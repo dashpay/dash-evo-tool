@@ -14,9 +14,10 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
+use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ResultBannerExt};
 use crate::ui::helpers::{TransactionType, add_key_chooser};
 use crate::ui::identities::get_selected_wallet;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{BackendTaskSuccessResult, MessageType, ScreenLike};
 use dash_sdk::dpp::data_contract::accessors::v0::{DataContractV0Getters, DataContractV0Setters};
 use dash_sdk::dpp::data_contract::conversion::json::DataContractJsonConversionMethodsV0;
@@ -29,16 +30,17 @@ use eframe::egui::{self, Color32, Context, Frame, Margin, TextEdit};
 use egui::{RichText, ScrollArea, Ui};
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(PartialEq)]
 enum BroadcastStatus {
     Idle,
     ParsingError(String),
     ValidContract(Box<DataContract>),
-    FetchingNonce(u64),
-    Broadcasting(u64),
-    ProofError(u64),
+    FetchingNonce,
+    Broadcasting,
+    ProofError,
+    // TODO(#660): BroadcastError should preserve the source error instead of a String.
+    // This requires changing the ScreenLike::display_message trait to pass typed errors.
     BroadcastError(String),
     Done,
 }
@@ -57,9 +59,10 @@ pub struct UpdateDataContractScreen {
     show_advanced_options: bool,
 
     pub selected_wallet: Option<Arc<RwLock<Wallet>>>,
+    wallet_open_attempted: bool,
     wallet_unlock_popup: WalletUnlockPopup,
-    error_message: Option<String>,
     completed_fee_result: Option<FeeResult>,
+    refresh_banner: Option<BannerHandle>,
 }
 
 impl UpdateDataContractScreen {
@@ -68,9 +71,8 @@ impl UpdateDataContractScreen {
             app_context.load_local_user_identities().unwrap_or_default();
         let selected_qualified_identity = qualified_identities.first().cloned();
 
-        let mut error_message: Option<String> = None;
         let selected_wallet = if let Some(ref identity) = selected_qualified_identity {
-            get_selected_wallet(identity, Some(app_context), None, &mut error_message)
+            get_selected_wallet(identity, Some(app_context), None).unwrap_or(None)
         } else {
             None
         };
@@ -117,9 +119,10 @@ impl UpdateDataContractScreen {
             show_advanced_options: false,
 
             selected_wallet,
+            wallet_open_attempted: false,
             wallet_unlock_popup: WalletUnlockPopup::new(),
-            error_message: None,
             completed_fee_result: None,
+            refresh_banner: None,
         }
     }
 
@@ -257,12 +260,7 @@ impl UpdateDataContractScreen {
                 let mut new_style = (**ui.style()).clone();
                 new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
                 ui.set_style(new_style);
-                let button =
-                    egui::Button::new(RichText::new("Update Contract").color(Color32::WHITE))
-                        .fill(DashColors::ACTION_BUTTON_BLUE)
-                        .frame(true)
-                        .corner_radius(3.0);
-                if ui.add(button).clicked() {
+                if ComponentStyles::add_primary_button(ui, "Update Contract").clicked() {
                     // Fire off a backend task
                     app_action = AppAction::BackendTask(BackendTask::ContractTask(Box::new(
                         ContractTask::UpdateDataContract(
@@ -273,42 +271,14 @@ impl UpdateDataContractScreen {
                     )));
                 }
             }
-            BroadcastStatus::FetchingNonce(start_time) => {
-                // Show how long we've been fetching nonce
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
-                let elapsed = now - start_time;
-                ui.label(format!(
-                    "Fetching identity contract nonce... {} seconds elapsed.",
-                    elapsed
-                ));
+            BroadcastStatus::FetchingNonce => {
+                ui.spinner();
             }
-            BroadcastStatus::Broadcasting(start_time) => {
-                // Show how long we've been broadcasting
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
-                let elapsed = now - start_time;
-                ui.label("Fetched nonce successfully. ✅ ");
-                ui.label(format!(
-                    "Broadcasting contract... {} seconds elapsed.",
-                    elapsed
-                ));
+            BroadcastStatus::Broadcasting => {
+                ui.spinner();
             }
-            BroadcastStatus::ProofError(start_time) => {
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
-                let elapsed = now - start_time;
-                ui.label("Fetched nonce successfully. ✅ ");
-                ui.label("Broadcasted but received proof error. ⚠");
-                ui.label(format!(
-                    "Fetching contract from Platform... {elapsed} seconds elapsed."
-                ));
+            BroadcastStatus::ProofError => {
+                ui.spinner();
             }
             BroadcastStatus::Done => {
                 ui.colored_label(Color32::DARK_GREEN, "Data Contract updated successfully!");
@@ -318,12 +288,15 @@ impl UpdateDataContractScreen {
         if let AppAction::BackendTask(BackendTask::ContractTask(contract_task)) = &app_action
             && let ContractTask::UpdateDataContract(_, _, _) = **contract_task
         {
-            self.broadcast_status = BroadcastStatus::FetchingNonce(
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs(),
+            self.broadcast_status = BroadcastStatus::FetchingNonce;
+            self.refresh_banner.take_and_clear();
+            let handle = MessageBanner::set_global(
+                ui.ctx(),
+                "Fetching identity contract nonce...",
+                MessageType::Info,
             );
+            handle.with_elapsed();
+            self.refresh_banner = Some(handle);
         }
 
         app_action
@@ -362,37 +335,38 @@ impl UpdateDataContractScreen {
 
 impl ScreenLike for UpdateDataContractScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
+        if matches!(message_type, MessageType::Error | MessageType::Warning) {
+            self.refresh_banner.take_and_clear();
+        }
         if message_type == MessageType::Error {
-            if message.contains("proof error logged, contract inserted into the database") {
-                self.error_message = Some(message.to_string());
-                self.broadcast_status = BroadcastStatus::Done;
-            } else {
-                self.broadcast_status = BroadcastStatus::BroadcastError(message.to_string());
-            }
+            self.broadcast_status = BroadcastStatus::BroadcastError(message.to_string());
         }
     }
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
         match result {
             BackendTaskSuccessResult::FetchedNonce => {
-                self.broadcast_status = BroadcastStatus::Broadcasting(
-                    SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs(),
-                );
+                self.broadcast_status = BroadcastStatus::Broadcasting;
+                // Update banner text for the broadcasting phase
+                if let Some(handle) = &self.refresh_banner {
+                    handle.set_message("Broadcasting contract...");
+                }
             }
             BackendTaskSuccessResult::UpdatedContract(fee_result) => {
+                self.refresh_banner.take_and_clear();
                 self.completed_fee_result = Some(fee_result);
                 self.broadcast_status = BroadcastStatus::Done;
             }
             BackendTaskSuccessResult::ProofErrorLogged => {
-                self.broadcast_status = BroadcastStatus::ProofError(
-                    SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs(),
-                );
+                self.broadcast_status = BroadcastStatus::ProofError;
+                // Update banner text for the proof error recovery phase
+                if let Some(handle) = &self.refresh_banner {
+                    handle.set_message("Fetching contract from Platform...");
+                }
+            }
+            BackendTaskSuccessResult::ContractSavedAfterProofError => {
+                self.refresh_banner.take_and_clear();
+                self.broadcast_status = BroadcastStatus::Done;
             }
             _ => {}
         }
@@ -494,18 +468,18 @@ impl ScreenLike for UpdateDataContractScreen {
                         .cloned();
 
                     // Update wallet
-                    self.selected_wallet = get_selected_wallet(
-                        identity,
-                        Some(&self.app_context),
-                        None,
-                        &mut self.error_message,
-                    );
+                    self.selected_wallet =
+                        get_selected_wallet(identity, Some(&self.app_context), None)
+                            .or_show_error(self.app_context.egui_ctx())
+                            .unwrap_or(None);
+                    self.wallet_open_attempted = false;
 
                     // Re-parse contract with new owner ID
                     self.parse_contract();
                 } else {
                     self.selected_key = None;
                     self.selected_wallet = None;
+                    self.wallet_open_attempted = false;
                 }
             }
 
@@ -541,8 +515,9 @@ impl ScreenLike for UpdateDataContractScreen {
 
             // Render the wallet unlock if needed
             if let Some(wallet) = &self.selected_wallet {
-                if let Err(e) = try_open_wallet_no_password(wallet) {
-                    self.error_message = Some(e);
+                if !self.wallet_open_attempted {
+                    let _ = try_open_wallet_no_password(wallet).or_show_error(ui.ctx());
+                    self.wallet_open_attempted = true;
                 }
                 if wallet_needs_unlock(wallet) {
                     ui.add_space(10.0);

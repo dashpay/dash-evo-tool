@@ -1,13 +1,15 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
+use crate::model::secret::Secret;
 use crate::model::wallet::Wallet;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
-use chrono::{DateTime, Utc};
 use dash_sdk::dashcore_rpc::dashcore::{Address, InstantLock, Transaction};
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::prelude::AssetLockProof;
@@ -19,13 +21,10 @@ pub struct AssetLockDetailScreen {
     pub wallet_seed_hash: [u8; 32],
     pub asset_lock_index: usize,
     pub app_context: Arc<AppContext>,
-    message: Option<(String, MessageType, DateTime<Utc>)>,
     wallet: Option<Arc<RwLock<Wallet>>>,
-    wallet_password: String,
-    show_password: bool,
-    error_message: Option<String>,
+    password_input: PasswordInput,
     show_private_key_popup: bool,
-    private_key_wif: Option<String>,
+    private_key_wif: Option<Secret>,
 }
 
 impl AssetLockDetailScreen {
@@ -47,11 +46,8 @@ impl AssetLockDetailScreen {
             wallet_seed_hash,
             asset_lock_index,
             app_context: app_context.clone(),
-            message: None,
             wallet,
-            wallet_password: String::new(),
-            show_password: false,
-            error_message: None,
+            password_input: PasswordInput::new().with_hint_text("Enter password"),
             show_private_key_popup: false,
             private_key_wif: None,
         }
@@ -189,7 +185,7 @@ impl AssetLockDetailScreen {
                             ui.label("Asset Lock Proof (hex):");
                             if ui.small_button("Copy").clicked() {
                                 ui.ctx().copy_text(proof_hex.clone());
-                                self.display_message("Asset lock proof copied to clipboard", MessageType::Success);
+                                MessageBanner::set_global(ui.ctx(), "Asset lock proof copied to clipboard", MessageType::Success);
                             }
                         });
                         ui.add_space(5.0);
@@ -231,11 +227,11 @@ impl AssetLockDetailScreen {
                                         let wallet = wallet_arc.write().unwrap();
                                         match wallet.private_key_at_derivation_path(&derivation_path, self.app_context.network) {
                                             Ok(private_key) => {
-                                                self.private_key_wif = Some(private_key.to_wif());
+                                                self.private_key_wif = Some(Secret::new(private_key.to_wif()));
                                                 self.show_private_key_popup = true;
                                             }
                                             Err(e) => {
-                                                self.display_message(&format!("Error retrieving private key: {}", e), MessageType::Error);
+                                                MessageBanner::set_global(ui.ctx(), format!("Error retrieving private key: {}", e), MessageType::Error);
                                             }
                                         }
                                     }
@@ -262,17 +258,6 @@ impl AssetLockDetailScreen {
             });
         }
     }
-
-    fn check_message_expiration(&mut self) {
-        if let Some((_, _, timestamp)) = &self.message {
-            let now = Utc::now();
-            let elapsed = now.signed_duration_since(*timestamp);
-
-            if elapsed.num_seconds() >= 10 {
-                self.message = None;
-            }
-        }
-    }
 }
 
 impl ScreenWithWalletUnlock for AssetLockDetailScreen {
@@ -280,28 +265,8 @@ impl ScreenWithWalletUnlock for AssetLockDetailScreen {
         &self.wallet
     }
 
-    fn wallet_password_ref(&self) -> &String {
-        &self.wallet_password
-    }
-
-    fn wallet_password_mut(&mut self) -> &mut String {
-        &mut self.wallet_password
-    }
-
-    fn show_password(&self) -> bool {
-        self.show_password
-    }
-
-    fn show_password_mut(&mut self) -> &mut bool {
-        &mut self.show_password
-    }
-
-    fn set_error_message(&mut self, error_message: Option<String>) {
-        self.error_message = error_message;
-    }
-
-    fn error_message(&self) -> Option<&String> {
-        self.error_message.as_ref()
+    fn password_input(&mut self) -> &mut PasswordInput {
+        &mut self.password_input
     }
 
     fn app_context(&self) -> Arc<AppContext> {
@@ -311,8 +276,6 @@ impl ScreenWithWalletUnlock for AssetLockDetailScreen {
 
 impl ScreenLike for AssetLockDetailScreen {
     fn ui(&mut self, ctx: &Context) -> AppAction {
-        self.check_message_expiration();
-
         let mut action = add_top_panel(
             ctx,
             &self.app_context,
@@ -360,28 +323,7 @@ impl ScreenLike for AssetLockDetailScreen {
                     self.render_asset_lock_info(ui);
                 });
 
-            // Display messages
-            if let Some((message, message_type, timestamp)) = &self.message {
-                let message_color = match message_type {
-                    MessageType::Error => egui::Color32::DARK_RED,
-                    MessageType::Warning => DashColors::warning_color(dark_mode),
-                    MessageType::Info => DashColors::text_primary(dark_mode),
-                    MessageType::Success => egui::Color32::DARK_GREEN,
-                };
-
-                ui.add_space(25.0);
-                ui.horizontal(|ui| {
-                    ui.add_space(10.0);
-
-                    let now = Utc::now();
-                    let elapsed = now.signed_duration_since(*timestamp);
-                    let remaining = (10 - elapsed.num_seconds()).max(0);
-
-                    let full_msg = format!("{} ({}s)", message, remaining);
-                    ui.label(egui::RichText::new(full_msg).color(message_color));
-                });
-                ui.add_space(2.0);
-            }
+            // Message display is handled by the global MessageBanner
 
             inner_action
         });
@@ -409,24 +351,34 @@ impl ScreenLike for AssetLockDetailScreen {
                     ui.add_space(15.0);
 
                     ui.label("Private Key (WIF):");
-                    if let Some(wif) = self.private_key_wif.clone() {
-                        ui.add(egui::TextEdit::multiline(&mut wif.as_str())
+                    if let Some(ref wif) = self.private_key_wif {
+                        ui.add(egui::TextEdit::multiline(&mut wif.expose_secret())
                             .font(egui::FontId::monospace(12.0))
                             .desired_width(f32::INFINITY)
                             .desired_rows(1));
 
                         ui.add_space(10.0);
+                    }
 
-                        ui.horizontal(|ui| {
-                            if ui.button("Copy").clicked() {
-                                ui.ctx().copy_text(wif.clone());
-                                self.display_message("Private key copied to clipboard", MessageType::Success);
-                            }
-                            if ui.button("Close").clicked() {
-                                self.show_private_key_popup = false;
-                                self.private_key_wif = None;
-                            }
-                        });
+                    let mut close_popup = false;
+                    ui.horizontal(|ui| {
+                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        if ComponentStyles::add_primary_button(ui, "Copy").clicked()
+                            && let Some(ref wif) = self.private_key_wif
+                        {
+                            // SECURITY: clipboard copy inherently exposes plaintext — user-initiated action
+                            ui.ctx().copy_text(wif.expose_secret().to_string());
+                            MessageBanner::set_global(ctx, "Private key copied to clipboard", MessageType::Success);
+                        }
+                        if ComponentStyles::add_secondary_button(ui, "Close", dark_mode)
+                            .clicked()
+                        {
+                            close_popup = true;
+                        }
+                    });
+                    if close_popup {
+                        self.show_private_key_popup = false;
+                        self.private_key_wif = None;
                     }
                     ui.add_space(10.0);
                 });
@@ -435,8 +387,8 @@ impl ScreenLike for AssetLockDetailScreen {
         action
     }
 
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
-        self.message = Some((message.to_string(), message_type, Utc::now()));
+    fn display_message(&mut self, _message: &str, _message_type: MessageType) {
+        // Error/success display is handled by the global MessageBanner.
     }
 
     fn refresh_on_arrival(&mut self) {}

@@ -13,6 +13,7 @@ use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ResultBannerExt};
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Address;
@@ -23,13 +24,11 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::dpp::prelude::TimestampMillis;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::{self, Context, Frame, Margin, Ui};
 use egui::{Color32, RichText};
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::get_selected_wallet;
 use super::keys::add_key_screen::AddKeyScreen;
@@ -37,7 +36,7 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::helpers::{TransactionType, add_key_chooser};
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{DashColors, ResponseExt};
 
 /// Transfer destination type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -50,8 +49,8 @@ pub enum TransferDestinationType {
 #[derive(PartialEq)]
 pub enum TransferCreditsStatus {
     NotStarted,
-    WaitingForResult(TimestampMillis),
-    ErrorMessage(String),
+    WaitingForResult,
+    Error,
     Complete,
 }
 
@@ -63,26 +62,28 @@ pub struct TransferScreen {
     amount: Option<Amount>,
     amount_input: Option<AmountInput>,
     transfer_credits_status: TransferCreditsStatus,
-    error_message: Option<String>,
     max_amount: u64,
     pub app_context: Arc<AppContext>,
     confirmation_popup: bool,
     confirmation_dialog: Option<ConfirmationDialog>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
+    wallet_open_attempted: bool,
     // Platform address transfer fields
     destination_type: TransferDestinationType,
     platform_address_input: String,
     show_advanced_options: bool,
     // Fee result from completed operation
     completed_fee_result: Option<FeeResult>,
+    refresh_banner: Option<BannerHandle>,
 }
 
 impl TransferScreen {
     pub fn new(identity: QualifiedIdentity, app_context: &Arc<AppContext>) -> Self {
         let known_identities = app_context
             .load_local_qualified_identities()
-            .expect("Identities not loaded");
+            .or_show_error(app_context.egui_ctx())
+            .unwrap_or_default();
 
         let max_amount = identity.identity.balance();
         let identity_clone = identity.identity.clone();
@@ -92,9 +93,11 @@ impl TransferScreen {
             KeyType::all_key_types().into(),
             false,
         );
-        let mut error_message = None;
         let selected_wallet =
-            get_selected_wallet(&identity, None, selected_key, &mut error_message);
+            get_selected_wallet(&identity, None, selected_key).unwrap_or_else(|e| {
+                MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error);
+                None
+            });
         Self {
             identity,
             selected_key: selected_key.cloned(),
@@ -103,17 +106,18 @@ impl TransferScreen {
             amount: Some(Amount::new_dash(0.0)),
             amount_input: None,
             transfer_credits_status: TransferCreditsStatus::NotStarted,
-            error_message: None,
             max_amount,
             app_context: app_context.clone(),
             confirmation_popup: false,
             confirmation_dialog: None,
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
+            wallet_open_attempted: false,
             destination_type: TransferDestinationType::Identity,
             platform_address_input: String::new(),
             show_advanced_options: false,
             completed_fee_result: None,
+            refresh_banner: None,
         }
     }
 
@@ -146,8 +150,8 @@ impl TransferScreen {
 
         // Check if input should be disabled when operation is in progress
         let enabled = match self.transfer_credits_status {
-            TransferCreditsStatus::WaitingForResult(_) | TransferCreditsStatus::Complete => false,
-            TransferCreditsStatus::NotStarted | TransferCreditsStatus::ErrorMessage(_) => {
+            TransferCreditsStatus::WaitingForResult | TransferCreditsStatus::Complete => false,
+            TransferCreditsStatus::NotStarted | TransferCreditsStatus::Error => {
                 amount_input.set_max_amount(Some(max_amount_credits));
                 true
             }
@@ -311,18 +315,39 @@ impl TransferScreen {
         // Get the amount
         let credits = self.amount.as_ref().map(|v| v.value()).unwrap_or_default() as u128;
         if credits == 0 {
-            self.error_message = Some("Amount must be greater than 0".to_string());
-            self.transfer_credits_status =
-                TransferCreditsStatus::ErrorMessage("Amount must be greater than 0".to_string());
+            self.transfer_credits_status = TransferCreditsStatus::Error;
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "Amount must be greater than 0",
+                MessageType::Error,
+            );
+            return AppAction::None;
+        }
+
+        // Validate amount against estimated fees
+        let estimated_fee = self
+            .app_context
+            .fee_estimator()
+            .estimate_credit_transfer_to_addresses(1);
+        let max_transferable =
+            (self.identity.identity.balance() as u128).saturating_sub(estimated_fee as u128);
+        if credits > max_transferable {
+            self.set_error_state(format!(
+                "Amount plus estimated fee exceeds available balance (max transferable: {})",
+                format_credits_as_dash(max_transferable as u64)
+            ));
             return AppAction::None;
         }
 
         // Set waiting state
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        self.transfer_credits_status = TransferCreditsStatus::WaitingForResult(now);
+        self.transfer_credits_status = TransferCreditsStatus::WaitingForResult;
+        let handle = MessageBanner::set_global(
+            self.app_context.egui_ctx(),
+            "Transferring credits...",
+            MessageType::Info,
+        );
+        handle.with_elapsed();
+        self.refresh_banner = Some(handle);
 
         // Build outputs
         let mut outputs: BTreeMap<PlatformAddress, Credits> = BTreeMap::new();
@@ -363,19 +388,38 @@ impl TransferScreen {
         // Use the amount directly since it's already an Amount struct
         let credits = self.amount.as_ref().map(|v| v.value()).unwrap_or_default() as u128;
         if credits == 0 {
-            self.error_message = Some("Amount must be greater than 0".to_string());
-            self.transfer_credits_status =
-                TransferCreditsStatus::ErrorMessage("Amount must be greater than 0".to_string());
+            self.transfer_credits_status = TransferCreditsStatus::Error;
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "Amount must be greater than 0",
+                MessageType::Error,
+            );
+            self.confirmation_popup = false;
+            return AppAction::None;
+        }
+
+        // Validate amount against estimated fees
+        let estimated_fee = self.app_context.fee_estimator().estimate_credit_transfer();
+        let max_transferable =
+            (self.identity.identity.balance() as u128).saturating_sub(estimated_fee as u128);
+        if credits > max_transferable {
+            self.set_error_state(format!(
+                "Amount plus estimated fee exceeds available balance (max transferable: {})",
+                format_credits_as_dash(max_transferable as u64)
+            ));
             self.confirmation_popup = false;
             return AppAction::None;
         }
 
         // Set waiting state and create backend task
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        self.transfer_credits_status = TransferCreditsStatus::WaitingForResult(now);
+        self.transfer_credits_status = TransferCreditsStatus::WaitingForResult;
+        let handle = MessageBanner::set_global(
+            self.app_context.egui_ctx(),
+            "Transferring credits...",
+            MessageType::Info,
+        );
+        handle.with_elapsed();
+        self.refresh_banner = Some(handle);
 
         AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::Transfer(
             self.identity.clone(),
@@ -407,8 +451,8 @@ impl TransferScreen {
 
     /// Set error state with the given message
     fn set_error_state(&mut self, error: String) {
-        self.error_message = Some(error.clone());
-        self.transfer_credits_status = TransferCreditsStatus::ErrorMessage(error);
+        self.transfer_credits_status = TransferCreditsStatus::Error;
+        MessageBanner::set_global(self.app_context.egui_ctx(), &error, MessageType::Error);
     }
 
     fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
@@ -487,10 +531,11 @@ impl TransferScreen {
 }
 
 impl ScreenLike for TransferScreen {
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
-        if let MessageType::Error = message_type {
-            self.transfer_credits_status = TransferCreditsStatus::ErrorMessage(message.to_string());
-            self.error_message = Some(message.to_string());
+    fn display_message(&mut self, _message: &str, message_type: MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
+        if matches!(message_type, MessageType::Error | MessageType::Warning) {
+            self.refresh_banner.take_and_clear();
+            self.transfer_credits_status = TransferCreditsStatus::Error;
         }
     }
 
@@ -498,6 +543,7 @@ impl ScreenLike for TransferScreen {
         if let BackendTaskSuccessResult::TransferredCredits(fee_result) =
             backend_task_success_result
         {
+            self.refresh_banner.take_and_clear();
             self.completed_fee_result = Some(fee_result);
             self.transfer_credits_status = TransferCreditsStatus::Complete;
         }
@@ -505,13 +551,17 @@ impl ScreenLike for TransferScreen {
 
     fn refresh(&mut self) {
         // Refresh the identity because there might be new keys
-        let identities = match self.app_context.load_local_qualified_identities() {
-            Ok(list) => list,
-            Err(e) => {
-                tracing::warn!("Failed to load identities during refresh: {}", e);
-                Vec::new()
-            }
-        };
+        let identities = self
+            .app_context
+            .load_local_qualified_identities()
+            .unwrap_or_else(|e| {
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    format!("Failed to load local identities: {e}"),
+                    MessageType::Error,
+                );
+                vec![]
+            });
         if let Some(refreshed) = identities
             .iter()
             .find(|identity| identity.identity.id() == self.identity.identity.id())
@@ -595,8 +645,11 @@ impl ScreenLike for TransferScreen {
                 if self.selected_wallet.is_some()
                     && let Some(wallet) = &self.selected_wallet
                 {
-                    if let Err(e) = try_open_wallet_no_password(wallet) {
-                        self.error_message = Some(e);
+                    if !self.wallet_open_attempted {
+                        if let Err(e) = try_open_wallet_no_password(wallet) {
+                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                        }
+                        self.wallet_open_attempted = true;
                     }
                     if wallet_needs_unlock(wallet) {
                         ui.add_space(10.0);
@@ -718,7 +771,7 @@ impl ScreenLike for TransferScreen {
                     && has_enough_balance
                     && !matches!(
                         self.transfer_credits_status,
-                        TransferCreditsStatus::WaitingForResult(_),
+                        TransferCreditsStatus::WaitingForResult,
                     )
                     && match self.destination_type {
                         TransferDestinationType::Identity => !self.receiver_identity_id.is_empty(),
@@ -747,7 +800,8 @@ impl ScreenLike for TransferScreen {
 
                 if ui
                     .add_enabled(ready, button)
-                    .on_hover_text(hover_text)
+                    .clickable_tooltip(&hover_text)
+                    .disabled_tooltip(&hover_text)
                     .clicked()
                 {
                     self.confirmation_popup = true;
@@ -762,67 +816,7 @@ impl ScreenLike for TransferScreen {
                     };
                 }
 
-                // Handle transfer status messages
-                ui.add_space(5.0);
-                match &self.transfer_credits_status {
-                    TransferCreditsStatus::NotStarted => {
-                        // Do nothing
-                    }
-                    TransferCreditsStatus::WaitingForResult(start_time) => {
-                        let now = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs();
-                        let elapsed_seconds = now - start_time;
-
-                        let display_time = if elapsed_seconds < 60 {
-                            format!(
-                                "{} second{}",
-                                elapsed_seconds,
-                                if elapsed_seconds == 1 { "" } else { "s" }
-                            )
-                        } else {
-                            let minutes = elapsed_seconds / 60;
-                            let seconds = elapsed_seconds % 60;
-                            format!(
-                                "{} minute{} and {} second{}",
-                                minutes,
-                                if minutes == 1 { "" } else { "s" },
-                                seconds,
-                                if seconds == 1 { "" } else { "s" }
-                            )
-                        };
-
-                        ui.label(format!(
-                            "Transferring... Time taken so far: {}",
-                            display_time
-                        ));
-                    }
-                    TransferCreditsStatus::ErrorMessage(msg) => {
-                        let error_color = DashColors::ERROR;
-                        let msg = msg.clone();
-                        Frame::new()
-                            .fill(error_color.gamma_multiply(0.1))
-                            .inner_margin(Margin::symmetric(10, 8))
-                            .corner_radius(5.0)
-                            .stroke(egui::Stroke::new(1.0, error_color))
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.label(
-                                        RichText::new(format!("Error: {}", msg)).color(error_color),
-                                    );
-                                    ui.add_space(10.0);
-                                    if ui.small_button("Dismiss").clicked() {
-                                        self.transfer_credits_status =
-                                            TransferCreditsStatus::NotStarted;
-                                    }
-                                });
-                            });
-                    }
-                    TransferCreditsStatus::Complete => {
-                        // Handled above
-                    }
-                }
+                // Status display is handled by the global MessageBanner
             }
 
             inner_action

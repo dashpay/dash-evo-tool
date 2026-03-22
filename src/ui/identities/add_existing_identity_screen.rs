@@ -6,25 +6,25 @@ use crate::model::qualified_identity::IdentityType;
 use crate::model::wallet::Wallet;
 use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
+use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenLike};
 use bip39::rand::{prelude::IteratorRandom, thread_rng};
 use dash_sdk::dashcore_rpc::dashcore::Network;
-use dash_sdk::dpp::identity::TimestampMillis;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
-use eframe::egui::{Context, Frame, Margin};
+use eframe::egui::Context;
 use egui::{Color32, ComboBox, RichText, Ui};
 use serde::Deserialize;
 use std::fs;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Deserialize)]
 struct MasternodeInfo {
@@ -55,9 +55,19 @@ struct TestnetNodes {
     hp_masternodes: std::collections::HashMap<String, HPMasternodeInfo>,
 }
 
-fn load_testnet_nodes_from_yml(file_path: &str) -> Option<TestnetNodes> {
-    let file_content = fs::read_to_string(file_path).ok()?;
-    serde_yaml_ng::from_str(&file_content).expect("expected proper yaml")
+fn load_testnet_nodes_from_yml(file_path: &str) -> Result<Option<TestnetNodes>, String> {
+    let file_content = match fs::read_to_string(file_path) {
+        Ok(content) => content,
+        Err(_) => return Ok(None),
+    };
+    serde_yaml_ng::from_str::<TestnetNodes>(&file_content)
+        .map(Some)
+        .map_err(|e| {
+            format!(
+                "Failed to parse YAML file '{}': {}. Please check the file format.",
+                file_path, e
+            )
+        })
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -76,8 +86,8 @@ enum WalletIdentitySearchMode {
 #[derive(PartialEq)]
 pub enum AddIdentityStatus {
     NotStarted,
-    WaitingForResult(TimestampMillis),
-    ErrorMessage(String),
+    WaitingForResult,
+    Error,
     Complete,
 }
 
@@ -85,59 +95,71 @@ pub struct AddExistingIdentityScreen {
     identity_id_input: String,
     pub identity_type: IdentityType,
     alias_input: String,
-    voting_private_key_input: String,
-    owner_private_key_input: String,
-    payout_address_private_key_input: String,
-    keys_input: Vec<String>,
+    voting_private_key_input: PasswordInput,
+    owner_private_key_input: PasswordInput,
+    payout_address_private_key_input: PasswordInput,
+    keys_input: Vec<PasswordInput>,
     add_identity_status: AddIdentityStatus,
     testnet_loaded_nodes: Option<TestnetNodes>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     identity_associated_with_wallet: bool,
     wallet_unlock_popup: WalletUnlockPopup,
-    error_message: Option<String>,
+    wallet_open_attempted: bool,
     pub identity_index_input: String,
     pub app_context: Arc<AppContext>,
     show_pop_up_info: Option<String>,
     mode: LoadIdentityMode,
-    backend_message: Option<String>,
     wallet_search_mode: WalletIdentitySearchMode,
     success_message: Option<String>,
     dpns_name_input: String,
     /// Whether to show advanced options
     show_advanced_options: bool,
+    refresh_banner: Option<BannerHandle>,
 }
 
 impl AddExistingIdentityScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         let selected_wallet = app_context.wallets.read().unwrap().values().next().cloned();
-        let testnet_loaded_nodes = if app_context.network == Network::Testnet {
-            load_testnet_nodes_from_yml(".testnet_nodes.yml")
+        let (testnet_loaded_nodes, init_error) = if app_context.network == Network::Testnet {
+            match load_testnet_nodes_from_yml(".testnet_nodes.yml") {
+                Ok(nodes) => (nodes, None),
+                Err(e) => (None, Some(e)),
+            }
         } else {
-            None
+            (None, None)
         };
+        if let Some(err) = init_error {
+            MessageBanner::set_global(app_context.egui_ctx(), &err, MessageType::Error);
+        }
         Self {
             identity_id_input: String::new(),
             identity_type: IdentityType::User,
             alias_input: String::new(),
-            voting_private_key_input: String::new(),
-            owner_private_key_input: String::new(),
-            payout_address_private_key_input: String::new(),
+            voting_private_key_input: PasswordInput::new()
+                .with_hint_text("Private key (WIF or hex)")
+                .with_monospace(),
+            owner_private_key_input: PasswordInput::new()
+                .with_hint_text("Private key (WIF or hex)")
+                .with_monospace(),
+            payout_address_private_key_input: PasswordInput::new()
+                .with_hint_text("Private key (WIF or hex)")
+                .with_monospace(),
             keys_input: vec![],
             add_identity_status: AddIdentityStatus::NotStarted,
             testnet_loaded_nodes,
             selected_wallet,
             identity_associated_with_wallet: true,
             wallet_unlock_popup: WalletUnlockPopup::new(),
-            error_message: None,
+            wallet_open_attempted: false,
             identity_index_input: String::new(),
             app_context: app_context.clone(),
             show_pop_up_info: None,
             mode: LoadIdentityMode::IdentityId,
-            backend_message: None,
             wallet_search_mode: WalletIdentitySearchMode::SpecificIndex,
             success_message: None,
             dpns_name_input: String::new(),
             show_advanced_options: false,
+            refresh_banner: None,
         }
     }
 
@@ -235,6 +257,7 @@ impl AddExistingIdentityScreen {
                                     .clicked()
                                 {
                                     self.selected_wallet = None;
+                                    self.wallet_open_attempted = false;
                                 }
 
                                 for (alias, wallet) in &wallets_snapshot {
@@ -245,6 +268,7 @@ impl AddExistingIdentityScreen {
 
                                     if ui.selectable_label(is_selected, alias).clicked() {
                                         self.selected_wallet = Some(wallet.clone());
+                                        self.wallet_open_attempted = false;
                                     }
                                 }
                             });
@@ -257,8 +281,11 @@ impl AddExistingIdentityScreen {
 
                             if wallet_still_loaded {
                                 // Try to open wallet without password if it doesn't use one
-                                if let Err(e) = try_open_wallet_no_password(selected_wallet) {
-                                    self.error_message = Some(e);
+                                if !self.wallet_open_attempted {
+                                    if let Err(e) = try_open_wallet_no_password(selected_wallet) {
+                                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                                    }
+                                    self.wallet_open_attempted = true;
                                 }
 
                                 if wallet_needs_unlock(selected_wallet) {
@@ -273,6 +300,7 @@ impl AddExistingIdentityScreen {
                                 }
                             } else {
                                 self.selected_wallet = None;
+                                self.wallet_open_attempted = false;
                                 ui.colored_label(
                                     Color32::RED,
                                     "Selected wallet is no longer loaded. We'll search unlocked wallets instead.",
@@ -363,28 +391,23 @@ impl AddExistingIdentityScreen {
                 if self.show_advanced_options {
                     match self.identity_type {
                         IdentityType::Masternode | IdentityType::Evonode => {
-                            let voting_private_key_input = &mut self.voting_private_key_input;
-                            let owner_private_key_input = &mut self.owner_private_key_input;
-                            let payout_address_private_key_input =
-                                &mut self.payout_address_private_key_input;
-
                             ui.label("Voting Private Key:");
-                            ui.text_edit_singleline(voting_private_key_input);
+                            self.voting_private_key_input.show(ui);
                             ui.end_row();
 
                             ui.label("Owner Private Key:");
-                            ui.text_edit_singleline(owner_private_key_input);
+                            self.owner_private_key_input.show(ui);
                             ui.end_row();
 
                             ui.label("Payout Address Private Key:");
-                            ui.text_edit_singleline(payout_address_private_key_input);
+                            self.payout_address_private_key_input.show(ui);
                             ui.end_row();
                         }
                         IdentityType::User => {
                             // Manual key inputs for User type
                             let mut keys_to_remove = vec![];
 
-                            for (i, key) in self.keys_input.iter_mut().enumerate() {
+                            for (i, key_input) in self.keys_input.iter_mut().enumerate() {
                                 ui.horizontal(|ui| {
                                     ui.label(format!("Private Key {} (Hex or WIF):", i + 1));
 
@@ -401,7 +424,7 @@ impl AddExistingIdentityScreen {
                                     }
                                 });
 
-                                ui.text_edit_singleline(key);
+                                key_input.show(ui);
 
                                 if ui.button("-").clicked() {
                                     keys_to_remove.push(i);
@@ -422,7 +445,11 @@ impl AddExistingIdentityScreen {
         if self.show_advanced_options && self.identity_type == IdentityType::User {
             ui.add_space(10.0);
             if ui.button("+ Add key manually").clicked() {
-                self.keys_input.push(String::new());
+                self.keys_input.push(
+                    PasswordInput::new()
+                        .with_hint_text("Private key (WIF or hex)")
+                        .with_monospace(),
+                );
             }
         }
 
@@ -452,11 +479,14 @@ impl AddExistingIdentityScreen {
             .corner_radius(3.0);
 
         if ui.add_enabled(is_valid_id, button).clicked() {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            self.add_identity_status = AddIdentityStatus::WaitingForResult(now);
+            self.add_identity_status = AddIdentityStatus::WaitingForResult;
+            let handle = MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "Loading identity...",
+                MessageType::Info,
+            );
+            handle.with_elapsed();
+            self.refresh_banner = Some(handle);
             action = self.load_identity_clicked();
         }
 
@@ -517,6 +547,7 @@ impl AddExistingIdentityScreen {
                             {
                                 // Update the selected wallet
                                 self.selected_wallet = Some(wallet.clone());
+                                self.wallet_open_attempted = false;
                             }
                         }
                     });
@@ -563,8 +594,11 @@ impl AddExistingIdentityScreen {
         let wallet = self.selected_wallet.as_ref().unwrap();
 
         // Try to open wallet without password if it doesn't use one
-        if let Err(e) = try_open_wallet_no_password(wallet) {
-            self.error_message = Some(e);
+        if !self.wallet_open_attempted {
+            if let Err(e) = try_open_wallet_no_password(wallet) {
+                MessageBanner::set_global(self.app_context.egui_ctx(), &e, MessageType::Error);
+            }
+            self.wallet_open_attempted = true;
         }
 
         if wallet_needs_unlock(wallet) {
@@ -602,8 +636,6 @@ impl AddExistingIdentityScreen {
             });
             if wallet_mode_changed {
                 self.add_identity_status = AddIdentityStatus::NotStarted;
-                self.error_message = None;
-                self.backend_message = None;
                 self.success_message = None;
             }
             ui.add_space(6.0);
@@ -654,13 +686,15 @@ impl AddExistingIdentityScreen {
             .corner_radius(3.0);
 
         if ui.add(button).clicked() {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            self.add_identity_status = AddIdentityStatus::WaitingForResult(now);
-            self.backend_message = None;
+            self.add_identity_status = AddIdentityStatus::WaitingForResult;
             self.success_message = None;
+            let handle = MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "Loading identity...",
+                MessageType::Info,
+            );
+            handle.with_elapsed();
+            self.refresh_banner = Some(handle);
 
             // Parse identity index input
             if let Ok(identity_index) = self.identity_index_input.trim().parse::<u32>() {
@@ -677,8 +711,12 @@ impl AddExistingIdentityScreen {
                 ));
             } else {
                 // Handle invalid index input
-                self.add_identity_status =
-                    AddIdentityStatus::ErrorMessage("Invalid identity index".to_string());
+                self.add_identity_status = AddIdentityStatus::NotStarted;
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "Invalid identity index",
+                    MessageType::Error,
+                );
             }
         }
         action
@@ -811,13 +849,15 @@ impl AddExistingIdentityScreen {
             .corner_radius(3.0);
 
         if ui.add_enabled(is_valid, button).clicked() {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            self.add_identity_status = AddIdentityStatus::WaitingForResult(now);
-            self.backend_message = None;
+            self.add_identity_status = AddIdentityStatus::WaitingForResult;
             self.success_message = None;
+            let handle = MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "Loading identity...",
+                MessageType::Info,
+            );
+            handle.with_elapsed();
+            self.refresh_banner = Some(handle);
 
             // Get the selected wallet seed hash for key derivation
             let selected_wallet_seed_hash = if self.identity_associated_with_wallet {
@@ -857,10 +897,14 @@ impl AddExistingIdentityScreen {
             identity_id_input: self.identity_id_input.trim().to_string(),
             identity_type: self.identity_type,
             alias_input: self.alias_input.clone(),
-            voting_private_key_input: self.voting_private_key_input.clone(),
-            owner_private_key_input: self.owner_private_key_input.clone(),
-            payout_address_private_key_input: self.payout_address_private_key_input.clone(),
-            keys_input: self.keys_input.clone(),
+            voting_private_key_input: self.voting_private_key_input.take_secret(),
+            owner_private_key_input: self.owner_private_key_input.take_secret(),
+            payout_address_private_key_input: self.payout_address_private_key_input.take_secret(),
+            keys_input: self
+                .keys_input
+                .iter_mut()
+                .map(|k| k.take_secret())
+                .collect(),
             derive_keys_from_wallets: self.identity_associated_with_wallet,
             selected_wallet_seed_hash,
         };
@@ -873,17 +917,17 @@ impl AddExistingIdentityScreen {
         if let Some((name, hpmn)) = self
             .testnet_loaded_nodes
             .as_ref()
-            .unwrap()
-            .hp_masternodes
-            .iter()
-            .choose(&mut thread_rng())
+            .and_then(|nodes| nodes.hp_masternodes.iter().choose(&mut thread_rng()))
         {
             self.identity_id_input = hpmn.protx_tx_hash.clone();
             self.identity_type = IdentityType::Evonode;
             self.alias_input = name.clone();
-            self.voting_private_key_input = hpmn.voter.private_key.clone();
-            self.owner_private_key_input = hpmn.owner.private_key.clone();
-            self.payout_address_private_key_input = hpmn.payout.private_key.clone();
+            self.voting_private_key_input
+                .set_text(hpmn.voter.private_key.clone());
+            self.owner_private_key_input
+                .set_text(hpmn.owner.private_key.clone());
+            self.payout_address_private_key_input
+                .set_text(hpmn.payout.private_key.clone());
         }
     }
 
@@ -891,16 +935,15 @@ impl AddExistingIdentityScreen {
         if let Some((name, masternode)) = self
             .testnet_loaded_nodes
             .as_ref()
-            .unwrap()
-            .masternodes
-            .iter()
-            .choose(&mut thread_rng())
+            .and_then(|nodes| nodes.masternodes.iter().choose(&mut thread_rng()))
         {
             self.identity_id_input = masternode.pro_tx_hash.clone();
             self.identity_type = IdentityType::Masternode;
             self.alias_input = name.clone();
-            self.voting_private_key_input = masternode.voter.private_key.clone();
-            self.owner_private_key_input = masternode.owner.private_key.clone();
+            self.voting_private_key_input
+                .set_text(masternode.voter.private_key.clone());
+            self.owner_private_key_input
+                .set_text(masternode.owner.private_key.clone());
         }
     }
 
@@ -934,13 +977,21 @@ impl AddExistingIdentityScreen {
             self.voting_private_key_input.clear();
             self.owner_private_key_input.clear();
             self.payout_address_private_key_input.clear();
-            self.keys_input = vec![String::new(), String::new(), String::new()];
+            self.keys_input = vec![
+                PasswordInput::new()
+                    .with_hint_text("Private key (WIF or hex)")
+                    .with_monospace(),
+                PasswordInput::new()
+                    .with_hint_text("Private key (WIF or hex)")
+                    .with_monospace(),
+                PasswordInput::new()
+                    .with_hint_text("Private key (WIF or hex)")
+                    .with_monospace(),
+            ];
             self.identity_index_input.clear();
             self.dpns_name_input.clear();
-            self.error_message = None;
             self.show_pop_up_info = None;
             self.add_identity_status = AddIdentityStatus::NotStarted;
-            self.backend_message = None;
             self.success_message = None;
             return AppAction::None;
         }
@@ -951,21 +1002,26 @@ impl AddExistingIdentityScreen {
 
 impl ScreenLike for AddExistingIdentityScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
+        // Error/success display is handled by the global MessageBanner.
+        // Side-effects only: update status and progress tracking.
         match message_type {
             MessageType::Error => {
-                self.add_identity_status = AddIdentityStatus::ErrorMessage(message.to_string());
+                self.refresh_banner.take_and_clear();
+                self.add_identity_status = AddIdentityStatus::Error;
             }
             MessageType::Success => {
                 // Check if this is a final success message or a progress update
                 if message.starts_with("Successfully loaded")
                     || message.starts_with("Finished loading")
                 {
+                    self.refresh_banner.take_and_clear();
                     self.success_message = Some(message.to_string());
                     self.add_identity_status = AddIdentityStatus::Complete;
-                    self.backend_message = None;
                 } else {
-                    // This is a progress update
-                    self.backend_message = Some(message.to_string());
+                    // This is a progress update - update the banner text
+                    if let Some(ref handle) = self.refresh_banner {
+                        handle.set_message(message);
+                    }
                 }
             }
             _ => {}
@@ -975,19 +1031,21 @@ impl ScreenLike for AddExistingIdentityScreen {
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         match backend_task_success_result {
             BackendTaskSuccessResult::LoadedIdentity(_) => {
+                self.refresh_banner.take_and_clear();
                 self.success_message = Some("Successfully loaded identity.".to_string());
                 self.add_identity_status = AddIdentityStatus::Complete;
-                self.backend_message = None;
             }
             BackendTaskSuccessResult::Message(msg) => {
                 // Check if this is a final success message or a progress update
                 if msg.starts_with("Successfully loaded") || msg.starts_with("Finished loading") {
+                    self.refresh_banner.take_and_clear();
                     self.success_message = Some(msg);
                     self.add_identity_status = AddIdentityStatus::Complete;
-                    self.backend_message = None;
                 } else {
-                    // This is a progress update
-                    self.backend_message = Some(msg);
+                    // This is a progress update - update the banner text
+                    if let Some(ref handle) = self.refresh_banner {
+                        handle.set_message(&msg);
+                    }
                 }
             }
             _ => {}
@@ -1018,28 +1076,7 @@ impl ScreenLike for AddExistingIdentityScreen {
         action |= island_central_panel(ctx, |ui| {
             let mut inner_action = AppAction::None;
 
-            // Display error message at the top, outside of scroll area
-            if let Some(error_message) = self.error_message.clone() {
-                let error_color = DashColors::ERROR;
-                Frame::new()
-                    .fill(error_color.gamma_multiply(0.1))
-                    .inner_margin(Margin::symmetric(10, 8))
-                    .corner_radius(5.0)
-                    .stroke(egui::Stroke::new(1.0, error_color))
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new(format!("Error: {}", error_message))
-                                    .color(error_color),
-                            );
-                            ui.add_space(10.0);
-                            if ui.small_button("Dismiss").clicked() {
-                                self.error_message = None;
-                            }
-                        });
-                    });
-                ui.add_space(10.0);
-            }
+            // Error display is handled by the global MessageBanner
 
             egui::ScrollArea::vertical()
                 .auto_shrink([false; 2])
@@ -1085,8 +1122,6 @@ impl ScreenLike for AddExistingIdentityScreen {
 
                     if mode_changed {
                         self.add_identity_status = AddIdentityStatus::NotStarted;
-                        self.error_message = None;
-                        self.backend_message = None;
                         self.success_message = None;
                     }
 
@@ -1106,70 +1141,7 @@ impl ScreenLike for AddExistingIdentityScreen {
                         }
                     }
 
-                    ui.add_space(10.0);
-
-                    match &self.add_identity_status {
-                        AddIdentityStatus::NotStarted => {
-                            // Do nothing
-                        }
-                        AddIdentityStatus::WaitingForResult(start_time) => {
-                            let now = SystemTime::now()
-                                .duration_since(UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_secs();
-                            let elapsed_seconds = now - start_time;
-
-                            let display_time = if elapsed_seconds < 60 {
-                                format!(
-                                    "{} second{}",
-                                    elapsed_seconds,
-                                    if elapsed_seconds == 1 { "" } else { "s" }
-                                )
-                            } else {
-                                let minutes = elapsed_seconds / 60;
-                                let seconds = elapsed_seconds % 60;
-                                format!(
-                                    "{} minute{} and {} second{}",
-                                    minutes,
-                                    if minutes == 1 { "" } else { "s" },
-                                    seconds,
-                                    if seconds == 1 { "" } else { "s" }
-                                )
-                            };
-
-                            // Show progress message with time, or generic loading message
-                            if let Some(ref progress_msg) = self.backend_message {
-                                ui.label(format!("{} ({})", progress_msg, display_time));
-                            } else {
-                                ui.label(format!("Loading... ({})", display_time));
-                            }
-                        }
-                        AddIdentityStatus::ErrorMessage(msg) => {
-                            let error_color = DashColors::ERROR;
-                            let msg = msg.clone();
-                            Frame::new()
-                                .fill(error_color.gamma_multiply(0.1))
-                                .inner_margin(Margin::symmetric(10, 8))
-                                .corner_radius(5.0)
-                                .stroke(egui::Stroke::new(1.0, error_color))
-                                .show(ui, |ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.label(
-                                            RichText::new(format!("Error: {}", msg))
-                                                .color(error_color),
-                                        );
-                                        ui.add_space(10.0);
-                                        if ui.small_button("Dismiss").clicked() {
-                                            self.add_identity_status =
-                                                AddIdentityStatus::NotStarted;
-                                        }
-                                    });
-                                });
-                        }
-                        AddIdentityStatus::Complete => {
-                            // handled above
-                        }
-                    }
+                    // Status display is handled by the global MessageBanner
                 });
 
             inner_action

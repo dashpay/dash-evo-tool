@@ -1,5 +1,6 @@
 //! Execute token query by keyword on Platform
 
+use crate::backend_task::error::TaskError;
 use crate::{
     backend_task::BackendTaskSuccessResult, context::AppContext,
     ui::tokens::tokens_screen::ContractDescriptionInfo,
@@ -23,11 +24,14 @@ impl AppContext {
         keyword: &str,
         cursor: &Option<Start>,
         sdk: &Sdk,
-    ) -> Result<BackendTaskSuccessResult, String> {
-        // ── 1. fetch keyword → contractId docs ────────────────────────────────
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
+        // -- 1. fetch keyword -> contractId docs
         let mut kw_query =
-            DocumentQuery::new(self.keyword_search_contract.clone(), "contractKeywords")
-                .map_err(|e| format!("Failed to create document query: {}", e))?;
+            DocumentQuery::new(self.keyword_search_contract.clone(), "contractKeywords").map_err(
+                |e| TaskError::TokenQueryError {
+                    detail: format!("Failed to create document query: {}", e),
+                },
+            )?;
         kw_query.limit = 100;
         kw_query.start = cursor.clone();
         kw_query = kw_query.with_where(WhereClause {
@@ -36,21 +40,21 @@ impl AppContext {
             value: Value::Text(keyword.to_owned()),
         });
 
-        let kw_docs = Document::fetch_many(sdk, kw_query.clone())
-            .await
-            .map_err(|e| e.to_string())?;
+        let kw_docs = Document::fetch_many(sdk, kw_query.clone()).await?;
 
-        // store the order for deterministic pagination
         let mut contract_ids: Vec<Identifier> = Vec::with_capacity(kw_docs.len());
         for (_doc_id, doc_opt) in kw_docs.iter() {
             if let Some(doc) = doc_opt
                 && let Some(cid_val) = doc.get("contractId")
             {
-                contract_ids.push(cid_val.to_identifier().map_err(|e| e.to_string())?);
+                contract_ids.push(cid_val.to_identifier().map_err(|e| {
+                    TaskError::IdentifierParsingError {
+                        input: format!("{}", e),
+                    }
+                })?);
             }
         }
 
-        // Determine next‑page cursor before we start any second‑phase queries
         let has_next_page = kw_docs.len() == 100;
         let next_cursor = if has_next_page {
             kw_docs
@@ -62,15 +66,16 @@ impl AppContext {
             None
         };
 
-        // ── 2. for every contractId, fetch its shortDescription doc ───────────
+        // -- 2. for every contractId, fetch its shortDescription doc
         let mut descriptions: Vec<ContractDescriptionInfo> = Vec::with_capacity(contract_ids.len());
 
         for cid in &contract_ids {
-            // build a WHERE contractId == cid query
             let mut desc_query =
                 DocumentQuery::new(self.keyword_search_contract.clone(), "shortDescription")
-                    .map_err(|e| format!("Failed to create document query: {}", e))?;
-            desc_query.limit = 1; // only one per contract (schema‑unique)
+                    .map_err(|e| TaskError::TokenQueryError {
+                        detail: format!("Failed to create document query: {}", e),
+                    })?;
+            desc_query.limit = 1;
             desc_query = desc_query.with_where(WhereClause {
                 field: "contractId".into(),
                 operator: WhereOperator::Equal,
@@ -79,8 +84,7 @@ impl AppContext {
 
             let description = if let Some((_, Some(desc_doc))) =
                 Document::fetch_many(sdk, desc_query)
-                    .await
-                    .map_err(|e| e.to_string())?
+                    .await?
                     .into_iter()
                     .next()
             {
@@ -99,7 +103,6 @@ impl AppContext {
             });
         }
 
-        // ── 3. return result ────────────────────────────────────────────────
         Ok(BackendTaskSuccessResult::DescriptionsByKeyword(
             descriptions,
             next_cursor,

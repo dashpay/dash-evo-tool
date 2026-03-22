@@ -13,6 +13,12 @@ on:
       tag:
         description: "Version (i.e. v0.1.0)"
         required: false
+  workflow_call:
+    inputs:
+      tag:
+        description: "Version (i.e. v0.1.0)"
+        required: false
+        type: string
 
 permissions:
   id-token: write
@@ -42,31 +48,6 @@ jobs:
     runs-on: ${{ matrix.runs-on }}
 
     steps:
-      - name: Free disk space
-        if: ${{ runner.os == 'Linux' }}
-        run: |
-          echo "=== Disk space before cleanup ==="
-          df -h
-          # Remove large unnecessary directories
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /opt/hostedtoolcache/CodeQL
-          sudo rm -rf /opt/hostedtoolcache/go
-          sudo rm -rf /opt/hostedtoolcache/node
-          sudo rm -rf /usr/local/share/boost
-          sudo rm -rf /usr/share/swift
-          sudo rm -rf /usr/local/graalvm
-          sudo rm -rf /usr/local/.ghcup
-          # Clean docker
-          sudo docker image prune --all --force || true
-          sudo docker system prune --all --force || true
-          # Clean apt cache
-          sudo apt-get clean
-          sudo rm -rf /var/lib/apt/lists/*
-          echo "=== Disk space after cleanup ==="
-          df -h
-
       - name: Check out code
         uses: actions/checkout@v4
 
@@ -115,12 +96,13 @@ jobs:
 
       - name: Windows libsql
         if: ${{ matrix.target == 'x86_64-pc-windows-gnu' }}
-        run: curl -OL https://www.sqlite.org/2024/sqlite-dll-win-x64-3460100.zip && sudo unzip -o sqlite-dll-win-x64-3460100.zip -d winlibs && sudo chown -R runner:docker winlibs/ && pwd && ls -lah && cd winlibs && x86_64-w64-mingw32-dlltool -d sqlite3.def -l libsqlite3.a && ls -lah && cd ..
+        run: curl -OL https://www.sqlite.org/2024/sqlite-dll-win-x64-3460100.zip && sudo unzip -o sqlite-dll-win-x64-3460100.zip -d winlibs && sudo chown -R runner:docker winlibs/ && pwd && ls -lah && cd winlibs && x86_64-w64-mingw32-dlltool -d sqlite3.def -l libsqlite3.a && ls -lah && cd .. && sudo cp winlibs/libsqlite3.a /usr/x86_64-w64-mingw32/lib/libsqlite3.a
 
       - name: Build project
         run: |
           cargo build --release --target ${{ matrix.target }}
           mv target/${{ matrix.target }}/release/dash-evo-tool${{ matrix.ext }} dash-evo-tool/dash-evo-tool${{ matrix.ext }}
+          if [ -f winlibs/sqlite3.dll ]; then cp winlibs/sqlite3.dll dash-evo-tool/sqlite3.dll; fi
 
       - name: Package release
         run: |
@@ -136,6 +118,7 @@ jobs:
         with:
           name: dash-evo-tool-${{ matrix.platform }}.zip
           path: dash-evo-tool-${{ matrix.platform }}.zip
+          retention-days: 14
 
   build-macos-arm64:
     name: Build macOS ARM64 (Signed & Notarized)
@@ -403,6 +386,7 @@ jobs:
         with:
           name: dash-evo-tool-macos-arm64.dmg
           path: dash-evo-tool-macos-arm64.dmg
+          retention-days: 14
 
   build-macos-x86:
     name: Build macOS x86_64 (Signed & Notarized)
@@ -665,6 +649,7 @@ jobs:
         with:
           name: dash-evo-tool-macos-x86_64.dmg
           path: dash-evo-tool-macos-x86_64.dmg
+          retention-days: 14
 
   release:
     name: Create GitHub Release
@@ -696,9 +681,9 @@ jobs:
         uses: softprops/action-gh-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        if: ${{ github.event.inputs.tag != '' }}
+        if: ${{ inputs.tag != '' }}
         with:
-          tag_name: ${{ github.event.inputs.tag }}
+          tag_name: ${{ inputs.tag }}
           files: |
             ./dash-evo-tool-linux-x86_64.zip
             ./dash-evo-tool-linux-arm64.zip

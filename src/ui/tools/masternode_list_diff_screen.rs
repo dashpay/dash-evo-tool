@@ -4,11 +4,12 @@ use crate::backend_task::mnlist::MnListTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::components::core_p2p_handler::CoreP2PHandler;
 use crate::context::AppContext;
+use crate::ui::components::component_trait::Component;
 use crate::ui::components::left_panel::add_left_panel;
-use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::styled::{ConfirmationDialog, ConfirmationStatus, island_central_panel};
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{DashColors, ResponseExt};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dashcore_rpc::json::QuorumType;
@@ -39,7 +40,7 @@ use dash_sdk::dpp::dashcore::{
 };
 use dash_sdk::dpp::prelude::CoreBlockHeight;
 use eframe::egui::{self, Context, ScrollArea, Ui};
-use egui::{Align, Color32, Frame, Layout, Margin, RichText, Stroke, TextEdit, Vec2};
+use egui::{Align, Frame, Layout, Margin, RichText, Stroke, TextEdit, Vec2};
 use itertools::Itertools;
 use rfd::FileDialog;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -67,8 +68,7 @@ struct InputState {
 #[derive(Default)]
 struct UiState {
     selected_tab: usize,
-    show_popup_for_render_masternode_list_engine: bool,
-    message: Option<(String, MessageType)>,
+    masternode_engine_confirm_dialog: Option<ConfirmationDialog>,
     error: Option<String>,
 }
 
@@ -815,7 +815,7 @@ impl MasternodeListDiffScreen {
         let qr_info = match p2p_handler.get_qr_info(known_block_hashes, block_hash) {
             Ok(list_diff) => list_diff,
             Err(e) => {
-                self.ui_state.error = Some(e);
+                self.ui_state.error = Some(e.to_string());
                 return None;
             }
         };
@@ -932,7 +932,7 @@ impl MasternodeListDiffScreen {
         let list_diff = match p2p_handler.get_dml_diff(base_block_hash, block_hash) {
             Ok(list_diff) => list_diff,
             Err(e) => {
-                self.ui_state.error = Some(e);
+                self.ui_state.error = Some(e.to_string());
                 return;
             }
         };
@@ -1162,7 +1162,6 @@ impl MasternodeListDiffScreen {
         self.task.queued_task = None;
         self.input.search_term = None;
         self.ui_state.error = None;
-        self.ui_state.message = None;
     }
 
     /// Clear all data except the oldest MNList diff starting from height 0
@@ -1206,7 +1205,6 @@ impl MasternodeListDiffScreen {
         self.selection.selected_quorum_hash_in_mnlist_diff = None;
         self.selection.selected_masternode_pro_tx_hash = None;
         self.data.qr_infos = Default::default();
-        self.ui_state.message = None;
         // Clear chain lock signatures caches as these are independent of the retained base diff
         self.cache.chain_lock_sig_cache.clear();
         self.cache.chain_lock_reversed_sig_cache.clear();
@@ -1229,7 +1227,7 @@ impl MasternodeListDiffScreen {
         let mut p2p_handler = match CoreP2PHandler::new(self.app_context.network, None) {
             Ok(p2p_handler) => p2p_handler,
             Err(e) => {
-                self.ui_state.error = Some(e);
+                self.ui_state.error = Some(e.to_string());
                 return;
             }
         };
@@ -1261,7 +1259,7 @@ impl MasternodeListDiffScreen {
         let mut p2p_handler = match CoreP2PHandler::new(self.app_context.network, None) {
             Ok(p2p_handler) => p2p_handler,
             Err(e) => {
-                self.ui_state.error = Some(e);
+                self.ui_state.error = Some(e.to_string());
                 return;
             }
         };
@@ -1328,7 +1326,7 @@ impl MasternodeListDiffScreen {
         let mut p2p_handler = match CoreP2PHandler::new(self.app_context.network, None) {
             Ok(p2p_handler) => p2p_handler,
             Err(e) => {
-                self.ui_state.error = Some(e);
+                self.ui_state.error = Some(e.to_string());
                 return;
             }
         };
@@ -1351,7 +1349,7 @@ impl MasternodeListDiffScreen {
             None => match CoreP2PHandler::new(self.app_context.network, None) {
                 Ok(p2p_handler) => p2p_handler,
                 Err(e) => {
-                    self.ui_state.error = Some(e);
+                    self.ui_state.error = Some(e.to_string());
                     return;
                 }
             },
@@ -1530,7 +1528,7 @@ impl MasternodeListDiffScreen {
                     }
                     if ui
                         .button("Clear")
-                        .on_hover_text("Clear all data and reset to initial state.")
+                        .clickable_tooltip("Clear all data and reset to initial state.")
                         .clicked()
                     {
                         self.clear();
@@ -1538,7 +1536,7 @@ impl MasternodeListDiffScreen {
                     }
                     if ui
                         .button("Clear keep base")
-                        .on_hover_text(
+                        .clickable_tooltip(
                             "Clear all data except the oldest MNList diff starting from height 0.",
                         )
                         .clicked()
@@ -1554,38 +1552,6 @@ impl MasternodeListDiffScreen {
                 ui.add_space(12.0);
             });
         action
-    }
-
-    fn render_message_banner(&mut self, ui: &mut Ui) {
-        let Some((msg, msg_type)) = self.ui_state.message.clone() else {
-            return;
-        };
-
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
-        let message_color = match msg_type {
-            MessageType::Error => DashColors::ERROR,
-            MessageType::Warning => DashColors::WARNING,
-            MessageType::Info => DashColors::text_primary(dark_mode),
-            // Dark green for success text
-            MessageType::Success => Color32::DARK_GREEN,
-        };
-        ui.horizontal(|ui| {
-            Frame::new()
-                .fill(message_color.gamma_multiply(0.1))
-                .inner_margin(Margin::symmetric(10, 8))
-                .corner_radius(5.0)
-                .stroke(egui::Stroke::new(1.0, message_color))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(msg).color(message_color));
-                        ui.add_space(10.0);
-                        if ui.small_button("Dismiss").clicked() {
-                            self.ui_state.message = None;
-                        }
-                    });
-                });
-        });
-        ui.add_space(10.0);
     }
 
     fn render_error_banner(&mut self, ui: &mut Ui) {
@@ -2144,8 +2110,14 @@ impl MasternodeListDiffScreen {
                             match index {
                                 7 => {
                                     // Show the popup when "Masternode List Engine" is selected
-                                    self.ui_state.show_popup_for_render_masternode_list_engine =
-                                        true;
+                                    self.ui_state.masternode_engine_confirm_dialog = Some(
+                                        ConfirmationDialog::new(
+                                            "Confirmation",
+                                            "This operation will take about 10 seconds. Are you sure you wish to continue?",
+                                        )
+                                        .confirm_text(Some("Yes"))
+                                        .cancel_text(Some("Cancel")),
+                                    );
                                 }
                                 8 => {
                                     self.load_masternode_list_engine();
@@ -2193,24 +2165,14 @@ impl MasternodeListDiffScreen {
         }
 
         // Render the confirmation popup if needed
-        if self.ui_state.show_popup_for_render_masternode_list_engine {
-            egui::Window::new("Confirmation")
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-                .show(ui.ctx(), |ui| {
-                    ui.label("This operation will take about 10 seconds. Are you sure you wish to continue?");
-
-                    ui.horizontal(|ui| {
-                        if ui.button("Yes").clicked() {
-                            self.save_masternode_list_engine();
-                            self.ui_state.show_popup_for_render_masternode_list_engine = false;
-                        }
-                        if ui.button("Cancel").clicked() {
-                            self.ui_state.show_popup_for_render_masternode_list_engine = false;
-                        }
-                    });
-                });
+        if let Some(dialog) = self.ui_state.masternode_engine_confirm_dialog.as_mut() {
+            let response = dialog.show(ui);
+            if let Some(result) = response.inner.dialog_response {
+                self.ui_state.masternode_engine_confirm_dialog = None;
+                if result == ConfirmationStatus::Confirmed {
+                    self.save_masternode_list_engine();
+                }
+            }
         }
     }
 
@@ -4144,7 +4106,7 @@ impl MasternodeListDiffScreen {
             let mut p2p_handler = match CoreP2PHandler::new(self.app_context.network, None) {
                 Ok(p2p_handler) => p2p_handler,
                 Err(e) => {
-                    self.ui_state.error = Some(e);
+                    self.ui_state.error = Some(e.to_string());
                     return;
                 }
             };
@@ -4180,17 +4142,10 @@ impl MasternodeListDiffScreen {
 
 impl ScreenLike for MasternodeListDiffScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
-        match message_type {
-            MessageType::Error | MessageType::Warning => {
-                self.task.pending = None;
-                self.ui_state.error = Some(message.to_string());
-            }
-            MessageType::Success => {
-                self.ui_state.message = Some((message.to_string(), message_type));
-            }
-            MessageType::Info => {
-                // Do not show transient info messages to avoid noisy black text banners.
-            }
+        // Banner display is handled globally by AppState; this is only for side-effects.
+        if matches!(message_type, MessageType::Error | MessageType::Warning) {
+            self.task.pending = None;
+            self.ui_state.error = Some(message.to_string());
         }
     }
 
@@ -4432,7 +4387,6 @@ impl ScreenLike for MasternodeListDiffScreen {
                 inner |= AppAction::BackendTask(task);
             }
 
-            self.render_message_banner(ui);
             self.render_error_banner(ui);
             self.render_pending_status(ui);
 

@@ -2,7 +2,9 @@ use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
 use crate::model::amount::Amount;
-use crate::ui::theme::DashColors;
+use crate::ui::components::MessageBanner;
+use crate::ui::helpers::clicked_outside_window;
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::tokens::burn_tokens_screen::BurnTokensScreen;
 use crate::ui::tokens::claim_tokens_screen::ClaimTokensScreen;
 use crate::ui::tokens::destroy_frozen_funds_screen::DestroyFrozenFundsScreen;
@@ -21,8 +23,8 @@ use crate::ui::tokens::transfer_tokens_screen::TransferTokensScreen;
 use crate::ui::tokens::unfreeze_tokens_screen::UnfreezeTokensScreen;
 use crate::ui::tokens::update_token_config::UpdateTokenConfigScreen;
 use crate::ui::tokens::view_token_claims_screen::ViewTokenClaimsScreen;
-use crate::ui::{Screen, ScreenType};
-use chrono::{Local, Utc};
+use crate::ui::{MessageType, Screen, ScreenType};
+use chrono::Local;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters;
@@ -163,7 +165,9 @@ impl TokensScreen {
                 // Otherwise, show the list of all tokens
                 match self.render_token_list(ui) {
                     Ok(list_action) => action |= list_action,
-                    Err(e) => self.token_creator_error_message = Some(e),
+                    Err(e) => {
+                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                    }
                 }
             }
         }
@@ -175,7 +179,7 @@ impl TokensScreen {
                 let mut close_popup = false;
                 let dark_mode = ui.ctx().style().visuals.dark_mode;
 
-                egui::Window::new("Token Configuration Details")
+                let window_response = egui::Window::new("Token Configuration Details")
                     .resizable(true)
                     .collapsible(false)
                     .default_width(600.0)
@@ -191,15 +195,22 @@ impl TokensScreen {
                                     self.render_token_info_popup_content(ui, &token_info);
 
                                     ui.separator();
-                                    if ui.button("Close").clicked() {
+                                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                    if ComponentStyles::add_secondary_button(ui, "Close", dark_mode)
+                                        .clicked()
+                                    {
                                         close_popup = true;
                                     }
                                 });
                             });
                     });
 
-                // Handle close actions
+                // Handle close actions (X button, Close button, or click outside)
                 if !is_open || close_popup {
+                    self.show_token_info_popup = None;
+                } else if let Some(ref wr) = window_response
+                    && clicked_outside_window(ui.ctx(), wr.response.rect)
+                {
                     self.show_token_info_popup = None;
                 }
             } else {
@@ -274,11 +285,17 @@ impl TokensScreen {
                             .min_size(egui::vec2(150.0, 36.0));
 
                             if ui.add(button).clicked() {
-                                if let RefreshingStatus::Refreshing(_) = self.refreshing_status {
+                                if let RefreshingStatus::Refreshing = self.refreshing_status {
                                     app_action = AppAction::None;
                                 } else {
-                                    self.refreshing_status =
-                                        RefreshingStatus::Refreshing(Utc::now().timestamp() as u64);
+                                    self.refreshing_status = RefreshingStatus::Refreshing;
+                                    let handle = MessageBanner::set_global(
+                                        ui.ctx(),
+                                        "Refreshing tokens...",
+                                        MessageType::Info,
+                                    );
+                                    handle.with_elapsed();
+                                    self.operation_banner = Some(handle);
                                     app_action = AppAction::Refresh;
                                 }
                             }
@@ -428,7 +445,7 @@ impl TokensScreen {
                                                 ui.label(
                                                     RichText::new(itb.identity_id.to_string(Encoding::Base58))
                                                         .color(Color32::from_rgb(0, 100, 0)) // Dark green
-                                                ).on_hover_text("Owner of the contract");
+                                                ).info_tooltip("Owner of the contract");
                                             } else {
                                                 ui.label(itb.identity_id.to_string(Encoding::Base58));
                                             }
@@ -469,7 +486,14 @@ impl TokensScreen {
                                                                                 identity_id: itb.identity_id,
                                                                                 token_id: itb.token_id,
                                                                             })));
-                                                                            self.refreshing_status = RefreshingStatus::Refreshing(Utc::now().timestamp() as u64);
+                                                                            self.refreshing_status = RefreshingStatus::Refreshing;
+                                                                            let handle = MessageBanner::set_global(
+                                                                                ui.ctx(),
+                                                                                "Estimating rewards...",
+                                                                                MessageType::Info,
+                                                                            );
+                                                                            handle.with_elapsed();
+                                                                            self.operation_banner = Some(handle);
                                                                         }
                                                                     })
                                                                 });
@@ -482,7 +506,14 @@ impl TokensScreen {
                                                                 identity_id: itb.identity_id,
                                                                 token_id: itb.token_id,
                                                             })));
-                                                            self.refreshing_status = RefreshingStatus::Refreshing(Utc::now().timestamp() as u64);
+                                                            self.refreshing_status = RefreshingStatus::Refreshing;
+                                                            let handle = MessageBanner::set_global(
+                                                                self.app_context.egui_ctx(),
+                                                                "Estimating rewards...",
+                                                                MessageType::Info,
+                                                            );
+                                                            handle.with_elapsed();
+                                                            self.operation_banner = Some(handle);
                                                         }
 
                                                 }
@@ -502,7 +533,7 @@ impl TokensScreen {
                                             // Remove
                                             if ui
                                                 .button("X")
-                                                .on_hover_text(
+                                                .clickable_tooltip(
                                                     "Remove identity token balance from DET",
                                                 )
                                                 .clicked()
@@ -520,7 +551,16 @@ impl TokensScreen {
         if let Some(identity_token_id) = self.show_explanation_popup {
             if let Some(explanation) = self.reward_explanations.get(&identity_token_id) {
                 let mut is_open = true;
-                egui::Window::new("Reward Calculation Explanation")
+
+                // Draw dark overlay behind the popup
+                let screen_rect = ui.ctx().content_rect();
+                let painter = ui.ctx().layer_painter(egui::LayerId::new(
+                    egui::Order::Background,
+                    egui::Id::new("reward_explanation_overlay"),
+                ));
+                painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
+
+                let window_response = egui::Window::new("Reward Calculation Explanation")
                     .resizable(true)
                     .collapsible(false)
                     .default_width(600.0)
@@ -576,7 +616,10 @@ impl TokensScreen {
                             }
 
                             ui.separator();
-                            if ui.button("Close").clicked() {
+                            let dark_mode = ui.ctx().style().visuals.dark_mode;
+                            if ComponentStyles::add_secondary_button(ui, "Close", dark_mode)
+                                .clicked()
+                            {
                                 self.show_explanation_popup = None;
                             }
                         });
@@ -584,6 +627,19 @@ impl TokensScreen {
 
                 // If the window was closed via the X button
                 if !is_open {
+                    self.show_explanation_popup = None;
+                }
+
+                // Handle Escape key
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    self.show_explanation_popup = None;
+                }
+
+                // Handle click outside window
+                if let Some(ref wr) = window_response
+                    && self.show_explanation_popup.is_some()
+                    && clicked_outside_window(ui.ctx(), wr.response.rect)
+                {
                     self.show_explanation_popup = None;
                 }
             } else {
@@ -625,7 +681,7 @@ impl TokensScreen {
                     false,
                     egui::Button::new(RichText::new("Transfer").color(Color32::GRAY)),
                 )
-                .on_hover_text("Transfer not available");
+                .disabled_tooltip("Transfer not available");
             }
         }
 
@@ -647,12 +703,18 @@ impl TokensScreen {
                         ui.close_kind(egui::UiKind::Menu);
                     }
                     Ok(None) => {
-                        self.token_creator_error_message =
-                            Some("Token contract not found".to_string());
+                        MessageBanner::set_global(
+                            ui.ctx(),
+                            "Token contract not found",
+                            MessageType::Error,
+                        );
                     }
                     Err(e) => {
-                        self.token_creator_error_message =
-                            Some(format!("Error fetching token contract: {e}"));
+                        MessageBanner::set_global(
+                            ui.ctx(),
+                            format!("Error fetching token contract: {e}"),
+                            MessageType::Error,
+                        );
                     }
                 }
             }
@@ -664,16 +726,11 @@ impl TokensScreen {
                 match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
                         Ok(info) => {
                             action = AppAction::AddScreen(
-                                Screen::MintTokensScreen(
-                                    MintTokensScreen::new(
-                                        info,
-                                        &self.app_context,
-                                    ),
-                                ),
+                                Screen::MintTokensScreen(MintTokensScreen::new(info, &self.app_context)),
                             );
                         }
                         Err(e) => {
-                            self.token_creator_error_message = Some(e);
+                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
                         }
                     };
 
@@ -695,7 +752,7 @@ impl TokensScreen {
                             );
                         }
                         Err(e) => {
-                            self.token_creator_error_message = Some(e);
+                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
                         }
                     };
                 ui.close_kind(egui::UiKind::Menu);
@@ -707,16 +764,11 @@ impl TokensScreen {
                 match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
                         Ok(info) => {
                             action = AppAction::AddScreen(
-                                Screen::FreezeTokensScreen(
-                                    FreezeTokensScreen::new(
-                                        info,
-                                        &self.app_context,
-                                    ),
-                                ),
+                                Screen::FreezeTokensScreen(FreezeTokensScreen::new(info, &self.app_context)),
                             );
                         }
                         Err(e) => {
-                            self.token_creator_error_message = Some(e);
+                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
                         }
                     };
                 ui.close_kind(egui::UiKind::Menu);
@@ -728,16 +780,11 @@ impl TokensScreen {
                 match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
                         Ok(info) => {
                             action = AppAction::AddScreen(
-                                Screen::DestroyFrozenFundsScreen(
-                                    DestroyFrozenFundsScreen::new(
-                                        info,
-                                        &self.app_context,
-                                    ),
-                                ),
+                                Screen::DestroyFrozenFundsScreen(DestroyFrozenFundsScreen::new(info, &self.app_context)),
                             );
                         }
                         Err(e) => {
-                            self.token_creator_error_message = Some(e);
+                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
                         }
                     };
                 ui.close_kind(egui::UiKind::Menu);
@@ -749,16 +796,11 @@ impl TokensScreen {
                 match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
                         Ok(info) => {
                             action = AppAction::AddScreen(
-                                Screen::UnfreezeTokensScreen(
-                                    UnfreezeTokensScreen::new(
-                                        info,
-                                        &self.app_context,
-                                    ),
-                                ),
+                                Screen::UnfreezeTokensScreen(UnfreezeTokensScreen::new(info, &self.app_context)),
                             );
                         }
                         Err(e) => {
-                            self.token_creator_error_message = Some(e);
+                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
                         }
                     };
                 ui.close_kind(egui::UiKind::Menu);
@@ -780,7 +822,7 @@ impl TokensScreen {
                                 );
                             }
                             Err(e) => {
-                                self.token_creator_error_message = Some(e);
+                                MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
                             }
                         };
                     ui.close_kind(egui::UiKind::Menu);
@@ -802,7 +844,7 @@ impl TokensScreen {
                                 );
                             }
                             Err(e) => {
-                                self.token_creator_error_message = Some(e);
+                                MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
                             }
                         };
                     ui.close_kind(egui::UiKind::Menu);
@@ -833,7 +875,7 @@ impl TokensScreen {
                             );
                         }
                         Err(e) => {
-                            self.token_creator_error_message = Some(e);
+                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
                         }
                     };
                 ui.close_kind(egui::UiKind::Menu);
@@ -891,7 +933,7 @@ impl TokensScreen {
                                         );
                                     }
                                     Err(e) => {
-                                        self.token_creator_error_message = Some(e);
+                                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
                                     }
                                 };
                             ui.close_kind(egui::UiKind::Menu);
@@ -902,7 +944,7 @@ impl TokensScreen {
                                 false,
                                 egui::Button::new(RichText::new("Purchase").color(egui::Color32::GRAY)),
                             )
-                            .on_hover_text({
+                            .disabled_tooltip({
                                 if let Some(Some(pricing)) = self.token_pricing_data.get(&itb.token_id) {
                                     let min_price = get_min_token_price(pricing);
                                     format!("Insufficient credits. Need at least {} credits to purchase one token", min_price)
@@ -930,7 +972,7 @@ impl TokensScreen {
                             );
                         }
                         Err(e) => {
-                            self.token_creator_error_message = Some(e);
+                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
                         }
                     };
 
@@ -1018,7 +1060,7 @@ impl TokensScreen {
                                 // Remove button
                                 if ui
                                     .button("X")
-                                    .on_hover_text("Remove token from DET")
+                                    .clickable_tooltip("Remove token from DET")
                                     .clicked()
                                 {
                                     self.confirm_remove_token_popup = true;

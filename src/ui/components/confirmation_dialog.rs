@@ -1,7 +1,6 @@
-use std::sync::Arc;
-
 use crate::ui::components::component_trait::{Component, ComponentResponse};
-use crate::ui::theme::{ComponentStyles, DashColors, Shape};
+use crate::ui::helpers::clicked_outside_window;
+use crate::ui::theme::{ComponentStyles, DashColors};
 use egui::{InnerResponse, Ui, WidgetText};
 
 /// Response from showing a confirmation dialog
@@ -195,67 +194,25 @@ impl ConfirmationDialog {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         // Confirm button (only if text is provided)
                         if let Some(confirm_text) = &self.confirm_text {
-                            let (fill_color, text_color) = if self.danger_mode {
-                                (
-                                    ComponentStyles::danger_button_fill(),
-                                    ComponentStyles::danger_button_text(),
-                                )
+                            let response = if self.danger_mode {
+                                ComponentStyles::add_danger_button(ui, confirm_text.clone())
                             } else {
-                                (
-                                    ComponentStyles::primary_button_fill(),
-                                    ComponentStyles::primary_button_text(),
-                                )
-                            };
-                            let confirm_label = if let WidgetText::RichText(rich_text) =
-                                confirm_text
-                            {
-                                // preserve rich text formatting
-                                rich_text.clone()
-                            } else {
-                                Arc::new(egui::RichText::new(confirm_text.text()).color(text_color))
+                                ComponentStyles::add_primary_button(ui, confirm_text.clone())
                             };
 
-                            let confirm_button = egui::Button::new(confirm_label)
-                                .fill(fill_color)
-                                .stroke(if self.danger_mode {
-                                    egui::Stroke::NONE
-                                } else {
-                                    ComponentStyles::primary_button_stroke()
-                                })
-                                .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-                                .min_size(egui::Vec2::new(80.0, 32.0));
-
-                            if ui
-                                .add(confirm_button)
-                                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                .clicked()
-                            {
+                            if response.clicked() {
                                 final_response = Some(ConfirmationStatus::Confirmed);
                             }
                         }
 
                         // Cancel button (only if text is provided)
                         if let Some(cancel_text) = &self.cancel_text {
-                            let cancel_label = if let WidgetText::RichText(rich_text) = cancel_text
-                            {
-                                // preserve rich text formatting
-                                rich_text.clone()
-                            } else {
-                                egui::RichText::new(cancel_text.text())
-                                    .color(ComponentStyles::secondary_button_text())
-                                    .into()
-                            };
-
-                            let cancel_button = egui::Button::new(cancel_label)
-                                .fill(ComponentStyles::secondary_button_fill())
-                                .stroke(ComponentStyles::secondary_button_stroke())
-                                .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-                                .min_size(egui::Vec2::new(80.0, 32.0));
-
-                            if ui
-                                .add(cancel_button)
-                                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                .clicked()
+                            if ComponentStyles::add_secondary_button(
+                                ui,
+                                cancel_text.clone(),
+                                dark_mode,
+                            )
+                            .clicked()
                             {
                                 final_response = Some(ConfirmationStatus::Canceled);
                             }
@@ -273,6 +230,26 @@ impl ConfirmationDialog {
 
         // Handle Escape key press - always treat as cancel
         if final_response.is_none() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            final_response = Some(ConfirmationStatus::Canceled);
+        }
+
+        // Handle Enter key press - confirm for non-danger dialogs,
+        // but only when no other widget (e.g., text input) has focus
+        if final_response.is_none()
+            && !self.danger_mode
+            && self.confirm_text.is_some()
+            && ui.ctx().memory(|m| m.focused().is_none())
+            && ui.input(|i| i.key_pressed(egui::Key::Enter))
+        {
+            final_response = Some(ConfirmationStatus::Confirmed);
+        }
+
+        // Handle click outside window - close for non-danger dialogs
+        if let Some(ref wr) = window_response
+            && final_response.is_none()
+            && !self.danger_mode
+            && clicked_outside_window(ui.ctx(), wr.response.rect)
+        {
             final_response = Some(ConfirmationStatus::Canceled);
         }
 

@@ -1,3 +1,4 @@
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::context::shielded::get_proving_key;
 use crate::model::wallet::WalletSeedHash;
@@ -86,15 +87,20 @@ pub fn build_shield_credit(
     amount: u64,
     from_address: PlatformAddress,
     nonce: u32,
-) -> Result<dash_sdk::dpp::state_transition::StateTransition, String> {
+) -> Result<dash_sdk::dpp::state_transition::StateTransition, TaskError> {
     let sdk = { app_context.sdk.load().as_ref().clone() };
 
-    let prover = CachedProver { key: get_proving_key() };
+    let prover = CachedProver {
+        key: get_proving_key(),
+    };
     let recipient_addr = payment_address_to_orchard(recipient_payment_address)?;
 
     let wallet_arc = {
         let wallets = app_context.wallets.read().unwrap();
-        wallets.get(seed_hash).cloned().ok_or("Wallet not found")?
+        wallets
+            .get(seed_hash)
+            .cloned()
+            .ok_or(TaskError::WalletNotFound)?
     };
 
     let mut inputs = BTreeMap::new();
@@ -115,7 +121,9 @@ pub fn build_shield_credit(
         [0u8; 36],
         sdk.version(),
     )
-    .map_err(|e| format!("Failed to build shield transition: {e}"))
+    .map_err(|e| TaskError::ShieldedTransitionBuildFailed {
+        detail: e.to_string(),
+    })
 }
 
 /// Build and broadcast a Shield transition (transparent -> shielded pool).
@@ -130,22 +138,23 @@ pub async fn shield_credits(
     from_address: PlatformAddress,
     nonce_override: Option<u32>,
     stage: Option<Arc<Mutex<ShieldStage>>>,
-) -> Result<(), String> {
+) -> Result<(), TaskError> {
     let sdk = { app_context.sdk.load().as_ref().clone() };
 
-    let prover = CachedProver { key: get_proving_key() };
-
-    // Build recipient Orchard address from our default payment address
-    let recipient_addr = payment_address_to_orchard(recipient_payment_address)?;
-
-    // Get the wallet for signing and nonce lookup
-    let wallet_arc = {
-        let wallets = app_context.wallets.read().unwrap();
-        wallets.get(seed_hash).cloned().ok_or("Wallet not found")?
+    let prover = CachedProver {
+        key: get_proving_key(),
     };
 
-    // Get the nonce for the input address from the wallet's platform address info,
-    // unless a nonce override was provided (batch parallel mode).
+    let recipient_addr = payment_address_to_orchard(recipient_payment_address)?;
+
+    let wallet_arc = {
+        let wallets = app_context.wallets.read().unwrap();
+        wallets
+            .get(seed_hash)
+            .cloned()
+            .ok_or(TaskError::WalletNotFound)?
+    };
+
     let nonce: u32 = if let Some(n) = nonce_override {
         n
     } else {
@@ -161,7 +170,7 @@ pub async fn shield_credits(
                     None
                 }
             })
-            .ok_or("Platform address not found in wallet")?
+            .ok_or(TaskError::PlatformAddressNotFound)?
     };
 
     let mut inputs = BTreeMap::new();
@@ -174,7 +183,6 @@ pub async fn shield_credits(
         *s.lock().unwrap() = ShieldStage::BuildingProof { nonce };
     }
 
-    // Use the DPP builder which handles bundle construction internally
     let state_transition = {
         let wallet = wallet_arc.read().unwrap();
         build_shield_transition(
@@ -188,17 +196,20 @@ pub async fn shield_credits(
             [0u8; 36],
             sdk.version(),
         )
-        .map_err(|e| format!("Failed to build shield transition: {e}"))?
+        .map_err(|e| TaskError::ShieldedTransitionBuildFailed {
+            detail: e.to_string(),
+        })?
     };
 
     if let Some(s) = &stage {
         *s.lock().unwrap() = ShieldStage::Broadcasting;
     }
 
-    state_transition
-        .broadcast(&sdk, None)
-        .await
-        .map_err(|e| format!("Failed to broadcast shield transition: {e}"))?;
+    state_transition.broadcast(&sdk, None).await.map_err(|e| {
+        TaskError::ShieldedBroadcastFailed {
+            source: Box::new(e),
+        }
+    })?;
 
     Ok(())
 }
@@ -212,25 +223,23 @@ pub async fn shielded_transfer(
     shielded_state: &ShieldedWalletState,
     amount: u64,
     recipient_address_bytes: &[u8],
-) -> Result<Vec<Nullifier>, String> {
+) -> Result<Vec<Nullifier>, TaskError> {
     let sdk = { app_context.sdk.load().as_ref().clone() };
 
-    let prover = CachedProver { key: get_proving_key() };
+    let prover = CachedProver {
+        key: get_proving_key(),
+    };
 
-    // Parse recipient address
     let recipient_bytes: [u8; 43] = recipient_address_bytes
         .try_into()
-        .map_err(|_| "Invalid recipient address length, expected 43 bytes")?;
+        .map_err(|_| TaskError::ShieldedInvalidRecipientAddress)?;
     let recipient_addr = OrchardAddress::from_raw_bytes(&recipient_bytes)
-        .map_err(|e| format!("Invalid recipient address: {e}"))?;
+        .map_err(|_| TaskError::ShieldedInvalidRecipientAddress)?;
 
-    // Select notes to spend
     let (spendable_notes, _total_value) = select_notes_for_amount(shielded_state, amount)?;
 
-    // Collect nullifiers of the notes we're about to spend
     let spent_nullifiers: Vec<Nullifier> = spendable_notes.iter().map(|n| n.nullifier).collect();
 
-    // Get Merkle witness and anchor (lock scoped to avoid holding across await)
     let (spends, anchor) = {
         let tree = shielded_state.commitment_tree.lock().unwrap();
         let spends = spendable_notes
@@ -238,18 +247,24 @@ pub async fn shielded_transfer(
             .map(|note| {
                 let merkle_path = tree
                     .witness(note.position, 0)
-                    .map_err(|e| format!("Failed to get Merkle witness: {e}"))?
-                    .ok_or("No Merkle path available for note")?;
+                    .map_err(|e| TaskError::ShieldedMerkleWitnessUnavailable {
+                        detail: e.to_string(),
+                    })?
+                    .ok_or(TaskError::ShieldedMerkleWitnessUnavailable {
+                        detail: "No Merkle path available for note".into(),
+                    })?;
                 Ok(SpendableNote {
                     note: note.note,
                     merkle_path,
                 })
             })
-            .collect::<Result<Vec<_>, String>>()?;
+            .collect::<Result<Vec<_>, TaskError>>()?;
 
         let anchor = tree
             .anchor()
-            .map_err(|e| format!("Failed to get tree anchor: {e}"))?;
+            .map_err(|e| TaskError::ShieldedMerkleWitnessUnavailable {
+                detail: e.to_string(),
+            })?;
         (spends, anchor)
     };
 
@@ -268,12 +283,15 @@ pub async fn shielded_transfer(
         None,
         sdk.version(),
     )
-    .map_err(|e| format!("Failed to build shielded transfer: {e}"))?;
+    .map_err(|e| TaskError::ShieldedTransitionBuildFailed {
+        detail: e.to_string(),
+    })?;
 
-    state_transition
-        .broadcast(&sdk, None)
-        .await
-        .map_err(|e| format!("Failed to broadcast shielded transfer: {e}"))?;
+    state_transition.broadcast(&sdk, None).await.map_err(|e| {
+        TaskError::ShieldedBroadcastFailed {
+            source: Box::new(e),
+        }
+    })?;
 
     Ok(spent_nullifiers)
 }
@@ -287,18 +305,17 @@ pub async fn unshield_credits(
     shielded_state: &ShieldedWalletState,
     amount: u64,
     to_platform_address: PlatformAddress,
-) -> Result<Vec<Nullifier>, String> {
+) -> Result<Vec<Nullifier>, TaskError> {
     let sdk = { app_context.sdk.load().as_ref().clone() };
 
-    let prover = CachedProver { key: get_proving_key() };
+    let prover = CachedProver {
+        key: get_proving_key(),
+    };
 
-    // Select notes to spend
     let (spendable_notes, _total_value) = select_notes_for_amount(shielded_state, amount)?;
 
-    // Collect nullifiers of the notes we're about to spend
     let spent_nullifiers: Vec<Nullifier> = spendable_notes.iter().map(|n| n.nullifier).collect();
 
-    // Get Merkle witness and anchor (lock scoped to avoid holding across await)
     let (spends, anchor) = {
         let tree = shielded_state.commitment_tree.lock().unwrap();
         let spends = spendable_notes
@@ -306,18 +323,24 @@ pub async fn unshield_credits(
             .map(|note| {
                 let merkle_path = tree
                     .witness(note.position, 0)
-                    .map_err(|e| format!("Failed to get Merkle witness: {e}"))?
-                    .ok_or("No Merkle path available for note")?;
+                    .map_err(|e| TaskError::ShieldedMerkleWitnessUnavailable {
+                        detail: e.to_string(),
+                    })?
+                    .ok_or(TaskError::ShieldedMerkleWitnessUnavailable {
+                        detail: "No Merkle path available for note".into(),
+                    })?;
                 Ok(SpendableNote {
                     note: note.note,
                     merkle_path,
                 })
             })
-            .collect::<Result<Vec<_>, String>>()?;
+            .collect::<Result<Vec<_>, TaskError>>()?;
 
         let anchor = tree
             .anchor()
-            .map_err(|e| format!("Failed to get tree anchor: {e}"))?;
+            .map_err(|e| TaskError::ShieldedMerkleWitnessUnavailable {
+                detail: e.to_string(),
+            })?;
         (spends, anchor)
     };
 
@@ -336,12 +359,15 @@ pub async fn unshield_credits(
         None,
         sdk.version(),
     )
-    .map_err(|e| format!("Failed to build unshield transition: {e}"))?;
+    .map_err(|e| TaskError::ShieldedTransitionBuildFailed {
+        detail: e.to_string(),
+    })?;
 
-    state_transition
-        .broadcast(&sdk, None)
-        .await
-        .map_err(|e| format!("Failed to broadcast unshield transition: {e}"))?;
+    state_transition.broadcast(&sdk, None).await.map_err(|e| {
+        TaskError::ShieldedBroadcastFailed {
+            source: Box::new(e),
+        }
+    })?;
 
     Ok(spent_nullifiers)
 }
@@ -357,7 +383,7 @@ pub async fn shield_from_asset_lock(
     seed_hash: &WalletSeedHash,
     shielded_state: &ShieldedWalletState,
     amount_duffs: u64,
-) -> Result<u64, String> {
+) -> Result<u64, TaskError> {
     use dash_sdk::dashcore_rpc::RpcApi;
     use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
     use dash_sdk::dpp::prelude::AssetLockProof;
@@ -367,13 +393,10 @@ pub async fn shield_from_asset_lock(
 
     let proving_key = crate::context::shielded::get_proving_key();
 
-    // Platform charges a processing fee on top of the shielded amount, so we must
-    // inflate the asset lock to cover both the shield amount and the fee.
     let platform_fee_credits = app_context
         .fee_estimator()
         .min_fees()
         .address_funding_asset_lock_cost;
-    // Add a 20% safety buffer to the platform fee estimate
     let platform_fee_duffs = (platform_fee_credits / CREDITS_PER_DUFF).saturating_mul(120) / 100;
     let asset_lock_duffs = amount_duffs.saturating_add(platform_fee_duffs);
 
@@ -384,39 +407,33 @@ pub async fn shield_from_asset_lock(
             wallets
                 .get(seed_hash)
                 .cloned()
-                .ok_or_else(|| "Wallet not found".to_string())?
+                .ok_or(TaskError::WalletNotFound)?
         };
 
-        let mut wallet = wallet_arc.write().map_err(|e| e.to_string())?;
+        let mut wallet = wallet_arc
+            .write()
+            .map_err(|_| TaskError::LockPoisoned { resource: "wallet" })?;
 
-        // Try to create the asset lock transaction, reload UTXOs if needed
         match wallet.generic_asset_lock_transaction(
+            app_context.as_ref(),
             app_context.network,
             asset_lock_duffs,
             false,
-            Some(app_context.as_ref()),
         ) {
             Ok((tx, private_key, address, _change, utxos)) => (tx, private_key, address, utxos),
             Err(_) => {
-                // Reload UTXOs and try again
                 wallet
-                    .reload_utxos(
-                        &app_context
-                            .core_client
-                            .read()
-                            .expect("Core client lock was poisoned"),
-                        app_context.network,
-                        Some(app_context.as_ref()),
-                    )
-                    .map_err(|e| e.to_string())?;
+                    .reload_utxos(app_context.as_ref())
+                    .map_err(|e| TaskError::ShieldedTransitionBuildFailed { detail: e })?;
 
                 let (tx, private_key, address, _change, utxos) = wallet
                     .generic_asset_lock_transaction(
+                        app_context.as_ref(),
                         app_context.network,
                         asset_lock_duffs,
                         false,
-                        Some(app_context.as_ref()),
-                    )?;
+                    )
+                    .map_err(|e| TaskError::ShieldedTransitionBuildFailed { detail: e })?;
                 (tx, private_key, address, utxos)
             }
         }
@@ -438,8 +455,7 @@ pub async fn shield_from_asset_lock(
         .core_client
         .read()
         .expect("Core client lock was poisoned")
-        .send_raw_transaction(&asset_lock_transaction)
-        .map_err(|e| format!("Failed to broadcast asset lock transaction: {}", e))?;
+        .send_raw_transaction(&asset_lock_transaction)?;
 
     // Step 4: Remove used UTXOs from wallet
     {
@@ -448,10 +464,12 @@ pub async fn shield_from_asset_lock(
             wallets
                 .get(seed_hash)
                 .cloned()
-                .ok_or_else(|| "Wallet not found".to_string())?
+                .ok_or(TaskError::WalletNotFound)?
         };
 
-        let mut wallet = wallet_arc.write().map_err(|e| e.to_string())?;
+        let mut wallet = wallet_arc
+            .write()
+            .map_err(|_| TaskError::LockPoisoned { resource: "wallet" })?;
         wallet.utxos.retain(|_, utxo_map| {
             utxo_map.retain(|outpoint, _| !used_utxos.contains_key(outpoint));
             !utxo_map.is_empty()
@@ -460,16 +478,17 @@ pub async fn shield_from_asset_lock(
         for utxo in used_utxos.keys() {
             app_context
                 .db
-                .drop_utxo(utxo, &app_context.network.to_string())
-                .map_err(|e| e.to_string())?;
+                .drop_utxo(utxo, &app_context.network.to_string())?;
         }
 
-        wallet.recalculate_affected_address_balances(&used_utxos, app_context.as_ref())?;
+        wallet
+            .recalculate_affected_address_balances(&used_utxos, app_context.as_ref())
+            .map_err(|e| TaskError::ShieldedTransitionBuildFailed { detail: e })?;
     }
 
     // Step 5: Wait for asset lock proof (InstantLock or ChainLock) with timeout
     let asset_lock_proof: AssetLockProof;
-    let timeout = tokio::time::sleep(Duration::from_secs(300)); // 5 minute timeout
+    let timeout = tokio::time::sleep(Duration::from_secs(300));
     tokio::pin!(timeout);
 
     loop {
@@ -491,7 +510,7 @@ pub async fn shield_from_asset_lock(
                     });
                 }
 
-                return Err("Timeout waiting for asset lock proof — no InstantLock or ChainLock received within 5 minutes".to_string());
+                return Err(TaskError::ShieldedAssetLockTimeout);
             }
             _ = tokio::time::sleep(Duration::from_millis(200)) => {
                 let proofs = app_context.transactions_waiting_for_finality.lock().unwrap();
@@ -518,14 +537,13 @@ pub async fn shield_from_asset_lock(
     let recipient = payment_address_to_orchard(&shielded_state.keys.default_address)?;
     let prover = CachedProver { key: proving_key };
 
-    // Shield only the user's requested amount; the extra duffs in the asset lock
-    // cover the platform processing fee.
-    let shield_amount_credits = amount_duffs.checked_mul(CREDITS_PER_DUFF).ok_or_else(|| {
-        format!(
-            "Overflow converting {} duffs to credits (CREDITS_PER_DUFF = {})",
-            amount_duffs, CREDITS_PER_DUFF
-        )
-    })?;
+    let shield_amount_credits =
+        amount_duffs
+            .checked_mul(CREDITS_PER_DUFF)
+            .ok_or(TaskError::CreditCalculationOverflow {
+                amount: amount_duffs,
+                credits_per_duff: CREDITS_PER_DUFF,
+            })?;
 
     let state_transition = build_shield_from_asset_lock_transition(
         &recipient,
@@ -536,12 +554,15 @@ pub async fn shield_from_asset_lock(
         [0u8; 36],
         sdk.version(),
     )
-    .map_err(|e| format!("Failed to build shield-from-asset-lock transition: {e}"))?;
+    .map_err(|e| TaskError::ShieldedTransitionBuildFailed {
+        detail: e.to_string(),
+    })?;
 
-    state_transition
-        .broadcast(&sdk, None)
-        .await
-        .map_err(|e| format!("Failed to broadcast shield-from-asset-lock transition: {e}"))?;
+    state_transition.broadcast(&sdk, None).await.map_err(|e| {
+        TaskError::ShieldedBroadcastFailed {
+            source: Box::new(e),
+        }
+    })?;
 
     Ok(shield_amount_credits)
 }
@@ -555,10 +576,12 @@ pub async fn shielded_withdrawal(
     shielded_state: &ShieldedWalletState,
     amount: u64,
     to_core_address: Address,
-) -> Result<Vec<Nullifier>, String> {
+) -> Result<Vec<Nullifier>, TaskError> {
     let sdk = { app_context.sdk.load().as_ref().clone() };
 
-    let prover = CachedProver { key: get_proving_key() };
+    let prover = CachedProver {
+        key: get_proving_key(),
+    };
 
     let output_script = CoreScript::from_bytes(to_core_address.script_pubkey().to_bytes());
 
@@ -572,18 +595,24 @@ pub async fn shielded_withdrawal(
             .map(|note| {
                 let merkle_path = tree
                     .witness(note.position, 0)
-                    .map_err(|e| format!("Failed to get Merkle witness: {e}"))?
-                    .ok_or("No Merkle path available for note")?;
+                    .map_err(|e| TaskError::ShieldedMerkleWitnessUnavailable {
+                        detail: e.to_string(),
+                    })?
+                    .ok_or(TaskError::ShieldedMerkleWitnessUnavailable {
+                        detail: "No Merkle path available for note".into(),
+                    })?;
                 Ok(SpendableNote {
                     note: note.note,
                     merkle_path,
                 })
             })
-            .collect::<Result<Vec<_>, String>>()?;
+            .collect::<Result<Vec<_>, TaskError>>()?;
 
         let anchor = tree
             .anchor()
-            .map_err(|e| format!("Failed to get tree anchor: {e}"))?;
+            .map_err(|e| TaskError::ShieldedMerkleWitnessUnavailable {
+                detail: e.to_string(),
+            })?;
         (spends, anchor)
     };
 
@@ -604,12 +633,15 @@ pub async fn shielded_withdrawal(
         None,
         sdk.version(),
     )
-    .map_err(|e| format!("Failed to build shielded withdrawal transition: {e}"))?;
+    .map_err(|e| TaskError::ShieldedTransitionBuildFailed {
+        detail: e.to_string(),
+    })?;
 
-    state_transition
-        .broadcast(&sdk, None)
-        .await
-        .map_err(|e| format!("Failed to broadcast shielded withdrawal transition: {e}"))?;
+    state_transition.broadcast(&sdk, None).await.map_err(|e| {
+        TaskError::ShieldedBroadcastFailed {
+            source: Box::new(e),
+        }
+    })?;
 
     Ok(spent_nullifiers)
 }
@@ -618,19 +650,19 @@ pub async fn shielded_withdrawal(
 fn select_notes_for_amount(
     shielded_state: &ShieldedWalletState,
     amount: u64,
-) -> Result<(Vec<&crate::model::wallet::shielded::ShieldedNote>, u64), String> {
+) -> Result<(Vec<&crate::model::wallet::shielded::ShieldedNote>, u64), TaskError> {
     let unspent: Vec<_> = shielded_state.unspent_notes();
 
     if unspent.is_empty() {
-        return Err("No unspent shielded notes available".to_string());
+        return Err(TaskError::ShieldedNoUnspentNotes);
     }
 
     let total_available: u64 = unspent.iter().map(|n| n.value).sum();
     if total_available < amount {
-        return Err(format!(
-            "Insufficient shielded balance: have {}, need {}",
-            total_available, amount
-        ));
+        return Err(TaskError::ShieldedInsufficientBalance {
+            available: total_available,
+            required: amount,
+        });
     }
 
     let mut sorted: Vec<_> = unspent;
@@ -651,7 +683,7 @@ fn select_notes_for_amount(
 }
 
 /// Convert a PaymentAddress to an OrchardAddress for the builder functions.
-fn payment_address_to_orchard(addr: &PaymentAddress) -> Result<OrchardAddress, String> {
+fn payment_address_to_orchard(addr: &PaymentAddress) -> Result<OrchardAddress, TaskError> {
     let raw = addr.to_raw_address_bytes();
-    OrchardAddress::from_raw_bytes(&raw).map_err(|e| format!("Invalid orchard address: {e}"))
+    OrchardAddress::from_raw_bytes(&raw).map_err(|_| TaskError::ShieldedInvalidRecipientAddress)
 }

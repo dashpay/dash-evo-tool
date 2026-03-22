@@ -15,16 +15,16 @@ impl AppContext {
     pub(crate) async fn fetch_platform_address_balances(
         self: &Arc<Self>,
         seed_hash: WalletSeedHash,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, crate::backend_task::error::TaskError> {
         tracing::info!("Platform address sync start");
         let start_time = std::time::Instant::now();
 
         let wallet_arc = {
-            let wallets = self.wallets.read().unwrap();
+            let wallets = self.wallets.read()?;
             wallets
                 .get(&seed_hash)
                 .cloned()
-                .ok_or_else(|| "Wallet not found".to_string())?
+                .ok_or(crate::backend_task::error::TaskError::WalletNotFound)?
         };
 
         // Get last sync timestamp from database
@@ -32,17 +32,22 @@ impl AppContext {
             self.db.get_platform_sync_info(&seed_hash).unwrap_or((0, 0));
 
         // Create provider (requires wallet to be open for address derivation)
-        let provider = {
-            let wallet = wallet_arc.read().map_err(|e| e.to_string())?;
+        let mut provider = {
+            let wallet = wallet_arc.read()?;
             match WalletAddressProvider::new(&wallet, self.network) {
                 Ok(provider) => provider.with_stored_state(&wallet, self.network, last_sync_height),
                 Err(_) if !wallet.is_open() => {
-                    return Err("Wallet is locked. Please unlock it first to refresh.".to_string());
+                    return Err(crate::backend_task::error::TaskError::WalletLocked);
                 }
-                Err(e) => return Err(e),
+                Err(e) => {
+                    return Err(
+                        crate::backend_task::error::TaskError::WalletAddressProviderSetupFailed {
+                            detail: e,
+                        },
+                    );
+                }
             }
         };
-        let mut provider = provider;
 
         // Sync using SDK's privacy-preserving method (handles both full and incremental)
         let sdk = self.sdk.load().as_ref().clone();
@@ -70,13 +75,15 @@ impl AppContext {
             .await
         {
             Ok(res) => res,
+            // TODO: Replace with structural match when the SDK exposes a typed
+            // variant for empty-tree proof responses.
             Err(e) if e.to_string().contains("empty tree") => {
                 tracing::debug!(
                     "Platform address balance tree is empty. Returning empty sync result."
                 );
                 AddressSyncResult::default()
             }
-            Err(e) => return Err(format!("Failed to sync Platform addresses: {}", e)),
+            Err(e) => return Err(crate::backend_task::error::TaskError::from(e)),
         };
 
         tracing::info!(
@@ -115,7 +122,7 @@ impl AppContext {
 
         // Apply results to wallet and persist
         let balances = {
-            let mut wallet = wallet_arc.write().map_err(|e| e.to_string())?;
+            let mut wallet = wallet_arc.write()?;
 
             // Update wallet with synced balances
             provider.apply_results_to_wallet(&mut wallet);
@@ -148,17 +155,21 @@ impl AppContext {
                     funds.balance,
                     funds.nonce,
                     &self.network,
-                    true,
                 ) {
                     tracing::warn!("Failed to persist Platform address info: {}", e);
                 }
             }
 
-            // Return balances for result
-            provider
-                .found_balances()
+            // Return the wallet's complete platform_address_info, not just
+            // found_balances.  The SDK's incremental sync only reports addresses
+            // whose balance changed; unchanged addresses are absent from
+            // found_balances but still have valid nonces in the wallet.
+            // Returning only found_balances would cause the UI to lose nonce
+            // values for stable-balance addresses (issue #652).
+            wallet
+                .platform_address_info
                 .iter()
-                .map(|(addr, funds)| (addr.clone(), (funds.balance, funds.nonce)))
+                .map(|(addr, info)| (addr.clone(), (info.balance, info.nonce)))
                 .collect()
         };
 

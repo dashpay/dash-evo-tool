@@ -12,6 +12,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
+use crate::ui::components::{MessageBanner, ResultBannerExt};
 use crate::ui::dashpay::DashPaySubscreen;
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::theme::DashColors;
@@ -37,11 +38,11 @@ pub struct ContactInfoEditorScreen {
     is_hidden: bool,
     accepted_accounts: Vec<u32>,
     account_input: String,
-    message: Option<(String, MessageType)>,
     saving: bool,
     show_info_popup: bool,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
+    wallet_open_attempted: bool,
 }
 
 impl ContactInfoEditorScreen {
@@ -51,9 +52,9 @@ impl ContactInfoEditorScreen {
         contact_id: Identifier,
     ) -> Self {
         // Get wallet for the identity
-        let mut error_message = None;
-        let selected_wallet =
-            get_selected_wallet(&identity, Some(&app_context), None, &mut error_message);
+        let selected_wallet = get_selected_wallet(&identity, Some(&app_context), None)
+            .or_show_error(app_context.egui_ctx())
+            .unwrap_or(None);
 
         Self {
             app_context,
@@ -65,11 +66,11 @@ impl ContactInfoEditorScreen {
             is_hidden: false,
             accepted_accounts: Vec::new(),
             account_input: String::new(),
-            message: None,
             saving: false,
             show_info_popup: false,
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
+            wallet_open_attempted: false,
         }
     }
 
@@ -134,18 +135,6 @@ impl ContactInfoEditorScreen {
         });
 
         ui.separator();
-
-        // Show message if any
-        if let Some((message, message_type)) = &self.message {
-            let color = match message_type {
-                MessageType::Success => DashColors::SUCCESS,
-                MessageType::Error => DashColors::ERROR,
-                MessageType::Warning => DashColors::WARNING,
-                MessageType::Info => DashColors::INFO,
-            };
-            ui.colored_label(color, message);
-            ui.separator();
-        }
 
         ScrollArea::vertical().show(ui, |ui| {
             ui.group(|ui| {
@@ -246,8 +235,11 @@ impl ContactInfoEditorScreen {
 
                 // Check wallet lock status before showing save button
                 let wallet_locked = if let Some(wallet) = &self.selected_wallet {
-                    if let Err(e) = try_open_wallet_no_password(wallet) {
-                        self.message = Some((e, MessageType::Error));
+                    if !self.wallet_open_attempted {
+                        if let Err(e) = try_open_wallet_no_password(wallet) {
+                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                        }
+                        self.wallet_open_attempted = true;
                     }
                     wallet_needs_unlock(wallet)
                 } else {
@@ -298,21 +290,21 @@ impl ContactInfoEditorScreen {
         action
     }
 
-    pub fn display_message(&mut self, message: &str, message_type: MessageType) {
-        self.message = Some((message.to_string(), message_type));
+    pub fn display_message(&mut self, _message: &str, _message_type: MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
     }
 
     pub fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
         self.saving = false;
         match result {
-            BackendTaskSuccessResult::Message(msg) => {
-                self.display_message(&msg, MessageType::Success);
+            BackendTaskSuccessResult::Message(_msg) => {
+                // Message display is handled globally by AppState
             }
             BackendTaskSuccessResult::DashPayContactsWithInfo(contacts_data) => {
                 self.handle_contacts_result(contacts_data);
             }
             _ => {
-                self.display_message("Contact information updated", MessageType::Success);
+                // Message display is handled globally by AppState
             }
         }
     }

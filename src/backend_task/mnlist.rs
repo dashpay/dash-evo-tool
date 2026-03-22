@@ -1,4 +1,5 @@
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::error::TaskError;
 use crate::components::core_p2p_handler::CoreP2PHandler;
 use crate::context::AppContext;
 use dash_sdk::dashcore_rpc::RpcApi;
@@ -37,7 +38,7 @@ pub enum MnListTask {
 pub async fn run_mnlist_task(
     app: &AppContext,
     task: MnListTask,
-) -> Result<BackendTaskSuccessResult, String> {
+) -> Result<BackendTaskSuccessResult, TaskError> {
     match task {
         MnListTask::FetchEndDmlDiff {
             base_block_height,
@@ -68,7 +69,6 @@ pub async fn run_mnlist_task(
             known_block_hashes,
             block_hash,
         } => {
-            // For now, fetch QRInfo; UI can integrate included diffs from QRInfo
             let network = app.network;
             let mut p2p = CoreP2PHandler::new(network, None)?;
             let qr_info = p2p.get_qr_info(known_block_hashes, block_hash)?;
@@ -78,8 +78,7 @@ pub async fn run_mnlist_task(
             base_block_height,
             block_height,
         } => {
-            let client = app.core_client.read().unwrap();
-            // Determine the range (replicate UI logic approximately)
+            let client = app.core_client.read()?;
             let loaded_list_height = match app.network {
                 Network::Dash => 2_227_096,
                 Network::Testnet => 1_296_600,
@@ -96,9 +95,7 @@ pub async fn run_mnlist_task(
             let mut out: Vec<((u32, BlockHash), Option<BLSSignature>)> = Vec::new();
             for h in start_height..end_height {
                 if let Ok(bh2) = client.get_block_hash(h) {
-                    // Convert RPC hash to DPP hash
                     let bh = BlockHash::from_byte_array(bh2.to_byte_array());
-                    // Get block and extract coinbase best_cl_signature
                     if let Ok(block) = client.get_block(&bh2) {
                         let sig_opt = block
                             .coinbase()

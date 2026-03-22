@@ -33,8 +33,8 @@ impl Database {
             wallet.master_bip44_ecdsa_extended_public_key.encode();
 
         self.execute(
-            "INSERT INTO wallet (seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, alias, is_main, uses_password, password_hint, network, confirmed_balance, unconfirmed_balance, total_balance)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO wallet (seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, alias, is_main, uses_password, password_hint, network, confirmed_balance, unconfirmed_balance, total_balance, core_wallet_name)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 wallet.seed_hash(),
                 wallet.encrypted_seed_slice(),
@@ -48,10 +48,33 @@ impl Database {
                 network_str,
                 wallet.confirmed_balance as i64,
                 wallet.unconfirmed_balance as i64,
-                wallet.total_balance as i64
+                wallet.total_balance as i64,
+                wallet.core_wallet_name.as_deref(),
             ],
         )?;
         Ok(())
+    }
+
+    /// Update the Dash Core wallet name for an HD wallet.
+    ///
+    /// Returns `Ok(true)` if exactly one row was updated, `Ok(false)` if no
+    /// matching wallet was found (0 rows), or `Err` on database errors
+    /// (including the unexpected case of >1 rows affected).
+    pub fn set_wallet_core_wallet_name(
+        &self,
+        seed_hash: &[u8; 32],
+        core_wallet_name: Option<&str>,
+    ) -> rusqlite::Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn.execute(
+            "UPDATE wallet SET core_wallet_name = ? WHERE seed_hash = ?",
+            params![core_wallet_name, seed_hash],
+        )?;
+        match rows {
+            0 => Ok(false),
+            1 => Ok(true),
+            n => Err(rusqlite::Error::StatementChangedRows(n)),
+        }
     }
 
     /// Update the alias of a wallet based on the seed.
@@ -419,7 +442,7 @@ impl Database {
 
         tracing::trace!("step 1: retrieve all wallets for the given network");
         let mut stmt = conn.prepare(
-            "SELECT seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, alias, is_main, uses_password, password_hint, confirmed_balance, unconfirmed_balance, total_balance FROM wallet WHERE network = ?",
+            "SELECT seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, alias, is_main, uses_password, password_hint, confirmed_balance, unconfirmed_balance, total_balance, core_wallet_name FROM wallet WHERE network = ?",
         )?;
 
         let mut wallets_map: BTreeMap<[u8; 32], Wallet> = BTreeMap::new();
@@ -437,6 +460,7 @@ impl Database {
             let confirmed_balance: i64 = row.get::<_, Option<i64>>(9)?.unwrap_or(0);
             let unconfirmed_balance: i64 = row.get::<_, Option<i64>>(10)?.unwrap_or(0);
             let total_balance: i64 = row.get::<_, Option<i64>>(11)?.unwrap_or(0);
+            let core_wallet_name: Option<String> = row.get(12)?;
 
             // Reconstruct the extended public keys
             let master_ecdsa_extended_public_key =
@@ -512,6 +536,7 @@ impl Database {
                     unconfirmed_balance: unconfirmed_balance as u64,
                     total_balance: total_balance as u64,
                     platform_address_info: BTreeMap::new(),
+                    core_wallet_name,
                 },
             );
 
@@ -976,7 +1001,6 @@ impl Database {
         balance: u64,
         nonce: u32,
         network: &Network,
-        _is_sync_operation: bool,
     ) -> rusqlite::Result<()> {
         let network_str = network.to_string();
         let canonical_address = Wallet::canonical_address(address, *network);
@@ -1139,6 +1163,11 @@ impl Database {
     }
 
     /// Set the platform sync timestamp and sync height for a wallet.
+    ///
+    /// Note: The `sync_height` value (SDK's `new_sync_height`) is stored in the
+    /// `last_platform_sync_checkpoint` SQL column. The column was not renamed to
+    /// avoid an extra DB migration, but it now represents a block height rather
+    /// than the old checkpoint concept.
     pub fn set_platform_sync_info(
         &self,
         seed_hash: &[u8; 32],
@@ -1200,8 +1229,27 @@ fn check_address_for_network(
 #[derive(thiserror::Error, Debug)]
 /// Error type for wallet operations.
 pub enum WalletError {
-    #[error("Error in address: {0}")]
+    /// Invalid address format.
+    #[error("The wallet address could not be read. Please check the format and try again.")]
     AddressError(#[from] dashcore::address::Error),
+
+    /// HD key derivation failed (BIP-32/BIP-44).
+    #[error(
+        "Could not derive a wallet key. The wallet may be corrupted — try re-importing your recovery phrase."
+    )]
+    KeyDerivation {
+        #[from]
+        source: dash_sdk::dpp::key_wallet::bip32::Error,
+    },
+
+    /// Signature hash computation failed during transaction signing.
+    #[error("Could not prepare the transaction for signing. Please retry.")]
+    Sighash {
+        /// Zero-based index of the transaction input that failed.
+        input_index: usize,
+        #[source]
+        source: dash_sdk::dpp::dashcore::sighash::Error,
+    },
 }
 
 impl From<WalletError> for rusqlite::Error {
@@ -1420,7 +1468,7 @@ mod tests {
         assert!(info.is_none());
 
         // Set platform address info
-        db.set_platform_address_info(&seed_hash, &address, 10_000_000, 5, &network, true)
+        db.set_platform_address_info(&seed_hash, &address, 10_000_000, 5, &network)
             .expect("Failed to set platform address info");
 
         // Retrieve it
@@ -1433,7 +1481,7 @@ mod tests {
         assert_eq!(info.1, 5); // nonce
 
         // Update it
-        db.set_platform_address_info(&seed_hash, &address, 20_000_000, 10, &network, true)
+        db.set_platform_address_info(&seed_hash, &address, 20_000_000, 10, &network)
             .expect("Failed to update platform address info");
 
         let info = db
@@ -1531,7 +1579,7 @@ mod tests {
 
         // Add a single valid platform address using the helper function
         let address = create_test_address(network);
-        db.set_platform_address_info(&seed_hash, &address, 5_000_000, 3, &network, true)
+        db.set_platform_address_info(&seed_hash, &address, 5_000_000, 3, &network)
             .expect("Failed to set platform address info");
 
         // Get all addresses
@@ -1569,7 +1617,7 @@ mod tests {
         }
 
         // Set platform address info
-        db.set_platform_address_info(&seed_hash, &address, 10_000_000, 5, &network, true)
+        db.set_platform_address_info(&seed_hash, &address, 10_000_000, 5, &network)
             .expect("Failed to set platform address info");
 
         // Verify it exists

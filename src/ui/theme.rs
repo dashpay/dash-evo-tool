@@ -1,4 +1,7 @@
-use egui::{Color32, FontData, FontDefinitions, FontFamily, FontId, Stroke, Vec2};
+use egui::{
+    Button, Color32, CursorIcon, FontData, FontDefinitions, FontFamily, FontId, RichText, Stroke,
+    Vec2, WidgetText,
+};
 
 /// Theme mode enumeration
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -324,6 +327,15 @@ impl DashColors {
         }
     }
 
+    /// Magenta-red for sync/connection error state (distinct from disconnected red).
+    pub fn sync_error_color(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            Color32::from_rgb(230, 80, 180)
+        } else {
+            Color32::from_rgb(200, 50, 150)
+        }
+    }
+
     pub fn info_color(dark_mode: bool) -> Color32 {
         if dark_mode {
             Color32::from_rgb(100, 180, 255) // Lighter blue for dark mode
@@ -408,6 +420,17 @@ impl DashColors {
     pub fn popup_border_glow() -> Color32 {
         Color32::from_rgba_unmultiplied(255, 255, 255, 30)
     }
+
+    // Secondary button colors (theme-aware)
+    /// Secondary button colors — must contrast against dialog window_fill
+    /// Light: darker than BACKGROUND (240,242,247) so buttons are visible on dialogs
+    /// Dark: lighter than DARK_BACKGROUND (18,18,18) for the same reason
+    pub const SECONDARY_BUTTON_FILL_LIGHT: Color32 = Color32::from_rgb(218, 222, 230);
+    pub const SECONDARY_BUTTON_FILL_DARK: Color32 = Color32::from_rgb(50, 52, 58);
+    pub const SECONDARY_BUTTON_TEXT_LIGHT: Color32 = Self::BLACK; // (17, 25, 33)
+    pub const SECONDARY_BUTTON_TEXT_DARK: Color32 = Self::DARK_TEXT_PRIMARY; // (240, 240, 240)
+    pub const SECONDARY_BUTTON_STROKE_LIGHT: Color32 = Color32::from_rgb(195, 200, 212);
+    pub const SECONDARY_BUTTON_STROKE_DARK: Color32 = Color32::from_rgb(72, 75, 82);
 
     /// Popup fill color adapting to dark/light mode
     pub fn popup_fill(dark_mode: bool) -> Color32 {
@@ -680,6 +703,9 @@ pub struct ComponentStyles;
 
 #[allow(dead_code)]
 impl ComponentStyles {
+    /// Standard minimum size for dialog buttons (width × height)
+    pub const DIALOG_BUTTON_MIN_SIZE: Vec2 = Vec2::new(96.0, 36.0);
+
     pub fn primary_button_fill() -> Color32 {
         DashColors::DASH_BLUE
     }
@@ -692,16 +718,28 @@ impl ComponentStyles {
         Stroke::new(1.0, DashColors::DASH_BLUE)
     }
 
-    pub fn secondary_button_fill() -> Color32 {
-        DashColors::WHITE
+    pub fn secondary_button_fill(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            DashColors::SECONDARY_BUTTON_FILL_DARK
+        } else {
+            DashColors::SECONDARY_BUTTON_FILL_LIGHT
+        }
     }
 
-    pub fn secondary_button_text() -> Color32 {
-        DashColors::DASH_BLUE
+    pub fn secondary_button_text(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            DashColors::SECONDARY_BUTTON_TEXT_DARK
+        } else {
+            DashColors::SECONDARY_BUTTON_TEXT_LIGHT
+        }
     }
 
-    pub fn secondary_button_stroke() -> Stroke {
-        Stroke::new(1.0, DashColors::DASH_BLUE)
+    pub fn secondary_button_stroke(dark_mode: bool) -> Stroke {
+        if dark_mode {
+            Stroke::new(1.0, DashColors::SECONDARY_BUTTON_STROKE_DARK)
+        } else {
+            Stroke::new(1.0, DashColors::SECONDARY_BUTTON_STROKE_LIGHT)
+        }
     }
 
     pub fn danger_button_fill() -> Color32 {
@@ -722,6 +760,251 @@ impl ComponentStyles {
 
     pub fn input_stroke_error() -> Stroke {
         Stroke::new(2.0, DashColors::ERROR)
+    }
+
+    /// Returns a fully styled primary (action) button with Dash Blue fill and white text.
+    ///
+    /// Accepts any label type (`&str`, `String`, `RichText`, `WidgetText`).
+    /// When a `RichText` is passed, its existing formatting (e.g. font size) is
+    /// preserved and only `strong` + text color are applied on top.
+    pub fn primary_button(label: impl Into<WidgetText>) -> Button<'static> {
+        let text = match label.into() {
+            WidgetText::RichText(rt) => rt
+                .as_ref()
+                .clone()
+                .strong()
+                .color(Self::primary_button_text()),
+            // INTENTIONAL(CMT-010): LayoutJob/Galley variants not used by any callsite
+            other => RichText::new(other.text().to_string())
+                .strong()
+                .color(Self::primary_button_text()),
+        };
+        Button::new(text)
+            .fill(Self::primary_button_fill())
+            .stroke(Self::primary_button_stroke())
+            .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+            .min_size(Self::DIALOG_BUTTON_MIN_SIZE)
+    }
+
+    /// Returns a fully styled secondary (cancel/close) button with theme-aware colors.
+    ///
+    /// Accepts any label type (`&str`, `String`, `RichText`, `WidgetText`).
+    pub fn secondary_button(label: impl Into<WidgetText>, dark_mode: bool) -> Button<'static> {
+        let text = match label.into() {
+            WidgetText::RichText(rt) => rt
+                .as_ref()
+                .clone()
+                .strong()
+                .color(Self::secondary_button_text(dark_mode)),
+            // INTENTIONAL(CMT-010): LayoutJob/Galley variants not used by any callsite
+            other => RichText::new(other.text().to_string())
+                .strong()
+                .color(Self::secondary_button_text(dark_mode)),
+        };
+        Button::new(text)
+            .fill(Self::secondary_button_fill(dark_mode))
+            .stroke(Self::secondary_button_stroke(dark_mode))
+            .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+            .min_size(Self::DIALOG_BUTTON_MIN_SIZE)
+    }
+
+    /// Returns a fully styled danger (destructive action) button with red fill and white text.
+    ///
+    /// Accepts any label type (`&str`, `String`, `RichText`, `WidgetText`).
+    pub fn danger_button(label: impl Into<WidgetText>) -> Button<'static> {
+        let text = match label.into() {
+            WidgetText::RichText(rt) => rt
+                .as_ref()
+                .clone()
+                .strong()
+                .color(Self::danger_button_text()),
+            // INTENTIONAL(CMT-010): LayoutJob/Galley variants not used by any callsite
+            other => RichText::new(other.text().to_string())
+                .strong()
+                .color(Self::danger_button_text()),
+        };
+        Button::new(text)
+            .fill(Self::danger_button_fill())
+            .stroke(egui::Stroke::NONE)
+            .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+            .min_size(Self::DIALOG_BUTTON_MIN_SIZE)
+    }
+
+    /// Add a primary button to the UI with pointer cursor on hover.
+    pub fn add_primary_button(ui: &mut egui::Ui, label: impl Into<WidgetText>) -> egui::Response {
+        ui.add(Self::primary_button(label))
+            .on_hover_cursor(CursorIcon::PointingHand)
+    }
+
+    /// Add a primary button (conditionally enabled) with pointer cursor on hover.
+    ///
+    /// When disabled, uses distinct greyed-out fill and text so the button
+    /// visually reads as inactive (egui's default disabled visuals are bypassed
+    /// by the explicit fill/text styling in `primary_button()`).
+    pub fn add_primary_button_enabled(
+        ui: &mut egui::Ui,
+        enabled: bool,
+        label: impl Into<WidgetText>,
+    ) -> egui::Response {
+        let button = if enabled {
+            Self::primary_button(label)
+        } else {
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let text = match label.into() {
+                WidgetText::RichText(rt) => rt
+                    .as_ref()
+                    .clone()
+                    .strong()
+                    .color(DashColors::disabled(dark_mode)),
+                // INTENTIONAL(CMT-010): LayoutJob/Galley variants not used by any callsite
+                other => RichText::new(other.text().to_string())
+                    .strong()
+                    .color(DashColors::disabled(dark_mode)),
+            };
+            Button::new(text)
+                .fill(DashColors::BUTTON_DISABLED)
+                .stroke(egui::Stroke::NONE)
+                .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+                .min_size(Self::DIALOG_BUTTON_MIN_SIZE)
+        };
+        ui.add_enabled(enabled, button)
+            .on_hover_cursor(CursorIcon::PointingHand)
+    }
+
+    /// Add a secondary button to the UI with pointer cursor on hover.
+    pub fn add_secondary_button(
+        ui: &mut egui::Ui,
+        label: impl Into<WidgetText>,
+        dark_mode: bool,
+    ) -> egui::Response {
+        ui.add(Self::secondary_button(label, dark_mode))
+            .on_hover_cursor(CursorIcon::PointingHand)
+    }
+
+    /// Add a danger button to the UI with pointer cursor on hover.
+    pub fn add_danger_button(ui: &mut egui::Ui, label: impl Into<WidgetText>) -> egui::Response {
+        ui.add(Self::danger_button(label))
+            .on_hover_cursor(CursorIcon::PointingHand)
+    }
+
+    /// Add any custom-styled button to the UI with pointer cursor on hover.
+    ///
+    /// Use this for buttons that don't fit the primary/secondary/danger/toolbar helpers.
+    pub fn add_button(ui: &mut egui::Ui, button: Button<'_>) -> egui::Response {
+        ui.add(button).on_hover_cursor(CursorIcon::PointingHand)
+    }
+
+    /// Height for toolbar buttons in the top panel.
+    const TOOLBAR_BUTTON_HEIGHT: f32 = 30.0;
+
+    /// Returns a styled toolbar button with white text on the given accent fill.
+    ///
+    /// Used for top-panel action buttons (Register Name, Refresh, Documents, etc.)
+    /// whose fill color depends on the active network.
+    pub fn toolbar_button(label: impl Into<WidgetText>, fill: egui::Color32) -> Button<'static> {
+        let text = match label.into() {
+            WidgetText::RichText(rt) => rt.as_ref().clone().color(DashColors::WHITE),
+            // INTENTIONAL(CMT-010): LayoutJob/Galley variants not used by any callsite
+            other => RichText::new(other.text().to_string()).color(DashColors::WHITE),
+        };
+        Button::new(text)
+            .fill(fill)
+            .frame(true)
+            .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
+            .stroke(egui::Stroke::NONE)
+            .min_size(Vec2::new(100.0, Self::TOOLBAR_BUTTON_HEIGHT))
+    }
+
+    /// Add a toolbar button to the UI with pointer cursor on hover.
+    pub fn add_toolbar_button(
+        ui: &mut egui::Ui,
+        label: impl Into<WidgetText>,
+        fill: egui::Color32,
+    ) -> egui::Response {
+        ui.add(Self::toolbar_button(label, fill))
+            .on_hover_cursor(CursorIcon::PointingHand)
+    }
+}
+
+/// Extension methods for [`egui::Response`] that enforce the project-wide tooltip cursor
+/// policy. Never use bare `.on_hover_text()` or `.on_disabled_hover_text()` -- use these
+/// methods instead.
+///
+/// Methods are **state-aware**: `clickable_tooltip` only applies when the widget is
+/// enabled, `disabled_tooltip` only when disabled. This lets you chain both on the same
+/// response and have exactly the right one take effect:
+///
+/// ```ignore
+/// ui.add_enabled(ready, button)
+///     .clickable_tooltip("Transfer credits")
+///     .disabled_tooltip("Fill all fields first")
+///     .clicked()
+/// ```
+///
+/// All methods return `Self` for chaining -- this is a design contract. New methods
+/// added to this trait must also be state-aware and return `Self`.
+pub trait ResponseExt {
+    /// Informational tooltip with `Help` (?) cursor.
+    ///
+    /// Applies regardless of enabled/disabled state -- informational text is always
+    /// relevant. Use for non-interactive elements that show explanatory text on hover
+    /// (status labels, setting descriptions).
+    ///
+    /// ```ignore
+    /// ui.label("Sync status: connected")
+    ///     .info_tooltip("Last synced 3 seconds ago");
+    /// ```
+    fn info_tooltip(self, text: impl Into<egui::WidgetText>) -> Self;
+
+    /// Clickable tooltip with `PointingHand` cursor.
+    ///
+    /// Only applies when the widget is **enabled** -- skips silently when disabled so
+    /// it can be chained with [`disabled_tooltip`](ResponseExt::disabled_tooltip). Use
+    /// for interactive elements (buttons, clickable labels, links).
+    ///
+    /// ```ignore
+    /// ui.add_enabled(ready, button)
+    ///     .clickable_tooltip("Submit the form");
+    /// ```
+    fn clickable_tooltip(self, text: impl Into<egui::WidgetText>) -> Self;
+
+    /// Disabled tooltip with `NotAllowed` cursor.
+    ///
+    /// Only applies when the widget is **disabled** -- skips silently when enabled so
+    /// it can be chained with [`clickable_tooltip`](ResponseExt::clickable_tooltip). Use
+    /// to explain why an action is unavailable.
+    ///
+    /// ```ignore
+    /// ui.add_enabled(ready, button)
+    ///     .disabled_tooltip("Fill all required fields first");
+    /// ```
+    fn disabled_tooltip(self, text: impl Into<egui::WidgetText>) -> Self;
+}
+
+impl ResponseExt for egui::Response {
+    fn info_tooltip(self, text: impl Into<egui::WidgetText>) -> Self {
+        let text = text.into();
+        self.on_hover_text(text.clone())
+            .on_disabled_hover_text(text)
+            .on_hover_cursor(CursorIcon::Help)
+    }
+
+    fn clickable_tooltip(self, text: impl Into<egui::WidgetText>) -> Self {
+        if self.enabled() {
+            self.on_hover_text(text)
+                .on_hover_cursor(CursorIcon::PointingHand)
+        } else {
+            self
+        }
+    }
+
+    fn disabled_tooltip(self, text: impl Into<egui::WidgetText>) -> Self {
+        if self.enabled() {
+            self
+        } else {
+            self.on_disabled_hover_text(text)
+                .on_hover_cursor(CursorIcon::NotAllowed)
+        }
     }
 }
 

@@ -17,11 +17,13 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
+use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::helpers::{TransactionType, add_key_chooser};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
+use crate::ui::tokens::validate_signing_key;
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dpp::balances::credits::Credits;
 use dash_sdk::dpp::data_contract::GroupContractPosition;
@@ -43,7 +45,6 @@ use egui::RichText;
 use egui_extras::{Column, TableBuilder};
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Pricing type selection
 #[derive(PartialEq, Clone)]
@@ -75,8 +76,8 @@ impl From<Option<TokenPricingSchedule>> for PricingType {
 #[derive(PartialEq)]
 pub enum SetTokenPriceStatus {
     NotStarted,
-    WaitingForResult(u64), // Use seconds or millis
-    ErrorMessage(String),
+    WaitingForResult,
+    Error,
     Complete,
 }
 
@@ -92,16 +93,15 @@ pub struct SetTokenPriceScreen {
 
     pub token_pricing_schedule: String,
     /// Token pricing schedule to use; if None, we will remove the pricing schedule
-    pub pricing_type: PricingType,
+    pricing_type: PricingType,
 
     // AmountInput components for pricing - following the design pattern
     single_price_amount: Option<Amount>,
     single_price_input: Option<AmountInput>,
 
     // Tiered pricing with AmountInput components
-    pub tiered_prices: Vec<(Option<AmountInput>, Option<AmountInput>)>, // (amount_input, price_input)
+    tiered_prices: Vec<(Option<AmountInput>, Option<AmountInput>)>, // (amount_input, price_input)
     status: SetTokenPriceStatus,
-    error_message: Option<String>,
 
     /// Basic references
     pub app_context: Arc<AppContext>,
@@ -113,8 +113,11 @@ pub struct SetTokenPriceScreen {
     // If needed for password-based wallet unlocking:
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
+    wallet_open_attempted: bool,
     // Fee result from completed operation
     completed_fee_result: Option<FeeResult>,
+    // Banner handle for elapsed time display
+    refresh_banner: Option<BannerHandle>,
 }
 
 /// 1 Dash = 100,000,000,000 credits
@@ -170,7 +173,7 @@ impl SetTokenPriceScreen {
                 false,
             );
 
-        let mut error_message = None;
+        let set_error_banner = |msg: &str| super::set_error_banner(app_context, msg);
 
         let group = match identity_token_info
             .token_config
@@ -179,34 +182,30 @@ impl SetTokenPriceScreen {
             .authorized_to_make_change_action_takers()
         {
             AuthorizedActionTakers::NoOne => {
-                error_message =
-                    Some("Setting token price is not allowed on this token".to_string());
+                set_error_banner("Setting token price is not allowed on this token");
                 None
             }
             AuthorizedActionTakers::ContractOwner => {
                 if identity_token_info.data_contract.contract.owner_id()
                     != identity_token_info.identity.identity.id()
                 {
-                    error_message = Some(
-                        "You are not allowed to set token price on this token. Only the contract owner is."
-                            .to_string(),
+                    set_error_banner(
+                        "You are not allowed to set token price on this token. Only the contract owner is.",
                     );
                 }
                 None
             }
             AuthorizedActionTakers::Identity(identifier) => {
                 if identifier != &identity_token_info.identity.identity.id() {
-                    error_message =
-                        Some("You are not allowed to set token price on this token".to_string());
+                    set_error_banner("You are not allowed to set token price on this token");
                 }
                 None
             }
             AuthorizedActionTakers::MainGroup => {
                 match identity_token_info.token_config.main_control_group() {
                     None => {
-                        error_message = Some(
-                            "Invalid contract: No main control group, though one should exist"
-                                .to_string(),
+                        set_error_banner(
+                            "Invalid contract: No main control group, though one should exist",
                         );
                         None
                     }
@@ -218,7 +217,7 @@ impl SetTokenPriceScreen {
                         {
                             Ok(group) => Some((group_pos, group.clone())),
                             Err(e) => {
-                                error_message = Some(format!("Invalid contract: {}", e));
+                                set_error_banner(&format!("Invalid contract: {}", e));
                                 None
                             }
                         }
@@ -233,7 +232,7 @@ impl SetTokenPriceScreen {
                 {
                     Ok(group) => Some((*group_pos, group.clone())),
                     Err(e) => {
-                        error_message = Some(format!("Invalid contract: {}", e));
+                        set_error_banner(&format!("Invalid contract: {}", e));
                         None
                     }
                 }
@@ -256,12 +255,13 @@ impl SetTokenPriceScreen {
         };
 
         // Attempt to get an unlocked wallet reference
-        let selected_wallet = get_selected_wallet(
-            &identity_token_info.identity,
-            None,
-            possible_key,
-            &mut error_message,
-        );
+        let selected_wallet =
+            get_selected_wallet(&identity_token_info.identity, None, possible_key).unwrap_or_else(
+                |e| {
+                    set_error_banner(&e);
+                    None
+                },
+            );
 
         Self {
             identity_token_info: identity_token_info.clone(),
@@ -277,13 +277,14 @@ impl SetTokenPriceScreen {
             single_price_input: None,
             tiered_prices: vec![(None, None)],
             status: SetTokenPriceStatus::NotStarted,
-            error_message: None,
             app_context: app_context.clone(),
             show_confirmation_popup: false,
             confirmation_dialog: None,
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
+            wallet_open_attempted: false,
             completed_fee_result: None,
+            refresh_banner: None,
         }
     }
 
@@ -725,20 +726,29 @@ impl SetTokenPriceScreen {
             }
         };
 
+        // Validate signing key before transitioning to waiting state
+        let Some(signing_key) = validate_signing_key(&self.app_context, self.selected_key.as_ref())
+        else {
+            return AppAction::None;
+        };
+
         // Set waiting state
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        self.status = SetTokenPriceStatus::WaitingForResult(now);
+        self.status = SetTokenPriceStatus::WaitingForResult;
+        let handle = MessageBanner::set_global(
+            self.app_context.egui_ctx(),
+            "Setting token price...",
+            MessageType::Info,
+        );
+        handle.with_elapsed();
+        self.refresh_banner = Some(handle);
 
         // Prepare group info
-        let group_info = if self.group_action_id.is_some() {
+        let group_info = if let Some(action_id) = self.group_action_id {
             self.group.as_ref().map(|(pos, _)| {
                 GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
                     GroupStateTransitionInfo {
                         group_contract_position: *pos,
-                        action_id: self.group_action_id.unwrap(),
+                        action_id,
                         action_is_proposer: false,
                     },
                 )
@@ -755,7 +765,7 @@ impl SetTokenPriceScreen {
                 identity: self.identity_token_info.identity.clone(),
                 data_contract: Arc::new(self.identity_token_info.data_contract.contract.clone()),
                 token_position: self.identity_token_info.token_position,
-                signing_key: self.selected_key.clone().expect("Expected a key"),
+                signing_key,
                 public_note: if self.group_action_id.is_some() {
                     None
                 } else {
@@ -776,8 +786,8 @@ impl SetTokenPriceScreen {
 
     /// Set error state with the given message
     fn set_error_state(&mut self, error: String) {
-        self.error_message = Some(error.clone());
-        self.status = SetTokenPriceStatus::ErrorMessage(error);
+        self.status = SetTokenPriceStatus::Error;
+        MessageBanner::set_global(self.app_context.egui_ctx(), &error, MessageType::Error);
     }
 
     /// Renders a confirm popup with the final "Are you sure?" step
@@ -818,15 +828,17 @@ impl SetTokenPriceScreen {
 }
 
 impl ScreenLike for SetTokenPriceScreen {
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
-        if let MessageType::Error = message_type {
-            self.status = SetTokenPriceStatus::ErrorMessage(message.to_string());
-            self.error_message = Some(message.to_string());
+    fn display_message(&mut self, _message: &str, message_type: MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
+        if matches!(message_type, MessageType::Error | MessageType::Warning) {
+            self.refresh_banner.take_and_clear();
+            self.status = SetTokenPriceStatus::Error;
         }
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         if let BackendTaskSuccessResult::SetTokenPrice(fee_result) = backend_task_success_result {
+            self.refresh_banner.take_and_clear();
             self.completed_fee_result = Some(fee_result);
             self.status = SetTokenPriceStatus::Complete;
         }
@@ -951,8 +963,11 @@ impl ScreenLike for SetTokenPriceScreen {
             } else {
                 // Possibly handle locked wallet scenario (similar to TransferTokens)
                 if let Some(wallet) = &self.selected_wallet {
-                    if let Err(e) = try_open_wallet_no_password(wallet) {
-                        self.error_message = Some(e);
+                    if !self.wallet_open_attempted {
+                        if let Err(e) = try_open_wallet_no_password(wallet) {
+                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                        }
+                        self.wallet_open_attempted = true;
                     }
                     if wallet_needs_unlock(wallet) {
                         ui.add_space(10.0);
@@ -1026,16 +1041,12 @@ impl ScreenLike for SetTokenPriceScreen {
                     ));
                 } else {
                     ui.horizontal(|ui| {
-                        ui.label("Public note (optional):");
+                        ui.label("Public note (optional):").info_tooltip(
+                            "A note about the transaction that can be seen by the public.",
+                        );
                         ui.add_space(10.0);
                         let mut txt = self.public_note.clone().unwrap_or_default();
-                        if ui
-                            .text_edit_singleline(&mut txt)
-                            .on_hover_text(
-                                "A note about the transaction that can be seen by the public.",
-                            )
-                            .changed()
-                        {
+                        if ui.text_edit_singleline(&mut txt).changed() {
                             self.public_note = if !txt.is_empty() { Some(txt) } else { None };
                         }
                     });
@@ -1046,8 +1057,11 @@ impl ScreenLike for SetTokenPriceScreen {
                         .members()
                         .get(&self.identity_token_info.identity.identity.id());
                     if your_power.is_none() {
-                        self.error_message =
-                            Some("Only group members can set price on this token".to_string());
+                        MessageBanner::set_global(
+                            ui.ctx(),
+                            "Only group members can set price on this token",
+                            MessageType::Error,
+                        );
                     }
                     ui.heading("This is a group action, it is not immediate.");
                     ui.label(format!(
@@ -1109,22 +1123,13 @@ impl ScreenLike for SetTokenPriceScreen {
 
                 // Set price button
                 let validation_result = self.validate_pricing_configuration();
-                let button_active = validation_result.is_ok() && !matches!(self.status, SetTokenPriceStatus::WaitingForResult(_));
+                let button_active = validation_result.is_ok() && !matches!(self.status, SetTokenPriceStatus::WaitingForResult);
 
-                let button_color = if validation_result.is_ok() {
-                    DashColors::ACTION_BUTTON_BLUE
-                } else {
-                    DashColors::BUTTON_DISABLED
-                };
-
-                let button = egui::Button::new(RichText::new(set_price_text).color(Color32::WHITE))
-                    .fill(button_color)
-                    .corner_radius(3.0);
-
-                let button_response = ui.add_enabled(button_active, button);
+                let button_response =
+                    ComponentStyles::add_primary_button_enabled(ui, button_active, set_price_text);
 
                 if let Err(hover_message) = validation_result {
-                                    button_response.on_disabled_hover_text(hover_message);
+                    button_response.disabled_tooltip(hover_message);
                 } else if button_response.clicked() {
                     self.show_confirmation_popup = true;
                 }
@@ -1140,31 +1145,11 @@ impl ScreenLike for SetTokenPriceScreen {
                     SetTokenPriceStatus::NotStarted => {
                         // no-op
                     }
-                    SetTokenPriceStatus::WaitingForResult(start_time) => {
-                        let now = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs();
-                        let elapsed = now - start_time;
-                        ui.label(format!("Setting price... elapsed: {} seconds", elapsed));
+                    SetTokenPriceStatus::WaitingForResult => {
+                        // Elapsed display is handled by the global MessageBanner
                     }
-                    SetTokenPriceStatus::ErrorMessage(msg) => {
-                        let error_color = DashColors::ERROR;
-                        let msg = msg.clone();
-                        Frame::new()
-                            .fill(error_color.gamma_multiply(0.1))
-                            .inner_margin(Margin::symmetric(10, 8))
-                            .corner_radius(5.0)
-                            .stroke(egui::Stroke::new(1.0, error_color))
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.label(RichText::new(format!("Error: {}", msg)).color(error_color));
-                                    ui.add_space(10.0);
-                                    if ui.small_button("Dismiss").clicked() {
-                                        self.status = SetTokenPriceStatus::NotStarted;
-                                    }
-                                });
-                            });
+                    SetTokenPriceStatus::Error => {
+                        // Error display is handled by the global MessageBanner
                     }
                     SetTokenPriceStatus::Complete => {
                         // handled above

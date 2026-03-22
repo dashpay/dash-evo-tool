@@ -1,6 +1,7 @@
 use std::sync::OnceLock;
 
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::shielded::ShieldedTask;
 use crate::context::AppContext;
 use crate::model::wallet::shielded::{ShieldedNote, ShieldedWalletState, derive_orchard_keys};
@@ -30,7 +31,7 @@ impl AppContext {
     pub async fn run_shielded_task(
         self: &Arc<Self>,
         task: ShieldedTask,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         match task {
             ShieldedTask::WarmUpProvingKey => {
                 let _ = get_proving_key();
@@ -134,7 +135,6 @@ impl AppContext {
                 balance,
                 new_nonce,
                 &self.network,
-                false,
             );
         }
     }
@@ -152,7 +152,7 @@ impl AppContext {
     fn initialize_shielded_wallet(
         self: &Arc<Self>,
         seed_hash: crate::model::wallet::WalletSeedHash,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         // Check if already initialized
         {
             let states = self.shielded_states.lock().unwrap();
@@ -168,28 +168,28 @@ impl AppContext {
         // Get the wallet seed
         let seed_bytes = {
             let wallets = self.wallets.read().unwrap();
-            let wallet_arc = wallets.get(&seed_hash).ok_or("Wallet not found")?;
+            let wallet_arc = wallets.get(&seed_hash).ok_or(TaskError::WalletNotFound)?;
             let wallet = wallet_arc.read().unwrap();
             match &wallet.wallet_seed {
                 crate::model::wallet::WalletSeed::Open(open) => open.seed,
                 crate::model::wallet::WalletSeed::Closed(_) => {
-                    return Err("Wallet must be unlocked to initialize shielded state".to_string());
+                    return Err(TaskError::WalletLocked);
                 }
             }
         };
 
-        // Derive Orchard keys via ZIP32
-        let keys = derive_orchard_keys(&seed_bytes, self.network, 0)?;
+        let keys = derive_orchard_keys(&seed_bytes, self.network, 0)
+            .map_err(|e| TaskError::ShieldedTransitionBuildFailed { detail: e })?;
 
         let network_str = self.network.to_string();
 
-        // Open the persistent commitment tree on the shared DB connection.
-        // Tables are created automatically if they don't exist.
         let commitment_tree = ClientPersistentCommitmentTree::open_on_shared_connection(
             self.db.shared_connection(),
             100,
         )
-        .map_err(|e| format!("Failed to open commitment tree: {e}"))?;
+        .map_err(|e| TaskError::ShieldedTreeUpdateFailed {
+            detail: e.to_string(),
+        })?;
 
         let mut last_synced_index = 0u64;
 
@@ -247,13 +247,11 @@ impl AppContext {
     async fn sync_shielded_notes(
         self: &Arc<Self>,
         seed_hash: crate::model::wallet::WalletSeedHash,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         // Take the state temporarily for the async operation
         let mut state = {
             let mut states = self.shielded_states.lock().unwrap();
-            states
-                .remove(&seed_hash)
-                .ok_or("Shielded wallet not initialized")?
+            states.remove(&seed_hash).ok_or(TaskError::WalletNotFound)?
         };
 
         let result = crate::backend_task::shielded::sync::sync_notes(
@@ -293,12 +291,10 @@ impl AppContext {
         amount: u64,
         from_address: dash_sdk::dpp::address_funds::PlatformAddress,
         nonce_override: Option<u32>,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         let default_address = {
             let states = self.shielded_states.lock().unwrap();
-            let state = states
-                .get(&seed_hash)
-                .ok_or("Shielded wallet not initialized")?;
+            let state = states.get(&seed_hash).ok_or(TaskError::WalletNotFound)?;
             state.keys.default_address
         };
 
@@ -324,12 +320,10 @@ impl AppContext {
         seed_hash: crate::model::wallet::WalletSeedHash,
         amount: u64,
         recipient_address_bytes: Vec<u8>,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         let mut state = {
             let mut states = self.shielded_states.lock().unwrap();
-            states
-                .remove(&seed_hash)
-                .ok_or("Shielded wallet not initialized")?
+            states.remove(&seed_hash).ok_or(TaskError::WalletNotFound)?
         };
 
         let result = crate::backend_task::shielded::bundle::shielded_transfer(
@@ -362,12 +356,10 @@ impl AppContext {
         seed_hash: crate::model::wallet::WalletSeedHash,
         amount: u64,
         to_platform_address: dash_sdk::dpp::address_funds::PlatformAddress,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         let mut state = {
             let mut states = self.shielded_states.lock().unwrap();
-            states
-                .remove(&seed_hash)
-                .ok_or("Shielded wallet not initialized")?
+            states.remove(&seed_hash).ok_or(TaskError::WalletNotFound)?
         };
 
         let result = crate::backend_task::shielded::bundle::unshield_credits(
@@ -400,12 +392,10 @@ impl AppContext {
         seed_hash: crate::model::wallet::WalletSeedHash,
         amount: u64,
         to_core_address: dash_sdk::dpp::dashcore::Address,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         let mut state = {
             let mut states = self.shielded_states.lock().unwrap();
-            states
-                .remove(&seed_hash)
-                .ok_or("Shielded wallet not initialized")?
+            states.remove(&seed_hash).ok_or(TaskError::WalletNotFound)?
         };
 
         let result = crate::backend_task::shielded::bundle::shielded_withdrawal(
@@ -435,12 +425,10 @@ impl AppContext {
         self: &Arc<Self>,
         seed_hash: crate::model::wallet::WalletSeedHash,
         amount_duffs: u64,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         let state_ref = {
             let mut states = self.shielded_states.lock().unwrap();
-            states
-                .remove(&seed_hash)
-                .ok_or("Shielded wallet not initialized")?
+            states.remove(&seed_hash).ok_or(TaskError::WalletNotFound)?
         };
 
         let result = crate::backend_task::shielded::bundle::shield_from_asset_lock(
@@ -468,12 +456,10 @@ impl AppContext {
     async fn check_nullifiers_task(
         self: &Arc<Self>,
         seed_hash: crate::model::wallet::WalletSeedHash,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         let mut state = {
             let mut states = self.shielded_states.lock().unwrap();
-            states
-                .remove(&seed_hash)
-                .ok_or("Shielded wallet not initialized")?
+            states.remove(&seed_hash).ok_or(TaskError::WalletNotFound)?
         };
 
         let result = crate::backend_task::shielded::nullifiers::check_nullifiers(

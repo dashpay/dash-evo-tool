@@ -3,6 +3,7 @@ use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
 use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
@@ -55,7 +56,6 @@ pub struct ContactDetailsScreen {
     edit_nickname: String,
     edit_note: String,
     edit_hidden: bool,
-    message: Option<(String, MessageType)>,
     loading: bool,
     show_info_popup: bool,
     needs_backend_fetch: bool,
@@ -77,7 +77,6 @@ impl ContactDetailsScreen {
             edit_nickname: String::new(),
             edit_note: String::new(),
             edit_hidden: false,
-            message: None,
             loading: false,
             show_info_popup: false,
             needs_backend_fetch: true,
@@ -256,18 +255,6 @@ impl ContactDetailsScreen {
         });
 
         ui.separator();
-
-        // Show message if any
-        if let Some((message, message_type)) = &self.message {
-            let color = match message_type {
-                MessageType::Success => DashColors::SUCCESS,
-                MessageType::Error => DashColors::ERROR,
-                MessageType::Warning => DashColors::WARNING,
-                MessageType::Info => DashColors::INFO,
-            };
-            ui.colored_label(color, message);
-            ui.separator();
-        }
 
         // Loading indicator
         if self.loading {
@@ -520,21 +507,15 @@ impl ContactDetailsScreen {
 
         action
     }
-
-    pub fn display_message(&mut self, message: &str, message_type: MessageType) {
-        self.message = Some((message.to_string(), message_type));
-    }
 }
 
 impl ScreenLike for ContactDetailsScreen {
     fn refresh(&mut self) {
         self.load_from_database();
-        self.message = None;
     }
 
     fn refresh_on_arrival(&mut self) {
         self.load_from_database();
-        self.message = None;
         // Flag that we need a backend fetch; it will be dispatched from render()
         self.needs_backend_fetch = true;
     }
@@ -587,8 +568,9 @@ impl ScreenLike for ContactDetailsScreen {
         action
     }
 
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
-        self.display_message(message, message_type);
+    fn display_message(&mut self, _message: &str, _message_type: MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
+        self.loading = false;
     }
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
@@ -656,7 +638,11 @@ impl ScreenLike for ContactDetailsScreen {
             }
             BackendTaskSuccessResult::DashPayContactInfoUpdated(contact_id) => {
                 if contact_id == self.contact_id {
-                    self.display_message("Contact info saved to Platform", MessageType::Success);
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        "Contact info saved to Platform",
+                        MessageType::Success,
+                    );
                 }
             }
             BackendTaskSuccessResult::DashPayContactsWithInfo(contacts_data) => {

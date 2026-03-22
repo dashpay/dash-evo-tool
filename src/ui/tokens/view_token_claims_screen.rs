@@ -2,11 +2,12 @@ use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::document::DocumentTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::ComponentStyles;
 use crate::ui::{MessageType, ScreenLike};
 use chrono::{DateTime, Utc};
 use dash_sdk::dpp::document::DocumentV0Getters;
@@ -14,7 +15,6 @@ use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::drive::query::{WhereClause, WhereOperator};
 use dash_sdk::platform::{Document, DocumentQuery};
 use egui::Context;
-use egui::{Color32, RichText};
 use std::sync::Arc;
 
 use super::tokens_screen::IdentityTokenBasicInfo;
@@ -28,7 +28,6 @@ pub enum FetchStatus {
 pub struct ViewTokenClaimsScreen {
     pub identity_token_basic_info: IdentityTokenBasicInfo,
     pub new_claims_query: DocumentQuery,
-    message: Option<(String, MessageType, DateTime<Utc>)>,
     fetch_status: FetchStatus,
     pub app_context: Arc<AppContext>,
     claims: Vec<Document>,
@@ -60,7 +59,6 @@ impl ViewTokenClaimsScreen {
                 limit: 0,
                 start: None,
             },
-            message: None,
             fetch_status: FetchStatus::NotFetching,
             app_context: app_context.clone(),
             claims: vec![],
@@ -70,19 +68,14 @@ impl ViewTokenClaimsScreen {
 
 impl ScreenLike for ViewTokenClaimsScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
         match message_type {
-            MessageType::Success => {
-                self.message = Some((message.to_string(), MessageType::Success, Utc::now()));
-            }
             MessageType::Error | MessageType::Warning => {
-                self.message = Some((message.to_string(), message_type, Utc::now()));
                 if message.contains("Error fetching documents") {
                     self.fetch_status = FetchStatus::NotFetching;
                 }
             }
-            MessageType::Info => {
-                self.message = Some((message.to_string(), MessageType::Info, Utc::now()));
-            }
+            _ => {}
         }
     }
 
@@ -92,7 +85,11 @@ impl ScreenLike for ViewTokenClaimsScreen {
             self.claims = documents.into_iter().filter_map(|(_, doc)| doc).collect();
 
             if self.claims.is_empty() {
-                self.display_message("No claims found", MessageType::Info);
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "No claims found",
+                    MessageType::Info,
+                );
             }
         }
     }
@@ -130,37 +127,17 @@ impl ScreenLike for ViewTokenClaimsScreen {
 
         // Central panel
         island_central_panel(ctx, |ui| {
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
             ui.heading("View Token Claims");
             ui.add_space(10.0);
 
-            let fetch_button =
-                egui::Button::new(RichText::new("Fetch claims").color(Color32::WHITE))
-                    .fill(DashColors::ACTION_BUTTON_BLUE)
-                    .frame(true)
-                    .corner_radius(3.0);
-
-            if ui.add(fetch_button).clicked() {
+            if ComponentStyles::add_primary_button(ui, "Fetch claims").clicked() {
                 action |= AppAction::BackendTask(BackendTask::DocumentTask(Box::new(
                     DocumentTask::FetchDocuments(self.new_claims_query.clone()),
                 )));
                 self.fetch_status = FetchStatus::Fetching(Utc::now())
             }
 
-            if let Some((msg, msg_type, _)) = &self.message {
-                ui.add_space(10.0);
-                match msg_type {
-                    MessageType::Success => {
-                        ui.colored_label(DashColors::success_color(dark_mode), msg);
-                    }
-                    MessageType::Error | MessageType::Warning => {
-                        ui.colored_label(DashColors::error_color(dark_mode), msg);
-                    }
-                    MessageType::Info => {
-                        ui.label(msg);
-                    }
-                };
-            }
+            // Message display is handled by the global MessageBanner
 
             if self.fetch_status != FetchStatus::NotFetching {
                 ui.add_space(10.0);

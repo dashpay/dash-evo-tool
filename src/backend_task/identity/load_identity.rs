@@ -1,4 +1,5 @@
 use super::BackendTaskSuccessResult;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::{IdentityInputToLoad, verify_key_input};
 use crate::context::AppContext;
 use crate::model::qualified_identity::PrivateKeyTarget::{
@@ -41,7 +42,7 @@ impl AppContext {
         &self,
         sdk: &Sdk,
         input: IdentityInputToLoad,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         let IdentityInputToLoad {
             identity_id_input,
             identity_type,
@@ -55,32 +56,51 @@ impl AppContext {
         } = input;
 
         // Verify the voting private key
-        let owner_private_key_bytes = verify_key_input(owner_private_key_input, "Owner")?;
+        let owner_private_key_bytes =
+            verify_key_input(owner_private_key_input, "Owner").map_err(|e| {
+                TaskError::KeyInputValidationFailed {
+                    key_name: "Owner".to_string(),
+                    detail: e,
+                }
+            })?;
 
         // Verify the voting private key
-        let voting_private_key_bytes = verify_key_input(voting_private_key_input, "Voting")?;
+        let voting_private_key_bytes = verify_key_input(voting_private_key_input, "Voting")
+            .map_err(|e| TaskError::KeyInputValidationFailed {
+                key_name: "Voting".to_string(),
+                detail: e,
+            })?;
 
         let payout_address_private_key_bytes =
-            verify_key_input(payout_address_private_key_input, "Payout Address")?;
+            verify_key_input(payout_address_private_key_input, "Payout Address").map_err(|e| {
+                TaskError::KeyInputValidationFailed {
+                    key_name: "Payout Address".to_string(),
+                    detail: e,
+                }
+            })?;
 
         // Parse the identity ID
         let identity_id = match Identifier::from_string(&identity_id_input, Encoding::Base58)
             .or_else(|_| Identifier::from_string(&identity_id_input, Encoding::Hex))
         {
             Ok(id) => id,
-            Err(e) => return Err(format!("Identifier error: {}", e)),
+            Err(_e) => {
+                return Err(TaskError::IdentifierParsingError {
+                    input: identity_id_input,
+                });
+            }
         };
 
         // Fetch the identity using the SDK
         let identity = match Identity::fetch_by_identifier(sdk, identity_id).await {
             Ok(Some(identity)) => identity,
-            Ok(None) => return Err("Identity not found".to_string()),
-            Err(e) => return Err(format!("Error fetching identity: {}", e)),
+            Ok(None) => return Err(TaskError::IdentityNotFound),
+            Err(e) => return Err(TaskError::from(e)),
         };
 
         let mut encrypted_private_keys = BTreeMap::new();
 
-        let wallets = self.wallets.read().unwrap().clone();
+        let wallets = self.wallets.read().map_err(TaskError::from)?.clone();
 
         if identity_type == IdentityType::User
             && derive_keys_from_wallets
@@ -96,8 +116,12 @@ impl AppContext {
         if identity_type != IdentityType::User
             && let Some(owner_private_key_bytes) = owner_private_key_bytes
         {
-            let key =
-                self.verify_owner_key_exists_on_identity(&identity, &owner_private_key_bytes)?;
+            let key = self
+                .verify_owner_key_exists_on_identity(&identity, &owner_private_key_bytes)
+                .map_err(|e| TaskError::KeyInputValidationFailed {
+                    key_name: "Owner".to_string(),
+                    detail: e,
+                })?;
             let key_id = key.id();
             let qualified_key =
                 QualifiedIdentityPublicKey::from_identity_public_key_with_wallets_check(
@@ -117,10 +141,15 @@ impl AppContext {
         if identity_type != IdentityType::User
             && let Some(payout_address_private_key_bytes) = payout_address_private_key_bytes
         {
-            let key = self.verify_payout_address_key_exists_on_identity(
-                &identity,
-                &payout_address_private_key_bytes,
-            )?;
+            let key = self
+                .verify_payout_address_key_exists_on_identity(
+                    &identity,
+                    &payout_address_private_key_bytes,
+                )
+                .map_err(|e| TaskError::KeyInputValidationFailed {
+                    key_name: "Payout Address".to_string(),
+                    detail: e,
+                })?;
             let key_id = key.id();
             let qualified_key =
                 QualifiedIdentityPublicKey::from_identity_public_key_with_wallets_check(
@@ -154,14 +183,19 @@ impl AppContext {
                     let voter_identity =
                         match Identity::fetch_by_identifier(sdk, voter_identifier).await {
                             Ok(Some(identity)) => identity,
-                            Ok(None) => return Err("Voter Identity not found".to_string()),
-                            Err(e) => return Err(format!("Error fetching voter identity: {}", e)),
+                            Ok(None) => return Err(TaskError::IdentityNotFound),
+                            Err(e) => return Err(TaskError::from(e)),
                         };
 
-                    let key = self.verify_voting_key_exists_on_identity(
-                        &voter_identity,
-                        &voting_private_key_bytes,
-                    )?;
+                    let key = self
+                        .verify_voting_key_exists_on_identity(
+                            &voter_identity,
+                            &voting_private_key_bytes,
+                        )
+                        .map_err(|e| TaskError::KeyInputValidationFailed {
+                            key_name: "Voting".to_string(),
+                            detail: e,
+                        })?;
                     let qualified_key =
                         QualifiedIdentityPublicKey::from_identity_public_key_with_wallets_check(
                             key.clone(),
@@ -177,7 +211,9 @@ impl AppContext {
                     );
                     Some((voter_identity, key))
                 } else {
-                    return Err("Voting private key is not valid".to_string());
+                    return Err(TaskError::InvalidPrivateKey {
+                        detail: "Voting private key is not valid".to_string(),
+                    });
                 }
             } else {
                 None
@@ -194,14 +230,21 @@ impl AppContext {
                 .filter_map(|key_string| {
                     Some(
                         verify_key_input(key_string, "User Key")
+                            .map_err(|e| TaskError::KeyInputValidationFailed {
+                                key_name: "User Key".to_string(),
+                                detail: e,
+                            })
                             .transpose()?
                             .and_then(|sk| {
-                                PrivateKey::from_byte_array(&sk, self.network)
-                                    .map_err(|e| e.to_string())
+                                PrivateKey::from_byte_array(&sk, self.network).map_err(|e| {
+                                    TaskError::InvalidPrivateKey {
+                                        detail: e.to_string(),
+                                    }
+                                })
                             }),
                     )
                 })
-                .collect::<Result<Vec<PrivateKey>, String>>()?;
+                .collect::<Result<Vec<PrivateKey>, TaskError>>()?;
 
             let secp = Secp256k1::new();
             #[allow(clippy::type_complexity)]
@@ -312,7 +355,9 @@ impl AppContext {
                     })
                     .collect::<Vec<DPNSNameInfo>>()
             })
-            .map_err(|e| format!("Error fetching DPNS names: {}", e))?;
+            .map_err(|e| TaskError::DpnsFetchError {
+                source: Box::new(e),
+            })?;
 
         // Determine alias: use user input, or fall back to first DPNS name if available
         let alias = if !alias_input.is_empty() {
@@ -334,23 +379,27 @@ impl AppContext {
             dpns_names: maybe_owned_dpns_names,
             associated_wallets: wallets
                 .values()
-                .map(|wallet| (wallet.read().unwrap().seed_hash(), wallet.clone()))
-                .collect(),
+                .map(|wallet| {
+                    let w = wallet.read()?;
+                    Ok::<_, TaskError>((w.seed_hash(), wallet.clone()))
+                })
+                .collect::<Result<_, _>>()?,
             wallet_index: None, //todo
             top_ups: Default::default(),
             status: IdentityStatus::Active,
             network: self.network,
         };
-        let wallet_info = qualified_identity.determine_wallet_info()?;
+        let wallet_info = qualified_identity
+            .determine_wallet_info()
+            .map_err(|e| TaskError::WalletInfoDeterminationFailed { detail: e })?;
 
         // Insert qualified identity into the database
-        self.insert_local_qualified_identity(&qualified_identity, &wallet_info)
-            .map_err(|e| format!("Database error: {}", e))?;
+        self.insert_local_qualified_identity(&qualified_identity, &wallet_info)?;
 
         if let Some((wallet_seed_hash, identity_index)) = wallet_info
             && let Some(wallet_arc) = wallets.get(&wallet_seed_hash)
         {
-            let mut wallet = wallet_arc.write().unwrap();
+            let mut wallet = wallet_arc.write().map_err(TaskError::from)?;
             wallet
                 .identities
                 .insert(identity_index, qualified_identity.identity.clone());
@@ -364,7 +413,7 @@ impl AppContext {
         identity: &Identity,
         wallets: &BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>,
         wallet_filter: Option<WalletSeedHash>,
-    ) -> Result<WalletMatchResult, String> {
+    ) -> Result<WalletMatchResult, TaskError> {
         let highest_identity_key_id = identity.public_keys().keys().copied().max().unwrap_or(0);
         let top_bound = highest_identity_key_id.saturating_add(6).max(1);
 
@@ -372,7 +421,10 @@ impl AppContext {
             if wallet_filter.is_some_and(|filter| filter != wallet_seed_hash) {
                 continue;
             }
-            let mut wallet = wallet_arc.write().unwrap();
+            let mut wallet = match wallet_arc.write() {
+                Ok(guard) => guard,
+                Err(_) => continue, // Skip poisoned wallets rather than failing the whole operation
+            };
             if !wallet.is_open() {
                 continue;
             }
@@ -403,7 +455,7 @@ impl AppContext {
         wallet: &mut Wallet,
         wallet_seed_hash: WalletSeedHash,
         top_bound: u32,
-    ) -> Result<Option<(u32, WalletKeyMap)>, String> {
+    ) -> Result<Option<(u32, WalletKeyMap)>, TaskError> {
         let identity_id = identity.id();
 
         if let Some((&identity_index, _)) = wallet
@@ -413,11 +465,13 @@ impl AppContext {
         {
             let (public_key_map, public_key_hash_map) = wallet
                 .identity_authentication_ecdsa_public_keys_data_map(
+                    self,
+                    true,
                     self.network,
                     identity_index,
                     0..top_bound,
-                    Some(self),
-                )?;
+                )
+                .map_err(|e| TaskError::WalletAddressDerivationFailed { detail: e })?;
             let wallet_private_keys = self.build_wallet_private_key_map(
                 identity,
                 wallet_seed_hash,
@@ -434,11 +488,13 @@ impl AppContext {
         for candidate_index in 0..MAX_IDENTITY_INDEX {
             let (public_key_map, public_key_hash_map) = wallet
                 .identity_authentication_ecdsa_public_keys_data_map(
+                    self,
+                    false,
                     self.network,
                     candidate_index,
                     0..top_bound,
-                    None,
-                )?;
+                )
+                .map_err(|e| TaskError::WalletAddressDerivationFailed { detail: e })?;
 
             if !Self::identity_matches_wallet_key_material(
                 identity,
@@ -450,11 +506,13 @@ impl AppContext {
 
             let (public_key_map, public_key_hash_map) = wallet
                 .identity_authentication_ecdsa_public_keys_data_map(
+                    self,
+                    true,
                     self.network,
                     candidate_index,
                     0..top_bound,
-                    Some(self),
-                )?;
+                )
+                .map_err(|e| TaskError::WalletAddressDerivationFailed { detail: e })?;
 
             let wallet_private_keys = self.build_wallet_private_key_map(
                 identity,

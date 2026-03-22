@@ -1,5 +1,6 @@
 use crate::app::AppAction;
 use crate::backend_task::dashpay::DashPayTask;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -17,7 +18,7 @@ use dash_sdk::platform::Identifier;
 use egui::{ColorImage, RichText, ScrollArea, TextureHandle, Ui};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::warn;
+use tracing::error;
 
 const PUBLIC_PROFILE_INFO_TEXT: &str = "About Public Profiles:\n\n\
     This is the contact's public DashPay profile.\n\n\
@@ -44,7 +45,6 @@ pub struct ContactProfileViewerScreen {
     pub identity: QualifiedIdentity,
     pub contact_id: Identifier,
     profile: Option<ContactPublicProfile>,
-    message: Option<(String, MessageType)>,
     loading: bool,
     initial_fetch_done: bool,
     // Private contact info fields
@@ -103,7 +103,6 @@ impl ContactProfileViewerScreen {
             identity,
             contact_id,
             profile,
-            message: None,
             loading: false,
             initial_fetch_done, // If we have cached data, don't auto-fetch
             nickname,
@@ -119,7 +118,6 @@ impl ContactProfileViewerScreen {
     fn fetch_profile(&mut self) -> AppAction {
         self.loading = true;
         self.profile = None; // Clear any existing profile
-        self.message = None; // Clear any existing message
 
         let task = BackendTask::DashPayTask(Box::new(DashPayTask::FetchContactProfile {
             identity: self.identity.clone(),
@@ -129,17 +127,15 @@ impl ContactProfileViewerScreen {
         AppAction::BackendTask(task)
     }
 
-    fn save_private_info(&mut self) -> Result<(), String> {
-        self.app_context
-            .db
-            .save_contact_private_info(
-                &self.identity.identity.id(),
-                &self.contact_id,
-                &self.nickname,
-                &self.notes,
-                self.is_hidden,
-            )
-            .map_err(|e| e.to_string())
+    fn save_private_info(&mut self) -> Result<(), TaskError> {
+        self.app_context.db.save_contact_private_info(
+            &self.identity.identity.id(),
+            &self.contact_id,
+            &self.nickname,
+            &self.notes,
+            self.is_hidden,
+        )?;
+        Ok(())
     }
 
     fn load_avatar_texture(&mut self, ctx: &egui::Context, url: &str) {
@@ -193,7 +189,7 @@ impl ContactProfileViewerScreen {
                     }
                 }
                 Err(e) => {
-                    warn!("Failed to fetch contact avatar image: {}", e);
+                    error!("Failed to fetch contact avatar image: {}", e);
                 }
             }
         });
@@ -224,18 +220,6 @@ impl ContactProfileViewerScreen {
         });
 
         ui.separator();
-
-        // Show message if any
-        if let Some((message, message_type)) = &self.message {
-            let color = match message_type {
-                MessageType::Success => DashColors::success_color(dark_mode),
-                MessageType::Error => DashColors::error_color(dark_mode),
-                MessageType::Warning => DashColors::warning_color(dark_mode),
-                MessageType::Info => DashColors::DASH_BLUE,
-            };
-            ui.colored_label(color, message);
-            ui.separator();
-        }
 
         // Loading indicator
         if self.loading {
@@ -540,16 +524,18 @@ impl ContactProfileViewerScreen {
                                     match self.save_private_info() {
                                         Ok(_) => {
                                             self.editing_private_info = false;
-                                            self.message = Some((
-                                                "Private info saved".to_string(),
+                                            crate::ui::components::MessageBanner::set_global(
+                                                ui.ctx(),
+                                                "Private info saved",
                                                 MessageType::Success,
-                                            ));
+                                            );
                                         }
                                         Err(e) => {
-                                            self.message = Some((
+                                            crate::ui::components::MessageBanner::set_global(
+                                                ui.ctx(),
                                                 format!("Failed to save: {}", e),
                                                 MessageType::Error,
-                                            ));
+                                            );
                                         }
                                     }
                                 }
@@ -639,15 +625,14 @@ impl ContactProfileViewerScreen {
         action
     }
 
-    pub fn display_message(&mut self, message: &str, message_type: MessageType) {
+    pub fn display_message(&mut self, _message: &str, _message_type: MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
         self.loading = false;
-        self.message = Some((message.to_string(), message_type));
     }
 
     pub fn refresh(&mut self) {
         // Don't auto-fetch on refresh - just clear temporary states
         self.loading = false;
-        self.message = None;
     }
 
     pub fn refresh_on_arrival(&mut self) {
@@ -742,15 +727,12 @@ impl ScreenLike for ContactProfileViewerScreen {
 
                     // Note: We don't save to database here - that should only happen
                     // when actually adding them as a contact, not just viewing their profile
-
-                    self.message = None;
                 } else {
                     self.profile = None;
-                    self.message = None; // Don't set message here, UI already shows "No profile found"
                 }
             }
-            BackendTaskSuccessResult::Message(msg) => {
-                self.message = Some((msg, MessageType::Info));
+            BackendTaskSuccessResult::Message(_msg) => {
+                // Message display is handled globally by AppState
             }
             _ => {
                 // Ignore other results

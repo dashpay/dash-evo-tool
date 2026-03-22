@@ -55,6 +55,7 @@ pub struct TopUpIdentityScreen {
     funding_utxo: Option<(OutPoint, TxOut, Address)>,
     copied_to_clipboard: Option<Option<String>>,
     wallet_unlock_popup: WalletUnlockPopup,
+    wallet_open_attempted: bool,
     show_pop_up_info: Option<String>,
     pub app_context: Arc<AppContext>,
     // Platform address fields
@@ -80,6 +81,7 @@ impl TopUpIdentityScreen {
             funding_utxo: None,
             copied_to_clipboard: None,
             wallet_unlock_popup: WalletUnlockPopup::new(),
+            wallet_open_attempted: false,
             show_pop_up_info: None,
             app_context: app_context.clone(),
             selected_platform_address: None,
@@ -178,6 +180,7 @@ impl TopUpIdentityScreen {
 
         if let Some(wallet) = selected_wallet_update {
             self.wallet = Some(wallet);
+            self.wallet_open_attempted = false;
             self.funding_address = None;
             self.funding_asset_lock = None;
             self.funding_utxo = None;
@@ -610,8 +613,11 @@ impl ScreenLike for TopUpIdentityScreen {
                     };
 
                     if let Some(wallet) = &self.wallet {
-                        if let Err(e) = try_open_wallet_no_password(wallet) {
-                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                        if !self.wallet_open_attempted {
+                            if let Err(e) = try_open_wallet_no_password(wallet) {
+                                MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                            }
+                            self.wallet_open_attempted = true;
                         }
                         if wallet_needs_unlock(wallet) {
                             ui.add_space(10.0);

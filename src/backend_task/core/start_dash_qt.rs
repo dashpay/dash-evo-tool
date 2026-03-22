@@ -68,7 +68,6 @@ impl AppContext {
         let cancel = self.subtasks.cancellation_token.clone();
         let db = Arc::clone(&self.db);
         self.subtasks.spawn_sync("dash_qt_watcher", async move {
-
             // Wait for the process to exit or current task to be cancelled
             tokio::select! {
                 exited = dash_qt.wait() => {

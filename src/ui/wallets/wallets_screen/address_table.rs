@@ -1,7 +1,8 @@
 use crate::app::AppAction;
 use crate::model::wallet::{DerivationPathHelpers, DerivationPathReference};
+use crate::ui::MessageType;
+use crate::ui::components::message_banner::MessageBanner;
 use crate::ui::wallets::account_summary::{AccountCategory, categorize_account_path};
-use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::{Address, Network};
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
@@ -157,12 +158,19 @@ impl WalletsBalancesScreen {
                         self.app_context.network,
                     );
 
-                    // Get Platform credits balance and nonce for Platform Payment addresses
-                    // Use canonical lookup to handle potential Address key mismatches
-                    let platform_info = wallet.get_platform_address_info(address);
-                    let platform_credits =
-                        platform_info.map(|info| info.balance).unwrap_or_default();
-                    let nonce = platform_info.map(|info| info.nonce).unwrap_or_default();
+                    // Get Platform credits balance and nonce for Platform Payment addresses only.
+                    // Skip the lookup for non-platform addresses to avoid unnecessary linear
+                    // scans in get_platform_address_info()'s fallback path.
+                    let (platform_credits, nonce) =
+                        if account_category == AccountCategory::PlatformPayment {
+                            let platform_info = wallet.get_platform_address_info(address);
+                            (
+                                platform_info.map(|info| info.balance).unwrap_or_default(),
+                                platform_info.map(|info| info.nonce).unwrap_or_default(),
+                            )
+                        } else {
+                            (Default::default(), Default::default())
+                        };
 
                     AddressData {
                         address: address.clone(),
@@ -221,6 +229,17 @@ impl WalletsBalancesScreen {
             .as_ref()
             .map(|(cat, _)| *cat == AccountCategory::PlatformPayment)
             .unwrap_or(false);
+
+        // Reset sort column if it refers to a column not visible for the current account type
+        if is_platform_account
+            && matches!(
+                self.sort_column,
+                SortColumn::UTXOs | SortColumn::TotalReceived
+            )
+        {
+            self.sort_column = SortColumn::Balance;
+            self.sort_order = SortOrder::Descending;
+        }
 
         // Render the table
         let mut builder = TableBuilder::new(ui)
@@ -430,7 +449,13 @@ impl WalletsBalancesScreen {
                                             self.private_key_dialog.private_key_wif = key;
                                             self.private_key_dialog.show_key = false;
                                         }
-                                        Err(err) => self.display_message(&err, MessageType::Error),
+                                        Err(err) => {
+                                            MessageBanner::set_global(
+                                                self.app_context.egui_ctx(),
+                                                &err,
+                                                MessageType::Error,
+                                            );
+                                        }
                                     }
                                 }
                             }

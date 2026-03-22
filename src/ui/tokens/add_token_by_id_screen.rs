@@ -8,11 +8,14 @@ use dash_sdk::dpp::data_contract::associated_token::token_configuration_conventi
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::DataContract;
 use dash_sdk::platform::Identifier;
-use eframe::egui::{self, Color32, Context, RichText, Ui};
+use eframe::egui::{self, Context, Ui};
+
+use crate::ui::theme::ComponentStyles;
 
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::contract::ContractTask;
 use crate::database::contracts::InsertTokensToo;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
@@ -21,7 +24,7 @@ use crate::{
     app::AppAction,
     backend_task::{BackendTask, tokens::TokenTask},
     context::AppContext,
-    ui::{MessageType, ScreenLike, components::top_panel::add_top_panel, theme::DashColors},
+    ui::{MessageType, ScreenLike, components::top_panel::add_top_panel},
 };
 
 /// UI state during the add-token flow.
@@ -31,7 +34,7 @@ enum AddTokenStatus {
     Searching(u32),
     FoundSingle(Box<TokenInfo>),
     FoundMultiple(Vec<TokenInfo>),
-    Error(String),
+    Error,
     Complete,
 }
 
@@ -44,7 +47,6 @@ pub struct AddTokenByIdScreen {
     status: AddTokenStatus,
     selected_token: Option<TokenInfo>,
 
-    error_message: Option<String>,
     try_token_id_next: bool,
 }
 
@@ -56,7 +58,6 @@ impl AddTokenByIdScreen {
             fetched_contract: None,
             status: AddTokenStatus::Idle,
             selected_token: None,
-            error_message: None,
             try_token_id_next: false,
         }
     }
@@ -79,7 +80,6 @@ impl AddTokenByIdScreen {
         {
             let now = Utc::now().timestamp() as u32;
             self.status = AddTokenStatus::Searching(now);
-            self.error_message = None;
 
             if !self.contract_or_token_id_input.is_empty() {
                 // Try to parse as identifier
@@ -91,7 +91,12 @@ impl AddTokenByIdScreen {
                         TokenTask::FetchTokenByContractId(identifier),
                     )));
                 } else {
-                    self.status = AddTokenStatus::Error("Invalid identifier format".into());
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        "Invalid identifier format",
+                        MessageType::Error,
+                    );
+                    self.status = AddTokenStatus::Error;
                 }
             }
         }
@@ -129,12 +134,7 @@ impl AddTokenByIdScreen {
 
     fn render_add_button(&mut self, ui: &mut Ui) -> AppAction {
         if let (Some(contract), Some(tok)) = (&self.fetched_contract, &self.selected_token)
-            && ui
-                .add(
-                    egui::Button::new(RichText::new("Add Token").color(Color32::WHITE))
-                        .fill(Color32::from_rgb(0, 120, 0)),
-                )
-                .clicked()
+            && ComponentStyles::add_primary_button(ui, "Add Token").clicked()
         {
             let insert_mode = InsertTokensToo::SomeTokensShouldBeAdded(vec![tok.token_position]);
 
@@ -196,7 +196,12 @@ impl AddTokenByIdScreen {
     ) {
         // 1. Bail out if the contract has no tokens
         if contract.tokens().is_empty() {
-            self.status = AddTokenStatus::Error("Contract has no token definitions".into());
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "Contract has no token definitions",
+                MessageType::Error,
+            );
+            self.status = AddTokenStatus::Error;
             return;
         }
 
@@ -232,7 +237,12 @@ impl AddTokenByIdScreen {
             {
                 self.status = AddTokenStatus::FoundSingle(Box::new(token_info));
             } else {
-                self.status = AddTokenStatus::Error("Token position not found in contract".into());
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "Token position not found in contract",
+                    MessageType::Error,
+                );
+                self.status = AddTokenStatus::Error;
                 return;
             }
         } else if token_infos.len() == 1 {
@@ -250,6 +260,7 @@ impl AddTokenByIdScreen {
 
 impl ScreenLike for AddTokenByIdScreen {
     fn display_message(&mut self, msg: &str, msg_type: MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
         match msg_type {
             MessageType::Success => {
                 if msg.contains("DataContract successfully saved") {
@@ -262,22 +273,16 @@ impl ScreenLike for AddTokenByIdScreen {
                         // We'll initiate a token ID search
                         self.try_token_id_next = true;
                     } else {
-                        self.status = AddTokenStatus::Error("Contract not found".into());
+                        self.status = AddTokenStatus::Error;
                     }
-                } else if msg.contains("Token not found") {
-                    self.status = AddTokenStatus::Error("Token not found".into());
-                } else if msg.contains("Error fetching contracts") {
-                    self.status = AddTokenStatus::Error(msg.to_owned());
+                } else if msg.contains("Token not found")
+                    || msg.contains("Error fetching contracts")
+                {
+                    self.status = AddTokenStatus::Error;
                 }
             }
             MessageType::Error | MessageType::Warning => {
-                // Handle any error during the add token process
-                if msg.contains("Error inserting contract into the database") {
-                    self.status = AddTokenStatus::Error("Failed to add token to database".into());
-                } else {
-                    self.status = AddTokenStatus::Error(msg.to_owned());
-                }
-                self.error_message = Some(msg.to_owned());
+                self.status = AddTokenStatus::Error;
             }
             MessageType::Info => {}
         }
@@ -324,8 +329,6 @@ impl ScreenLike for AddTokenByIdScreen {
         action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
 
         action |= island_central_panel(ctx, |ui| {
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
-
             // If we are in the "Complete" status, just show success screen
             if self.status == AddTokenStatus::Complete {
                 return self.show_success_screen(ui);
@@ -375,25 +378,8 @@ impl ScreenLike for AddTokenByIdScreen {
             ui.add_space(10.0);
             self.render_search_results(ui);
 
-            if let AddTokenStatus::Error(err) = &self.status {
-                ui.add_space(10.0);
-                ui.colored_label(
-                    DashColors::error_color(dark_mode),
-                    format!("Error: {}", err),
-                );
-            }
-
             ui.add_space(10.0);
             inner_action |= self.render_add_button(ui);
-
-            // Show any additional error messages
-            if let Some(error_msg) = &self.error_message {
-                ui.add_space(5.0);
-                ui.colored_label(
-                    DashColors::error_color(dark_mode),
-                    format!("Details: {}", error_msg),
-                );
-            }
 
             inner_action
         });

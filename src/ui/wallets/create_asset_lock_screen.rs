@@ -1,22 +1,23 @@
 use crate::app::AppAction;
 use crate::backend_task::core::{CoreItem, CoreTask};
+use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::Component;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::identities::funding_common::{self, WalletFundedScreenStep, generate_qr_code_image};
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
-use chrono::{DateTime, Utc};
-use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dashcore_rpc::dashcore::{Address, OutPoint, TxOut};
 use eframe::egui::{self, Context, Ui};
 use egui::{Button, RichText, Vec2};
@@ -35,11 +36,7 @@ pub struct CreateAssetLockScreen {
     pub wallet: Arc<RwLock<Wallet>>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     pub app_context: Arc<AppContext>,
-    message: Option<(String, MessageType, DateTime<Utc>)>,
-    wallet_password: String,
-    show_password: bool,
-    error_message: Option<String>,
-
+    password_input: PasswordInput,
     // Asset lock creation fields
     step: Arc<RwLock<WalletFundedScreenStep>>,
     amount_input: Option<AmountInput>,
@@ -78,10 +75,7 @@ impl CreateAssetLockScreen {
             wallet,
             selected_wallet,
             app_context: app_context.clone(),
-            message: None,
-            wallet_password: String::new(),
-            show_password: false,
-            error_message: None,
+            password_input: PasswordInput::new().with_hint_text("Enter password"),
             step: Arc::new(RwLock::new(WalletFundedScreenStep::WaitingOnFunds)),
             amount_input: Some(
                 AmountInput::new(Amount::new_dash(0.5))
@@ -102,49 +96,32 @@ impl CreateAssetLockScreen {
         }
     }
 
-    fn generate_funding_address(&mut self) -> Result<(), String> {
+    fn generate_funding_address(&mut self) -> Result<(), TaskError> {
         let mut wallet = self.wallet.write().unwrap();
 
         // Generate a new asset lock funding address
-        let receive_address =
-            wallet.receive_address(self.app_context.network, true, Some(&self.app_context))?;
+        let receive_address = wallet
+            .receive_address(self.app_context.network, true, Some(&self.app_context))
+            .map_err(|e| TaskError::WalletAddressDerivationFailed { detail: e })?;
+        let core_wallet_name = wallet.core_wallet_name.clone();
+        drop(wallet);
 
         // Import address to core if needed
         if let Some(has_address) = self.core_has_funding_address {
             if !has_address {
-                self.app_context
-                    .core_client
-                    .read()
-                    .expect("Core client lock was poisoned")
-                    .import_address(
-                        &receive_address,
-                        Some("Managed by Dash Evo Tool - Asset Lock"),
-                        Some(false),
-                    )
-                    .map_err(|e| e.to_string())?;
+                self.app_context.ensure_address_imported(
+                    &receive_address,
+                    core_wallet_name.as_deref(),
+                    Some("Managed by Dash Evo Tool - Asset Lock"),
+                )?;
             }
             self.funding_address = Some(receive_address);
         } else {
-            let info = self
-                .app_context
-                .core_client
-                .read()
-                .expect("Core client lock was poisoned")
-                .get_address_info(&receive_address)
-                .map_err(|e| e.to_string())?;
-
-            if !(info.is_watchonly || info.is_mine) {
-                self.app_context
-                    .core_client
-                    .read()
-                    .expect("Core client lock was poisoned")
-                    .import_address(
-                        &receive_address,
-                        Some("Managed by Dash Evo Tool - Asset Lock"),
-                        Some(false),
-                    )
-                    .map_err(|e| e.to_string())?;
-            }
+            self.app_context.ensure_address_imported(
+                &receive_address,
+                core_wallet_name.as_deref(),
+                Some("Managed by Dash Evo Tool - Asset Lock"),
+            )?;
             self.funding_address = Some(receive_address);
             self.core_has_funding_address = Some(true);
         }
@@ -152,7 +129,7 @@ impl CreateAssetLockScreen {
         Ok(())
     }
 
-    fn render_qr_code(&mut self, ui: &mut egui::Ui) -> Result<(), String> {
+    fn render_qr_code(&mut self, ui: &mut egui::Ui) -> Result<(), TaskError> {
         if self.funding_address.is_none() {
             self.generate_funding_address()?
         }
@@ -182,21 +159,14 @@ impl CreateAssetLockScreen {
 
         if ui.button("Copy Address").clicked() {
             ui.ctx().copy_text(dash_uri.clone());
-            self.display_message("Address copied to clipboard", MessageType::Success);
+            MessageBanner::set_global(
+                ui.ctx(),
+                "Address copied to clipboard",
+                MessageType::Success,
+            );
         }
 
         Ok(())
-    }
-
-    fn check_message_expiration(&mut self) {
-        if let Some((_, _, timestamp)) = &self.message {
-            let now = Utc::now();
-            let elapsed = now.signed_duration_since(*timestamp);
-
-            if elapsed.num_seconds() >= 10 {
-                self.message = None;
-            }
-        }
     }
 
     fn show_success(&mut self, ui: &mut Ui) -> AppAction {
@@ -251,7 +221,6 @@ impl CreateAssetLockScreen {
                 self.funding_utxo = None;
                 self.core_has_funding_address = None;
                 self.asset_lock_tx_id = None;
-                self.error_message = None;
                 self.show_advanced_options = false;
                 *self.step.write().unwrap() = WalletFundedScreenStep::WaitingOnFunds;
             }
@@ -268,28 +237,8 @@ impl ScreenWithWalletUnlock for CreateAssetLockScreen {
         &self.selected_wallet
     }
 
-    fn wallet_password_ref(&self) -> &String {
-        &self.wallet_password
-    }
-
-    fn wallet_password_mut(&mut self) -> &mut String {
-        &mut self.wallet_password
-    }
-
-    fn show_password(&self) -> bool {
-        self.show_password
-    }
-
-    fn show_password_mut(&mut self) -> &mut bool {
-        &mut self.show_password
-    }
-
-    fn set_error_message(&mut self, error_message: Option<String>) {
-        self.error_message = error_message;
-    }
-
-    fn error_message(&self) -> Option<&String> {
-        self.error_message.as_ref()
+    fn password_input(&mut self) -> &mut PasswordInput {
+        &mut self.password_input
     }
 
     fn app_context(&self) -> Arc<AppContext> {
@@ -299,8 +248,6 @@ impl ScreenWithWalletUnlock for CreateAssetLockScreen {
 
 impl ScreenLike for CreateAssetLockScreen {
     fn ui(&mut self, ctx: &Context) -> AppAction {
-        self.check_message_expiration();
-
         let wallet_name = self
             .wallet
             .read()
@@ -609,15 +556,15 @@ impl ScreenLike for CreateAssetLockScreen {
                                 egui::Layout::top_down(egui::Align::Min).with_cross_align(egui::Align::Center),
                                 |ui| {
                                     if let Err(e) = self.render_qr_code(ui) {
-                                        self.error_message = Some(e);
+                                        MessageBanner::set_global(
+                                            ui.ctx(),
+                                            "Failed to render QR code",
+                                            MessageType::Error,
+                                        )
+                                        .with_details(e);
                                     }
 
                                     ui.add_space(20.0);
-
-                                    if let Some(error_message) = self.error_message.as_ref() {
-                                        ui.colored_label(egui::Color32::DARK_RED, error_message);
-                                        ui.add_space(20.0);
-                                    }
 
                                     match step {
                                         WalletFundedScreenStep::WaitingOnFunds => {
@@ -652,21 +599,21 @@ impl ScreenLike for CreateAssetLockScreen {
                                                                     CoreTask::CreateTopUpAssetLock(self.wallet.clone(), credits, identity_index, self.top_up_index)
                                                                 ))
                                                             } else {
-                                                                self.error_message = Some("Selected identity has no wallet index".to_string());
+                                                                MessageBanner::set_global(ui.ctx(), "Selected identity has no wallet index", MessageType::Error);
                                                                 AppAction::None
                                                             }
                                                         } else {
-                                                            self.error_message = Some("No identity selected for top-up".to_string());
+                                                            MessageBanner::set_global(ui.ctx(), "No identity selected for top-up", MessageType::Error);
                                                             AppAction::None
                                                         }
                                                     }
                                                     None => {
-                                                        self.error_message = Some("No purpose selected".to_string());
+                                                        MessageBanner::set_global(ui.ctx(), "No purpose selected", MessageType::Error);
                                                         AppAction::None
                                                     }
                                                 }
                                             } else {
-                                                self.error_message = Some("No amount specified".to_string());
+                                                MessageBanner::set_global(ui.ctx(), "No amount specified", MessageType::Error);
                                                 AppAction::None
                                             }
                                         }
@@ -690,28 +637,7 @@ impl ScreenLike for CreateAssetLockScreen {
                     }
                 });
 
-            // Display messages
-            if let Some((message, message_type, timestamp)) = &self.message {
-                let message_color = match message_type {
-                    MessageType::Error => egui::Color32::DARK_RED,
-                    MessageType::Warning => DashColors::warning_color(dark_mode),
-                    MessageType::Info => DashColors::text_primary(dark_mode),
-                    MessageType::Success => egui::Color32::DARK_GREEN,
-                };
-
-                ui.add_space(25.0);
-                ui.horizontal(|ui| {
-                    ui.add_space(10.0);
-
-                    let now = Utc::now();
-                    let elapsed = now.signed_duration_since(*timestamp);
-                    let remaining = (10 - elapsed.num_seconds()).max(0);
-
-                    let full_msg = format!("{} ({}s)", message, remaining);
-                    ui.label(egui::RichText::new(full_msg).color(message_color));
-                });
-                ui.add_space(2.0);
-            }
+            // Message display is handled by the global MessageBanner
 
             inner_action
         });
@@ -719,8 +645,8 @@ impl ScreenLike for CreateAssetLockScreen {
         action
     }
 
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
-        self.message = Some((message.to_string(), message_type, Utc::now()));
+    fn display_message(&mut self, _message: &str, _message_type: MessageType) {
+        // Error/success display is handled by the global MessageBanner.
     }
 
     fn refresh_on_arrival(&mut self) {
@@ -769,7 +695,8 @@ impl ScreenLike for CreateAssetLockScreen {
                             let mut step = self.step.write().unwrap();
                             *step = WalletFundedScreenStep::Success;
                             drop(step);
-                            self.display_message(
+                            MessageBanner::set_global(
+                                self.app_context.egui_ctx(),
                                 "Asset lock created successfully!",
                                 MessageType::Success,
                             );
@@ -784,7 +711,8 @@ impl ScreenLike for CreateAssetLockScreen {
                             let mut step = self.step.write().unwrap();
                             *step = WalletFundedScreenStep::Success;
                             drop(step);
-                            self.display_message(
+                            MessageBanner::set_global(
+                                self.app_context.egui_ctx(),
                                 "Asset lock created successfully!",
                                 MessageType::Success,
                             );
@@ -806,7 +734,8 @@ impl ScreenLike for CreateAssetLockScreen {
                             let mut step = self.step.write().unwrap();
                             *step = WalletFundedScreenStep::Success;
                             drop(step);
-                            self.display_message(
+                            MessageBanner::set_global(
+                                self.app_context.egui_ctx(),
                                 "Asset lock created successfully!",
                                 MessageType::Success,
                             );
@@ -821,7 +750,8 @@ impl ScreenLike for CreateAssetLockScreen {
                             let mut step = self.step.write().unwrap();
                             *step = WalletFundedScreenStep::Success;
                             drop(step);
-                            self.display_message(
+                            MessageBanner::set_global(
+                                self.app_context.egui_ctx(),
                                 "Asset lock created successfully!",
                                 MessageType::Success,
                             );

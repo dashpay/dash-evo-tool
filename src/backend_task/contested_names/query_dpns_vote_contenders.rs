@@ -1,4 +1,5 @@
 use crate::app::TaskResult;
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::proof_log_item::{ProofLogItem, RequestType};
 use dash_sdk::Sdk;
@@ -18,13 +19,17 @@ impl AppContext {
         name: &str,
         sdk: &Sdk,
         _sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
-    ) -> Result<(), String> {
+    ) -> Result<(), TaskError> {
         let data_contract = self.dpns_contract.as_ref();
         let document_type = data_contract
             .document_type_for_name("domain")
-            .map_err(|_| "DPNS contract missing 'domain' document type".to_string())?;
+            .map_err(|_| TaskError::DataContractNotFound)?;
         let Some(contested_index) = document_type.find_contested_index() else {
-            return Err("No contested index on dpns domains".to_string());
+            return Err(TaskError::PlatformFetchError {
+                source: Box::new(dash_sdk::Error::Generic(
+                    "No contested index on dpns domains".to_string(),
+                )),
+            });
         };
         let index_values = [Value::from("dash"), Value::Text(name.to_owned())]; // hardcoded for dpns
 
@@ -44,18 +49,16 @@ impl AppContext {
             result_type: ContestedDocumentVotePollDriveQueryResultType::DocumentsAndVoteTally,
         };
 
-        // Define retries
         const MAX_RETRIES: usize = 3;
         let mut retries = 0;
 
         loop {
             match ContenderWithSerializedDocument::fetch_many(sdk, contenders_query.clone()).await {
                 Ok(contenders) => {
-                    // If successful, proceed to insert/update contenders
                     return self
                         .db
                         .insert_or_update_contenders(name, &contenders, document_type, self)
-                        .map_err(|e| e.to_string());
+                        .map_err(TaskError::from);
                 }
                 Err(e) => {
                     tracing::error!("Error fetching vote contenders: {}", e);
@@ -67,45 +70,41 @@ impl AppContext {
                         error,
                     }) = &e
                     {
-                        // Encode the query using bincode
-                        let encoded_query = match bincode::encode_to_vec(
-                            &contenders_query,
-                            bincode::config::standard(),
-                        )
-                        .map_err(|encode_err| {
-                            tracing::error!("Error encoding query: {}", encode_err);
-                            format!("Error encoding query: {}", encode_err)
-                        }) {
-                            Ok(encoded_query) => encoded_query,
-                            Err(e) => return Err(e),
-                        };
+                        let encoded_query =
+                            bincode::encode_to_vec(&contenders_query, bincode::config::standard())
+                                .map_err(|encode_err| {
+                                    tracing::error!("Error encoding query: {}", encode_err);
+                                    TaskError::SerializationError {
+                                        detail: format!("Error encoding query: {}", encode_err),
+                                    }
+                                })?;
 
-                        // Encode the path_query using bincode
                         let verification_path_query_bytes =
-                            match bincode::encode_to_vec(path_query, bincode::config::standard())
+                            bincode::encode_to_vec(path_query, bincode::config::standard())
                                 .map_err(|encode_err| {
                                     tracing::error!("Error encoding path_query: {}", encode_err);
-                                    format!("Error encoding path_query: {}", encode_err)
-                                }) {
-                                Ok(encoded_path_query) => encoded_path_query,
-                                Err(e) => return Err(e),
-                            };
+                                    TaskError::SerializationError {
+                                        detail: format!(
+                                            "Error encoding path_query: {}",
+                                            encode_err
+                                        ),
+                                    }
+                                })?;
 
-                        self.db
-                            .insert_proof_log_item(ProofLogItem {
-                                request_type: RequestType::GetContestedResourceIdentityVotes,
-                                request_bytes: encoded_query,
-                                verification_path_query_bytes,
-                                height: *height,
-                                time_ms: *time_ms,
-                                proof_bytes: proof_bytes.clone(),
-                                error: Some(error.clone()),
-                            })
-                            .map_err(|e| e.to_string())?
+                        self.db.insert_proof_log_item(ProofLogItem {
+                            request_type: RequestType::GetContestedResourceIdentityVotes,
+                            request_bytes: encoded_query,
+                            verification_path_query_bytes,
+                            height: *height,
+                            time_ms: *time_ms,
+                            proof_bytes: proof_bytes.clone(),
+                            error: Some(error.clone()),
+                        })?
                     }
-                    let error_str = e.to_string();
-                    if error_str.contains("try another server")
-                        || error_str.contains(
+                    // TODO: Replace the "contract not found" string match with a
+                    // structural SDK variant when one is available.
+                    if matches!(e, dash_sdk::Error::StaleNode(_))
+                        || e.to_string().contains(
                             "contract not found when querying from value with contract info",
                         )
                     {
@@ -115,16 +114,12 @@ impl AppContext {
                                 "Max retries reached for query_dpns_vote_contenders: {}",
                                 e
                             );
-                            return Err(format!(
-                                "Error fetching vote contenders after retries: {}",
-                                e
-                            ));
+                            return Err(TaskError::from(e));
                         } else {
                             continue;
                         }
                     } else {
-                        // For other errors, return immediately
-                        return Err(format!("Error fetching vote contenders: {}", e));
+                        return Err(TaskError::from(e));
                     }
                 }
             }

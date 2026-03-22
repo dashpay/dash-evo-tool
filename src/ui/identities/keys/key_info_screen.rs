@@ -4,16 +4,20 @@ use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::qualified_identity::encrypted_key_storage::{
     PrivateKeyData, WalletDerivationPath,
 };
+use crate::model::secret::Secret;
 use crate::model::wallet::Wallet;
-use crate::ui::ScreenLike;
+use crate::ui::components::MessageBanner;
+use crate::ui::components::component_trait::Component;
 use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
-use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::password_input::PasswordInput;
+use crate::ui::components::styled::{ConfirmationDialog, ConfirmationStatus, island_central_panel};
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::theme::DashColors;
+use crate::ui::{MessageType, ScreenLike};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use dash_sdk::dashcore_rpc::dashcore::PrivateKey as RPCPrivateKey;
@@ -30,7 +34,7 @@ use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBound
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::IdentityPublicKey;
 use eframe::egui::{self, Context};
-use egui::{Color32, Frame, Margin, RichText, ScrollArea};
+use egui::{Color32, RichText, ScrollArea};
 use std::sync::{Arc, RwLock};
 
 pub struct KeyInfoScreen {
@@ -39,18 +43,17 @@ pub struct KeyInfoScreen {
     pub private_key_data: Option<(PrivateKeyData, Option<WalletDerivationPath>)>,
     pub decrypted_private_key: Option<RPCPrivateKey>,
     pub app_context: Arc<AppContext>,
-    private_key_input: String,
-    error_message: Option<String>,
+    private_key_input: PasswordInput,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
+    wallet_open_attempted: bool,
     message_input: String,
     signed_message: Option<String>,
-    sign_error_message: Option<String>,
     view_wallet_unlock: bool,
     wallet_open: bool,
     view_private_key_even_if_encrypted_or_in_wallet: bool,
     show_pop_up_info: Option<String>,
-    show_confirm_remove_private_key: bool,
+    remove_private_key_dialog: Option<ConfirmationDialog>,
 }
 
 // /// The prefix for signed messages using Dash's message signing protocol.
@@ -312,8 +315,11 @@ impl ScreenLike for KeyInfoScreen {
                                                 .strong()
                                                 .color(ui.visuals().text_color()),
                                         );
+                                        let wif = Secret::new(private_key.to_wif());
+                                        // INTENTIONAL(CODE-003): WIF displayed as plaintext label — user-initiated key view.
+                                        // Secret wrapper provides zeroize-on-drop for the Rust-side variable.
                                         ui.label(
-                                            RichText::new(private_key.to_wif())
+                                            RichText::new(wif.expose_secret())
                                                 .color(ui.visuals().text_color()),
                                         );
                                         ui.end_row();
@@ -324,16 +330,26 @@ impl ScreenLike for KeyInfoScreen {
                                             .strong()
                                             .color(ui.visuals().text_color()),
                                     );
-                                    let private_key_hex = hex::encode(clear);
+                                    let private_key_hex = Secret::new(hex::encode(clear));
+                                    // INTENTIONAL(CODE-003): WIF displayed as plaintext label — user-initiated key view.
+                                    // Secret wrapper provides zeroize-on-drop for the Rust-side variable.
                                     ui.label(
-                                        RichText::new(private_key_hex)
+                                        RichText::new(private_key_hex.expose_secret())
                                             .color(ui.visuals().text_color()),
                                     );
                                     ui.end_row();
                                 });
                             ui.add_space(10.0);
                             if ui.button("Remove private key from DET").clicked() {
-                                self.show_confirm_remove_private_key = true;
+                                self.remove_private_key_dialog = Some(
+                                    ConfirmationDialog::new(
+                                        "Remove Private Key",
+                                        "Are you sure you want to remove the private key?",
+                                    )
+                                    .confirm_text(Some("Remove"))
+                                    .cancel_text(Some("Cancel"))
+                                    .danger_mode(true),
+                                );
                             }
                             self.render_sign_input(ui);
                         }
@@ -358,9 +374,9 @@ impl ScreenLike for KeyInfoScreen {
                                                     .strong()
                                                     .color(ui.visuals().text_color()),
                                             );
-                                            let private_key_wif = private_key.to_wif();
+                                            let wif = Secret::new(private_key.to_wif());
                                             ui.label(
-                                                RichText::new(private_key_wif)
+                                                RichText::new(wif.expose_secret())
                                                     .color(ui.visuals().text_color()),
                                             );
                                             ui.end_row();
@@ -370,10 +386,11 @@ impl ScreenLike for KeyInfoScreen {
                                                     .strong()
                                                     .color(ui.visuals().text_color()),
                                             );
-                                            let private_key_hex =
-                                                hex::encode(private_key.inner.secret_bytes());
+                                            let private_key_hex = Secret::new(hex::encode(
+                                                private_key.inner.secret_bytes(),
+                                            ));
                                             ui.label(
-                                                RichText::new(private_key_hex)
+                                                RichText::new(private_key_hex.expose_secret())
                                                     .color(ui.visuals().text_color()),
                                             );
                                             ui.end_row();
@@ -395,9 +412,9 @@ impl ScreenLike for KeyInfoScreen {
                                                             .strong()
                                                             .color(ui.visuals().text_color()),
                                                     );
-                                                    let private_key_wif = private_key.to_wif();
+                                                    let wif = Secret::new(private_key.to_wif());
                                                     ui.label(
-                                                        RichText::new(private_key_wif)
+                                                        RichText::new(wif.expose_secret())
                                                             .color(ui.visuals().text_color()),
                                                     );
                                                     ui.end_row();
@@ -407,12 +424,14 @@ impl ScreenLike for KeyInfoScreen {
                                                             .strong()
                                                             .color(ui.visuals().text_color()),
                                                     );
-                                                    let private_key_hex = hex::encode(
+                                                    let private_key_hex = Secret::new(hex::encode(
                                                         private_key.inner.secret_bytes(),
-                                                    );
+                                                    ));
                                                     ui.label(
-                                                        RichText::new(private_key_hex)
-                                                            .color(ui.visuals().text_color()),
+                                                        RichText::new(
+                                                            private_key_hex.expose_secret(),
+                                                        )
+                                                        .color(ui.visuals().text_color()),
                                                     );
                                                     ui.end_row();
                                                 });
@@ -451,9 +470,9 @@ impl ScreenLike for KeyInfoScreen {
                                                             .strong()
                                                             .color(ui.visuals().text_color()),
                                                     );
-                                                    let private_key_wif = private_key.to_wif();
+                                                    let wif = Secret::new(private_key.to_wif());
                                                     ui.label(
-                                                        RichText::new(private_key_wif)
+                                                        RichText::new(wif.expose_secret())
                                                             .color(ui.visuals().text_color()),
                                                     );
                                                     ui.end_row();
@@ -463,12 +482,14 @@ impl ScreenLike for KeyInfoScreen {
                                                             .strong()
                                                             .color(ui.visuals().text_color()),
                                                     );
-                                                    let private_key_hex = hex::encode(
+                                                    let private_key_hex = Secret::new(hex::encode(
                                                         private_key.inner.secret_bytes(),
-                                                    );
+                                                    ));
                                                     ui.label(
-                                                        RichText::new(private_key_hex)
-                                                            .color(ui.visuals().text_color()),
+                                                        RichText::new(
+                                                            private_key_hex.expose_secret(),
+                                                        )
+                                                        .color(ui.visuals().text_color()),
                                                     );
                                                     ui.end_row();
                                                 });
@@ -499,40 +520,22 @@ impl ScreenLike for KeyInfoScreen {
                     }
                 } else {
                     ui.label(RichText::new("Enter Private Key:").color(text_primary));
-                    ui.text_edit_singleline(&mut self.private_key_input);
+                    self.private_key_input.show(ui);
 
                     if ui.button("Add Private Key").clicked() {
                         self.validate_and_store_private_key();
                     }
-
-                    // Display error message if validation fails
-                    if let Some(error_message) = self.error_message.clone() {
-                        let error_color = DashColors::ERROR;
-                        Frame::new()
-                            .fill(error_color.gamma_multiply(0.1))
-                            .inner_margin(Margin::symmetric(10, 8))
-                            .corner_radius(5.0)
-                            .stroke(egui::Stroke::new(1.0, error_color))
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.label(
-                                        RichText::new(format!("Error: {}", error_message))
-                                            .color(error_color),
-                                    );
-                                    ui.add_space(10.0);
-                                    if ui.small_button("Dismiss").clicked() {
-                                        self.error_message = None;
-                                    }
-                                });
-                            });
-                    }
+                    // Error display is handled by the global MessageBanner
                 }
 
                 if self.view_wallet_unlock
                     && let Some(wallet) = &self.selected_wallet
                 {
-                    if let Err(e) = try_open_wallet_no_password(wallet) {
-                        self.error_message = Some(e);
+                    if !self.wallet_open_attempted {
+                        if let Err(e) = try_open_wallet_no_password(wallet) {
+                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                        }
+                        self.wallet_open_attempted = true;
                     }
                     if wallet_needs_unlock(wallet) {
                         ui.add_space(10.0);
@@ -550,8 +553,8 @@ impl ScreenLike for KeyInfoScreen {
                 }
 
                 // Show the remove private key confirmation popup
-                if self.show_confirm_remove_private_key {
-                    self.render_remove_private_key_confirm(ui);
+                if self.remove_private_key_dialog.is_some() {
+                    self.show_remove_private_key_dialog(ui);
                 }
 
                 ui.add_space(10.0);
@@ -610,36 +613,44 @@ impl KeyInfoScreen {
             private_key_data,
             decrypted_private_key: None,
             app_context: app_context.clone(),
-            private_key_input: String::new(),
-            error_message: None,
+            private_key_input: PasswordInput::new()
+                .with_hint_text("Private key (WIF or hex)")
+                .with_monospace(),
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
+            wallet_open_attempted: false,
             message_input: "".to_string(),
             signed_message: None,
-            sign_error_message: None,
             view_wallet_unlock: false,
             wallet_open: false,
             view_private_key_even_if_encrypted_or_in_wallet: false,
             show_pop_up_info: None,
-            show_confirm_remove_private_key: false,
+            remove_private_key_dialog: None,
         }
     }
 
     fn validate_and_store_private_key(&mut self) {
         // Convert the input string to bytes (hex decoding)
-        let private_key_bytes = match hex::decode(&self.private_key_input) {
+        let private_key_bytes = match hex::decode(self.private_key_input.text()) {
             Ok(private_key_bytes_vec) if private_key_bytes_vec.len() == 32 => {
                 private_key_bytes_vec.try_into().unwrap()
             }
             Ok(_) => {
-                self.error_message = Some("Private key not 32 bytes".to_string());
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "Private key not 32 bytes",
+                    MessageType::Error,
+                );
                 return;
             }
-            Err(_) => match PrivateKey::from_wif(&self.private_key_input) {
+            Err(_) => match PrivateKey::from_wif(self.private_key_input.text()) {
                 Ok(key) => key.inner.secret_bytes(),
                 Err(_) => {
-                    self.error_message =
-                        Some("Invalid hex string or WIF for private key.".to_string());
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        "Invalid hex string or WIF for private key.",
+                        MessageType::Error,
+                    );
                     return;
                 }
             },
@@ -649,7 +660,11 @@ impl KeyInfoScreen {
             .key
             .validate_private_key_bytes(&private_key_bytes, self.app_context.network);
         if let Err(err) = validation_result {
-            self.error_message = Some(format!("Issue verifying private key {}", err));
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                format!("Issue verifying private key {}", err),
+                MessageType::Error,
+            );
         } else if validation_result.unwrap() {
             // If valid, store the private key in the context and reset the input field
             self.private_key_data = Some((PrivateKeyData::Clear(private_key_bytes), None));
@@ -657,19 +672,22 @@ impl KeyInfoScreen {
                 (self.key.purpose().into(), self.key.id()),
                 (self.key.clone().into(), private_key_bytes),
             );
-            match self
+            if let Err(e) = self
                 .app_context
                 .update_local_qualified_identity(&self.identity)
             {
-                Ok(_) => {
-                    self.error_message = None;
-                }
-                Err(e) => {
-                    self.error_message = Some(format!("Issue saving: {}", e));
-                }
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    format!("Issue saving: {}", e),
+                    MessageType::Error,
+                );
             }
         } else {
-            self.error_message = Some("Private key does not match the public key.".to_string());
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "Private key does not match the public key.",
+                MessageType::Error,
+            );
         }
     }
 
@@ -706,25 +724,7 @@ impl KeyInfoScreen {
             self.sign_message();
         }
 
-        if let Some(error_message) = self.sign_error_message.clone() {
-            let error_color = DashColors::ERROR;
-            Frame::new()
-                .fill(error_color.gamma_multiply(0.1))
-                .inner_margin(Margin::symmetric(10, 8))
-                .corner_radius(5.0)
-                .stroke(egui::Stroke::new(1.0, error_color))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new(format!("Error: {}", error_message)).color(error_color),
-                        );
-                        ui.add_space(10.0);
-                        if ui.small_button("Dismiss").clicked() {
-                            self.sign_error_message = None;
-                        }
-                    });
-                });
-        }
+        // Sign error display is handled by the global MessageBanner
 
         if let Some(signed_message) = &self.signed_message {
             ui.add_space(10.0);
@@ -751,7 +751,11 @@ impl KeyInfoScreen {
                 (_, Some(private_key)) => private_key.inner.secret_bytes(),
                 // Other cases may not have the private key directly
                 _ => {
-                    self.sign_error_message = Some("Private key is not available.".to_string());
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        "Private key is not available.",
+                        MessageType::Error,
+                    );
                     return;
                 }
             };
@@ -777,54 +781,47 @@ impl KeyInfoScreen {
                     let signature_base64 = STANDARD.encode(serialized_signature);
 
                     self.signed_message = Some(signature_base64);
-                    self.sign_error_message = None;
                 }
                 _ => {
-                    self.sign_error_message = Some("Unsupported key type for signing.".to_string());
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        "Unsupported key type for signing.",
+                        MessageType::Error,
+                    );
                 }
             }
         } else {
-            self.sign_error_message = Some("Private key is not available.".to_string());
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "Private key is not available.",
+                MessageType::Error,
+            );
         }
     }
 
-    fn render_remove_private_key_confirm(&mut self, ui: &mut egui::Ui) {
-        let text_primary = DashColors::text_primary(ui.ctx().style().visuals.dark_mode);
-        egui::Window::new("Remove Private Key")
-            .collapsible(false) // Prevent collapsing
-            .resizable(false) // Prevent resizing
-            .show(ui.ctx(), |ui| {
-                ui.label(
-                    RichText::new("Are you sure you want to remove the private key?")
-                        .color(text_primary),
-                );
-                ui.add_space(10.0);
-
-                ui.horizontal(|ui| {
-                    if ui.button("Cancel").clicked() {
-                        self.show_confirm_remove_private_key = false;
+    fn show_remove_private_key_dialog(&mut self, ui: &mut egui::Ui) {
+        if let Some(dialog) = self.remove_private_key_dialog.as_mut() {
+            let response = dialog.show(ui);
+            if let Some(result) = response.inner.dialog_response {
+                self.remove_private_key_dialog = None;
+                if result == ConfirmationStatus::Confirmed {
+                    self.private_key_data = None;
+                    self.identity
+                        .private_keys
+                        .private_keys
+                        .remove(&(self.key.purpose().into(), self.key.id()));
+                    if let Err(e) = self
+                        .app_context
+                        .update_local_qualified_identity(&self.identity)
+                    {
+                        MessageBanner::set_global(
+                            ui.ctx(),
+                            format!("Issue saving: {}", e),
+                            MessageType::Error,
+                        );
                     }
-                    ui.add_space(3.0);
-                    if ui.button("Remove").clicked() {
-                        self.private_key_data = None;
-                        self.identity
-                            .private_keys
-                            .private_keys
-                            .remove(&(self.key.purpose().into(), self.key.id()));
-                        match self
-                            .app_context
-                            .update_local_qualified_identity(&self.identity)
-                        {
-                            Ok(_) => {
-                                self.error_message = None;
-                            }
-                            Err(e) => {
-                                self.error_message = Some(format!("Issue saving: {}", e));
-                            }
-                        }
-                        self.show_confirm_remove_private_key = false;
-                    }
-                });
-            });
+                }
+            }
+        }
     }
 }

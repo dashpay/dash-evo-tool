@@ -1,4 +1,5 @@
 use crate::app::TaskResult;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::contract::ContractTask;
 use crate::backend_task::core::{CoreItem, CoreTask};
@@ -47,6 +48,7 @@ pub mod contract;
 pub mod core;
 pub mod dashpay;
 pub mod document;
+pub mod error;
 pub mod grovestark;
 pub mod identity;
 pub mod mnlist;
@@ -251,6 +253,10 @@ pub enum BackendTaskSuccessResult {
     ContractNotFound,
     TokenNotFound,
     ProofErrorLogged,
+    /// Contract was saved to the local database despite a proof verification error.
+    /// Sent by `register_data_contract` / `update_data_contract` when the contract was
+    /// successfully fetched from Platform and stored after a `DriveProofError`.
+    ContractSavedAfterProofError,
 
     // Wallet operation results (replacing string messages)
     RefreshedWallet {
@@ -261,7 +267,6 @@ pub enum BackendTaskSuccessResult {
         recovered_count: usize,
         total_amount: u64,
     },
-    MineBlocksSuccess(usize),
 
     // DPNS operation results (replacing string messages)
     ScheduledVotes,
@@ -270,6 +275,12 @@ pub enum BackendTaskSuccessResult {
 
     // Broadcast results
     BroadcastedStateTransition,
+
+    // Mining results (dev mode, Regtest/Devnet only)
+    MineBlocksSuccess(u64),
+
+    // Core wallet list (async fetch of loaded Core wallets)
+    CoreWalletsList(Vec<String>),
 
     // Shielded pool results
     ShieldedInitialized {
@@ -316,7 +327,7 @@ impl AppContext {
         self: &Arc<Self>,
         tasks: Vec<BackendTask>,
         sender: SenderAsync<TaskResult>,
-    ) -> Vec<Result<BackendTaskSuccessResult, String>> {
+    ) -> Vec<Result<BackendTaskSuccessResult, TaskError>> {
         let mut results = Vec::new();
         for task in tasks {
             match self.run_backend_task(task, sender.clone()).await {
@@ -332,7 +343,7 @@ impl AppContext {
         self: &Arc<Self>,
         tasks: Vec<BackendTask>,
         sender: SenderAsync<TaskResult>,
-    ) -> Vec<Result<BackendTaskSuccessResult, String>> {
+    ) -> Vec<Result<BackendTaskSuccessResult, TaskError>> {
         let futures = tasks
             .into_iter()
             .map(|task| {
@@ -350,45 +361,47 @@ impl AppContext {
         self: &Arc<Self>,
         task: BackendTask,
         sender: SenderAsync<TaskResult>,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         let sdk = self.sdk.load().as_ref().clone();
         match task {
             BackendTask::ContractTask(contract_task) => {
-                self.run_contract_task(*contract_task, &sdk, sender).await
+                Ok(self.run_contract_task(*contract_task, &sdk, sender).await?)
             }
-            BackendTask::ContestedResourceTask(contested_resource_task) => {
-                self.run_contested_resource_task(contested_resource_task, &sdk, sender)
-                    .await
-            }
+            BackendTask::ContestedResourceTask(contested_resource_task) => Ok(self
+                .run_contested_resource_task(contested_resource_task, &sdk, sender)
+                .await?),
             BackendTask::IdentityTask(identity_task) => {
-                self.run_identity_task(identity_task, &sdk, sender).await
+                Ok(self.run_identity_task(identity_task, &sdk, sender).await?)
             }
             BackendTask::DocumentTask(document_task) => {
-                self.run_document_task(*document_task, &sdk).await
+                Ok(self.run_document_task(*document_task, &sdk).await?)
             }
-            BackendTask::CoreTask(core_task) => self.run_core_task(core_task).await,
+            BackendTask::CoreTask(core_task) => Ok(self.run_core_task(core_task).await?),
             BackendTask::DashPayTask(dashpay_task) => {
-                self.run_dashpay_task(*dashpay_task, &sdk).await
+                Ok(self.run_dashpay_task(*dashpay_task, &sdk).await?)
             }
-            BackendTask::BroadcastStateTransition(state_transition) => {
-                self.broadcast_state_transition(state_transition, &sdk)
-                    .await
-            }
+            BackendTask::BroadcastStateTransition(state_transition) => Ok(self
+                .broadcast_state_transition(state_transition, &sdk)
+                .await?),
             BackendTask::TokenTask(token_task) => {
-                self.run_token_task(*token_task, &sdk, sender).await
+                Ok(self.run_token_task(*token_task, &sdk, sender).await?)
             }
-            BackendTask::SystemTask(system_task) => self.run_system_task(system_task, sender).await,
+            BackendTask::SystemTask(system_task) => {
+                Ok(self.run_system_task(system_task, sender).await?)
+            }
             BackendTask::MnListTask(mnlist_task) => {
-                mnlist::run_mnlist_task(self, mnlist_task).await
+                Ok(mnlist::run_mnlist_task(self, mnlist_task).await?)
             }
-            BackendTask::PlatformInfo(platform_info_task) => {
-                self.run_platform_info_task(platform_info_task, &sdk).await
-            }
+            BackendTask::PlatformInfo(platform_info_task) => Ok(self
+                .run_platform_info_task(platform_info_task, &sdk)
+                .await?),
             BackendTask::GroveSTARKTask(grovestark_task) => {
-                grovestark::run_grovestark_task(grovestark_task, &sdk).await
+                Ok(grovestark::run_grovestark_task(grovestark_task, &sdk).await?)
             }
-            BackendTask::WalletTask(wallet_task) => self.run_wallet_task(wallet_task).await,
-            BackendTask::ShieldedTask(shielded_task) => self.run_shielded_task(shielded_task).await,
+            BackendTask::WalletTask(wallet_task) => Ok(self.run_wallet_task(wallet_task).await?),
+            BackendTask::ShieldedTask(shielded_task) => {
+                Ok(self.run_shielded_task(shielded_task).await?)
+            }
             BackendTask::None => Ok(BackendTaskSuccessResult::None),
         }
     }
@@ -396,7 +409,7 @@ impl AppContext {
     async fn run_wallet_task(
         self: &Arc<Self>,
         task: WalletTask,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         match task {
             WalletTask::GenerateReceiveAddress { seed_hash } => {
                 self.generate_receive_address(seed_hash).await

@@ -13,9 +13,9 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
+use crate::ui::components::{MessageBanner, ResultBannerExt};
 use crate::ui::dashpay::dashpay_screen::DashPaySubscreen;
 use crate::ui::identities::get_selected_wallet;
-use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
@@ -29,10 +29,10 @@ pub struct QRScannerScreen {
     selected_identity_string: String,
     qr_data_input: String,
     parsed_qr_data: Option<AutoAcceptProofData>,
-    message: Option<(String, MessageType)>,
     sending: bool,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
+    wallet_open_attempted: bool,
 }
 
 impl QRScannerScreen {
@@ -43,27 +43,40 @@ impl QRScannerScreen {
             selected_identity_string: String::new(),
             qr_data_input: String::new(),
             parsed_qr_data: None,
-            message: None,
             sending: false,
             selected_wallet: None,
             wallet_unlock_popup: WalletUnlockPopup::new(),
+            wallet_open_attempted: false,
         }
     }
 
     fn parse_qr_code(&mut self) {
         if self.qr_data_input.is_empty() {
-            self.display_message("Please enter QR code data", MessageType::Error);
+            self.parsed_qr_data = None;
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "Please enter QR code data",
+                MessageType::Error,
+            );
             return;
         }
 
         match AutoAcceptProofData::from_qr_string(&self.qr_data_input) {
             Ok(data) => {
                 self.parsed_qr_data = Some(data);
-                self.display_message("QR code parsed successfully", MessageType::Success);
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "QR code parsed successfully",
+                    MessageType::Success,
+                );
             }
             Err(e) => {
                 self.parsed_qr_data = None;
-                self.display_message(&format!("Invalid QR code: {}", e), MessageType::Error);
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    format!("Invalid QR code: {}", e),
+                    MessageType::Error,
+                );
             }
         }
     }
@@ -84,7 +97,11 @@ impl QRScannerScreen {
                 ) {
                     Some(key) => key,
                     None => {
-                        self.display_message("No suitable signing key found. This operation requires a ECDSA_SECP256K1 AUTHENTICATION key.", MessageType::Error);
+                        MessageBanner::set_global(
+                            self.app_context.egui_ctx(),
+                            "No suitable signing key found. This operation requires a ECDSA_SECP256K1 AUTHENTICATION key.",
+                            MessageType::Error,
+                        );
                         return AppAction::None;
                     }
                 };
@@ -106,10 +123,18 @@ impl QRScannerScreen {
 
                 return AppAction::BackendTask(task);
             } else {
-                self.display_message("Please parse a QR code first", MessageType::Error);
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "Please parse a QR code first",
+                    MessageType::Error,
+                );
             }
         } else {
-            self.display_message("Please select an identity", MessageType::Error);
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "Please select an identity",
+                MessageType::Error,
+            );
         }
 
         AppAction::None
@@ -117,23 +142,10 @@ impl QRScannerScreen {
 
     pub fn render(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
 
         // Header
         ui.heading("Scan Contact QR Code");
         ui.add_space(10.0);
-
-        // Show message if any
-        if let Some((message, message_type)) = &self.message {
-            let color = match message_type {
-                MessageType::Success => DashColors::success_color(dark_mode),
-                MessageType::Error => DashColors::error_color(dark_mode),
-                MessageType::Warning => DashColors::warning_color(dark_mode),
-                MessageType::Info => DashColors::DASH_BLUE,
-            };
-            ui.colored_label(color, message);
-            ui.add_space(10.0);
-        }
 
         // Identity selector
         let identities = self
@@ -174,16 +186,17 @@ impl QRScannerScreen {
                 let new_identity_id = self.selected_identity.as_ref().map(|i| i.identity.id());
                 if prev_identity_id != new_identity_id {
                     if let Some(identity) = &self.selected_identity {
-                        let mut error_message = None;
                         self.selected_wallet = get_selected_wallet(
                             identity,
                             Some(&self.app_context),
                             None,
-                            &mut error_message,
-                        );
+                        )
+                        .or_show_error(self.app_context.egui_ctx())
+                        .unwrap_or(None);
                     } else {
                         self.selected_wallet = None;
                     }
+                    self.wallet_open_attempted = false;
                 }
             });
 
@@ -210,7 +223,6 @@ impl QRScannerScreen {
                     if ui.button("Clear").clicked() {
                         self.qr_data_input.clear();
                         self.parsed_qr_data = None;
-                        self.message = None;
                     }
                 });
             });
@@ -247,8 +259,11 @@ impl QRScannerScreen {
 
                     // Check wallet lock status before showing send button
                     let wallet_locked = if let Some(wallet) = &self.selected_wallet {
-                        if let Err(e) = try_open_wallet_no_password(wallet) {
-                            self.message = Some((e, MessageType::Error));
+                        if !self.wallet_open_attempted {
+                            if let Err(e) = try_open_wallet_no_password(wallet) {
+                                MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                            }
+                            self.wallet_open_attempted = true;
                         }
                         wallet_needs_unlock(wallet)
                     } else {
@@ -299,22 +314,18 @@ impl QRScannerScreen {
         action
     }
 
-    pub fn display_message(&mut self, message: &str, message_type: MessageType) {
-        self.message = Some((message.to_string(), message_type));
+    pub fn display_message(&mut self, _message: &str, _message_type: MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
     }
 
     pub fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
         self.sending = false;
-        match result {
-            BackendTaskSuccessResult::Message(msg) => {
-                self.display_message(&msg, MessageType::Success);
-                // Clear the form on success
-                self.qr_data_input.clear();
-                self.parsed_qr_data = None;
-            }
-            _ => {
-                self.display_message("Contact request sent successfully", MessageType::Success);
-            }
+        if let BackendTaskSuccessResult::DashPayContactRequestSent(_)
+        | BackendTaskSuccessResult::DashPayContactAlreadyEstablished(_) = result
+        {
+            // Clear the form on success
+            self.qr_data_input.clear();
+            self.parsed_qr_data = None;
         }
     }
 }
@@ -359,8 +370,8 @@ impl ScreenLike for QRScannerScreen {
         action
     }
 
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
-        self.display_message(message, message_type);
+    fn display_message(&mut self, _message: &str, _message_type: MessageType) {
+        // Banner display is handled globally by AppState; no side-effects needed.
     }
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {

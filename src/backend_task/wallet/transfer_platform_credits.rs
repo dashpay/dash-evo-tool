@@ -14,20 +14,20 @@ impl AppContext {
         inputs: BTreeMap<PlatformAddress, Credits>,
         outputs: BTreeMap<PlatformAddress, Credits>,
         fee_payer_index: u16,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, crate::backend_task::error::TaskError> {
         use dash_sdk::dpp::address_funds::AddressFundsFeeStrategyStep;
         use dash_sdk::platform::transition::transfer_address_funds::TransferAddressFunds;
 
         // Clone wallet and SDK before the async operation to avoid holding guards across await
         let (wallet, sdk) = {
             let wallet_arc = {
-                let wallets = self.wallets.read().unwrap();
+                let wallets = self.wallets.read()?;
                 wallets
                     .get(&seed_hash)
                     .cloned()
-                    .ok_or_else(|| "Wallet not found".to_string())?
+                    .ok_or(crate::backend_task::error::TaskError::WalletNotFound)?
             };
-            let wallet = wallet_arc.read().map_err(|e| e.to_string())?.clone();
+            let wallet = wallet_arc.read()?.clone();
             let sdk = self.sdk.load().as_ref().clone();
             (wallet, sdk)
         };
@@ -51,7 +51,7 @@ impl AppContext {
         let address_infos = sdk
             .transfer_address_funds(inputs, outputs, fee_strategy, &wallet, None)
             .await
-            .map_err(|e| format!("Failed to transfer Platform credits: {}", e))?;
+            .map_err(crate::backend_task::error::TaskError::from)?;
 
         // Update wallet balances from the proof-verified response (no extra fetch needed)
         self.update_wallet_platform_address_info_from_sdk(seed_hash, &address_infos)?;

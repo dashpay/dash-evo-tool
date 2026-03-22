@@ -5,8 +5,8 @@ use crate::context::AppContext;
 use crate::context::connection_status::OverallConnectionState;
 use crate::spv::CoreBackendMode;
 use crate::ui::ScreenType;
-use crate::ui::theme::{DashColors, Shadow, Shape};
-use egui::{Context, Frame, Margin, RichText, Stroke, TextureHandle, TopBottomPanel, Ui};
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Shadow, Shape};
+use egui::{Align2, Context, FontId, Frame, Margin, RichText, TextureHandle, TopBottomPanel, Ui};
 use rust_embed::RustEmbed;
 use std::sync::Arc;
 use tracing::error;
@@ -104,19 +104,24 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAc
     let dark_mode = ui.ctx().style().visuals.dark_mode;
     let circle_size = 14.0;
 
-    // Three-state color: green (synced), orange (syncing), red (disconnected)
+    // Five-state color: green (synced), orange (syncing/connecting), magenta (error), red (disconnected)
     let color = match overall {
         OverallConnectionState::Synced => DashColors::success_color(dark_mode),
-        OverallConnectionState::Syncing => DashColors::warning_color(dark_mode),
+        OverallConnectionState::Connecting | OverallConnectionState::Syncing => {
+            DashColors::warning_color(dark_mode)
+        }
+        OverallConnectionState::Error => DashColors::sync_error_color(dark_mode),
         OverallConnectionState::Disconnected => DashColors::error_color(dark_mode),
     };
 
-    // Pulsation: synced = normal pulse, syncing = slower pulse, disconnected = none
+    // Pulsation per state
     let time = ui.ctx().input(|i| i.time as f32);
 
     let pulse_scale = match overall {
         OverallConnectionState::Synced => 1.0 + 0.2 * (time * 2.0).sin(),
+        OverallConnectionState::Connecting => 1.0 + 0.2 * (time * 2.5).sin(),
         OverallConnectionState::Syncing => 1.0 + 0.15 * (time * 1.2).sin(),
+        OverallConnectionState::Error => 1.0 + 0.25 * (time * 0.8).sin(),
         OverallConnectionState::Disconnected => 1.0, // No pulse when disconnected
     };
 
@@ -147,18 +152,32 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAc
                     // Draw the main circle
                     ui.painter().circle_filled(center, circle_size / 2.0, color);
 
-                    // Request repaint for animation (only when not disconnected)
+                    // Draw "!" glyph on error state
+                    if overall == OverallConnectionState::Error {
+                        ui.painter().text(
+                            center,
+                            Align2::CENTER_CENTER,
+                            "!",
+                            FontId::proportional(10.0),
+                            egui::Color32::WHITE,
+                        );
+                    }
+
+                    // Request repaint for animation (Synced, Syncing, and Error states pulse)
                     if overall != OverallConnectionState::Disconnected {
                         app_context.repaint_animation(ui.ctx());
                     }
-                    let tip = status.tooltip_text();
-                    let resp = resp.on_hover_text(tip);
-
-                    if resp.clicked()
-                        && overall == OverallConnectionState::Disconnected
+                    let tip = status.tooltip_text(app_context);
+                    let can_start_dash_qt = overall == OverallConnectionState::Disconnected
                         && backend_mode == CoreBackendMode::Rpc
-                        && !status.rpc_online()
-                    {
+                        && !status.rpc_online();
+                    let resp = if can_start_dash_qt {
+                        resp.clickable_tooltip(tip)
+                    } else {
+                        resp.info_tooltip(tip)
+                    };
+
+                    if resp.clicked() && can_start_dash_qt {
                         let settings = app_context.get_settings().ok().flatten();
 
                         let (custom_path, overwrite) = settings
@@ -263,17 +282,11 @@ pub fn add_top_panel(
                                 if !doc_actions.is_empty() {
                                     ui.add_space(3.0);
 
-                                    // give it the same style as your other buttons
-                                    let docs_btn = egui::Button::new(
-                                        RichText::new("Documents").color(DashColors::WHITE),
-                                    )
-                                    .fill(network_accent)
-                                    .frame(true)
-                                    .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
-                                    .stroke(Stroke::NONE)
-                                    .min_size(egui::vec2(100.0, 30.0));
-
-                                    let resp = ui.add(docs_btn);
+                                    let resp = ComponentStyles::add_toolbar_button(
+                                        ui,
+                                        "Documents",
+                                        network_accent,
+                                    );
                                     let popup_id = ui.make_persistent_id("docs_popup");
 
                                     let dark_mode = ui.ctx().style().visuals.dark_mode;
@@ -294,13 +307,9 @@ pub fn add_top_panel(
                                     .show(|ui| {
                                         ui.set_min_width(150.0);
                                         for (text, da) in doc_actions {
-                                            if ui
-                                                .add_sized(
-                                                    [ui.available_width(), 0.0],
-                                                    egui::Button::new(text),
-                                                )
-                                                .clicked()
-                                            {
+                                            let btn = egui::Button::new(text)
+                                                .min_size(egui::vec2(ui.available_width(), 0.0));
+                                            if ComponentStyles::add_button(ui, btn).clicked() {
                                                 action = da.create_action(app_context);
                                                 ui.close();
                                             }
@@ -312,17 +321,12 @@ pub fn add_top_panel(
                                 if !contract_actions.is_empty() {
                                     ui.add_space(3.0);
 
-                                    let contracts_btn = egui::Button::new(
-                                        RichText::new("Contracts").color(DashColors::WHITE),
-                                    )
-                                    .fill(network_accent)
-                                    .frame(true)
-                                    .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
-                                    .stroke(Stroke::NONE)
-                                    .min_size(egui::vec2(100.0, 30.0));
-
                                     let popup_id = ui.auto_id_with("contracts_popup");
-                                    let resp = ui.add(contracts_btn);
+                                    let resp = ComponentStyles::add_toolbar_button(
+                                        ui,
+                                        "Contracts",
+                                        network_accent,
+                                    );
 
                                     let dark_mode = ui.ctx().style().visuals.dark_mode;
                                     egui::Popup::new(
@@ -342,13 +346,9 @@ pub fn add_top_panel(
                                     .show(|ui| {
                                         ui.set_min_width(150.0);
                                         for (text, ca) in contract_actions {
-                                            if ui
-                                                .add_sized(
-                                                    [ui.available_width(), 0.0],
-                                                    egui::Button::new(text),
-                                                )
-                                                .clicked()
-                                            {
+                                            let btn = egui::Button::new(text)
+                                                .min_size(egui::vec2(ui.available_width(), 0.0));
+                                            if ComponentStyles::add_button(ui, btn).clicked() {
                                                 action = ca.create_action(app_context);
                                                 ui.close();
                                             }
@@ -359,29 +359,9 @@ pub fn add_top_panel(
                                 // Render other buttons normally
                                 for (text, btn_act) in other_actions.into_iter().rev() {
                                     ui.add_space(3.0);
-                                    let font = egui::FontId::proportional(16.0);
-                                    let text_size = ui
-                                        .ctx()
-                                        .fonts_mut(|f| {
-                                            f.layout_no_wrap(
-                                                text.to_string(),
-                                                font.clone(),
-                                                DashColors::WHITE,
-                                            )
-                                        })
-                                        .size();
-                                    let width = text_size.x + 12.0;
-
-                                    let button = egui::Button::new(
-                                        RichText::new(text).color(DashColors::WHITE),
-                                    )
-                                    .fill(network_accent)
-                                    .frame(true)
-                                    .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
-                                    .stroke(Stroke::NONE)
-                                    .min_size(egui::vec2(width, 30.0));
-
-                                    if ui.add(button).clicked() {
+                                    if ComponentStyles::add_toolbar_button(ui, text, network_accent)
+                                        .clicked()
+                                    {
                                         action = btn_act.create_action(app_context);
                                     }
                                 }

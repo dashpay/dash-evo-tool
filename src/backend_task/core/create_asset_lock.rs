@@ -1,4 +1,5 @@
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
@@ -12,52 +13,42 @@ impl AppContext {
         amount: Credits,
         allow_take_fee_from_amount: bool,
         identity_index: u32,
-    ) -> Result<BackendTaskSuccessResult, String> {
-        // Convert credits to duffs (1 duff = 1000 credits)
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         let amount_duffs = amount / CREDITS_PER_DUFF;
 
-        // Create the asset lock transaction
-        let (asset_lock_transaction, _private_key, _change_address, used_utxos) = {
-            let mut wallet_guard = wallet.write().map_err(|e| e.to_string())?;
+        let (asset_lock_transaction, _private_key, _change_address, _used_utxos) = {
+            let mut wallet_guard = wallet.write()?;
 
-            wallet_guard.registration_asset_lock_transaction(
-                self.network,
-                amount_duffs,
-                allow_take_fee_from_amount,
-                identity_index,
-                Some(self),
-            )?
+            wallet_guard
+                .registration_asset_lock_transaction(
+                    self,
+                    self.network,
+                    amount_duffs,
+                    allow_take_fee_from_amount,
+                    identity_index,
+                )
+                .map_err(|e| TaskError::AssetLockTransactionBuildFailed { detail: e })?
         };
 
         let tx_id = asset_lock_transaction.txid();
 
-        // Insert the transaction into waiting for finality
         {
-            let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();
+            let mut proofs = self.transactions_waiting_for_finality.lock()?;
             proofs.insert(tx_id, None);
         }
 
-        // Broadcast the transaction
-        self.broadcast_raw_transaction(&asset_lock_transaction)
+        if let Err(e) = self
+            .broadcast_raw_transaction(&asset_lock_transaction)
             .await
-            .map_err(|e| format!("Failed to broadcast asset lock transaction: {}", e))?;
-
-        // Update wallet UTXOs
         {
-            let mut wallet_guard = wallet.write().map_err(|e| e.to_string())?;
-            wallet_guard.utxos.retain(|_, utxo_map| {
-                utxo_map.retain(|outpoint, _| !used_utxos.contains_key(outpoint));
-                !utxo_map.is_empty() // Keep addresses that still have UTXOs
-            });
-
-            // Drop used UTXOs from database
-            for utxo in used_utxos.keys() {
-                self.db
-                    .drop_utxo(utxo, &self.network.to_string())
-                    .map_err(|e| e.to_string())?;
+            if let Ok(mut proofs) = self.transactions_waiting_for_finality.lock() {
+                proofs.remove(&tx_id);
+            } else {
+                tracing::warn!(
+                    "Failed to clean up finality tracking for tx {tx_id}: Mutex poisoned"
+                );
             }
-
-            wallet_guard.recalculate_affected_address_balances(&used_utxos, self)?;
+            return Err(e);
         }
 
         Ok(BackendTaskSuccessResult::Message(format!(
@@ -73,53 +64,43 @@ impl AppContext {
         allow_take_fee_from_amount: bool,
         identity_index: u32,
         top_up_index: u32,
-    ) -> Result<BackendTaskSuccessResult, String> {
-        // Convert credits to duffs (1 duff = 1000 credits)
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         let amount_duffs = amount / CREDITS_PER_DUFF;
 
-        // Create the asset lock transaction
-        let (asset_lock_transaction, _private_key, _change_address, used_utxos) = {
-            let mut wallet_guard = wallet.write().map_err(|e| e.to_string())?;
+        let (asset_lock_transaction, _private_key, _change_address, _used_utxos) = {
+            let mut wallet_guard = wallet.write()?;
 
-            wallet_guard.top_up_asset_lock_transaction(
-                self.network,
-                amount_duffs,
-                allow_take_fee_from_amount,
-                identity_index,
-                top_up_index,
-                Some(self),
-            )?
+            wallet_guard
+                .top_up_asset_lock_transaction(
+                    self,
+                    self.network,
+                    amount_duffs,
+                    allow_take_fee_from_amount,
+                    identity_index,
+                    top_up_index,
+                )
+                .map_err(|e| TaskError::AssetLockTransactionBuildFailed { detail: e })?
         };
 
         let tx_id = asset_lock_transaction.txid();
 
-        // Insert the transaction into waiting for finality
         {
-            let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();
+            let mut proofs = self.transactions_waiting_for_finality.lock()?;
             proofs.insert(tx_id, None);
         }
 
-        // Broadcast the transaction
-        self.broadcast_raw_transaction(&asset_lock_transaction)
+        if let Err(e) = self
+            .broadcast_raw_transaction(&asset_lock_transaction)
             .await
-            .map_err(|e| format!("Failed to broadcast asset lock transaction: {}", e))?;
-
-        // Update wallet UTXOs
         {
-            let mut wallet_guard = wallet.write().map_err(|e| e.to_string())?;
-            wallet_guard.utxos.retain(|_, utxo_map| {
-                utxo_map.retain(|outpoint, _| !used_utxos.contains_key(outpoint));
-                !utxo_map.is_empty() // Keep addresses that still have UTXOs
-            });
-
-            // Drop used UTXOs from database
-            for utxo in used_utxos.keys() {
-                self.db
-                    .drop_utxo(utxo, &self.network.to_string())
-                    .map_err(|e| e.to_string())?;
+            if let Ok(mut proofs) = self.transactions_waiting_for_finality.lock() {
+                proofs.remove(&tx_id);
+            } else {
+                tracing::warn!(
+                    "Failed to clean up finality tracking for tx {tx_id}: Mutex poisoned"
+                );
             }
-
-            wallet_guard.recalculate_affected_address_balances(&used_utxos, self)?;
+            return Err(e);
         }
 
         Ok(BackendTaskSuccessResult::Message(format!(

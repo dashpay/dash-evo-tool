@@ -187,7 +187,7 @@ pub enum TaskError {
 
     /// DAPI server is temporarily unavailable (gRPC Unavailable).
     #[error(
-        "A Dash network server is temporarily unavailable. Please retry — the app will try a different server."
+        "A Dash network server is temporarily unavailable. Please retry."
     )]
     DapiUnavailable {
         #[source]
@@ -196,7 +196,7 @@ pub enum TaskError {
 
     /// Connection to DAPI server timed out (gRPC Unavailable with timeout message).
     #[error(
-        "Connection to a Dash network server timed out. Please retry — the app will try a different server."
+        "Connection to a Dash network server timed out. Please retry."
     )]
     DapiTimeout {
         #[source]
@@ -205,7 +205,7 @@ pub enum TaskError {
 
     /// Could not reach DAPI server (gRPC Unavailable with connection refused).
     #[error(
-        "Could not reach a Dash network server. Please retry — the app will try a different server."
+        "Could not reach a Dash network server. Please retry."
     )]
     DapiConnectionRefused {
         #[source]
@@ -227,7 +227,7 @@ pub enum TaskError {
     },
 
     /// Access denied by DAPI server (gRPC Unauthenticated/PermissionDenied).
-    #[error("Access was denied by the network server. Please retry in a few moments.")]
+    #[error("Access was denied by the network server. Check you password in settings.")]
     DapiAccessDenied {
         #[source]
         source_error: Box<SdkError>,
@@ -268,7 +268,7 @@ pub enum TaskError {
 
     /// Connected server is behind (SdkError::StaleNode).
     #[error(
-        "The server you connected to is behind. Please retry — the app will pick a different server automatically."
+        "The server you connected to is behind. Please retry."
     )]
     DapiStaleNode {
         #[source]

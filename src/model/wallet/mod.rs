@@ -402,14 +402,14 @@ impl Wallet {
         // Derive master BIP44 extended public key
         let master_priv = ExtendedPrivKey::new_master(network, &seed).map_err(|e| {
             TaskError::WalletKeyDerivationFailed {
-                detail: e.to_string(),
+                source: Box::new(e),
             }
         })?;
         let bip44_path = Self::bip44_account0_path(network);
         let secp = Secp256k1::new();
         let account_priv = master_priv.derive_priv(&secp, &bip44_path).map_err(|e| {
             TaskError::WalletKeyDerivationFailed {
-                detail: e.to_string(),
+                source: Box::new(e),
             }
         })?;
         let master_bip44_ecdsa_extended_public_key =
@@ -418,7 +418,7 @@ impl Wallet {
         // Derive the first receive address (m/44'/coin'/0'/0/0)
         let (known_addresses, watched_addresses) =
             Self::derive_first_address(&master_bip44_ecdsa_extended_public_key, network, &secp)
-                .map_err(|e| TaskError::WalletKeyDerivationFailed { detail: e })?;
+                .map_err(|e| TaskError::WalletKeyDerivationFailed { source: e.into() })?;
 
         Ok(Wallet {
             wallet_seed: WalletSeed::Open(OpenWalletSeed {

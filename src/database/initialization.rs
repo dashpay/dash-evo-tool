@@ -969,12 +969,7 @@ impl Database {
             conn.execute(
                 &format!("UPDATE {table} SET network = 'mainnet' WHERE network = 'dash'"),
                 [],
-            )
-            .map_err(|e| {
-                rusqlite::Error::InvalidParameterName(format!(
-                    "migration 29: failed to update network in table `{table}`: {e}"
-                ))
-            })?;
+            )?;
         }
         Ok(())
     }

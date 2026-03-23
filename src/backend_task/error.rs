@@ -628,7 +628,10 @@ pub enum TaskError {
 
     /// Wallet key derivation failed during construction.
     #[error("Could not create the wallet. Key derivation failed — please try again.")]
-    WalletKeyDerivationFailed { detail: String },
+    WalletKeyDerivationFailed {
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
 
     // ──────────────────────────────────────────────────────────────────────────
     // Shielded pool errors

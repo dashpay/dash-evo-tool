@@ -970,6 +970,7 @@ impl Database {
                 wallet_seed_hash BLOB NOT NULL,
                 network TEXT NOT NULL,
                 last_nullifier_sync_height INTEGER NOT NULL DEFAULT 0,
+                last_nullifier_sync_timestamp INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (wallet_seed_hash, network)
             )",
             [],
@@ -979,13 +980,11 @@ impl Database {
 
     /// Add last_nullifier_sync_timestamp column to shielded_wallet_meta. Idempotent.
     fn add_nullifier_sync_timestamp_column(&self, conn: &Connection) -> rusqlite::Result<()> {
-        let has_column: bool = conn
-            .query_row(
-                "SELECT COUNT(*) FROM pragma_table_info('shielded_wallet_meta') WHERE name='last_nullifier_sync_timestamp'",
-                [],
-                |row| row.get::<_, i32>(0).map(|count| count > 0),
-            )
-            .unwrap_or(false);
+        let has_column: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('shielded_wallet_meta') WHERE name='last_nullifier_sync_timestamp'",
+            [],
+            |row| row.get::<_, i32>(0).map(|count| count > 0),
+        )?;
         if !has_column {
             conn.execute(
                 "ALTER TABLE shielded_wallet_meta ADD COLUMN last_nullifier_sync_timestamp INTEGER NOT NULL DEFAULT 0",
@@ -1014,6 +1013,8 @@ impl Database {
             "wallet_transactions",
             "single_key_wallet",
             "token",
+            "shielded_notes",
+            "shielded_wallet_meta",
         ];
         for table in tables {
             conn.execute(

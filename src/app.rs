@@ -1102,7 +1102,7 @@ impl App for AppState {
         // transient dark_light::detect() glitches during high-frequency repaints.
         if self.theme_preference == ThemeMode::System {
             let now = Instant::now();
-            if now.duration_since(self.theme_last_checked) > Duration::from_secs(2) {
+            if now.duration_since(self.theme_last_checked) >= Duration::from_secs(2) {
                 self.theme_last_checked = now;
                 let new_resolved = crate::ui::theme::resolve_theme_mode(self.theme_preference);
                 if new_resolved != self.resolved_theme {
@@ -1157,8 +1157,6 @@ impl App for AppState {
                             self.theme_preference = new_theme;
                             self.resolved_theme = crate::ui::theme::resolve_theme_mode(new_theme);
                             self.theme_last_checked = Instant::now();
-                            // Force immediate re-apply even if resolved colour didn't change.
-                            self.last_applied_theme = None;
                             crate::ui::theme::apply_theme(ctx, self.resolved_theme);
                             self.last_applied_theme = Some(self.resolved_theme);
                             MessageBanner::set_global(

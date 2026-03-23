@@ -1,7 +1,4 @@
-use egui::{
-    Button, Color32, CursorIcon, FontData, FontDefinitions, FontFamily, FontId, RichText, Stroke,
-    Vec2, WidgetText,
-};
+use egui::{Button, Color32, CursorIcon, FontFamily, FontId, RichText, Stroke, Vec2, WidgetText};
 
 /// Theme mode enumeration
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1009,28 +1006,6 @@ impl ResponseExt for egui::Response {
 }
 
 /// Configure fonts for the application
-pub fn configure_fonts() -> FontDefinitions {
-    let mut fonts = FontDefinitions::default();
-
-    // Load Noto Sans font for better international support
-    fonts.font_data.insert(
-        "NotoSans".to_owned(),
-        FontData::from_static(include_bytes!(
-            "../../assets/Fonts/Noto_Sans/NotoSans-VariableFont.ttf"
-        ))
-        .into(),
-    );
-
-    // Add NotoSans to the proportional font family (used for UI text)
-    fonts
-        .families
-        .get_mut(&FontFamily::Proportional)
-        .unwrap()
-        .insert(0, "NotoSans".to_owned());
-
-    fonts
-}
-
 /// Apply the modern Dash theme to the egui context
 pub fn apply_theme(ctx: &egui::Context, theme_mode: ThemeMode) {
     // Resolve the actual theme to use
@@ -1150,15 +1125,4 @@ pub fn apply_theme(ctx: &egui::Context, theme_mode: ThemeMode) {
     style.visuals.faint_bg_color = DashColors::background(dark_mode);
 
     ctx.set_style(style);
-
-    let fonts_key = egui::Id::new("dash_fonts_initialized");
-    let already_set = ctx.data_mut(|d| {
-        let flag = d.get_temp_mut_or_default::<bool>(fonts_key);
-        let was = *flag;
-        *flag = true;
-        was
-    });
-    if !already_set {
-        ctx.set_fonts(configure_fonts());
-    }
 }

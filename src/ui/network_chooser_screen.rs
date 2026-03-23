@@ -493,7 +493,12 @@ impl NetworkChooserScreen {
                         );
                         if let Err(e) = config.save(&self.mainnet_app_context.data_dir) {
                             tracing::error!("Failed to save config to .env: {e}");
-                        }
+                            MessageBanner::set_global(
+                                ui.ctx(),
+                                "Could not save the configuration file. Your changes will apply for this session only.",
+                                MessageType::Warning,
+                            );
+                        } else {
 
                         // Only update the in-memory config and reinit if the
                         // context for this network already exists.  If it
@@ -545,6 +550,7 @@ impl NetworkChooserScreen {
                                 MessageType::Success,
                             );
                         }
+                        } // else: config.save() succeeded
                     }
                 });
             }

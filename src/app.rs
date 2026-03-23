@@ -1157,20 +1157,34 @@ impl App for AppState {
                         }
                         BackendTaskSuccessResult::UpdatedThemePreference(new_theme) => {
                             self.theme_preference = new_theme;
+                            let mut detection_failed = false;
                             self.resolved_theme = if new_theme == ThemeMode::System {
-                                crate::ui::theme::try_detect_system_theme()
-                                    .unwrap_or(self.resolved_theme)
+                                match crate::ui::theme::try_detect_system_theme() {
+                                    Some(detected) => detected,
+                                    None => {
+                                        detection_failed = true;
+                                        self.resolved_theme
+                                    }
+                                }
                             } else {
                                 new_theme
                             };
                             self.theme_last_checked = Instant::now();
                             crate::ui::theme::apply_theme(ctx, self.resolved_theme);
                             self.last_applied_theme = Some(self.resolved_theme);
-                            MessageBanner::set_global(
-                                ctx,
-                                "Theme preference updated successfully",
-                                MessageType::Success,
-                            );
+                            if detection_failed {
+                                MessageBanner::set_global(
+                                    ctx,
+                                    "Could not detect your system theme. Using the previous theme for now — it will update automatically when detection succeeds.",
+                                    MessageType::Warning,
+                                );
+                            } else {
+                                MessageBanner::set_global(
+                                    ctx,
+                                    "Theme preference updated successfully",
+                                    MessageType::Success,
+                                );
+                            }
                             self.visible_screen_mut().display_message(
                                 "Theme preference updated successfully",
                                 MessageType::Success,

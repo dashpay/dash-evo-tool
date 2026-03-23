@@ -914,14 +914,7 @@ impl Database {
         Ok(())
     }
 
-    /// Migration 29: rename network value "dash" to "mainnet" in all tables.
-    ///
-    /// Upstream `dashcore` renamed `Network::Dash` to `Network::Mainnet`,
-    /// which changes `Display`/`FromStr` representations from `"dash"` to
-    /// `"mainnet"`.  This migration updates every table that stores the
-    /// network as a string.
     /// Migration 30: add `status` column to `wallet_transactions`.
-    /// Default 2 (Confirmed) — all pre-existing rows were confirmed transactions.
     fn add_wallet_transaction_status_column(&self, conn: &Connection) -> rusqlite::Result<()> {
         let has_status: bool = conn.query_row(
             "SELECT COUNT(*) FROM pragma_table_info('wallet_transactions') WHERE name='status'",
@@ -930,6 +923,9 @@ impl Database {
         )?;
         if !has_status {
             conn.execute(
+                // DEFAULT 2 (Confirmed) for migration: existing transactions predate status
+                // tracking and are assumed confirmed. Fresh installs use DEFAULT 0 (Unconfirmed)
+                // in the CREATE TABLE (wallet.rs).
                 "ALTER TABLE wallet_transactions ADD COLUMN status INTEGER NOT NULL DEFAULT 2",
                 [],
             )?;
@@ -996,6 +992,11 @@ impl Database {
         Ok(())
     }
 
+    /// Migration 29: rename network value `"dash"` to `"mainnet"` in all tables.
+    ///
+    /// Upstream `dashcore` renamed `Network::Dash` to `Network::Mainnet`,
+    /// changing the `Display`/`FromStr` representation. This migration updates
+    /// every table that stores the network as a string column.
     fn rename_network_dash_to_mainnet(&self, conn: &Connection) -> rusqlite::Result<()> {
         let tables = [
             "settings",

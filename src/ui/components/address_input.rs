@@ -1105,12 +1105,97 @@ mod tests {
 
     #[test]
     fn disabled_type_rejected_with_correct_error() {
-        let input = AddressInput::new(Network::Testnet).with_address_kinds(&[AddressKind::Core]);
-        // Simulate validation of a platform address with only Core enabled
+        let mut input =
+            AddressInput::new(Network::Testnet).with_address_kinds(&[AddressKind::Core]);
+        // Set a platform-looking address with only Core enabled
+        input.input_text = "tdash1qwer1234".to_string();
+        input.has_blurred = true;
         let (err, val) = input.validate_input();
-        // Input is empty, so no error
-        assert!(err.is_none());
+        assert!(
+            val.is_none(),
+            "should reject platform address when only Core is enabled"
+        );
+        assert_eq!(
+            err.as_deref(),
+            Some("Only wallet addresses are accepted here.")
+        );
+    }
+
+    #[test]
+    fn disabled_type_empty_input_no_error() {
+        let input = AddressInput::new(Network::Testnet).with_address_kinds(&[AddressKind::Core]);
+        let (err, val) = input.validate_input();
+        assert!(err.is_none(), "empty input should not produce an error");
         assert!(val.is_none());
+    }
+
+    // --- Selection-only mode tests ---
+
+    #[test]
+    fn selection_only_rejects_manual_input() {
+        let mut input = AddressInput::new(Network::Testnet).with_selection_only(true);
+        let (addr_str, _) = testnet_core_address();
+        input.input_text = addr_str;
+        input.has_blurred = true;
+        let (err, val) = input.validate_input();
+        assert!(
+            val.is_none(),
+            "selection-only mode should reject manual input"
+        );
+        assert_eq!(
+            err.as_deref(),
+            Some("Please select an address from the list.")
+        );
+    }
+
+    #[test]
+    fn selection_only_empty_input_no_error() {
+        let input = AddressInput::new(Network::Testnet).with_selection_only(true);
+        let (err, val) = input.validate_input();
+        assert!(
+            err.is_none(),
+            "empty input in selection-only mode should not error"
+        );
+        assert!(val.is_none());
+    }
+
+    // --- Identity validation tests ---
+
+    #[test]
+    fn validate_identity_valid_identifier() {
+        let input =
+            AddressInput::new(Network::Testnet).with_address_kinds(&[AddressKind::Identity]);
+        let id = Identifier::random();
+        let id_str = id.to_string(Encoding::Base58);
+        let (err, val) = input.validate_identity(&id_str);
+        assert!(err.is_none());
+        let val = val.expect("valid identifier should produce ValidatedAddress");
+        assert_eq!(val.kind(), AddressKind::Identity);
+        assert_eq!(val.as_identity_id(), Some(&id));
+    }
+
+    #[test]
+    fn validate_identity_invalid_string() {
+        let input = AddressInput::new(Network::Testnet);
+        let (err, val) = input.validate_identity("not-a-valid-identifier");
+        assert!(val.is_none());
+        assert_eq!(
+            err.as_deref(),
+            Some("This does not look like a valid address.")
+        );
+    }
+
+    // --- Truncate boundary tests ---
+
+    #[test]
+    fn truncate_address_boundary_16_unchanged() {
+        assert_eq!(truncate_address("1234567890123456"), "1234567890123456");
+    }
+
+    #[test]
+    fn truncate_address_boundary_17_truncated() {
+        let result = truncate_address("12345678901234567");
+        assert_eq!(result, "12345678...234567");
     }
 
     // --- BalanceRange tests ---

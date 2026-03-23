@@ -216,23 +216,50 @@ impl AppContext {
         };
 
         // Load persisted notes from DB and reconstruct Note objects
-        if let Ok(note_rows) = self.db.get_unspent_shielded_notes(&seed_hash, &network_str) {
-            for row in note_rows {
-                if let Some(note) = crate::model::wallet::shielded::deserialize_note(&row.note_data)
-                    && let Some(nullifier) = Nullifier::from_bytes(&row.nullifier).into_option()
-                {
-                    state.notes.push(ShieldedNote {
-                        note,
-                        position: Position::from(row.position),
-                        cmx: row.cmx,
-                        nullifier,
-                        block_height: row.block_height,
-                        is_spent: false,
-                        value: row.value,
-                    });
+        match self.db.get_unspent_shielded_notes(&seed_hash, &network_str) {
+            Ok(note_rows) => {
+                for row in note_rows {
+                    if let Some(note) =
+                        crate::model::wallet::shielded::deserialize_note(&row.note_data)
+                        && let Some(nullifier) = Nullifier::from_bytes(&row.nullifier).into_option()
+                    {
+                        state.notes.push(ShieldedNote {
+                            note,
+                            position: Position::from(row.position),
+                            cmx: row.cmx,
+                            nullifier,
+                            block_height: row.block_height,
+                            is_spent: false,
+                            value: row.value,
+                        });
+                    }
                 }
+                state.recalculate_balance();
             }
-            state.recalculate_balance();
+            Err(e) => {
+                tracing::warn!("Failed to load shielded notes from DB (table may be missing): {e}");
+            }
+        }
+
+        // Safety net: if the tree has been synced but we have no unspent notes
+        // in the DB, force a full resync from index 0. This handles the case
+        // where change notes from prior operations were only in memory and the
+        // app restarted before the next sync persisted them.
+        if state.last_synced_index > 0 && state.notes.is_empty() {
+            tracing::info!(
+                "Shielded init: tree synced to index {} but no unspent notes in DB — forcing full resync",
+                state.last_synced_index,
+            );
+            let _ = self.db.clear_commitment_tree_tables();
+            let fresh_tree = ClientPersistentCommitmentTree::open_on_shared_connection(
+                self.db.shared_connection(),
+                100,
+            )
+            .map_err(|e| TaskError::ShieldedTreeUpdateFailed {
+                detail: e.to_string(),
+            })?;
+            state.commitment_tree = std::sync::Mutex::new(fresh_tree);
+            state.last_synced_index = 0;
         }
 
         let balance = state.shielded_balance;

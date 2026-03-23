@@ -46,6 +46,16 @@ impl Database {
             }
         }
 
+        // Defensive: ensure shielded tables exist even if migrations were
+        // skipped (e.g., DB version was already past v29/v30 from a previous
+        // build that had different migration content for those versions).
+        // Safe because both methods use CREATE TABLE/INDEX IF NOT EXISTS.
+        {
+            let conn = self.conn.lock().unwrap();
+            self.create_shielded_tables(&conn)?;
+            self.create_shielded_wallet_meta_table(&conn)?;
+        }
+
         Ok(())
     }
 

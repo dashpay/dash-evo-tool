@@ -444,6 +444,10 @@ impl NetworkChooserScreen {
                 ui.add_space(8.0);
 
                 ui.horizontal(|ui| {
+                    // Reserve space for "Save" and "Auto Update" buttons + item spacing
+                    let buttons_width = 200.0;
+                    let input_width = (ui.available_width() - buttons_width).max(100.0);
+                    self.dashmate_password_input.set_desired_width(input_width);
                     self.dashmate_password_input.show(ui);
 
                     let save_clicked = ui.button("Save").clicked();

@@ -933,12 +933,8 @@ impl Database {
         Ok(())
     }
 
-    // create_shielded_tables, create_shielded_wallet_meta_table, and
-    // add_nullifier_sync_timestamp_column live in shielded.rs (the canonical
-    // location on branches that have the shielded module). The v1.0-dev
-    // backport (PR #788) inlined them here because shielded.rs doesn't exist
-    // on that branch; after merging v1.0-dev back, the duplicates must be
-    // removed to avoid E0592.
+    // Shielded table helpers (create_shielded_tables, create_shielded_wallet_meta_table,
+    // add_nullifier_sync_timestamp_column) are implemented in database/shielded.rs.
 
     /// Migration 29: rename network value `"dash"` to `"mainnet"` in all tables.
     ///

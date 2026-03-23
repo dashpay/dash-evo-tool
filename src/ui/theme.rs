@@ -18,14 +18,15 @@ pub fn detect_system_theme() -> Result<ThemeMode, String> {
     }
 }
 
-/// Detect system theme, returning `None` on error or ambiguous result.
+/// Detect system theme, returning `None` only on detection errors.
 /// Use this for polling: a `None` means "keep the previous theme" rather than
-/// flipping to an arbitrary default.
+/// flipping to an arbitrary default. `Unspecified` maps to Light (common on
+/// Linux where `dark_light` often can't determine the theme).
 pub fn try_detect_system_theme() -> Option<ThemeMode> {
     match dark_light::detect() {
         Ok(dark_light::Mode::Dark) => Some(ThemeMode::Dark),
-        Ok(dark_light::Mode::Light) => Some(ThemeMode::Light),
-        _ => None,
+        Ok(dark_light::Mode::Light | dark_light::Mode::Unspecified) => Some(ThemeMode::Light),
+        Err(_) => None,
     }
 }
 

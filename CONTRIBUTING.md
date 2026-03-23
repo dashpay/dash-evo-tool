@@ -76,13 +76,13 @@ cargo test --all-features --workspace              # All tests
 cargo test --doc --all-features --workspace        # Doc tests only
 cargo test <test_name> --all-features              # Single test
 cargo test --test kittest --all-features           # UI integration tests (egui_kittest)
-cargo test --test e2e --all-features               # End-to-end tests
+cargo test --test frontend-e2e --all-features               # End-to-end tests
 ```
 
 Test locations:
 - Unit tests: inline in source files (`#[test]`)
 - UI integration: `tests/kittest/`
-- E2E: `tests/e2e/`
+- E2E: `tests/frontend-e2e/`
 
 ## Local network (development only)
 

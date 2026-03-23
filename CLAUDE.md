@@ -25,7 +25,7 @@ cargo test --all-features --workspace              # All tests
 cargo test --doc --all-features --workspace        # Doc tests only
 cargo test <test_name> --all-features              # Single test
 cargo test --test kittest --all-features           # UI integration tests (egui_kittest)
-cargo test --test e2e --all-features               # End-to-end tests
+cargo test --test frontend-e2e --all-features               # End-to-end tests
 ```
 
 ### Backend E2E tests (network-dependent)
@@ -35,7 +35,7 @@ Tests that exercise backend tasks against a live Dash testnet via SPV (no GUI). 
 Test locations:
 - Unit tests: inline in source files (`#[test]`)
 - UI integration: `tests/kittest/`
-- E2E: `tests/e2e/`
+- E2E: `tests/frontend-e2e/`
 - Backend E2E: `tests/backend-e2e/` (network-dependent, `#[ignore]`)
 
 Always run `cargo clippy` and `cargo +nightly fmt` when finalizing your work.

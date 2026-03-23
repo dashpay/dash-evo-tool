@@ -6,7 +6,7 @@ mod phases;
 /// Required: E2E_WALLET_MNEMONIC env var (BIP39 testnet mnemonic)
 /// The wallet must be pre-funded with at least 0.1 DASH.
 ///
-/// Run: E2E_WALLET_MNEMONIC="word1 word2 ..." cargo test --test e2e --all-features -- --ignored --nocapture
+/// Run: E2E_WALLET_MNEMONIC="word1 word2 ..." cargo test --test frontend-e2e --all-features -- --ignored --nocapture
 #[test]
 #[ignore]
 fn e2e_testnet_journey() {

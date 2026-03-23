@@ -99,8 +99,8 @@ tokio-shared-rt = "=0.1.0"
 winres = "0.1"
 
 [[test]]
-name = "e2e"
-path = "tests/e2e/main.rs"
+name = "frontend-e2e"
+path = "tests/frontend-e2e/main.rs"
 required-features = ["e2e"]
 
 # Keep full debuginfo for our code, but only line tables for dependencies.

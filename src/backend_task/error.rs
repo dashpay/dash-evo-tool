@@ -137,16 +137,20 @@ pub enum TaskError {
     #[error("{0}")]
     MustRetry(String),
 
-    /// Duplicate identity public key — the key data already exists on the platform.
-    #[error("This public key is already registered on the platform. Try a different key.")]
+    /// Duplicate identity public key — this key's hash is already registered and
+    /// the key is marked as unique, so it cannot be reused.
+    #[error(
+        "This public key must be unique but is already registered on the platform. Try a different key."
+    )]
     DuplicateIdentityPublicKey {
         /// The original SDK error returned by the broadcast API.
         #[source]
         source_error: Box<SdkError>,
     },
 
-    /// Duplicate identity public key ID — the key hash is already taken platform-wide.
-    #[error("This key is already registered on the platform. Try a different key.")]
+    /// Duplicate identity public key ID — the key ID is already used by another
+    /// key on this identity.
+    #[error("This key ID is already used by another key on this identity. Try a different key.")]
     DuplicateIdentityPublicKeyId {
         /// The original SDK error returned by the broadcast API.
         #[source]
@@ -699,14 +703,18 @@ fn grpc_status_user_message(status: &dash_sdk::dapi_grpc::tonic::Status) -> Stri
                 .to_string()
         }
         Code::Unauthenticated | Code::PermissionDenied => {
-            "Access was denied by the network server. Please retry — the app will try a different server.".to_string()
+            "Access was denied by the network server. Please retry in a few moments.".to_string()
         }
         Code::ResourceExhausted => {
             "The network server is overloaded. Please wait a moment and retry.".to_string()
         }
-        _ => "Could not connect to the Dash network. Please retry in a few moments.".to_string(),
+        _ => "A network error occurred. Please retry in a few moments.".to_string(),
     }
 }
+
+/// Message shown when all DAPI server addresses have been exhausted.
+const NO_AVAILABLE_ADDRESSES_MSG: &str =
+    "All Dash network servers are temporarily unreachable. Please wait a minute and retry.";
 
 /// Produce a user-friendly message by inspecting the inner `DapiClientError`.
 ///
@@ -721,11 +729,9 @@ fn dapi_client_error_user_message(error: &DapiClientError) -> String {
             "No Dash network servers are configured. Please check your network settings."
                 .to_string()
         }
-        DapiClientError::NoAvailableAddressesToRetry(_) => {
-            "All Dash network servers are temporarily unreachable. Please wait a minute and retry."
-                .to_string()
-        }
-        _ => "Could not connect to the Dash network. Please retry in a few moments.".to_string(),
+        DapiClientError::NoAvailableAddressesToRetry(_) => NO_AVAILABLE_ADDRESSES_MSG.to_string(),
+        _ => "Could not communicate with the Dash network. Please retry in a few moments."
+            .to_string(),
     }
 }
 
@@ -756,9 +762,7 @@ fn sdk_error_user_message(error: &SdkError) -> String {
             "The server you connected to is behind. Please retry — the app will pick a different server automatically.".to_string()
         }
         SdkError::DapiClientError(dapi_err) => dapi_client_error_user_message(dapi_err),
-        SdkError::NoAvailableAddressesToRetry(_) => {
-            "All Dash network servers are temporarily unreachable. Please wait a minute and retry.".to_string()
-        }
+        SdkError::NoAvailableAddressesToRetry(_) => NO_AVAILABLE_ADDRESSES_MSG.to_string(),
         SdkError::Cancelled(_) => "The operation was cancelled.".to_string(),
         SdkError::AlreadyExists(_) => {
             "This object already exists on the platform.".to_string()
@@ -819,12 +823,23 @@ impl From<SdkError> for TaskError {
             && status.code() == Code::Internal
         {
             let msg = status.message().to_lowercase();
-            if msg.contains("unique key") && msg.contains("already exists") {
+            // Drive error: "a unique key with that hash already exists: {details}"
+            // (IdentityError::UniqueKeyAlreadyExists in rs-drive/src/error/identity.rs)
+            // TODO: workaround — replace with structured `drive-error-data-bin` decoding
+            //       when the SDK exposes it (see issue #714).
+            if msg.contains("a unique key with that hash already exists") {
                 return TaskError::DuplicateIdentityPublicKey {
                     source_error: Box::new(error),
                 };
             }
-            if msg.contains("duplicate") && msg.contains("identity") && msg.contains("key") {
+            // DPP consensus errors:
+            //   "Duplicated public keys [..] found" (DuplicatedIdentityPublicKeyStateError)
+            //   "Duplicated public keys [..] found" (DuplicatedIdentityPublicKeyBasicError)
+            // Drive error:
+            //   "identity key already exists for user error: {details}" (IdentityError::IdentityKeyAlreadyExists)
+            // TODO: workaround — replace with structured decoding (see issue #714).
+            if msg.contains("duplicated public key") || msg.contains("identity key already exists")
+            {
                 return TaskError::DuplicateIdentityPublicKey {
                     source_error: Box::new(error),
                 };

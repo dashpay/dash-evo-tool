@@ -1153,7 +1153,7 @@ pub fn apply_theme(ctx: &egui::Context, theme_mode: ThemeMode) {
 
     let fonts_key = egui::Id::new("dash_fonts_initialized");
     let already_set = ctx.data_mut(|d| {
-        let flag = d.get_persisted_mut_or_default::<bool>(fonts_key);
+        let flag = d.get_temp_mut_or_default::<bool>(fonts_key);
         let was = *flag;
         *flag = true;
         was

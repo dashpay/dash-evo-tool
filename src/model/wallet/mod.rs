@@ -1,5 +1,6 @@
 mod asset_lock_transaction;
 pub mod encryption;
+pub mod shielded;
 pub mod single_key;
 mod utxos;
 
@@ -3037,6 +3038,8 @@ mod tests {
         assert_eq!(wallet.max_balance(), 300_000);
 
         let db = create_test_database().expect("test db");
+        db.store_wallet(&wallet, &Network::Testnet)
+            .expect("store test wallet");
         register_test_address(&db, &wallet, &addr);
         let (selected, _) = wallet
             .select_unspent_utxos_for(90_000, 10_000, false)
@@ -3057,6 +3060,8 @@ mod tests {
         add_utxo(&mut wallet, &addr, 1, 0, 100_000);
 
         let db = create_test_database().expect("test db");
+        db.store_wallet(&wallet, &Network::Testnet)
+            .expect("store test wallet");
         register_test_address(&db, &wallet, &addr);
         let (selected, _) = wallet
             .select_unspent_utxos_for(90_000, 10_000, false)

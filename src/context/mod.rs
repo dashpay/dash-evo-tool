@@ -2,6 +2,7 @@ pub mod connection_status;
 mod contract_token_db;
 mod identity_db;
 mod settings_db;
+pub mod shielded;
 mod transaction_processing;
 mod wallet_lifecycle;
 
@@ -104,6 +105,13 @@ pub struct AppContext {
     /// Cached fee multiplier permille from current epoch (1000 = 1x, 2000 = 2x)
     /// Updated when epoch info is fetched from Platform
     fee_multiplier_permille: AtomicU64,
+    /// Per-wallet shielded state (initialized lazily, keyed by wallet seed hash)
+    pub(crate) shielded_states: Mutex<
+        std::collections::HashMap<
+            WalletSeedHash,
+            crate::model::wallet::shielded::ShieldedWalletState,
+        >,
+    >,
     /// The egui context, stored for use in non-UI code paths (e.g. display_task_result).
     /// Clone is O(1) — egui::Context is Arc-backed and the same instance for the app lifetime.
     egui_ctx: egui::Context,
@@ -332,6 +340,7 @@ impl AppContext {
             fee_multiplier_permille: AtomicU64::new(
                 PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE,
             ),
+            shielded_states: Mutex::new(std::collections::HashMap::new()),
             egui_ctx,
         };
 

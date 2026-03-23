@@ -8,6 +8,7 @@ mod initialization;
 mod proof_log;
 mod scheduled_votes;
 mod settings;
+pub mod shielded;
 mod single_key_wallet;
 #[cfg(any(test, feature = "testing"))]
 pub mod test_helpers;
@@ -72,8 +73,7 @@ impl Database {
     ///
     /// Used by `ClientPersistentCommitmentTree` to share the same SQLite
     /// connection for the shielded commitment tree tables.
-    #[allow(dead_code)] // Prepared for ClientPersistentCommitmentTree
-    pub(crate) fn shared_connection(&self) -> Arc<Mutex<Connection>> {
+    pub fn shared_connection(&self) -> Arc<Mutex<Connection>> {
         self.conn.clone()
     }
 
@@ -182,6 +182,19 @@ impl Database {
             "DELETE FROM single_key_wallet WHERE network = ?1",
             rusqlite::params![&network_str],
         )?;
+
+        tx.execute(
+            "DELETE FROM shielded_notes WHERE network = ?1",
+            rusqlite::params![&network_str],
+        )?;
+
+        // Clear commitment tree tables (persistent shielded tree data).
+        // These tables are created by grovedb on first use, so they may not
+        // exist yet — ignore errors from missing tables.
+        let _ = tx.execute("DELETE FROM commitment_tree_shards", []);
+        let _ = tx.execute("DELETE FROM commitment_tree_cap", []);
+        let _ = tx.execute("DELETE FROM commitment_tree_checkpoints", []);
+        let _ = tx.execute("DELETE FROM commitment_tree_checkpoint_marks_removed", []);
 
         tx.commit()
     }

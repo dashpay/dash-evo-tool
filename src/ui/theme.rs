@@ -1016,7 +1016,6 @@ impl ResponseExt for egui::Response {
     }
 }
 
-/// Configure fonts for the application
 /// Apply the modern Dash theme to the egui context
 pub fn apply_theme(ctx: &egui::Context, theme_mode: ThemeMode) {
     // Resolve the actual theme to use

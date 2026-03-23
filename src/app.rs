@@ -1157,7 +1157,12 @@ impl App for AppState {
                         }
                         BackendTaskSuccessResult::UpdatedThemePreference(new_theme) => {
                             self.theme_preference = new_theme;
-                            self.resolved_theme = crate::ui::theme::resolve_theme_mode(new_theme);
+                            self.resolved_theme = if new_theme == ThemeMode::System {
+                                crate::ui::theme::try_detect_system_theme()
+                                    .unwrap_or(self.resolved_theme)
+                            } else {
+                                new_theme
+                            };
                             self.theme_last_checked = Instant::now();
                             crate::ui::theme::apply_theme(ctx, self.resolved_theme);
                             self.last_applied_theme = Some(self.resolved_theme);

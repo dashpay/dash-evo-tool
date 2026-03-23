@@ -811,7 +811,7 @@ impl From<SdkError> for TaskError {
         // Check DapiClientError for domain errors carried as gRPC Internal status.
         // The SDK's From<DapiClientError> decodes `dash-serialized-consensus-error-bin`
         // metadata, but some platform errors arrive as plain Internal with descriptive
-        // message text only. This is a message-based workaround (see also #714 fallback).
+        // message text only. This is a message-based workaround; see issue #714 for the original fallback logic.
         // NOTE: a malicious node could spoof these messages; no auth/data impact.
         // TODO: replace with structured `dash-serialized-consensus-error-bin` decoding.
         if let SdkError::DapiClientError(DapiClientError::Transport(TransportError::Grpc(status))) =

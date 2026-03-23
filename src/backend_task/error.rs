@@ -655,6 +655,10 @@ pub enum TaskError {
     #[error("Could not build the shielded transaction. Please retry.")]
     ShieldedTransitionBuildFailed { detail: String },
 
+    /// The shielded note witnesses are stale — the commitment tree changed since sync.
+    #[error("Your shielded notes are out of sync. Please sync your shielded wallet and retry.")]
+    ShieldedAnchorMismatch { detail: String },
+
     /// The amount plus network fee exceeds the spendable shielded balance.
     #[error(
         "The amount plus the network fee ({fee_dash} Dash) exceeds your shielded balance. Reduce the amount or shield more credits.",
@@ -800,9 +804,10 @@ fn parse_fee_exceeds_spendable(detail: &str) -> Option<(u64, u64, u64)> {
 
 /// Construct the appropriate `TaskError` for a shielded transition build failure.
 ///
-/// Parses the error string for the "fee exceeds spendable" pattern and returns
-/// `ShieldedFeeExceedsBalance` when matched, falling back to
-/// `ShieldedTransitionBuildFailed` otherwise.
+/// Parses the error string for known patterns and returns a specific variant:
+/// - `ShieldedFeeExceedsBalance` when the fee exceeds spendable balance,
+/// - `ShieldedAnchorMismatch` when witnesses are stale,
+/// - `ShieldedTransitionBuildFailed` otherwise.
 pub fn shielded_build_error(detail: String) -> TaskError {
     if let Some((amount, fee, spendable)) = parse_fee_exceeds_spendable(&detail) {
         TaskError::ShieldedFeeExceedsBalance {
@@ -810,6 +815,8 @@ pub fn shielded_build_error(detail: String) -> TaskError {
             fee,
             spendable,
         }
+    } else if detail.contains("AnchorMismatch") {
+        TaskError::ShieldedAnchorMismatch { detail }
     } else {
         TaskError::ShieldedTransitionBuildFailed { detail }
     }
@@ -1569,6 +1576,29 @@ mod tests {
         assert!(
             matches!(err, TaskError::ShieldedBroadcastFailed { .. }),
             "Expected ShieldedBroadcastFailed, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn shielded_build_error_produces_anchor_mismatch_variant() {
+        let detail =
+            "Shielded transaction build error: failed to add spend: AnchorMismatch".to_string();
+        let err = shielded_build_error(detail);
+        assert!(
+            matches!(err, TaskError::ShieldedAnchorMismatch { .. }),
+            "Expected ShieldedAnchorMismatch, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn shielded_anchor_mismatch_display() {
+        let err = TaskError::ShieldedAnchorMismatch {
+            detail: "test".into(),
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("out of sync"),
+            "Expected sync message, got: {msg}"
         );
     }
 }

@@ -56,6 +56,10 @@ pub enum TaskError {
     )]
     CoreWalletNotConfigured,
 
+    /// Dash Core RPC rejected the request due to invalid credentials (HTTP 401).
+    #[error("Dash Core rejected your credentials. Check your RPC password in settings.")]
+    CoreRpcAuthFailed,
+
     /// A Dash Core RPC call failed.
     #[error("Could not communicate with Dash Core. Check that Dash Core is running and retry.")]
     CoreRpc {
@@ -605,6 +609,18 @@ pub enum TaskError {
     WalletKeyDerivationFailed { detail: String },
 }
 
+/// Returns `true` when a `dashcore_rpc::Error` wraps an HTTP 401 response,
+/// indicating the RPC server rejected the supplied credentials.
+pub fn is_rpc_auth_error(e: &dashcore_rpc::Error) -> bool {
+    if let dashcore_rpc::Error::JsonRpc(dashcore_rpc::jsonrpc::error::Error::Transport(boxed)) = e
+        && let Some(dashcore_rpc::jsonrpc::simple_http::Error::HttpErrorCode(401)) =
+            boxed.downcast_ref::<dashcore_rpc::jsonrpc::simple_http::Error>()
+    {
+        return true;
+    }
+    false
+}
+
 /// Returns `true` when the SDK error indicates an invalid instant asset lock
 /// proof signature — the structured equivalent of the old string-matching
 /// on `"Instant lock proof signature is invalid"`.
@@ -714,6 +730,9 @@ impl<T> From<std::sync::PoisonError<T>> for TaskError {
 
 impl From<dashcore_rpc::Error> for TaskError {
     fn from(e: dashcore_rpc::Error) -> Self {
+        if is_rpc_auth_error(&e) {
+            return TaskError::CoreRpcAuthFailed;
+        }
         if let dashcore_rpc::Error::JsonRpc(dashcore_rpc::jsonrpc::error::Error::Rpc(ref rpc_err)) =
             e
             && rpc_err.code == RPC_WALLET_NOT_SPECIFIED
@@ -812,6 +831,51 @@ mod tests {
     use dash_sdk::dpp::consensus::state::identity::identity_public_key_already_exists_for_unique_contract_bounds_error::IdentityPublicKeyAlreadyExistsForUniqueContractBoundsError;
     use dash_sdk::dpp::identity::Purpose;
     use dash_sdk::platform::Identifier;
+
+    #[test]
+    fn rpc_http_401_converts_to_core_rpc_auth_failed() {
+        let http_err = dashcore_rpc::jsonrpc::simple_http::Error::HttpErrorCode(401);
+        let transport_err = dashcore_rpc::jsonrpc::error::Error::Transport(Box::new(http_err));
+        let err: TaskError = dashcore_rpc::Error::JsonRpc(transport_err).into();
+        assert!(
+            matches!(err, TaskError::CoreRpcAuthFailed),
+            "Expected CoreRpcAuthFailed, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn rpc_http_401_display_mentions_credentials() {
+        let msg = TaskError::CoreRpcAuthFailed.to_string();
+        assert!(msg.contains("credentials"));
+        assert!(msg.contains("RPC password"));
+    }
+
+    #[test]
+    fn is_rpc_auth_error_detects_401() {
+        let http_err = dashcore_rpc::jsonrpc::simple_http::Error::HttpErrorCode(401);
+        let transport_err = dashcore_rpc::jsonrpc::error::Error::Transport(Box::new(http_err));
+        let rpc_err = dashcore_rpc::Error::JsonRpc(transport_err);
+        assert!(is_rpc_auth_error(&rpc_err));
+    }
+
+    #[test]
+    fn is_rpc_auth_error_ignores_other_http_codes() {
+        let http_err = dashcore_rpc::jsonrpc::simple_http::Error::HttpErrorCode(403);
+        let transport_err = dashcore_rpc::jsonrpc::error::Error::Transport(Box::new(http_err));
+        let rpc_err = dashcore_rpc::Error::JsonRpc(transport_err);
+        assert!(!is_rpc_auth_error(&rpc_err));
+    }
+
+    #[test]
+    fn is_rpc_auth_error_ignores_rpc_errors() {
+        let rpc_err = dashcore_rpc::jsonrpc::error::RpcError {
+            code: -1,
+            message: "Some error".to_string(),
+            data: None,
+        };
+        let err = dashcore_rpc::Error::JsonRpc(dashcore_rpc::jsonrpc::error::Error::Rpc(rpc_err));
+        assert!(!is_rpc_auth_error(&err));
+    }
 
     #[test]
     fn display_message_is_user_friendly() {

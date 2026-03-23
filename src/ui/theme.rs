@@ -26,7 +26,10 @@ pub fn try_detect_system_theme() -> Option<ThemeMode> {
     match dark_light::detect() {
         Ok(dark_light::Mode::Dark) => Some(ThemeMode::Dark),
         Ok(dark_light::Mode::Light | dark_light::Mode::Unspecified) => Some(ThemeMode::Light),
-        Err(_) => None,
+        Err(e) => {
+            tracing::debug!("OS theme detection failed: {e}");
+            None
+        }
     }
 }
 

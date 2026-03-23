@@ -242,6 +242,7 @@ impl TopUpIdentityScreen {
 
         ComboBox::from_id_salt("funding_method")
             .selected_text(format!("{}", *funding_method))
+            .height(200.0)
             .show_ui(ui, |ui| {
                 ui.selectable_value(
                     &mut *funding_method,

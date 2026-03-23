@@ -508,6 +508,8 @@ impl NetworkChooserScreen {
                                 e
                             );
                         }
+                        // Clear stale auth/connection error banners before showing success
+                        MessageBanner::clear_all_global(ui.ctx());
                         MessageBanner::set_global(
                             ui.ctx(),
                             "Core RPC password saved successfully.",

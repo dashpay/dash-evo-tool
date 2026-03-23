@@ -655,6 +655,17 @@ pub enum TaskError {
     #[error("Could not build the shielded transaction. Please retry.")]
     ShieldedTransitionBuildFailed { detail: String },
 
+    /// The amount plus network fee exceeds the spendable shielded balance.
+    #[error(
+        "The amount plus the network fee ({fee_dash} Dash) exceeds your shielded balance. Reduce the amount or shield more credits.",
+        fee_dash = format_credits_as_dash(*.fee)
+    )]
+    ShieldedFeeExceedsBalance {
+        amount: u64,
+        fee: u64,
+        spendable: u64,
+    },
+
     /// Failed to broadcast a shielded state transition.
     #[error(
         "Could not broadcast the shielded transaction. Please check your connection and retry."
@@ -662,6 +673,17 @@ pub enum TaskError {
     ShieldedBroadcastFailed {
         #[source]
         source: Box<dash_sdk::Error>,
+    },
+
+    /// The shielded pool does not have enough notes for an outgoing transaction.
+    #[error(
+        "The shielded pool needs more participants before you can unshield. The pool has {current_count} notes but requires at least {minimum_required}. Please try again later as more users join the pool."
+    )]
+    ShieldedInsufficientPoolNotes {
+        current_count: u64,
+        minimum_required: u64,
+        #[source]
+        source_error: Box<dash_sdk::Error>,
     },
 
     /// Invalid recipient address for shielded transfer.
@@ -733,6 +755,89 @@ pub fn is_instant_lock_proof_invalid(error: &SdkError) -> bool {
             BasicError::InvalidInstantAssetLockProofSignatureError(_),
         ))
     )
+}
+
+/// Format a credit amount as Dash with 4 decimal places.
+///
+/// Credits use 10^11 as the conversion factor (not satoshis).
+fn format_credits_as_dash(credits: u64) -> String {
+    let whole = credits / 100_000_000_000;
+    let frac = credits % 100_000_000_000;
+    // 4 decimal places: divide fractional part by 10^7 to get 4 digits
+    let four_digits = frac / 10_000_000;
+    format!("{whole}.{four_digits:04}")
+}
+
+// TODO: Replace string parsing with a pre-check on amount + fee > spendable
+// before calling the SDK builder, or wait for upstream to add a typed
+// ProtocolError variant (currently ProtocolError::ShieldedBuildError(String)).
+
+/// Parse the "amount + fee exceeds spendable" pattern from DPP builder errors.
+///
+/// Matches strings like:
+///   "unshield amount 188000000000 + fee 180841600 = ... exceeds total spendable value 188000000000"
+///   "transfer amount X + fee Y = Z exceeds total spendable value W"
+///   "withdrawal amount X + fee Y = Z exceeds total spendable value W"
+///
+/// Returns `(amount, fee, spendable)` on match.
+fn parse_fee_exceeds_spendable(detail: &str) -> Option<(u64, u64, u64)> {
+    // Pattern: "{type} amount {A} + fee {F} = {sum} exceeds total spendable value {S}"
+    let amount_start = detail.find("amount ")? + 7;
+    let amount_end = detail[amount_start..].find(' ')? + amount_start;
+    let amount: u64 = detail[amount_start..amount_end].parse().ok()?;
+
+    let fee_marker = detail.find("fee ")?;
+    let fee_start = fee_marker + 4;
+    let fee_end = detail[fee_start..].find(' ')? + fee_start;
+    let fee: u64 = detail[fee_start..fee_end].parse().ok()?;
+
+    let spendable_marker = detail.find("exceeds total spendable value ")?;
+    let spendable_start = spendable_marker + 30;
+    let spendable: u64 = detail[spendable_start..].trim().parse().ok()?;
+
+    Some((amount, fee, spendable))
+}
+
+/// Construct the appropriate `TaskError` for a shielded transition build failure.
+///
+/// Parses the error string for the "fee exceeds spendable" pattern and returns
+/// `ShieldedFeeExceedsBalance` when matched, falling back to
+/// `ShieldedTransitionBuildFailed` otherwise.
+pub fn shielded_build_error(detail: String) -> TaskError {
+    if let Some((amount, fee, spendable)) = parse_fee_exceeds_spendable(&detail) {
+        TaskError::ShieldedFeeExceedsBalance {
+            amount,
+            fee,
+            spendable,
+        }
+    } else {
+        TaskError::ShieldedTransitionBuildFailed { detail }
+    }
+}
+
+/// Construct the appropriate `TaskError` for a shielded broadcast failure.
+///
+/// Checks for `InsufficientPoolNotesError` in the SDK error chain and returns
+/// `ShieldedInsufficientPoolNotes` when matched, falling back to
+/// `ShieldedBroadcastFailed` otherwise.
+pub fn shielded_broadcast_error(e: SdkError) -> TaskError {
+    let consensus_error = match &e {
+        SdkError::StateTransitionBroadcastError(broadcast_err) => broadcast_err.cause.as_ref(),
+        SdkError::Protocol(ProtocolError::ConsensusError(ce)) => Some(ce.as_ref()),
+        _ => None,
+    };
+    if let Some(ConsensusError::StateError(StateError::InsufficientPoolNotesError(pool_err))) =
+        consensus_error
+    {
+        return TaskError::ShieldedInsufficientPoolNotes {
+            current_count: pool_err.current_count(),
+            minimum_required: pool_err.minimum_required(),
+            source_error: Box::new(e),
+        };
+    }
+    TaskError::ShieldedBroadcastFailed {
+        source: Box::new(e),
+    }
 }
 
 /// Produce a user-friendly message for SPV subsystem errors.
@@ -837,7 +942,14 @@ impl From<SdkError> for TaskError {
             DuplicateKeyId,
             ContractBoundsConflict(String),
             InvalidInstantLockProof,
-            InsufficientBalance { available: u64, required: u64 },
+            InsufficientBalance {
+                available: u64,
+                required: u64,
+            },
+            InsufficientPoolNotes {
+                current_count: u64,
+                minimum_required: u64,
+            },
         }
 
         let kind: Option<ConsensusKind> = {
@@ -871,6 +983,12 @@ impl From<SdkError> for TaskError {
                     ConsensusError::BasicError(
                         BasicError::InvalidInstantAssetLockProofSignatureError(_),
                     ) => Some(ConsensusKind::InvalidInstantLockProof),
+                    ConsensusError::StateError(StateError::InsufficientPoolNotesError(e)) => {
+                        Some(ConsensusKind::InsufficientPoolNotes {
+                            current_count: e.current_count(),
+                            minimum_required: e.minimum_required(),
+                        })
+                    }
                     _ => None,
                 })
                 .or_else(|| {
@@ -911,6 +1029,14 @@ impl From<SdkError> for TaskError {
             }) => TaskError::IdentityInsufficientBalance {
                 available,
                 required,
+                source_error: boxed,
+            },
+            Some(ConsensusKind::InsufficientPoolNotes {
+                current_count,
+                minimum_required,
+            }) => TaskError::ShieldedInsufficientPoolNotes {
+                current_count,
+                minimum_required,
                 source_error: boxed,
             },
             None => TaskError::SdkError {
@@ -1273,5 +1399,176 @@ mod tests {
         );
         assert!(msg.contains("Dash Core"));
         assert!(msg.contains("network settings"));
+    }
+
+    #[test]
+    fn parse_fee_exceeds_spendable_unshield() {
+        let detail = "Shielded transaction build error: unshield amount 188000000000 + fee 180841600 = 188180841600 exceeds total spendable value 188000000000";
+        let result = parse_fee_exceeds_spendable(detail);
+        assert_eq!(
+            result,
+            Some((188_000_000_000, 180_841_600, 188_000_000_000))
+        );
+    }
+
+    #[test]
+    fn parse_fee_exceeds_spendable_transfer() {
+        let detail = "transfer amount 500000000000 + fee 200000000 = 500200000000 exceeds total spendable value 400000000000";
+        let result = parse_fee_exceeds_spendable(detail);
+        assert_eq!(
+            result,
+            Some((500_000_000_000, 200_000_000, 400_000_000_000))
+        );
+    }
+
+    #[test]
+    fn parse_fee_exceeds_spendable_no_match() {
+        let detail = "some other error message";
+        assert_eq!(parse_fee_exceeds_spendable(detail), None);
+    }
+
+    #[test]
+    fn shielded_build_error_produces_fee_variant_on_match() {
+        let detail = "unshield amount 188000000000 + fee 180841600 = 188180841600 exceeds total spendable value 188000000000".to_string();
+        let err = shielded_build_error(detail);
+        assert!(
+            matches!(
+                err,
+                TaskError::ShieldedFeeExceedsBalance {
+                    amount: 188_000_000_000,
+                    fee: 180_841_600,
+                    spendable: 188_000_000_000,
+                }
+            ),
+            "Expected ShieldedFeeExceedsBalance, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn shielded_build_error_falls_back_on_no_match() {
+        let detail = "some other build error".to_string();
+        let err = shielded_build_error(detail);
+        assert!(
+            matches!(err, TaskError::ShieldedTransitionBuildFailed { .. }),
+            "Expected ShieldedTransitionBuildFailed, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn shielded_fee_exceeds_balance_display_shows_dash() {
+        let err = TaskError::ShieldedFeeExceedsBalance {
+            amount: 188_000_000_000,
+            fee: 180_841_600,
+            spendable: 188_000_000_000,
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("0.0018"),
+            "Expected fee in Dash in message, got: {msg}"
+        );
+        assert!(
+            msg.contains("Reduce the amount"),
+            "Expected actionable guidance, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn format_credits_as_dash_basic() {
+        assert_eq!(format_credits_as_dash(100_000_000_000), "1.0000");
+        assert_eq!(format_credits_as_dash(180_841_600), "0.0018");
+        assert_eq!(format_credits_as_dash(0), "0.0000");
+        assert_eq!(format_credits_as_dash(250_000_000_000), "2.5000");
+    }
+
+    #[test]
+    fn from_sdk_error_insufficient_pool_notes_via_consensus() {
+        use dash_sdk::dpp::consensus::state::shielded::insufficient_pool_notes_error::InsufficientPoolNotesError;
+        let consensus = ConsensusError::from(InsufficientPoolNotesError::new(14, 250));
+        let sdk_err = SdkError::from(consensus);
+        let err = TaskError::from(sdk_err);
+        assert!(
+            matches!(
+                err,
+                TaskError::ShieldedInsufficientPoolNotes {
+                    current_count: 14,
+                    minimum_required: 250,
+                    ..
+                }
+            ),
+            "Expected ShieldedInsufficientPoolNotes, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn from_sdk_error_insufficient_pool_notes_via_broadcast() {
+        use dash_sdk::dpp::consensus::state::shielded::insufficient_pool_notes_error::InsufficientPoolNotesError;
+        let consensus = ConsensusError::from(InsufficientPoolNotesError::new(14, 250));
+        let broadcast_err = dash_sdk::error::StateTransitionBroadcastError {
+            code: 40300,
+            message: "insufficient pool notes".to_string(),
+            cause: Some(consensus),
+        };
+        let sdk_err = SdkError::StateTransitionBroadcastError(broadcast_err);
+        let err = TaskError::from(sdk_err);
+        assert!(
+            matches!(
+                err,
+                TaskError::ShieldedInsufficientPoolNotes {
+                    current_count: 14,
+                    minimum_required: 250,
+                    ..
+                }
+            ),
+            "Expected ShieldedInsufficientPoolNotes, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn insufficient_pool_notes_display_includes_counts() {
+        use dash_sdk::dpp::consensus::state::shielded::insufficient_pool_notes_error::InsufficientPoolNotesError;
+        let consensus = ConsensusError::from(InsufficientPoolNotesError::new(14, 250));
+        let sdk_err = SdkError::from(consensus);
+        let err = TaskError::from(sdk_err);
+        let msg = err.to_string();
+        assert!(msg.contains("14"), "Expected current count, got: {msg}");
+        assert!(msg.contains("250"), "Expected minimum required, got: {msg}");
+        assert!(
+            msg.contains("try again later"),
+            "Expected actionable guidance, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn shielded_broadcast_error_detects_pool_notes() {
+        use dash_sdk::dpp::consensus::state::shielded::insufficient_pool_notes_error::InsufficientPoolNotesError;
+        let consensus = ConsensusError::from(InsufficientPoolNotesError::new(14, 250));
+        let broadcast_err = dash_sdk::error::StateTransitionBroadcastError {
+            code: 40300,
+            message: "insufficient pool notes".to_string(),
+            cause: Some(consensus),
+        };
+        let sdk_err = SdkError::StateTransitionBroadcastError(broadcast_err);
+        let err = shielded_broadcast_error(sdk_err);
+        assert!(
+            matches!(
+                err,
+                TaskError::ShieldedInsufficientPoolNotes {
+                    current_count: 14,
+                    minimum_required: 250,
+                    ..
+                }
+            ),
+            "Expected ShieldedInsufficientPoolNotes, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn shielded_broadcast_error_falls_back_for_other_errors() {
+        let sdk_err = SdkError::Generic("some broadcast error".to_string());
+        let err = shielded_broadcast_error(sdk_err);
+        assert!(
+            matches!(err, TaskError::ShieldedBroadcastFailed { .. }),
+            "Expected ShieldedBroadcastFailed, got: {err:?}"
+        );
     }
 }

@@ -1,4 +1,4 @@
-use crate::backend_task::error::TaskError;
+use crate::backend_task::error::{TaskError, shielded_broadcast_error, shielded_build_error};
 use crate::context::AppContext;
 use crate::context::shielded::get_proving_key;
 use crate::model::wallet::WalletSeedHash;
@@ -121,9 +121,7 @@ pub fn build_shield_credit(
         [0u8; 36],
         sdk.version(),
     )
-    .map_err(|e| TaskError::ShieldedTransitionBuildFailed {
-        detail: e.to_string(),
-    })
+    .map_err(|e| shielded_build_error(e.to_string()))
 }
 
 /// Build and broadcast a Shield transition (transparent -> shielded pool).
@@ -196,20 +194,17 @@ pub async fn shield_credits(
             [0u8; 36],
             sdk.version(),
         )
-        .map_err(|e| TaskError::ShieldedTransitionBuildFailed {
-            detail: e.to_string(),
-        })?
+        .map_err(|e| shielded_build_error(e.to_string()))?
     };
 
     if let Some(s) = &stage {
         *s.lock().unwrap() = ShieldStage::Broadcasting;
     }
 
-    state_transition.broadcast(&sdk, None).await.map_err(|e| {
-        TaskError::ShieldedBroadcastFailed {
-            source: Box::new(e),
-        }
-    })?;
+    state_transition
+        .broadcast(&sdk, None)
+        .await
+        .map_err(shielded_broadcast_error)?;
 
     Ok(())
 }
@@ -283,15 +278,12 @@ pub async fn shielded_transfer(
         None,
         sdk.version(),
     )
-    .map_err(|e| TaskError::ShieldedTransitionBuildFailed {
-        detail: e.to_string(),
-    })?;
+    .map_err(|e| shielded_build_error(e.to_string()))?;
 
-    state_transition.broadcast(&sdk, None).await.map_err(|e| {
-        TaskError::ShieldedBroadcastFailed {
-            source: Box::new(e),
-        }
-    })?;
+    state_transition
+        .broadcast(&sdk, None)
+        .await
+        .map_err(shielded_broadcast_error)?;
 
     Ok(spent_nullifiers)
 }
@@ -359,15 +351,12 @@ pub async fn unshield_credits(
         None,
         sdk.version(),
     )
-    .map_err(|e| TaskError::ShieldedTransitionBuildFailed {
-        detail: e.to_string(),
-    })?;
+    .map_err(|e| shielded_build_error(e.to_string()))?;
 
-    state_transition.broadcast(&sdk, None).await.map_err(|e| {
-        TaskError::ShieldedBroadcastFailed {
-            source: Box::new(e),
-        }
-    })?;
+    state_transition
+        .broadcast(&sdk, None)
+        .await
+        .map_err(shielded_broadcast_error)?;
 
     Ok(spent_nullifiers)
 }
@@ -424,7 +413,7 @@ pub async fn shield_from_asset_lock(
             Err(_) => {
                 wallet
                     .reload_utxos(app_context.as_ref())
-                    .map_err(|e| TaskError::ShieldedTransitionBuildFailed { detail: e })?;
+                    .map_err(shielded_build_error)?;
 
                 let (tx, private_key, address, _change, utxos) = wallet
                     .generic_asset_lock_transaction(
@@ -433,7 +422,7 @@ pub async fn shield_from_asset_lock(
                         asset_lock_duffs,
                         false,
                     )
-                    .map_err(|e| TaskError::ShieldedTransitionBuildFailed { detail: e })?;
+                    .map_err(shielded_build_error)?;
                 (tx, private_key, address, utxos)
             }
         }
@@ -483,7 +472,7 @@ pub async fn shield_from_asset_lock(
 
         wallet
             .recalculate_affected_address_balances(&used_utxos, app_context.as_ref())
-            .map_err(|e| TaskError::ShieldedTransitionBuildFailed { detail: e })?;
+            .map_err(shielded_build_error)?;
     }
 
     // Step 5: Wait for asset lock proof (InstantLock or ChainLock) with timeout
@@ -554,15 +543,12 @@ pub async fn shield_from_asset_lock(
         [0u8; 36],
         sdk.version(),
     )
-    .map_err(|e| TaskError::ShieldedTransitionBuildFailed {
-        detail: e.to_string(),
-    })?;
+    .map_err(|e| shielded_build_error(e.to_string()))?;
 
-    state_transition.broadcast(&sdk, None).await.map_err(|e| {
-        TaskError::ShieldedBroadcastFailed {
-            source: Box::new(e),
-        }
-    })?;
+    state_transition
+        .broadcast(&sdk, None)
+        .await
+        .map_err(shielded_broadcast_error)?;
 
     Ok(shield_amount_credits)
 }
@@ -633,15 +619,12 @@ pub async fn shielded_withdrawal(
         None,
         sdk.version(),
     )
-    .map_err(|e| TaskError::ShieldedTransitionBuildFailed {
-        detail: e.to_string(),
-    })?;
+    .map_err(|e| shielded_build_error(e.to_string()))?;
 
-    state_transition.broadcast(&sdk, None).await.map_err(|e| {
-        TaskError::ShieldedBroadcastFailed {
-            source: Box::new(e),
-        }
-    })?;
+    state_transition
+        .broadcast(&sdk, None)
+        .await
+        .map_err(shielded_broadcast_error)?;
 
     Ok(spent_nullifiers)
 }

@@ -1,7 +1,7 @@
 use std::sync::OnceLock;
 
 use crate::backend_task::BackendTaskSuccessResult;
-use crate::backend_task::error::TaskError;
+use crate::backend_task::error::{TaskError, shielded_build_error};
 use crate::backend_task::shielded::ShieldedTask;
 use crate::context::AppContext;
 use crate::model::wallet::shielded::{ShieldedNote, ShieldedWalletState, derive_orchard_keys};
@@ -178,8 +178,8 @@ impl AppContext {
             }
         };
 
-        let keys = derive_orchard_keys(&seed_bytes, self.network, 0)
-            .map_err(|e| TaskError::ShieldedTransitionBuildFailed { detail: e })?;
+        let keys =
+            derive_orchard_keys(&seed_bytes, self.network, 0).map_err(shielded_build_error)?;
 
         let network_str = self.network.to_string();
 

@@ -4,7 +4,7 @@ use rusqlite::{Connection, params};
 use std::fs;
 use std::path::Path;
 
-pub const DEFAULT_DB_VERSION: u16 = 32;
+pub const DEFAULT_DB_VERSION: u16 = 33;
 
 pub const DEFAULT_NETWORK: &str = "mainnet";
 
@@ -51,22 +51,18 @@ impl Database {
 
     fn apply_version_changes(&self, version: u16, tx: &Connection) -> rusqlite::Result<()> {
         match version {
-            32 => {
-                self.rename_network_dash_to_mainnet(tx)?;
-                self.add_wallet_transaction_status_column(tx)?;
-            }
-            31 => {
-                self.add_nullifier_sync_timestamp_column(tx)?;
-            }
-            30 => {
-                self.create_shielded_wallet_meta_table(tx)?;
-            }
-            29 => {
-                self.create_shielded_tables(tx)?;
-            }
-            28 => {
+            // Versions 28-32 were consolidated into v33 to resolve migration
+            // numbering conflicts between the zk and v1.0-dev branches.
+            // If migrating from < 28, these are no-ops that just bump the version.
+            28..=32 => {}
+            33 => {
                 self.add_core_wallet_name_column(tx)?;
                 self.init_contacts_tables(tx)?;
+                self.create_shielded_tables(tx)?;
+                self.create_shielded_wallet_meta_table(tx)?;
+                self.add_nullifier_sync_timestamp_column(tx)?;
+                self.rename_network_dash_to_mainnet(tx)?;
+                self.add_wallet_transaction_status_column(tx)?;
             }
             27 => {
                 self.add_network_indexes(tx)?;

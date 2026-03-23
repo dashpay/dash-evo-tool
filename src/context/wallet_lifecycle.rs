@@ -4,7 +4,7 @@ use crate::backend_task::error::TaskError;
 use crate::database::is_unique_constraint_violation;
 use crate::model::wallet::{
     AddressInfo as WalletAddressInfo, DerivationPathHelpers, DerivationPathReference,
-    DerivationPathType, Wallet, WalletSeedHash, WalletTransaction,
+    DerivationPathType, TransactionStatus, Wallet, WalletSeedHash, WalletTransaction,
 };
 use crate::spv::{AssetLockFinalityEvent, CoreBackendMode, SpvManager};
 use dash_sdk::dpp::dashcore::hashes::Hash;
@@ -377,11 +377,17 @@ impl AppContext {
 
     pub(crate) fn wallet_network_key(&self) -> WalletNetwork {
         match self.network {
-            Network::Dash => WalletNetwork::Dash,
+            Network::Mainnet => WalletNetwork::Mainnet,
             Network::Testnet => WalletNetwork::Testnet,
             Network::Devnet => WalletNetwork::Devnet,
             Network::Regtest => WalletNetwork::Regtest,
-            _ => WalletNetwork::Dash,
+            other => {
+                tracing::debug!(
+                    ?other,
+                    "Unknown Network variant, defaulting to Mainnet wallet key"
+                );
+                WalletNetwork::Mainnet
+            }
         }
     }
 
@@ -442,6 +448,27 @@ impl AppContext {
                 DerivationPathReference::BIP44,
                 DerivationPathType::CLEAR_FUNDS,
             )),
+            AccountType::ProviderVotingKeys => Some((
+                DerivationPathReference::ProviderVotingKeys,
+                DerivationPathType::CLEAR_FUNDS,
+            )),
+            AccountType::ProviderOwnerKeys => Some((
+                DerivationPathReference::ProviderOwnerKeys,
+                DerivationPathType::CLEAR_FUNDS,
+            )),
+            AccountType::ProviderOperatorKeys => Some((
+                DerivationPathReference::ProviderOperatorKeys,
+                DerivationPathType::CLEAR_FUNDS,
+            )),
+            AccountType::ProviderPlatformKeys => Some((
+                DerivationPathReference::ProviderPlatformNodeKeys,
+                DerivationPathType::CLEAR_FUNDS,
+            )),
+            // BlockchainIdentities addresses are bootstrapped by DET directly
+            // (not via SDK WalletManager accounts) and registered with SPV
+            // through register_spv_address() during wallet bootstrap. Other
+            // account types (CoinJoin, DashPay, PlatformPayment, AssetLock*)
+            // are either not yet supported or operate off-chain.
             _ => None,
         }
     }
@@ -803,16 +830,20 @@ impl AppContext {
                 .map_err(|e| crate::spv::SpvError::WalletError(e.to_string()))?;
             let wallet_transactions: Vec<WalletTransaction> = history
                 .into_iter()
-                .map(|record| WalletTransaction {
-                    txid: record.txid,
-                    transaction: record.transaction.clone(),
-                    timestamp: record.timestamp,
-                    height: record.height,
-                    block_hash: record.block_hash,
-                    net_amount: record.net_amount,
-                    fee: record.fee,
-                    label: record.label.clone(),
-                    is_ours: record.is_ours,
+                .map(|record| {
+                    let status = TransactionStatus::from_height(record.height);
+                    WalletTransaction {
+                        txid: record.txid,
+                        transaction: record.transaction.clone(),
+                        timestamp: record.timestamp,
+                        height: record.height,
+                        block_hash: record.block_hash,
+                        net_amount: record.net_amount,
+                        fee: record.fee,
+                        label: record.label.clone(),
+                        is_ours: record.is_ours,
+                        status,
+                    }
                 })
                 .collect();
 

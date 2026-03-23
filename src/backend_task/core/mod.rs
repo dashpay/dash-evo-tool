@@ -7,13 +7,14 @@ mod start_dash_qt;
 
 use crate::app_dir::core_cookie_path;
 use crate::backend_task::BackendTaskSuccessResult;
-use crate::backend_task::error::TaskError;
+use crate::backend_task::error::{TaskError, is_rpc_auth_error};
 use crate::config::{Config, NetworkConfig};
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
 use crate::model::wallet::single_key::SingleKeyWallet;
 use crate::spv::CoreBackendMode;
 use dash_sdk::dash_spv::sync::ProgressPercentage;
+use dash_sdk::dashcore_rpc;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dashcore_rpc::{Auth, Client};
 use dash_sdk::dpp::dashcore::secp256k1::{Message, Secp256k1};
@@ -31,7 +32,7 @@ use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_builder:
 };
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_building::AccountTypePreference;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
-use dash_sdk::dpp::key_wallet_manager::wallet_manager::{WalletError, WalletId, WalletManager};
+use dash_sdk::dpp::key_wallet_manager::manager::{WalletError, WalletId, WalletManager};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
@@ -43,7 +44,7 @@ const DEFAULT_BIP44_ACCOUNT_INDEX: u32 = 0;
 fn networks_address_compatible(a: &Network, b: &Network) -> bool {
     matches!(
         (a, b),
-        (Network::Dash, Network::Dash)
+        (Network::Mainnet, Network::Mainnet)
             | (
                 Network::Testnet | Network::Devnet | Network::Regtest,
                 Network::Testnet | Network::Devnet | Network::Regtest,
@@ -182,22 +183,38 @@ impl AppContext {
                 // Load configs
                 let config = Config::load_from(&self.data_dir)?;
 
-                let maybe_mainnet_config = config.config_for_network(Network::Dash);
+                let maybe_mainnet_config = config.config_for_network(Network::Mainnet);
                 let maybe_testnet_config = config.config_for_network(Network::Testnet);
                 let maybe_devnet_config = config.config_for_network(Network::Devnet);
                 let maybe_local_config = config.config_for_network(Network::Regtest);
 
-                let mainnet_result = Self::get_best_chain_lock(maybe_mainnet_config, Network::Dash);
+                let mainnet_result =
+                    Self::get_best_chain_lock(maybe_mainnet_config, Network::Mainnet);
                 let testnet_result =
                     Self::get_best_chain_lock(maybe_testnet_config, Network::Testnet);
                 let devnet_result = Self::get_best_chain_lock(maybe_devnet_config, Network::Devnet);
                 let local_result = Self::get_best_chain_lock(maybe_local_config, Network::Regtest);
 
-                // Convert each to Option<ChainLock>
-                let mainnet_chainlock = mainnet_result.ok();
-                let testnet_chainlock = testnet_result.ok();
-                let devnet_chainlock = devnet_result.ok();
-                let local_chainlock = local_result.ok();
+                // Surface auth errors on the active network instead of
+                // silently degrading to "Disconnected".
+                let active_result = match self.network {
+                    Network::Mainnet => &mainnet_result,
+                    Network::Testnet => &testnet_result,
+                    Network::Devnet => &devnet_result,
+                    Network::Regtest => &local_result,
+                    _ => &mainnet_result,
+                };
+                if let Err(e) = active_result
+                    && is_rpc_auth_error(e)
+                {
+                    return Err(TaskError::CoreRpcAuthFailed);
+                }
+
+                // Convert each to Option<ChainLock> (flatten Ok(None) and Err into None)
+                let mainnet_chainlock = mainnet_result.ok().flatten();
+                let testnet_chainlock = testnet_result.ok().flatten();
+                let devnet_chainlock = devnet_result.ok().flatten();
+                let local_chainlock = local_result.ok().flatten();
 
                 // Return whatever we have — even all-None is valid.
                 Ok(BackendTaskSuccessResult::CoreItem(CoreItem::ChainLocks(
@@ -419,41 +436,49 @@ impl AppContext {
     fn get_best_chain_lock(
         config: &Option<NetworkConfig>,
         network: Network,
-    ) -> Result<ChainLock, String> {
-        if let Some(network_config) = config {
-            let addr = format!(
-                "http://{}:{}",
-                network_config.core_host, network_config.core_rpc_port
-            );
+    ) -> Result<Option<ChainLock>, dashcore_rpc::Error> {
+        let Some(network_config) = config else {
+            return Ok(None);
+        };
 
-            let cookie_path = core_cookie_path(network, &network_config.devnet_name)
-                .map_err(|e| format!("Failed to get core cookie path: {}", e))?;
+        let addr = format!(
+            "http://{}:{}",
+            network_config.core_host, network_config.core_rpc_port
+        );
 
-            // Try cookie authentication first
-            let client = match Client::new(&addr, Auth::CookieFile(cookie_path.clone())) {
-                Ok(client) => Ok(client),
-                Err(_) => {
-                    tracing::info!(
-                        "Failed to authenticate using .cookie file at {:?}, falling back to user/pass",
-                        cookie_path
-                    );
-                    Client::new(
-                        &addr,
-                        Auth::UserPass(
-                            network_config.core_rpc_user.to_string(),
-                            network_config.core_rpc_password.to_string(),
-                        ),
-                    )
+        let cookie_path = match core_cookie_path(network, &network_config.devnet_name) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!("Failed to get core cookie path for {network}: {e}");
+                return Ok(None);
+            }
+        };
+
+        // Try cookie authentication first
+        let client = match Client::new(&addr, Auth::CookieFile(cookie_path.clone())) {
+            Ok(client) => client,
+            Err(_) => {
+                tracing::info!(
+                    "Failed to authenticate using .cookie file at {:?}, falling back to user/pass",
+                    cookie_path
+                );
+                match Client::new(
+                    &addr,
+                    Auth::UserPass(
+                        network_config.core_rpc_user.to_string(),
+                        network_config.core_rpc_password.to_string(),
+                    ),
+                ) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        tracing::warn!("Failed to create {network} client: {e}");
+                        return Ok(None);
+                    }
                 }
             }
-                .map_err(|_| format!("Failed to create {} client", network))?;
+        };
 
-            client
-                .get_best_chain_lock()
-                .map_err(|e| format!("Failed to get best chain lock for {}: {}", network, e))
-        } else {
-            Err(format!("{} config not found", network))
-        }
+        client.get_best_chain_lock().map(Some)
     }
 
     async fn send_wallet_payment(

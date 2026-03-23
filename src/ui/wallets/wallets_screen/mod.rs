@@ -10,7 +10,7 @@ use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::context::connection_status::spv_phase_summary;
 use crate::model::amount::Amount;
-use crate::model::wallet::{Wallet, WalletSeedHash, WalletTransaction};
+use crate::model::wallet::{TransactionStatus, Wallet, WalletSeedHash, WalletTransaction};
 use crate::spv::{CoreBackendMode, SpvStatus};
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
@@ -457,7 +457,9 @@ impl WalletsBalancesScreen {
         if let Ok(wallets_guard) = self.app_context.wallets.read() {
             for wallet in wallets_guard.values() {
                 let guard = wallet.read().unwrap();
-                let balance_dash = guard.total_balance_duffs() as f64 * 1e-8;
+                let core_balance = guard.total_balance_duffs();
+                let platform_balance = Self::platform_balance_duffs(&guard);
+                let balance_dash = (core_balance + platform_balance) as f64 * 1e-8;
                 let label = format!(
                     "HD: {} ({:.4} DASH)",
                     guard.alias.clone().unwrap_or_else(|| "Unnamed".to_string()),
@@ -518,7 +520,11 @@ impl WalletsBalancesScreen {
             wallet
                 .read()
                 .ok()
-                .map(|g| g.total_balance_duffs())
+                .map(|g| {
+                    let core = g.total_balance_duffs();
+                    let platform = Self::platform_balance_duffs(&g);
+                    core + platform
+                })
                 .unwrap_or(0)
         } else if let Some(wallet) = &self.selected_single_key_wallet {
             wallet
@@ -950,12 +956,17 @@ impl WalletsBalancesScreen {
     }
 
     fn format_transaction_status(tx: &WalletTransaction) -> String {
-        if tx.is_confirmed() {
-            tx.height
+        match tx.status {
+            TransactionStatus::Unconfirmed => "Pending".to_string(),
+            TransactionStatus::InstantSendLocked => "⚡ InstantSend".to_string(),
+            TransactionStatus::Confirmed => tx
+                .height
                 .map(|h| format!("Confirmed @{}", h))
-                .unwrap_or_else(|| "Confirmed".to_string())
-        } else {
-            "Pending".to_string()
+                .unwrap_or_else(|| "Confirmed".to_string()),
+            TransactionStatus::ChainLocked => tx
+                .height
+                .map(|h| format!("🔒 ChainLocked @{}", h))
+                .unwrap_or_else(|| "🔒 ChainLocked".to_string()),
         }
     }
 
@@ -979,6 +990,7 @@ impl WalletsBalancesScreen {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
         let total = wallet.total_balance_duffs();
         let platform = Self::platform_balance_duffs(wallet);
+        let combined = total + platform;
 
         ui.horizontal(|ui| {
             ui.label(RichText::new(format!(
@@ -990,6 +1002,13 @@ impl WalletsBalancesScreen {
             RichText::new(format!("Platform balance: {}", Self::format_dash(platform)))
                 .color(DashColors::text_primary(dark_mode)),
         );
+        if platform > 0 {
+            ui.label(
+                RichText::new(format!("Total: {}", Self::format_dash(combined)))
+                    .color(DashColors::text_primary(dark_mode))
+                    .strong(),
+            );
+        }
     }
 
     fn render_action_buttons(&mut self, ui: &mut Ui, ctx: &Context) -> AppAction {
@@ -1132,7 +1151,9 @@ impl WalletsBalancesScreen {
 
     fn render_transactions_section(&self, ui: &mut Ui) {
         ui.add_space(10.0);
-        ui.heading("Transactions");
+        // TODO: Synchronize transactions display with selected account type
+        // (main account -> Core transactions, platform account -> platform state transitions, etc.)
+        ui.heading("Dash Core Transactions");
         let Some(wallet_arc) = self.selected_wallet.as_ref() else {
             ui.label("Select a wallet to view its transaction history.");
             return;
@@ -1140,7 +1161,9 @@ impl WalletsBalancesScreen {
 
         let wallet_guard = wallet_arc.read().unwrap();
         if wallet_guard.transactions.is_empty() {
-            ui.label("No transactions yet from SPV. Keep your wallet online to sync history.");
+            ui.label(
+                "No transactions found. Try refreshing your wallet to load transaction history.",
+            );
             return;
         }
 
@@ -1478,12 +1501,9 @@ impl WalletsBalancesScreen {
                         ui.add_space(8.0);
                         action |= self.render_address_table(ui);
 
-                        // Transactions section - requires SPV which is dev mode only
-                        if self.app_context.is_developer_mode() {
-                            ui.add_space(10.0);
-                            ui.separator();
-                            self.render_transactions_section(ui);
-                        }
+                        ui.add_space(10.0);
+                        ui.separator();
+                        self.render_transactions_section(ui);
 
                         ui.add_space(14.0);
                         self.render_bottom_options(ui);
@@ -2342,6 +2362,11 @@ impl ScreenLike for WalletsBalancesScreen {
     }
 
     fn refresh_on_arrival(&mut self) {
+        // Clear the spinner in case a refresh completed while this screen was not
+        // visible (task results are dispatched to the visible screen, so ours would
+        // have been silently discarded).
+        self.refreshing = false;
+
         // Check if there's a pending wallet selection (e.g., from wallet creation/import)
         let pending_seed_hash = self
             .app_context

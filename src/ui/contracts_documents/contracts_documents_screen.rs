@@ -621,7 +621,7 @@ impl ScreenLike for DocumentQueryScreen {
             DesiredAppAction::AddScreenType(Box::new(ScreenType::GroupActions)),
         );
         let mut action = AppAction::None;
-        if self.app_context.network == Network::Dash {
+        if self.app_context.network == Network::Mainnet {
             action |= add_top_panel(
                 ctx,
                 &self.app_context,

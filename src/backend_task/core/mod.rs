@@ -31,7 +31,7 @@ use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_builder:
 };
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_building::AccountTypePreference;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
-use dash_sdk::dpp::key_wallet_manager::wallet_manager::{WalletError, WalletId, WalletManager};
+use dash_sdk::dpp::key_wallet_manager::manager::{WalletError, WalletId, WalletManager};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
@@ -43,7 +43,7 @@ const DEFAULT_BIP44_ACCOUNT_INDEX: u32 = 0;
 fn networks_address_compatible(a: &Network, b: &Network) -> bool {
     matches!(
         (a, b),
-        (Network::Dash, Network::Dash)
+        (Network::Mainnet, Network::Mainnet)
             | (
                 Network::Testnet | Network::Devnet | Network::Regtest,
                 Network::Testnet | Network::Devnet | Network::Regtest,
@@ -182,12 +182,13 @@ impl AppContext {
                 // Load configs
                 let config = Config::load_from(&self.data_dir)?;
 
-                let maybe_mainnet_config = config.config_for_network(Network::Dash);
+                let maybe_mainnet_config = config.config_for_network(Network::Mainnet);
                 let maybe_testnet_config = config.config_for_network(Network::Testnet);
                 let maybe_devnet_config = config.config_for_network(Network::Devnet);
                 let maybe_local_config = config.config_for_network(Network::Regtest);
 
-                let mainnet_result = Self::get_best_chain_lock(maybe_mainnet_config, Network::Dash);
+                let mainnet_result =
+                    Self::get_best_chain_lock(maybe_mainnet_config, Network::Mainnet);
                 let testnet_result =
                     Self::get_best_chain_lock(maybe_testnet_config, Network::Testnet);
                 let devnet_result = Self::get_best_chain_lock(maybe_devnet_config, Network::Devnet);

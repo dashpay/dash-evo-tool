@@ -61,7 +61,7 @@ pub struct NetworkConfig {
 impl Config {
     pub fn config_for_network(&self, network: Network) -> &Option<NetworkConfig> {
         match network {
-            Network::Dash => &self.mainnet_config,
+            Network::Mainnet => &self.mainnet_config,
             Network::Testnet => &self.testnet_config,
             Network::Devnet => &self.devnet_config,
             Network::Regtest => &self.local_config,
@@ -252,7 +252,7 @@ impl Config {
     /// Update (overwrite) the configuration for a particular network.
     pub fn update_config_for_network(&mut self, network: Network, new_config: NetworkConfig) {
         match network {
-            Network::Dash => self.mainnet_config = Some(new_config),
+            Network::Mainnet => self.mainnet_config = Some(new_config),
             Network::Testnet => self.testnet_config = Some(new_config),
             Network::Devnet => self.devnet_config = Some(new_config),
             Network::Regtest => self.local_config = Some(new_config),
@@ -402,7 +402,7 @@ mod tests {
             local_config: None,
             developer_mode: None,
         };
-        assert!(config.config_for_network(Network::Dash).is_some());
+        assert!(config.config_for_network(Network::Mainnet).is_some());
         assert!(config.config_for_network(Network::Testnet).is_none());
         assert!(config.config_for_network(Network::Devnet).is_none());
         assert!(config.config_for_network(Network::Regtest).is_none());
@@ -417,7 +417,10 @@ mod tests {
             local_config: Some(make_network_config("http://127.0.0.1:2443", 20302)),
             developer_mode: Some(true),
         };
-        let main = config.config_for_network(Network::Dash).as_ref().unwrap();
+        let main = config
+            .config_for_network(Network::Mainnet)
+            .as_ref()
+            .unwrap();
         assert_eq!(main.core_rpc_port, 9998);
         let test = config
             .config_for_network(Network::Testnet)
@@ -446,7 +449,7 @@ mod tests {
         };
         assert!(config.mainnet_config.is_none());
         let new_cfg = make_network_config("https://1.1.1.1:443", 9998);
-        config.update_config_for_network(Network::Dash, new_cfg);
+        config.update_config_for_network(Network::Mainnet, new_cfg);
         assert!(config.mainnet_config.is_some());
         assert_eq!(config.mainnet_config.as_ref().unwrap().core_rpc_port, 9998);
     }
@@ -461,7 +464,7 @@ mod tests {
             developer_mode: None,
         };
         let new_cfg = make_network_config("https://new.example.com:443", 2222);
-        config.update_config_for_network(Network::Dash, new_cfg);
+        config.update_config_for_network(Network::Mainnet, new_cfg);
         let main = config.mainnet_config.as_ref().unwrap();
         assert_eq!(main.core_rpc_port, 2222);
         assert_eq!(main.dapi_addresses, "https://new.example.com:443");

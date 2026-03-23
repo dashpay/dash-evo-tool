@@ -18,7 +18,7 @@ qrcode = "0.14.1"
 nix = { version = "0.31.1", features = ["signal"] }
 eframe = { version = "0.33.3", features = ["persistence", "wgpu"] }
 base64 = "0.22.1"
-dash-sdk = { git = "https://github.com/dashpay/platform", rev = "aa86b74f7e28dd0444fec9ceb13373bd22f768d9", features = [
+dash-sdk = { git = "https://github.com/dashpay/platform", rev = "93556aa4b", features = [
     "core_key_wallet",
     "core_key_wallet_manager",
     "core_bincode",
@@ -122,3 +122,4 @@ check-cfg = ["cfg(tokio_unstable)", "cfg(feature, values(\"testing\", \"mcp\", \
 
 [lints.clippy]
 uninlined_format_args = "allow"
+

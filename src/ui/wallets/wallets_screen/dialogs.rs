@@ -153,7 +153,7 @@ impl WalletsBalancesScreen {
             .open(&mut open)
             .show(ctx, |ui| {
                 ui.label("Recipient Address");
-                let hint = if self.app_context.network == Network::Dash {
+                let hint = if self.app_context.network == Network::Mainnet {
                     "Enter Core address (X.../7...)"
                 } else {
                     "Enter Core address (y.../8...)"

@@ -179,6 +179,12 @@ Screens hold `Arc<AppContext>` and manage their own UI state.
 - `connection_status`, `developer_mode`, `fee_multiplier_permille`
 - Per-network instances (mainnet always present, others created on demand)
 
+### ConnectionStatus (single source of truth for connection health)
+
+`ConnectionStatus` (`src/context/connection_status.rs`) is the **single source of truth** for all high-level connection health state — RPC, ZMQ, SPV, and DAPI. For connection health (status, peer counts, errors, overall state), always read from `ConnectionStatus`, not directly from `SpvManager` or other subsystems.
+
+SPV status is **push-based**: `SpvManager` event handlers write directly to `ConnectionStatus` atomics (status, peer count, errors) as events arrive. The UI frame loop calls `refresh_state()` to recompute `overall_state` from these atomics, but does not poll SPV for health. This means `ConnectionStatus` is up-to-date in both GUI and headless/test contexts. Detailed SPV sync progress (heights, phase summaries used by tooltips) may still be read directly from `SpvManager.status()` until that progress reporting is migrated into `ConnectionStatus`.
+
 ## UI Component Pattern
 
 Components follow a lazy initialization pattern (see `docs/COMPONENT_DESIGN_PATTERN.md`):

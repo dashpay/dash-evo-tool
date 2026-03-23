@@ -495,26 +495,56 @@ impl NetworkChooserScreen {
                             tracing::error!("Failed to save config to .env: {e}");
                         }
 
-                        let app_context = self.context_for_network(self.current_network);
-                        {
-                            let mut cfg_lock = app_context.config.write().unwrap();
-                            *cfg_lock = updated_config;
-                        }
+                        // Only update the in-memory config and reinit if the
+                        // context for this network already exists.  If it
+                        // doesn't, `context_for_network` would silently fall
+                        // back to mainnet and corrupt its config.  The saved
+                        // file-level config will be picked up when the network
+                        // context is created.
+                        let network_context_exists = match self.current_network {
+                            Network::Mainnet => true,
+                            Network::Testnet => self.testnet_app_context.is_some(),
+                            Network::Devnet => self.devnet_app_context.is_some(),
+                            Network::Regtest => self.local_app_context.is_some(),
+                            _ => false,
+                        };
 
-                        if let Err(e) = Arc::clone(app_context).reinit_core_client_and_sdk() {
-                            tracing::error!(
-                                "Failed to re-init RPC client and sdk for {:?}: {}",
-                                self.current_network,
-                                e
+                        if network_context_exists {
+                            let app_context = self.context_for_network(self.current_network);
+                            {
+                                let mut cfg_lock = app_context.config.write().unwrap();
+                                *cfg_lock = updated_config;
+                            }
+
+                            // Clear stale auth/connection error banners before showing result
+                            MessageBanner::clear_all_global(ui.ctx());
+                            if let Err(e) =
+                                Arc::clone(app_context).reinit_core_client_and_sdk()
+                            {
+                                tracing::error!(
+                                    "Failed to re-init RPC client and sdk for {:?}: {}",
+                                    self.current_network,
+                                    e
+                                );
+                                MessageBanner::set_global(
+                                    ui.ctx(),
+                                    "Password saved but the connection could not be re-established. Check that Dash Core is running and retry.",
+                                    MessageType::Warning,
+                                );
+                            } else {
+                                MessageBanner::set_global(
+                                    ui.ctx(),
+                                    "Core RPC password saved successfully.",
+                                    MessageType::Success,
+                                );
+                            }
+                        } else {
+                            MessageBanner::set_global(
+                                ui.ctx(),
+                                "Core RPC password saved successfully.",
+                                MessageType::Success,
                             );
                         }
-                        // Clear stale auth/connection error banners before showing success
-                        MessageBanner::clear_all_global(ui.ctx());
-                        MessageBanner::set_global(
-                            ui.ctx(),
-                            "Core RPC password saved successfully.",
-                            MessageType::Success,
-                        );
                     }
                 });
             }

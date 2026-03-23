@@ -67,7 +67,7 @@ pub enum TaskError {
     CoreRpcConnectionFailed {
         url: String,
         #[source]
-        source: dashcore_rpc::Error,
+        source: Option<dashcore_rpc::Error>,
     },
 
     /// A Dash Core RPC call failed.
@@ -1389,8 +1389,8 @@ mod tests {
         );
         let err = TaskError::CoreRpcConnectionFailed {
             url: "127.0.0.1:9998".to_string(),
-            source: dashcore_rpc::Error::JsonRpc(dashcore_rpc::jsonrpc::error::Error::Transport(
-                Box::new(socket_err),
+            source: Some(dashcore_rpc::Error::JsonRpc(
+                dashcore_rpc::jsonrpc::error::Error::Transport(Box::new(socket_err)),
             )),
         };
         let msg = err.to_string();

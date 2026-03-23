@@ -523,6 +523,16 @@ impl AddressInput {
                 None,
             );
         }
+        // Orchard shielded addresses are ~70+ chars; reject anything too short.
+        if trimmed.len() < 60 {
+            return (
+                Some(
+                    "This private address looks incomplete. Please paste the full address."
+                        .to_string(),
+                ),
+                None,
+            );
+        }
         (None, Some(ValidatedAddress::Shielded(trimmed.to_string())))
     }
 
@@ -557,10 +567,12 @@ impl AddressInput {
 
     // --- Autocomplete filtering ---
 
-    fn filtered_entries(&self) -> Vec<&AddressEntry> {
+    /// Returns matching entries (truncated to 10) and the total match count
+    /// before truncation.
+    fn filtered_entries(&self) -> (Vec<&AddressEntry>, usize) {
         let query = self.input_text.trim().to_lowercase();
         if query.len() < 3 {
-            return Vec::new();
+            return (Vec::new(), 0);
         }
 
         let mut results: Vec<&AddressEntry> = self
@@ -598,8 +610,9 @@ impl AddressInput {
                 .then(a.display_label.cmp(&b.display_label))
         });
 
+        let total = results.len();
         results.truncate(10);
-        results
+        (results, total)
     }
 
     // --- Balance formatting ---
@@ -695,35 +708,21 @@ impl AddressInput {
             let mut selected_entry: Option<AddressEntry> = None;
             if has_focus && self.input_text.trim().len() >= 3 {
                 // Collect filtered entries into an owned snapshot to release the borrow on self
-                let entries_snapshot: Vec<(String, String, AddressEntry)> = {
-                    let filtered = self.filtered_entries();
-                    filtered
-                        .iter()
-                        .map(|e| {
-                            (
-                                e.display_label.clone(),
-                                self.format_balance(e),
-                                (*e).clone(),
-                            )
-                        })
-                        .collect()
-                };
+                let (filtered, total_entries) = self.filtered_entries();
+                let entries_snapshot: Vec<(String, String, AddressEntry)> = filtered
+                    .iter()
+                    .map(|e| {
+                        (
+                            e.display_label.clone(),
+                            self.format_balance(e),
+                            (*e).clone(),
+                        )
+                    })
+                    .collect();
 
                 if !entries_snapshot.is_empty() {
                     self.autocomplete_open = true;
                     let popup_id = ui.id().with("address_autocomplete");
-                    let total_entries = self
-                        .all_entries
-                        .iter()
-                        .filter(|e| {
-                            if let Some(fk) = self.selected_type_filter {
-                                e.address_kind == fk
-                            } else {
-                                true
-                            }
-                        })
-                        .filter(|e| self.enabled_kinds.contains(&e.address_kind))
-                        .count();
 
                     egui::Area::new(popup_id)
                         .order(egui::Order::Foreground)
@@ -784,7 +783,7 @@ impl AddressInput {
 
             // Keyboard navigation
             if self.autocomplete_open {
-                let filtered_len = self.filtered_entries().len();
+                let filtered_len = self.filtered_entries().0.len();
                 ui.input(|i| {
                     if i.key_pressed(egui::Key::ArrowDown) {
                         self.autocomplete_highlight = Some(
@@ -806,7 +805,7 @@ impl AddressInput {
                     if i.key_pressed(egui::Key::Enter)
                         && let Some(idx) = self.autocomplete_highlight
                     {
-                        let filtered = self.filtered_entries();
+                        let (filtered, _) = self.filtered_entries();
                         if let Some(entry) = filtered.get(idx) {
                             selected_entry = Some((*entry).clone());
                         }
@@ -901,37 +900,16 @@ impl Component for AddressInput {
 /// Priority: Shielded > Platform > Core > Identity (Base58 fallback).
 /// Identity detection only runs when `identity_enabled` is true.
 fn detect_address_type(input: &str, identity_enabled: bool) -> DetectedType {
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
-        return DetectedType::Unknown;
+    // Delegate to AddressKind::detect() with a dummy network (detection is
+    // network-agnostic — it only checks format, not network correctness).
+    match AddressKind::detect(input, Network::Testnet) {
+        Some(AddressKind::Identity) if !identity_enabled => DetectedType::Unknown,
+        Some(AddressKind::Core) => DetectedType::Core,
+        Some(AddressKind::Platform) => DetectedType::Platform,
+        Some(AddressKind::Shielded) => DetectedType::Shielded,
+        Some(AddressKind::Identity) => DetectedType::Identity,
+        None => DetectedType::Unknown,
     }
-
-    // 1. Shielded (dash1z... / tdash1z...)
-    if is_shielded_address(trimmed) {
-        return DetectedType::Shielded;
-    }
-
-    // 2. Platform (Bech32m per DIP-18, but NOT shielded)
-    if crate::ui::helpers::is_platform_address_string(trimmed) {
-        return DetectedType::Platform;
-    }
-
-    // 3. Core (Base58Check)
-    if trimmed.parse::<Address<NetworkUnchecked>>().is_ok() {
-        return DetectedType::Core;
-    }
-
-    // 4. Identity (Base58 fallback, only when enabled)
-    if identity_enabled && Identifier::from_string(trimmed, Encoding::Base58).is_ok() {
-        return DetectedType::Identity;
-    }
-
-    DetectedType::Unknown
-}
-
-/// Check if a string looks like a shielded Orchard address.
-fn is_shielded_address(s: &str) -> bool {
-    s.starts_with("dash1z") || s.starts_with("tdash1z")
 }
 
 /// Truncate an address string for display, showing prefix and suffix.
@@ -1096,7 +1074,41 @@ mod tests {
     #[test]
     fn shielded_address_correct_network_accepted() {
         let input = AddressInput::new(Network::Testnet);
-        let (err, val) = input.validate_shielded("tdash1z_test_addr");
+        // Use a long enough address to pass the minimum length check
+        let long_addr = format!("tdash1z{}", "a".repeat(60));
+        let (err, val) = input.validate_shielded(&long_addr);
+        assert!(err.is_none());
+        assert!(val.is_some());
+    }
+
+    #[test]
+    fn shielded_address_too_short_rejected() {
+        let input = AddressInput::new(Network::Testnet);
+        let (err, val) = input.validate_shielded("tdash1z");
+        assert!(val.is_none());
+        assert_eq!(
+            err.as_deref(),
+            Some("This private address looks incomplete. Please paste the full address.")
+        );
+    }
+
+    #[test]
+    fn shielded_prefix_only_rejected() {
+        let input = AddressInput::new(Network::Mainnet);
+        let (err, val) = input.validate_shielded("dash1z");
+        assert!(val.is_none());
+        assert_eq!(
+            err.as_deref(),
+            Some("This private address looks incomplete. Please paste the full address.")
+        );
+    }
+
+    #[test]
+    fn shielded_address_with_invalid_chars_but_long_enough_accepted() {
+        // Length check only — no character validation beyond prefix
+        let input = AddressInput::new(Network::Testnet);
+        let long_addr = format!("tdash1z{}", "x".repeat(60));
+        let (err, val) = input.validate_shielded(&long_addr);
         assert!(err.is_none());
         assert!(val.is_some());
     }

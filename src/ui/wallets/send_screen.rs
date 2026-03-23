@@ -508,28 +508,8 @@ impl WalletSendScreen {
     /// Detect address kind from the address string.
     ///
     /// Returns `None` for empty or unrecognized input.
-    fn detect_address_kind(address: &str) -> Option<AddressKind> {
-        let trimmed = address.trim();
-        if trimmed.is_empty() {
-            return None;
-        }
-
-        // Check for shielded address (dash1z... or tdash1z...)
-        if trimmed.starts_with("dash1z") || trimmed.starts_with("tdash1z") {
-            return Some(AddressKind::Shielded);
-        }
-
-        // Check for Platform address (Bech32m format per DIP-18)
-        if crate::ui::helpers::is_platform_address_string(trimmed) {
-            return Some(AddressKind::Platform);
-        }
-
-        // Try to parse as Core address
-        if trimmed.parse::<Address<NetworkUnchecked>>().is_ok() {
-            return Some(AddressKind::Core);
-        }
-
-        None
+    fn detect_address_kind(&self, address: &str) -> Option<AddressKind> {
+        AddressKind::detect(address, self.app_context.network)
     }
 
     fn min_output_amount(
@@ -1959,7 +1939,7 @@ impl WalletSendScreen {
         let has_platform_output = self
             .advanced_outputs
             .iter()
-            .any(|o| Self::detect_address_kind(&o.address) == Some(AddressKind::Platform));
+            .any(|o| self.detect_address_kind(&o.address) == Some(AddressKind::Platform));
 
         if self.advanced_source_type == AdvancedSourceType::Platform || has_platform_output {
             ui.label(
@@ -2269,7 +2249,7 @@ impl WalletSendScreen {
         let addr_kinds: Vec<Option<AddressKind>> = self
             .advanced_outputs
             .iter()
-            .map(|o| Self::detect_address_kind(&o.address))
+            .map(|o| self.detect_address_kind(&o.address))
             .collect();
 
         for (idx, &addr_kind) in addr_kinds.iter().enumerate() {
@@ -2440,7 +2420,7 @@ impl WalletSendScreen {
         let output_kinds: Vec<Option<AddressKind>> = self
             .advanced_outputs
             .iter()
-            .map(|o| Self::detect_address_kind(&o.address))
+            .map(|o| self.detect_address_kind(&o.address))
             .collect();
 
         let has_core_output = output_kinds.contains(&Some(AddressKind::Core));

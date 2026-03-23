@@ -60,6 +60,16 @@ pub enum TaskError {
     #[error("Dash Core rejected your credentials. Check your RPC password in settings.")]
     CoreRpcAuthFailed,
 
+    /// Could not connect to Dash Core at the configured address.
+    #[error(
+        "Could not connect to Dash Core at {url}. Check that Dash Core is running and your network settings are correct."
+    )]
+    CoreRpcConnectionFailed {
+        url: String,
+        #[source]
+        source: dashcore_rpc::Error,
+    },
+
     /// A Dash Core RPC call failed.
     #[error("Could not communicate with Dash Core. Check that Dash Core is running and retry.")]
     CoreRpc {
@@ -681,6 +691,21 @@ pub fn is_rpc_auth_error(e: &dashcore_rpc::Error) -> bool {
     false
 }
 
+/// Returns `true` when the RPC error indicates a transport-level connection
+/// failure (refused, reset, timeout) as opposed to a protocol-level error.
+/// Excludes HTTP status code errors (like 401) which are auth, not connection.
+pub fn is_rpc_connection_error(e: &dashcore_rpc::Error) -> bool {
+    if let dashcore_rpc::Error::JsonRpc(dashcore_rpc::jsonrpc::error::Error::Transport(boxed)) = e
+        && let Some(http_err) = boxed.downcast_ref::<dashcore_rpc::jsonrpc::simple_http::Error>()
+    {
+        return matches!(
+            http_err,
+            dashcore_rpc::jsonrpc::simple_http::Error::SocketError(_)
+        );
+    }
+    false
+}
+
 /// Returns `true` when the SDK error indicates an invalid instant asset lock
 /// proof signature — the structured equivalent of the old string-matching
 /// on `"Instant lock proof signature is invalid"`.
@@ -1098,5 +1123,54 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("could not be verified instantly"));
         assert!(msg.contains("included in a block"));
+    }
+
+    #[test]
+    fn is_rpc_connection_error_detects_socket_error() {
+        let socket_err = dashcore_rpc::jsonrpc::simple_http::Error::SocketError(
+            std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "Connection refused"),
+        );
+        let transport_err = dashcore_rpc::jsonrpc::error::Error::Transport(Box::new(socket_err));
+        let rpc_err = dashcore_rpc::Error::JsonRpc(transport_err);
+        assert!(is_rpc_connection_error(&rpc_err));
+    }
+
+    #[test]
+    fn is_rpc_connection_error_ignores_http_error_codes() {
+        let http_err = dashcore_rpc::jsonrpc::simple_http::Error::HttpErrorCode(500);
+        let transport_err = dashcore_rpc::jsonrpc::error::Error::Transport(Box::new(http_err));
+        let rpc_err = dashcore_rpc::Error::JsonRpc(transport_err);
+        assert!(!is_rpc_connection_error(&rpc_err));
+    }
+
+    #[test]
+    fn is_rpc_connection_error_ignores_rpc_errors() {
+        let rpc_err = dashcore_rpc::jsonrpc::error::RpcError {
+            code: -1,
+            message: "Some error".to_string(),
+            data: None,
+        };
+        let err = dashcore_rpc::Error::JsonRpc(dashcore_rpc::jsonrpc::error::Error::Rpc(rpc_err));
+        assert!(!is_rpc_connection_error(&err));
+    }
+
+    #[test]
+    fn connection_failed_display_includes_url() {
+        let socket_err = dashcore_rpc::jsonrpc::simple_http::Error::SocketError(
+            std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "Connection refused"),
+        );
+        let err = TaskError::CoreRpcConnectionFailed {
+            url: "127.0.0.1:9998".to_string(),
+            source: dashcore_rpc::Error::JsonRpc(dashcore_rpc::jsonrpc::error::Error::Transport(
+                Box::new(socket_err),
+            )),
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("127.0.0.1:9998"),
+            "Expected URL in message, got: {msg}"
+        );
+        assert!(msg.contains("Dash Core"));
+        assert!(msg.contains("network settings"));
     }
 }

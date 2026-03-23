@@ -7,7 +7,7 @@ mod start_dash_qt;
 
 use crate::app_dir::core_cookie_path;
 use crate::backend_task::BackendTaskSuccessResult;
-use crate::backend_task::error::{TaskError, is_rpc_auth_error};
+use crate::backend_task::error::{TaskError, is_rpc_auth_error, is_rpc_connection_error};
 use crate::config::{Config, NetworkConfig};
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
@@ -178,7 +178,7 @@ impl AppContext {
                         self.network,
                     ))
                 })
-                .map_err(TaskError::from),
+                .map_err(|e| self.rpc_error_with_url(e)),
             CoreTask::GetBestChainLocks => {
                 // Load configs
                 let config = Config::load_from(&self.data_dir)?;
@@ -195,19 +195,19 @@ impl AppContext {
                 let devnet_result = Self::get_best_chain_lock(maybe_devnet_config, Network::Devnet);
                 let local_result = Self::get_best_chain_lock(maybe_local_config, Network::Regtest);
 
-                // Surface auth errors on the active network instead of
-                // silently degrading to "Disconnected".
-                let active_result = match self.network {
-                    Network::Mainnet => &mainnet_result,
-                    Network::Testnet => &testnet_result,
-                    Network::Devnet => &devnet_result,
-                    Network::Regtest => &local_result,
-                    _ => &mainnet_result,
+                // Surface auth and connection errors on the active network
+                // instead of silently degrading to "Disconnected".
+                let (active_result, active_config) = match self.network {
+                    Network::Mainnet => (&mainnet_result, maybe_mainnet_config),
+                    Network::Testnet => (&testnet_result, maybe_testnet_config),
+                    Network::Devnet => (&devnet_result, maybe_devnet_config),
+                    Network::Regtest => (&local_result, maybe_local_config),
+                    _ => (&mainnet_result, maybe_mainnet_config),
                 };
                 if let Err(e) = active_result
-                    && is_rpc_auth_error(e)
+                    && let Some(task_err) = Self::chain_lock_rpc_error(active_config, e)
                 {
-                    return Err(TaskError::CoreRpcAuthFailed);
+                    return Err(task_err);
                 }
 
                 // Convert each to Option<ChainLock> (flatten Ok(None) and Err into None)
@@ -479,6 +479,40 @@ impl AppContext {
         };
 
         client.get_best_chain_lock().map(Some)
+    }
+
+    /// Convert a `dashcore_rpc::Error` from `get_best_chain_lock` into a
+    /// `TaskError`, enriching connection failures with host:port.
+    fn chain_lock_rpc_error(
+        config: &Option<NetworkConfig>,
+        e: &dashcore_rpc::Error,
+    ) -> Option<TaskError> {
+        if is_rpc_auth_error(e) {
+            return Some(TaskError::CoreRpcAuthFailed);
+        }
+        if is_rpc_connection_error(e) {
+            let url = config
+                .as_ref()
+                .map(|c| format!("{}:{}", c.core_host, c.core_rpc_port))
+                .unwrap_or_else(|| "unknown".to_string());
+            // We can't move the error since we only have a reference, so we
+            // create the generic variant without a source.  The user-facing
+            // message already contains the URL which is the actionable part.
+            return Some(TaskError::CoreRpcConnectionFailed {
+                url,
+                source: dashcore_rpc::Error::JsonRpc(
+                    dashcore_rpc::jsonrpc::error::Error::Transport(Box::new(
+                        dashcore_rpc::jsonrpc::simple_http::Error::SocketError(
+                            std::io::Error::new(
+                                std::io::ErrorKind::ConnectionRefused,
+                                format!("{e}"),
+                            ),
+                        ),
+                    )),
+                ),
+            });
+        }
+        None
     }
 
     async fn send_wallet_payment(

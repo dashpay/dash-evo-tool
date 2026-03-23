@@ -1244,11 +1244,20 @@ impl App for AppState {
                     if !handled {
                         let msg = err.to_string();
                         let handle = MessageBanner::set_global(ctx, &msg, MessageType::Error);
-                        if self.current_app_context().is_developer_mode() {
+                        // Always show details for RPC connection errors (users
+                        // need the host:port info to diagnose).  Show details
+                        // for all other errors only in developer mode.
+                        if matches!(
+                            err,
+                            TaskError::CoreRpc { .. }
+                                | TaskError::CoreRpcConnectionFailed { .. }
+                                | TaskError::CoreRpcAuthFailed
+                        ) || self.current_app_context().is_developer_mode()
+                        {
                             // INTENTIONAL(SEC-003): TaskError Debug output is shown to users
-                            // in developer mode. This is a local UI app — no third parties
-                            // see this output. Ensure inner error types don't expose secrets
-                            // (see #667).
+                            // for RPC errors and in developer mode. This is a local UI app —
+                            // no third parties see this output. Ensure inner error types
+                            // don't expose secrets (see #667).
                             handle.with_details(&err);
                         }
                         self.visible_screen_mut()

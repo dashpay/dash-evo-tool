@@ -3,6 +3,7 @@
 //! `Display` → user-friendly text (shown in `MessageBanner`).
 //! `Debug` → variant name + fields (logged and shown in collapsible details).
 
+use crate::model::fee_estimation::format_credits_as_dash;
 use dash_sdk::Error as SdkError;
 use dash_sdk::dashcore_rpc;
 use dash_sdk::dpp::ProtocolError;
@@ -319,8 +320,10 @@ pub enum TaskError {
 
     /// The identity doesn't have enough Platform credits for this operation.
     #[error(
-        "Not enough Platform credits. Your identity has {available} credits \
-         but this operation requires {required}. Please top up your identity first."
+        "Not enough balance. You have {available_dash} but this operation requires {required_dash}. \
+         Please top up your identity first.",
+        available_dash = format_credits_as_dash(*.available),
+        required_dash = format_credits_as_dash(*.required)
     )]
     IdentityInsufficientBalance {
         available: u64,
@@ -659,12 +662,12 @@ pub enum TaskError {
     ShieldedTransitionBuildFailed { detail: String },
 
     /// The shielded note witnesses are stale — the commitment tree changed since sync.
-    #[error("Your shielded notes are out of sync. Please sync your shielded wallet and retry.")]
+    #[error("Your wallet data is slightly outdated. Please wait a moment and try again.")]
     ShieldedAnchorMismatch { detail: String },
 
     /// The amount plus network fee exceeds the spendable shielded balance.
     #[error(
-        "The amount plus the network fee ({fee_dash}) exceeds your shielded balance. Reduce the amount or shield more credits.",
+        "The amount plus the network fee ({fee_dash}) exceeds your available balance. Reduce the amount or add more funds.",
         fee_dash = format_credits_as_dash(*.fee)
     )]
     ShieldedFeeExceedsBalance {
@@ -684,7 +687,7 @@ pub enum TaskError {
 
     /// The shielded pool does not have enough notes for an outgoing transaction.
     #[error(
-        "The shielded pool needs more participants before you can unshield. The pool has {current_count} notes but requires at least {minimum_required}. Please try again later as more users join the pool."
+        "This type of transaction is not available right now because the network needs more activity. Please try again later."
     )]
     ShieldedInsufficientPoolNotes {
         current_count: u64,
@@ -762,11 +765,6 @@ pub fn is_instant_lock_proof_invalid(error: &SdkError) -> bool {
             BasicError::InvalidInstantAssetLockProofSignatureError(_),
         ))
     )
-}
-
-/// Format a credit amount as Dash using `Amount`'s Display implementation.
-fn format_credits_as_dash(credits: u64) -> String {
-    crate::model::amount::Amount::dash_from_credits(credits).to_string()
 }
 
 // TODO: Replace string parsing with a pre-check on amount + fee > spendable
@@ -1372,12 +1370,8 @@ mod tests {
         let err = TaskError::from(sdk_err);
         let msg = err.to_string();
         assert!(
-            msg.contains("12656420"),
-            "Expected available balance in message, got: {msg}"
-        );
-        assert!(
-            msg.contains("42332820"),
-            "Expected required balance in message, got: {msg}"
+            msg.contains("DASH"),
+            "Expected DASH amounts in message, got: {msg}"
         );
         assert!(
             msg.contains("top up"),
@@ -1528,17 +1522,19 @@ mod tests {
     }
 
     #[test]
-    fn insufficient_pool_notes_display_includes_counts() {
+    fn insufficient_pool_notes_display_is_user_friendly() {
         use dash_sdk::dpp::consensus::state::shielded::insufficient_pool_notes_error::InsufficientPoolNotesError;
         let consensus = ConsensusError::from(InsufficientPoolNotesError::new(14, 250));
         let sdk_err = SdkError::from(consensus);
         let err = TaskError::from(sdk_err);
         let msg = err.to_string();
-        assert!(msg.contains("14"), "Expected current count, got: {msg}");
-        assert!(msg.contains("250"), "Expected minimum required, got: {msg}");
         assert!(
             msg.contains("try again later"),
             "Expected actionable guidance, got: {msg}"
+        );
+        assert!(
+            !msg.contains("14") && !msg.contains("250"),
+            "Expected no technical counts in user message, got: {msg}"
         );
     }
 
@@ -1594,8 +1590,12 @@ mod tests {
         };
         let msg = err.to_string();
         assert!(
-            msg.contains("out of sync"),
-            "Expected sync message, got: {msg}"
+            msg.contains("try again"),
+            "Expected actionable guidance, got: {msg}"
+        );
+        assert!(
+            !msg.contains("sync") && !msg.contains("anchor"),
+            "Expected no ZK jargon in user message, got: {msg}"
         );
     }
 }

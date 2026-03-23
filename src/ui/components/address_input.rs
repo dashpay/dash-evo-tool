@@ -358,12 +358,16 @@ impl AddressInput {
                 } else {
                     truncate_address(&addr_str)
                 };
+                let bech32m = addr_str.clone();
                 self.all_entries.push(AddressEntry {
                     address_string: addr_str,
                     address_kind: AddressKind::Platform,
                     display_label: display,
                     balance: info.balance,
-                    validated: ValidatedAddress::Platform(platform_addr),
+                    validated: ValidatedAddress::Platform {
+                        address: platform_addr,
+                        bech32m,
+                    },
                 });
             }
         }
@@ -504,7 +508,13 @@ impl AddressInput {
             );
         }
         match PlatformAddress::from_bech32m_string(&canonical) {
-            Ok((pa, _network)) => (None, Some(ValidatedAddress::Platform(pa))),
+            Ok((pa, _network)) => (
+                None,
+                Some(ValidatedAddress::Platform {
+                    address: pa,
+                    bech32m: canonical,
+                }),
+            ),
             Err(_) => (
                 Some("This does not look like a valid address.".to_string()),
                 None,
@@ -533,7 +543,27 @@ impl AddressInput {
                 None,
             );
         }
-        (None, Some(ValidatedAddress::Shielded(trimmed.to_string())))
+        use dash_sdk::dpp::address_funds::OrchardAddress;
+        match OrchardAddress::from_bech32m_string(trimmed) {
+            Ok((_, network)) => {
+                if network != self.network
+                    && !(self.network != Network::Mainnet && network != Network::Mainnet)
+                {
+                    (
+                        Some("This address belongs to a different network.".to_string()),
+                        None,
+                    )
+                } else {
+                    (None, Some(ValidatedAddress::Shielded(trimmed.to_string())))
+                }
+            }
+            Err(_) => (
+                Some(
+                    "This private address is not valid. Please check it and try again.".to_string(),
+                ),
+                None,
+            ),
+        }
     }
 
     fn validate_identity(&self, trimmed: &str) -> (Option<String>, Option<ValidatedAddress>) {
@@ -914,11 +944,19 @@ fn detect_address_type(input: &str, identity_enabled: bool) -> DetectedType {
 
 /// Truncate an address string for display, showing prefix and suffix.
 fn truncate_address(addr: &str) -> String {
-    if addr.len() <= 16 {
-        addr.to_string()
-    } else {
-        format!("{}...{}", &addr[..8], &addr[addr.len() - 6..])
+    if addr.chars().count() <= 16 {
+        return addr.to_string();
     }
+    let prefix: String = addr.chars().take(8).collect();
+    let suffix: String = addr
+        .chars()
+        .rev()
+        .take(6)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    format!("{prefix}...{suffix}")
 }
 
 #[cfg(test)]
@@ -1072,16 +1110,6 @@ mod tests {
     }
 
     #[test]
-    fn shielded_address_correct_network_accepted() {
-        let input = AddressInput::new(Network::Testnet);
-        // Use a long enough address to pass the minimum length check
-        let long_addr = format!("tdash1z{}", "a".repeat(60));
-        let (err, val) = input.validate_shielded(&long_addr);
-        assert!(err.is_none());
-        assert!(val.is_some());
-    }
-
-    #[test]
     fn shielded_address_too_short_rejected() {
         let input = AddressInput::new(Network::Testnet);
         let (err, val) = input.validate_shielded("tdash1z");
@@ -1104,13 +1132,15 @@ mod tests {
     }
 
     #[test]
-    fn shielded_address_with_invalid_chars_but_long_enough_accepted() {
-        // Length check only — no character validation beyond prefix
+    fn shielded_address_with_invalid_chars_rejected() {
         let input = AddressInput::new(Network::Testnet);
         let long_addr = format!("tdash1z{}", "x".repeat(60));
         let (err, val) = input.validate_shielded(&long_addr);
-        assert!(err.is_none());
-        assert!(val.is_some());
+        assert!(val.is_none());
+        assert_eq!(
+            err.as_deref(),
+            Some("This private address is not valid. Please check it and try again.")
+        );
     }
 
     // --- Enabled type restriction tests ---
@@ -1208,6 +1238,19 @@ mod tests {
     fn truncate_address_boundary_17_truncated() {
         let result = truncate_address("12345678901234567");
         assert_eq!(result, "12345678...234567");
+    }
+
+    #[test]
+    fn truncate_address_non_ascii_does_not_panic() {
+        let addr = "\u{1F355}dash1ztestaddr\u{1F389}longstringpadding";
+        let result = truncate_address(addr);
+        assert!(result.contains("..."));
+    }
+
+    #[test]
+    fn truncate_address_multibyte_short_unchanged() {
+        let addr = "\u{00E9}\u{00E9}\u{00E9}abc";
+        assert_eq!(truncate_address(addr), addr);
     }
 
     // --- BalanceRange tests ---

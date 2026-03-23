@@ -1356,6 +1356,8 @@ impl WalletSendScreen {
                     let mut selected = is_core_selected;
                     if ui.radio_value(&mut selected, true, "").changed() && selected {
                         self.selected_source = Some(SourceSelection::CoreWallet);
+                        self.address_input = None;
+                        self.validated_destination = None;
                     }
                     ui.label(
                         RichText::new("Core Wallet")
@@ -1412,6 +1414,8 @@ impl WalletSendScreen {
                                 .collect();
                             self.selected_source =
                                 Some(SourceSelection::PlatformAddresses(addresses_with_balances));
+                            self.address_input = None;
+                            self.validated_destination = None;
                         }
                         ui.label(
                             RichText::new("Platform Addresses")
@@ -1458,6 +1462,8 @@ impl WalletSendScreen {
                         if ui.radio_value(&mut selected, true, "").changed() && selected {
                             self.selected_source =
                                 Some(SourceSelection::Shielded(seed_hash, balance));
+                            self.address_input = None;
+                            self.validated_destination = None;
                         }
                         ui.label(
                             RichText::new("Shielded Balance")
@@ -1478,9 +1484,23 @@ impl WalletSendScreen {
 
     fn render_destination_input(&mut self, ui: &mut Ui) {
         let addr_input = self.address_input.get_or_insert_with(|| {
+            let allowed_kinds = match &self.selected_source {
+                Some(SourceSelection::CoreWallet) => {
+                    vec![AddressKind::Core, AddressKind::Platform]
+                }
+                Some(SourceSelection::PlatformAddresses(_)) => {
+                    vec![AddressKind::Platform, AddressKind::Core]
+                }
+                Some(SourceSelection::Shielded(..)) => {
+                    vec![AddressKind::Shielded, AddressKind::Platform]
+                }
+                None => AddressKind::ALL.to_vec(),
+            };
+
             let mut builder = AddressInput::new(self.app_context.network)
                 .with_label("Send to")
-                .with_hint_text("Enter address (X.../y.../dash1.../tdash1...)");
+                .with_hint_text("Enter address (X.../y.../dash1.../tdash1...)")
+                .with_address_kinds(&allowed_kinds);
 
             // Provide wallet data for autocomplete if available
             if let Some(wallet) = &self.selected_wallet {

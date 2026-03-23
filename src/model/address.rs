@@ -91,8 +91,11 @@ impl std::fmt::Display for AddressKind {
 pub enum ValidatedAddress {
     /// A validated Core L1 address.
     Core(Address),
-    /// A validated Platform L2 address.
-    Platform(PlatformAddress),
+    /// A validated Platform L2 address with its canonical bech32m encoding.
+    Platform {
+        address: PlatformAddress,
+        bech32m: String,
+    },
     /// A validated shielded Orchard address (stored as the raw string).
     Shielded(String),
     /// A validated identity identifier with optional DPNS name.
@@ -109,7 +112,7 @@ impl ValidatedAddress {
     pub fn kind(&self) -> AddressKind {
         match self {
             Self::Core(_) => AddressKind::Core,
-            Self::Platform(_) => AddressKind::Platform,
+            Self::Platform { .. } => AddressKind::Platform,
             Self::Shielded(_) => AddressKind::Shielded,
             Self::Identity { .. } => AddressKind::Identity,
         }
@@ -119,7 +122,7 @@ impl ValidatedAddress {
     pub fn to_address_string(&self) -> String {
         match self {
             Self::Core(addr) => addr.to_string(),
-            Self::Platform(addr) => format!("{}", addr),
+            Self::Platform { bech32m, .. } => bech32m.clone(),
             Self::Shielded(s) => s.clone(),
             Self::Identity { id, .. } => {
                 id.to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58)
@@ -138,7 +141,7 @@ impl ValidatedAddress {
     /// Returns the platform address if this is a Platform variant.
     pub fn as_platform(&self) -> Option<&PlatformAddress> {
         match self {
-            Self::Platform(addr) => Some(addr),
+            Self::Platform { address, .. } => Some(address),
             _ => None,
         }
     }
@@ -164,7 +167,7 @@ impl std::fmt::Display for ValidatedAddress {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Core(addr) => write!(f, "{}", addr),
-            Self::Platform(addr) => write!(f, "{}", addr),
+            Self::Platform { bech32m, .. } => write!(f, "{}", bech32m),
             Self::Shielded(s) => write!(f, "{}", s),
             Self::Identity {
                 id,

@@ -200,7 +200,7 @@ impl ScreenLike for UnshieldCreditsScreen {
                         && let Some(amount) = self.parse_amount_credits()
                     {
                         match &self.validated_destination {
-                            Some(ValidatedAddress::Platform(addr)) => {
+                            Some(ValidatedAddress::Platform { address: addr, .. }) => {
                                 self.status = Status::WaitingForResult;
                                 self.error_message = None;
                                 action = AppAction::BackendTask(BackendTask::ShieldedTask(

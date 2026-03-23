@@ -4,7 +4,7 @@ use rusqlite::{Connection, params};
 use std::fs;
 use std::path::Path;
 
-pub const DEFAULT_DB_VERSION: u16 = 29;
+pub const DEFAULT_DB_VERSION: u16 = 33;
 
 pub const DEFAULT_NETWORK: &str = "mainnet";
 
@@ -51,13 +51,22 @@ impl Database {
 
     fn apply_version_changes(&self, version: u16, tx: &Connection) -> rusqlite::Result<()> {
         match version {
-            29 => {
-                self.rename_network_dash_to_mainnet(tx)?;
-                self.add_wallet_transaction_status_column(tx)?;
-            }
-            28 => {
+            // Versions 28-32 were consolidated into v33 to resolve migration
+            // numbering conflicts between the zk and v1.0-dev branches.
+            // If migrating from < 28, these are no-ops that just bump the version.
+            28..=32 => {}
+            33 => {
+                // Consolidated migration: all changes from v28-v32 in one step.
+                // Every sub-migration is idempotent (IF NOT EXISTS / column checks),
+                // so this is safe to run on any DB that already applied some or all
+                // of the individual steps.
                 self.add_core_wallet_name_column(tx)?;
                 self.init_contacts_tables(tx)?;
+                self.create_shielded_tables(tx)?;
+                self.create_shielded_wallet_meta_table(tx)?;
+                self.add_nullifier_sync_timestamp_column(tx)?;
+                self.rename_network_dash_to_mainnet(tx)?;
+                self.add_wallet_transaction_status_column(tx)?;
             }
             27 => {
                 self.add_network_indexes(tx)?;
@@ -515,6 +524,10 @@ impl Database {
         // Initialize single key wallet table
         self.initialize_single_key_wallet_table(&conn)?;
 
+        // Initialize shielded pool tables
+        self.create_shielded_tables(&conn)?;
+        self.create_shielded_wallet_meta_table(&conn)?;
+
         Ok(())
     }
 
@@ -924,6 +937,65 @@ impl Database {
         Ok(())
     }
 
+    /// Create shielded pool tables. Idempotent (IF NOT EXISTS).
+    fn create_shielded_tables(&self, conn: &Connection) -> rusqlite::Result<()> {
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS shielded_notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                wallet_seed_hash BLOB NOT NULL,
+                note_data BLOB NOT NULL,
+                position INTEGER NOT NULL,
+                cmx BLOB NOT NULL,
+                nullifier BLOB NOT NULL,
+                block_height INTEGER NOT NULL,
+                is_spent INTEGER NOT NULL DEFAULT 0,
+                value INTEGER NOT NULL,
+                network TEXT NOT NULL,
+                UNIQUE(wallet_seed_hash, nullifier, network),
+                FOREIGN KEY (wallet_seed_hash) REFERENCES wallet(seed_hash) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_shielded_notes_wallet_network
+             ON shielded_notes (wallet_seed_hash, network)",
+            [],
+        )?;
+        Ok(())
+    }
+
+    /// Create shielded wallet metadata table. Idempotent (IF NOT EXISTS).
+    fn create_shielded_wallet_meta_table(&self, conn: &Connection) -> rusqlite::Result<()> {
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS shielded_wallet_meta (
+                wallet_seed_hash BLOB NOT NULL,
+                network TEXT NOT NULL,
+                last_nullifier_sync_height INTEGER NOT NULL DEFAULT 0,
+                last_nullifier_sync_timestamp INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (wallet_seed_hash, network),
+                FOREIGN KEY (wallet_seed_hash) REFERENCES wallet(seed_hash) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+        Ok(())
+    }
+
+    /// Add last_nullifier_sync_timestamp column to shielded_wallet_meta. Idempotent.
+    fn add_nullifier_sync_timestamp_column(&self, conn: &Connection) -> rusqlite::Result<()> {
+        let has_column: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('shielded_wallet_meta') WHERE name='last_nullifier_sync_timestamp'",
+            [],
+            |row| row.get::<_, i32>(0).map(|count| count > 0),
+        )?;
+        if !has_column {
+            conn.execute(
+                "ALTER TABLE shielded_wallet_meta ADD COLUMN last_nullifier_sync_timestamp INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
+        Ok(())
+    }
+
     fn rename_network_dash_to_mainnet(&self, conn: &Connection) -> rusqlite::Result<()> {
         let tables = [
             "settings",
@@ -943,6 +1015,8 @@ impl Database {
             "wallet_transactions",
             "single_key_wallet",
             "token",
+            "shielded_notes",
+            "shielded_wallet_meta",
         ];
         for table in tables {
             conn.execute(

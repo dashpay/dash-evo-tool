@@ -929,6 +929,9 @@ impl Database {
             |row| row.get::<_, i32>(0).map(|count| count > 0),
         )?;
         if !has_status {
+            // DEFAULT 2 (Confirmed) for migration: existing transactions predate status
+            // tracking and are assumed confirmed. Fresh installs use DEFAULT 0 (Unconfirmed)
+            // in the CREATE TABLE (wallet.rs).
             conn.execute(
                 "ALTER TABLE wallet_transactions ADD COLUMN status INTEGER NOT NULL DEFAULT 2",
                 [],

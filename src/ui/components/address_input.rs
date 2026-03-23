@@ -435,7 +435,8 @@ impl AddressInput {
             return (None, None);
         }
 
-        // In selection-only mode, manual input that does not match an entry is rejected.
+        // In selection-only mode, all manual input is rejected. Users must select
+        // an address from the autocomplete dropdown.
         if self.selection_only {
             return (
                 Some("Please select an address from the list.".to_string()),
@@ -494,6 +495,17 @@ impl AddressInput {
     }
 
     fn validate_platform(&self, trimmed: &str) -> (Option<String>, Option<ValidatedAddress>) {
+        // BIP-350: bech32m must be either all-lowercase or all-uppercase; mixed case is invalid.
+        let is_lower = trimmed.chars().all(|c| !c.is_ascii_uppercase());
+        let is_upper = trimmed.chars().all(|c| !c.is_ascii_lowercase());
+        if !is_lower && !is_upper {
+            return (
+                Some(
+                    "Platform addresses must not mix upper and lower case characters.".to_string(),
+                ),
+                None,
+            );
+        }
         let canonical = trimmed.to_lowercase();
         let expected_prefix = match self.network {
             Network::Mainnet => "dash1",
@@ -679,7 +691,7 @@ impl AddressInput {
                             .selected_type_filter
                             .map(|t| t.display_name())
                             .unwrap_or("All");
-                        egui::ComboBox::from_id_salt("address_type_filter")
+                        egui::ComboBox::from_id_salt(ui.id().with("address_type_filter"))
                             .selected_text(current_label)
                             .width(120.0)
                             .show_ui(ui, |ui| {
@@ -739,6 +751,7 @@ impl AddressInput {
             if has_focus && self.input_text.trim().len() >= 3 {
                 // Collect filtered entries into an owned snapshot to release the borrow on self
                 let (filtered, total_entries) = self.filtered_entries();
+                let filtered_len = filtered.len();
                 let entries_snapshot: Vec<(String, String, AddressEntry)> = filtered
                     .iter()
                     .map(|e| {
@@ -804,6 +817,33 @@ impl AddressInput {
                                     });
                             });
                         });
+
+                    // Keyboard navigation (uses snapshot data, no recomputation)
+                    ui.input(|i| {
+                        if i.key_pressed(egui::Key::ArrowDown) {
+                            self.autocomplete_highlight = Some(
+                                self.autocomplete_highlight
+                                    .map(|h| (h + 1).min(filtered_len.saturating_sub(1)))
+                                    .unwrap_or(0),
+                            );
+                        }
+                        if i.key_pressed(egui::Key::ArrowUp) {
+                            self.autocomplete_highlight = self
+                                .autocomplete_highlight
+                                .map(|h| h.saturating_sub(1))
+                                .or(Some(0));
+                        }
+                        if i.key_pressed(egui::Key::Escape) {
+                            self.autocomplete_open = false;
+                            self.autocomplete_highlight = None;
+                        }
+                        if i.key_pressed(egui::Key::Enter)
+                            && let Some(idx) = self.autocomplete_highlight
+                            && let Some((_, _, entry)) = entries_snapshot.get(idx)
+                        {
+                            selected_entry = Some(entry.clone());
+                        }
+                    });
                 } else {
                     self.autocomplete_open = false;
                 }
@@ -811,42 +851,12 @@ impl AddressInput {
                 self.autocomplete_open = false;
             }
 
-            // Keyboard navigation
-            if self.autocomplete_open {
-                let filtered_len = self.filtered_entries().0.len();
-                ui.input(|i| {
-                    if i.key_pressed(egui::Key::ArrowDown) {
-                        self.autocomplete_highlight = Some(
-                            self.autocomplete_highlight
-                                .map(|h| (h + 1).min(filtered_len.saturating_sub(1)))
-                                .unwrap_or(0),
-                        );
-                    }
-                    if i.key_pressed(egui::Key::ArrowUp) {
-                        self.autocomplete_highlight = self
-                            .autocomplete_highlight
-                            .map(|h| h.saturating_sub(1))
-                            .or(Some(0));
-                    }
-                    if i.key_pressed(egui::Key::Escape) {
-                        self.autocomplete_open = false;
-                        self.autocomplete_highlight = None;
-                    }
-                    if i.key_pressed(egui::Key::Enter)
-                        && let Some(idx) = self.autocomplete_highlight
-                    {
-                        let (filtered, _) = self.filtered_entries();
-                        if let Some(entry) = filtered.get(idx) {
-                            selected_entry = Some((*entry).clone());
-                        }
-                    }
-                });
-            }
-
-            // Handle autocomplete selection
+            // Handle autocomplete selection (FIX 7: clear cached_detection)
+            let selected_this_frame = selected_entry.is_some();
             if let Some(entry) = selected_entry {
                 self.input_text = entry.address_string.clone();
                 self.selected_from_autocomplete = true;
+                self.cached_detection = None;
                 self.autocomplete_open = false;
                 self.autocomplete_highlight = None;
                 self.has_blurred = true;
@@ -880,7 +890,10 @@ impl AddressInput {
             }
 
             // Build response
-            let changed = text_changed || self.selected_from_autocomplete || self.changed;
+            // FIX 1: blur validation produces a result => signal changed
+            let blur_validated = lost_focus && validated_address.is_some();
+            // FIX 2: use one-frame local flag for autocomplete selection
+            let changed = text_changed || selected_this_frame || self.changed || blur_validated;
             if self.changed {
                 self.changed = false;
             }
@@ -1360,5 +1373,73 @@ mod tests {
         let va = ValidatedAddress::Shielded("dash1z_test".to_string());
         assert_eq!(va.kind(), AddressKind::Shielded);
         assert_eq!(va.to_address_string(), "dash1z_test");
+    }
+
+    // --- FIX 1: Blur validation propagation ---
+
+    #[test]
+    fn blur_triggers_validation_for_valid_core_address() {
+        let (addr_str, _) = testnet_core_address();
+        let mut input = AddressInput::new(Network::Testnet);
+        input.input_text = addr_str;
+        // Simulate blur: has_blurred is set when focus leaves with non-empty input
+        input.has_blurred = true;
+        let (err, val) = input.validate_input();
+        assert!(err.is_none(), "valid address after blur should not error");
+        assert!(
+            val.is_some(),
+            "valid address after blur should produce a validated address"
+        );
+    }
+
+    #[test]
+    fn current_value_returns_validated_after_blur() {
+        let (addr_str, _) = testnet_core_address();
+        let mut input = AddressInput::new(Network::Testnet);
+        input.input_text = addr_str;
+        input.has_blurred = true;
+        let val = input.current_value();
+        assert!(
+            val.is_some(),
+            "current_value should return validated address after blur"
+        );
+        assert_eq!(val.unwrap().kind(), AddressKind::Core);
+    }
+
+    // --- FIX 4: Mixed-case bech32m rejection ---
+
+    #[test]
+    fn platform_mixed_case_rejected() {
+        let input = AddressInput::new(Network::Testnet);
+        let (err, val) = input.validate_platform("tDash1qwer1234");
+        assert!(val.is_none(), "mixed-case bech32m should be rejected");
+        assert_eq!(
+            err.as_deref(),
+            Some("Platform addresses must not mix upper and lower case characters.")
+        );
+    }
+
+    #[test]
+    fn platform_all_lowercase_accepted_for_case_check() {
+        let input = AddressInput::new(Network::Testnet);
+        // This will fail bech32m parsing, but should NOT fail the case check
+        let (err, _) = input.validate_platform("tdash1qwer1234");
+        assert_ne!(
+            err.as_deref(),
+            Some("Platform addresses must not mix upper and lower case characters."),
+            "all-lowercase should pass the case check"
+        );
+    }
+
+    #[test]
+    fn platform_all_uppercase_accepted_for_case_check() {
+        let input = AddressInput::new(Network::Testnet);
+        // All-uppercase is valid per BIP-350 (will fail other checks, but not case)
+        let (err, _) = input.validate_platform("TDASH1QWER1234");
+        assert_ne!(
+            err.as_deref(),
+            Some("Platform addresses must not mix upper and lower case characters."),
+            "all-uppercase should pass the case check"
+        );
     }
 }

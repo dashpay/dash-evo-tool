@@ -143,13 +143,13 @@ impl ScreenLike for UnshieldCreditsScreen {
                 Some(AddressKind::Platform) => {
                     ui.colored_label(
                         Color32::DARK_GREEN,
-                        "Platform address — will unshield to platform (Type 17)",
+                        "Platform address — credits will be moved to this platform address",
                     );
                 }
                 Some(AddressKind::Core) => {
                     ui.colored_label(
                         Color32::DARK_GREEN,
-                        "Core address — will withdraw to core DASH (Type 19)",
+                        "Core address — credits will be withdrawn as DASH to this address",
                     );
                 }
                 _ => {}

@@ -681,10 +681,7 @@ impl WalletSendScreen {
         }
     }
 
-    /// Returns the detected address kind for the current destination.
-    ///
-    /// Uses the validated address if available (simple mode with AddressInput),
-    /// otherwise falls back to raw string detection (advanced mode outputs).
+    /// Returns the address kind of the current validated destination, if any.
     fn destination_kind(&self) -> Option<AddressKind> {
         self.validated_destination.as_ref().map(|v| v.kind())
     }

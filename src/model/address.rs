@@ -35,7 +35,7 @@ impl AddressKind {
         }
     }
 
-    /// All address kinds in detection priority order.
+    /// All supported address kinds.
     pub const ALL: [AddressKind; 4] = [
         AddressKind::Core,
         AddressKind::Platform,

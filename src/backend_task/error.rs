@@ -57,9 +57,7 @@ pub enum TaskError {
     CoreWalletNotConfigured,
 
     /// Dash Core RPC rejected the request due to invalid credentials (HTTP 401).
-    #[error(
-        "Dash Core rejected your credentials. Check your RPC username and password in settings."
-    )]
+    #[error("Dash Core rejected your credentials. Check your RPC password in settings.")]
     CoreRpcAuthFailed,
 
     /// A Dash Core RPC call failed.
@@ -849,7 +847,7 @@ mod tests {
     fn rpc_http_401_display_mentions_credentials() {
         let msg = TaskError::CoreRpcAuthFailed.to_string();
         assert!(msg.contains("credentials"));
-        assert!(msg.contains("username and password"));
+        assert!(msg.contains("RPC password"));
     }
 
     #[test]

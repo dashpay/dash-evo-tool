@@ -661,7 +661,7 @@ pub enum TaskError {
 
     /// The amount plus network fee exceeds the spendable shielded balance.
     #[error(
-        "The amount plus the network fee ({fee_dash} Dash) exceeds your shielded balance. Reduce the amount or shield more credits.",
+        "The amount plus the network fee ({fee_dash}) exceeds your shielded balance. Reduce the amount or shield more credits.",
         fee_dash = format_credits_as_dash(*.fee)
     )]
     ShieldedFeeExceedsBalance {
@@ -761,15 +761,9 @@ pub fn is_instant_lock_proof_invalid(error: &SdkError) -> bool {
     )
 }
 
-/// Format a credit amount as Dash with 4 decimal places.
-///
-/// Credits use 10^11 as the conversion factor (not satoshis).
+/// Format a credit amount as Dash using `Amount`'s Display implementation.
 fn format_credits_as_dash(credits: u64) -> String {
-    let whole = credits / 100_000_000_000;
-    let frac = credits % 100_000_000_000;
-    // 4 decimal places: divide fractional part by 10^7 to get 4 digits
-    let four_digits = frac / 10_000_000;
-    format!("{whole}.{four_digits:04}")
+    crate::model::amount::Amount::dash_from_credits(credits).to_string()
 }
 
 // TODO: Replace string parsing with a pre-check on amount + fee > spendable
@@ -1481,10 +1475,10 @@ mod tests {
 
     #[test]
     fn format_credits_as_dash_basic() {
-        assert_eq!(format_credits_as_dash(100_000_000_000), "1.0000");
-        assert_eq!(format_credits_as_dash(180_841_600), "0.0018");
-        assert_eq!(format_credits_as_dash(0), "0.0000");
-        assert_eq!(format_credits_as_dash(250_000_000_000), "2.5000");
+        assert_eq!(format_credits_as_dash(100_000_000_000), "1 DASH");
+        assert_eq!(format_credits_as_dash(180_841_600), "0.001808416 DASH");
+        assert_eq!(format_credits_as_dash(0), "0 DASH");
+        assert_eq!(format_credits_as_dash(250_000_000_000), "2.5 DASH");
     }
 
     #[test]

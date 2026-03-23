@@ -324,6 +324,13 @@ impl Amount {
         Self::new(credits, DASH_DECIMAL_PLACES).with_unit_name("DASH")
     }
 
+    /// Return Amount representing Dash currency equal to the given credits.
+    ///
+    /// 1 DASH = 10^11 credits (100 billion).
+    pub fn dash_from_credits(credits: u64) -> Self {
+        Self::new(credits, DASH_DECIMAL_PLACES).with_unit_name("DASH")
+    }
+
     /// Returns the DASH amount as duffs, rounded down to the nearest integer.
     ///
     /// ## Returns

@@ -3,9 +3,11 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
 use crate::backend_task::wallet::WalletTask;
 use crate::context::AppContext;
+use crate::model::address::{AddressKind, ValidatedAddress};
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::wallet::{Wallet, WalletSeedHash};
+use crate::ui::components::address_input::AddressInput;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::components::left_panel::add_left_panel;
@@ -262,15 +264,6 @@ fn allocate_platform_addresses(
     })
 }
 
-/// Detected address type
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AddressType {
-    Core,
-    Platform,
-    Shielded,
-    Unknown,
-}
-
 /// Source selection for sending
 #[derive(Debug, Clone, PartialEq)]
 pub enum SourceSelection {
@@ -373,7 +366,8 @@ pub struct WalletSendScreen {
 
     // Unified send fields (simple mode)
     selected_source: Option<SourceSelection>,
-    destination_address: String,
+    address_input: Option<AddressInput>,
+    validated_destination: Option<ValidatedAddress>,
     amount: Option<Amount>,
     amount_input: Option<AmountInput>,
 
@@ -407,7 +401,8 @@ impl WalletSendScreen {
             selected_wallet: Some(wallet),
             selected_wallet_seed_hash: seed_hash,
             selected_source: Some(SourceSelection::CoreWallet),
-            destination_address: String::new(),
+            address_input: None,
+            validated_destination: None,
             amount: None,
             amount_input: None,
             show_advanced_options: false,
@@ -445,14 +440,12 @@ impl WalletSendScreen {
             return estimate_platform_fee(fee_estimator, 1);
         }
 
-        let dest_type = Self::detect_address_type(&self.destination_address);
-        if dest_type == AddressType::Core {
+        let dest_kind = self.validated_destination.as_ref().map(|v| v.kind());
+        if dest_kind == Some(AddressKind::Core) {
             let output_script = self
-                .destination_address
-                .trim()
-                .parse::<Address<NetworkUnchecked>>()
-                .ok()
-                .and_then(|addr| addr.require_network(self.app_context.network).ok())
+                .validated_destination
+                .as_ref()
+                .and_then(|v| v.as_core())
                 .map(|addr| CoreScript::new(addr.script_pubkey()));
             if let Some(output_script) = output_script {
                 let max_fee_inputs: BTreeMap<PlatformAddress, u64> = sorted_addresses
@@ -472,7 +465,8 @@ impl WalletSendScreen {
     }
 
     fn reset_form(&mut self) {
-        self.destination_address.clear();
+        self.address_input = None;
+        self.validated_destination = None;
         self.amount = None;
         self.amount_input = None;
         self.selected_source = Some(SourceSelection::CoreWallet);
@@ -511,39 +505,37 @@ impl WalletSendScreen {
         Ok(duffs as Credits * 1000)
     }
 
-    /// Detect address type from the address string
-    fn detect_address_type(address: &str) -> AddressType {
+    /// Detect address kind from the address string.
+    ///
+    /// Returns `None` for empty or unrecognized input.
+    fn detect_address_kind(address: &str) -> Option<AddressKind> {
         let trimmed = address.trim();
         if trimmed.is_empty() {
-            return AddressType::Unknown;
+            return None;
         }
 
         // Check for shielded address (dash1z... or tdash1z...)
-        if Self::is_shielded_address(trimmed) {
-            return AddressType::Shielded;
+        if trimmed.starts_with("dash1z") || trimmed.starts_with("tdash1z") {
+            return Some(AddressKind::Shielded);
         }
 
         // Check for Platform address (Bech32m format per DIP-18)
         if crate::ui::helpers::is_platform_address_string(trimmed) {
-            return AddressType::Platform;
+            return Some(AddressKind::Platform);
         }
 
         // Try to parse as Core address
         if trimmed.parse::<Address<NetworkUnchecked>>().is_ok() {
-            return AddressType::Core;
+            return Some(AddressKind::Core);
         }
 
-        AddressType::Unknown
-    }
-
-    fn is_shielded_address(s: &str) -> bool {
-        s.starts_with("dash1z") || s.starts_with("tdash1z")
+        None
     }
 
     fn min_output_amount(
         &self,
-        input_type: AddressType,
-        output_type: AddressType,
+        input_type: Option<AddressKind>,
+        output_type: Option<AddressKind>,
     ) -> Option<Credits> {
         let core_min = 5460_u64 * CREDITS_PER_DUFF;
         let platform_min = self
@@ -554,20 +546,22 @@ impl WalletSendScreen {
             .address_funds
             .min_output_amount;
 
+        use AddressKind::*;
         match (input_type, output_type) {
-            (AddressType::Unknown, AddressType::Unknown) => None,
-            (AddressType::Core, AddressType::Core) => Some(core_min),
-            (AddressType::Platform, AddressType::Platform) => Some(platform_min),
-            (AddressType::Core, AddressType::Platform) => Some(56000000), // needed for asset locks
-            (AddressType::Platform, AddressType::Core) => Some(core_min.max(platform_min)),
-            (AddressType::Unknown, AddressType::Core) => Some(core_min),
-            (AddressType::Unknown, AddressType::Platform) => Some(platform_min),
-            (AddressType::Core, AddressType::Unknown) => Some(core_min),
-            (AddressType::Platform, AddressType::Unknown) => Some(platform_min),
-            (AddressType::Shielded, AddressType::Shielded) => Some(platform_min),
-            (AddressType::Shielded, AddressType::Platform) => Some(platform_min),
-            (AddressType::Shielded, _) => Some(platform_min),
-            (_, AddressType::Shielded) => Some(platform_min),
+            (None, None) => None,
+            (Some(Core), Some(Core)) => Some(core_min),
+            (Some(Platform), Some(Platform)) => Some(platform_min),
+            (Some(Core), Some(Platform)) => Some(56000000), // needed for asset locks
+            (Some(Platform), Some(Core)) => Some(core_min.max(platform_min)),
+            (None, Some(Core)) => Some(core_min),
+            (None, Some(Platform)) => Some(platform_min),
+            (Some(Core), None) => Some(core_min),
+            (Some(Platform), None) => Some(platform_min),
+            (Some(Shielded), Some(Shielded)) => Some(platform_min),
+            (Some(Shielded), Some(Platform)) => Some(platform_min),
+            (Some(Shielded), _) => Some(platform_min),
+            (_, Some(Shielded)) => Some(platform_min),
+            (Some(Identity), _) | (_, Some(Identity)) => Some(platform_min),
         }
     }
 
@@ -685,20 +679,43 @@ impl WalletSendScreen {
 
     /// Get description of transaction type based on source and destination
     fn get_transaction_type_description(&self) -> &'static str {
-        let dest_type = Self::detect_address_type(&self.destination_address);
-        match (&self.selected_source, dest_type) {
-            (Some(SourceSelection::CoreWallet), AddressType::Core) => "Core Transaction",
-            (Some(SourceSelection::CoreWallet), AddressType::Platform) => "Fund Platform Address",
-            (Some(SourceSelection::PlatformAddresses(_)), AddressType::Platform) => {
+        let dest_kind = self.destination_kind();
+        match (&self.selected_source, dest_kind) {
+            (Some(SourceSelection::CoreWallet), Some(AddressKind::Core)) => "Core Transaction",
+            (Some(SourceSelection::CoreWallet), Some(AddressKind::Platform)) => {
+                "Fund Platform Address"
+            }
+            (Some(SourceSelection::PlatformAddresses(_)), Some(AddressKind::Platform)) => {
                 "Platform Transfer"
             }
-            (Some(SourceSelection::PlatformAddresses(_)), AddressType::Core) => "Withdraw to Core",
-            (Some(SourceSelection::Shielded(..)), AddressType::Shielded) => {
+            (Some(SourceSelection::PlatformAddresses(_)), Some(AddressKind::Core)) => {
+                "Withdraw to Core"
+            }
+            (Some(SourceSelection::Shielded(..)), Some(AddressKind::Shielded)) => {
                 "Private Transfer (Shielded)"
             }
-            (Some(SourceSelection::Shielded(..)), AddressType::Platform) => "Unshield to Platform",
+            (Some(SourceSelection::Shielded(..)), Some(AddressKind::Platform)) => {
+                "Unshield to Platform"
+            }
             _ => "Send",
         }
+    }
+
+    /// Returns the detected address kind for the current destination.
+    ///
+    /// Uses the validated address if available (simple mode with AddressInput),
+    /// otherwise falls back to raw string detection (advanced mode outputs).
+    fn destination_kind(&self) -> Option<AddressKind> {
+        self.validated_destination.as_ref().map(|v| v.kind())
+    }
+
+    /// Returns the destination address string, from the validated address if
+    /// available or an empty string otherwise.
+    fn destination_address_string(&self) -> String {
+        self.validated_destination
+            .as_ref()
+            .map(|v| v.to_address_string())
+            .unwrap_or_default()
     }
 
     /// Clear the current send banner and show a new "Sending transaction..." progress banner.
@@ -722,7 +739,6 @@ impl WalletSendScreen {
         }
 
         let seed_hash = wallet_guard.seed_hash();
-        let network = self.app_context.network;
 
         // Validate source
         let source = self
@@ -731,8 +747,8 @@ impl WalletSendScreen {
             .ok_or("Please select a source")?;
 
         // Validate destination
-        let dest_type = Self::detect_address_type(&self.destination_address);
-        if dest_type == AddressType::Unknown {
+        let dest_kind = self.destination_kind();
+        if dest_kind.is_none() {
             return Err(
                 "Invalid destination address. Use a Dash address (X.../y...) or Platform address (dash1.../tdash1...)"
                     .to_string(),
@@ -751,21 +767,21 @@ impl WalletSendScreen {
         drop(wallet_guard);
 
         // Route to appropriate handler based on source and destination types
-        match (source.clone(), dest_type) {
-            (SourceSelection::CoreWallet, AddressType::Core) => self.send_core_to_core(),
-            (SourceSelection::CoreWallet, AddressType::Platform) => {
+        match (source.clone(), dest_kind) {
+            (SourceSelection::CoreWallet, Some(AddressKind::Core)) => self.send_core_to_core(),
+            (SourceSelection::CoreWallet, Some(AddressKind::Platform)) => {
                 self.send_core_to_platform(seed_hash)
             }
-            (SourceSelection::PlatformAddresses(addresses), AddressType::Platform) => {
+            (SourceSelection::PlatformAddresses(addresses), Some(AddressKind::Platform)) => {
                 self.send_platform_to_platform(seed_hash, addresses)
             }
-            (SourceSelection::PlatformAddresses(addresses), AddressType::Core) => {
-                self.send_platform_to_core(seed_hash, addresses, network)
+            (SourceSelection::PlatformAddresses(addresses), Some(AddressKind::Core)) => {
+                self.send_platform_to_core(seed_hash, addresses)
             }
-            (SourceSelection::Shielded(sh, _), AddressType::Shielded) => {
+            (SourceSelection::Shielded(sh, _), Some(AddressKind::Shielded)) => {
                 self.send_shielded_to_shielded(sh)
             }
-            (SourceSelection::Shielded(sh, _), AddressType::Platform) => {
+            (SourceSelection::Shielded(sh, _), Some(AddressKind::Platform)) => {
                 self.send_shielded_to_platform(sh)
             }
             _ => Err("Invalid source/destination combination".to_string()),
@@ -799,7 +815,7 @@ impl WalletSendScreen {
             .clone();
 
         let recipient = PaymentRecipient {
-            address: self.destination_address.trim().to_string(),
+            address: self.destination_address_string(),
             amount_duffs,
         };
 
@@ -828,11 +844,12 @@ impl WalletSendScreen {
             return Err("Amount must be greater than 0".to_string());
         }
 
-        // Parse platform address
-        let address_str = self.destination_address.trim();
-        let destination = PlatformAddress::from_bech32m_string(address_str)
-            .map(|(addr, _)| addr)
-            .map_err(|e| format!("Invalid platform address: {}", e))?;
+        // Extract validated platform address
+        let destination = self
+            .validated_destination
+            .as_ref()
+            .and_then(|v| v.as_platform().copied())
+            .ok_or_else(|| "Invalid platform address".to_string())?;
 
         // Check balance; fees will be subtracted from amount
         let required = amount_duffs;
@@ -894,11 +911,12 @@ impl WalletSendScreen {
             ));
         }
 
-        // Parse destination platform address
-        let address_str = self.destination_address.trim();
-        let destination = PlatformAddress::from_bech32m_string(address_str)
-            .map(|(addr, _)| addr)
-            .map_err(|e| format!("Invalid platform address: {}", e))?;
+        // Extract validated platform address
+        let destination = self
+            .validated_destination
+            .as_ref()
+            .and_then(|v| v.as_platform().copied())
+            .ok_or_else(|| "Invalid platform address".to_string())?;
 
         // Allocate addresses using the helper function
         let allocation = allocate_platform_addresses(
@@ -990,7 +1008,6 @@ impl WalletSendScreen {
         &mut self,
         seed_hash: WalletSeedHash,
         addresses: Vec<(PlatformAddress, Address, u64)>,
-        network: dash_sdk::dpp::dashcore::Network,
     ) -> Result<AppAction, String> {
         // Amount in credits
         let amount_credits = self
@@ -1020,14 +1037,12 @@ impl WalletSendScreen {
             ));
         }
 
-        // Parse destination Core address
-        let address_str = self.destination_address.trim();
-        let dest_address: Address<NetworkUnchecked> = address_str
-            .parse()
-            .map_err(|e| format!("Invalid Core address: {}", e))?;
-        let dest_address = dest_address
-            .require_network(network)
-            .map_err(|e| format!("Address network mismatch: {}", e))?;
+        // Extract validated Core address
+        let dest_address = self
+            .validated_destination
+            .as_ref()
+            .and_then(|v| v.as_core())
+            .ok_or_else(|| "Invalid Core address".to_string())?;
 
         let output_script = CoreScript::new(dest_address.script_pubkey());
 
@@ -1277,7 +1292,7 @@ impl WalletSendScreen {
             .ok_or_else(|| "Amount is required".to_string())?
             .value();
 
-        let recipient = self.destination_address.trim().to_string();
+        let recipient = self.destination_address_string();
         let recipient_bytes = if let Ok((addr, _)) =
             dash_sdk::dpp::address_funds::OrchardAddress::from_bech32m_string(&recipient)
         {
@@ -1309,9 +1324,11 @@ impl WalletSendScreen {
             .ok_or_else(|| "Amount is required".to_string())?
             .value();
 
-        let address_str = self.destination_address.trim();
-        let (platform_addr, _) = PlatformAddress::from_bech32m_string(address_str)
-            .map_err(|e| format!("Invalid platform address: {e}"))?;
+        let platform_addr = self
+            .validated_destination
+            .as_ref()
+            .and_then(|v| v.as_platform().copied())
+            .ok_or_else(|| "Invalid platform address".to_string())?;
 
         self.send_status = SendStatus::WaitingForResult;
         Ok(AppAction::BackendTask(
@@ -1480,57 +1497,21 @@ impl WalletSendScreen {
     }
 
     fn render_destination_input(&mut self, ui: &mut Ui) {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
-        let dest_type = Self::detect_address_type(&self.destination_address);
+        let addr_input = self.address_input.get_or_insert_with(|| {
+            let mut builder = AddressInput::new(self.app_context.network)
+                .with_label("Send to")
+                .with_hint_text("Enter address (X.../y.../dash1.../tdash1...)");
 
-        ui.horizontal(|ui| {
-            ui.label(
-                RichText::new("Send to")
-                    .color(DashColors::text_primary(dark_mode))
-                    .strong()
-                    .size(14.0),
-            );
-
-            // Show detected type
-            if dest_type != AddressType::Unknown {
-                ui.add_space(10.0);
-                let (type_text, type_color) = match dest_type {
-                    AddressType::Core => ("Core Address", DashColors::DASH_BLUE),
-                    AddressType::Platform => ("Platform Address", DashColors::PLATFORM_PURPLE),
-                    AddressType::Shielded => ("Shielded Address", Color32::from_rgb(0, 180, 120)),
-                    AddressType::Unknown => ("", Color32::GRAY),
-                };
-                ui.label(
-                    RichText::new(format!("({})", type_text))
-                        .color(type_color)
-                        .size(12.0),
-                );
+            // Provide wallet data for autocomplete if available
+            if let Some(wallet) = &self.selected_wallet {
+                builder = builder.with_wallet(wallet.clone());
             }
+
+            builder
         });
 
-        ui.add_space(8.0);
-
-        Frame::group(ui.style())
-            .fill(DashColors::surface(dark_mode))
-            .inner_margin(Margin::symmetric(12, 10))
-            .corner_radius(5.0)
-            .show(ui, |ui| {
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.destination_address)
-                        .hint_text("Enter address (X.../y.../dash1.../tdash1...)")
-                        .desired_width(f32::INFINITY),
-                );
-            });
-
-        // Show error for invalid address
-        if !self.destination_address.trim().is_empty() && dest_type == AddressType::Unknown {
-            ui.add_space(5.0);
-            ui.label(
-                RichText::new("Invalid address format")
-                    .color(DashColors::ERROR)
-                    .size(12.0),
-            );
-        }
+        let resp = addr_input.show(ui);
+        resp.inner.update(&mut self.validated_destination);
     }
 
     fn render_amount_input(&mut self, ui: &mut Ui) {
@@ -1554,12 +1535,12 @@ impl WalletSendScreen {
                         .ok()
                         .map(|wallet| wallet.total_balance_duffs() * CREDITS_PER_DUFF) // duffs to credits
                 });
-                let dest_type = Self::detect_address_type(&self.destination_address);
-                let hint = if dest_type == AddressType::Platform {
-                    let destination =
-                        PlatformAddress::from_bech32m_string(self.destination_address.trim())
-                            .map(|(addr, _)| addr)
-                            .ok();
+                let dest_kind = self.destination_kind();
+                let hint = if dest_kind == Some(AddressKind::Platform) {
+                    let destination = self
+                        .validated_destination
+                        .as_ref()
+                        .and_then(|v| v.as_platform().copied());
                     if let Some(destination) = destination {
                         let estimated_fee = estimate_address_funding_fee_from_transition(
                             self.app_context.platform_version(),
@@ -1579,11 +1560,11 @@ impl WalletSendScreen {
                 (max, hint)
             }
             Some(SourceSelection::PlatformAddresses(addresses)) => {
-                // Parse destination to exclude it from max calculation (can't send to yourself)
-                let destination =
-                    PlatformAddress::from_bech32m_string(self.destination_address.trim())
-                        .map(|(addr, _)| addr)
-                        .ok();
+                // Extract destination to exclude it from max calculation (can't send to yourself)
+                let destination = self
+                    .validated_destination
+                    .as_ref()
+                    .and_then(|v| v.as_platform().copied());
 
                 // Filter out destination and sort by balance descending
                 let mut sorted_addresses: Vec<_> = addresses
@@ -1623,14 +1604,14 @@ impl WalletSendScreen {
             None => (None, None),
         };
 
-        let input_type = match self.selected_source {
-            Some(SourceSelection::CoreWallet) => AddressType::Core,
-            Some(SourceSelection::PlatformAddresses(_)) => AddressType::Platform,
-            Some(SourceSelection::Shielded(_, _)) => AddressType::Shielded,
-            None => AddressType::Unknown,
+        let input_kind = match self.selected_source {
+            Some(SourceSelection::CoreWallet) => Some(AddressKind::Core),
+            Some(SourceSelection::PlatformAddresses(_)) => Some(AddressKind::Platform),
+            Some(SourceSelection::Shielded(_, _)) => Some(AddressKind::Shielded),
+            None => None,
         };
-        let output_type = Self::detect_address_type(&self.destination_address);
-        let min_amount = self.min_output_amount(input_type, output_type);
+        let output_kind = self.destination_kind();
+        let min_amount = self.min_output_amount(input_kind, output_kind);
 
         Frame::group(ui.style())
             .fill(DashColors::surface(dark_mode))
@@ -1663,7 +1644,7 @@ impl WalletSendScreen {
 
         // Show transaction type hint
         let tx_type = self.get_transaction_type_description();
-        if tx_type != "Send" && !self.destination_address.trim().is_empty() {
+        if tx_type != "Send" && self.validated_destination.is_some() {
             ui.add_space(5.0);
             ui.label(
                 RichText::new(format!("Transaction type: {}", tx_type))
@@ -1674,9 +1655,9 @@ impl WalletSendScreen {
         }
 
         // Show subtract fee checkbox for Core wallet to Core address transactions
-        let dest_type = Self::detect_address_type(&self.destination_address);
+        let dest_kind = self.destination_kind();
         if matches!(self.selected_source, Some(SourceSelection::CoreWallet))
-            && dest_type == AddressType::Core
+            && dest_kind == Some(AddressKind::Core)
         {
             ui.add_space(8.0);
             ui.horizontal(|ui| {
@@ -1711,10 +1692,11 @@ impl WalletSendScreen {
             _ => return,
         };
 
-        // Parse destination platform address (if valid) to exclude it from inputs
-        let destination = PlatformAddress::from_bech32m_string(self.destination_address.trim())
-            .map(|(addr, _)| addr)
-            .ok();
+        // Extract destination platform address (if valid) to exclude it from inputs
+        let destination = self
+            .validated_destination
+            .as_ref()
+            .and_then(|v| v.as_platform().copied());
 
         // Use the same allocation algorithm as the send logic, filtering out the destination
         let allocation = allocate_platform_addresses(
@@ -1808,8 +1790,7 @@ impl WalletSendScreen {
             .as_ref()
             .is_some_and(|w| w.read().map(|g| g.is_open()).unwrap_or(false));
 
-        let dest_type = Self::detect_address_type(&self.destination_address);
-        let has_destination = dest_type != AddressType::Unknown;
+        let has_destination = self.validated_destination.is_some();
         let has_amount = self.amount.as_ref().map(|a| a.value() > 0).unwrap_or(false);
         let has_source = self.selected_source.is_some();
 
@@ -1975,10 +1956,10 @@ impl WalletSendScreen {
 
         // ========== FEE STRATEGY SECTION ==========
         // Only show for platform source or platform outputs
-        let has_platform_output = self.advanced_outputs.iter().any(|o| {
-            let addr_type = Self::detect_address_type(&o.address);
-            addr_type == AddressType::Platform
-        });
+        let has_platform_output = self
+            .advanced_outputs
+            .iter()
+            .any(|o| Self::detect_address_kind(&o.address) == Some(AddressKind::Platform));
 
         if self.advanced_source_type == AdvancedSourceType::Platform || has_platform_output {
             ui.label(
@@ -2284,14 +2265,14 @@ impl WalletSendScreen {
         let mut outputs_to_remove = Vec::new();
         let num_outputs = self.advanced_outputs.len();
 
-        // Pre-compute address types to avoid borrow issues
-        let addr_types: Vec<AddressType> = self
+        // Pre-compute address kinds to avoid borrow issues
+        let addr_kinds: Vec<Option<AddressKind>> = self
             .advanced_outputs
             .iter()
-            .map(|o| Self::detect_address_type(&o.address))
+            .map(|o| Self::detect_address_kind(&o.address))
             .collect();
 
-        for (idx, &addr_type) in addr_types.iter().enumerate() {
+        for (idx, &addr_kind) in addr_kinds.iter().enumerate() {
             Frame::group(ui.style())
                 .fill(DashColors::surface(dark_mode))
                 .inner_margin(Margin::symmetric(12, 10))
@@ -2307,16 +2288,18 @@ impl WalletSendScreen {
                             );
 
                             // Show detected type
-                            if addr_type != AddressType::Unknown {
-                                let (type_text, type_color) = match addr_type {
-                                    AddressType::Core => ("Core", DashColors::DASH_BLUE),
-                                    AddressType::Platform => {
+                            if let Some(kind) = addr_kind {
+                                let (type_text, type_color) = match kind {
+                                    AddressKind::Core => ("Core", DashColors::DASH_BLUE),
+                                    AddressKind::Platform => {
                                         ("Platform", DashColors::PLATFORM_PURPLE)
                                     }
-                                    AddressType::Shielded => {
+                                    AddressKind::Shielded => {
                                         ("Shielded", Color32::from_rgb(0, 180, 120))
                                     }
-                                    AddressType::Unknown => ("", Color32::GRAY),
+                                    AddressKind::Identity => {
+                                        ("Identity", DashColors::PLATFORM_PURPLE)
+                                    }
                                 };
                                 ui.label(
                                     RichText::new(format!("({})", type_text))
@@ -2453,15 +2436,15 @@ impl WalletSendScreen {
             return Err("Please add at least one output".to_string());
         }
 
-        // Determine output types
-        let output_types: Vec<AddressType> = self
+        // Determine output kinds
+        let output_kinds: Vec<Option<AddressKind>> = self
             .advanced_outputs
             .iter()
-            .map(|o| Self::detect_address_type(&o.address))
+            .map(|o| Self::detect_address_kind(&o.address))
             .collect();
 
-        let has_core_output = output_types.contains(&AddressType::Core);
-        let has_platform_output = output_types.contains(&AddressType::Platform);
+        let has_core_output = output_kinds.contains(&Some(AddressKind::Core));
+        let has_platform_output = output_kinds.contains(&Some(AddressKind::Platform));
 
         // Validate that we don't mix output types
         if has_core_output && has_platform_output {

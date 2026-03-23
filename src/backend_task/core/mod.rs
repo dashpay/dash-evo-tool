@@ -483,22 +483,7 @@ impl AppContext {
                 .as_ref()
                 .map(|c| format!("{}:{}", c.core_host, c.core_rpc_port))
                 .unwrap_or_else(|| "unknown".to_string());
-            // We can't move the error since we only have a reference, so we
-            // create the generic variant without a source.  The user-facing
-            // message already contains the URL which is the actionable part.
-            return Some(TaskError::CoreRpcConnectionFailed {
-                url,
-                source: dashcore_rpc::Error::JsonRpc(
-                    dashcore_rpc::jsonrpc::error::Error::Transport(Box::new(
-                        dashcore_rpc::jsonrpc::simple_http::Error::SocketError(
-                            std::io::Error::new(
-                                std::io::ErrorKind::ConnectionRefused,
-                                format!("{e}"),
-                            ),
-                        ),
-                    )),
-                ),
-            });
+            return Some(TaskError::CoreRpcConnectionFailed { url, source: None });
         }
         None
     }

@@ -647,7 +647,10 @@ impl AppContext {
                 .ok()
                 .map(|c| format!("{}:{}", c.core_host, c.core_rpc_port))
                 .unwrap_or_else(|| "unknown".to_string());
-            TaskError::CoreRpcConnectionFailed { url, source: e }
+            TaskError::CoreRpcConnectionFailed {
+                url,
+                source: Some(e),
+            }
         } else {
             TaskError::from(e)
         }

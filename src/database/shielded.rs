@@ -17,7 +17,8 @@ impl Database {
                 is_spent INTEGER NOT NULL DEFAULT 0,
                 value INTEGER NOT NULL,
                 network TEXT NOT NULL,
-                UNIQUE(wallet_seed_hash, nullifier, network)
+                UNIQUE(wallet_seed_hash, nullifier, network),
+                FOREIGN KEY (wallet_seed_hash) REFERENCES wallet(seed_hash) ON DELETE CASCADE
             )",
             [],
         )?;
@@ -188,7 +189,8 @@ impl Database {
                 network TEXT NOT NULL,
                 last_nullifier_sync_height INTEGER NOT NULL DEFAULT 0,
                 last_nullifier_sync_timestamp INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY (wallet_seed_hash, network)
+                PRIMARY KEY (wallet_seed_hash, network),
+                FOREIGN KEY (wallet_seed_hash) REFERENCES wallet(seed_hash) ON DELETE CASCADE
             )",
             [],
         )?;
@@ -207,13 +209,11 @@ impl Database {
         )?;
 
         if table_exists {
-            let has_column: bool = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM pragma_table_info('shielded_wallet_meta') WHERE name='last_nullifier_sync_timestamp'",
-                    [],
-                    |row| row.get::<_, i32>(0).map(|count| count > 0),
-                )
-                .unwrap_or(false);
+            let has_column: bool = conn.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('shielded_wallet_meta') WHERE name='last_nullifier_sync_timestamp'",
+                [],
+                |row| row.get::<_, i32>(0).map(|count| count > 0),
+            )?;
 
             if !has_column {
                 conn.execute(

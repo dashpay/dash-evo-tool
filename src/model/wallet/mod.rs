@@ -3004,9 +3004,8 @@ mod tests {
 
     /// Helper: register a wallet address in the test database so that
     /// `update_address_balance` can find the row.
+    /// Caller must store the wallet first via `db.store_wallet()`.
     fn register_test_address(db: &Database, wallet: &Wallet, address: &Address) {
-        db.store_wallet(wallet, &Network::Testnet)
-            .expect("store test wallet");
         let seed_hash = wallet.seed_hash();
         let path = DerivationPath::from(vec![
             ChildNumber::Hardened { index: 44 },

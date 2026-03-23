@@ -67,7 +67,7 @@ pub enum TaskError {
     CoreRpcConnectionFailed {
         url: String,
         #[source]
-        source: dashcore_rpc::Error,
+        source: Option<dashcore_rpc::Error>,
     },
 
     /// A Dash Core RPC call failed.
@@ -655,9 +655,13 @@ pub enum TaskError {
     #[error("Could not build the shielded transaction. Please retry.")]
     ShieldedTransitionBuildFailed { detail: String },
 
+    /// The shielded note witnesses are stale — the commitment tree changed since sync.
+    #[error("Your shielded notes are out of sync. Please sync your shielded wallet and retry.")]
+    ShieldedAnchorMismatch { detail: String },
+
     /// The amount plus network fee exceeds the spendable shielded balance.
     #[error(
-        "The amount plus the network fee ({fee_dash} Dash) exceeds your shielded balance. Reduce the amount or shield more credits.",
+        "The amount plus the network fee ({fee_dash}) exceeds your shielded balance. Reduce the amount or shield more credits.",
         fee_dash = format_credits_as_dash(*.fee)
     )]
     ShieldedFeeExceedsBalance {
@@ -757,15 +761,9 @@ pub fn is_instant_lock_proof_invalid(error: &SdkError) -> bool {
     )
 }
 
-/// Format a credit amount as Dash with 4 decimal places.
-///
-/// Credits use 10^11 as the conversion factor (not satoshis).
+/// Format a credit amount as Dash using `Amount`'s Display implementation.
 fn format_credits_as_dash(credits: u64) -> String {
-    let whole = credits / 100_000_000_000;
-    let frac = credits % 100_000_000_000;
-    // 4 decimal places: divide fractional part by 10^7 to get 4 digits
-    let four_digits = frac / 10_000_000;
-    format!("{whole}.{four_digits:04}")
+    crate::model::amount::Amount::dash_from_credits(credits).to_string()
 }
 
 // TODO: Replace string parsing with a pre-check on amount + fee > spendable
@@ -800,9 +798,10 @@ fn parse_fee_exceeds_spendable(detail: &str) -> Option<(u64, u64, u64)> {
 
 /// Construct the appropriate `TaskError` for a shielded transition build failure.
 ///
-/// Parses the error string for the "fee exceeds spendable" pattern and returns
-/// `ShieldedFeeExceedsBalance` when matched, falling back to
-/// `ShieldedTransitionBuildFailed` otherwise.
+/// Parses the error string for known patterns and returns a specific variant:
+/// - `ShieldedFeeExceedsBalance` when the fee exceeds spendable balance,
+/// - `ShieldedAnchorMismatch` when witnesses are stale,
+/// - `ShieldedTransitionBuildFailed` otherwise.
 pub fn shielded_build_error(detail: String) -> TaskError {
     if let Some((amount, fee, spendable)) = parse_fee_exceeds_spendable(&detail) {
         TaskError::ShieldedFeeExceedsBalance {
@@ -810,6 +809,8 @@ pub fn shielded_build_error(detail: String) -> TaskError {
             fee,
             spendable,
         }
+    } else if detail.contains("AnchorMismatch") {
+        TaskError::ShieldedAnchorMismatch { detail }
     } else {
         TaskError::ShieldedTransitionBuildFailed { detail }
     }
@@ -1388,8 +1389,8 @@ mod tests {
         );
         let err = TaskError::CoreRpcConnectionFailed {
             url: "127.0.0.1:9998".to_string(),
-            source: dashcore_rpc::Error::JsonRpc(dashcore_rpc::jsonrpc::error::Error::Transport(
-                Box::new(socket_err),
+            source: Some(dashcore_rpc::Error::JsonRpc(
+                dashcore_rpc::jsonrpc::error::Error::Transport(Box::new(socket_err)),
             )),
         };
         let msg = err.to_string();
@@ -1474,10 +1475,10 @@ mod tests {
 
     #[test]
     fn format_credits_as_dash_basic() {
-        assert_eq!(format_credits_as_dash(100_000_000_000), "1.0000");
-        assert_eq!(format_credits_as_dash(180_841_600), "0.0018");
-        assert_eq!(format_credits_as_dash(0), "0.0000");
-        assert_eq!(format_credits_as_dash(250_000_000_000), "2.5000");
+        assert_eq!(format_credits_as_dash(100_000_000_000), "1 DASH");
+        assert_eq!(format_credits_as_dash(180_841_600), "0.001808416 DASH");
+        assert_eq!(format_credits_as_dash(0), "0 DASH");
+        assert_eq!(format_credits_as_dash(250_000_000_000), "2.5 DASH");
     }
 
     #[test]
@@ -1569,6 +1570,29 @@ mod tests {
         assert!(
             matches!(err, TaskError::ShieldedBroadcastFailed { .. }),
             "Expected ShieldedBroadcastFailed, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn shielded_build_error_produces_anchor_mismatch_variant() {
+        let detail =
+            "Shielded transaction build error: failed to add spend: AnchorMismatch".to_string();
+        let err = shielded_build_error(detail);
+        assert!(
+            matches!(err, TaskError::ShieldedAnchorMismatch { .. }),
+            "Expected ShieldedAnchorMismatch, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn shielded_anchor_mismatch_display() {
+        let err = TaskError::ShieldedAnchorMismatch {
+            detail: "test".into(),
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("out of sync"),
+            "Expected sync message, got: {msg}"
         );
     }
 }

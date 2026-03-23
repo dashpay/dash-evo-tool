@@ -335,6 +335,33 @@ impl AppContext {
         )
         .await;
 
+        // On anchor mismatch, sync notes once and retry
+        let result = if matches!(result, Err(TaskError::ShieldedAnchorMismatch { .. })) {
+            tracing::info!("Shielded anchor mismatch during transfer — syncing notes and retrying");
+            crate::backend_task::shielded::sync::sync_notes(
+                self,
+                &seed_hash,
+                &mut state,
+                self.network,
+            )
+            .await
+            .map_err(|e| {
+                tracing::warn!("Note sync after anchor mismatch failed: {e}");
+                e
+            })?;
+            state.last_notes_synced_at = Some(std::time::Instant::now());
+            crate::backend_task::shielded::bundle::shielded_transfer(
+                self,
+                &seed_hash,
+                &state,
+                amount,
+                &recipient_address_bytes,
+            )
+            .await
+        } else {
+            result
+        };
+
         // On success, mark the spent notes immediately
         if let Ok(ref spent_nullifiers) = result {
             self.mark_notes_spent(&seed_hash, &mut state, spent_nullifiers);
@@ -371,6 +398,33 @@ impl AppContext {
         )
         .await;
 
+        // On anchor mismatch, sync notes once and retry
+        let result = if matches!(result, Err(TaskError::ShieldedAnchorMismatch { .. })) {
+            tracing::info!("Shielded anchor mismatch during unshield — syncing notes and retrying");
+            crate::backend_task::shielded::sync::sync_notes(
+                self,
+                &seed_hash,
+                &mut state,
+                self.network,
+            )
+            .await
+            .map_err(|e| {
+                tracing::warn!("Note sync after anchor mismatch failed: {e}");
+                e
+            })?;
+            state.last_notes_synced_at = Some(std::time::Instant::now());
+            crate::backend_task::shielded::bundle::unshield_credits(
+                self,
+                &seed_hash,
+                &state,
+                amount,
+                to_platform_address,
+            )
+            .await
+        } else {
+            result
+        };
+
         // On success, mark the spent notes immediately
         if let Ok(ref spent_nullifiers) = result {
             self.mark_notes_spent(&seed_hash, &mut state, spent_nullifiers);
@@ -398,6 +452,7 @@ impl AppContext {
             states.remove(&seed_hash).ok_or(TaskError::WalletNotFound)?
         };
 
+        let to_core_address_clone = to_core_address.clone();
         let result = crate::backend_task::shielded::bundle::shielded_withdrawal(
             self,
             &seed_hash,
@@ -406,6 +461,35 @@ impl AppContext {
             to_core_address,
         )
         .await;
+
+        // On anchor mismatch, sync notes once and retry
+        let result = if matches!(result, Err(TaskError::ShieldedAnchorMismatch { .. })) {
+            tracing::info!(
+                "Shielded anchor mismatch during withdrawal — syncing notes and retrying"
+            );
+            crate::backend_task::shielded::sync::sync_notes(
+                self,
+                &seed_hash,
+                &mut state,
+                self.network,
+            )
+            .await
+            .map_err(|e| {
+                tracing::warn!("Note sync after anchor mismatch failed: {e}");
+                e
+            })?;
+            state.last_notes_synced_at = Some(std::time::Instant::now());
+            crate::backend_task::shielded::bundle::shielded_withdrawal(
+                self,
+                &seed_hash,
+                &state,
+                amount,
+                to_core_address_clone,
+            )
+            .await
+        } else {
+            result
+        };
 
         if let Ok(ref spent_nullifiers) = result {
             self.mark_notes_spent(&seed_hash, &mut state, spent_nullifiers);

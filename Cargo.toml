@@ -89,6 +89,7 @@ raw-cpuid = "11.5.0"
 
 [features]
 testing = []
+e2e = []
 
 [dev-dependencies]
 egui_kittest = { version = "0.33.3", features = ["eframe"] }
@@ -96,6 +97,11 @@ tokio-shared-rt = "=0.1.0"
 
 [build-dependencies]
 winres = "0.1"
+
+[[test]]
+name = "e2e"
+path = "tests/e2e/main.rs"
+required-features = ["e2e"]
 
 # Keep full debuginfo for our code, but only line tables for dependencies.
 # This shrinks DWARF from ~790MB to a fraction, letting gimli (std's backtrace
@@ -105,7 +111,7 @@ debug = "line-tables-only"
 
 [lints.rust.unexpected_cfgs]
 level = "warn"
-check-cfg = ["cfg(tokio_unstable)", "cfg(feature, values(\"testing\"))"]
+check-cfg = ["cfg(tokio_unstable)", "cfg(feature, values(\"testing\", \"e2e\"))"]
 
 [lints.clippy]
 uninlined_format_args = "allow"

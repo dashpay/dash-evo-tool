@@ -65,6 +65,28 @@ pub struct ImportMnemonicScreen {
     selected_core_wallet_index: usize,
 }
 
+#[cfg(feature = "e2e")]
+impl ImportMnemonicScreen {
+    /// Set the seed phrase words from a slice for E2E tests.
+    pub fn set_seed_phrase_words(&mut self, words: &[&str]) {
+        self.seed_phrase_words = words.iter().map(|w| w.to_string()).collect();
+        self.selected_seed_phrase_length = words.len();
+        // Parse the mnemonic
+        let phrase = words.join(" ");
+        self.seed_phrase = bip39::Mnemonic::parse_normalized(&phrase).ok();
+    }
+
+    /// Set the wallet alias for E2E tests.
+    pub fn set_alias(&mut self, alias: &str) {
+        self.alias_input = alias.to_string();
+    }
+
+    /// Trigger wallet save for E2E tests.
+    pub fn trigger_save(&mut self) -> Result<AppAction, String> {
+        self.save_wallet()
+    }
+}
+
 impl ImportMnemonicScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         Self {

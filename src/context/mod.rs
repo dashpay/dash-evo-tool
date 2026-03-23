@@ -710,7 +710,7 @@ impl AppContext {
 }
 
 /// Test-only accessors for fields that are normally `pub(crate)`.
-#[cfg(any(test, feature = "testing"))]
+#[cfg(any(test, feature = "testing", feature = "e2e"))]
 impl AppContext {
     /// Returns a reference to the database.
     pub fn db(&self) -> &Arc<Database> {

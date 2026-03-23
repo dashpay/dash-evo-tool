@@ -64,6 +64,14 @@ pub struct RegisterDpnsNameScreen {
     refresh_banner: Option<BannerHandle>,
 }
 
+#[cfg(feature = "e2e")]
+impl RegisterDpnsNameScreen {
+    /// Set the DPNS name input for E2E tests.
+    pub fn set_name_input(&mut self, name: String) {
+        self.name_input = name;
+    }
+}
+
 impl RegisterDpnsNameScreen {
     pub fn new(app_context: &Arc<AppContext>, source: RegisterDpnsNameSource) -> Self {
         let qualified_identities: Vec<_> =
@@ -434,7 +442,10 @@ impl ScreenLike for RegisterDpnsNameScreen {
             ui.add_space(5.0);
             ui.horizontal(|ui| {
                 ui.label("Name (without \".dash\"):");
-                ui.text_edit_singleline(&mut self.name_input);
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.name_input)
+                        .hint_text("Enter name to register"),
+                );
             });
 
             // Display validation status and cost information

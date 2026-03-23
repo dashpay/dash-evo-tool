@@ -108,7 +108,10 @@ impl AddContractsScreen {
         for (i, contract_id) in self.contract_ids_input.iter_mut().enumerate() {
             ui.horizontal(|ui| {
                 ui.label(format!("Contract {}:", i + 1));
-                ui.text_edit_singleline(contract_id);
+                ui.add(
+                    egui::TextEdit::singleline(contract_id)
+                        .hint_text("Enter contract ID (Base58 or hex)"),
+                );
             });
             ui.add_space(5.0);
         }

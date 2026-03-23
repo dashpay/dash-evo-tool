@@ -1,0 +1,93 @@
+use crate::helpers::context::{TestContext, seed_hash_prefix};
+use crate::helpers::harness::*;
+use dash_evo_tool::app::AppState;
+use dash_evo_tool::spv::SpvStatus;
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use egui_kittest::Harness;
+
+pub fn run(harness: &mut Harness<'_, AppState>, ctx: &TestContext) {
+    // ─── 1. Stop SPV sync ──────────────────────────────────────────────
+    harness.state().current_app_context().spv_manager().stop();
+    println!("  SPV sync stopped");
+
+    // ─── 2. Wait for SPV to reach a terminal state (Stopped/Idle/Error) ─
+    let spv_stopped = wait_until(
+        harness,
+        |h| {
+            let app_ctx = h.state().current_app_context();
+            matches!(
+                app_ctx.spv_manager().status().status,
+                SpvStatus::Stopped | SpvStatus::Idle | SpvStatus::Error
+            )
+        },
+        SPV_STOP_TIMEOUT,
+        60,
+    );
+    assert!(
+        spv_stopped,
+        "SPV must reach a terminal state after stop (still active after {}s)",
+        SPV_STOP_TIMEOUT.as_secs()
+    );
+    let final_status = harness.state().current_app_context().spv_manager().status();
+    println!("  SPV status after stop: {:?}", final_status.status);
+
+    // ─── 3. Remove test identity and wallet from database ──────────────
+    let app_ctx = harness.state().current_app_context();
+
+    if let Some(identity_id) = &ctx.identity_id {
+        match app_ctx
+            .db()
+            .delete_local_qualified_identity(identity_id, app_ctx)
+        {
+            Ok(()) => println!("  Removed E2E identity from database"),
+            Err(e) => println!("  Warning: could not remove E2E identity: {}", e),
+        }
+    }
+
+    if let Some(seed_hash) = &ctx.wallet_seed_hash {
+        match app_ctx.remove_wallet(seed_hash) {
+            Ok(()) => println!("  Removed test wallet from database"),
+            Err(e) => println!("  Warning: could not remove test wallet: {}", e),
+        }
+    }
+
+    // ─── 4. Log test summary ─────────────────────────────────────────
+    println!();
+    println!("  =======================================");
+    println!("  E2E Test Suite Summary");
+    println!("  =======================================");
+    println!("  Network:        {}", ctx.network);
+    println!(
+        "  Wallet seed:    {}",
+        ctx.wallet_seed_hash
+            .as_ref()
+            .map(seed_hash_prefix)
+            .unwrap_or_else(|| "N/A".to_string())
+    );
+    println!(
+        "  Balance:        {} duffs ({:.8} DASH)",
+        ctx.balance_duffs,
+        ctx.balance_duffs as f64 / 1e8
+    );
+    println!("  SPV synced:     {}", ctx.spv_synced);
+    println!("  Header height:  {}", ctx.header_height);
+    println!("  Wallet reused:  {}", ctx.wallet_reused);
+    println!(
+        "  Receive addr:   {}",
+        ctx.receive_address.as_deref().unwrap_or("N/A")
+    );
+    println!(
+        "  Identity ID:    {}",
+        ctx.identity_id
+            .map(|id| id.to_string(Encoding::Base58))
+            .unwrap_or_else(|| "N/A".to_string())
+    );
+    println!(
+        "  DPNS name:      {}",
+        ctx.dpns_name.as_deref().unwrap_or("N/A")
+    );
+    println!("  =======================================");
+    println!();
+
+    println!("  Phase 07 complete: teardown finished");
+}

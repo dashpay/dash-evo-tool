@@ -106,6 +106,29 @@ pub struct AddNewIdentityScreen {
     completed_fee_result: Option<FeeResult>,
 }
 
+#[cfg(feature = "e2e")]
+impl AddNewIdentityScreen {
+    /// Returns a reference to the step state for E2E tests.
+    pub fn step(&self) -> Arc<RwLock<WalletFundedScreenStep>> {
+        self.step.clone()
+    }
+
+    /// Returns a reference to the funding method state for E2E tests.
+    pub fn funding_method(&self) -> Arc<RwLock<FundingMethod>> {
+        self.funding_method.clone()
+    }
+
+    /// Sets the funding amount for E2E tests.
+    pub fn set_funding_amount(&mut self, amount: Option<Amount>) {
+        self.funding_amount = amount;
+    }
+
+    /// Sets the alias input for E2E tests.
+    pub fn set_alias_input(&mut self, alias: String) {
+        self.alias_input = alias;
+    }
+}
+
 impl AddNewIdentityScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         Self::new_with_wallet(app_context, None)

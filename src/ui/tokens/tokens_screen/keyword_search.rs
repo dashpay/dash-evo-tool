@@ -43,7 +43,8 @@ impl TokensScreen {
             let query_ref = self
                 .token_search_query
                 .get_or_insert_with(|| "".to_string());
-            let text_edit_response = ui.text_edit_singleline(query_ref);
+            let text_edit_response =
+                ui.add(egui::TextEdit::singleline(query_ref).hint_text("Enter search keyword"));
 
             // Clone the current query for use in the closure below
             let current_query = query_ref.clone();

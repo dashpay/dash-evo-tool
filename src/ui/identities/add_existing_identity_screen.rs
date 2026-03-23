@@ -344,7 +344,10 @@ impl AddExistingIdentityScreen {
                         }
                     }
                 });
-                ui.text_edit_singleline(&mut self.identity_id_input);
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.identity_id_input)
+                        .hint_text("Enter identity ID (Base58 or hex)"),
+                );
                 ui.end_row();
 
                 // Advanced: Identity Type selector
@@ -818,7 +821,10 @@ impl AddExistingIdentityScreen {
             .show(ui, |ui| {
                 ui.label("Username:");
                 ui.horizontal(|ui| {
-                    ui.text_edit_singleline(&mut self.dpns_name_input);
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.dpns_name_input)
+                            .hint_text("Enter username"),
+                    );
                     ui.label(".dash");
                 });
                 ui.end_row();

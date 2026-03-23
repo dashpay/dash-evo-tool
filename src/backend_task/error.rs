@@ -317,6 +317,18 @@ pub enum TaskError {
         source_error: Box<SdkError>,
     },
 
+    /// The identity doesn't have enough Platform credits for this operation.
+    #[error(
+        "Not enough Platform credits. Your identity has {available} credits \
+         but this operation requires {required}. Please top up your identity first."
+    )]
+    IdentityInsufficientBalance {
+        available: u64,
+        required: u64,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
     /// Fetching address information from the platform failed.
     #[error("Could not retrieve address information from the platform. Please retry.")]
     PlatformFetchError {
@@ -825,6 +837,7 @@ impl From<SdkError> for TaskError {
             DuplicateKeyId,
             ContractBoundsConflict(String),
             InvalidInstantLockProof,
+            InsufficientBalance { available: u64, required: u64 },
         }
 
         let kind: Option<ConsensusKind> = {
@@ -849,6 +862,12 @@ impl From<SdkError> for TaskError {
                     ) => Some(ConsensusKind::ContractBoundsConflict(
                         e.contract_id().to_string(Encoding::Base58),
                     )),
+                    ConsensusError::StateError(StateError::IdentityInsufficientBalanceError(e)) => {
+                        Some(ConsensusKind::InsufficientBalance {
+                            available: e.balance(),
+                            required: e.required_balance(),
+                        })
+                    }
                     ConsensusError::BasicError(
                         BasicError::InvalidInstantAssetLockProofSignatureError(_),
                     ) => Some(ConsensusKind::InvalidInstantLockProof),
@@ -886,6 +905,14 @@ impl From<SdkError> for TaskError {
                     source_error: boxed,
                 }
             }
+            Some(ConsensusKind::InsufficientBalance {
+                available,
+                required,
+            }) => TaskError::IdentityInsufficientBalance {
+                available,
+                required,
+                source_error: boxed,
+            },
             None => TaskError::SdkError {
                 source_error: boxed,
             },
@@ -899,6 +926,7 @@ mod tests {
     use dash_sdk::dpp::consensus::basic::identity::InvalidInstantAssetLockProofSignatureError;
     use dash_sdk::dpp::consensus::state::identity::duplicated_identity_public_key_id_state_error::DuplicatedIdentityPublicKeyIdStateError;
     use dash_sdk::dpp::consensus::state::identity::duplicated_identity_public_key_state_error::DuplicatedIdentityPublicKeyStateError;
+    use dash_sdk::dpp::consensus::state::identity::IdentityInsufficientBalanceError;
     use dash_sdk::dpp::consensus::state::identity::identity_public_key_already_exists_for_unique_contract_bounds_error::IdentityPublicKeyAlreadyExistsForUniqueContractBoundsError;
     use dash_sdk::dpp::identity::Purpose;
     use dash_sdk::platform::Identifier;
@@ -1152,6 +1180,79 @@ mod tests {
         };
         let err = dashcore_rpc::Error::JsonRpc(dashcore_rpc::jsonrpc::error::Error::Rpc(rpc_err));
         assert!(!is_rpc_connection_error(&err));
+    }
+
+    #[test]
+    fn from_sdk_error_insufficient_balance_via_consensus() {
+        let identity_id = Identifier::random();
+        let consensus = ConsensusError::from(IdentityInsufficientBalanceError::new(
+            identity_id,
+            12_656_420,
+            42_332_820,
+        ));
+        let sdk_err = SdkError::from(consensus);
+        let err = TaskError::from(sdk_err);
+        assert!(
+            matches!(
+                err,
+                TaskError::IdentityInsufficientBalance {
+                    available: 12_656_420,
+                    required: 42_332_820,
+                    ..
+                }
+            ),
+            "Expected IdentityInsufficientBalance, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn from_sdk_error_insufficient_balance_via_broadcast() {
+        let identity_id = Identifier::random();
+        let consensus =
+            ConsensusError::from(IdentityInsufficientBalanceError::new(identity_id, 100, 500));
+        let broadcast_err = dash_sdk::error::StateTransitionBroadcastError {
+            code: 40200,
+            message: "insufficient balance".to_string(),
+            cause: Some(consensus),
+        };
+        let sdk_err = SdkError::StateTransitionBroadcastError(broadcast_err);
+        let err = TaskError::from(sdk_err);
+        assert!(
+            matches!(
+                err,
+                TaskError::IdentityInsufficientBalance {
+                    available: 100,
+                    required: 500,
+                    ..
+                }
+            ),
+            "Expected IdentityInsufficientBalance, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn insufficient_balance_display_includes_amounts_and_action() {
+        let identity_id = Identifier::random();
+        let consensus = ConsensusError::from(IdentityInsufficientBalanceError::new(
+            identity_id,
+            12_656_420,
+            42_332_820,
+        ));
+        let sdk_err = SdkError::from(consensus);
+        let err = TaskError::from(sdk_err);
+        let msg = err.to_string();
+        assert!(
+            msg.contains("12656420"),
+            "Expected available balance in message, got: {msg}"
+        );
+        assert!(
+            msg.contains("42332820"),
+            "Expected required balance in message, got: {msg}"
+        );
+        assert!(
+            msg.contains("top up"),
+            "Expected actionable guidance in message, got: {msg}"
+        );
     }
 
     #[test]

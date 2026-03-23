@@ -978,7 +978,70 @@ impl Database {
 #[cfg(test)]
 mod test {
     use crate::database::initialization::DEFAULT_DB_VERSION;
-    use rusqlite::params;
+    use rusqlite::{Connection, params};
+
+    /// Helper: assert that a table exists in the database.
+    fn assert_table_exists(conn: &Connection, table: &str) {
+        let exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                params![table],
+                |row| row.get::<_, i32>(0).map(|c| c > 0),
+            )
+            .unwrap();
+        assert!(exists, "table `{table}` should exist");
+    }
+
+    /// Helper: assert that a column exists in a table.
+    fn assert_column_exists(conn: &Connection, table: &str, column: &str) {
+        let exists: bool = conn
+            .query_row(
+                &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name='{column}'"),
+                [],
+                |row| row.get::<_, i32>(0).map(|c| c > 0),
+            )
+            .unwrap();
+        assert!(exists, "column `{column}` should exist in table `{table}`");
+    }
+
+    /// Verify the full v33 schema: all tables and columns introduced in v28-v33.
+    fn assert_v33_schema(conn: &Connection) {
+        // wallet.core_wallet_name (v28)
+        assert_column_exists(conn, "wallet", "core_wallet_name");
+
+        // shielded_notes table (v29)
+        assert_table_exists(conn, "shielded_notes");
+        for col in [
+            "wallet_seed_hash",
+            "note_data",
+            "position",
+            "cmx",
+            "nullifier",
+            "block_height",
+            "is_spent",
+            "value",
+            "network",
+        ] {
+            assert_column_exists(conn, "shielded_notes", col);
+        }
+
+        // shielded_wallet_meta table with last_nullifier_sync_timestamp (v30)
+        assert_table_exists(conn, "shielded_wallet_meta");
+        assert_column_exists(
+            conn,
+            "shielded_wallet_meta",
+            "last_nullifier_sync_timestamp",
+        );
+
+        // wallet_transactions.status (v30)
+        assert_column_exists(conn, "wallet_transactions", "status");
+
+        // contact_private_info table (v29)
+        assert_table_exists(conn, "contact_private_info");
+
+        // dashpay_contact_requests table (pre-existing, but checked for completeness)
+        assert_table_exists(conn, "dashpay_contact_requests");
+    }
 
     #[test]
     /// Given a new database file,
@@ -1061,5 +1124,147 @@ mod test {
             count, 1,
             "Identity should not be deleted during migration failure"
         );
+    }
+
+    #[test]
+    fn test_v33_migration_fresh_install() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_file_path = temp_dir.path().join("fresh.db");
+        let db = super::Database::new(&db_file_path).unwrap();
+        db.initialize(&db_file_path).unwrap();
+
+        let conn = db.conn.lock().unwrap();
+
+        // Version must be 33
+        let version: u16 = conn
+            .query_row(
+                "SELECT database_version FROM settings WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, DEFAULT_DB_VERSION);
+        assert_eq!(version, 33);
+
+        assert_v33_schema(&conn);
+    }
+
+    #[test]
+    fn test_v33_migration_from_v27() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_file_path = temp_dir.path().join("v27.db");
+        let db = super::Database::new(&db_file_path).unwrap();
+
+        // Build a full database then strip v28+ additions to simulate v27.
+        db.create_tables().unwrap();
+        db.set_default_version().unwrap();
+
+        {
+            let conn = db.conn.lock().unwrap();
+
+            // Remove v28+ tables entirely
+            conn.execute("DROP TABLE IF EXISTS shielded_notes", [])
+                .unwrap();
+            conn.execute("DROP TABLE IF EXISTS shielded_wallet_meta", [])
+                .unwrap();
+            conn.execute("DROP TABLE IF EXISTS contact_private_info", [])
+                .unwrap();
+
+            // Recreate `wallet` without `core_wallet_name` (SQLite has no DROP COLUMN)
+            conn.execute_batch(
+                "CREATE TABLE wallet_old AS SELECT
+                    seed_hash, encrypted_seed, salt, nonce,
+                    master_ecdsa_bip44_account_0_epk, alias, is_main,
+                    uses_password, password_hint, network,
+                    confirmed_balance, unconfirmed_balance, total_balance,
+                    last_platform_full_sync, last_platform_sync_checkpoint,
+                    last_terminal_block
+                 FROM wallet;
+                 DROP TABLE wallet;
+                 CREATE TABLE wallet (
+                    seed_hash BLOB NOT NULL PRIMARY KEY,
+                    encrypted_seed BLOB NOT NULL,
+                    salt BLOB NOT NULL,
+                    nonce BLOB NOT NULL,
+                    master_ecdsa_bip44_account_0_epk BLOB NOT NULL,
+                    alias TEXT,
+                    is_main INTEGER,
+                    uses_password INTEGER NOT NULL,
+                    password_hint TEXT,
+                    network TEXT NOT NULL,
+                    confirmed_balance INTEGER DEFAULT 0,
+                    unconfirmed_balance INTEGER DEFAULT 0,
+                    total_balance INTEGER DEFAULT 0,
+                    last_platform_full_sync INTEGER DEFAULT 0,
+                    last_platform_sync_checkpoint INTEGER DEFAULT 0,
+                    last_terminal_block INTEGER DEFAULT 0
+                 );
+                 INSERT INTO wallet SELECT * FROM wallet_old;
+                 DROP TABLE wallet_old;",
+            )
+            .unwrap();
+
+            // Recreate `wallet_transactions` without `status`
+            conn.execute_batch(
+                "DROP TABLE IF EXISTS wallet_transactions;
+                 CREATE TABLE wallet_transactions (
+                    seed_hash BLOB NOT NULL,
+                    txid BLOB NOT NULL,
+                    network TEXT NOT NULL,
+                    timestamp INTEGER NOT NULL,
+                    height INTEGER,
+                    block_hash BLOB,
+                    net_amount INTEGER NOT NULL,
+                    fee INTEGER,
+                    label TEXT,
+                    is_ours INTEGER NOT NULL,
+                    raw_transaction BLOB NOT NULL,
+                    PRIMARY KEY (seed_hash, txid, network)
+                 );",
+            )
+            .unwrap();
+
+            // Recreate `single_key_wallet` without `core_wallet_name`
+            conn.execute_batch(
+                "DROP TABLE IF EXISTS single_key_wallet;
+                 CREATE TABLE single_key_wallet (
+                    key_hash BLOB NOT NULL PRIMARY KEY,
+                    encrypted_private_key BLOB NOT NULL,
+                    salt BLOB NOT NULL,
+                    nonce BLOB NOT NULL,
+                    public_key BLOB NOT NULL,
+                    address TEXT NOT NULL,
+                    alias TEXT,
+                    uses_password INTEGER NOT NULL,
+                    network TEXT NOT NULL,
+                    confirmed_balance INTEGER DEFAULT 0,
+                    unconfirmed_balance INTEGER DEFAULT 0,
+                    total_balance INTEGER DEFAULT 0
+                 );",
+            )
+            .unwrap();
+
+            // Set version to 27
+            conn.execute("UPDATE settings SET database_version = 27 WHERE id = 1", [])
+                .unwrap();
+        }
+
+        // Verify version is 27 before migration
+        assert_eq!(db.db_schema_version().unwrap(), 27);
+
+        // Run migration from v27 to v33
+        let result = db.try_perform_migration(27, DEFAULT_DB_VERSION);
+        assert!(
+            result.is_ok(),
+            "migration from v27 to v33 failed: {:?}",
+            result.err()
+        );
+
+        // Verify final version
+        assert_eq!(db.db_schema_version().unwrap(), 33);
+
+        // Verify full v33 schema
+        let conn = db.conn.lock().unwrap();
+        assert_v33_schema(&conn);
     }
 }

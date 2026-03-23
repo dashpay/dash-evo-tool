@@ -67,7 +67,7 @@ pub const DASH_BIP44_ACCOUNT_0_PATH_TESTNET: [ChildNumber; 3] = [
 
 /// Check if two networks use the same address format.
 /// Testnet, Devnet, and Regtest all use testnet-style addresses.
-fn networks_address_compatible(a: &Network, b: &Network) -> bool {
+pub(crate) fn networks_address_compatible(a: &Network, b: &Network) -> bool {
     matches!(
         (a, b),
         (Network::Mainnet, Network::Mainnet)

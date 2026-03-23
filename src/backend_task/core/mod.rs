@@ -11,6 +11,7 @@ use crate::backend_task::error::{TaskError, is_rpc_auth_error, is_rpc_connection
 use crate::config::{Config, NetworkConfig};
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
+use crate::model::wallet::networks_address_compatible;
 use crate::model::wallet::single_key::SingleKeyWallet;
 use crate::spv::CoreBackendMode;
 use dash_sdk::dash_spv::sync::ProgressPercentage;
@@ -38,19 +39,6 @@ use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 
 const DEFAULT_BIP44_ACCOUNT_INDEX: u32 = 0;
-
-/// Check if two networks use the same address format.
-/// Testnet, Devnet, and Regtest all use testnet-style addresses.
-fn networks_address_compatible(a: &Network, b: &Network) -> bool {
-    matches!(
-        (a, b),
-        (Network::Mainnet, Network::Mainnet)
-            | (
-                Network::Testnet | Network::Devnet | Network::Regtest,
-                Network::Testnet | Network::Devnet | Network::Regtest,
-            )
-    )
-}
 
 #[derive(Debug, Clone)]
 pub enum CoreTask {

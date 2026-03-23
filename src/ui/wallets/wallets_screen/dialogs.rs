@@ -1027,7 +1027,10 @@ impl WalletsBalancesScreen {
                 match PlatformAddress::from_bech32m_string(selected_addr) {
                     Ok((addr, network)) => {
                         // Validate that address network matches app network
-                        if network != self.app_context.network {
+                        if !crate::model::wallet::networks_address_compatible(
+                            &network,
+                            &self.app_context.network,
+                        ) {
                             self.fund_platform_dialog.status = Some(format!(
                                 "Address network mismatch: address is for {:?} but app is on {:?}",
                                 network, self.app_context.network

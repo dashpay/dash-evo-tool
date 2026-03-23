@@ -207,13 +207,11 @@ impl Database {
         )?;
 
         if table_exists {
-            let has_column: bool = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM pragma_table_info('shielded_wallet_meta') WHERE name='last_nullifier_sync_timestamp'",
-                    [],
-                    |row| row.get::<_, i32>(0).map(|count| count > 0),
-                )
-                .unwrap_or(false);
+            let has_column: bool = conn.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('shielded_wallet_meta') WHERE name='last_nullifier_sync_timestamp'",
+                [],
+                |row| row.get::<_, i32>(0).map(|count| count > 0),
+            )?;
 
             if !has_column {
                 conn.execute(

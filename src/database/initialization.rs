@@ -952,6 +952,8 @@ impl Database {
             "wallet_transactions",
             "single_key_wallet",
             "token",
+            "shielded_notes",
+            "shielded_wallet_meta",
         ];
         for table in tables {
             conn.execute(

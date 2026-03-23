@@ -18,6 +18,17 @@ pub fn detect_system_theme() -> Result<ThemeMode, String> {
     }
 }
 
+/// Detect system theme, returning `None` on error or ambiguous result.
+/// Use this for polling: a `None` means "keep the previous theme" rather than
+/// flipping to an arbitrary default.
+pub fn try_detect_system_theme() -> Option<ThemeMode> {
+    match dark_light::detect() {
+        Ok(dark_light::Mode::Dark) => Some(ThemeMode::Dark),
+        Ok(dark_light::Mode::Light) => Some(ThemeMode::Light),
+        _ => None,
+    }
+}
+
 /// Resolve the actual theme to use based on preference
 pub fn resolve_theme_mode(preference: ThemeMode) -> ThemeMode {
     match preference {

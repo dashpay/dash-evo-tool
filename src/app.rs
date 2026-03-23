@@ -1104,9 +1104,10 @@ impl App for AppState {
             let now = Instant::now();
             if now.duration_since(self.theme_last_checked) >= Duration::from_secs(2) {
                 self.theme_last_checked = now;
-                let new_resolved = crate::ui::theme::resolve_theme_mode(self.theme_preference);
-                if new_resolved != self.resolved_theme {
-                    self.resolved_theme = new_resolved;
+                if let Some(detected) = crate::ui::theme::try_detect_system_theme()
+                    && detected != self.resolved_theme
+                {
+                    self.resolved_theme = detected;
                 }
             }
         }

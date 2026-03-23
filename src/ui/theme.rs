@@ -485,7 +485,7 @@ impl DashColors {
         dark_mode: bool,
     ) -> Color32 {
         match network {
-            dash_sdk::dashcore_rpc::dashcore::Network::Dash => {
+            dash_sdk::dashcore_rpc::dashcore::Network::Mainnet => {
                 if dark_mode {
                     Self::DASH_BLUE_DARK
                 } else {

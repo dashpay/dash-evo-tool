@@ -249,7 +249,7 @@ impl TransferScreen {
                 egui::TextEdit::singleline(&mut self.platform_address_input)
                     .hint_text(
                         if self.app_context.network
-                            == dash_sdk::dashcore_rpc::dashcore::Network::Dash
+                            == dash_sdk::dashcore_rpc::dashcore::Network::Mainnet
                         {
                             "Enter Platform address (dash1...)"
                         } else {

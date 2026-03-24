@@ -222,10 +222,22 @@ impl Config {
 
         // Load each network config. Missing configs are normal — not every
         // user configures all networks. Only fail if nothing is configured at all.
-        let mainnet_config = envy::prefixed("MAINNET_").from_env::<NetworkConfig>().ok();
-        let testnet_config = envy::prefixed("TESTNET_").from_env::<NetworkConfig>().ok();
-        let devnet_config = envy::prefixed("DEVNET_").from_env::<NetworkConfig>().ok();
-        let local_config = envy::prefixed("LOCAL_").from_env::<NetworkConfig>().ok();
+        let mainnet_config = envy::prefixed("MAINNET_")
+            .from_env::<NetworkConfig>()
+            .inspect_err(|e| tracing::debug!("Failed to parse mainnet config: {e}"))
+            .ok();
+        let testnet_config = envy::prefixed("TESTNET_")
+            .from_env::<NetworkConfig>()
+            .inspect_err(|e| tracing::debug!("Failed to parse testnet config: {e}"))
+            .ok();
+        let devnet_config = envy::prefixed("DEVNET_")
+            .from_env::<NetworkConfig>()
+            .inspect_err(|e| tracing::debug!("Failed to parse devnet config: {e}"))
+            .ok();
+        let local_config = envy::prefixed("LOCAL_")
+            .from_env::<NetworkConfig>()
+            .inspect_err(|e| tracing::debug!("Failed to parse local config: {e}"))
+            .ok();
 
         if mainnet_config.is_none()
             && testnet_config.is_none()

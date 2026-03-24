@@ -191,6 +191,16 @@ impl Config {
             .persist(&env_file_path)
             .map_err(|e| ConfigError::SaveError { source: e.error })?;
 
+        // Restrict file permissions on Unix (config contains RPC credentials).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o600);
+            if let Err(e) = std::fs::set_permissions(&env_file_path, perms) {
+                tracing::warn!("Could not set config file permissions to 0600: {e}");
+            }
+        }
+
         tracing::info!("Successfully saved configuration to {:?}", env_file_path);
         Ok(())
     }

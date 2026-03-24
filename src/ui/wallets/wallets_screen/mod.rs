@@ -141,6 +141,9 @@ pub struct WalletsBalancesScreen {
     pending_list_wallet_hash: Option<[u8; 32]>,
     /// Whether the wallet pending list is a single-key wallet
     pending_list_is_single_key: bool,
+    /// Cached filtered transaction indices for the currently selected wallet.
+    /// Invalidated (set to None) on wallet switch or transaction updates.
+    cached_tx_indices: Option<Vec<usize>>,
 }
 
 impl WalletsBalancesScreen {
@@ -244,6 +247,7 @@ impl WalletsBalancesScreen {
             pending_list_core_wallets: false,
             pending_list_wallet_hash: None,
             pending_list_is_single_key: false,
+            cached_tx_indices: None,
         }
     }
 
@@ -344,6 +348,7 @@ impl WalletsBalancesScreen {
         self.selected_account = None;
         self.selected_tab = WalletViewTab::default();
         self.shielded_tab_view = None;
+        self.cached_tx_indices = None;
 
         if let Some(hash) = seed_hash {
             self.persist_selected_wallet_hash(Some(hash));
@@ -435,6 +440,12 @@ impl WalletsBalancesScreen {
         self.pending_list_core_wallets = false;
         self.pending_list_wallet_hash = None;
         self.pending_list_is_single_key = false;
+    }
+
+    /// Reset all cached AddressInput widgets so they pick up the new network.
+    pub(crate) fn invalidate_address_inputs(&mut self) {
+        self.mine_dialog.address_input = None;
+        self.cached_tx_indices = None;
     }
 
     fn add_receiving_address(&mut self) {
@@ -1179,7 +1190,7 @@ impl WalletsBalancesScreen {
         }
     }
 
-    fn render_transactions_section(&self, ui: &mut Ui) {
+    fn render_transactions_section(&mut self, ui: &mut Ui) {
         ui.add_space(10.0);
         // TODO: Synchronize transactions display with selected account type
         // (main account -> Core transactions, platform account -> platform state transitions, etc.)
@@ -1217,20 +1228,23 @@ impl WalletsBalancesScreen {
         }
 
         // Filter transactions to only those involving this wallet's addresses.
-        // This prevents showing transactions from other wallets that may have
-        // leaked in via a non-wallet-scoped RPC endpoint.
-        let wallet_addresses: std::collections::HashSet<&Address> =
-            wallet_guard.known_addresses.keys().collect();
-        let relevant_indices: Vec<usize> = (0..wallet_guard.transactions.len())
-            .filter(|&i| {
-                let tx = &wallet_guard.transactions[i];
-                tx.transaction.output.iter().any(|output| {
-                    Address::from_script(&output.script_pubkey, self.app_context.network)
-                        .ok()
-                        .is_some_and(|addr| wallet_addresses.contains(&addr))
+        // We check outputs only — transactions are already fetched per-wallet
+        // from SPV/RPC, so inputs are implicitly relevant. The output filter
+        // only excludes transactions that leaked from other wallets' data.
+        let relevant_indices = self.cached_tx_indices.get_or_insert_with(|| {
+            let wallet_addresses: std::collections::HashSet<&Address> =
+                wallet_guard.known_addresses.keys().collect();
+            (0..wallet_guard.transactions.len())
+                .filter(|&i| {
+                    let tx = &wallet_guard.transactions[i];
+                    tx.transaction.output.iter().any(|output| {
+                        Address::from_script(&output.script_pubkey, self.app_context.network)
+                            .ok()
+                            .is_some_and(|addr| wallet_addresses.contains(&addr))
+                    })
                 })
-            })
-            .collect();
+                .collect()
+        });
 
         if relevant_indices.is_empty() {
             ui.label(
@@ -1240,7 +1254,7 @@ impl WalletsBalancesScreen {
         }
 
         let dark_mode = ui.ctx().style().visuals.dark_mode;
-        let mut order = relevant_indices;
+        let mut order: Vec<usize> = relevant_indices.clone();
         order.sort_by(|&a, &b| {
             wallet_guard.transactions[b]
                 .timestamp
@@ -2443,6 +2457,7 @@ impl ScreenLike for WalletsBalancesScreen {
         match backend_task_success_result {
             crate::ui::BackendTaskSuccessResult::RefreshedWallet { warning } => {
                 self.refreshing = false;
+                self.cached_tx_indices = None;
                 // Refresh the cached platform sync info so the panel shows
                 // updated timestamps and block heights after a wallet sync.
                 let seed_hash = self

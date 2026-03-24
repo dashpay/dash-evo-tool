@@ -43,6 +43,11 @@ pub struct UnshieldCreditsScreen {
 }
 
 impl UnshieldCreditsScreen {
+    /// Clear the AddressInput widget so it picks up the new network on next frame.
+    pub(crate) fn invalidate_address_input(&mut self) {
+        self.address_input = None;
+    }
+
     pub fn new(seed_hash: WalletSeedHash, app_context: &Arc<AppContext>) -> Self {
         let max_balance = {
             let states = app_context.shielded_states.lock().unwrap();

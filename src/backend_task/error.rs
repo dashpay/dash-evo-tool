@@ -221,7 +221,7 @@ pub enum TaskError {
     },
 
     /// Access denied by DAPI server (gRPC Unauthenticated/PermissionDenied).
-    #[error("Access was denied by the network server. Check you password in settings.")]
+    #[error("Access was denied by the network server. Check your password in settings.")]
     DapiAccessDenied {
         #[source]
         source_error: Box<SdkError>,

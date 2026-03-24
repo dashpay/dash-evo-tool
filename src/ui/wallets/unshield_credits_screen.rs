@@ -3,9 +3,11 @@ use crate::backend_task::shielded::ShieldedTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::address::{AddressKind, ValidatedAddress};
+use crate::model::amount::Amount;
 use crate::model::wallet::WalletSeedHash;
 use crate::ui::components::ComponentResponse;
 use crate::ui::components::address_input::AddressInput;
+use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
@@ -26,7 +28,8 @@ enum Status {
 pub struct UnshieldCreditsScreen {
     pub app_context: Arc<AppContext>,
     pub seed_hash: WalletSeedHash,
-    amount_str: String,
+    amount_input: Option<AmountInput>,
+    amount: Option<Amount>,
     address_input: Option<AddressInput>,
     validated_destination: Option<ValidatedAddress>,
     max_balance: u64,
@@ -48,33 +51,14 @@ impl UnshieldCreditsScreen {
         Self {
             app_context: app_context.clone(),
             seed_hash,
-            amount_str: String::new(),
+            amount_input: None,
+            amount: None,
             address_input: None,
             validated_destination: None,
             max_balance,
             status: Status::NotStarted,
             error_message: None,
             success_message: None,
-        }
-    }
-
-    fn parse_amount_credits(&self) -> Option<u64> {
-        let trimmed = self.amount_str.trim();
-        if trimmed.is_empty() {
-            return None;
-        }
-        if trimmed.contains('.') {
-            let dash: f64 = trimmed.parse().ok()?;
-            if dash <= 0.0 {
-                return None;
-            }
-            Some((dash * CREDITS_PER_DUFF as f64 * 1e8) as u64)
-        } else {
-            let credits: u64 = trimmed.parse().ok()?;
-            if credits == 0 {
-                return None;
-            }
-            Some(credits)
         }
     }
 }
@@ -164,22 +148,19 @@ impl ScreenLike for UnshieldCreditsScreen {
             ui.add_space(10.0);
 
             // Amount input
-            ui.horizontal(|ui| {
-                ui.label("Amount (DASH):");
-                ui.text_edit_singleline(&mut self.amount_str);
+            let amount_input = self.amount_input.get_or_insert_with(|| {
+                AmountInput::new(Amount::new_dash(0.0))
+                    .with_label("Amount (DASH):")
+                    .with_hint_text("Enter amount")
+                    .with_max_button(true)
+                    .with_desired_width(150.0)
             });
-            if let Some(credits) = self.parse_amount_credits() {
-                let dash = credits as f64 / CREDITS_PER_DUFF as f64 / 1e8;
-                ui.label(format!("= {:.8} DASH ({} credits)", dash, credits));
-                if credits > self.max_balance {
-                    ui.colored_label(Color32::from_rgb(255, 100, 100), "Exceeds shielded balance");
-                }
-            }
+            amount_input.set_max_amount(Some(self.max_balance));
+            let response = amount_input.show(ui);
+            response.inner.update(&mut self.amount);
             ui.add_space(15.0);
 
-            let amount_ok = self
-                .parse_amount_credits()
-                .is_some_and(|a| a <= self.max_balance);
+            let amount_ok = self.amount.is_some();
             let has_destination = self.validated_destination.is_some();
             let can_confirm = self.status == Status::NotStarted && amount_ok && has_destination;
 
@@ -204,7 +185,7 @@ impl ScreenLike for UnshieldCreditsScreen {
                             .fill(crate::ui::theme::DashColors::DASH_BLUE),
                         )
                         .clicked()
-                        && let Some(amount) = self.parse_amount_credits()
+                        && let Some(amount) = self.amount.as_ref().map(|a| a.value())
                     {
                         match &self.validated_destination {
                             Some(ValidatedAddress::Platform { address: addr, .. }) => {

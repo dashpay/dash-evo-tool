@@ -1519,15 +1519,6 @@ impl WalletSendScreen {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
         let fee_estimator = self.app_context.fee_estimator();
 
-        ui.label(
-            RichText::new("Amount")
-                .color(DashColors::text_primary(dark_mode))
-                .strong()
-                .size(14.0),
-        );
-
-        ui.add_space(8.0);
-
         // Get max amount and hint based on source selection
         let (max_amount_credits, max_hint) = match &self.selected_source {
             Some(SourceSelection::CoreWallet) => {
@@ -1621,6 +1612,7 @@ impl WalletSendScreen {
             .show(ui, |ui| {
                 let amount_input = self.amount_input.get_or_insert_with(|| {
                     AmountInput::new(Amount::new_dash(0.0))
+                        .with_label("Amount (DASH):")
                         .with_hint_text("Enter amount")
                         .with_max_button(true)
                         .with_desired_width(150.0)

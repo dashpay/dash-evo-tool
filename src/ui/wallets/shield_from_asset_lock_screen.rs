@@ -32,6 +32,8 @@ pub struct ShieldFromAssetLockScreen {
     status: Status,
     error_message: Option<String>,
     success_message: Option<String>,
+    /// Queued task to dispatch on next frame (e.g., sync notes after successful shield).
+    pending_refresh_task: Option<BackendTask>,
 }
 
 impl ShieldFromAssetLockScreen {
@@ -56,13 +58,20 @@ impl ShieldFromAssetLockScreen {
             status: Status::NotStarted,
             error_message: None,
             success_message: None,
+            pending_refresh_task: None,
         }
     }
 }
 
 impl ScreenLike for ShieldFromAssetLockScreen {
     fn ui(&mut self, ctx: &Context) -> AppAction {
-        let mut action = add_top_panel(
+        let mut action = self
+            .pending_refresh_task
+            .take()
+            .map(AppAction::BackendTask)
+            .unwrap_or(AppAction::None);
+
+        action |= add_top_panel(
             ctx,
             &self.app_context,
             vec![
@@ -176,6 +185,10 @@ impl ScreenLike for ShieldFromAssetLockScreen {
                     "Successfully shielded {:.8} DASH from core wallet",
                     dash
                 ));
+                self.pending_refresh_task =
+                    Some(BackendTask::ShieldedTask(ShieldedTask::SyncNotes {
+                        seed_hash: self.seed_hash,
+                    }));
             }
             _ => {}
         }

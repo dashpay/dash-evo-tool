@@ -36,6 +36,8 @@ pub struct UnshieldCreditsScreen {
     status: Status,
     error_message: Option<String>,
     success_message: Option<String>,
+    /// Queued task to dispatch on next frame (e.g., sync notes after successful unshield).
+    pending_refresh_task: Option<BackendTask>,
 }
 
 impl UnshieldCreditsScreen {
@@ -59,13 +61,20 @@ impl UnshieldCreditsScreen {
             status: Status::NotStarted,
             error_message: None,
             success_message: None,
+            pending_refresh_task: None,
         }
     }
 }
 
 impl ScreenLike for UnshieldCreditsScreen {
     fn ui(&mut self, ctx: &Context) -> AppAction {
-        let mut action = add_top_panel(
+        let mut action = self
+            .pending_refresh_task
+            .take()
+            .map(AppAction::BackendTask)
+            .unwrap_or(AppAction::None);
+
+        action |= add_top_panel(
             ctx,
             &self.app_context,
             vec![
@@ -236,6 +245,10 @@ impl ScreenLike for UnshieldCreditsScreen {
                     "Successfully unshielded {:.8} DASH to platform address",
                     dash
                 ));
+                self.pending_refresh_task =
+                    Some(BackendTask::ShieldedTask(ShieldedTask::SyncNotes {
+                        seed_hash: self.seed_hash,
+                    }));
             }
             BackendTaskSuccessResult::ShieldedWithdrawalComplete { seed_hash, amount }
                 if seed_hash == self.seed_hash =>
@@ -246,6 +259,10 @@ impl ScreenLike for UnshieldCreditsScreen {
                     "Successfully withdrew {:.8} DASH to core address",
                     dash
                 ));
+                self.pending_refresh_task =
+                    Some(BackendTask::ShieldedTask(ShieldedTask::SyncNotes {
+                        seed_hash: self.seed_hash,
+                    }));
             }
             _ => {}
         }

@@ -47,6 +47,8 @@ pub struct ShieldCreditsScreen {
     batch_remaining: u32,
     /// Queued task to dispatch on next frame (for sequential batch mode).
     pending_next_task: Option<BackendTask>,
+    /// Queued sync task to dispatch on next frame after successful operation.
+    pending_refresh_task: Option<BackendTask>,
     /// Per-operation progress for parallel batch mode.
     batch_stages: Option<Vec<Arc<Mutex<ShieldStage>>>>,
     /// JSON of a failed state transition to show in the popup.
@@ -84,6 +86,7 @@ impl ShieldCreditsScreen {
             batch_failed: 0,
             batch_remaining: 0,
             pending_next_task: None,
+            pending_refresh_task: None,
             batch_stages: None,
             json_preview: None,
         }
@@ -352,6 +355,11 @@ impl ScreenLike for ShieldCreditsScreen {
         // Dispatch pending sequential task from previous frame
         if let Some(task) = self.pending_next_task.take() {
             action = AppAction::BackendTask(task);
+        }
+
+        // Dispatch pending refresh task (sync notes after successful shield)
+        if let Some(task) = self.pending_refresh_task.take() {
+            action |= AppAction::BackendTask(task);
         }
 
         island_central_panel(ctx, |ui| {
@@ -700,11 +708,21 @@ impl ScreenLike for ShieldCreditsScreen {
                     self.check_batch_complete();
                     if self.status == Status::BatchInProgress {
                         self.queue_next_sequential();
+                    } else {
+                        // Batch complete — sync shielded notes
+                        self.pending_refresh_task =
+                            Some(BackendTask::ShieldedTask(ShieldedTask::SyncNotes {
+                                seed_hash: self.seed_hash,
+                            }));
                     }
                 } else {
                     self.status = Status::Complete;
                     let dash = amount as f64 / CREDITS_PER_DUFF as f64 / 1e8;
                     self.success_message = Some(format!("Successfully shielded {:.8} DASH", dash));
+                    self.pending_refresh_task =
+                        Some(BackendTask::ShieldedTask(ShieldedTask::SyncNotes {
+                            seed_hash: self.seed_hash,
+                        }));
                 }
             }
             _ => {}

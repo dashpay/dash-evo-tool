@@ -2033,7 +2033,7 @@ impl WalletsBalancesScreen {
                         let right_width = available - left_width;
 
                         ui.horizontal(|ui| {
-                            // LEFT COLUMN: name, total balance, action buttons
+                            // LEFT COLUMN: name, total balance
                             ui.vertical(|ui| {
                                 ui.set_width(left_width);
 
@@ -2058,9 +2058,6 @@ impl WalletsBalancesScreen {
                                     let wallet = wallet_arc.read().unwrap();
                                     self.render_balance_total(ui, &wallet);
                                 }
-
-                                // Action buttons (Send, Receive, spinner, Advanced)
-                                action |= self.render_action_buttons(ui, ctx);
                             });
 
                             // RIGHT COLUMN: balance breakdown + sync status, right-aligned
@@ -2077,6 +2074,9 @@ impl WalletsBalancesScreen {
                                 self.render_sync_status(ui);
                             });
                         });
+
+                        // Action buttons span full width below the header
+                        action |= self.render_action_buttons(ui, ctx);
 
                         // --- Accounts & Addresses (tabs, full-width below header) ---
                         ui.add_space(10.0);

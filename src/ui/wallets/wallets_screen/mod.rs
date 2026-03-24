@@ -85,12 +85,12 @@ impl RefreshMode {
         }
     }
 
-    fn all_modes() -> &'static [RefreshMode] {
-        &[
-            RefreshMode::All,
-            RefreshMode::CoreOnly,
-            RefreshMode::PlatformOnly,
-        ]
+    fn next(self) -> Self {
+        match self {
+            RefreshMode::All => RefreshMode::CoreOnly,
+            RefreshMode::CoreOnly => RefreshMode::PlatformOnly,
+            RefreshMode::PlatformOnly => RefreshMode::All,
+        }
     }
 }
 
@@ -1071,52 +1071,48 @@ impl WalletsBalancesScreen {
                         )
                         .show(|ui| {
                             ui.set_min_width(160.0);
+                            ui.with_layout(egui::Layout::top_down(egui::Align::RIGHT), |ui| {
+                                // Get Test Dash (opens browser to faucet)
+                                if matches!(
+                                    self.app_context.network,
+                                    dash_sdk::dpp::dashcore::Network::Testnet
+                                ) && ui.button("Get Test Dash").clicked()
+                                {
+                                    ui.ctx().open_url(egui::OpenUrl::new_tab(
+                                        "https://faucet.testnet.networks.dash.org/",
+                                    ));
+                                }
 
-                            // Get Test Dash (opens browser to faucet)
-                            if matches!(
-                                self.app_context.network,
-                                dash_sdk::dpp::dashcore::Network::Testnet
-                            ) && ui.button("Get Test Dash").clicked()
-                            {
-                                ui.ctx().open_url(egui::OpenUrl::new_tab(
-                                    "https://faucet.testnet.networks.dash.org/",
-                                ));
-                            }
+                                // Mine button (Regtest/Devnet with RPC only)
+                                if matches!(
+                                    self.app_context.network,
+                                    dash_sdk::dpp::dashcore::Network::Regtest
+                                        | dash_sdk::dpp::dashcore::Network::Devnet
+                                ) && self.app_context.core_backend_mode() == CoreBackendMode::Rpc
+                                    && ui
+                                        .button(
+                                            RichText::new("Mine")
+                                                .color(DashColors::text_primary(dark_mode))
+                                                .strong(),
+                                        )
+                                        .clicked()
+                                {
+                                    self.open_mine_dialog();
+                                }
 
-                            // Mine button (Regtest/Devnet with RPC only)
-                            if matches!(
-                                self.app_context.network,
-                                dash_sdk::dpp::dashcore::Network::Regtest
-                                    | dash_sdk::dpp::dashcore::Network::Devnet
-                            ) && self.app_context.core_backend_mode() == CoreBackendMode::Rpc
-                                && ui
-                                    .button(
-                                        RichText::new("Mine")
-                                            .color(DashColors::text_primary(dark_mode))
-                                            .strong(),
-                                    )
-                                    .clicked()
-                            {
-                                self.open_mine_dialog();
-                            }
-
-                            // Refresh Mode selector
-                            ui.horizontal(|ui| {
-                                ui.label(
-                                    RichText::new("Refresh Mode:")
-                                        .color(DashColors::text_primary(dark_mode)),
-                                );
-                                ComboBox::from_id_salt("refresh_mode_selector_dev_tools")
-                                    .selected_text(self.refresh_mode.label())
-                                    .show_ui(ui, |ui| {
-                                        for mode in RefreshMode::all_modes() {
-                                            ui.selectable_value(
-                                                &mut self.refresh_mode,
-                                                *mode,
-                                                mode.label(),
-                                            );
-                                        }
-                                    });
+                                // Refresh Mode cycle button
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new("Refresh Mode:")
+                                            .color(DashColors::text_primary(dark_mode)),
+                                    );
+                                    if ui
+                                        .button(format!("{} \u{25B6}", self.refresh_mode.label()))
+                                        .clicked()
+                                    {
+                                        self.refresh_mode = self.refresh_mode.next();
+                                    }
+                                });
                             });
                         });
                 });

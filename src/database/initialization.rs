@@ -1160,7 +1160,7 @@ mod test {
     }
 
     #[test]
-    fn test_v33_migration_fresh_install() {
+    fn test_v34_migration_fresh_install() {
         let temp_dir = tempfile::tempdir().unwrap();
         let db_file_path = temp_dir.path().join("fresh.db");
         let db = super::Database::new(&db_file_path).unwrap();

@@ -50,12 +50,15 @@ impl AppContext {
 
             let mut wallet = wallet_arc.write()?;
 
+            let funding_index = wallet.next_generic_funding_index(self.network);
+
             // Try to create the asset lock transaction, reload UTXOs if needed
             match wallet.generic_asset_lock_transaction(
                 self,
                 self.network,
                 asset_lock_amount,
                 allow_take_fee_from_amount,
+                funding_index,
             ) {
                 Ok((tx, private_key, address, _change, utxos)) => (tx, private_key, address, utxos),
                 Err(e) => {
@@ -73,6 +76,7 @@ impl AppContext {
                             self.network,
                             asset_lock_amount,
                             allow_take_fee_from_amount,
+                            funding_index,
                         )
                         .map_err(|e| TaskError::AssetLockTransactionBuildFailed { detail: e })?;
                     (tx, private_key, address, utxos)

@@ -147,6 +147,7 @@ pub trait DerivationPathHelpers {
         key_class: u32,
         index: u32,
     ) -> DerivationPath;
+    fn is_generic_asset_lock_funding(&self, network: Network) -> bool;
 }
 
 pub(crate) fn is_bip44_path(path: &DerivationPath, network: Network) -> bool {
@@ -248,6 +249,33 @@ impl DerivationPathHelpers for DerivationPath {
             ChildNumber::Normal { index },
         ])
     }
+
+    fn is_generic_asset_lock_funding(&self, network: Network) -> bool {
+        let coin_type = match network {
+            Network::Mainnet => 5,
+            _ => 1,
+        };
+        let components = self.as_ref();
+        components.len() == 4
+            && components[0] == ChildNumber::Hardened { index: 9 }
+            && components[1] == ChildNumber::Hardened { index: coin_type }
+            && components[2] == ChildNumber::Hardened { index: 15 }
+    }
+}
+
+/// Create a derivation path for generic asset lock funding: m/9'/coin_type'/15'/index'
+///
+/// This path is used for asset lock transactions that are not tied to a specific
+/// identity (e.g., platform address funding). Sub-feature index 15 is chosen to
+/// avoid collision with existing sub-features (5 = identity, 17 = platform payment).
+fn asset_lock_funding_path(network: Network, index: u32) -> DerivationPath {
+    let coin_type = Wallet::coin_type(network);
+    DerivationPath::from(vec![
+        ChildNumber::Hardened { index: 9 },
+        ChildNumber::Hardened { index: coin_type },
+        ChildNumber::Hardened { index: 15 },
+        ChildNumber::Hardened { index },
+    ])
 }
 
 use crate::context::AppContext;
@@ -270,6 +298,8 @@ const BOOTSTRAP_IDENTITY_INVITATION_COUNT: u32 = 8;
 const BOOTSTRAP_IDENTITY_TOPUP_PER_REGISTRATION: u32 = 4;
 const BOOTSTRAP_IDENTITY_TOPUP_NOT_BOUND_COUNT: u32 = 8;
 const BOOTSTRAP_PROVIDER_ADDRESS_COUNT: u32 = 4;
+/// Number of generic asset lock funding addresses to bootstrap
+const BOOTSTRAP_GENERIC_FUNDING_ADDRESS_COUNT: u32 = 8;
 /// DIP-17: Number of Platform payment addresses to bootstrap per key class
 const BOOTSTRAP_PLATFORM_PAYMENT_ADDRESS_COUNT: u32 = 20;
 
@@ -809,6 +839,10 @@ impl Wallet {
 
         if let Err(err) = self.bootstrap_platform_payment_addresses(network, app_context) {
             tracing::warn!("Failed to bootstrap Platform payment addresses: {}", err);
+        }
+
+        if let Err(err) = self.bootstrap_generic_funding_addresses(network, app_context) {
+            tracing::warn!("Failed to bootstrap generic funding addresses: {}", err);
         }
     }
 
@@ -1420,6 +1454,29 @@ impl Wallet {
         Ok(())
     }
 
+    fn bootstrap_generic_funding_addresses(
+        &mut self,
+        network: Network,
+        app_context: &AppContext,
+    ) -> Result<(), String> {
+        let seed = *self.seed_bytes()?;
+        for index in 0..BOOTSTRAP_GENERIC_FUNDING_ADDRESS_COUNT {
+            let derivation_path = asset_lock_funding_path(network, index);
+            let extended_private_key = derivation_path
+                .derive_priv_ecdsa_for_master_seed(&seed, network)
+                .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
+            let private_key = extended_private_key.to_priv();
+            self.register_address_from_private_key(
+                &private_key,
+                &derivation_path,
+                DerivationPathType::CREDIT_FUNDING,
+                DerivationPathReference::BlockchainIdentityCreditRegistrationFunding,
+                app_context,
+            )?;
+        }
+        Ok(())
+    }
+
     fn identity_registration_indices(&self) -> BTreeSet<u32> {
         let mut indices: BTreeSet<u32> = self.identities.keys().copied().collect();
         let fallback_limit = BOOTSTRAP_IDENTITY_REGISTRATION_FALLBACK;
@@ -1608,6 +1665,50 @@ impl Wallet {
             app_context,
         )?;
         Ok(private_key)
+    }
+
+    /// Generate a deterministic key for generic asset lock funding.
+    ///
+    /// Uses derivation path `m/9'/coin_type'/15'/index'` to produce a key that
+    /// is always recoverable from the wallet seed, preventing fund loss when a
+    /// Platform state transition is rejected after the asset lock is broadcast.
+    pub fn generic_asset_lock_ecdsa_private_key(
+        &mut self,
+        app_context: &AppContext,
+        network: Network,
+        funding_index: u32,
+    ) -> Result<PrivateKey, String> {
+        let derivation_path = asset_lock_funding_path(network, funding_index);
+        let extended_private_key = derivation_path
+            .derive_priv_ecdsa_for_master_seed(self.seed_bytes()?, network)
+            .expect("derivation should not be able to fail");
+        let private_key = extended_private_key.to_priv();
+
+        self.register_address_from_private_key(
+            &private_key,
+            &derivation_path,
+            DerivationPathType::CREDIT_FUNDING,
+            DerivationPathReference::BlockchainIdentityCreditRegistrationFunding,
+            app_context,
+        )?;
+        Ok(private_key)
+    }
+
+    /// Find the next unused index for generic asset lock funding by scanning
+    /// `known_addresses` for existing paths under `m/9'/coin_type'/15'/*'`.
+    pub fn next_generic_funding_index(&self, network: Network) -> u32 {
+        self.known_addresses
+            .values()
+            .filter(|path| path.is_generic_asset_lock_funding(network))
+            .filter_map(|path| {
+                path.as_ref().last().and_then(|child| match child {
+                    ChildNumber::Hardened { index } => Some(*index),
+                    _ => None,
+                })
+            })
+            .max()
+            .map(|max_idx| max_idx + 1)
+            .unwrap_or(0)
     }
 
     pub fn receive_address(

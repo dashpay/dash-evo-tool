@@ -221,8 +221,13 @@ impl Wallet {
         )
     }
 
-    /// Create an asset lock transaction with a randomly generated one-time key.
+    /// Create an asset lock transaction with a deterministic HD-derived key.
     /// This is used for generic platform address funding (not identity-specific).
+    ///
+    /// The key is derived from `m/9'/coin_type'/15'/funding_index'`, making it
+    /// always recoverable from the wallet seed. This prevents permanent fund
+    /// loss when Platform rejects a state transition after the asset lock
+    /// transaction has been broadcast.
     #[allow(clippy::type_complexity)]
     pub fn generic_asset_lock_transaction(
         &mut self,
@@ -230,6 +235,7 @@ impl Wallet {
         network: Network,
         amount: u64,
         allow_take_fee_from_amount: bool,
+        funding_index: u32,
     ) -> Result<
         (
             Transaction,
@@ -240,15 +246,11 @@ impl Wallet {
         ),
         String,
     > {
-        use bip39::rand::rngs::OsRng;
-
-        // Generate a random private key for the asset lock
+        let private_key =
+            self.generic_asset_lock_ecdsa_private_key(app_context, network, funding_index)?;
         let secp = Secp256k1::new();
-        let (secret_key, _) = secp.generate_keypair(&mut OsRng);
-        let private_key = PrivateKey::new(secret_key, network);
         let public_key = private_key.public_key(&secp);
 
-        // The asset lock address is where the proof will be tied to
         let asset_lock_address = Address::p2pkh(&public_key, network);
 
         let (tx, returned_private_key, change_address, used_utxos) = self

@@ -1065,63 +1065,59 @@ impl WalletsBalancesScreen {
                 ui.add(egui::Spinner::new().color(DashColors::DASH_BLUE));
             }
 
-            // Dev Tools dropdown button (developer mode only), right-aligned
+            // Advanced dropdown button (developer mode only)
             if self.app_context.is_developer_mode() {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let dev_tools_response = ui.button(
-                        RichText::new("Tools \u{25BC}")
-                            .color(DashColors::text_primary(dark_mode))
-                            .strong(),
-                    );
+                let advanced_response = ui.button(
+                    RichText::new("Advanced \u{25BC}")
+                        .color(DashColors::text_primary(dark_mode))
+                        .strong(),
+                );
 
-                    let popup_id = ui.make_persistent_id("dev_tools_popup");
-                    egui::Popup::from_toggle_button_response(&dev_tools_response)
-                        .id(popup_id)
-                        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                        .frame(
-                            egui::Frame::popup(ui.style()).fill(DashColors::popup_fill(dark_mode)),
-                        )
-                        .show(|ui| {
-                            ui.set_min_width(160.0);
-                            ui.with_layout(egui::Layout::top_down(egui::Align::RIGHT), |ui| {
-                                // Get Test Dash (opens browser to faucet)
-                                if matches!(
-                                    self.app_context.network,
-                                    dash_sdk::dpp::dashcore::Network::Testnet
-                                ) && ui.button("Get Test Dash").clicked()
-                                {
-                                    ui.ctx().open_url(egui::OpenUrl::new_tab(
-                                        "https://faucet.testnet.networks.dash.org/",
-                                    ));
-                                }
+                let popup_id = ui.make_persistent_id("advanced_popup");
+                egui::Popup::from_toggle_button_response(&advanced_response)
+                    .id(popup_id)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                    .frame(egui::Frame::popup(ui.style()).fill(DashColors::popup_fill(dark_mode)))
+                    .show(|ui| {
+                        ui.set_min_width(160.0);
+                        ui.with_layout(egui::Layout::top_down(egui::Align::RIGHT), |ui| {
+                            // Get Test Dash (opens browser to faucet)
+                            if matches!(
+                                self.app_context.network,
+                                dash_sdk::dpp::dashcore::Network::Testnet
+                            ) && ui.button("Get Test Dash").clicked()
+                            {
+                                ui.ctx().open_url(egui::OpenUrl::new_tab(
+                                    "https://faucet.testnet.networks.dash.org/",
+                                ));
+                            }
 
-                                // Mine button (Regtest/Devnet with RPC only)
-                                if matches!(
-                                    self.app_context.network,
-                                    dash_sdk::dpp::dashcore::Network::Regtest
-                                        | dash_sdk::dpp::dashcore::Network::Devnet
-                                ) && self.app_context.core_backend_mode() == CoreBackendMode::Rpc
-                                    && ui
-                                        .button(
-                                            RichText::new("Mine")
-                                                .color(DashColors::text_primary(dark_mode))
-                                                .strong(),
-                                        )
-                                        .clicked()
-                                {
-                                    self.open_mine_dialog();
-                                }
-
-                                // Refresh Mode cycle button
-                                if ui
-                                    .button(format!("Refresh mode: {}", self.refresh_mode.label()))
+                            // Mine button (Regtest/Devnet with RPC only)
+                            if matches!(
+                                self.app_context.network,
+                                dash_sdk::dpp::dashcore::Network::Regtest
+                                    | dash_sdk::dpp::dashcore::Network::Devnet
+                            ) && self.app_context.core_backend_mode() == CoreBackendMode::Rpc
+                                && ui
+                                    .button(
+                                        RichText::new("Mine")
+                                            .color(DashColors::text_primary(dark_mode))
+                                            .strong(),
+                                    )
                                     .clicked()
-                                {
-                                    self.refresh_mode = self.refresh_mode.next();
-                                }
-                            });
+                            {
+                                self.open_mine_dialog();
+                            }
+
+                            // Refresh Mode cycle button
+                            if ui
+                                .button(format!("Refresh mode: {}", self.refresh_mode.label()))
+                                .clicked()
+                            {
+                                self.refresh_mode = self.refresh_mode.next();
+                            }
                         });
-                });
+                    });
             }
         });
 
@@ -1935,23 +1931,29 @@ impl WalletsBalancesScreen {
         );
     }
 
-    /// Render the collapsible balance breakdown section.
-    fn render_balance_breakdown(&mut self, ui: &mut Ui, wallet: &Wallet) {
+    /// Render the total balance label only (used in the left column of the header).
+    fn render_balance_total(&self, ui: &mut Ui, wallet: &Wallet) {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
         let core_balance = wallet.total_balance_duffs();
         let platform_balance = Self::platform_balance_duffs(wallet);
         let shielded_balance = self.shielded_balance_duffs(&wallet.seed_hash());
         let total = core_balance + platform_balance + shielded_balance;
 
-        // Total balance (always visible)
         ui.label(
             RichText::new(format!("Balance: {}", Self::format_dash(total)))
                 .color(DashColors::text_primary(dark_mode))
                 .size(20.0)
                 .strong(),
         );
+    }
 
-        // Collapsible breakdown
+    /// Render the collapsible breakdown detail (used in the right column of the header).
+    fn render_balance_breakdown_detail(&mut self, ui: &mut Ui, wallet: &Wallet) {
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let core_balance = wallet.total_balance_duffs();
+        let platform_balance = Self::platform_balance_duffs(wallet);
+        let shielded_balance = self.shielded_balance_duffs(&wallet.seed_hash());
+
         let header = egui::CollapsingHeader::new(
             RichText::new("Balance breakdown")
                 .size(13.0)
@@ -1999,36 +2001,58 @@ impl WalletsBalancesScreen {
                     .fill(DashColors::surface(dark_mode))
                     .inner_margin(Margin::symmetric(18, 16))
                     .show(col, |ui| {
-                        // --- 1. Wallet Header ---
-                        ui.horizontal(|ui| {
-                            ui.heading(
-                                RichText::new(alias.clone())
-                                    .color(DashColors::text_primary(dark_mode))
-                                    .size(25.0),
-                            );
+                        // --- Two-column header ---
+                        let available = ui.available_width();
+                        let left_width = available * 0.55;
+                        let right_width = available - left_width;
 
-                            if self.app_context.is_developer_mode() {
-                                ui.label(
-                                    RichText::new("[DEV]")
-                                        .color(DashColors::text_secondary(dark_mode))
-                                        .size(12.0),
-                                );
-                            }
+                        ui.horizontal(|ui| {
+                            // LEFT COLUMN: name, total balance, action buttons
+                            ui.vertical(|ui| {
+                                ui.set_width(left_width);
+
+                                // Wallet name + [DEV] badge
+                                ui.horizontal(|ui| {
+                                    ui.heading(
+                                        RichText::new(alias.clone())
+                                            .color(DashColors::text_primary(dark_mode))
+                                            .size(25.0),
+                                    );
+                                    if self.app_context.is_developer_mode() {
+                                        ui.label(
+                                            RichText::new("[DEV]")
+                                                .color(DashColors::text_secondary(dark_mode))
+                                                .size(12.0),
+                                        );
+                                    }
+                                });
+
+                                // Total balance line
+                                {
+                                    let wallet = wallet_arc.read().unwrap();
+                                    self.render_balance_total(ui, &wallet);
+                                }
+
+                                // Action buttons (Send, Receive, spinner, Advanced)
+                                action |= self.render_action_buttons(ui, ctx);
+                            });
+
+                            // RIGHT COLUMN: balance breakdown + sync status, right-aligned
+                            ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
+                                ui.set_width(right_width);
+
+                                // Collapsible balance breakdown
+                                {
+                                    let wallet = wallet_arc.read().unwrap();
+                                    self.render_balance_breakdown_detail(ui, &wallet);
+                                }
+
+                                // Collapsible sync status
+                                self.render_sync_status(ui);
+                            });
                         });
 
-                        // --- 2. Balance with collapsible breakdown ---
-                        {
-                            let wallet = wallet_arc.read().unwrap();
-                            self.render_balance_breakdown(ui, &wallet);
-                        }
-
-                        // --- 3. Sync Status (collapsible) ---
-                        self.render_sync_status(ui);
-
-                        // --- 4. Action Buttons (Send, Receive, Dev Tools) ---
-                        action |= self.render_action_buttons(ui, ctx);
-
-                        // --- 5. Accounts & Addresses (tabs) ---
+                        // --- Accounts & Addresses (tabs, full-width below header) ---
                         ui.add_space(10.0);
                         ui.separator();
 

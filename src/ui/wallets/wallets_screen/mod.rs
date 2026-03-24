@@ -1073,51 +1073,60 @@ impl WalletsBalancesScreen {
                 ui.add(egui::Spinner::new().color(DashColors::DASH_BLUE));
             }
 
+            // Dev-mode buttons: right-aligned, filling all remaining space
             if self.app_context.is_developer_mode() {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if matches!(
-                        self.app_context.network,
-                        dash_sdk::dpp::dashcore::Network::Testnet
-                    ) && ui
-                        .button(
-                            RichText::new("Get Test Dash")
-                                .color(DashColors::text_primary(dark_mode))
-                                .strong(),
-                        )
-                        .clicked()
-                    {
-                        ui.ctx().open_url(egui::OpenUrl::new_tab(
-                            "https://faucet.testnet.networks.dash.org/",
-                        ));
-                    }
-
-                    if matches!(
-                        self.app_context.network,
-                        dash_sdk::dpp::dashcore::Network::Regtest
-                            | dash_sdk::dpp::dashcore::Network::Devnet
-                    ) && self.app_context.core_backend_mode() == CoreBackendMode::Rpc
-                        && ui
+                let remaining = ui.available_width();
+                ui.allocate_ui_with_layout(
+                    egui::vec2(remaining, ui.min_size().y),
+                    egui::Layout::right_to_left(egui::Align::Center),
+                    |ui| {
+                        if matches!(
+                            self.app_context.network,
+                            dash_sdk::dpp::dashcore::Network::Testnet
+                        ) && ui
                             .button(
-                                RichText::new("Mine")
+                                RichText::new("Get Test Dash")
                                     .color(DashColors::text_primary(dark_mode))
                                     .strong(),
                             )
                             .clicked()
-                    {
-                        self.open_mine_dialog();
-                    }
+                        {
+                            ui.ctx().open_url(egui::OpenUrl::new_tab(
+                                "https://faucet.testnet.networks.dash.org/",
+                            ));
+                        }
 
-                    if ui
-                        .button(
-                            RichText::new(format!("Refresh mode: {}", self.refresh_mode.label()))
+                        if matches!(
+                            self.app_context.network,
+                            dash_sdk::dpp::dashcore::Network::Regtest
+                                | dash_sdk::dpp::dashcore::Network::Devnet
+                        ) && self.app_context.core_backend_mode() == CoreBackendMode::Rpc
+                            && ui
+                                .button(
+                                    RichText::new("Mine")
+                                        .color(DashColors::text_primary(dark_mode))
+                                        .strong(),
+                                )
+                                .clicked()
+                        {
+                            self.open_mine_dialog();
+                        }
+
+                        if ui
+                            .button(
+                                RichText::new(format!(
+                                    "Refresh mode: {}",
+                                    self.refresh_mode.label()
+                                ))
                                 .color(DashColors::text_primary(dark_mode))
                                 .strong(),
-                        )
-                        .clicked()
-                    {
-                        self.refresh_mode = self.refresh_mode.next();
-                    }
-                });
+                            )
+                            .clicked()
+                        {
+                            self.refresh_mode = self.refresh_mode.next();
+                        }
+                    },
+                );
             }
         });
 

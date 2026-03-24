@@ -128,12 +128,19 @@ impl ScreenLike for UnshieldCreditsScreen {
 
             // Destination address input via AddressInput component
             let addr_input = self.address_input.get_or_insert_with(|| {
-                AddressInput::new(self.app_context.network)
+                let mut builder = AddressInput::new(self.app_context.network)
                     .with_address_kinds(&[AddressKind::Core, AddressKind::Platform])
                     .with_label("To address")
                     .with_hint_text(
                         "Enter a platform address (tdash1.../dash1...) or core DASH address",
-                    )
+                    );
+
+                if let Ok(wallets) = self.app_context.wallets.read() {
+                    let all_wallets: Vec<_> = wallets.values().cloned().collect();
+                    builder = builder.with_wallets(&all_wallets);
+                }
+
+                builder
             });
             let resp = addr_input.show(ui);
             resp.inner.update(&mut self.validated_destination);

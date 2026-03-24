@@ -454,7 +454,7 @@ impl AppContext {
         let client = match Client::new(&addr, Auth::CookieFile(cookie_path.clone())) {
             Ok(client) => client,
             Err(_) => {
-                tracing::trace!(
+                tracing::debug!(
                     "Failed to authenticate using .cookie file at {:?}, falling back to user/pass",
                     cookie_path
                 );

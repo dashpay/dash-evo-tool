@@ -209,7 +209,7 @@ pub async fn shield_credits(
         *s.lock().unwrap() = ShieldStage::Broadcasting;
     }
 
-    tracing::debug!("Shield credits: state transition built, broadcasting...");
+    tracing::trace!("Shield credits: state transition built, broadcasting...");
 
     state_transition
         .broadcast(&sdk, None)
@@ -307,7 +307,7 @@ pub async fn shielded_transfer(
     )
     .map_err(|e| shielded_build_error(e.to_string()))?;
 
-    tracing::debug!("Shielded transfer: state transition built, broadcasting...");
+    tracing::trace!("Shielded transfer: state transition built, broadcasting...");
 
     state_transition
         .broadcast(&sdk, None)
@@ -400,7 +400,7 @@ pub async fn unshield_credits(
     )
     .map_err(|e| shielded_build_error(e.to_string()))?;
 
-    tracing::debug!("Unshield credits: state transition built, broadcasting...");
+    tracing::trace!("Unshield credits: state transition built, broadcasting...");
 
     state_transition
         .broadcast(&sdk, None)
@@ -606,7 +606,7 @@ pub async fn shield_from_asset_lock(
     )
     .map_err(|e| shielded_build_error(e.to_string()))?;
 
-    tracing::debug!("Shield from asset lock: state transition built, broadcasting...");
+    tracing::trace!("Shield from asset lock: state transition built, broadcasting...");
 
     state_transition
         .broadcast(&sdk, None)
@@ -702,7 +702,7 @@ pub async fn shielded_withdrawal(
     )
     .map_err(|e| shielded_build_error(e.to_string()))?;
 
-    tracing::debug!("Shielded withdrawal: state transition built, broadcasting...");
+    tracing::trace!("Shielded withdrawal: state transition built, broadcasting...");
 
     state_transition
         .broadcast(&sdk, None)

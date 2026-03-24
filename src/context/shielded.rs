@@ -4,7 +4,6 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::{TaskError, shielded_build_error};
 use crate::backend_task::shielded::ShieldedTask;
 use crate::context::AppContext;
-use crate::database::Database;
 use crate::model::wallet::WalletSeedHash;
 use crate::model::wallet::shielded::{ShieldedNote, ShieldedWalletState, derive_orchard_keys};
 use dash_sdk::grovedb_commitment_tree::{
@@ -185,17 +184,13 @@ impl AppContext {
 
         let network_str = self.network.to_string();
 
-        let tree_conn =
-            crate::database::shielded::open_commitment_tree_connection(&self.data_dir, &seed_hash)
-                .map_err(|e| TaskError::ShieldedTreeUpdateFailed {
-                    detail: e.to_string(),
-                })?;
-        let commitment_tree =
-            ClientPersistentCommitmentTree::open(tree_conn, 100).map_err(|e| {
-                TaskError::ShieldedTreeUpdateFailed {
-                    detail: e.to_string(),
-                }
-            })?;
+        let commitment_tree = ClientPersistentCommitmentTree::open_on_shared_connection(
+            self.db.shared_connection(),
+            100,
+        )
+        .map_err(|e| TaskError::ShieldedTreeUpdateFailed {
+            detail: e.to_string(),
+        })?;
 
         let mut last_synced_index = 0u64;
 
@@ -256,20 +251,18 @@ impl AppContext {
                     hex::encode(seed_hash.as_slice()),
                     state.last_synced_index,
                 );
-                Database::clear_commitment_tree_for_wallet(&self.data_dir, &seed_hash)?;
-                let fresh_conn = crate::database::shielded::open_commitment_tree_connection(
-                    &self.data_dir,
-                    &seed_hash,
+                self.db.clear_commitment_tree_tables().map_err(|e| {
+                    TaskError::ShieldedTreeUpdateFailed {
+                        detail: e.to_string(),
+                    }
+                })?;
+                let fresh_tree = ClientPersistentCommitmentTree::open_on_shared_connection(
+                    self.db.shared_connection(),
+                    100,
                 )
                 .map_err(|e| TaskError::ShieldedTreeUpdateFailed {
                     detail: e.to_string(),
                 })?;
-                let fresh_tree =
-                    ClientPersistentCommitmentTree::open(fresh_conn, 100).map_err(|e| {
-                        TaskError::ShieldedTreeUpdateFailed {
-                            detail: e.to_string(),
-                        }
-                    })?;
                 state.commitment_tree = std::sync::Mutex::new(fresh_tree);
                 state.last_synced_index = 0;
             }
@@ -452,19 +445,23 @@ impl AppContext {
             tracing::info!(
                 "Shielded anchor mismatch during {operation_name} — syncing notes and retrying"
             );
-            crate::backend_task::shielded::sync::sync_notes(
+            let sync_result = crate::backend_task::shielded::sync::sync_notes(
                 self,
                 seed_hash,
                 &mut state,
                 self.network,
             )
-            .await
-            .map_err(|e| {
-                tracing::warn!("Note sync after anchor mismatch failed: {e}");
-                e
-            })?;
-            state.last_notes_synced_at = Some(std::time::Instant::now());
-            operation(&state).await
+            .await;
+            match sync_result {
+                Ok(_) => {
+                    state.last_notes_synced_at = Some(std::time::Instant::now());
+                    operation(&state).await
+                }
+                Err(e) => {
+                    tracing::warn!("Note sync after anchor mismatch failed: {e}");
+                    Err(e)
+                }
+            }
         } else {
             result
         };

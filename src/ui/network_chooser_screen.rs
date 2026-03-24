@@ -491,19 +491,20 @@ impl NetworkChooserScreen {
                             self.current_network,
                             updated_config.clone(),
                         );
-                        if let Err(e) = config.save(&self.mainnet_app_context.data_dir) {
+                        let save_failed = if let Err(e) =
+                            config.save(&self.mainnet_app_context.data_dir)
+                        {
                             tracing::error!("Failed to save config to .env: {e}");
-                            MessageBanner::set_global(
-                                ui.ctx(),
-                                "Could not save the configuration file. Your changes will apply for this session only.",
-                                MessageType::Warning,
-                            );
+                            true
                         } else {
+                            false
+                        };
 
-                        // Only update the in-memory config and reinit if the
-                        // context for this network already exists.  If it
-                        // doesn't, `context_for_network` would silently fall
-                        // back to mainnet and corrupt its config.  The saved
+                        // Update in-memory config and reinit regardless of save
+                        // result, so the password takes effect for this session.
+                        // Only do so when the context for this network already
+                        // exists — otherwise `context_for_network` would silently
+                        // fall back to mainnet and corrupt its config.  The saved
                         // file-level config will be picked up when the network
                         // context is created.
                         let network_context_exists = match self.current_network {
@@ -514,14 +515,13 @@ impl NetworkChooserScreen {
                             _ => false,
                         };
 
-                        if network_context_exists {
+                        let reinit_failed = if network_context_exists {
                             let app_context = self.context_for_network(self.current_network);
                             {
                                 let mut cfg_lock = app_context.config.write().unwrap();
                                 *cfg_lock = updated_config;
                             }
 
-                            // Clear stale auth/connection error banners before showing result
                             MessageBanner::clear_all_global(ui.ctx());
                             if let Err(e) =
                                 Arc::clone(app_context).reinit_core_client_and_sdk()
@@ -531,26 +531,44 @@ impl NetworkChooserScreen {
                                     self.current_network,
                                     e
                                 );
-                                MessageBanner::set_global(
-                                    ui.ctx(),
-                                    "Password saved but the connection could not be re-established. Check that Dash Core is running and retry.",
-                                    MessageType::Warning,
-                                );
+                                true
                             } else {
+                                false
+                            }
+                        } else {
+                            false
+                        };
+
+                        match (save_failed, reinit_failed) {
+                            (false, false) => {
                                 MessageBanner::set_global(
                                     ui.ctx(),
                                     "Core RPC password saved successfully.",
                                     MessageType::Success,
                                 );
                             }
-                        } else {
-                            MessageBanner::set_global(
-                                ui.ctx(),
-                                "Core RPC password saved successfully.",
-                                MessageType::Success,
-                            );
+                            (false, true) => {
+                                MessageBanner::set_global(
+                                    ui.ctx(),
+                                    "Password saved but the connection could not be re-established. Check that Dash Core is running and retry.",
+                                    MessageType::Warning,
+                                );
+                            }
+                            (true, false) => {
+                                MessageBanner::set_global(
+                                    ui.ctx(),
+                                    "Could not save the configuration file. Your changes will apply for this session only.",
+                                    MessageType::Warning,
+                                );
+                            }
+                            (true, true) => {
+                                MessageBanner::set_global(
+                                    ui.ctx(),
+                                    "Could not save the configuration file and the connection could not be re-established. Check that Dash Core is running and retry.",
+                                    MessageType::Warning,
+                                );
+                            }
                         }
-                        } // else: config.save() succeeded
                     }
                 });
             }

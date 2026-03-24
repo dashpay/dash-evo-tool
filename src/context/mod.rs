@@ -649,7 +649,8 @@ impl AppContext {
                 .unwrap_or_else(|| "unknown".to_string());
             TaskError::CoreRpcConnectionFailed {
                 url,
-                source: Some(e),
+                detail: None,
+                source: Some(Box::new(e)),
             }
         } else {
             TaskError::from(e)

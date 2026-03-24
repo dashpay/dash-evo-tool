@@ -489,7 +489,11 @@ impl AppContext {
                 .as_ref()
                 .map(|c| format!("{}:{}", c.core_host, c.core_rpc_port))
                 .unwrap_or_else(|| "unknown".to_string());
-            return Some(TaskError::CoreRpcConnectionFailed { url, source: None });
+            return Some(TaskError::CoreRpcConnectionFailed {
+                url,
+                detail: Some(format!("{e}")),
+                source: None,
+            });
         }
         None
     }

@@ -63,12 +63,14 @@ pub enum TaskError {
 
     /// Could not connect to Dash Core at the configured address.
     #[error(
-        "Could not connect to Dash Core at {url}. Check that Dash Core is running and your network settings are correct."
+        "Could not connect to Dash Core at {url}.{} Check that Dash Core is running and your network settings are correct.",
+        detail.as_ref().map(|d| format!(" {d}")).unwrap_or_default()
     )]
     CoreRpcConnectionFailed {
         url: String,
+        detail: Option<String>,
         #[source]
-        source: Option<dashcore_rpc::Error>,
+        source: Option<Box<dashcore_rpc::Error>>,
     },
 
     /// A Dash Core RPC call failed.
@@ -92,6 +94,14 @@ pub enum TaskError {
     /// The wallet is locked and must be unlocked before this operation can proceed.
     #[error("Wallet is locked. Please unlock your wallet and try again.")]
     WalletLocked,
+
+    /// Refreshing wallet UTXOs from Dash Core failed.
+    #[error("Could not refresh wallet balance. Please try again.")]
+    WalletUtxoReloadFailed { detail: String },
+
+    /// Recalculating address balances after a transaction failed.
+    #[error("Could not update wallet balances after transaction. Please refresh your wallet.")]
+    WalletBalanceRecalculationFailed { detail: String },
 
     /// The requested document could not be found on the platform.
     #[error("The document could not be found. It may have been deleted or the ID is incorrect.")]
@@ -1443,9 +1453,10 @@ mod tests {
         );
         let err = TaskError::CoreRpcConnectionFailed {
             url: "127.0.0.1:9998".to_string(),
-            source: Some(dashcore_rpc::Error::JsonRpc(
+            detail: None,
+            source: Some(Box::new(dashcore_rpc::Error::JsonRpc(
                 dashcore_rpc::jsonrpc::error::Error::Transport(Box::new(socket_err)),
-            )),
+            ))),
         };
         let msg = err.to_string();
         assert!(

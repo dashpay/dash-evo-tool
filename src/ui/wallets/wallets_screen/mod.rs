@@ -136,8 +136,6 @@ pub struct WalletsBalancesScreen {
     shielded_tab_view: Option<ShieldedTabView>,
     /// Whether the balance breakdown section is expanded
     balance_breakdown_expanded: bool,
-    /// Whether the Dev Tools popup is open
-    dev_tools_open: bool,
     /// Cached platform sync info: (last_sync_timestamp, last_sync_height)
     platform_sync_info: Option<(u64, u64)>,
     /// Core wallet selection dialog (shown when auto-detection fails)
@@ -249,7 +247,6 @@ impl WalletsBalancesScreen {
             selected_account_tab: AccountTab::default(),
             shielded_tab_view: None,
             balance_breakdown_expanded: app_context.is_developer_mode(),
-            dev_tools_open: false,
             platform_sync_info,
             core_wallet_dialog: None,
             pending_core_wallet_seed_hash: None,
@@ -494,7 +491,9 @@ impl WalletsBalancesScreen {
                 let guard = wallet.read().unwrap();
                 let core_balance = guard.total_balance_duffs();
                 let platform_balance = Self::platform_balance_duffs(&guard);
-                let balance_dash = (core_balance + platform_balance) as f64 * 1e-8;
+                let shielded_balance = self.shielded_balance_duffs(&guard.seed_hash());
+                let balance_dash =
+                    (core_balance + platform_balance + shielded_balance) as f64 * 1e-8;
                 let label = format!(
                     "HD: {} ({:.4} DASH)",
                     guard.alias.clone().unwrap_or_else(|| "Unnamed".to_string()),
@@ -558,7 +557,8 @@ impl WalletsBalancesScreen {
                 .map(|g| {
                     let core = g.total_balance_duffs();
                     let platform = Self::platform_balance_duffs(&g);
-                    core + platform
+                    let shielded = self.shielded_balance_duffs(&g.seed_hash());
+                    core + platform + shielded
                 })
                 .unwrap_or(0)
         } else if let Some(wallet) = &self.selected_single_key_wallet {
@@ -1001,6 +1001,15 @@ impl WalletsBalancesScreen {
             .sum()
     }
 
+    fn shielded_balance_duffs(&self, seed_hash: &WalletSeedHash) -> u64 {
+        self.app_context
+            .shielded_states
+            .lock()
+            .ok()
+            .and_then(|states| states.get(seed_hash).map(|s| s.shielded_balance))
+            .unwrap_or(0)
+    }
+
     fn render_action_buttons(&mut self, ui: &mut Ui, ctx: &Context) -> AppAction {
         let mut action = AppAction::None;
         ui.add_space(10.0);
@@ -1040,76 +1049,79 @@ impl WalletsBalancesScreen {
                 action |= self.open_receive_dialog(ctx);
             }
 
-            // Dev Tools expandable button (developer mode only)
-            if self.app_context.is_developer_mode() {
-                let dev_tools_label = if self.dev_tools_open {
-                    "Dev Tools \u{25BC}"
-                } else {
-                    "Dev Tools \u{25B6}"
-                };
-                if ui
-                    .button(
-                        RichText::new(dev_tools_label)
-                            .color(DashColors::text_primary(dark_mode))
-                            .strong(),
-                    )
-                    .clicked()
-                {
-                    self.dev_tools_open = !self.dev_tools_open;
-                }
-            }
-
             if self.refreshing {
                 ui.add(egui::Spinner::new().color(DashColors::DASH_BLUE));
             }
-        });
 
-        // Dev Tools expanded section
-        if self.app_context.is_developer_mode() && self.dev_tools_open {
-            ui.indent("dev_tools_indent", |ui| {
-                ui.horizontal(|ui| {
-                    // Get Test Dash (opens browser to faucet)
-                    if matches!(
-                        self.app_context.network,
-                        dash_sdk::dpp::dashcore::Network::Testnet
-                    ) && ui.button("Get Test Dash").clicked()
-                    {
-                        ui.ctx().open_url(egui::OpenUrl::new_tab(
-                            "https://faucet.testnet.networks.dash.org/",
-                        ));
-                    }
-
-                    // Mine button (Regtest/Devnet with RPC only)
-                    if matches!(
-                        self.app_context.network,
-                        dash_sdk::dpp::dashcore::Network::Regtest
-                            | dash_sdk::dpp::dashcore::Network::Devnet
-                    ) && self.app_context.core_backend_mode() == CoreBackendMode::Rpc
-                        && ui
-                            .button(
-                                RichText::new("Mine")
-                                    .color(DashColors::text_primary(dark_mode))
-                                    .strong(),
-                            )
-                            .clicked()
-                    {
-                        self.open_mine_dialog();
-                    }
-
-                    // Refresh Mode selector
-                    ui.label(
-                        RichText::new("Refresh Mode:").color(DashColors::text_primary(dark_mode)),
+            // Dev Tools dropdown button (developer mode only), right-aligned
+            if self.app_context.is_developer_mode() {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let dev_tools_response = ui.button(
+                        RichText::new("Dev Tools \u{25BC}")
+                            .color(DashColors::text_primary(dark_mode))
+                            .strong(),
                     );
-                    ComboBox::from_id_salt("refresh_mode_selector_dev_tools")
-                        .selected_text(self.refresh_mode.label())
-                        .show_ui(ui, |ui| {
-                            for mode in RefreshMode::all_modes() {
-                                ui.selectable_value(&mut self.refresh_mode, *mode, mode.label());
+
+                    let popup_id = ui.make_persistent_id("dev_tools_popup");
+                    egui::Popup::from_toggle_button_response(&dev_tools_response)
+                        .id(popup_id)
+                        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                        .frame(
+                            egui::Frame::popup(ui.style()).fill(DashColors::popup_fill(dark_mode)),
+                        )
+                        .show(|ui| {
+                            ui.set_min_width(160.0);
+
+                            // Get Test Dash (opens browser to faucet)
+                            if matches!(
+                                self.app_context.network,
+                                dash_sdk::dpp::dashcore::Network::Testnet
+                            ) && ui.button("Get Test Dash").clicked()
+                            {
+                                ui.ctx().open_url(egui::OpenUrl::new_tab(
+                                    "https://faucet.testnet.networks.dash.org/",
+                                ));
                             }
+
+                            // Mine button (Regtest/Devnet with RPC only)
+                            if matches!(
+                                self.app_context.network,
+                                dash_sdk::dpp::dashcore::Network::Regtest
+                                    | dash_sdk::dpp::dashcore::Network::Devnet
+                            ) && self.app_context.core_backend_mode() == CoreBackendMode::Rpc
+                                && ui
+                                    .button(
+                                        RichText::new("Mine")
+                                            .color(DashColors::text_primary(dark_mode))
+                                            .strong(),
+                                    )
+                                    .clicked()
+                            {
+                                self.open_mine_dialog();
+                            }
+
+                            // Refresh Mode selector
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new("Refresh Mode:")
+                                        .color(DashColors::text_primary(dark_mode)),
+                                );
+                                ComboBox::from_id_salt("refresh_mode_selector_dev_tools")
+                                    .selected_text(self.refresh_mode.label())
+                                    .show_ui(ui, |ui| {
+                                        for mode in RefreshMode::all_modes() {
+                                            ui.selectable_value(
+                                                &mut self.refresh_mode,
+                                                *mode,
+                                                mode.label(),
+                                            );
+                                        }
+                                    });
+                            });
                         });
                 });
-            });
-        }
+            }
+        });
 
         action
     }
@@ -1682,7 +1694,8 @@ impl WalletsBalancesScreen {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
         let core_balance = wallet.total_balance_duffs();
         let platform_balance = Self::platform_balance_duffs(wallet);
-        let total = core_balance + platform_balance;
+        let shielded_balance = self.shielded_balance_duffs(&wallet.seed_hash());
+        let total = core_balance + platform_balance + shielded_balance;
 
         // Total balance (always visible)
         ui.label(
@@ -1706,6 +1719,8 @@ impl WalletsBalancesScreen {
                 ui.label(format!("Core: {}", Self::format_dash(core_balance)));
                 ui.label(" | ");
                 ui.label(format!("Platform: {}", Self::format_dash(platform_balance)));
+                ui.label(" | ");
+                ui.label(format!("Shielded: {}", Self::format_dash(shielded_balance)));
             });
         });
     }

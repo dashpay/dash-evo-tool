@@ -1466,6 +1466,27 @@ impl WalletsBalancesScreen {
                                 {
                                     let _ = copy_text_to_clipboard(&full_txid);
                                 }
+                                // Show "View" button for networks with a public explorer
+                                let explorer_base = match self.app_context.network {
+                                    dash_sdk::dpp::dashcore::Network::Mainnet => {
+                                        Some("https://insight.dash.org/insight/tx/")
+                                    }
+                                    dash_sdk::dpp::dashcore::Network::Testnet => Some(
+                                        "https://insight.testnet.networks.dash.org/insight/tx/",
+                                    ),
+                                    _ => None,
+                                };
+                                if let Some(base_url) = explorer_base
+                                    && ui
+                                        .small_button("View")
+                                        .clickable_tooltip("View on block explorer")
+                                        .clicked()
+                                {
+                                    ui.ctx().open_url(egui::OpenUrl::new_tab(format!(
+                                        "{}{}",
+                                        base_url, full_txid
+                                    )));
+                                }
                             });
                         });
                     });
@@ -1821,11 +1842,11 @@ impl WalletsBalancesScreen {
                         // --- 3. Action Buttons (Send, Receive, Dev Tools) ---
                         action |= self.render_action_buttons(ui, ctx);
 
-                        // --- 4. Transaction History (collapsible) ---
+                        // --- 4. Dash Core Transaction History (collapsible) ---
                         ui.add_space(10.0);
                         ui.separator();
                         let tx_header = egui::CollapsingHeader::new(
-                            RichText::new("Transaction History")
+                            RichText::new("Dash Core Transaction History")
                                 .size(16.0)
                                 .color(DashColors::text_primary(dark_mode)),
                         )

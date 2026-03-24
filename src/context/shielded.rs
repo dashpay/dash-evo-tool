@@ -458,7 +458,16 @@ impl AppContext {
         };
 
         if let Ok(ref spent_nullifiers) = result {
+            let notes_before = state.unspent_notes().len();
             self.mark_notes_spent(seed_hash, &mut state, spent_nullifiers);
+            let notes_after = state.unspent_notes().len();
+            tracing::info!(
+                "Shielded {operation_name}: marked {} note(s) spent (unspent notes: {} -> {}), new balance: {} credits",
+                spent_nullifiers.len(),
+                notes_before,
+                notes_after,
+                state.shielded_balance,
+            );
         }
 
         {

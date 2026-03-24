@@ -3,10 +3,11 @@ mod asset_locks;
 mod dialogs;
 mod single_key_view;
 
-use crate::app::{AppAction, DesiredAppAction};
+use crate::app::{AppAction, BackendTasksExecutionMode, DesiredAppAction};
 use crate::backend_task::BackendTask;
 use crate::backend_task::core::CoreTask;
 use crate::backend_task::error::TaskError;
+use crate::backend_task::shielded::ShieldedTask;
 use crate::context::AppContext;
 use crate::context::connection_status::spv_phase_summary;
 use crate::model::amount::Amount;
@@ -146,6 +147,8 @@ pub struct WalletsBalancesScreen {
     pending_core_wallet_options: Option<Vec<String>>,
     /// Whether the pending Core wallet selection is for a single-key wallet
     pending_core_wallet_is_single_key: bool,
+    /// Whether a wallet switch should trigger a Core refresh on the next frame
+    pending_wallet_refresh_on_switch: bool,
     /// Whether we need to fire a ListCoreWallets backend task (set on CoreWalletNotConfigured error)
     pending_list_core_wallets: bool,
     /// Wallet hash pending the ListCoreWallets response
@@ -252,6 +255,7 @@ impl WalletsBalancesScreen {
             pending_core_wallet_seed_hash: None,
             pending_core_wallet_options: None,
             pending_core_wallet_is_single_key: false,
+            pending_wallet_refresh_on_switch: false,
             pending_list_core_wallets: false,
             pending_list_wallet_hash: None,
             pending_list_is_single_key: false,
@@ -359,6 +363,10 @@ impl WalletsBalancesScreen {
         if let Some(hash) = seed_hash {
             self.persist_selected_wallet_hash(Some(hash));
             self.refresh_platform_sync_info_cache(&hash);
+            // Trigger a refresh on the next frame for the newly selected wallet
+            if self.app_context.core_backend_mode() == CoreBackendMode::Rpc {
+                self.pending_wallet_refresh_on_switch = true;
+            }
         } else {
             self.persist_selected_wallet_hash(None);
             self.platform_sync_info = None;
@@ -2027,6 +2035,19 @@ impl WalletsBalancesScreen {
         }
     }
 
+    /// Returns a SyncNotes backend task if the shielded wallet has been initialized
+    /// for the given seed hash.
+    fn shielded_sync_task(&self, seed_hash: &WalletSeedHash) -> Option<BackendTask> {
+        let states = self.app_context.shielded_states.lock().unwrap();
+        if states.contains_key(seed_hash) {
+            Some(BackendTask::ShieldedTask(ShieldedTask::SyncNotes {
+                seed_hash: *seed_hash,
+            }))
+        } else {
+            None
+        }
+    }
+
     /// Creates the appropriate refresh action based on the current refresh mode
     fn create_refresh_action(&self, wallet_arc: &Arc<RwLock<Wallet>>) -> AppAction {
         self.create_refresh_action_for_mode(wallet_arc, self.refresh_mode)
@@ -2048,29 +2069,33 @@ impl WalletsBalancesScreen {
             .map(|w| w.seed_hash())
             .unwrap_or_default();
 
-        match mode {
+        let core_task = match mode {
             RefreshMode::All => {
                 // Core + Platform
-                AppAction::BackendTask(BackendTask::CoreTask(CoreTask::RefreshWalletInfo(
-                    wallet_arc.clone(),
-                    true,
-                )))
+                BackendTask::CoreTask(CoreTask::RefreshWalletInfo(wallet_arc.clone(), true))
             }
             RefreshMode::CoreOnly => {
                 // Core only, no Platform sync
-                AppAction::BackendTask(BackendTask::CoreTask(CoreTask::RefreshWalletInfo(
-                    wallet_arc.clone(),
-                    false,
-                )))
+                BackendTask::CoreTask(CoreTask::RefreshWalletInfo(wallet_arc.clone(), false))
             }
             RefreshMode::PlatformOnly => {
                 // Platform only
-                AppAction::BackendTask(BackendTask::WalletTask(
+                BackendTask::WalletTask(
                     crate::backend_task::wallet::WalletTask::FetchPlatformAddressBalances {
                         seed_hash,
                     },
-                ))
+                )
             }
+        };
+
+        // Also trigger shielded note sync if initialized
+        if let Some(shielded_task) = self.shielded_sync_task(&seed_hash) {
+            AppAction::BackendTasks(
+                vec![core_task, shielded_task],
+                BackendTasksExecutionMode::Concurrent,
+            )
+        } else {
+            AppAction::BackendTask(core_task)
         }
     }
 }
@@ -2084,6 +2109,24 @@ impl ScreenLike for WalletsBalancesScreen {
             AppAction::BackendTask(BackendTask::WalletTask(
                 crate::backend_task::wallet::WalletTask::FetchPlatformAddressBalances { seed_hash },
             ))
+        } else {
+            AppAction::None
+        };
+
+        // Trigger a wallet refresh after a wallet switch
+        let pending_switch_action = if self.pending_wallet_refresh_on_switch {
+            self.pending_wallet_refresh_on_switch = false;
+            if let Some(wallet_arc) = &self.selected_wallet {
+                let is_locked = wallet_arc.read().map(|w| !w.is_open()).unwrap_or(true);
+                if !is_locked {
+                    self.refreshing = true;
+                    self.create_refresh_action(wallet_arc)
+                } else {
+                    AppAction::None
+                }
+            } else {
+                AppAction::None
+            }
         } else {
             AppAction::None
         };
@@ -2552,8 +2595,9 @@ impl ScreenLike for WalletsBalancesScreen {
             }
         }
 
-        // Combine with pending refresh action
+        // Combine with pending actions
         action |= pending_refresh_action;
+        action |= pending_switch_action;
         action
     }
 

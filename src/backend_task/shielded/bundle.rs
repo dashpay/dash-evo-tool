@@ -1,6 +1,7 @@
 use crate::backend_task::error::{TaskError, shielded_broadcast_error, shielded_build_error};
 use crate::context::AppContext;
 use crate::context::shielded::get_proving_key;
+use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::wallet::WalletSeedHash;
 use crate::model::wallet::shielded::ShieldedWalletState;
 use dash_sdk::dpp::address_funds::{
@@ -177,6 +178,13 @@ pub async fn shield_credits(
     let fee_strategy: AddressFundsFeeStrategy =
         vec![AddressFundsFeeStrategyStep::DeductFromInput(0)];
 
+    tracing::info!(
+        "Shield credits: {} ({} credits), nonce={}, building proof...",
+        format_credits_as_dash(amount),
+        amount,
+        nonce,
+    );
+
     if let Some(s) = &stage {
         *s.lock().unwrap() = ShieldStage::BuildingProof { nonce };
     }
@@ -201,10 +209,17 @@ pub async fn shield_credits(
         *s.lock().unwrap() = ShieldStage::Broadcasting;
     }
 
+    tracing::debug!("Shield credits: state transition built, broadcasting...");
+
     state_transition
         .broadcast(&sdk, None)
         .await
         .map_err(shielded_broadcast_error)?;
+
+    tracing::info!(
+        "Shield credits broadcast succeeded: {} — balance will update after the next block is mined and notes are synced",
+        format_credits_as_dash(amount),
+    );
 
     Ok(())
 }
@@ -231,7 +246,19 @@ pub async fn shielded_transfer(
     let recipient_addr = OrchardAddress::from_raw_bytes(&recipient_bytes)
         .map_err(|_| TaskError::ShieldedInvalidRecipientAddress)?;
 
-    let (spendable_notes, _total_value) = select_notes_for_amount(shielded_state, amount)?;
+    let (spendable_notes, total_input_value) = select_notes_for_amount(shielded_state, amount)?;
+    let change_amount = total_input_value.saturating_sub(amount);
+
+    tracing::info!(
+        "Shielded transfer: sending {} ({} credits), spending {} input note(s) totalling {} ({} credits), change: {} ({} credits)",
+        format_credits_as_dash(amount),
+        amount,
+        spendable_notes.len(),
+        format_credits_as_dash(total_input_value),
+        total_input_value,
+        format_credits_as_dash(change_amount),
+        change_amount,
+    );
 
     let spent_nullifiers: Vec<Nullifier> = spendable_notes.iter().map(|n| n.nullifier).collect();
 
@@ -280,10 +307,18 @@ pub async fn shielded_transfer(
     )
     .map_err(|e| shielded_build_error(e.to_string()))?;
 
+    tracing::debug!("Shielded transfer: state transition built, broadcasting...");
+
     state_transition
         .broadcast(&sdk, None)
         .await
         .map_err(shielded_broadcast_error)?;
+
+    tracing::info!(
+        "Shielded transfer broadcast succeeded: {} nullifiers created, change={} — balance will update after the next block is mined and notes are synced",
+        spent_nullifiers.len(),
+        change_amount > 0,
+    );
 
     Ok(spent_nullifiers)
 }
@@ -304,7 +339,19 @@ pub async fn unshield_credits(
         key: get_proving_key(),
     };
 
-    let (spendable_notes, _total_value) = select_notes_for_amount(shielded_state, amount)?;
+    let (spendable_notes, total_input_value) = select_notes_for_amount(shielded_state, amount)?;
+    let change_amount = total_input_value.saturating_sub(amount);
+
+    tracing::info!(
+        "Unshield credits: {} ({} credits), spending {} input note(s) totalling {} ({} credits), change: {} ({} credits)",
+        format_credits_as_dash(amount),
+        amount,
+        spendable_notes.len(),
+        format_credits_as_dash(total_input_value),
+        total_input_value,
+        format_credits_as_dash(change_amount),
+        change_amount,
+    );
 
     let spent_nullifiers: Vec<Nullifier> = spendable_notes.iter().map(|n| n.nullifier).collect();
 
@@ -353,10 +400,18 @@ pub async fn unshield_credits(
     )
     .map_err(|e| shielded_build_error(e.to_string()))?;
 
+    tracing::debug!("Unshield credits: state transition built, broadcasting...");
+
     state_transition
         .broadcast(&sdk, None)
         .await
         .map_err(shielded_broadcast_error)?;
+
+    tracing::info!(
+        "Unshield credits broadcast succeeded: {} nullifiers created, change={} — balance will update after the next block is mined and notes are synced",
+        spent_nullifiers.len(),
+        change_amount > 0,
+    );
 
     Ok(spent_nullifiers)
 }
@@ -534,6 +589,12 @@ pub async fn shield_from_asset_lock(
                 credits_per_duff: CREDITS_PER_DUFF,
             })?;
 
+    tracing::info!(
+        "Shield from asset lock: building state transition for {} ({} credits)",
+        format_credits_as_dash(shield_amount_credits),
+        shield_amount_credits,
+    );
+
     let state_transition = build_shield_from_asset_lock_transition(
         &recipient,
         shield_amount_credits,
@@ -545,10 +606,17 @@ pub async fn shield_from_asset_lock(
     )
     .map_err(|e| shielded_build_error(e.to_string()))?;
 
+    tracing::debug!("Shield from asset lock: state transition built, broadcasting...");
+
     state_transition
         .broadcast(&sdk, None)
         .await
         .map_err(shielded_broadcast_error)?;
+
+    tracing::info!(
+        "Shield from asset lock broadcast succeeded: {} — balance will update after the next block is mined and notes are synced",
+        format_credits_as_dash(shield_amount_credits),
+    );
 
     Ok(shield_amount_credits)
 }
@@ -571,7 +639,20 @@ pub async fn shielded_withdrawal(
 
     let output_script = CoreScript::from_bytes(to_core_address.script_pubkey().to_bytes());
 
-    let (spendable_notes, _total_value) = select_notes_for_amount(shielded_state, amount)?;
+    let (spendable_notes, total_input_value) = select_notes_for_amount(shielded_state, amount)?;
+    let change_amount = total_input_value.saturating_sub(amount);
+
+    tracing::info!(
+        "Shielded withdrawal: {} ({} credits) to core address, spending {} input note(s) totalling {} ({} credits), change: {} ({} credits)",
+        format_credits_as_dash(amount),
+        amount,
+        spendable_notes.len(),
+        format_credits_as_dash(total_input_value),
+        total_input_value,
+        format_credits_as_dash(change_amount),
+        change_amount,
+    );
+
     let spent_nullifiers: Vec<Nullifier> = spendable_notes.iter().map(|n| n.nullifier).collect();
 
     let (spends, anchor) = {
@@ -621,10 +702,18 @@ pub async fn shielded_withdrawal(
     )
     .map_err(|e| shielded_build_error(e.to_string()))?;
 
+    tracing::debug!("Shielded withdrawal: state transition built, broadcasting...");
+
     state_transition
         .broadcast(&sdk, None)
         .await
         .map_err(shielded_broadcast_error)?;
+
+    tracing::info!(
+        "Shielded withdrawal broadcast succeeded: {} nullifiers created, change={} — balance will update after the next block is mined and notes are synced",
+        spent_nullifiers.len(),
+        change_amount > 0,
+    );
 
     Ok(spent_nullifiers)
 }

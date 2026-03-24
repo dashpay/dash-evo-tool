@@ -1008,6 +1008,7 @@ impl WalletsBalancesScreen {
             .ok()
             .and_then(|states| states.get(seed_hash).map(|s| s.shielded_balance))
             .unwrap_or(0)
+            / CREDITS_PER_DUFF
     }
 
     fn render_action_buttons(&mut self, ui: &mut Ui, ctx: &Context) -> AppAction {
@@ -1195,15 +1196,64 @@ impl WalletsBalancesScreen {
         // Tab bar
         ui.horizontal_wrapped(|ui| {
             for tab in &tabs {
-                let label = match tab {
-                    AccountTab::Category(cat, idx) => cat.tab_label(*idx),
-                    AccountTab::Shielded => "Shielded",
+                let (base_label, balance_duffs) = match tab {
+                    AccountTab::Category(cat, idx) => {
+                        let balance = if matches!(
+                            cat,
+                            AccountCategory::ProviderVoting
+                                | AccountCategory::ProviderOwner
+                                | AccountCategory::ProviderOperator
+                                | AccountCategory::ProviderPlatform
+                        ) {
+                            // Provider tab groups all provider categories
+                            summaries
+                                .iter()
+                                .filter(|s| {
+                                    matches!(
+                                        s.category,
+                                        AccountCategory::ProviderVoting
+                                            | AccountCategory::ProviderOwner
+                                            | AccountCategory::ProviderOperator
+                                            | AccountCategory::ProviderPlatform
+                                    )
+                                })
+                                .map(|s| s.confirmed_balance)
+                                .sum::<u64>()
+                        } else if matches!(cat, AccountCategory::PlatformPayment) {
+                            summaries
+                                .iter()
+                                .filter(|s| s.category == *cat && s.index == *idx)
+                                .map(|s| s.platform_credits / CREDITS_PER_DUFF)
+                                .sum::<u64>()
+                        } else {
+                            summaries
+                                .iter()
+                                .filter(|s| s.category == *cat && s.index == *idx)
+                                .map(|s| s.confirmed_balance)
+                                .sum::<u64>()
+                        };
+                        (cat.tab_label(*idx).to_string(), balance)
+                    }
+                    AccountTab::Shielded => {
+                        let balance = self
+                            .selected_wallet
+                            .as_ref()
+                            .and_then(|w| w.read().ok())
+                            .map(|g| self.shielded_balance_duffs(&g.seed_hash()))
+                            .unwrap_or(0);
+                        ("Shielded".to_string(), balance)
+                    }
+                };
+                let label = if balance_duffs == 0 {
+                    format!("{} (empty)", base_label)
+                } else {
+                    format!("{} ({})", base_label, Self::format_dash(balance_duffs))
                 };
                 let is_selected = &self.selected_account_tab == tab;
                 let text = if is_selected {
-                    RichText::new(label).strong().color(DashColors::DASH_BLUE)
+                    RichText::new(&label).strong().color(DashColors::DASH_BLUE)
                 } else {
-                    RichText::new(label).color(DashColors::text_secondary(dark_mode))
+                    RichText::new(&label).color(DashColors::text_secondary(dark_mode))
                 };
                 if ui.selectable_label(is_selected, text).clicked() {
                     self.selected_account_tab = tab.clone();
@@ -1835,10 +1885,13 @@ impl WalletsBalancesScreen {
                             self.render_balance_breakdown(ui, &wallet);
                         }
 
-                        // --- 3. Action Buttons (Send, Receive, Dev Tools) ---
+                        // --- 3. Sync Status (collapsible) ---
+                        self.render_sync_status(ui);
+
+                        // --- 4. Action Buttons (Send, Receive, Dev Tools) ---
                         action |= self.render_action_buttons(ui, ctx);
 
-                        // --- 4. Dash Core Transaction History (collapsible) ---
+                        // --- 5. Dash Core Transaction History (collapsible) ---
                         ui.add_space(10.0);
                         ui.separator();
                         let tx_header = egui::CollapsingHeader::new(
@@ -1852,7 +1905,7 @@ impl WalletsBalancesScreen {
                             self.render_transactions_section(ui);
                         });
 
-                        // --- 5. Accounts & Addresses (tabs) ---
+                        // --- 6. Accounts & Addresses (tabs) ---
                         ui.add_space(10.0);
                         ui.separator();
 
@@ -2061,12 +2114,6 @@ impl ScreenLike for WalletsBalancesScreen {
                         });
 
                     ui.add_space(10.0);
-
-                    // Sync status panel (only for HD wallets)
-                    if self.selected_wallet.is_some() {
-                        self.render_sync_status(ui);
-                        ui.add_space(6.0);
-                    }
 
                     // Render the appropriate detail view based on selection
                     if self.selected_wallet.is_some() {

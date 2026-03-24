@@ -1073,59 +1073,51 @@ impl WalletsBalancesScreen {
                 ui.add(egui::Spinner::new().color(DashColors::DASH_BLUE));
             }
 
-            // Advanced dropdown button (developer mode only)
             if self.app_context.is_developer_mode() {
-                let advanced_response = ui.button(
-                    RichText::new("Advanced \u{25BC}")
-                        .color(DashColors::text_primary(dark_mode))
-                        .strong(),
-                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if matches!(
+                        self.app_context.network,
+                        dash_sdk::dpp::dashcore::Network::Testnet
+                    ) && ui
+                        .button(
+                            RichText::new("Get Test Dash")
+                                .color(DashColors::text_primary(dark_mode))
+                                .strong(),
+                        )
+                        .clicked()
+                    {
+                        ui.ctx().open_url(egui::OpenUrl::new_tab(
+                            "https://faucet.testnet.networks.dash.org/",
+                        ));
+                    }
 
-                let popup_id = ui.make_persistent_id("advanced_popup");
-                egui::Popup::from_toggle_button_response(&advanced_response)
-                    .id(popup_id)
-                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                    .frame(egui::Frame::popup(ui.style()).fill(DashColors::popup_fill(dark_mode)))
-                    .show(|ui| {
-                        ui.set_min_width(160.0);
-                        ui.with_layout(egui::Layout::top_down(egui::Align::RIGHT), |ui| {
-                            // Get Test Dash (opens browser to faucet)
-                            if matches!(
-                                self.app_context.network,
-                                dash_sdk::dpp::dashcore::Network::Testnet
-                            ) && ui.button("Get Test Dash").clicked()
-                            {
-                                ui.ctx().open_url(egui::OpenUrl::new_tab(
-                                    "https://faucet.testnet.networks.dash.org/",
-                                ));
-                            }
+                    if matches!(
+                        self.app_context.network,
+                        dash_sdk::dpp::dashcore::Network::Regtest
+                            | dash_sdk::dpp::dashcore::Network::Devnet
+                    ) && self.app_context.core_backend_mode() == CoreBackendMode::Rpc
+                        && ui
+                            .button(
+                                RichText::new("Mine")
+                                    .color(DashColors::text_primary(dark_mode))
+                                    .strong(),
+                            )
+                            .clicked()
+                    {
+                        self.open_mine_dialog();
+                    }
 
-                            // Mine button (Regtest/Devnet with RPC only)
-                            if matches!(
-                                self.app_context.network,
-                                dash_sdk::dpp::dashcore::Network::Regtest
-                                    | dash_sdk::dpp::dashcore::Network::Devnet
-                            ) && self.app_context.core_backend_mode() == CoreBackendMode::Rpc
-                                && ui
-                                    .button(
-                                        RichText::new("Mine")
-                                            .color(DashColors::text_primary(dark_mode))
-                                            .strong(),
-                                    )
-                                    .clicked()
-                            {
-                                self.open_mine_dialog();
-                            }
-
-                            // Refresh Mode cycle button
-                            if ui
-                                .button(format!("Refresh mode: {}", self.refresh_mode.label()))
-                                .clicked()
-                            {
-                                self.refresh_mode = self.refresh_mode.next();
-                            }
-                        });
-                    });
+                    if ui
+                        .button(
+                            RichText::new(format!("Refresh mode: {}", self.refresh_mode.label()))
+                                .color(DashColors::text_primary(dark_mode))
+                                .strong(),
+                        )
+                        .clicked()
+                    {
+                        self.refresh_mode = self.refresh_mode.next();
+                    }
+                });
             }
         });
 

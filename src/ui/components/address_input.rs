@@ -130,7 +130,7 @@ impl ComponentResponse for AddressInputResponse {
 /// ```rust,ignore
 /// let addr_input = self.address_input.get_or_insert_with(|| {
 ///     AddressInput::new(network)
-///         .with_wallet(wallet.clone())
+///         .with_wallets(&wallets)
 ///         .with_label("Destination address")
 ///         .with_hint_text("Enter address or username")
 /// });
@@ -205,10 +205,14 @@ impl AddressInput {
 
     /// Provide wallet data for Core and Platform autocomplete.
     ///
-    /// Entries are extracted immediately (read lock acquired once).
-    /// Skips gracefully if the wallet lock is poisoned.
-    pub fn with_wallet(mut self, wallet: Arc<RwLock<Wallet>>) -> Self {
-        self.extract_wallet_entries(&wallet);
+    /// Entries are extracted immediately (read lock acquired once per wallet).
+    /// Skips gracefully if a wallet lock is poisoned.
+    /// When more than one wallet is provided, entries are prefixed with the wallet alias.
+    pub fn with_wallets(mut self, wallets: &[Arc<RwLock<Wallet>>]) -> Self {
+        let multi = wallets.len() > 1;
+        for wallet in wallets {
+            self.extract_wallet_entries(wallet, multi);
+        }
         self
     }
 
@@ -298,11 +302,16 @@ impl AddressInput {
     // --- Mutable setters for runtime reconfiguration ---
 
     /// Update wallet data after initialization (e.g., balance refresh).
-    pub fn set_wallet(&mut self, wallet: &Arc<RwLock<Wallet>>) {
+    ///
+    /// When more than one wallet is provided, entries are prefixed with the wallet alias.
+    pub fn set_wallets(&mut self, wallets: &[Arc<RwLock<Wallet>>]) {
         self.all_entries.retain(|e| {
             e.address_kind != AddressKind::Core && e.address_kind != AddressKind::Platform
         });
-        self.extract_wallet_entries(wallet);
+        let multi = wallets.len() > 1;
+        for wallet in wallets {
+            self.extract_wallet_entries(wallet, multi);
+        }
     }
 
     /// Update identity data after initialization.
@@ -326,19 +335,26 @@ impl AddressInput {
 
     // --- Entry extraction ---
 
-    fn extract_wallet_entries(&mut self, wallet: &Arc<RwLock<Wallet>>) {
+    fn extract_wallet_entries(&mut self, wallet: &Arc<RwLock<Wallet>>, multi_wallet: bool) {
         let guard = match wallet.read().ok() {
             Some(g) => g,
             None => return,
+        };
+
+        let prefix = if multi_wallet {
+            let name = guard.alias.as_deref().unwrap_or("Wallet");
+            format!("[{}] ", name)
+        } else {
+            String::new()
         };
 
         // Core addresses from address_balances
         for (address, &balance) in &guard.address_balances {
             let addr_str = address.to_string();
             let display = if self.full_addresses {
-                addr_str.clone()
+                format!("{}{}", prefix, addr_str)
             } else {
-                truncate_address(&addr_str)
+                format!("{}{}", prefix, truncate_address(&addr_str))
             };
             self.all_entries.push(AddressEntry {
                 address_string: addr_str,
@@ -354,9 +370,9 @@ impl AddressInput {
             if let Ok(platform_addr) = PlatformAddress::try_from(core_addr.clone()) {
                 let addr_str = platform_addr.to_bech32m_string(self.network);
                 let display = if self.full_addresses {
-                    addr_str.clone()
+                    format!("{}{}", prefix, addr_str)
                 } else {
-                    truncate_address(&addr_str)
+                    format!("{}{}", prefix, truncate_address(&addr_str))
                 };
                 let bech32m = addr_str.clone();
                 self.all_entries.push(AddressEntry {

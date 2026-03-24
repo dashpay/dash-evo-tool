@@ -1499,9 +1499,13 @@ impl WalletSendScreen {
                 .with_hint_text("Enter address (X.../y.../dash1.../tdash1...)")
                 .with_address_kinds(&allowed_kinds);
 
-            // Provide wallet data for autocomplete if available
-            if let Some(wallet) = &self.selected_wallet {
-                builder = builder.with_wallet(wallet.clone());
+            // Provide all wallet addresses for autocomplete
+            if let Ok(wallets_guard) = self.app_context.wallets.read() {
+                let all_wallets: Vec<Arc<RwLock<Wallet>>> =
+                    wallets_guard.values().cloned().collect();
+                if !all_wallets.is_empty() {
+                    builder = builder.with_wallets(&all_wallets);
+                }
             }
 
             builder

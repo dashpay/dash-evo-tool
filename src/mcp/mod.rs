@@ -13,6 +13,9 @@ pub mod resolve;
 pub mod server;
 pub mod tools;
 
+#[cfg(test)]
+mod tests;
+
 pub use config::McpConfig;
 
 /// Start the MCP server over stdin/stdout.
@@ -64,9 +67,12 @@ pub async fn start_http_server(
     let listener = tokio::net::TcpListener::bind(&config.listen_addr).await?;
     tracing::info!("MCP server listening on {}", config.listen_addr);
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(cancel.cancelled_owned())
-        .await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(cancel.cancelled_owned())
+    .await?;
 
     tracing::info!("MCP server stopped");
     Ok(())

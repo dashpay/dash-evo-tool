@@ -55,6 +55,9 @@ impl DashMcpService {
 
     /// Get the current AppContext. In HTTP mode, loads from ArcSwap.
     /// In stdio mode, initializes on first call.
+    ///
+    /// Each tool must call this exactly once and pass the resulting `Arc` to
+    /// both validation and the operation to avoid TOCTOU issues with ArcSwap.
     pub(crate) async fn ctx(&self) -> Result<Arc<AppContext>, McpError> {
         match &self.ctx_provider {
             #[cfg(feature = "mcp")]
@@ -140,10 +143,10 @@ pub async fn init_app_context() -> Result<Arc<AppContext>, McpError> {
     ensure_env_file(&data_dir);
 
     let env_path = data_dir.join(".env");
-    if env_path.exists() {
-        if let Err(e) = dotenvy::from_path(&env_path) {
-            tracing::warn!("Failed to load .env file at {}: {e}", env_path.display());
-        }
+    if env_path.exists()
+        && let Err(e) = dotenvy::from_path(&env_path)
+    {
+        tracing::warn!("Failed to load .env file at {}: {e}", env_path.display());
     }
 
     let db_file_path = data_file_path(&data_dir, "data.db")

@@ -4,11 +4,12 @@
 
 use axum::{
     body::Body,
-    extract::State,
+    extract::{ConnectInfo, State},
     http::{Request, StatusCode},
     middleware::Next,
-    response::Response,
+    response::{IntoResponse, Response},
 };
+use std::net::SocketAddr;
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
 
@@ -20,9 +21,10 @@ pub struct ApiKey(pub Arc<str>);
 /// Uses constant-time comparison to prevent timing attacks.
 pub async fn bearer_auth(
     State(api_key): State<ApiKey>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     request: Request<Body>,
     next: Next,
-) -> Result<Response, StatusCode> {
+) -> Result<Response, Response> {
     let auth_header = request
         .headers()
         .get("authorization")
@@ -34,9 +36,21 @@ pub async fn bearer_auth(
             if provided.as_bytes().ct_eq(api_key.0.as_bytes()).into() {
                 Ok(next.run(request).await)
             } else {
-                Err(StatusCode::UNAUTHORIZED)
+                tracing::warn!("MCP auth failed from {}", addr);
+                Err(unauthorized_response())
             }
         }
-        _ => Err(StatusCode::UNAUTHORIZED),
+        _ => {
+            tracing::warn!("MCP auth failed from {}", addr);
+            Err(unauthorized_response())
+        }
     }
+}
+
+fn unauthorized_response() -> Response {
+    (
+        StatusCode::UNAUTHORIZED,
+        axum::Json(serde_json::json!({"error": "unauthorized"})),
+    )
+        .into_response()
 }

@@ -8,7 +8,10 @@ use std::sync::Arc;
 
 /// Run a single backend task and return its result.
 ///
-/// Creates a throwaway channel (the receiver is never read).
+/// Creates a throwaway channel because `run_backend_task` requires a sender
+/// for the GUI event loop. In MCP/CLI mode there is no GUI consuming the
+/// receiver, so it is intentionally dropped. The task result is returned
+/// directly from the async call rather than through the channel.
 /// Same pattern as `tests/backend-e2e/framework/task_runner.rs`.
 pub(crate) async fn dispatch_task(
     app_context: &Arc<AppContext>,

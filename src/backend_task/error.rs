@@ -186,27 +186,21 @@ pub enum TaskError {
     InternalSendError,
 
     /// DAPI server is temporarily unavailable (gRPC Unavailable).
-    #[error(
-        "A Dash network server is temporarily unavailable. Please retry."
-    )]
+    #[error("A Dash network server is temporarily unavailable. Please retry.")]
     DapiUnavailable {
         #[source]
         source_error: Box<SdkError>,
     },
 
     /// Connection to DAPI server timed out (gRPC Unavailable with timeout message).
-    #[error(
-        "Connection to a Dash network server timed out. Please retry."
-    )]
+    #[error("Connection to a Dash network server timed out. Please retry.")]
     DapiTimeout {
         #[source]
         source_error: Box<SdkError>,
     },
 
     /// Could not reach DAPI server (gRPC Unavailable with connection refused).
-    #[error(
-        "Could not reach a Dash network server. Please retry."
-    )]
+    #[error("Could not reach a Dash network server. Please retry.")]
     DapiConnectionRefused {
         #[source]
         source_error: Box<SdkError>,
@@ -267,9 +261,7 @@ pub enum TaskError {
     },
 
     /// Connected server is behind (SdkError::StaleNode).
-    #[error(
-        "The server you connected to is behind. Please retry."
-    )]
+    #[error("The server you connected to is behind. Please retry.")]
     DapiStaleNode {
         #[source]
         source_error: Box<SdkError>,

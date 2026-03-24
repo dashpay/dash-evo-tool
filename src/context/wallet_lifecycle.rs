@@ -154,11 +154,17 @@ impl AppContext {
             // Eagerly initialize shielded wallet state so that the cached
             // balance (from persisted notes) is available to all UI screens
             // immediately, without requiring the user to visit the Shielded tab.
+            // Then queue async SyncNotes -> CheckNullifiers to refresh from
+            // the network. This is the single init path — the UI never
+            // dispatches InitializeShieldedWallet.
             match self.initialize_shielded_wallet(seed_hash) {
-                Ok(_) => tracing::trace!(
-                    seed = %hex::encode(seed_hash),
-                    "Shielded wallet state initialized on unlock"
-                ),
+                Ok(_) => {
+                    tracing::trace!(
+                        seed = %hex::encode(seed_hash),
+                        "Shielded wallet state initialized on unlock"
+                    );
+                    self.queue_shielded_sync(seed_hash);
+                }
                 Err(e) => tracing::debug!(
                     seed = %hex::encode(seed_hash),
                     error = %e,
@@ -177,6 +183,34 @@ impl AppContext {
             }
         };
         self.queue_spv_wallet_unload(seed_hash);
+    }
+
+    /// Queue async SyncNotes -> CheckNullifiers for an already-initialized
+    /// shielded wallet. Uses `spawn_blocking` + `block_on` to sidestep
+    /// rust-lang/rust#100013 (`self: &Arc<Self>` futures are not Send).
+    fn queue_shielded_sync(self: &Arc<Self>, seed_hash: WalletSeedHash) {
+        let ctx = Arc::clone(self);
+        let handle = tokio::runtime::Handle::current();
+        tokio::task::spawn_blocking(move || {
+            handle.block_on(async {
+                match ctx.sync_shielded_notes(seed_hash).await {
+                    Ok(_) => {
+                        if let Err(e) = ctx.check_nullifiers_task(seed_hash).await {
+                            tracing::debug!(
+                                seed = %hex::encode(seed_hash),
+                                error = %e,
+                                "Shielded nullifier check after init failed"
+                            );
+                        }
+                    }
+                    Err(e) => tracing::debug!(
+                        seed = %hex::encode(seed_hash),
+                        error = %e,
+                        "Shielded note sync after init failed"
+                    ),
+                }
+            });
+        });
     }
 
     fn wallet_seed_snapshot(wallet: &Arc<RwLock<Wallet>>) -> Option<(WalletSeedHash, [u8; 64])> {

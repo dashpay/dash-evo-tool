@@ -44,12 +44,24 @@ use dialogs::{
     SendDialogState,
 };
 
-/// Tab selector for the wallet detail panel.
-#[derive(Default, Clone, Copy, PartialEq)]
-enum WalletViewTab {
-    #[default]
-    Balances,
+/// Tab selector for the Accounts & Addresses section.
+///
+/// Each tab corresponds to either an `AccountCategory` or the special Shielded
+/// view.  Visibility is controlled by developer mode: only DashCore, Platform,
+/// and Shielded are shown by default; the rest appear in developer mode when
+/// addresses of that type exist.
+#[derive(Clone, PartialEq, Eq)]
+enum AccountTab {
+    /// Regular account category (BIP44, PlatformPayment, CoinJoin, etc.)
+    Category(AccountCategory, Option<u32>),
+    /// Shielded wallet view (replaces the old top-level Shielded tab)
     Shielded,
+}
+
+impl Default for AccountTab {
+    fn default() -> Self {
+        AccountTab::Category(AccountCategory::Bip44, Some(0))
+    }
 }
 
 /// Refresh mode for dev mode dropdown - controls what gets refreshed
@@ -118,10 +130,14 @@ pub struct WalletsBalancesScreen {
     utxo_page: usize,
     /// Selected refresh mode (only shown in dev mode)
     refresh_mode: RefreshMode,
-    /// Currently selected tab in the wallet detail panel
-    selected_tab: WalletViewTab,
+    /// Currently selected account tab in the Accounts & Addresses section
+    selected_account_tab: AccountTab,
     /// Shielded tab view component (lazily initialized per wallet)
     shielded_tab_view: Option<ShieldedTabView>,
+    /// Whether the balance breakdown section is expanded
+    balance_breakdown_expanded: bool,
+    /// Whether the Dev Tools popup is open
+    dev_tools_open: bool,
     /// Cached platform sync info: (last_sync_timestamp, last_sync_height)
     platform_sync_info: Option<(u64, u64)>,
     /// Core wallet selection dialog (shown when auto-detection fails)
@@ -230,8 +246,10 @@ impl WalletsBalancesScreen {
             asset_lock_search_banner: None,
             utxo_page: 0,
             refresh_mode: RefreshMode::default(),
-            selected_tab: WalletViewTab::default(),
+            selected_account_tab: AccountTab::default(),
             shielded_tab_view: None,
+            balance_breakdown_expanded: app_context.is_developer_mode(),
+            dev_tools_open: false,
             platform_sync_info,
             core_wallet_dialog: None,
             pending_core_wallet_seed_hash: None,
@@ -338,7 +356,7 @@ impl WalletsBalancesScreen {
         self.selected_wallet = wallet;
         self.selected_single_key_wallet = None;
         self.selected_account = None;
-        self.selected_tab = WalletViewTab::default();
+        self.selected_account_tab = AccountTab::default();
         self.shielded_tab_view = None;
 
         if let Some(hash) = seed_hash {
@@ -588,31 +606,6 @@ impl WalletsBalancesScreen {
                         DashColors::text_primary(ui.ctx().style().visuals.dark_mode),
                         format!(" Balance: {}", Self::format_dash(current_balance)),
                     );
-
-                    ui.separator();
-
-                    // Dev mode: Refresh mode selector
-                    if self.app_context.is_developer_mode() {
-                        ui.label(
-                            egui::RichText::new("Refresh Mode:").color(DashColors::text_primary(
-                                ui.ctx().style().visuals.dark_mode,
-                            )),
-                        );
-
-                        ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                            ComboBox::from_id_salt("refresh_mode_selector")
-                                .selected_text(self.refresh_mode.label())
-                                .show_ui(ui, |ui| {
-                                    for mode in RefreshMode::all_modes() {
-                                        ui.selectable_value(
-                                            &mut self.refresh_mode,
-                                            *mode,
-                                            mode.label(),
-                                        );
-                                    }
-                                });
-                        });
-                    }
                 });
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
@@ -743,7 +736,7 @@ impl WalletsBalancesScreen {
             .as_ref()
             .is_some_and(|wallet_guard| wallet_guard.read().unwrap().is_open());
 
-        // Only show "Add Receiving Address" button for Main Account (BIP44 account 0)
+        // Only show "Add Receiving Address" button for Dash Core account (BIP44 account 0)
         let is_main_account = self
             .selected_account
             .as_ref()
@@ -1008,31 +1001,6 @@ impl WalletsBalancesScreen {
             .sum()
     }
 
-    fn render_wallet_overview(&self, ui: &mut Ui, wallet: &Wallet) {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
-        let total = wallet.total_balance_duffs();
-        let platform = Self::platform_balance_duffs(wallet);
-        let combined = total + platform;
-
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(format!(
-                "Core balance: {}",
-                Self::format_dash(total)
-            )));
-        });
-        ui.label(
-            RichText::new(format!("Platform balance: {}", Self::format_dash(platform)))
-                .color(DashColors::text_primary(dark_mode)),
-        );
-        if platform > 0 {
-            ui.label(
-                RichText::new(format!("Total: {}", Self::format_dash(combined)))
-                    .color(DashColors::text_primary(dark_mode))
-                    .strong(),
-            );
-        }
-    }
-
     fn render_action_buttons(&mut self, ui: &mut Ui, ctx: &Context) -> AppAction {
         let mut action = AppAction::None;
         ui.add_space(10.0);
@@ -1072,110 +1040,251 @@ impl WalletsBalancesScreen {
                 action |= self.open_receive_dialog(ctx);
             }
 
-            if matches!(
-                self.app_context.network,
-                dash_sdk::dpp::dashcore::Network::Regtest
-                    | dash_sdk::dpp::dashcore::Network::Devnet
-            ) && self.app_context.is_developer_mode()
-                && self.app_context.core_backend_mode() == CoreBackendMode::Rpc
-                && ui
+            // Dev Tools expandable button (developer mode only)
+            if self.app_context.is_developer_mode() {
+                let dev_tools_label = if self.dev_tools_open {
+                    "Dev Tools \u{25BC}"
+                } else {
+                    "Dev Tools \u{25B6}"
+                };
+                if ui
                     .button(
-                        RichText::new("Mine")
+                        RichText::new(dev_tools_label)
                             .color(DashColors::text_primary(dark_mode))
                             .strong(),
                     )
                     .clicked()
-            {
-                self.open_mine_dialog();
+                {
+                    self.dev_tools_open = !self.dev_tools_open;
+                }
+            }
+
+            if self.refreshing {
+                ui.add(egui::Spinner::new().color(DashColors::DASH_BLUE));
             }
         });
+
+        // Dev Tools expanded section
+        if self.app_context.is_developer_mode() && self.dev_tools_open {
+            ui.indent("dev_tools_indent", |ui| {
+                ui.horizontal(|ui| {
+                    // Get Test Dash (opens browser to faucet)
+                    if matches!(
+                        self.app_context.network,
+                        dash_sdk::dpp::dashcore::Network::Testnet
+                    ) && ui.button("Get Test Dash").clicked()
+                    {
+                        ui.ctx().open_url(egui::OpenUrl::new_tab(
+                            "https://faucet.testnet.networks.dash.org/",
+                        ));
+                    }
+
+                    // Mine button (Regtest/Devnet with RPC only)
+                    if matches!(
+                        self.app_context.network,
+                        dash_sdk::dpp::dashcore::Network::Regtest
+                            | dash_sdk::dpp::dashcore::Network::Devnet
+                    ) && self.app_context.core_backend_mode() == CoreBackendMode::Rpc
+                        && ui
+                            .button(
+                                RichText::new("Mine")
+                                    .color(DashColors::text_primary(dark_mode))
+                                    .strong(),
+                            )
+                            .clicked()
+                    {
+                        self.open_mine_dialog();
+                    }
+
+                    // Refresh Mode selector
+                    ui.label(
+                        RichText::new("Refresh Mode:").color(DashColors::text_primary(dark_mode)),
+                    );
+                    ComboBox::from_id_salt("refresh_mode_selector_dev_tools")
+                        .selected_text(self.refresh_mode.label())
+                        .show_ui(ui, |ui| {
+                            for mode in RefreshMode::all_modes() {
+                                ui.selectable_value(&mut self.refresh_mode, *mode, mode.label());
+                            }
+                        });
+                });
+            });
+        }
+
         action
     }
 
-    fn render_accounts_section(&mut self, ui: &mut Ui, summaries: &[AccountSummary]) {
-        ui.add_space(14.0);
-        ui.heading("Accounts");
-        ui.add_space(6.0);
+    /// Build the list of visible account tabs based on current summaries and dev mode.
+    fn build_account_tabs(&self, summaries: &[AccountSummary]) -> Vec<AccountTab> {
+        let developer_mode = self.app_context.is_developer_mode();
+        let mut tabs: Vec<AccountTab> = Vec::new();
+        // Track which provider categories we have seen (they get grouped into one tab)
+        let mut has_provider = false;
 
-        if summaries.is_empty() {
-            ui.label("No account activity yet.");
-            return;
+        for summary in summaries {
+            let visible = if developer_mode {
+                true
+            } else {
+                summary.category.is_visible_in_default_mode() && summary.index == Some(0)
+                    || summary.category == AccountCategory::PlatformPayment
+            };
+            if !visible {
+                continue;
+            }
+
+            // Group all Provider* categories into a single tab
+            let is_provider = matches!(
+                summary.category,
+                AccountCategory::ProviderVoting
+                    | AccountCategory::ProviderOwner
+                    | AccountCategory::ProviderOperator
+                    | AccountCategory::ProviderPlatform
+            );
+            if is_provider {
+                if has_provider {
+                    continue;
+                }
+                has_provider = true;
+            }
+
+            tabs.push(AccountTab::Category(
+                summary.category.clone(),
+                summary.index,
+            ));
         }
 
+        // Always add the Shielded tab (after Dash Core and Platform)
+        tabs.push(AccountTab::Shielded);
+
+        tabs
+    }
+
+    /// Render the Accounts & Addresses tab bar and content.
+    fn render_account_tabs(&mut self, ui: &mut Ui, summaries: &[AccountSummary]) -> AppAction {
+        let mut action = AppAction::None;
         let dark_mode = ui.ctx().style().visuals.dark_mode;
 
-        // Find the currently selected summary
-        let selected_summary = self.selected_account.as_ref().and_then(|(cat, idx)| {
-            summaries
-                .iter()
-                .find(|s| &s.category == cat && s.index == *idx)
-        });
+        ui.add_space(14.0);
+        ui.heading(
+            RichText::new("Accounts & Addresses").color(DashColors::text_primary(dark_mode)),
+        );
+        ui.add_space(6.0);
 
-        // Build the selected text for the dropdown
-        let selected_text = selected_summary
-            .map(|s| {
-                if s.category.is_key_only() {
-                    s.label.clone()
-                } else if s.category == AccountCategory::PlatformPayment {
-                    let credits_as_dash = s.platform_credits as f64 / CREDITS_PER_DUFF as f64 / 1e8;
-                    format!("{} - {:.4} DASH", s.label, credits_as_dash)
+        if summaries.is_empty() && !matches!(self.selected_account_tab, AccountTab::Shielded) {
+            ui.label("No account activity yet.");
+            return action;
+        }
+
+        let tabs = self.build_account_tabs(summaries);
+
+        // Ensure the selected tab is still valid
+        if !tabs.contains(&self.selected_account_tab)
+            && let Some(first) = tabs.first()
+        {
+            self.selected_account_tab = first.clone();
+        }
+
+        // Tab bar
+        ui.horizontal_wrapped(|ui| {
+            for tab in &tabs {
+                let label = match tab {
+                    AccountTab::Category(cat, idx) => cat.tab_label(*idx),
+                    AccountTab::Shielded => "Shielded",
+                };
+                let is_selected = &self.selected_account_tab == tab;
+                let text = if is_selected {
+                    RichText::new(label).strong().color(DashColors::DASH_BLUE)
                 } else {
-                    format!("{} - {}", s.label, Self::format_dash(s.confirmed_balance))
-                }
-            })
-            .unwrap_or_else(|| "Select an account".to_string());
-
-        // Account dropdown selector
-        ComboBox::from_id_salt("account_selector")
-            .selected_text(&selected_text)
-            .width(ui.available_width() - 16.0)
-            .show_ui(ui, |ui| {
-                for summary in summaries {
-                    let is_selected = self
-                        .selected_account
-                        .as_ref()
-                        .map(|(cat, idx)| cat == &summary.category && *idx == summary.index)
-                        .unwrap_or(false);
-
-                    let label = if summary.category.is_key_only() {
-                        summary.label.clone()
-                    } else if summary.category == AccountCategory::PlatformPayment {
-                        let credits_as_dash =
-                            summary.platform_credits as f64 / CREDITS_PER_DUFF as f64 / 1e8;
-                        format!("{} - {:.4} DASH", summary.label, credits_as_dash)
-                    } else {
-                        format!(
-                            "{} - {}",
-                            summary.label,
-                            Self::format_dash(summary.confirmed_balance)
-                        )
-                    };
-
-                    if ui.selectable_label(is_selected, &label).clicked() {
-                        self.selected_account = Some((summary.category.clone(), summary.index));
+                    RichText::new(label).color(DashColors::text_secondary(dark_mode))
+                };
+                if ui.selectable_label(is_selected, text).clicked() {
+                    self.selected_account_tab = tab.clone();
+                    // Sync the selected_account for address_table filtering
+                    if let AccountTab::Category(cat, idx) = tab {
+                        self.selected_account = Some((cat.clone(), *idx));
                     }
                 }
-            });
+            }
+        });
+        ui.separator();
+        ui.add_space(4.0);
 
-        // Show description of the selected account below the dropdown
-        if let Some(summary) = selected_summary
-            && let Some(description) = summary.category.description()
-        {
-            ui.add_space(4.0);
-            ui.label(
-                RichText::new(description)
-                    .color(DashColors::text_secondary(dark_mode))
-                    .italics()
-                    .size(12.0),
-            );
+        // Tab content
+        match &self.selected_account_tab.clone() {
+            AccountTab::Shielded => {
+                let seed_hash = self
+                    .selected_wallet
+                    .as_ref()
+                    .and_then(|w| w.read().ok().map(|g| g.seed_hash()));
+                if let Some(seed_hash) = seed_hash {
+                    let shielded_view = self
+                        .shielded_tab_view
+                        .get_or_insert_with(|| ShieldedTabView::new(&self.app_context, seed_hash));
+                    shielded_view.update_seed_hash(seed_hash);
+                    shielded_view.update_app_context(&self.app_context);
+                    action |= shielded_view.ui(ui);
+                }
+            }
+            AccountTab::Category(cat, idx) => {
+                // Show description for the selected account category
+                if let Some(description) = cat.description() {
+                    ui.label(
+                        RichText::new(description)
+                            .color(DashColors::text_secondary(dark_mode))
+                            .italics()
+                            .size(12.0),
+                    );
+                    ui.add_space(4.0);
+                }
+
+                // When in dev mode for provider tabs, filter to show all
+                // provider-type addresses
+                let is_provider_group = matches!(
+                    cat,
+                    AccountCategory::ProviderVoting
+                        | AccountCategory::ProviderOwner
+                        | AccountCategory::ProviderOperator
+                        | AccountCategory::ProviderPlatform
+                );
+
+                if is_provider_group {
+                    // Show all provider addresses, not just one sub-type
+                    self.selected_account = Some((cat.clone(), *idx));
+                } else {
+                    self.selected_account = Some((cat.clone(), *idx));
+                }
+
+                // Addresses heading with zero-balance filter
+                ui.horizontal(|ui| {
+                    let addresses_heading = format!("Addresses ({})", cat.label(*idx));
+                    ui.heading(
+                        RichText::new(addresses_heading).color(DashColors::text_primary(dark_mode)),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.checkbox(
+                            &mut self.show_zero_balance_addresses,
+                            "Show zero-balance addresses",
+                        );
+                    });
+                });
+                ui.add_space(8.0);
+                action |= self.render_address_table(ui);
+
+                // Bottom options (Add Receiving Address for Dash Core tab)
+                self.render_bottom_options(ui);
+
+                // Asset Locks section — only on the Dash Core tab
+                if *cat == AccountCategory::Bip44 && *idx == Some(0) {
+                    ui.add_space(16.0);
+                    action |= self.render_wallet_asset_locks(ui);
+                }
+            }
         }
+
+        action
     }
 
     fn render_transactions_section(&self, ui: &mut Ui) {
-        ui.add_space(10.0);
-        // TODO: Synchronize transactions display with selected account type
-        // (main account -> Core transactions, platform account -> platform state transitions, etc.)
-        ui.heading("Dash Core Transactions");
         let Some(wallet_arc) = self.selected_wallet.as_ref() else {
             ui.label("Select a wallet to view its transaction history.");
             return;
@@ -1190,6 +1299,7 @@ impl WalletsBalancesScreen {
         }
 
         let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let show_fee = self.app_context.is_developer_mode();
         let mut order: Vec<usize> = (0..wallet_guard.transactions.len()).collect();
         order.sort_by(|&a, &b| {
             wallet_guard.transactions[b]
@@ -1203,12 +1313,18 @@ impl WalletsBalancesScreen {
         });
 
         let row_height = 26.0;
-        TableBuilder::new(ui)
+        let mut builder = TableBuilder::new(ui)
             .id_salt("transactions_table")
             .striped(true)
             .column(Column::initial(150.0)) // Date
             .column(Column::initial(80.0)) // Type
-            .column(Column::initial(120.0)) // Amount
+            .column(Column::initial(120.0)); // Amount
+
+        if show_fee {
+            builder = builder.column(Column::initial(100.0)); // Fee
+        }
+
+        builder
             .column(Column::initial(150.0)) // Status
             .column(Column::remainder()) // TxID
             .header(row_height, |mut header| {
@@ -1233,6 +1349,15 @@ impl WalletsBalancesScreen {
                             .color(DashColors::text_primary(dark_mode)),
                     );
                 });
+                if show_fee {
+                    header.col(|ui| {
+                        ui.label(
+                            RichText::new("Fee")
+                                .strong()
+                                .color(DashColors::text_primary(dark_mode)),
+                        );
+                    });
+                }
                 header.col(|ui| {
                     ui.label(
                         RichText::new("Status")
@@ -1263,6 +1388,15 @@ impl WalletsBalancesScreen {
                                 Self::transaction_amount_display(tx, dark_mode);
                             ui.label(RichText::new(amount_text).color(amount_color).strong());
                         });
+                        if show_fee {
+                            row.col(|ui| {
+                                let fee_text = tx
+                                    .fee
+                                    .map(Self::format_dash)
+                                    .unwrap_or_else(|| "-".to_string());
+                                ui.label(fee_text);
+                            });
+                        }
                         row.col(|ui| {
                             ui.label(Self::format_transaction_status(tx));
                         });
@@ -1543,6 +1677,39 @@ impl WalletsBalancesScreen {
         );
     }
 
+    /// Render the collapsible balance breakdown section.
+    fn render_balance_breakdown(&mut self, ui: &mut Ui, wallet: &Wallet) {
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let core_balance = wallet.total_balance_duffs();
+        let platform_balance = Self::platform_balance_duffs(wallet);
+        let total = core_balance + platform_balance;
+
+        // Total balance (always visible)
+        ui.label(
+            RichText::new(format!("Balance: {}", Self::format_dash(total)))
+                .color(DashColors::text_primary(dark_mode))
+                .size(20.0)
+                .strong(),
+        );
+
+        // Collapsible breakdown
+        let header = egui::CollapsingHeader::new(
+            RichText::new("Balance breakdown")
+                .size(13.0)
+                .color(DashColors::text_secondary(dark_mode)),
+        )
+        .id_salt("balance_breakdown")
+        .default_open(self.balance_breakdown_expanded);
+
+        header.show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(format!("Core: {}", Self::format_dash(core_balance)));
+                ui.label(" | ");
+                ui.label(format!("Platform: {}", Self::format_dash(platform_balance)));
+            });
+        });
+    }
+
     fn render_wallet_detail_panel(&mut self, ui: &mut Ui, ctx: &Context) -> AppAction {
         let Some(wallet_arc) = self.selected_wallet.clone() else {
             self.render_no_wallets_view(ui);
@@ -1571,6 +1738,7 @@ impl WalletsBalancesScreen {
                     .fill(DashColors::surface(dark_mode))
                     .inner_margin(Margin::symmetric(18, 16))
                     .show(col, |ui| {
+                        // --- 1. Wallet Header ---
                         ui.horizontal(|ui| {
                             ui.heading(
                                 RichText::new(alias.clone())
@@ -1578,125 +1746,48 @@ impl WalletsBalancesScreen {
                                     .size(25.0),
                             );
 
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if self.refreshing {
-                                        ui.add(egui::Spinner::new().color(DashColors::DASH_BLUE))
-                                    } else {
-                                        ui.add(egui::Label::new(""))
-                                    }
-                                },
-                            );
-                        });
-
-                        // Tab bar: Balances | Shielded
-                        ui.add_space(6.0);
-                        ui.horizontal(|ui| {
-                            let balances_text = if self.selected_tab == WalletViewTab::Balances {
-                                RichText::new("Balances")
-                                    .strong()
-                                    .color(DashColors::DASH_BLUE)
-                            } else {
-                                RichText::new("Balances")
-                                    .color(DashColors::text_secondary(dark_mode))
-                            };
-                            if ui
-                                .selectable_label(
-                                    self.selected_tab == WalletViewTab::Balances,
-                                    balances_text,
-                                )
-                                .clicked()
-                            {
-                                self.selected_tab = WalletViewTab::Balances;
-                            }
-
-                            let shielded_text = if self.selected_tab == WalletViewTab::Shielded {
-                                RichText::new("Shielded")
-                                    .strong()
-                                    .color(DashColors::DASH_BLUE)
-                            } else {
-                                RichText::new("Shielded")
-                                    .color(DashColors::text_secondary(dark_mode))
-                            };
-                            if ui
-                                .selectable_label(
-                                    self.selected_tab == WalletViewTab::Shielded,
-                                    shielded_text,
-                                )
-                                .clicked()
-                            {
-                                self.selected_tab = WalletViewTab::Shielded;
+                            if self.app_context.is_developer_mode() {
+                                ui.label(
+                                    RichText::new("[DEV]")
+                                        .color(DashColors::text_secondary(dark_mode))
+                                        .size(12.0),
+                                );
                             }
                         });
-                        ui.separator();
-                        ui.add_space(4.0);
 
-                        match self.selected_tab {
-                            WalletViewTab::Balances => {
-                                let summaries = {
-                                    let wallet = wallet_arc.read().unwrap();
-                                    self.render_wallet_overview(ui, &wallet);
-                                    collect_account_summaries(&wallet, self.app_context.network)
-                                };
-
-                                self.ensure_account_selection(&summaries);
-                                action |= self.render_action_buttons(ui, ctx);
-                                ui.add_space(10.0);
-                                ui.separator();
-                                self.render_accounts_section(ui, &summaries);
-                                ui.add_space(10.0);
-                                ui.separator();
-                                ui.add_space(10.0);
-                                let addresses_heading = self
-                                    .selected_account
-                                    .as_ref()
-                                    .map(|(category, index)| {
-                                        format!("Addresses ({})", category.label(*index))
-                                    })
-                                    .unwrap_or_else(|| "Addresses".to_string());
-                                ui.horizontal(|ui| {
-                                    ui.heading(
-                                        RichText::new(addresses_heading)
-                                            .color(DashColors::text_primary(dark_mode)),
-                                    );
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            ui.checkbox(
-                                                &mut self.show_zero_balance_addresses,
-                                                "Show zero-balance addresses",
-                                            );
-                                        },
-                                    );
-                                });
-                                ui.add_space(8.0);
-                                action |= self.render_address_table(ui);
-
-                                // Transactions section - requires SPV which is dev mode only
-                                if self.app_context.is_developer_mode() {
-                                    ui.add_space(10.0);
-                                    ui.separator();
-                                    self.render_transactions_section(ui);
-                                }
-
-                                ui.add_space(14.0);
-                                self.render_bottom_options(ui);
-
-                                ui.add_space(16.0);
-                                action |= self.render_wallet_asset_locks(ui);
-                            }
-                            WalletViewTab::Shielded => {
-                                let seed_hash = wallet_arc.read().unwrap().seed_hash();
-                                let shielded_view =
-                                    self.shielded_tab_view.get_or_insert_with(|| {
-                                        ShieldedTabView::new(&self.app_context, seed_hash)
-                                    });
-                                shielded_view.update_seed_hash(seed_hash);
-                                shielded_view.update_app_context(&self.app_context);
-                                action |= shielded_view.ui(ui);
-                            }
+                        // --- 2. Balance with collapsible breakdown ---
+                        {
+                            let wallet = wallet_arc.read().unwrap();
+                            self.render_balance_breakdown(ui, &wallet);
                         }
+
+                        // --- 3. Action Buttons (Send, Receive, Dev Tools) ---
+                        action |= self.render_action_buttons(ui, ctx);
+
+                        // --- 4. Transaction History (collapsible) ---
+                        ui.add_space(10.0);
+                        ui.separator();
+                        let tx_header = egui::CollapsingHeader::new(
+                            RichText::new("Transaction History")
+                                .size(16.0)
+                                .color(DashColors::text_primary(dark_mode)),
+                        )
+                        .id_salt("transaction_history")
+                        .default_open(false);
+                        tx_header.show(ui, |ui| {
+                            self.render_transactions_section(ui);
+                        });
+
+                        // --- 5. Accounts & Addresses (tabs) ---
+                        ui.add_space(10.0);
+                        ui.separator();
+
+                        let summaries = {
+                            let wallet = wallet_arc.read().unwrap();
+                            collect_account_summaries(&wallet, self.app_context.network)
+                        };
+                        self.ensure_account_selection(&summaries);
+                        action |= self.render_account_tabs(ui, &summaries);
                     });
             });
         });

@@ -54,7 +54,7 @@ impl AccountCategory {
     pub fn label(&self, index: Option<u32>) -> String {
         match self {
             AccountCategory::Bip44 => match index {
-                Some(0) => "Main Account".to_string(),
+                Some(0) => "Dash Core".to_string(),
                 Some(idx) => format!("BIP44 Account #{}", idx),
                 None => "BIP44 Account".to_string(),
             },
@@ -71,7 +71,7 @@ impl AccountCategory {
             AccountCategory::ProviderOwner => "Provider Owner".to_string(),
             AccountCategory::ProviderOperator => "Provider Operator".to_string(),
             AccountCategory::ProviderPlatform => "Provider Platform".to_string(),
-            AccountCategory::PlatformPayment => "Platform Account".to_string(),
+            AccountCategory::PlatformPayment => "Platform".to_string(),
             AccountCategory::Other(reference) => format!("{:?}", reference),
         }
     }
@@ -136,9 +136,39 @@ impl AccountCategory {
         }
     }
 
+    /// Returns a short label suitable for tab headers.
+    pub fn tab_label(&self, index: Option<u32>) -> &'static str {
+        match self {
+            AccountCategory::Bip44 => match index {
+                Some(0) => "Dash Core",
+                _ => "BIP44",
+            },
+            AccountCategory::Bip32 => "Legacy BIP32",
+            AccountCategory::CoinJoin => "CoinJoin",
+            AccountCategory::IdentityRegistration => "Identity Registration",
+            AccountCategory::IdentitySystem => "Identity System",
+            AccountCategory::IdentityTopup => "Identity Top-up",
+            AccountCategory::IdentityInvitation => "Identity Invitation",
+            AccountCategory::ProviderVoting
+            | AccountCategory::ProviderOwner
+            | AccountCategory::ProviderOperator
+            | AccountCategory::ProviderPlatform => "Provider",
+            AccountCategory::PlatformPayment => "Platform",
+            AccountCategory::Other(_) => "Other",
+        }
+    }
+
+    /// Whether this account tab is visible in default (non-developer) mode.
+    pub fn is_visible_in_default_mode(&self) -> bool {
+        matches!(
+            self,
+            AccountCategory::Bip44 | AccountCategory::PlatformPayment
+        )
+    }
+
     /// Returns true if this account category is primarily used for key
-    /// derivation and proofs rather than holding funds. Used for account
-    /// dropdown label formatting.
+    /// derivation and proofs rather than holding funds.
+    #[allow(dead_code)]
     pub fn is_key_only(&self) -> bool {
         matches!(
             self,
@@ -178,6 +208,7 @@ pub(crate) fn categorize_account_path(
 }
 
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct AccountSummary {
     pub category: AccountCategory,
     pub label: String,
@@ -273,7 +304,7 @@ mod tests {
     use dash_sdk::dpp::key_wallet::bip32::ChildNumber;
 
     #[test]
-    fn bip44_without_account_index_is_not_main_account() {
+    fn bip44_without_account_index_is_not_dash_core() {
         assert_eq!(AccountCategory::Bip44.label(None), "BIP44 Account");
     }
 

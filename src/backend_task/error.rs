@@ -1259,7 +1259,7 @@ mod tests {
             "Expected timeout message, got: {msg}"
         );
         assert!(
-            msg.contains("different server"),
+            msg.contains("Please retry"),
             "Expected retry hint, got: {msg}"
         );
     }
@@ -1357,7 +1357,7 @@ mod tests {
             "Expected unavailable message without timeout text, got: {msg}"
         );
         assert!(
-            msg.contains("different server"),
+            msg.contains("Please retry"),
             "Expected retry hint, got: {msg}"
         );
     }

@@ -4,10 +4,15 @@ use super::PKG_VERSION;
 use super::cache::load_cache;
 
 /// Print help for a single tool, using cached tool metadata.
-pub(super) fn print_tool_help(mcp_name: &str) {
+///
+/// Returns `true` if the tool was found, `false` if unknown.
+pub(super) fn print_tool_help(mcp_name: &str) -> bool {
     let cli_name = mcp_name.replace('_', "-");
 
-    let tools = load_cache().map(|c| c.tools).unwrap_or_default();
+    let tools = load_cache()
+        .filter(|c| c.version == PKG_VERSION)
+        .map(|c| c.tools)
+        .unwrap_or_default();
     let tool = tools.iter().find(|t| *t.name == *mcp_name);
 
     match tool {
@@ -50,11 +55,13 @@ pub(super) fn print_tool_help(mcp_name: &str) {
                 println!();
                 println!("This command takes no parameters.");
             }
+            true
         }
         None => {
             eprintln!(
                 "Unknown tool '{cli_name}'. Run 'det-cli tools' to refresh the command list."
             );
+            false
         }
     }
 }
@@ -114,6 +121,8 @@ pub(super) fn print_help(tools: Option<&[Tool]>) {
     println!("Management:");
     help_line("tools", "Refresh and display available commands");
     help_line("serve", "Run as MCP stdio server for AI agents");
+    #[cfg(feature = "headless")]
+    help_line("headless", "Run as headless HTTP MCP server daemon");
     help_line(
         "completion <shell>",
         "Generate shell completion (bash, zsh)",

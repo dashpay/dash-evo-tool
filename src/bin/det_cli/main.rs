@@ -164,7 +164,9 @@ async fn run(cli: Cli) -> Result<(), String> {
 
             if args[1..].iter().any(|a| a == "--help" || a == "-h") {
                 let mcp_name = tool_name.replace('-', "_");
-                help::print_tool_help(&mcp_name);
+                if !help::print_tool_help(&mcp_name) {
+                    Err(format!("Unknown tool '{tool_name}'"))?;
+                }
                 return Ok(());
             }
 

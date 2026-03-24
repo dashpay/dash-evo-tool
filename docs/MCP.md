@@ -128,18 +128,21 @@ curl http://127.0.0.1:9527/health
 curl -s http://127.0.0.1:9527/mcp \
   -H "Authorization: Bearer $MCP_API_KEY" \
   -H "Content-Type: application/json" \
+  -H "Accept: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"core_wallets_list","arguments":{}}}'
 
 # Generate a receive address
 curl -s http://127.0.0.1:9527/mcp \
   -H "Authorization: Bearer $MCP_API_KEY" \
   -H "Content-Type: application/json" \
+  -H "Accept: application/json" \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"core_address_create","arguments":{"wallet_id":"my-wallet"}}}'
 
 # Query queued withdrawals
 curl -s http://127.0.0.1:9527/mcp \
   -H "Authorization: Bearer $MCP_API_KEY" \
   -H "Content-Type: application/json" \
+  -H "Accept: application/json" \
   -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"platform_withdrawals_get","arguments":{"status":"queued"}}}'
 ```
 

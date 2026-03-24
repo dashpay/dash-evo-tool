@@ -16,7 +16,7 @@ _det_cli_wrapper() {{
     elif [ "$COMP_CWORD" -ge 2 ]; then
         local tool_name="${{COMP_WORDS[1]}}"
         local mcp_name=$(echo "$tool_name" | tr '-' '_')
-        local params=$(jq -r --arg t "$mcp_name" '.tools[] | select(.name == $t) | .inputSchema.properties // {{}} | keys[]' "$cache" 2>/dev/null | tr '_' '-')
+        local params=$(jq -r --arg t "$mcp_name" '.tools[] | select(.name == $t) | .input_schema.properties // {{}} | keys[]' "$cache" 2>/dev/null | tr '_' '-')
         local cur="${{COMP_WORDS[COMP_CWORD]}}"
         if [[ "$cur" == *=* ]]; then
             return

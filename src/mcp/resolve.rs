@@ -53,15 +53,16 @@ pub(crate) fn require_network(
 
 /// Resolve a wallet identifier (alias or 64-char hex seed hash) to a `WalletSeedHash`.
 pub(crate) fn wallet(ctx: &AppContext, wallet_id: &str) -> Result<WalletSeedHash, McpToolError> {
-    // Try hex parse first
+    let wallets = ctx.wallets.read().unwrap_or_else(|e| e.into_inner());
+
+    // Try hex parse first — but only accept if the wallet is actually loaded.
     if wallet_id.len() == 64
         && let Ok(bytes) = hex::decode(wallet_id)
         && let Ok(hash) = <[u8; 32]>::try_from(bytes.as_slice())
+        && wallets.contains_key(&hash)
     {
         return Ok(hash);
     }
-
-    let wallets = ctx.wallets.read().unwrap_or_else(|e| e.into_inner());
     let mut available: Vec<String> = Vec::new();
 
     for (seed_hash, wallet_arc) in wallets.iter() {

@@ -681,16 +681,38 @@ impl AddressInput {
 
     fn format_balance(&self, entry: &AddressEntry) -> String {
         match entry.address_kind {
-            AddressKind::Core => Amount::dash_from_duffs(entry.balance).to_string(),
+            AddressKind::Core => Self::format_dash_4dp(Amount::dash_from_duffs(entry.balance)),
             AddressKind::Platform | AddressKind::Shielded | AddressKind::Identity => {
                 let dash = Amount::new(entry.balance, DASH_DECIMAL_PLACES).with_unit_name("DASH");
                 if self.developer_mode {
-                    format!("{} ({} credits)", dash, entry.balance)
+                    format!(
+                        "{} ({} credits)",
+                        Self::format_dash_4dp(dash),
+                        entry.balance
+                    )
                 } else {
-                    dash.to_string()
+                    Self::format_dash_4dp(dash)
                 }
             }
         }
+    }
+
+    /// Format a DASH amount with exactly 4 decimal places for dropdown display.
+    fn format_dash_4dp(amount: Amount) -> String {
+        // Get the full-precision string without trimming, then truncate to 4 dp.
+        let full = amount.to_string_opts(false, false);
+        let formatted = if let Some(dot_pos) = full.find('.') {
+            let decimals = &full[dot_pos + 1..];
+            if decimals.len() > 4 {
+                format!("{}.{}", &full[..dot_pos], &decimals[..4])
+            } else {
+                // Pad with zeros if fewer than 4 decimals
+                format!("{}.{:0<4}", &full[..dot_pos], decimals)
+            }
+        } else {
+            format!("{full}.0000")
+        };
+        format!("{formatted} DASH")
     }
 
     // --- show() implementation ---
@@ -806,7 +828,9 @@ impl AddressInput {
                                             let highlighted =
                                                 self.autocomplete_highlight == Some(i);
                                             let row_resp = ui.horizontal(|ui| {
-                                                let _ = ui.selectable_label(highlighted, label.as_str());
+                                                let label_clicked = ui
+                                                    .selectable_label(highlighted, label.as_str())
+                                                    .clicked();
                                                 ui.with_layout(
                                                     egui::Layout::right_to_left(
                                                         egui::Align::Center,
@@ -821,8 +845,12 @@ impl AddressInput {
                                                         );
                                                     },
                                                 );
+                                                label_clicked
                                             });
-                                            if row_resp.response.clicked() {
+                                            // Capture clicks on the label (consumed by
+                                            // selectable_label) OR on the rest of the
+                                            // row (balance area, dead space).
+                                            if row_resp.inner || row_resp.response.clicked() {
                                                 selected_entry = Some(entry.clone());
                                             }
                                         }

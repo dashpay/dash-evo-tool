@@ -575,6 +575,7 @@ impl NetworkChooserScreen {
             let zmq_connected = status.zmq_connected();
             let spv_status = status.spv_status();
             let spv_connected = ConnectionStatus::spv_connected(spv_status);
+            let rpc_last_error = status.rpc_last_error();
             let spv_error_detail = status.spv_last_error();
             let snapshot = if current_backend_mode == CoreBackendMode::Spv {
                 Some(ctx.spv_manager().status().clone())
@@ -722,8 +723,14 @@ impl NetworkChooserScreen {
                         } else {
                             DashColors::ERROR
                         };
-                        let rpc_label = if rpc_online { "Connected" } else { "Disconnected" };
-                        ui.colored_label(rpc_color, rpc_label);
+                        let rpc_label = if rpc_online {
+                            "Connected".to_string()
+                        } else if let Some(ref err) = rpc_last_error {
+                            format!("Error: {err}")
+                        } else {
+                            "Disconnected".to_string()
+                        };
+                        ui.colored_label(rpc_color, &rpc_label);
 
                         ui.label(",");
                         ui.label("ZMQ:");
@@ -752,8 +759,14 @@ impl NetworkChooserScreen {
                         } else {
                             DashColors::ERROR
                         };
-                        let label = if rpc_online { "Connected" } else { "Disconnected" };
-                        ui.colored_label(color, label);
+                        let label = if rpc_online {
+                            "Connected".to_string()
+                        } else if let Some(ref err) = rpc_last_error {
+                            format!("Error: {err}")
+                        } else {
+                            "Disconnected".to_string()
+                        };
+                        ui.colored_label(color, &label);
                     });
 
                     ui.horizontal(|ui| {

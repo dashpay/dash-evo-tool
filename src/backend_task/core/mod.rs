@@ -138,7 +138,8 @@ pub enum CoreItem {
         Option<ChainLock>,
         Option<ChainLock>,
         Option<ChainLock>,
-    ), // Mainnet, Testnet, Devnet, Local
+        Option<String>,
+    ), // Mainnet, Testnet, Devnet, Local, active network RPC error
     ChainLockedBlock(Block, ChainLock),
 }
 
@@ -192,11 +193,15 @@ impl AppContext {
                     Network::Regtest => (&local_result, maybe_local_config),
                     _ => (&mainnet_result, maybe_mainnet_config),
                 };
-                if let Err(e) = active_result
-                    && let Some(task_err) = Self::chain_lock_rpc_error(active_config, e)
-                {
-                    return Err(task_err);
-                }
+                let active_rpc_error = if let Err(e) = active_result {
+                    if let Some(task_err) = Self::chain_lock_rpc_error(active_config, e) {
+                        return Err(task_err);
+                    }
+                    tracing::warn!(network = ?self.network, error = %e, "Chain lock query failed on active network");
+                    Some(e.to_string())
+                } else {
+                    None
+                };
 
                 // Convert each to Option<ChainLock> (flatten Ok(None) and Err into None)
                 let mainnet_chainlock = mainnet_result.ok().flatten();
@@ -210,6 +215,7 @@ impl AppContext {
                     testnet_chainlock,
                     devnet_chainlock,
                     local_chainlock,
+                    active_rpc_error,
                 )))
             }
             CoreTask::RefreshWalletInfo(wallet, sync_platform) => {

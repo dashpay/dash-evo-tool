@@ -35,6 +35,16 @@ impl AddressKind {
         }
     }
 
+    /// Short label for use in parenthetical suffixes, e.g. "(Core)".
+    pub fn short_label(&self) -> &'static str {
+        match self {
+            Self::Core => "Core",
+            Self::Platform => "Platform",
+            Self::Shielded => "Shielded",
+            Self::Identity => "Identity",
+        }
+    }
+
     /// All supported address kinds.
     pub const ALL: [AddressKind; 4] = [
         AddressKind::Core,

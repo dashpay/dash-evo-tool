@@ -629,9 +629,6 @@ impl AddressInput {
     /// before truncation.
     fn filtered_entries(&self) -> (Vec<&AddressEntry>, usize) {
         let query = self.input_text.trim().to_lowercase();
-        if query.len() < 3 {
-            return (Vec::new(), 0);
-        }
 
         let mut results: Vec<&AddressEntry> = self
             .all_entries
@@ -653,6 +650,10 @@ impl AddressInput {
                 {
                     return false;
                 }
+                // When query is empty, show all entries (no substring filter)
+                if query.is_empty() {
+                    return true;
+                }
                 // Substring match against address and label
                 e.address_string.to_lowercase().contains(&query)
                     || e.display_label.to_lowercase().contains(&query)
@@ -661,6 +662,9 @@ impl AddressInput {
 
         // Sort: exact prefix matches first, then by label
         results.sort_by(|a, b| {
+            if query.is_empty() {
+                return a.display_label.cmp(&b.display_label);
+            }
             let a_prefix = a.address_string.to_lowercase().starts_with(&query);
             let b_prefix = b.address_string.to_lowercase().starts_with(&query);
             b_prefix
@@ -748,9 +752,11 @@ impl AddressInput {
 
             // On text change: reset validation state
             if text_changed {
-                self.has_blurred = false;
                 self.selected_from_autocomplete = false;
                 self.cached_detection = None;
+                // Detect paste: a multi-character change in a single frame.
+                // Validate immediately so the user doesn't have to blur first.
+                self.has_blurred = self.input_text.trim().len() > 3;
             }
 
             // Detect address type (cached)
@@ -764,18 +770,20 @@ impl AddressInput {
 
             // Autocomplete popup
             let mut selected_entry: Option<AddressEntry> = None;
-            if has_focus && self.input_text.trim().len() >= 3 {
+            if has_focus || self.autocomplete_open {
                 // Collect filtered entries into an owned snapshot to release the borrow on self
                 let (filtered, total_entries) = self.filtered_entries();
                 let filtered_len = filtered.len();
+                let show_type_suffix = self.enabled_kinds.len() > 1;
                 let entries_snapshot: Vec<(String, String, AddressEntry)> = filtered
                     .iter()
                     .map(|e| {
-                        (
-                            e.display_label.clone(),
-                            self.format_balance(e),
-                            (*e).clone(),
-                        )
+                        let label = if show_type_suffix {
+                            format!("{} ({})", e.display_label, e.address_kind.short_label())
+                        } else {
+                            e.display_label.clone()
+                        };
+                        (label, self.format_balance(e), (*e).clone())
                     })
                     .collect();
 

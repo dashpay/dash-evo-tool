@@ -69,21 +69,19 @@ impl Database {
         })
     }
 
-    /// Get a shared reference to the underlying connection.
-    ///
-    /// Used by `ClientPersistentCommitmentTree` to share the same SQLite
-    /// connection for the shielded commitment tree tables.
-    pub fn shared_connection(&self) -> Arc<Mutex<Connection>> {
-        self.conn.clone()
-    }
-
     pub fn execute<P: Params>(&self, sql: &str, params: P) -> rusqlite::Result<usize> {
         let conn = self.conn.lock().unwrap();
         conn.execute(sql, params)
     }
 
     /// Removes all application data tied to a specific Dash network.
-    pub fn clear_network_data(&self, network: Network) -> rusqlite::Result<()> {
+    ///
+    /// `data_dir` is needed to delete per-wallet commitment tree DB files.
+    pub fn clear_network_data(
+        &self,
+        network: Network,
+        data_dir: &std::path::Path,
+    ) -> rusqlite::Result<()> {
         let network_str = network.to_string();
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
@@ -188,14 +186,28 @@ impl Database {
             rusqlite::params![&network_str],
         )?;
 
-        // Clear commitment tree tables (persistent shielded tree data).
-        // These tables are created by grovedb on first use, so they may not
-        // exist yet — ignore errors from missing tables.
-        let _ = tx.execute("DELETE FROM commitment_tree_shards", []);
-        let _ = tx.execute("DELETE FROM commitment_tree_cap", []);
-        let _ = tx.execute("DELETE FROM commitment_tree_checkpoints", []);
-        let _ = tx.execute("DELETE FROM commitment_tree_checkpoint_marks_removed", []);
+        // Collect wallet seed hashes for this network so we can delete their
+        // per-wallet commitment tree DB files after the transaction commits.
+        let mut wallet_hashes: Vec<Vec<u8>> = Vec::new();
+        {
+            let mut stmt = tx.prepare("SELECT seed_hash FROM wallet WHERE network = ?1")?;
+            let rows = stmt.query_map(rusqlite::params![&network_str], |row| {
+                row.get::<_, Vec<u8>>(0)
+            })?;
+            for row in rows {
+                wallet_hashes.push(row?);
+            }
+        }
 
-        tx.commit()
+        tx.commit()?;
+
+        // Delete per-wallet commitment tree DB files outside the transaction.
+        for hash_bytes in wallet_hashes {
+            if let Ok(seed_hash) = <[u8; 32]>::try_from(hash_bytes.as_slice()) {
+                let _ = shielded::delete_commitment_tree_db(data_dir, &seed_hash);
+            }
+        }
+
+        Ok(())
     }
 }

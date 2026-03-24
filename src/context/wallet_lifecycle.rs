@@ -30,7 +30,7 @@ impl AppContext {
     }
 
     pub fn clear_network_database(&self) -> Result<(), TaskError> {
-        self.db.clear_network_data(self.network)?;
+        self.db.clear_network_data(self.network, &self.data_dir)?;
 
         if let Ok(mut wallets) = self.wallets.write() {
             wallets.clear();

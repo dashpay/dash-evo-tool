@@ -555,7 +555,10 @@ impl ShieldedTabView {
                         .app_context
                         .db
                         .delete_shielded_notes(&self.seed_hash, &network_str);
-                    let _ = self.app_context.db.clear_commitment_tree_tables();
+                    let _ = crate::database::Database::clear_commitment_tree_for_wallet(
+                        &self.app_context.data_dir,
+                        &self.seed_hash,
+                    );
 
                     self.shielded_balance = 0;
                     self.tree_synced = false;

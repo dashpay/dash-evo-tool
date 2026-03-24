@@ -49,14 +49,17 @@ use dialogs::{
 ///
 /// Each tab corresponds to either an `AccountCategory` or the special Shielded
 /// view.  Visibility is controlled by developer mode: only DashCore, Platform,
-/// and Shielded are shown by default; the rest appear in developer mode when
-/// addresses of that type exist.
+/// and Shielded are shown by default; the System tab appears in developer mode
+/// and consolidates all system/dev account categories into collapsible sections.
 #[derive(Clone, PartialEq, Eq)]
 enum AccountTab {
-    /// Regular account category (BIP44, PlatformPayment, CoinJoin, etc.)
+    /// Regular account category (BIP44, PlatformPayment)
     Category(AccountCategory, Option<u32>),
     /// Shielded wallet view (replaces the old top-level Shielded tab)
     Shielded,
+    /// Consolidated system tab (developer mode only) — shows all non-primary
+    /// account categories as collapsible sections.
+    System,
 }
 
 impl Default for AccountTab {
@@ -1066,7 +1069,7 @@ impl WalletsBalancesScreen {
             if self.app_context.is_developer_mode() {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let dev_tools_response = ui.button(
-                        RichText::new("Dev Tools \u{25BC}")
+                        RichText::new("Tools \u{25BC}")
                             .color(DashColors::text_primary(dark_mode))
                             .strong(),
                     );
@@ -1110,18 +1113,12 @@ impl WalletsBalancesScreen {
                                 }
 
                                 // Refresh Mode cycle button
-                                ui.horizontal(|ui| {
-                                    ui.label(
-                                        RichText::new("Refresh Mode:")
-                                            .color(DashColors::text_primary(dark_mode)),
-                                    );
-                                    if ui
-                                        .button(format!("{} \u{25B6}", self.refresh_mode.label()))
-                                        .clicked()
-                                    {
-                                        self.refresh_mode = self.refresh_mode.next();
-                                    }
-                                });
+                                if ui
+                                    .button(format!("Refresh mode: {}", self.refresh_mode.label()))
+                                    .clicked()
+                                {
+                                    self.refresh_mode = self.refresh_mode.next();
+                                }
                             });
                         });
                 });
@@ -1135,82 +1132,116 @@ impl WalletsBalancesScreen {
     fn build_account_tabs(&self, summaries: &[AccountSummary]) -> Vec<AccountTab> {
         let developer_mode = self.app_context.is_developer_mode();
         let mut tabs: Vec<AccountTab> = Vec::new();
-        let mut has_provider = false;
 
+        // Always-visible primary tabs: Dash Core (Bip44 index 0) and Platform
+        for summary in summaries {
+            let visible = summary.category.is_visible_in_default_mode() && summary.index == Some(0)
+                || summary.category == AccountCategory::PlatformPayment;
+            if !visible {
+                continue;
+            }
+            tabs.push(AccountTab::Category(
+                summary.category.clone(),
+                summary.index,
+            ));
+        }
+
+        // Ensure Dash Core tab exists even without summaries
+        if !tabs
+            .iter()
+            .any(|t| matches!(t, AccountTab::Category(AccountCategory::Bip44, Some(0))))
+        {
+            tabs.insert(0, AccountTab::Category(AccountCategory::Bip44, Some(0)));
+        }
+
+        // Always add the Shielded tab
+        tabs.push(AccountTab::Shielded);
+
+        // In developer mode, add the consolidated System tab last
         if developer_mode {
-            // In developer mode, show ALL account categories as tabs — even those
-            // without addresses — so developers can inspect every derivation path.
-            let all_categories = [
-                AccountCategory::Bip44,
-                AccountCategory::PlatformPayment,
-                AccountCategory::Bip32,
-                AccountCategory::CoinJoin,
-                AccountCategory::IdentityRegistration,
-                AccountCategory::IdentitySystem,
-                AccountCategory::IdentityTopup,
-                AccountCategory::IdentityInvitation,
-                AccountCategory::ProviderOwner,
-                AccountCategory::ProviderVoting,
-                AccountCategory::ProviderOperator,
-                AccountCategory::ProviderPlatform,
-            ];
+            tabs.push(AccountTab::System);
+        }
 
-            for cat in &all_categories {
-                let is_provider = matches!(
-                    cat,
-                    AccountCategory::ProviderVoting
-                        | AccountCategory::ProviderOwner
-                        | AccountCategory::ProviderOperator
-                        | AccountCategory::ProviderPlatform
-                );
-                if is_provider {
-                    if has_provider {
-                        continue;
-                    }
-                    has_provider = true;
-                }
+        tabs
+    }
 
-                // Use the index from the summary if available, otherwise None
-                let idx = summaries
-                    .iter()
-                    .find(|s| &s.category == cat)
-                    .and_then(|s| s.index);
+    /// Collect the system account categories to display inside the System tab.
+    /// Returns `(category, index, address_count, balance_duffs)` tuples sorted
+    /// by the category's natural sort order.
+    fn system_tab_sections(
+        &self,
+        summaries: &[AccountSummary],
+    ) -> Vec<(AccountCategory, Option<u32>, usize, u64)> {
+        let all_system_categories = [
+            AccountCategory::IdentityRegistration,
+            AccountCategory::IdentitySystem,
+            AccountCategory::IdentityTopup,
+            AccountCategory::IdentityInvitation,
+            AccountCategory::CoinJoin,
+            AccountCategory::ProviderOwner,
+            AccountCategory::ProviderVoting,
+            AccountCategory::ProviderOperator,
+            AccountCategory::ProviderPlatform,
+            AccountCategory::Bip32,
+        ];
 
-                // For Bip44, default to index 0 (Dash Core)
-                let idx = match cat {
-                    AccountCategory::Bip44 => idx.or(Some(0)),
-                    _ => idx,
-                };
+        let mut sections = Vec::new();
+        for cat in &all_system_categories {
+            let matching: Vec<_> = summaries.iter().filter(|s| &s.category == cat).collect();
+            let address_count = self.count_addresses_for_category(cat);
+            let balance: u64 = matching.iter().map(|s| s.confirmed_balance).sum();
+            let idx = matching.first().and_then(|s| s.index);
+            sections.push((cat.clone(), idx, address_count, balance));
+        }
 
-                tabs.push(AccountTab::Category(cat.clone(), idx));
-            }
-
-            // Also add any summary-only categories not in the fixed list (e.g. Other)
-            for summary in summaries {
-                let tab = AccountTab::Category(summary.category.clone(), summary.index);
-                if !tabs.contains(&tab) {
-                    tabs.push(tab);
-                }
-            }
-        } else {
-            for summary in summaries {
-                let visible = summary.category.is_visible_in_default_mode()
-                    && summary.index == Some(0)
-                    || summary.category == AccountCategory::PlatformPayment;
-                if !visible {
-                    continue;
-                }
-                tabs.push(AccountTab::Category(
+        // Also include any Other(...) categories from summaries
+        for summary in summaries {
+            if matches!(summary.category, AccountCategory::Other(_))
+                && !sections.iter().any(|(c, _, _, _)| *c == summary.category)
+            {
+                let address_count = self.count_addresses_for_category(&summary.category);
+                sections.push((
                     summary.category.clone(),
                     summary.index,
+                    address_count,
+                    summary.confirmed_balance,
                 ));
             }
         }
 
-        // Always add the Shielded tab (after account categories)
-        tabs.push(AccountTab::Shielded);
+        sections
+    }
 
-        tabs
+    /// Count addresses belonging to a given category in the selected wallet.
+    fn count_addresses_for_category(&self, category: &AccountCategory) -> usize {
+        let Some(wallet_arc) = self.selected_wallet.as_ref() else {
+            return 0;
+        };
+        let Ok(wallet) = wallet_arc.read() else {
+            return 0;
+        };
+        let network = self.app_context.network;
+        wallet
+            .watched_addresses
+            .iter()
+            .filter(|(path, _info)| {
+                let (cat, _) = crate::ui::wallets::account_summary::categorize_account_path(
+                    path,
+                    network,
+                    _info.path_reference,
+                );
+                &cat == category
+            })
+            .count()
+    }
+
+    /// Format a duffs balance for tab labels: max 4 decimal places, trimmed.
+    fn format_tab_balance(duffs: u64) -> String {
+        let dash = duffs as f64 / 100_000_000.0;
+        // Format with 4 decimal places, then trim trailing zeros
+        let formatted = format!("{:.4}", dash);
+        let trimmed = formatted.trim_end_matches('0').trim_end_matches('.');
+        format!("{} DASH", trimmed)
     }
 
     /// Render the Accounts & Addresses tab bar and content.
@@ -1219,12 +1250,13 @@ impl WalletsBalancesScreen {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
 
         ui.add_space(14.0);
-        ui.heading(
-            RichText::new("Accounts & Addresses").color(DashColors::text_primary(dark_mode)),
-        );
-        ui.add_space(6.0);
 
-        if summaries.is_empty() && !matches!(self.selected_account_tab, AccountTab::Shielded) {
+        if summaries.is_empty()
+            && !matches!(
+                self.selected_account_tab,
+                AccountTab::Shielded | AccountTab::System
+            )
+        {
             ui.label("No account activity yet.");
             return action;
         }
@@ -1243,28 +1275,7 @@ impl WalletsBalancesScreen {
             for tab in &tabs {
                 let (base_label, balance_duffs) = match tab {
                     AccountTab::Category(cat, idx) => {
-                        let balance = if matches!(
-                            cat,
-                            AccountCategory::ProviderVoting
-                                | AccountCategory::ProviderOwner
-                                | AccountCategory::ProviderOperator
-                                | AccountCategory::ProviderPlatform
-                        ) {
-                            // Provider tab groups all provider categories
-                            summaries
-                                .iter()
-                                .filter(|s| {
-                                    matches!(
-                                        s.category,
-                                        AccountCategory::ProviderVoting
-                                            | AccountCategory::ProviderOwner
-                                            | AccountCategory::ProviderOperator
-                                            | AccountCategory::ProviderPlatform
-                                    )
-                                })
-                                .map(|s| s.confirmed_balance)
-                                .sum::<u64>()
-                        } else if matches!(cat, AccountCategory::PlatformPayment) {
+                        let balance = if matches!(cat, AccountCategory::PlatformPayment) {
                             summaries
                                 .iter()
                                 .filter(|s| s.category == *cat && s.index == *idx)
@@ -1288,18 +1299,34 @@ impl WalletsBalancesScreen {
                             .unwrap_or(0);
                         ("Shielded".to_string(), balance)
                     }
+                    AccountTab::System => {
+                        let balance: u64 = summaries
+                            .iter()
+                            .filter(|s| s.category.is_system_category())
+                            .map(|s| s.confirmed_balance)
+                            .sum();
+                        ("System".to_string(), balance)
+                    }
                 };
                 let label = if balance_duffs == 0 {
                     format!("{} (empty)", base_label)
                 } else {
-                    format!("{} ({})", base_label, Self::format_dash(balance_duffs))
+                    format!(
+                        "{} ({})",
+                        base_label,
+                        Self::format_tab_balance(balance_duffs)
+                    )
                 };
                 let is_selected = &self.selected_account_tab == tab;
                 let text = if is_selected {
-                    RichText::new(&label).strong().color(DashColors::DASH_BLUE)
+                    RichText::new(&label)
+                        .strong()
+                        .underline()
+                        .color(DashColors::DASH_BLUE)
                 } else {
                     RichText::new(&label).color(DashColors::text_secondary(dark_mode))
                 };
+                ui.add_space(4.0);
                 if ui.selectable_label(is_selected, text).clicked() {
                     self.selected_account_tab = tab.clone();
                     // Sync the selected_account for address_table filtering
@@ -1328,6 +1355,9 @@ impl WalletsBalancesScreen {
                     action |= shielded_view.ui(ui);
                 }
             }
+            AccountTab::System => {
+                action |= self.render_system_tab_content(ui, summaries);
+            }
             AccountTab::Category(cat, idx) => {
                 // Show description for the selected account category
                 if let Some(description) = cat.description() {
@@ -1340,22 +1370,7 @@ impl WalletsBalancesScreen {
                     ui.add_space(4.0);
                 }
 
-                // When in dev mode for provider tabs, filter to show all
-                // provider-type addresses
-                let is_provider_group = matches!(
-                    cat,
-                    AccountCategory::ProviderVoting
-                        | AccountCategory::ProviderOwner
-                        | AccountCategory::ProviderOperator
-                        | AccountCategory::ProviderPlatform
-                );
-
-                if is_provider_group {
-                    // Show all provider addresses, not just one sub-type
-                    self.selected_account = Some((cat.clone(), *idx));
-                } else {
-                    self.selected_account = Some((cat.clone(), *idx));
-                }
+                self.selected_account = Some((cat.clone(), *idx));
 
                 // Addresses (collapsible)
                 let addresses_heading = format!("Addresses ({})", cat.label(*idx));
@@ -1409,6 +1424,56 @@ impl WalletsBalancesScreen {
                     });
                 }
             }
+        }
+
+        action
+    }
+
+    /// Render the System tab content: each system account category as a
+    /// collapsible section, collapsed by default.
+    fn render_system_tab_content(
+        &mut self,
+        ui: &mut Ui,
+        summaries: &[AccountSummary],
+    ) -> AppAction {
+        let mut action = AppAction::None;
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let sections = self.system_tab_sections(summaries);
+
+        for (cat, idx, addr_count, balance) in &sections {
+            let balance_text = if *balance == 0 {
+                "empty".to_string()
+            } else {
+                Self::format_tab_balance(*balance)
+            };
+            let heading = format!(
+                "{} ({} addresses, {})",
+                cat.label(*idx),
+                addr_count,
+                balance_text
+            );
+            let header = egui::CollapsingHeader::new(
+                RichText::new(heading)
+                    .size(14.0)
+                    .color(DashColors::text_primary(dark_mode)),
+            )
+            .id_salt(format!("system_section_{:?}_{:?}", cat, idx))
+            .default_open(false);
+            header.show(ui, |ui| {
+                if let Some(description) = cat.description() {
+                    ui.label(
+                        RichText::new(description)
+                            .color(DashColors::text_secondary(dark_mode))
+                            .italics()
+                            .size(12.0),
+                    );
+                    ui.add_space(4.0);
+                }
+
+                self.selected_account = Some((cat.clone(), *idx));
+                action |= self.render_address_table(ui);
+            });
+            ui.add_space(2.0);
         }
 
         action

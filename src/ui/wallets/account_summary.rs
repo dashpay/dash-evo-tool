@@ -182,6 +182,15 @@ impl AccountCategory {
                 | AccountCategory::ProviderPlatform
         )
     }
+
+    /// Returns true if this is a "system" account category shown only in
+    /// developer mode under the consolidated System tab.
+    pub fn is_system_category(&self) -> bool {
+        !matches!(
+            self,
+            AccountCategory::Bip44 | AccountCategory::PlatformPayment
+        )
+    }
 }
 
 pub(crate) fn categorize_account_path(

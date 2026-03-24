@@ -1,3 +1,4 @@
+pub mod address_input;
 pub mod amount_input;
 pub mod component_trait;
 pub mod confirmation_dialog;

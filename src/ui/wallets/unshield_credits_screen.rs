@@ -2,17 +2,18 @@ use crate::app::AppAction;
 use crate::backend_task::shielded::ShieldedTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::model::address::{AddressKind, ValidatedAddress};
 use crate::model::wallet::WalletSeedHash;
+use crate::ui::components::ComponentResponse;
+use crate::ui::components::address_input::AddressInput;
+use crate::ui::components::component_trait::Component;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
-use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
-use dash_sdk::dpp::dashcore::Address;
 use eframe::egui::{self, Context};
 use egui::{Color32, RichText};
-use std::str::FromStr;
 use std::sync::Arc;
 
 #[derive(PartialEq)]
@@ -22,19 +23,12 @@ enum Status {
     Complete,
 }
 
-/// Which kind of destination was parsed from the address input.
-enum Destination {
-    /// Shielded pool → platform address (Type 17 Unshield)
-    Platform(PlatformAddress),
-    /// Shielded pool → core L1 address (Type 19 ShieldedWithdrawal)
-    Core(Address),
-}
-
 pub struct UnshieldCreditsScreen {
     pub app_context: Arc<AppContext>,
     pub seed_hash: WalletSeedHash,
     amount_str: String,
-    address_str: String,
+    address_input: Option<AddressInput>,
+    validated_destination: Option<ValidatedAddress>,
     max_balance: u64,
     status: Status,
     error_message: Option<String>,
@@ -55,7 +49,8 @@ impl UnshieldCreditsScreen {
             app_context: app_context.clone(),
             seed_hash,
             amount_str: String::new(),
-            address_str: String::new(),
+            address_input: None,
+            validated_destination: None,
             max_balance,
             status: Status::NotStarted,
             error_message: None,
@@ -81,30 +76,6 @@ impl UnshieldCreditsScreen {
             }
             Some(credits)
         }
-    }
-
-    /// Parse the address field into a Destination.
-    ///
-    /// Tries platform address (Bech32m tdash1.../dash1...) first, then falls
-    /// back to a core address (Base58 P2PKH/P2SH).
-    fn parse_destination(&self) -> Option<Destination> {
-        let s = self.address_str.trim();
-        if s.is_empty() {
-            return None;
-        }
-
-        // Try platform address first
-        if let Ok((pa, _network)) = PlatformAddress::from_bech32m_string(s) {
-            return Some(Destination::Platform(pa));
-        }
-
-        // Try core address
-        if let Ok(addr) = Address::from_str(s) {
-            let addr = addr.require_network(self.app_context.network).ok()?;
-            return Some(Destination::Core(addr));
-        }
-
-        None
     }
 }
 
@@ -155,33 +126,40 @@ impl ScreenLike for UnshieldCreditsScreen {
                 return;
             }
 
-            // Destination address input
-            ui.horizontal(|ui| {
-                ui.label("To address:");
-                ui.text_edit_singleline(&mut self.address_str);
+            // Destination address input via AddressInput component
+            let addr_input = self.address_input.get_or_insert_with(|| {
+                let mut builder = AddressInput::new(self.app_context.network)
+                    .with_address_kinds(&[AddressKind::Core, AddressKind::Platform])
+                    .with_label("To address")
+                    .with_hint_text(
+                        "Enter a platform address (tdash1.../dash1...) or core DASH address",
+                    );
+
+                if let Ok(wallets) = self.app_context.wallets.read() {
+                    let all_wallets: Vec<_> = wallets.values().cloned().collect();
+                    builder = builder.with_wallets(&all_wallets);
+                }
+
+                builder
             });
+            let resp = addr_input.show(ui);
+            resp.inner.update(&mut self.validated_destination);
 
             // Show what was parsed
-            match self.parse_destination() {
-                Some(Destination::Platform(_)) => {
+            match self.validated_destination.as_ref().map(|v| v.kind()) {
+                Some(AddressKind::Platform) => {
                     ui.colored_label(
                         Color32::DARK_GREEN,
-                        "Platform address — will unshield to platform (Type 17)",
+                        "Platform address — credits will be moved to this platform address",
                     );
                 }
-                Some(Destination::Core(_)) => {
+                Some(AddressKind::Core) => {
                     ui.colored_label(
                         Color32::DARK_GREEN,
-                        "Core address — will withdraw to core DASH (Type 19)",
+                        "Core address — credits will be withdrawn as DASH to this address",
                     );
                 }
-                None if !self.address_str.trim().is_empty() => {
-                    ui.colored_label(
-                        Color32::from_rgb(255, 100, 100),
-                        "Unrecognised address — enter a platform address (tdash1…/dash1…) or a core DASH address",
-                    );
-                }
-                None => {}
+                _ => {}
             }
             ui.add_space(10.0);
 
@@ -202,9 +180,8 @@ impl ScreenLike for UnshieldCreditsScreen {
             let amount_ok = self
                 .parse_amount_credits()
                 .is_some_and(|a| a <= self.max_balance);
-            let destination = self.parse_destination();
-            let can_confirm =
-                self.status == Status::NotStarted && amount_ok && destination.is_some();
+            let has_destination = self.validated_destination.is_some();
+            let can_confirm = self.status == Status::NotStarted && amount_ok && has_destination;
 
             if self.status == Status::WaitingForResult {
                 ui.horizontal(|ui| {
@@ -213,8 +190,8 @@ impl ScreenLike for UnshieldCreditsScreen {
                 });
             } else {
                 ui.horizontal(|ui| {
-                    let btn_label = match &destination {
-                        Some(Destination::Core(_)) => "Withdraw to Core",
+                    let btn_label = match self.validated_destination.as_ref().map(|v| v.kind()) {
+                        Some(AddressKind::Core) => "Withdraw to Core",
                         _ => "Unshield",
                     };
 
@@ -229,30 +206,30 @@ impl ScreenLike for UnshieldCreditsScreen {
                         .clicked()
                         && let Some(amount) = self.parse_amount_credits()
                     {
-                        match self.parse_destination() {
-                            Some(Destination::Platform(addr)) => {
+                        match &self.validated_destination {
+                            Some(ValidatedAddress::Platform { address: addr, .. }) => {
                                 self.status = Status::WaitingForResult;
                                 self.error_message = None;
                                 action = AppAction::BackendTask(BackendTask::ShieldedTask(
                                     ShieldedTask::UnshieldCredits {
                                         seed_hash: self.seed_hash,
                                         amount,
-                                        to_platform_address: addr,
+                                        to_platform_address: *addr,
                                     },
                                 ));
                             }
-                            Some(Destination::Core(addr)) => {
+                            Some(ValidatedAddress::Core(addr)) => {
                                 self.status = Status::WaitingForResult;
                                 self.error_message = None;
                                 action = AppAction::BackendTask(BackendTask::ShieldedTask(
                                     ShieldedTask::ShieldedWithdrawal {
                                         seed_hash: self.seed_hash,
                                         amount,
-                                        to_core_address: addr,
+                                        to_core_address: addr.clone(),
                                     },
                                 ));
                             }
-                            None => {}
+                            _ => {}
                         }
                     }
 

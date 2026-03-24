@@ -1655,10 +1655,21 @@ impl WalletsBalancesScreen {
                                         format!("Addresses ({})", category.label(*index))
                                     })
                                     .unwrap_or_else(|| "Addresses".to_string());
-                                ui.heading(
-                                    RichText::new(addresses_heading)
-                                        .color(DashColors::text_primary(dark_mode)),
-                                );
+                                ui.horizontal(|ui| {
+                                    ui.heading(
+                                        RichText::new(addresses_heading)
+                                            .color(DashColors::text_primary(dark_mode)),
+                                    );
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            ui.checkbox(
+                                                &mut self.show_zero_balance_addresses,
+                                                "Show zero-balance addresses",
+                                            );
+                                        },
+                                    );
+                                });
                                 ui.add_space(8.0);
                                 action |= self.render_address_table(ui);
 

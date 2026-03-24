@@ -260,7 +260,6 @@ impl WalletsBalancesScreen {
             refresh_mode: RefreshMode::default(),
             selected_account_tab: AccountTab::default(),
             shielded_tab_view,
-            balance_breakdown_expanded: app_context.is_developer_mode(),
             platform_sync_info,
             core_wallet_dialog: None,
             pending_core_wallet_seed_hash: None,

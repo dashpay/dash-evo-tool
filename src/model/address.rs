@@ -1,5 +1,7 @@
+use dash_sdk::dashcore_rpc::dashcore::Address;
+#[cfg(test)]
+use dash_sdk::dashcore_rpc::dashcore::Network;
 use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
-use dash_sdk::dashcore_rpc::dashcore::{Address, Network};
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
@@ -55,9 +57,10 @@ impl AddressKind {
 
     /// Detect the address kind from a raw input string.
     ///
+    /// Format-based detection only — network validation happens separately.
     /// Priority: Shielded > Platform > Core > Identity (Base58 fallback).
     /// Returns `None` for empty or unrecognized input.
-    pub fn detect(input: &str, _network: Network) -> Option<AddressKind> {
+    pub fn detect(input: &str) -> Option<AddressKind> {
         let trimmed = input.trim();
         if trimmed.is_empty() {
             return None;
@@ -232,14 +235,14 @@ mod tests {
 
     #[test]
     fn detect_empty_returns_none() {
-        assert_eq!(AddressKind::detect("", Network::Testnet), None);
-        assert_eq!(AddressKind::detect("   ", Network::Testnet), None);
+        assert_eq!(AddressKind::detect(""), None);
+        assert_eq!(AddressKind::detect("   "), None);
     }
 
     #[test]
     fn detect_shielded_mainnet() {
         assert_eq!(
-            AddressKind::detect("dash1z_some_shielded_addr", Network::Mainnet),
+            AddressKind::detect("dash1z_some_shielded_addr"),
             Some(AddressKind::Shielded)
         );
     }
@@ -247,7 +250,7 @@ mod tests {
     #[test]
     fn detect_shielded_testnet() {
         assert_eq!(
-            AddressKind::detect("tdash1z_some_shielded_addr", Network::Testnet),
+            AddressKind::detect("tdash1z_some_shielded_addr"),
             Some(AddressKind::Shielded)
         );
     }
@@ -256,7 +259,7 @@ mod tests {
     fn detect_shielded_priority_over_platform() {
         // dash1z starts with "dash1" which could match platform, but shielded wins
         assert_eq!(
-            AddressKind::detect("dash1z_test", Network::Mainnet),
+            AddressKind::detect("dash1z_test"),
             Some(AddressKind::Shielded)
         );
     }
@@ -264,7 +267,7 @@ mod tests {
     #[test]
     fn detect_platform_testnet() {
         assert_eq!(
-            AddressKind::detect("tdash1qwer1234", Network::Testnet),
+            AddressKind::detect("tdash1qwer1234"),
             Some(AddressKind::Platform)
         );
     }
@@ -272,7 +275,7 @@ mod tests {
     #[test]
     fn detect_platform_mainnet() {
         assert_eq!(
-            AddressKind::detect("dash1qwer1234", Network::Mainnet),
+            AddressKind::detect("dash1qwer1234"),
             Some(AddressKind::Platform)
         );
     }
@@ -288,7 +291,7 @@ mod tests {
         let pubkey = PublicKey::from_private_key(&secp, &privkey);
         let addr = Address::p2pkh(&pubkey, Network::Testnet);
         assert_eq!(
-            AddressKind::detect(&addr.to_string(), Network::Testnet),
+            AddressKind::detect(&addr.to_string()),
             Some(AddressKind::Core)
         );
     }
@@ -299,20 +302,14 @@ mod tests {
         let id_str = id.to_string(Encoding::Base58);
         // Some random identifiers parse as Core addresses. Skip those for
         // this test — only assert identity detection for ones that do not.
-        if AddressKind::detect(&id_str, Network::Testnet) == Some(AddressKind::Core) {
+        if AddressKind::detect(&id_str) == Some(AddressKind::Core) {
             return;
         }
-        assert_eq!(
-            AddressKind::detect(&id_str, Network::Testnet),
-            Some(AddressKind::Identity)
-        );
+        assert_eq!(AddressKind::detect(&id_str), Some(AddressKind::Identity));
     }
 
     #[test]
     fn detect_garbage_returns_none() {
-        assert_eq!(
-            AddressKind::detect("not-an-address", Network::Testnet),
-            None
-        );
+        assert_eq!(AddressKind::detect("not-an-address"), None);
     }
 }

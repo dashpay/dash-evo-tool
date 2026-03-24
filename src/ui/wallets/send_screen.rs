@@ -468,6 +468,11 @@ impl WalletSendScreen {
         estimate_platform_fee(fee_estimator, usable_count)
     }
 
+    /// Clear the AddressInput widget so it picks up the new network on next frame.
+    pub(crate) fn invalidate_address_input(&mut self) {
+        self.address_input = None;
+    }
+
     fn reset_form(&mut self) {
         self.address_input = None;
         self.validated_destination = None;
@@ -513,7 +518,7 @@ impl WalletSendScreen {
     ///
     /// Returns `None` for empty or unrecognized input.
     fn detect_address_kind(&self, address: &str) -> Option<AddressKind> {
-        AddressKind::detect(address, self.app_context.network)
+        AddressKind::detect(address)
     }
 
     fn min_output_amount(

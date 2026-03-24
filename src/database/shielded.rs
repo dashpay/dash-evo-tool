@@ -164,12 +164,26 @@ impl Database {
     }
 
     /// Clear all commitment tree data from the shared database.
+    ///
+    /// Handles fresh installs where grovedb creates these tables lazily —
+    /// each DELETE is skipped if the table does not exist yet.
     pub fn clear_commitment_tree_tables(&self) -> rusqlite::Result<()> {
         let conn = self.conn.lock().unwrap();
-        conn.execute("DELETE FROM commitment_tree_shards", [])?;
-        conn.execute("DELETE FROM commitment_tree_cap", [])?;
-        conn.execute("DELETE FROM commitment_tree_checkpoints", [])?;
-        conn.execute("DELETE FROM commitment_tree_checkpoint_marks_removed", [])?;
+        for table in &[
+            "commitment_tree_shards",
+            "commitment_tree_cap",
+            "commitment_tree_checkpoints",
+            "commitment_tree_checkpoint_marks_removed",
+        ] {
+            let exists: bool = conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+                |row| row.get::<_, i32>(0).map(|c| c > 0),
+            )?;
+            if exists {
+                conn.execute(&format!("DELETE FROM {table}"), [])?;
+            }
+        }
         Ok(())
     }
 

@@ -186,7 +186,12 @@ impl Database {
 
         tx.commit()?;
 
-        self.clear_commitment_tree_tables()?;
+        // Commitment tree tables are optional (created lazily by grovedb).
+        // Log and continue if clearing them fails — the main network data
+        // has already been committed above.
+        if let Err(e) = self.clear_commitment_tree_tables() {
+            tracing::warn!("Failed to clear commitment tree tables: {e}");
+        }
 
         Ok(())
     }

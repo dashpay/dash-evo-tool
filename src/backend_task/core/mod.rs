@@ -197,8 +197,10 @@ impl AppContext {
                     if let Some(task_err) = Self::chain_lock_rpc_error(active_config, e) {
                         return Err(task_err);
                     }
+                    // Non-auth, non-connection error — log the raw error but show
+                    // a sanitized message in the UI status display.
                     tracing::warn!(network = ?self.network, error = %e, "Chain lock query failed on active network");
-                    Some(e.to_string())
+                    Some("RPC error — check Dash Core status".to_string())
                 } else {
                     None
                 };
@@ -487,13 +489,9 @@ impl AppContext {
         if is_rpc_connection_error(e) {
             let url = config
                 .as_ref()
-                .map(|c| format!("{}:{}", c.core_host, c.core_rpc_port))
+                .map(|c| format!("{}:{} ({})", c.core_host, c.core_rpc_port, e))
                 .unwrap_or_else(|| "unknown".to_string());
-            return Some(TaskError::CoreRpcConnectionFailed {
-                url,
-                detail: Some(format!("{e}")),
-                source: None,
-            });
+            return Some(TaskError::CoreRpcConnectionFailed { url, source: None });
         }
         None
     }

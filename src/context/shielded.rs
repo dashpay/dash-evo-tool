@@ -441,6 +441,9 @@ impl AppContext {
 
         let result = operation(&state).await;
 
+        // INTENTIONAL(SEC-001): Shielded state removed from map during async operation.
+        // Panic during shielded operation loses state for the session — restart recovers.
+
         let result = if matches!(result, Err(TaskError::ShieldedAnchorMismatch { .. })) {
             tracing::info!(
                 "Shielded anchor mismatch during {operation_name} — syncing notes and retrying"
@@ -455,7 +458,19 @@ impl AppContext {
             match sync_result {
                 Ok(_) => {
                     state.last_notes_synced_at = Some(std::time::Instant::now());
-                    operation(&state).await
+                    // Fix SEC-002: verify sufficient balance after sync before retrying
+                    state.recalculate_balance();
+                    if state.shielded_balance == 0 {
+                        tracing::warn!(
+                            "Shielded {operation_name}: no unspent balance after anchor retry sync"
+                        );
+                        Err(TaskError::ShieldedInsufficientBalance {
+                            available: 0,
+                            required: 1,
+                        })
+                    } else {
+                        operation(&state).await
+                    }
                 }
                 Err(e) => {
                     tracing::warn!("Note sync after anchor mismatch failed: {e}");
@@ -488,6 +503,10 @@ impl AppContext {
     }
 
     /// Shield core DASH directly into the shielded pool via asset lock.
+    ///
+    /// Unlike operations that spend shielded notes (transfer, unshield, withdrawal),
+    /// shield-from-asset-lock only reads the payment address — it doesn't use the
+    /// commitment tree for witnesses, so anchor retry is not applicable.
     async fn shield_from_asset_lock_task(
         self: &Arc<Self>,
         seed_hash: WalletSeedHash,
@@ -506,7 +525,7 @@ impl AppContext {
         )
         .await;
 
-        // Put state back
+        // Always put state back
         {
             let mut states = self.shielded_states.lock().unwrap();
             states.insert(seed_hash, state_ref);

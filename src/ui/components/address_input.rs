@@ -1022,9 +1022,7 @@ impl Component for AddressInput {
 /// Priority: Shielded > Platform > Core > Identity (Base58 fallback).
 /// Identity detection only runs when `identity_enabled` is true.
 fn detect_address_type(input: &str, identity_enabled: bool) -> DetectedType {
-    // Delegate to AddressKind::detect() with a dummy network (detection is
-    // network-agnostic — it only checks format, not network correctness).
-    match AddressKind::detect(input, Network::Testnet) {
+    match AddressKind::detect(input) {
         Some(AddressKind::Identity) if !identity_enabled => DetectedType::Unknown,
         Some(AddressKind::Core) => DetectedType::Core,
         Some(AddressKind::Platform) => DetectedType::Platform,

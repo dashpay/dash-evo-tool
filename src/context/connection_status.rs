@@ -445,6 +445,8 @@ impl ConnectionStatus {
                         devnet_chainlock,
                         local_chainlock,
                     );
+                    // INTENTIONAL(SEC-005): RPC error strings shown as-is in network
+                    // status tooltip. Acceptable for desktop app — helps debugging.
                     self.set_rpc_last_error(rpc_error.clone());
                     self.refresh_state();
                 }

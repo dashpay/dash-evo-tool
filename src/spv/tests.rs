@@ -39,6 +39,9 @@ fn create_test_manager() -> (Arc<SpvManager>, Arc<TaskManager>, tempfile::TempDi
         task_manager.clone(),
     )
     .expect("SpvManager::new should succeed");
+    // Use explicit local peer to avoid DNS seed discovery which hangs in tests
+    // (upstream bug: dashpay/rust-dashcore#577).
+    manager.set_use_local_node(true);
     (manager, task_manager, tmp_dir)
 }
 
@@ -150,11 +153,14 @@ async fn test_double_stop_does_not_panic() {
 async fn test_use_local_node_toggle() {
     let (manager, _tm, _tmp_dir) = create_test_manager();
 
-    assert!(!manager.use_local_node(), "Default should be false");
+    assert!(
+        manager.use_local_node(),
+        "Test helper sets use_local_node to true"
+    );
+    manager.set_use_local_node(false);
+    assert!(!manager.use_local_node(), "Should be false after clear");
     manager.set_use_local_node(true);
     assert!(manager.use_local_node(), "Should be true after set");
-    manager.set_use_local_node(false);
-    assert!(!manager.use_local_node(), "Should be false after reset");
 }
 
 // ── clear_data_dir when idle ─────────────────────────────────────

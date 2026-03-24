@@ -121,7 +121,10 @@ impl NetworkChooserScreen {
         current_network: Network,
         overwrite_dash_conf: bool,
     ) -> Self {
-        let mut dashmate_password_input = PasswordInput::new().with_hint_text("Core RPC password");
+        let mut dashmate_password_input = PasswordInput::new()
+            .with_hint_text("Core RPC password")
+            .with_char_limit(40)
+            .with_desired_width(280.0);
         if let Ok(config) = Config::load_from(&mainnet_app_context.data_dir)
             && let Some(local_config) = config.config_for_network(Network::Regtest)
         {

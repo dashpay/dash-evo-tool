@@ -827,30 +827,58 @@ impl AddressInput {
                                         {
                                             let highlighted =
                                                 self.autocomplete_highlight == Some(i);
-                                            let row_resp = ui.horizontal(|ui| {
-                                                let label_clicked = ui
-                                                    .selectable_label(highlighted, label.as_str())
-                                                    .clicked();
-                                                ui.with_layout(
-                                                    egui::Layout::right_to_left(
-                                                        egui::Align::Center,
+
+                                            // Single interaction rect spanning the full
+                                            // row width. No child widgets — painted
+                                            // manually so nothing steals clicks.
+                                            let row_height = ui.spacing().interact_size.y;
+                                            let row_width = ui.available_width();
+                                            let (rect, response) = ui.allocate_exact_size(
+                                                egui::vec2(row_width, row_height),
+                                                egui::Sense::click(),
+                                            );
+
+                                            if ui.is_rect_visible(rect) {
+                                                let hovered = response.hovered();
+                                                if highlighted || hovered {
+                                                    ui.painter().rect_filled(
+                                                        rect,
+                                                        egui::CornerRadius::from(2.0),
+                                                        ui.style().visuals.widgets.hovered.bg_fill,
+                                                    );
+                                                }
+
+                                                let text_color = if highlighted || hovered {
+                                                    ui.style().visuals.widgets.hovered.text_color()
+                                                } else {
+                                                    ui.style().visuals.widgets.inactive.text_color()
+                                                };
+
+                                                let padding = 4.0;
+                                                ui.painter().text(
+                                                    egui::pos2(
+                                                        rect.left() + padding,
+                                                        rect.center().y,
                                                     ),
-                                                    |ui| {
-                                                        ui.label(
-                                                            egui::RichText::new(
-                                                                balance_str.as_str(),
-                                                            )
-                                                            .small()
-                                                            .color(DashColors::GRAY),
-                                                        );
-                                                    },
+                                                    egui::Align2::LEFT_CENTER,
+                                                    label.as_str(),
+                                                    egui::TextStyle::Body.resolve(ui.style()),
+                                                    text_color,
                                                 );
-                                                label_clicked
-                                            });
-                                            // Capture clicks on the label (consumed by
-                                            // selectable_label) OR on the rest of the
-                                            // row (balance area, dead space).
-                                            if row_resp.inner || row_resp.response.clicked() {
+
+                                                ui.painter().text(
+                                                    egui::pos2(
+                                                        rect.right() - padding,
+                                                        rect.center().y,
+                                                    ),
+                                                    egui::Align2::RIGHT_CENTER,
+                                                    balance_str.as_str(),
+                                                    egui::TextStyle::Small.resolve(ui.style()),
+                                                    DashColors::GRAY,
+                                                );
+                                            }
+
+                                            if response.clicked() {
                                                 selected_entry = Some(entry.clone());
                                             }
                                         }

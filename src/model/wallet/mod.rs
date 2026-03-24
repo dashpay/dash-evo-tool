@@ -148,6 +148,11 @@ pub trait DerivationPathHelpers {
         index: u32,
     ) -> DerivationPath;
     fn is_generic_asset_lock_funding(&self, network: Network) -> bool;
+    fn is_generic_asset_lock_funding_for_usage(
+        &self,
+        network: Network,
+        usage: AssetLockUsage,
+    ) -> bool;
 }
 
 pub(crate) fn is_bip44_path(path: &DerivationPath, network: Network) -> bool {
@@ -256,24 +261,80 @@ impl DerivationPathHelpers for DerivationPath {
             _ => 1,
         };
         let components = self.as_ref();
-        components.len() == 4
+        components.len() == 5
             && components[0] == ChildNumber::Hardened { index: 9 }
             && components[1] == ChildNumber::Hardened { index: coin_type }
-            && components[2] == ChildNumber::Hardened { index: 15 }
+            && components[2] == ChildNumber::Hardened { index: 5 }
+            && matches!(
+                components[3],
+                ChildNumber::Hardened { index: 4 } | ChildNumber::Hardened { index: 5 }
+            )
+    }
+
+    fn is_generic_asset_lock_funding_for_usage(
+        &self,
+        network: Network,
+        usage: AssetLockUsage,
+    ) -> bool {
+        let coin_type = match network {
+            Network::Mainnet => 5,
+            _ => 1,
+        };
+        let components = self.as_ref();
+        components.len() == 5
+            && components[0] == ChildNumber::Hardened { index: 9 }
+            && components[1] == ChildNumber::Hardened { index: coin_type }
+            && components[2] == ChildNumber::Hardened { index: 5 }
+            && components[3]
+                == ChildNumber::Hardened {
+                    index: usage.sub_feature_index(),
+                }
     }
 }
 
-/// Create a derivation path for generic asset lock funding: m/9'/coin_type'/15'/index'
+/// DIP-9 Feature 5' sub-features for asset lock key derivation.
 ///
-/// This path is used for asset lock transactions that are not tied to a specific
-/// identity (e.g., platform address funding). Sub-feature index 15 is chosen to
-/// avoid collision with existing sub-features (5 = identity, 17 = platform payment).
-fn asset_lock_funding_path(network: Network, index: u32) -> DerivationPath {
+/// Each variant maps to a sub-feature index under `m/9'/coin_type'/5'/`.
+/// See <https://github.com/dashpay/dips/blob/master/dip-0009/assignments.md>
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AssetLockUsage {
+    /// Sub-feature 1': Identity registration funding.
+    Registration,
+    /// Sub-feature 2': Identity top-up funding.
+    TopUp,
+    /// Sub-feature 3': Invitation funding.
+    Invitation,
+    /// Sub-feature 4': Generic platform address funding.
+    PlatformAddressFunding,
+    /// Sub-feature 5': Shielded (Orchard) address top-up.
+    ShieldedTopUp,
+}
+
+impl AssetLockUsage {
+    /// DIP-9 sub-feature index under Feature 5'.
+    pub fn sub_feature_index(&self) -> u32 {
+        match self {
+            Self::Registration => 1,
+            Self::TopUp => 2,
+            Self::Invitation => 3,
+            Self::PlatformAddressFunding => 4,
+            Self::ShieldedTopUp => 5,
+        }
+    }
+}
+
+/// Create a derivation path for asset lock funding: m/9'/coin_type'/5'/sub_feature'/index'
+///
+/// Sub-feature is determined by `AssetLockUsage` per DIP-9 Feature 5' assignments.
+fn asset_lock_funding_path(network: Network, usage: AssetLockUsage, index: u32) -> DerivationPath {
     let coin_type = Wallet::coin_type(network);
     DerivationPath::from(vec![
         ChildNumber::Hardened { index: 9 },
         ChildNumber::Hardened { index: coin_type },
-        ChildNumber::Hardened { index: 15 },
+        ChildNumber::Hardened { index: 5 },
+        ChildNumber::Hardened {
+            index: usage.sub_feature_index(),
+        },
         ChildNumber::Hardened { index },
     ])
 }
@@ -1460,19 +1521,25 @@ impl Wallet {
         app_context: &AppContext,
     ) -> Result<(), String> {
         let seed = *self.seed_bytes()?;
-        for index in 0..BOOTSTRAP_GENERIC_FUNDING_ADDRESS_COUNT {
-            let derivation_path = asset_lock_funding_path(network, index);
-            let extended_private_key = derivation_path
-                .derive_priv_ecdsa_for_master_seed(&seed, network)
-                .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
-            let private_key = extended_private_key.to_priv();
-            self.register_address_from_private_key(
-                &private_key,
-                &derivation_path,
-                DerivationPathType::CREDIT_FUNDING,
-                DerivationPathReference::BlockchainIdentityCreditRegistrationFunding,
-                app_context,
-            )?;
+        let usages = [
+            AssetLockUsage::PlatformAddressFunding,
+            AssetLockUsage::ShieldedTopUp,
+        ];
+        for usage in usages {
+            for index in 0..BOOTSTRAP_GENERIC_FUNDING_ADDRESS_COUNT {
+                let derivation_path = asset_lock_funding_path(network, usage, index);
+                let extended_private_key = derivation_path
+                    .derive_priv_ecdsa_for_master_seed(&seed, network)
+                    .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
+                let private_key = extended_private_key.to_priv();
+                self.register_address_from_private_key(
+                    &private_key,
+                    &derivation_path,
+                    DerivationPathType::CREDIT_FUNDING,
+                    DerivationPathReference::BlockchainIdentityCreditRegistrationFunding,
+                    app_context,
+                )?;
+            }
         }
         Ok(())
     }
@@ -1620,6 +1687,9 @@ impl Wallet {
         }
     }
 
+    // TODO(DIP-9): Top-up currently uses m/9'/ct'/5'/identity_index'/top_up_index'
+    // but DIP-9 assigns sub-feature 2' for top-up. Changing this would break
+    // existing wallets. Needs migration strategy.
     pub fn identity_top_up_ecdsa_private_key(
         &mut self,
         app_context: &AppContext,
@@ -1644,6 +1714,9 @@ impl Wallet {
         Ok(private_key)
     }
 
+    // TODO(DIP-9): Registration currently uses m/9'/ct'/5'/0'/index' but DIP-9
+    // assigns sub-feature 1' for registration. Changing this would break existing
+    // wallets that already derived keys on the old path. Needs migration strategy.
     /// Generate Core key for identity registration
     pub fn identity_registration_ecdsa_private_key(
         &mut self,
@@ -1669,16 +1742,18 @@ impl Wallet {
 
     /// Generate a deterministic key for generic asset lock funding.
     ///
-    /// Uses derivation path `m/9'/coin_type'/15'/index'` to produce a key that
-    /// is always recoverable from the wallet seed, preventing fund loss when a
-    /// Platform state transition is rejected after the asset lock is broadcast.
+    /// Uses derivation path `m/9'/coin_type'/5'/sub_feature'/index'` to produce
+    /// a key that is always recoverable from the wallet seed, preventing fund
+    /// loss when Platform rejects a state transition after the asset lock is
+    /// broadcast.
     pub fn generic_asset_lock_ecdsa_private_key(
         &mut self,
         app_context: &AppContext,
         network: Network,
+        usage: AssetLockUsage,
         funding_index: u32,
     ) -> Result<PrivateKey, String> {
-        let derivation_path = asset_lock_funding_path(network, funding_index);
+        let derivation_path = asset_lock_funding_path(network, usage, funding_index);
         let extended_private_key = derivation_path
             .derive_priv_ecdsa_for_master_seed(self.seed_bytes()?, network)
             .expect("derivation should not be able to fail");
@@ -1695,11 +1770,11 @@ impl Wallet {
     }
 
     /// Find the next unused index for generic asset lock funding by scanning
-    /// `known_addresses` for existing paths under `m/9'/coin_type'/15'/*'`.
-    pub fn next_generic_funding_index(&self, network: Network) -> u32 {
+    /// `known_addresses` for paths matching the given `AssetLockUsage`.
+    pub fn next_generic_funding_index(&self, network: Network, usage: AssetLockUsage) -> u32 {
         self.known_addresses
             .values()
-            .filter(|path| path.is_generic_asset_lock_funding(network))
+            .filter(|path| path.is_generic_asset_lock_funding_for_usage(network, usage))
             .filter_map(|path| {
                 path.as_ref().last().and_then(|child| match child {
                     ChildNumber::Hardened { index } => Some(*index),
@@ -3441,6 +3516,72 @@ mod tests {
         ]);
         assert!(path.is_asset_lock_funding(Network::Testnet));
         assert!(!path.is_asset_lock_funding(Network::Mainnet));
+    }
+
+    #[test]
+    fn test_asset_lock_usage_sub_feature_indices() {
+        assert_eq!(AssetLockUsage::Registration.sub_feature_index(), 1);
+        assert_eq!(AssetLockUsage::TopUp.sub_feature_index(), 2);
+        assert_eq!(AssetLockUsage::Invitation.sub_feature_index(), 3);
+        assert_eq!(
+            AssetLockUsage::PlatformAddressFunding.sub_feature_index(),
+            4
+        );
+        assert_eq!(AssetLockUsage::ShieldedTopUp.sub_feature_index(), 5);
+    }
+
+    #[test]
+    fn test_asset_lock_funding_path_structure() {
+        let path =
+            asset_lock_funding_path(Network::Testnet, AssetLockUsage::PlatformAddressFunding, 7);
+        let components = path.as_ref();
+        assert_eq!(components.len(), 5);
+        assert_eq!(components[0], ChildNumber::Hardened { index: 9 });
+        assert_eq!(components[1], ChildNumber::Hardened { index: 1 }); // testnet
+        assert_eq!(components[2], ChildNumber::Hardened { index: 5 }); // Feature 5'
+        assert_eq!(components[3], ChildNumber::Hardened { index: 4 }); // PlatformAddressFunding
+        assert_eq!(components[4], ChildNumber::Hardened { index: 7 }); // index
+    }
+
+    #[test]
+    fn test_asset_lock_funding_path_shielded() {
+        let path = asset_lock_funding_path(Network::Testnet, AssetLockUsage::ShieldedTopUp, 0);
+        let components = path.as_ref();
+        assert_eq!(components.len(), 5);
+        assert_eq!(components[2], ChildNumber::Hardened { index: 5 });
+        assert_eq!(components[3], ChildNumber::Hardened { index: 5 }); // ShieldedTopUp
+    }
+
+    #[test]
+    fn test_is_generic_asset_lock_funding() {
+        // PlatformAddressFunding path (sub-feature 4')
+        let path_platform =
+            asset_lock_funding_path(Network::Testnet, AssetLockUsage::PlatformAddressFunding, 0);
+        assert!(path_platform.is_generic_asset_lock_funding(Network::Testnet));
+        assert!(!path_platform.is_generic_asset_lock_funding(Network::Mainnet));
+
+        // ShieldedTopUp path (sub-feature 5')
+        let path_shielded =
+            asset_lock_funding_path(Network::Testnet, AssetLockUsage::ShieldedTopUp, 0);
+        assert!(path_shielded.is_generic_asset_lock_funding(Network::Testnet));
+
+        // Registration path (sub-feature 1') should NOT match generic
+        let path_reg = asset_lock_funding_path(Network::Testnet, AssetLockUsage::Registration, 0);
+        assert!(!path_reg.is_generic_asset_lock_funding(Network::Testnet));
+    }
+
+    #[test]
+    fn test_is_generic_asset_lock_funding_for_usage() {
+        let path =
+            asset_lock_funding_path(Network::Testnet, AssetLockUsage::PlatformAddressFunding, 3);
+        assert!(path.is_generic_asset_lock_funding_for_usage(
+            Network::Testnet,
+            AssetLockUsage::PlatformAddressFunding
+        ));
+        assert!(!path.is_generic_asset_lock_funding_for_usage(
+            Network::Testnet,
+            AssetLockUsage::ShieldedTopUp
+        ));
     }
 
     #[test]

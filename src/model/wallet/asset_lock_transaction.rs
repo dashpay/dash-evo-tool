@@ -1,5 +1,5 @@
 use crate::context::AppContext;
-use crate::model::wallet::Wallet;
+use crate::model::wallet::{AssetLockUsage, Wallet};
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dpp::dashcore::secp256k1::Message;
 use dash_sdk::dpp::dashcore::sighash::SighashCache;
@@ -224,10 +224,9 @@ impl Wallet {
     /// Create an asset lock transaction with a deterministic HD-derived key.
     /// This is used for generic platform address funding (not identity-specific).
     ///
-    /// The key is derived from `m/9'/coin_type'/15'/funding_index'`, making it
-    /// always recoverable from the wallet seed. This prevents permanent fund
-    /// loss when Platform rejects a state transition after the asset lock
-    /// transaction has been broadcast.
+    /// The key is derived from `m/9'/coin_type'/5'/sub_feature'/index'` where
+    /// the sub-feature is determined by the `AssetLockUsage` parameter per
+    /// DIP-9 Feature 5' assignments.
     #[allow(clippy::type_complexity)]
     pub fn generic_asset_lock_transaction(
         &mut self,
@@ -235,6 +234,7 @@ impl Wallet {
         network: Network,
         amount: u64,
         allow_take_fee_from_amount: bool,
+        usage: AssetLockUsage,
         funding_index: u32,
     ) -> Result<
         (
@@ -247,7 +247,7 @@ impl Wallet {
         String,
     > {
         let private_key =
-            self.generic_asset_lock_ecdsa_private_key(app_context, network, funding_index)?;
+            self.generic_asset_lock_ecdsa_private_key(app_context, network, usage, funding_index)?;
         let secp = Secp256k1::new();
         let public_key = private_key.public_key(&secp);
 

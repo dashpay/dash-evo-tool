@@ -1,7 +1,7 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
-use crate::model::wallet::WalletSeedHash;
+use crate::model::wallet::{AssetLockUsage, WalletSeedHash};
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use std::sync::Arc;
@@ -50,7 +50,8 @@ impl AppContext {
 
             let mut wallet = wallet_arc.write()?;
 
-            let funding_index = wallet.next_generic_funding_index(self.network);
+            let usage = AssetLockUsage::PlatformAddressFunding;
+            let funding_index = wallet.next_generic_funding_index(self.network, usage);
 
             // Try to create the asset lock transaction, reload UTXOs if needed
             match wallet.generic_asset_lock_transaction(
@@ -58,6 +59,7 @@ impl AppContext {
                 self.network,
                 asset_lock_amount,
                 allow_take_fee_from_amount,
+                usage,
                 funding_index,
             ) {
                 Ok((tx, private_key, address, _change, utxos)) => (tx, private_key, address, utxos),
@@ -76,6 +78,7 @@ impl AppContext {
                             self.network,
                             asset_lock_amount,
                             allow_take_fee_from_amount,
+                            usage,
                             funding_index,
                         )
                         .map_err(|e| TaskError::AssetLockTransactionBuildFailed { detail: e })?;

@@ -59,6 +59,7 @@ pub struct ConnectionStatus {
     // NOTE: Mutex (not RwLock) is intentional — single reader (tooltip hover),
     // single writer (poll cycle), minimal contention. RwLock overhead not justified.
     spv_last_error: Mutex<Option<String>>,
+    rpc_last_error: Mutex<Option<String>>,
     last_update: Mutex<Instant>,
     spv_connected_peers: AtomicU16,
     /// When SPV first entered an active state (`Starting`/`Syncing`) with zero
@@ -78,6 +79,7 @@ impl ConnectionStatus {
             disable_zmq: AtomicBool::new(false),
             overall_state: AtomicU8::new(OverallConnectionState::Disconnected as u8),
             spv_last_error: Mutex::new(None),
+            rpc_last_error: Mutex::new(None),
             last_update: Mutex::new(Instant::now()),
             spv_connected_peers: AtomicU16::new(0),
             spv_no_peers_since: Mutex::new(None),
@@ -113,6 +115,9 @@ impl ConnectionStatus {
         if let Ok(mut err) = self.spv_last_error.lock() {
             *err = None;
         }
+        if let Ok(mut err) = self.rpc_last_error.lock() {
+            *err = None;
+        }
         // Set last_update to epoch so the next trigger_refresh fires immediately
         *self.last_update.lock().unwrap_or_else(|e| e.into_inner()) =
             Instant::now() - REFRESH_CONNECTED;
@@ -124,6 +129,23 @@ impl ConnectionStatus {
 
     pub fn set_rpc_online(&self, online: bool) {
         self.rpc_online.store(online, Ordering::Relaxed);
+        if online {
+            self.set_rpc_last_error(None);
+        }
+    }
+
+    /// Set the last RPC error message (from chain lock polling).
+    pub fn set_rpc_last_error(&self, error: Option<String>) {
+        let mut err = self
+            .rpc_last_error
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        *err = error;
+    }
+
+    /// Get the last RPC error message, if any.
+    pub fn rpc_last_error(&self) -> Option<String> {
+        self.rpc_last_error.lock().ok().and_then(|g| g.clone())
     }
 
     pub fn zmq_connected(&self) -> bool {
@@ -414,6 +436,7 @@ impl ConnectionStatus {
                     testnet_chainlock,
                     devnet_chainlock,
                     local_chainlock,
+                    rpc_error,
                 )) => {
                     self.update_from_chainlocks(
                         active_network,
@@ -422,6 +445,7 @@ impl ConnectionStatus {
                         devnet_chainlock,
                         local_chainlock,
                     );
+                    self.set_rpc_last_error(rpc_error.clone());
                     self.refresh_state();
                 }
                 BackendTaskSuccessResult::CoreItem(CoreItem::ChainLock(_, network)) => {

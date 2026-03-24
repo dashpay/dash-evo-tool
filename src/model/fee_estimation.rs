@@ -12,6 +12,7 @@
 //! performed by Platform. For accurate fees, use Platform's EstimateStateTransitionFee
 //! endpoint (when available).
 
+use crate::model::amount::Amount;
 use dash_sdk::dpp::version::PlatformVersion;
 
 /// Storage fee constants from FEE_STORAGE_VERSION1 in rs-platform-version.
@@ -637,8 +638,7 @@ pub const CREDITS_PER_DASH: u64 = 100_000_000_000;
 
 /// Format credits as DASH for display
 pub fn format_credits_as_dash(credits: u64) -> String {
-    let dash = credits as f64 / CREDITS_PER_DASH as f64;
-    format!("{:.8} DASH", dash)
+    Amount::dash_from_credits(credits).to_string()
 }
 
 /// Format credits for display (with both credits and DASH)
@@ -684,7 +684,7 @@ mod tests {
         let fee = estimator.calculate_storage_fee(500);
         assert_eq!(fee, 500 * 27_000);
         // 13,500,000 credits = 0.000135 DASH (at 100 billion credits per DASH)
-        assert_eq!(format_credits_as_dash(fee), "0.00013500 DASH");
+        assert_eq!(format_credits_as_dash(fee), "0.000135 DASH");
     }
 
     #[test]
@@ -730,8 +730,8 @@ mod tests {
     #[test]
     fn test_format_credits() {
         // 1 DASH = 100,000,000,000 credits
-        assert_eq!(format_credits_as_dash(100_000_000_000), "1.00000000 DASH");
-        assert_eq!(format_credits_as_dash(100_000_000), "0.00100000 DASH");
-        assert_eq!(format_credits_as_dash(100_000), "0.00000100 DASH");
+        assert_eq!(format_credits_as_dash(100_000_000_000), "1 DASH");
+        assert_eq!(format_credits_as_dash(100_000_000), "0.001 DASH");
+        assert_eq!(format_credits_as_dash(100_000), "0.000001 DASH");
     }
 }

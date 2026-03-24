@@ -196,6 +196,10 @@ response.inner.update(&mut self.amount);
 
 **Anti-patterns:** public mutable fields, eager initialization, not clearing invalid data
 
+### UI Components Catalog
+
+See `src/ui/components/README.md` for a complete reference of available components, their APIs, and usage patterns. **Always consult this file before creating new UI elements** to avoid duplicating existing components.
+
 ## Message Display
 
 User-facing messages (errors, warnings, success, infos) use `MessageBanner` (`src/ui/components/message_banner.rs`). Global banners are rendered centrally by `island_central_panel()` — `AppState::update()` sets them automatically for backend task results. When using `MessageBanner::set_global()`, no guard is needed — it is idempotent and automatically logs at the appropriate level (error/warn/debug). Screens only override `display_message()` for side-effects. See the component's doc comments and `docs/ai-design/2026-02-17-unified-messages/` for details.

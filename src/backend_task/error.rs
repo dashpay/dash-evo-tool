@@ -63,12 +63,10 @@ pub enum TaskError {
 
     /// Could not connect to Dash Core at the configured address.
     #[error(
-        "Could not connect to Dash Core at {url}.{} Check that Dash Core is running and your network settings are correct.",
-        detail.as_ref().map(|d| format!(" {d}")).unwrap_or_default()
+        "Could not connect to Dash Core at {url}. Check that Dash Core is running and your network settings are correct."
     )]
     CoreRpcConnectionFailed {
         url: String,
-        detail: Option<String>,
         #[source]
         source: Option<Box<dashcore_rpc::Error>>,
     },
@@ -1453,7 +1451,6 @@ mod tests {
         );
         let err = TaskError::CoreRpcConnectionFailed {
             url: "127.0.0.1:9998".to_string(),
-            detail: None,
             source: Some(Box::new(dashcore_rpc::Error::JsonRpc(
                 dashcore_rpc::jsonrpc::error::Error::Transport(Box::new(socket_err)),
             ))),

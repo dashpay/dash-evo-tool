@@ -72,7 +72,7 @@ The default `cargo build` produces only the `dash-evo-tool` GUI binary. Optional
 | `headless` | `det-cli` | Combines `cli` + `mcp` for headless HTTP server mode via `det-cli headless`. No GUI required; `MCP_API_KEY` must be set. See [docs/MCP.md](docs/MCP.md). |
 | `testing` | — | Test-only utilities (not for production builds) |
 
-Features are independent — enable any combination.
+`mcp` and `cli` are independent of each other. `headless` depends on both `cli` and `mcp` (it enables both automatically).
 
 
 ## Code quality

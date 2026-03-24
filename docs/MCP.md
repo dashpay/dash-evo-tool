@@ -40,6 +40,8 @@ det-cli headless
 
 Build: `cargo build --features headless`
 
+> **Note:** Headless mode requires building from source with `--features headless`. Pre-built release binaries do not include this feature.
+
 The `headless` feature combines `cli` and `mcp`. The same environment variables (`MCP_API_KEY`, `MCP_LISTEN`) apply.
 
 ## Environment variables

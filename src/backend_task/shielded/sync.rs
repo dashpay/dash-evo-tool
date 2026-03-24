@@ -1,5 +1,6 @@
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::wallet::WalletSeedHash;
 use crate::model::wallet::shielded::{ShieldedNote, ShieldedWalletState};
 use dash_sdk::dpp::dashcore::Network;
@@ -48,6 +49,13 @@ pub async fn sync_notes(
         result.decrypted_notes.len(),
         result.next_start_index,
     );
+
+    if result.next_start_index == 0 && result.total_notes_scanned > 0 {
+        tracing::warn!(
+            "Shielded sync: next_start_index is 0 after scanning {} notes — next sync will rescan everything from the beginning",
+            result.total_notes_scanned,
+        );
+    }
 
     // Append notes to the local commitment tree, skipping positions already present.
     // all_notes is ordered: aligned_start + i == global position of all_notes[i].
@@ -151,6 +159,18 @@ pub async fn sync_notes(
     // positions already in the tree — so correctness is maintained.
     shielded_state.last_synced_index = aligned_start + result.total_notes_scanned;
     shielded_state.recalculate_balance();
+
+    let notes_total = shielded_state.notes.len();
+    let notes_unspent = shielded_state.unspent_notes().len();
+
+    tracing::info!(
+        "Shielded sync finished: {} new note(s), total notes={} (unspent={}), spendable balance: {} ({} credits)",
+        new_note_count,
+        notes_total,
+        notes_unspent,
+        format_credits_as_dash(shielded_state.shielded_balance),
+        shielded_state.shielded_balance,
+    );
 
     Ok((new_note_count, shielded_state.shielded_balance))
 }

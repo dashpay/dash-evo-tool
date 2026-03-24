@@ -209,6 +209,10 @@ impl ScreenLike for ShieldedSendScreen {
             BackendTaskSuccessResult::ShieldedTransferComplete { seed_hash, amount }
                 if seed_hash == self.seed_hash =>
             {
+                tracing::info!(
+                    "ShieldedSendScreen: transfer complete, amount={} credits, queueing post-transfer note sync",
+                    amount,
+                );
                 self.status = Status::Complete;
                 let dash = amount as f64 / CREDITS_PER_DUFF as f64 / 1e8;
                 self.success_message =
@@ -217,6 +221,17 @@ impl ScreenLike for ShieldedSendScreen {
                     Some(BackendTask::ShieldedTask(ShieldedTask::SyncNotes {
                         seed_hash: self.seed_hash,
                     }));
+            }
+            BackendTaskSuccessResult::ShieldedNotesSynced {
+                seed_hash,
+                new_notes,
+                balance,
+            } if seed_hash == self.seed_hash => {
+                tracing::info!(
+                    "ShieldedSendScreen: post-transfer sync complete, new_notes={}, balance={} credits",
+                    new_notes,
+                    balance,
+                );
             }
             _ => {}
         }

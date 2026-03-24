@@ -2861,7 +2861,9 @@ impl ScreenLike for WalletSendScreen {
                 amount,
             } => {
                 self.send_status = SendStatus::Complete(format!(
-                    "Shielded transfer of {} complete!",
+                    "Shielded transfer of {} complete!\n\n\
+                     Your remaining balance will update after the next block is confirmed. \
+                     The recipient's balance will also update after the next block and a wallet sync.",
                     format_credits_as_dash(amount)
                 ));
                 self.pending_refresh_task = Some(crate::backend_task::BackendTask::ShieldedTask(
@@ -2873,7 +2875,8 @@ impl ScreenLike for WalletSendScreen {
                 amount,
             } => {
                 self.send_status = SendStatus::Complete(format!(
-                    "Unshielded {} to platform address!",
+                    "Unshielded {} to platform address!\n\n\
+                     Your remaining balance will update after the next block is confirmed.",
                     format_credits_as_dash(amount)
                 ));
                 self.pending_refresh_task = Some(crate::backend_task::BackendTask::ShieldedTask(

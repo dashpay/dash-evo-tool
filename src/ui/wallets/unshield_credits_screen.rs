@@ -38,6 +38,8 @@ pub struct UnshieldCreditsScreen {
     success_message: Option<String>,
     /// Queued task to dispatch on next frame (e.g., sync notes after successful unshield).
     pending_refresh_task: Option<BackendTask>,
+    /// Whether to show the balance-update-pending info on the success screen.
+    balance_update_pending: bool,
 }
 
 impl UnshieldCreditsScreen {
@@ -62,6 +64,7 @@ impl UnshieldCreditsScreen {
             error_message: None,
             success_message: None,
             pending_refresh_task: None,
+            balance_update_pending: false,
         }
     }
 }
@@ -112,6 +115,12 @@ impl ScreenLike for UnshieldCreditsScreen {
             }
             if let Some(msg) = &self.success_message {
                 ui.colored_label(Color32::DARK_GREEN, msg);
+                if self.balance_update_pending {
+                    ui.add_space(8.0);
+                    ui.label(
+                        "Your remaining balance will update after the next block is confirmed.",
+                    );
+                }
                 ui.add_space(10.0);
                 if ui.button("Done").clicked() {
                     action = AppAction::PopScreen;
@@ -249,6 +258,7 @@ impl ScreenLike for UnshieldCreditsScreen {
                     Some(BackendTask::ShieldedTask(ShieldedTask::SyncNotes {
                         seed_hash: self.seed_hash,
                     }));
+                self.balance_update_pending = true;
             }
             BackendTaskSuccessResult::ShieldedWithdrawalComplete { seed_hash, amount }
                 if seed_hash == self.seed_hash =>
@@ -263,6 +273,7 @@ impl ScreenLike for UnshieldCreditsScreen {
                     Some(BackendTask::ShieldedTask(ShieldedTask::SyncNotes {
                         seed_hash: self.seed_hash,
                     }));
+                self.balance_update_pending = true;
             }
             _ => {}
         }

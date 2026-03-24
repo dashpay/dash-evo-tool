@@ -332,6 +332,21 @@ pub enum TaskError {
         source_error: Box<SdkError>,
     },
 
+    /// The asset lock transaction outpoint does not have enough remaining balance.
+    #[error(
+        "Not enough funds in this transaction to complete the operation. \
+         Available: {available_dash}, required: {required_dash}. \
+         Try using a different funding source or top up first.",
+        available_dash = format_credits_as_dash(*.available),
+        required_dash = format_credits_as_dash(*.required)
+    )]
+    AssetLockOutPointInsufficientBalance {
+        available: u64,
+        required: u64,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
     /// Fetching address information from the platform failed.
     #[error("Could not retrieve address information from the platform. Please retry.")]
     PlatformFetchError {
@@ -685,6 +700,21 @@ pub enum TaskError {
         source: Box<dash_sdk::Error>,
     },
 
+    /// The address used for a shielded transaction does not have enough locked funds.
+    #[error(
+        "Not enough funds locked for this shielded transaction. \
+         Available: {available_dash}, required: {required_dash}. \
+         Try locking more funds first.",
+        available_dash = format_credits_as_dash(*.available),
+        required_dash = format_credits_as_dash(*.required)
+    )]
+    ShieldedAddressInsufficientFunds {
+        available: u64,
+        required: u64,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
     /// The shielded pool does not have enough notes for an outgoing transaction.
     #[error(
         "This type of transaction is not available right now because the network needs more activity. Please try again later."
@@ -837,6 +867,15 @@ pub fn shielded_broadcast_error(e: SdkError) -> TaskError {
             source_error: Box::new(e),
         };
     }
+    if let Some(ConsensusError::StateError(StateError::AddressNotEnoughFundsError(addr_err))) =
+        consensus_error
+    {
+        return TaskError::ShieldedAddressInsufficientFunds {
+            available: addr_err.balance(),
+            required: addr_err.required_balance(),
+            source_error: Box::new(e),
+        };
+    }
     TaskError::ShieldedBroadcastFailed {
         source: Box::new(e),
     }
@@ -948,6 +987,10 @@ impl From<SdkError> for TaskError {
                 available: u64,
                 required: u64,
             },
+            AssetLockOutPointInsufficientBalance {
+                available: u64,
+                required: u64,
+            },
             InsufficientPoolNotes {
                 current_count: u64,
                 minimum_required: u64,
@@ -985,6 +1028,12 @@ impl From<SdkError> for TaskError {
                     ConsensusError::BasicError(
                         BasicError::InvalidInstantAssetLockProofSignatureError(_),
                     ) => Some(ConsensusKind::InvalidInstantLockProof),
+                    ConsensusError::BasicError(
+                        BasicError::IdentityAssetLockTransactionOutPointNotEnoughBalanceError(e),
+                    ) => Some(ConsensusKind::AssetLockOutPointInsufficientBalance {
+                        available: e.credits_left(),
+                        required: e.credits_required(),
+                    }),
                     ConsensusError::StateError(StateError::InsufficientPoolNotesError(e)) => {
                         Some(ConsensusKind::InsufficientPoolNotes {
                             current_count: e.current_count(),
@@ -1029,6 +1078,14 @@ impl From<SdkError> for TaskError {
                 available,
                 required,
             }) => TaskError::IdentityInsufficientBalance {
+                available,
+                required,
+                source_error: boxed,
+            },
+            Some(ConsensusKind::AssetLockOutPointInsufficientBalance {
+                available,
+                required,
+            }) => TaskError::AssetLockOutPointInsufficientBalance {
                 available,
                 required,
                 source_error: boxed,
@@ -1596,6 +1653,146 @@ mod tests {
         assert!(
             !msg.contains("sync") && !msg.contains("anchor"),
             "Expected no ZK jargon in user message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn from_sdk_error_asset_lock_outpoint_insufficient_balance_via_consensus() {
+        use dash_sdk::dpp::consensus::basic::identity::IdentityAssetLockTransactionOutPointNotEnoughBalanceError;
+        use dashcore::hashes::Hash;
+        let consensus = ConsensusError::from(
+            IdentityAssetLockTransactionOutPointNotEnoughBalanceError::new(
+                dashcore::Txid::from_byte_array([0u8; 32]),
+                0,
+                100_000_000,
+                100_000_000,
+                241_000_000,
+            ),
+        );
+        let sdk_err = SdkError::from(consensus);
+        let err = TaskError::from(sdk_err);
+        assert!(
+            matches!(
+                err,
+                TaskError::AssetLockOutPointInsufficientBalance {
+                    available: 100_000_000,
+                    required: 241_000_000,
+                    ..
+                }
+            ),
+            "Expected AssetLockOutPointInsufficientBalance, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn from_sdk_error_asset_lock_outpoint_insufficient_balance_via_broadcast() {
+        use dash_sdk::dpp::consensus::basic::identity::IdentityAssetLockTransactionOutPointNotEnoughBalanceError;
+        use dashcore::hashes::Hash;
+        let consensus = ConsensusError::from(
+            IdentityAssetLockTransactionOutPointNotEnoughBalanceError::new(
+                dashcore::Txid::from_byte_array([0u8; 32]),
+                0,
+                500_000_000,
+                200_000_000,
+                400_000_000,
+            ),
+        );
+        let broadcast_err = dash_sdk::error::StateTransitionBroadcastError {
+            code: 40100,
+            message: "not enough balance".to_string(),
+            cause: Some(consensus),
+        };
+        let sdk_err = SdkError::StateTransitionBroadcastError(broadcast_err);
+        let err = TaskError::from(sdk_err);
+        assert!(
+            matches!(
+                err,
+                TaskError::AssetLockOutPointInsufficientBalance {
+                    available: 200_000_000,
+                    required: 400_000_000,
+                    ..
+                }
+            ),
+            "Expected AssetLockOutPointInsufficientBalance, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn asset_lock_outpoint_insufficient_balance_display_includes_amounts() {
+        use dash_sdk::dpp::consensus::basic::identity::IdentityAssetLockTransactionOutPointNotEnoughBalanceError;
+        use dashcore::hashes::Hash;
+        let consensus = ConsensusError::from(
+            IdentityAssetLockTransactionOutPointNotEnoughBalanceError::new(
+                dashcore::Txid::from_byte_array([0u8; 32]),
+                0,
+                100_000_000_000,
+                100_000_000_000,
+                241_000_000_000,
+            ),
+        );
+        let sdk_err = SdkError::from(consensus);
+        let err = TaskError::from(sdk_err);
+        let msg = err.to_string();
+        assert!(
+            msg.contains("DASH"),
+            "Expected DASH amounts in message, got: {msg}"
+        );
+        assert!(
+            msg.contains("funding source"),
+            "Expected actionable guidance in message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn shielded_broadcast_error_detects_address_not_enough_funds() {
+        use dash_sdk::dpp::address_funds::PlatformAddress;
+        use dash_sdk::dpp::consensus::state::address_funds::AddressNotEnoughFundsError;
+        let address = PlatformAddress::P2pkh([0u8; 20]);
+        let consensus = ConsensusError::from(AddressNotEnoughFundsError::new(
+            address,
+            63_766_741_300,
+            100_000_000_000,
+        ));
+        let broadcast_err = dash_sdk::error::StateTransitionBroadcastError {
+            code: 40300,
+            message: "address not enough funds".to_string(),
+            cause: Some(consensus),
+        };
+        let sdk_err = SdkError::StateTransitionBroadcastError(broadcast_err);
+        let err = shielded_broadcast_error(sdk_err);
+        assert!(
+            matches!(
+                err,
+                TaskError::ShieldedAddressInsufficientFunds {
+                    available: 63_766_741_300,
+                    required: 100_000_000_000,
+                    ..
+                }
+            ),
+            "Expected ShieldedAddressInsufficientFunds, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn shielded_address_insufficient_funds_display_includes_amounts() {
+        use dash_sdk::dpp::address_funds::PlatformAddress;
+        use dash_sdk::dpp::consensus::state::address_funds::AddressNotEnoughFundsError;
+        let address = PlatformAddress::P2pkh([0u8; 20]);
+        let consensus = ConsensusError::from(AddressNotEnoughFundsError::new(
+            address,
+            63_766_741_300,
+            100_000_000_000,
+        ));
+        let sdk_err = SdkError::from(consensus);
+        let err = shielded_broadcast_error(sdk_err);
+        let msg = err.to_string();
+        assert!(
+            msg.contains("DASH"),
+            "Expected DASH amounts in message, got: {msg}"
+        );
+        assert!(
+            msg.contains("locking more funds"),
+            "Expected actionable guidance in message, got: {msg}"
         );
     }
 }

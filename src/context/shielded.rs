@@ -452,19 +452,23 @@ impl AppContext {
             tracing::info!(
                 "Shielded anchor mismatch during {operation_name} — syncing notes and retrying"
             );
-            crate::backend_task::shielded::sync::sync_notes(
+            let sync_result = crate::backend_task::shielded::sync::sync_notes(
                 self,
                 seed_hash,
                 &mut state,
                 self.network,
             )
-            .await
-            .map_err(|e| {
-                tracing::warn!("Note sync after anchor mismatch failed: {e}");
-                e
-            })?;
-            state.last_notes_synced_at = Some(std::time::Instant::now());
-            operation(&state).await
+            .await;
+            match sync_result {
+                Ok(_) => {
+                    state.last_notes_synced_at = Some(std::time::Instant::now());
+                    operation(&state).await
+                }
+                Err(e) => {
+                    tracing::warn!("Note sync after anchor mismatch failed: {e}");
+                    Err(e)
+                }
+            }
         } else {
             result
         };

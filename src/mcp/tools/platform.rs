@@ -81,9 +81,11 @@ impl AsyncTool<DashMcpService> for QueryWithdrawals {
             "completed" | "complete" => PlatformInfoTaskRequestType::RecentlyCompletedWithdrawals,
             "queued" | "" => PlatformInfoTaskRequestType::CurrentWithdrawalsInQueue,
             other => {
-                return Err(McpToolError::InvalidParams(format!(
-                    "Unknown status \"{other}\". Use \"queued\" or \"completed\"."
-                )));
+                return Err(McpToolError::InvalidParam {
+                    message: format!(
+                        "Unknown status \"{other}\". Use \"queued\" or \"completed\"."
+                    ),
+                });
             }
         };
 

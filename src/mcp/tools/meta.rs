@@ -57,9 +57,15 @@ impl AsyncTool<DashMcpService> for DescribeTool {
         service: &DashMcpService,
         param: ToolNameParams,
     ) -> Result<DescribeToolOutput, McpToolError> {
-        let tool_def = service.tool_router.get(&param.name).ok_or_else(|| {
-            McpToolError::InvalidParams(format!("Tool '{}' not found", param.name))
-        })?;
+        // INTENTIONAL(PROJ-003): tool_describe uses meta naming rather than domain_object_action
+        // convention — it's a meta-tool that describes other tools, not a domain operation.
+        let tool_def =
+            service
+                .tool_router
+                .get(&param.name)
+                .ok_or_else(|| McpToolError::InvalidParam {
+                    message: format!("Tool '{}' not found", param.name),
+                })?;
         let value = serde_json::to_value(tool_def)
             .map_err(|e| McpToolError::Internal(format!("serialization: {e}")))?;
         Ok(DescribeToolOutput { tool: value })

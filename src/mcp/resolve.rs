@@ -20,12 +20,33 @@ pub(crate) fn verify_network(
     expected: Option<&str>,
 ) -> Result<(), McpToolError> {
     if let Some(expected) = expected {
-        let actual = network_display_name(app_context.network);
+        let actual = network_display_name(app_context.network());
         if !expected.eq_ignore_ascii_case(actual) {
-            return Err(McpToolError::InvalidParams(format!(
-                "Network mismatch: expected '{expected}' but server is on '{actual}'"
-            )));
+            return Err(McpToolError::NetworkMismatch {
+                expected: expected.to_owned(),
+                actual: actual.to_owned(),
+            });
         }
+    }
+    Ok(())
+}
+
+/// Verify network is provided and matches (mandatory for destructive ops).
+pub(crate) fn require_network(
+    app_context: &AppContext,
+    network: Option<&str>,
+) -> Result<(), McpToolError> {
+    let Some(expected) = network else {
+        return Err(McpToolError::InvalidParam {
+            message: "The 'network' parameter is required for fund-sending operations to prevent accidental cross-network transfers.".to_owned(),
+        });
+    };
+    let actual = network_display_name(app_context.network());
+    if !expected.eq_ignore_ascii_case(actual) {
+        return Err(McpToolError::NetworkMismatch {
+            expected: expected.to_owned(),
+            actual: actual.to_owned(),
+        });
     }
     Ok(())
 }
@@ -56,7 +77,7 @@ pub(crate) fn wallet(ctx: &AppContext, wallet_id: &str) -> Result<WalletSeedHash
         }
     }
 
-    let msg = if available.is_empty() {
+    let detail = if available.is_empty() {
         "No wallets loaded".to_string()
     } else {
         format!(
@@ -65,7 +86,7 @@ pub(crate) fn wallet(ctx: &AppContext, wallet_id: &str) -> Result<WalletSeedHash
         )
     };
 
-    Err(McpToolError::WalletNotFound(msg))
+    Err(McpToolError::WalletNotFound { id: detail })
 }
 
 /// Get the `Arc<RwLock<Wallet>>` for a given seed hash.
@@ -77,7 +98,9 @@ pub(crate) fn wallet_arc(
     wallets
         .get(&seed_hash)
         .cloned()
-        .ok_or_else(|| McpToolError::WalletNotFound("Wallet not found".to_string()))
+        .ok_or_else(|| McpToolError::WalletNotFound {
+            id: "Wallet not found".to_string(),
+        })
 }
 
 /// Wait for SPV to reach fully-synced (green) state.
@@ -90,16 +113,50 @@ pub(crate) async fn ensure_spv_synced(ctx: &AppContext) -> Result<(), McpToolErr
             return Ok(());
         }
         if state == OverallConnectionState::Error {
-            return Err(McpToolError::SpvSyncFailed(
-                "SPV connection failed. Check your network configuration.".to_string(),
-            ));
+            return Err(McpToolError::SpvSyncFailed);
         }
         if tokio::time::Instant::now() >= deadline {
-            return Err(McpToolError::SpvSyncFailed(format!(
-                "SPV sync timed out after {} seconds (state: {state:?}). Check your network.",
+            tracing::warn!(
+                "SPV sync timed out after {} seconds (state: {state:?})",
                 SPV_WAIT_TIMEOUT.as_secs()
-            )));
+            );
+            return Err(McpToolError::SpvSyncFailed);
         }
         tokio::time::sleep(SPV_WAIT_POLL_INTERVAL).await;
     }
+}
+
+/// Validate amount for sending operations.
+pub(crate) fn validate_amount(amount_duffs: u64) -> Result<(), McpToolError> {
+    if amount_duffs == 0 {
+        return Err(McpToolError::InvalidParam {
+            message: "amount_duffs must be greater than zero".to_owned(),
+        });
+    }
+    Ok(())
+}
+
+/// Basic format check for a Dash address.
+///
+/// Validates that the address is non-empty and starts with a character
+/// typical for Dash addresses. This is a quick sanity check, not full
+/// Base58Check validation (which happens at the backend layer).
+pub(crate) fn validate_address(address: &str) -> Result<(), McpToolError> {
+    if address.is_empty() {
+        return Err(McpToolError::InvalidParam {
+            message: "address must not be empty".to_owned(),
+        });
+    }
+    // Dash mainnet: X (P2PKH), 7 (P2SH)
+    // Dash testnet/devnet: y (P2PKH), 8 (P2SH), 9 (P2SH)
+    let first = address.as_bytes()[0];
+    if !matches!(first, b'X' | b'7' | b'y' | b'8' | b'9') {
+        return Err(McpToolError::InvalidParam {
+            message: format!(
+                "address '{address}' does not look like a valid Dash address \
+                 (expected to start with X, 7, y, 8, or 9)"
+            ),
+        });
+    }
+    Ok(())
 }

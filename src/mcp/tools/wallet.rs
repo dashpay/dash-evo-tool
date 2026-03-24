@@ -170,9 +170,8 @@ pub struct SendFundsParams {
     pub address: String,
     /// Amount to send in duffs (1 DASH = 100,000,000 duffs)
     pub amount_duffs: u64,
-    /// Expected network (e.g. "mainnet", "testnet"). If provided, the request fails when it
-    /// doesn't match the server's active network.
-    #[serde(default)]
+    /// Expected network (e.g. "mainnet", "testnet"). **Required** for send operations
+    /// to prevent accidental cross-network transfers.
     pub network: Option<String>,
 }
 
@@ -201,7 +200,8 @@ impl ToolBase for SendCoreFunds {
     fn description() -> Option<Cow<'static, str>> {
         Some(
             "Send DASH from a wallet to an address. \
-             Amount is in duffs (1 DASH = 100,000,000 duffs)."
+             Amount is in duffs (1 DASH = 100,000,000 duffs). \
+             The 'network' parameter is required."
                 .into(),
         )
     }
@@ -226,7 +226,14 @@ impl AsyncTool<DashMcpService> for SendCoreFunds {
             .ctx()
             .await
             .map_err(|e| McpToolError::Internal(e.to_string()))?;
-        resolve::verify_network(&ctx, param.network.as_deref())?;
+
+        // Network is mandatory for destructive operations
+        resolve::require_network(&ctx, param.network.as_deref())?;
+
+        // Validate inputs before dispatching
+        resolve::validate_amount(param.amount_duffs)?;
+        resolve::validate_address(&param.address)?;
+
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
 
         resolve::ensure_spv_synced(&ctx).await?;

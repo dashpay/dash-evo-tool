@@ -60,9 +60,9 @@ impl AsyncTool<DashMcpService> for NetworkTool {
             .ctx()
             .await
             .map_err(|e| McpToolError::Internal(e.to_string()))?;
-        let active = network_display_name(ctx.network).to_owned();
+        let active = network_display_name(ctx.network()).to_owned();
 
-        let config = crate::config::Config::load_from(&ctx.data_dir)
+        let config = crate::config::Config::load_from(ctx.data_dir())
             .map_err(|e| McpToolError::Internal(format!("config load: {e}")))?;
         let available = collect_available(&config)
             .into_iter()

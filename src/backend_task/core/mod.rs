@@ -192,10 +192,12 @@ impl AppContext {
                     Network::Regtest => (&local_result, maybe_local_config),
                     _ => (&mainnet_result, maybe_mainnet_config),
                 };
-                if let Err(e) = active_result
-                    && let Some(task_err) = Self::chain_lock_rpc_error(active_config, e)
-                {
-                    return Err(task_err);
+                if let Err(e) = active_result {
+                    if let Some(task_err) = Self::chain_lock_rpc_error(active_config, e) {
+                        return Err(task_err);
+                    } else {
+                        tracing::warn!(network = ?self.network, error = %e, "Chain lock query failed on active network");
+                    }
                 }
 
                 // Convert each to Option<ChainLock> (flatten Ok(None) and Err into None)

@@ -4,7 +4,7 @@ use rusqlite::{Connection, params};
 use std::fs;
 use std::path::Path;
 
-pub const DEFAULT_DB_VERSION: u16 = 33;
+pub const DEFAULT_DB_VERSION: u16 = 34;
 
 pub const DEFAULT_NETWORK: &str = "mainnet";
 
@@ -51,6 +51,18 @@ impl Database {
 
     fn apply_version_changes(&self, version: u16, tx: &Connection) -> rusqlite::Result<()> {
         match version {
+            34 => {
+                // Commitment trees are now stored in per-wallet SQLite files
+                // under <data_dir>/shielded/<hex>.db. Drop the old global
+                // tables that were shared across all wallets.
+                let _ = tx.execute(
+                    "DROP TABLE IF EXISTS commitment_tree_checkpoint_marks_removed",
+                    [],
+                );
+                let _ = tx.execute("DROP TABLE IF EXISTS commitment_tree_checkpoints", []);
+                let _ = tx.execute("DROP TABLE IF EXISTS commitment_tree_cap", []);
+                let _ = tx.execute("DROP TABLE IF EXISTS commitment_tree_shards", []);
+            }
             // Versions 28-32 were consolidated into v33 to resolve migration
             // numbering conflicts between the zk and v1.0-dev branches.
             // If migrating from < 28, these are no-ops that just bump the version.
@@ -1036,19 +1048,37 @@ impl Database {
 #[cfg(test)]
 mod test {
     use crate::database::initialization::DEFAULT_DB_VERSION;
-    use rusqlite::params;
+    use rusqlite::{Connection, params};
+
+    fn assert_table_not_exists(conn: &Connection, table: &str) {
+        let exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                params![table],
+                |row| row.get::<_, i32>(0).map(|c| c > 0),
+            )
+            .unwrap();
+        assert!(!exists, "table `{table}` should NOT exist");
+    }
+
+    fn assert_v34_schema(conn: &Connection) {
+        assert_table_not_exists(conn, "commitment_tree_shards");
+        assert_table_not_exists(conn, "commitment_tree_cap");
+        assert_table_not_exists(conn, "commitment_tree_checkpoints");
+        assert_table_not_exists(conn, "commitment_tree_checkpoint_marks_removed");
+    }
 
     #[test]
     /// Given a new database file,
     /// when `initialize` is called,
-    /// then it should create the settings table with the default version.
+    /// then it should create the settings table with the default version
+    /// and the commitment tree tables should not exist.
     fn test_initialize_database() {
         let temp_dir = tempfile::tempdir().unwrap();
         let db_file_path = temp_dir.path().join("test_data.db");
         let db = super::Database::new(&db_file_path).unwrap();
         db.initialize(&db_file_path).unwrap();
 
-        // Check if the settings table is created and has the default version
         let conn = db.conn.lock().unwrap();
         let version: u16 = conn
             .query_row(
@@ -1058,6 +1088,76 @@ mod test {
             )
             .unwrap();
         assert_eq!(version, super::DEFAULT_DB_VERSION);
+        assert_v34_schema(&conn);
+    }
+
+    #[test]
+    /// Given a database at version 33 with commitment tree tables,
+    /// when migration 34 runs,
+    /// then those tables are dropped.
+    fn test_migration_v34_drops_commitment_tree_tables() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_file_path = temp_dir.path().join("test_data.db");
+        let db = super::Database::new(&db_file_path).unwrap();
+
+        db.create_tables().unwrap();
+        db.set_db_version(33).unwrap();
+
+        // Simulate old global commitment tree tables
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "CREATE TABLE commitment_tree_shards (id INTEGER PRIMARY KEY)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "CREATE TABLE commitment_tree_cap (id INTEGER PRIMARY KEY)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "CREATE TABLE commitment_tree_checkpoints (id INTEGER PRIMARY KEY)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "CREATE TABLE commitment_tree_checkpoint_marks_removed (id INTEGER PRIMARY KEY)",
+                [],
+            )
+            .unwrap();
+        }
+
+        let result = db.try_perform_migration(33, DEFAULT_DB_VERSION);
+        assert!(result.is_ok(), "migration should succeed: {result:?}");
+
+        let conn = db.conn.lock().unwrap();
+        let version: u16 = conn
+            .query_row(
+                "SELECT database_version FROM settings WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, DEFAULT_DB_VERSION);
+        assert_v34_schema(&conn);
+    }
+
+    #[test]
+    /// Migration 34 is idempotent: runs fine even when the tables never existed.
+    fn test_migration_v34_idempotent_without_tables() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_file_path = temp_dir.path().join("test_data.db");
+        let db = super::Database::new(&db_file_path).unwrap();
+
+        db.create_tables().unwrap();
+        db.set_db_version(33).unwrap();
+
+        let result = db.try_perform_migration(33, DEFAULT_DB_VERSION);
+        assert!(result.is_ok(), "migration should succeed: {result:?}");
+
+        let conn = db.conn.lock().unwrap();
+        assert_v34_schema(&conn);
     }
 
     // Given a database with a missing `asset_lock_transaction` table,

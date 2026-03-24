@@ -74,6 +74,38 @@ impl ShieldedTabView {
         self.app_context = app_context.clone();
     }
 
+    /// Drain pending backend tasks and trigger auto-initialization without
+    /// rendering any UI. Call this every frame so the init/sync chain runs
+    /// even when the Shielded tab is not the active tab.
+    pub fn tick(&mut self) -> AppAction {
+        let mut action = self
+            .pending_task
+            .take()
+            .map(AppAction::BackendTask)
+            .unwrap_or(AppAction::None);
+
+        // Auto-initialize if the wallet is already open (mirrors the check in ui())
+        if !self.is_initialized && !self.initializing {
+            let wallet_arc = {
+                let wallets = self.app_context.wallets.read().unwrap();
+                wallets.get(&self.seed_hash).cloned()
+            };
+            if let Some(wallet) = &wallet_arc
+                && !wallet_needs_unlock(wallet)
+            {
+                let _ = try_open_wallet_no_password(wallet);
+                self.initializing = true;
+                action |= AppAction::BackendTask(BackendTask::ShieldedTask(
+                    ShieldedTask::InitializeShieldedWallet {
+                        seed_hash: self.seed_hash,
+                    },
+                ));
+            }
+        }
+
+        action
+    }
+
     /// Handle backend task results for shielded operations.
     pub fn handle_result(
         &mut self,
@@ -176,11 +208,7 @@ impl ShieldedTabView {
     /// Render the shielded tab content.
     pub fn ui(&mut self, ui: &mut Ui) -> AppAction {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
-        let mut action = self
-            .pending_task
-            .take()
-            .map(AppAction::BackendTask)
-            .unwrap_or(AppAction::None);
+        let mut action = self.tick();
 
         // Messages
         if let Some(err) = &self.error_message.clone() {
@@ -216,25 +244,6 @@ impl ShieldedTabView {
         }
 
         // --- Not yet initialized ---
-        // Auto-initialize if the wallet is already open (no user click needed)
-        if !self.is_initialized && !self.initializing {
-            let wallet_arc = {
-                let wallets = self.app_context.wallets.read().unwrap();
-                wallets.get(&self.seed_hash).cloned()
-            };
-            if let Some(wallet) = &wallet_arc
-                && !wallet_needs_unlock(wallet)
-            {
-                let _ = try_open_wallet_no_password(wallet);
-                self.initializing = true;
-                action |= AppAction::BackendTask(BackendTask::ShieldedTask(
-                    ShieldedTask::InitializeShieldedWallet {
-                        seed_hash: self.seed_hash,
-                    },
-                ));
-            }
-        }
-
         if !self.is_initialized {
             if self.initializing {
                 ui.horizontal(|ui| {

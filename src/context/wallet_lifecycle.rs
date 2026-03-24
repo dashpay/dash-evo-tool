@@ -150,6 +150,21 @@ impl AppContext {
             self.queue_spv_wallet_load(seed_hash, seed_bytes);
             // Note: Platform address sync is not done here.
             // Core UTXO refresh is handled at startup in bootstrap_loaded_wallets.
+
+            // Eagerly initialize shielded wallet state so that the cached
+            // balance (from persisted notes) is available to all UI screens
+            // immediately, without requiring the user to visit the Shielded tab.
+            match self.initialize_shielded_wallet(seed_hash) {
+                Ok(_) => tracing::trace!(
+                    seed = %hex::encode(seed_hash),
+                    "Shielded wallet state initialized on unlock"
+                ),
+                Err(e) => tracing::debug!(
+                    seed = %hex::encode(seed_hash),
+                    error = %e,
+                    "Shielded wallet init skipped on unlock"
+                ),
+            }
         }
     }
 

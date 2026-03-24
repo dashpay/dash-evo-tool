@@ -150,7 +150,7 @@ impl AppContext {
     }
 
     /// Initialize shielded wallet state by deriving ZIP32 keys from the wallet seed.
-    fn initialize_shielded_wallet(
+    pub(crate) fn initialize_shielded_wallet(
         self: &Arc<Self>,
         seed_hash: WalletSeedHash,
     ) -> Result<BackendTaskSuccessResult, TaskError> {

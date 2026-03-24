@@ -222,6 +222,13 @@ impl WalletsBalancesScreen {
             .and_then(|hash| app_context.db.get_platform_sync_info(&hash).ok())
             .filter(|(ts, _)| *ts > 0);
 
+        // Eagerly create the ShieldedTabView so the init/sync chain starts
+        // as soon as the wallet screen is constructed.
+        let shielded_tab_view = selected_wallet
+            .as_ref()
+            .and_then(|w| w.read().ok().map(|g| g.seed_hash()))
+            .map(|hash| ShieldedTabView::new(app_context, hash));
+
         Self {
             selected_wallet,
             selected_single_key_wallet,
@@ -252,7 +259,8 @@ impl WalletsBalancesScreen {
             utxo_page: 0,
             refresh_mode: RefreshMode::default(),
             selected_account_tab: AccountTab::default(),
-            shielded_tab_view: None,
+            shielded_tab_view,
+            balance_breakdown_expanded: app_context.is_developer_mode(),
             platform_sync_info,
             core_wallet_dialog: None,
             pending_core_wallet_seed_hash: None,
@@ -362,8 +370,12 @@ impl WalletsBalancesScreen {
         self.selected_single_key_wallet = None;
         self.selected_account = None;
         self.selected_account_tab = AccountTab::default();
-        self.shielded_tab_view = None;
         self.cached_tx_indices = None;
+
+        // Eagerly create the ShieldedTabView so the init/sync chain starts
+        // immediately on wallet switch, not only when the user clicks the tab.
+        self.shielded_tab_view =
+            seed_hash.map(|hash| ShieldedTabView::new(&self.app_context, hash));
 
         if let Some(hash) = seed_hash {
             self.persist_selected_wallet_hash(Some(hash));
@@ -2235,6 +2247,14 @@ impl ScreenLike for WalletsBalancesScreen {
             AppAction::None
         };
 
+        // Tick the shielded tab view every frame so the init/sync chain
+        // runs even when the Shielded tab is not the active tab.
+        let shielded_tick_action = self
+            .shielded_tab_view
+            .as_mut()
+            .map(|v| v.tick())
+            .unwrap_or(AppAction::None);
+
         let mut right_buttons = vec![
             (
                 "Import Wallet",
@@ -2702,6 +2722,7 @@ impl ScreenLike for WalletsBalancesScreen {
         // Combine with pending actions
         action |= pending_refresh_action;
         action |= pending_switch_action;
+        action |= shielded_tick_action;
         action
     }
 

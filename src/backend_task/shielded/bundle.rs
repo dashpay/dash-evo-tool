@@ -468,7 +468,7 @@ pub async fn shield_from_asset_lock(
             Err(_) => {
                 wallet
                     .reload_utxos(app_context.as_ref())
-                    .map_err(shielded_build_error)?;
+                    .map_err(|detail| TaskError::WalletUtxoReloadFailed { detail })?;
 
                 let (tx, private_key, address, _change, utxos) = wallet
                     .generic_asset_lock_transaction(
@@ -527,7 +527,7 @@ pub async fn shield_from_asset_lock(
 
         wallet
             .recalculate_affected_address_balances(&used_utxos, app_context.as_ref())
-            .map_err(shielded_build_error)?;
+            .map_err(|detail| TaskError::WalletBalanceRecalculationFailed { detail })?;
     }
 
     // Step 5: Wait for asset lock proof (InstantLock or ChainLock) with timeout

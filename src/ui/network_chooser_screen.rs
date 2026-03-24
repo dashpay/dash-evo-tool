@@ -121,15 +121,18 @@ impl NetworkChooserScreen {
         current_network: Network,
         overwrite_dash_conf: bool,
     ) -> Self {
-        let mut dashmate_password_input = PasswordInput::new().with_hint_text("Core RPC password");
-        if let Ok(config) = Config::load()
+        let mut dashmate_password_input = PasswordInput::new()
+            .with_hint_text("Core RPC password")
+            .with_char_limit(40)
+            .with_desired_width(280.0);
+        if let Ok(config) = Config::load_from(&mainnet_app_context.data_dir)
             && let Some(local_config) = config.config_for_network(Network::Regtest)
         {
             dashmate_password_input.set_text(local_config.core_rpc_password.clone());
         }
 
         let current_context = match current_network {
-            Network::Dash => mainnet_app_context,
+            Network::Mainnet => mainnet_app_context,
             Network::Testnet => testnet_app_context.unwrap_or(mainnet_app_context),
             Network::Devnet => devnet_app_context.unwrap_or(mainnet_app_context),
             Network::Regtest => local_app_context.unwrap_or(mainnet_app_context),
@@ -157,7 +160,7 @@ impl NetworkChooserScreen {
             .unwrap_or(true);
 
         let mut backend_modes = HashMap::new();
-        backend_modes.insert(Network::Dash, mainnet_app_context.core_backend_mode());
+        backend_modes.insert(Network::Mainnet, mainnet_app_context.core_backend_mode());
         backend_modes.insert(
             Network::Testnet,
             testnet_app_context
@@ -210,7 +213,7 @@ impl NetworkChooserScreen {
 
     pub fn context_for_network(&self, network: Network) -> &Arc<AppContext> {
         match network {
-            Network::Dash => &self.mainnet_app_context,
+            Network::Mainnet => &self.mainnet_app_context,
             Network::Testnet if self.testnet_app_context.is_some() => {
                 self.testnet_app_context.as_ref().unwrap()
             }
@@ -354,7 +357,7 @@ impl NetworkChooserScreen {
                     };
 
                     let network_text = match self.current_network {
-                        Network::Dash => "Mainnet",
+                        Network::Mainnet => "Mainnet",
                         Network::Testnet => "Testnet",
                         Network::Devnet => "Devnet",
                         Network::Regtest => "Local",
@@ -371,12 +374,12 @@ impl NetworkChooserScreen {
                                 if ui
                                     .selectable_value(
                                         &mut self.current_network,
-                                        Network::Dash,
+                                        Network::Mainnet,
                                         "Mainnet",
                                     )
                                     .clicked()
                                 {
-                                    app_action = AppAction::SwitchNetwork(Network::Dash);
+                                    app_action = AppAction::SwitchNetwork(Network::Mainnet);
                                 }
                                 if self.testnet_app_context.is_some()
                                     && ui
@@ -467,7 +470,8 @@ impl NetworkChooserScreen {
                     }
 
                     if (save_clicked || auto_update_succeeded)
-                        && let Ok(mut config) = Config::load()
+                        && let Ok(mut config) =
+                            Config::load_from(&self.mainnet_app_context.data_dir)
                         && let Some(local_cfg) = config.config_for_network(Network::Regtest).clone()
                     {
                         let updated_local_config = local_cfg.update_core_rpc_password(
@@ -477,7 +481,7 @@ impl NetworkChooserScreen {
                             Network::Regtest,
                             updated_local_config.clone(),
                         );
-                        if let Err(e) = config.save() {
+                        if let Err(e) = config.save(&self.mainnet_app_context.data_dir) {
                             tracing::error!("Failed to save config to .env: {e}");
                         }
 
@@ -519,13 +523,14 @@ impl NetworkChooserScreen {
                 .entry(self.current_network)
                 .or_insert(CoreBackendMode::Rpc);
 
-            let ctx = self.current_app_context();
+            let ctx = self.current_app_context().clone();
             let status = ctx.connection_status();
             let disable_zmq = status.disable_zmq();
             let rpc_online = status.rpc_online();
             let zmq_connected = status.zmq_connected();
             let spv_status = status.spv_status();
             let spv_connected = ConnectionStatus::spv_connected(spv_status);
+            let spv_error_detail = status.spv_last_error();
             let snapshot = if current_backend_mode == CoreBackendMode::Spv {
                 Some(ctx.spv_manager().status().clone())
             } else {
@@ -737,7 +742,15 @@ impl NetworkChooserScreen {
                         } else {
                             DashColors::ERROR
                         };
-                        ui.colored_label(color, spv_status.to_string());
+                        let label = if spv_status == SpvStatus::Error {
+                            spv_error_detail
+                                .as_ref()
+                                .map(|e| format!("Error: {e}"))
+                                .unwrap_or_else(|| "Error".to_string())
+                        } else {
+                            spv_status.to_string()
+                        };
+                        ui.colored_label(color, label);
                     });
 
                     ui.horizontal(|ui| {
@@ -1052,9 +1065,9 @@ impl NetworkChooserScreen {
                         }
 
                         // Persist to config file (non-blocking for UI)
-                        if let Ok(mut config) = Config::load() {
+                        if let Ok(mut config) = Config::load_from(&self.mainnet_app_context.data_dir) {
                             config.developer_mode = Some(self.developer_mode);
-                            if let Err(e) = config.save() {
+                            if let Err(e) = config.save(&self.mainnet_app_context.data_dir) {
                                 tracing::error!("Failed to save config: {e}");
                             }
                         }
@@ -1067,7 +1080,7 @@ impl NetworkChooserScreen {
                             if self.mainnet_app_context.core_backend_mode() == CoreBackendMode::Spv {
                                 self.mainnet_app_context.set_core_backend_mode(CoreBackendMode::Rpc);
                             }
-                            self.backend_modes.insert(Network::Dash, CoreBackendMode::Rpc);
+                            self.backend_modes.insert(Network::Mainnet, CoreBackendMode::Rpc);
 
                             if let Some(ref ctx) = self.testnet_app_context {
                                 ctx.stop_spv();
@@ -1756,7 +1769,7 @@ impl NetworkChooserScreen {
 
     fn current_network_label(&self) -> &'static str {
         match self.current_network {
-            Network::Dash => "Mainnet",
+            Network::Mainnet => "Mainnet",
             Network::Testnet => "Testnet",
             Network::Devnet => "Devnet",
             Network::Regtest => "Local",
@@ -1933,7 +1946,7 @@ impl NetworkChooserScreen {
 
     fn has_context_for(&self, network: Network) -> bool {
         match network {
-            Network::Dash => true,
+            Network::Mainnet => true,
             Network::Testnet => self.testnet_app_context.is_some(),
             Network::Devnet => self.devnet_app_context.is_some(),
             Network::Regtest => self.local_app_context.is_some(),
@@ -2034,8 +2047,10 @@ impl ScreenLike for NetworkChooserScreen {
             self.theme_preference = settings.theme_mode;
         }
 
-        self.backend_modes
-            .insert(Network::Dash, self.mainnet_app_context.core_backend_mode());
+        self.backend_modes.insert(
+            Network::Mainnet,
+            self.mainnet_app_context.core_backend_mode(),
+        );
         if let Some(ctx) = &self.testnet_app_context {
             self.backend_modes
                 .insert(Network::Testnet, ctx.core_backend_mode());

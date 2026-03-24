@@ -2,7 +2,7 @@ use crate::database::{CorruptedBlobError, Database};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::{
     AddressInfo, ClosedKeyItem, DerivationPathReference, DerivationPathType, OpenWalletSeed,
-    Wallet, WalletSeed, WalletTransaction,
+    TransactionStatus, Wallet, WalletSeed, WalletTransaction,
 };
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
@@ -26,13 +26,32 @@ use std::str::FromStr;
 impl Database {
     /// Insert a new wallet into the wallet table
     pub fn store_wallet(&self, wallet: &Wallet, network: &Network) -> rusqlite::Result<()> {
+        self.store_wallet_with_addresses(wallet, network, &[])
+    }
+
+    /// Atomically persist a wallet row and its known addresses in a single
+    /// database transaction. Prevents partial persistence where the wallet
+    /// is stored but addresses are lost on failure.
+    pub fn store_wallet_with_addresses(
+        &self,
+        wallet: &Wallet,
+        network: &Network,
+        addresses: &[(
+            &Address,
+            &DerivationPath,
+            DerivationPathReference,
+            DerivationPathType,
+        )],
+    ) -> rusqlite::Result<()> {
         let network_str = network.to_string();
 
-        // Serialize the extended public keys
         let master_ecdsa_bip44_account_0_epk_bytes =
             wallet.master_bip44_ecdsa_extended_public_key.encode();
 
-        self.execute(
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+
+        tx.execute(
             "INSERT INTO wallet (seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, alias, is_main, uses_password, password_hint, network, confirmed_balance, unconfirmed_balance, total_balance, core_wallet_name)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
@@ -52,7 +71,25 @@ impl Database {
                 wallet.core_wallet_name.as_deref(),
             ],
         )?;
-        Ok(())
+
+        let seed_hash = wallet.seed_hash();
+        for (address, derivation_path, path_reference, path_type) in addresses {
+            let checked_addr = check_address_for_network(address.as_unchecked().clone(), network)?;
+            tx.execute(
+                "INSERT OR IGNORE INTO wallet_addresses
+                 (seed_hash, address, derivation_path, path_reference, path_type, balance)
+                 VALUES (?, ?, ?, ?, ?, NULL)",
+                params![
+                    seed_hash,
+                    checked_addr.to_string(),
+                    derivation_path.to_string(),
+                    *path_reference as u32,
+                    path_type.bits(),
+                ],
+            )?;
+        }
+
+        tx.commit()
     }
 
     /// Update the Dash Core wallet name for an HD wallet.
@@ -351,6 +388,7 @@ impl Database {
                 label TEXT,
                 is_ours INTEGER NOT NULL,
                 raw_transaction BLOB NOT NULL,
+                status INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (seed_hash, txid, network),
                 FOREIGN KEY (seed_hash) REFERENCES wallet(seed_hash) ON DELETE CASCADE
             )",
@@ -367,6 +405,11 @@ impl Database {
     }
 
     /// Replace all persisted transactions for a wallet+network with the provided set.
+    ///
+    /// Uses `INSERT OR REPLACE` so that when upstream returns the same txid
+    /// twice (e.g. as mempool + confirmed), the last-written version wins.
+    /// Callers should sort confirmed entries after unconfirmed to ensure the
+    /// confirmed version takes precedence.
     pub fn replace_wallet_transactions(
         &self,
         seed_hash: &[u8; 32],
@@ -389,7 +432,7 @@ impl Database {
 
         {
             let mut insert_stmt = tx.prepare(
-                "INSERT INTO wallet_transactions (
+                "INSERT OR REPLACE INTO wallet_transactions (
                     seed_hash,
                     txid,
                     network,
@@ -400,8 +443,9 @@ impl Database {
                     fee,
                     label,
                     is_ours,
-                    raw_transaction
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    raw_transaction,
+                    status
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             )?;
 
             for transaction in transactions {
@@ -423,6 +467,7 @@ impl Database {
                     transaction.label.as_deref(),
                     transaction.is_ours,
                     tx_bytes,
+                    transaction.status as u8,
                 ])?;
             }
         }
@@ -660,12 +705,6 @@ impl Database {
                         .address_total_received
                         .insert(canonical_address.clone(), total_received);
                 }
-                // Update total received if available.
-                if let Some(total_received) = total_received {
-                    wallet
-                        .address_total_received
-                        .insert(address.clone(), total_received);
-                }
 
                 // Add the address to the `known_addresses` map.
                 wallet
@@ -828,7 +867,7 @@ impl Database {
 
         tracing::trace!("step 7: load wallet transactions for each wallet");
         let mut tx_stmt = conn.prepare(
-            "SELECT seed_hash, txid, timestamp, height, block_hash, net_amount, fee, label, is_ours, raw_transaction
+            "SELECT seed_hash, txid, timestamp, height, block_hash, net_amount, fee, label, is_ours, raw_transaction, status
              FROM wallet_transactions WHERE network = ? ORDER BY timestamp DESC",
         )?;
 
@@ -843,6 +882,7 @@ impl Database {
             let label: Option<String> = row.get(7)?;
             let is_ours: bool = row.get(8)?;
             let raw_transaction: Vec<u8> = row.get(9)?;
+            let status_u8: u8 = row.get(10)?;
 
             let seed_hash_array: [u8; 32] = seed_hash.try_into().map_err(|_| {
                 rusqlite::Error::InvalidParameterName("Seed hash should be 32 bytes".to_string())
@@ -879,6 +919,7 @@ impl Database {
                     fee,
                     label,
                     is_ours,
+                    status: TransactionStatus::from_u8(status_u8),
                 },
             ))
         })?;

@@ -117,7 +117,7 @@ fn format_extended_epoch_info(
         };
 
     let epoch_estimated_time = match network {
-        Network::Dash => 788_400_000,
+        Network::Mainnet => 788_400_000,
         Network::Testnet => 3_600_000,
         Network::Devnet => 3_600_000,
         Network::Regtest => 1_200_000,

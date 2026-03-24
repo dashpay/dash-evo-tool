@@ -28,11 +28,15 @@ cargo test --test kittest --all-features           # UI integration tests (egui_
 cargo test --test e2e --all-features               # End-to-end tests
 ```
 
+### Backend E2E tests (network-dependent)
+
+Tests that exercise backend tasks against a live Dash testnet via SPV (no GUI). Marked `#[ignore]` — require network access, a funded wallet, and serial execution. See `tests/backend-e2e/README.md` for run commands, architecture, and writing guide.
 
 Test locations:
 - Unit tests: inline in source files (`#[test]`)
 - UI integration: `tests/kittest/`
 - E2E: `tests/e2e/`
+- Backend E2E: `tests/backend-e2e/` (network-dependent, `#[ignore]`)
 
 Always run `cargo clippy` and `cargo +nightly fmt` when finalizing your work.
 
@@ -160,6 +164,12 @@ Screens hold `Arc<AppContext>` and manage their own UI state.
 - Cached system contracts (DPNS, DashPay, withdrawals, tokens, keyword search)
 - `connection_status`, `developer_mode`, `fee_multiplier_permille`
 - Per-network instances (mainnet always present, others created on demand)
+
+### ConnectionStatus (single source of truth for connection health)
+
+`ConnectionStatus` (`src/context/connection_status.rs`) is the **single source of truth** for all high-level connection health state — RPC, ZMQ, SPV, and DAPI. For connection health (status, peer counts, errors, overall state), always read from `ConnectionStatus`, not directly from `SpvManager` or other subsystems.
+
+SPV status is **push-based**: `SpvManager` event handlers write directly to `ConnectionStatus` atomics (status, peer count, errors) as events arrive. The UI frame loop calls `refresh_state()` to recompute `overall_state` from these atomics, but does not poll SPV for health. This means `ConnectionStatus` is up-to-date in both GUI and headless/test contexts. Detailed SPV sync progress (heights, phase summaries used by tooltips) may still be read directly from `SpvManager.status()` until that progress reporting is migrated into `ConnectionStatus`.
 
 ## UI Component Pattern
 

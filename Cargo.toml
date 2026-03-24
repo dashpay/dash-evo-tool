@@ -18,7 +18,7 @@ qrcode = "0.14.1"
 nix = { version = "0.31.1", features = ["signal"] }
 eframe = { version = "0.33.3", features = ["persistence", "wgpu"] }
 base64 = "0.22.1"
-dash-sdk = { git = "https://github.com/dashpay/platform", branch = "v3.1-dev", features = [
+dash-sdk = { git = "https://github.com/dashpay/platform", branch = "feat/mempool-support", features = [
     "core_key_wallet",
     "core_key_wallet_manager",
     "core_bincode",
@@ -54,7 +54,7 @@ arboard = { version = "3.6.0", default-features = false, features = [
     "windows-sys",
 ] }
 directories = "6.0.0"
-rusqlite = { version = "0.38.0", features = ["functions", "fallible_uint"] }
+rusqlite = { version = "0.38.0", features = ["bundled", "functions", "fallible_uint"] }
 dark-light = "2.0.0"
 image = { version = "0.25.6", default-features = false, features = [
     "png",
@@ -94,6 +94,7 @@ testing = []
 
 [dev-dependencies]
 egui_kittest = { version = "0.33.3", features = ["eframe"] }
+tokio-shared-rt = "=0.1.0"
 
 [build-dependencies]
 winres = "0.1"
@@ -111,3 +112,4 @@ check-cfg = ["cfg(tokio_unstable)", "cfg(feature, values(\"testing\"))"]
 
 [lints.clippy]
 uninlined_format_args = "allow"
+

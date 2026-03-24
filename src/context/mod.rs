@@ -29,6 +29,8 @@ use crossbeam_channel::{Receiver, Sender};
 use dash_sdk::Sdk;
 use dash_sdk::dashcore_rpc::{Auth, Client, RpcApi};
 use dash_sdk::dpp::dashcore::{Address, Network, Txid};
+#[cfg(any(test, feature = "testing"))]
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::prelude::AssetLockProof;
 use dash_sdk::dpp::state_transition::StateTransitionSigningOptions;
 use dash_sdk::dpp::state_transition::batch_transition::methods::StateTransitionCreationOptions;
@@ -36,8 +38,11 @@ use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::dpp::version::v11::PLATFORM_V11;
 use dash_sdk::platform::DataContract;
+#[cfg(any(test, feature = "testing"))]
+use dash_sdk::platform::Identifier;
 use egui::Context;
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
 
@@ -53,6 +58,7 @@ pub(crate) type SettingsCacheGuard<'a> = RwLockWriteGuard<'a, Option<Settings>>;
 
 #[derive(Debug)]
 pub struct AppContext {
+    pub(crate) data_dir: PathBuf,
     pub(crate) network: Network,
     developer_mode: AtomicBool,
     pub(crate) db: Arc<Database>,
@@ -113,6 +119,7 @@ pub struct AppContext {
 
 impl AppContext {
     pub fn new(
+        data_dir: PathBuf,
         network: Network,
         db: Arc<Database>,
         password_info: Option<PasswordInfo>,
@@ -120,7 +127,7 @@ impl AppContext {
         connection_status: Arc<ConnectionStatus>,
         egui_ctx: egui::Context,
     ) -> Option<Arc<Self>> {
-        let config = match Config::load() {
+        let config = match Config::load_from(&data_dir) {
             Ok(config) => config,
             Err(e) => {
                 tracing::error!("Failed to load config: {e}");
@@ -255,8 +262,12 @@ impl AppContext {
             false => AtomicBool::new(true), // Animations are enabled by default
         };
 
-        let spv_manager = match SpvManager::new(network, Arc::clone(&config_lock), subtasks.clone())
-        {
+        let spv_manager = match SpvManager::new(
+            &data_dir,
+            network,
+            Arc::clone(&config_lock),
+            subtasks.clone(),
+        ) {
             Ok(manager) => manager,
             Err(err) => {
                 tracing::error!(?err, ?network, "Failed to initialize SPV manager");
@@ -267,6 +278,9 @@ impl AppContext {
         // Load the use_local_spv_node setting and apply to SPV manager
         let use_local_spv_node = db.get_use_local_spv_node().unwrap_or(false);
         spv_manager.set_use_local_node(use_local_spv_node);
+
+        // Wire up push-based SPV status updates to ConnectionStatus
+        spv_manager.set_connection_status(Arc::clone(&connection_status));
 
         // Load the core backend mode from settings, defaulting to RPC if not set
         let saved_core_backend_mode = db
@@ -293,6 +307,7 @@ impl AppContext {
             saved_single_key_hash.filter(|h| single_key_wallets.contains_key(h));
 
         let app_context = AppContext {
+            data_dir,
             network,
             developer_mode: AtomicBool::new(developer_mode_enabled),
             db,
@@ -703,11 +718,30 @@ impl AppContext {
     }
 }
 
+/// Test-only accessors for fields that are normally `pub(crate)`.
+#[cfg(any(test, feature = "testing"))]
+impl AppContext {
+    /// Returns a reference to the database.
+    pub fn db(&self) -> &Arc<Database> {
+        &self.db
+    }
+
+    /// Returns a reference to the wallets map.
+    pub fn wallets(&self) -> &RwLock<BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>> {
+        &self.wallets
+    }
+
+    /// Returns the DashPay contract identifier.
+    pub fn dashpay_contract_id(&self) -> Identifier {
+        self.dashpay_contract.id()
+    }
+}
+
 /// Returns the default platform version for the given network.
 pub(crate) const fn default_platform_version(network: &Network) -> &'static PlatformVersion {
     // TODO: Ideally use sdk.load().version() but this is a free function with no sdk access
     match network {
-        Network::Dash => &PLATFORM_V11,
+        Network::Mainnet => &PLATFORM_V11,
         Network::Testnet => &PLATFORM_V11,
         Network::Devnet => &PLATFORM_V11,
         Network::Regtest => &PLATFORM_V11,

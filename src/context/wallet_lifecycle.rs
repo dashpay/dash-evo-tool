@@ -1,9 +1,10 @@
 use super::AppContext;
 use super::get_transaction_info;
 use crate::backend_task::error::TaskError;
+use crate::database::is_unique_constraint_violation;
 use crate::model::wallet::{
     AddressInfo as WalletAddressInfo, DerivationPathHelpers, DerivationPathReference,
-    DerivationPathType, Wallet, WalletSeedHash, WalletTransaction,
+    DerivationPathType, TransactionStatus, Wallet, WalletSeedHash, WalletTransaction,
 };
 use crate::spv::{AssetLockFinalityEvent, CoreBackendMode, SpvManager};
 use dash_sdk::dpp::dashcore::hashes::Hash;
@@ -81,6 +82,58 @@ impl AppContext {
             .set_spv_status(self.spv_manager.status().status);
         self.connection_status.refresh_state();
         Ok(())
+    }
+
+    /// Persist a wallet to the database, register it in the in-memory map,
+    /// save its known addresses, and load it into SPV if applicable.
+    ///
+    /// This is the single entry point for adding a wallet to the system.
+    /// UI screens should call this after constructing a [`Wallet`] via
+    /// [`Wallet::new_from_seed()`].
+    pub fn register_wallet(
+        self: &Arc<Self>,
+        wallet: Wallet,
+    ) -> Result<(WalletSeedHash, Arc<RwLock<Wallet>>), TaskError> {
+        // 1. Persist wallet and known addresses atomically
+        let addresses: Vec<_> = wallet
+            .known_addresses
+            .iter()
+            .map(|(address, path)| {
+                (
+                    address,
+                    path,
+                    DerivationPathReference::BIP44,
+                    DerivationPathType::CLEAR_FUNDS,
+                )
+            })
+            .collect();
+
+        self.db
+            .store_wallet_with_addresses(&wallet, &self.network, &addresses)
+            .map_err(|e| {
+                if is_unique_constraint_violation(&e) {
+                    TaskError::WalletAlreadyImported
+                } else {
+                    TaskError::Database { source: e }
+                }
+            })?;
+
+        let seed_hash = wallet.seed_hash();
+
+        // 2. Register in-memory
+        let wallet_arc = Arc::new(RwLock::new(wallet));
+        let mut wallets = self.wallets.write()?;
+        wallets.insert(seed_hash, wallet_arc.clone());
+        self.has_wallet.store(true, Ordering::Relaxed);
+        drop(wallets);
+
+        // 3. Bootstrap any additional addresses and load into SPV
+        self.bootstrap_wallet_addresses(&wallet_arc);
+        if self.core_backend_mode() == CoreBackendMode::Spv {
+            self.handle_wallet_unlocked(&wallet_arc);
+        }
+
+        Ok((seed_hash, wallet_arc))
     }
 
     pub fn bootstrap_wallet_addresses(&self, wallet: &Arc<RwLock<Wallet>>) {
@@ -324,11 +377,17 @@ impl AppContext {
 
     pub(crate) fn wallet_network_key(&self) -> WalletNetwork {
         match self.network {
-            Network::Dash => WalletNetwork::Dash,
+            Network::Mainnet => WalletNetwork::Mainnet,
             Network::Testnet => WalletNetwork::Testnet,
             Network::Devnet => WalletNetwork::Devnet,
             Network::Regtest => WalletNetwork::Regtest,
-            _ => WalletNetwork::Dash,
+            other => {
+                tracing::debug!(
+                    ?other,
+                    "Unknown Network variant, defaulting to Mainnet wallet key"
+                );
+                WalletNetwork::Mainnet
+            }
         }
     }
 
@@ -389,6 +448,27 @@ impl AppContext {
                 DerivationPathReference::BIP44,
                 DerivationPathType::CLEAR_FUNDS,
             )),
+            AccountType::ProviderVotingKeys => Some((
+                DerivationPathReference::ProviderVotingKeys,
+                DerivationPathType::CLEAR_FUNDS,
+            )),
+            AccountType::ProviderOwnerKeys => Some((
+                DerivationPathReference::ProviderOwnerKeys,
+                DerivationPathType::CLEAR_FUNDS,
+            )),
+            AccountType::ProviderOperatorKeys => Some((
+                DerivationPathReference::ProviderOperatorKeys,
+                DerivationPathType::CLEAR_FUNDS,
+            )),
+            AccountType::ProviderPlatformKeys => Some((
+                DerivationPathReference::ProviderPlatformNodeKeys,
+                DerivationPathType::CLEAR_FUNDS,
+            )),
+            // BlockchainIdentities addresses are bootstrapped by DET directly
+            // (not via SDK WalletManager accounts) and registered with SPV
+            // through register_spv_address() during wallet bootstrap. Other
+            // account types (CoinJoin, DashPay, PlatformPayment, AssetLock*)
+            // are either not yet supported or operate off-chain.
             _ => None,
         }
     }
@@ -750,16 +830,20 @@ impl AppContext {
                 .map_err(|e| crate::spv::SpvError::WalletError(e.to_string()))?;
             let wallet_transactions: Vec<WalletTransaction> = history
                 .into_iter()
-                .map(|record| WalletTransaction {
-                    txid: record.txid,
-                    transaction: record.transaction.clone(),
-                    timestamp: record.timestamp,
-                    height: record.height,
-                    block_hash: record.block_hash,
-                    net_amount: record.net_amount,
-                    fee: record.fee,
-                    label: record.label.clone(),
-                    is_ours: record.is_ours,
+                .map(|record| {
+                    let status = TransactionStatus::from_height(record.height);
+                    WalletTransaction {
+                        txid: record.txid,
+                        transaction: record.transaction.clone(),
+                        timestamp: record.timestamp,
+                        height: record.height,
+                        block_hash: record.block_hash,
+                        net_amount: record.net_amount,
+                        fee: record.fee,
+                        label: record.label.clone(),
+                        is_ours: record.is_ours,
+                        status,
+                    }
                 })
                 .collect();
 

@@ -204,12 +204,12 @@ impl WalletsBalancesScreen {
 
         let account_address_count = address_data.len();
 
+        // INTENTIONAL(CMT-002): Zero-balance filter treats key-only addresses the same as all
+        // others. The old exception (always showing key-only addresses) was removed intentionally
+        // to reduce UI clutter — key-only accounts with no balance carry no actionable information.
         if !self.show_zero_balance_addresses {
             address_data.retain(|data| {
-                let is_platform_payment = data.account_category == AccountCategory::PlatformPayment;
-                if data.account_category.is_key_only() {
-                    true
-                } else if is_platform_payment {
+                if data.account_category == AccountCategory::PlatformPayment {
                     data.platform_credits > 0
                 } else {
                     data.balance > 0
@@ -371,7 +371,6 @@ impl WalletsBalancesScreen {
                 let network = self.app_context.network;
                 for data in &address_data {
                     body.row(25.0, |mut row| {
-                        let is_key_only = data.account_category.is_key_only();
                         let is_platform_payment =
                             data.account_category == AccountCategory::PlatformPayment;
 
@@ -379,9 +378,7 @@ impl WalletsBalancesScreen {
                             ui.label(data.display_address(network));
                         });
                         row.col(|ui| {
-                            if is_key_only {
-                                ui.label("N/A");
-                            } else if is_platform_payment {
+                            if is_platform_payment {
                                 let dash_balance =
                                     data.platform_credits as f64 / CREDITS_PER_DUFF as f64 / 1e8;
                                 ui.label(format!("{:.8}", dash_balance));
@@ -396,19 +393,11 @@ impl WalletsBalancesScreen {
                             });
                         } else {
                             row.col(|ui| {
-                                if is_key_only {
-                                    ui.label("N/A");
-                                } else {
-                                    ui.label(format!("{}", data.utxo_count));
-                                }
+                                ui.label(format!("{}", data.utxo_count));
                             });
                             row.col(|ui| {
-                                if is_key_only {
-                                    ui.label("N/A");
-                                } else {
-                                    let dash_received = data.total_received as f64 * 1e-8;
-                                    ui.label(format!("{:.8}", dash_received));
-                                }
+                                let dash_received = data.total_received as f64 * 1e-8;
+                                ui.label(format!("{:.8}", dash_received));
                             });
                         };
                         row.col(|ui| {

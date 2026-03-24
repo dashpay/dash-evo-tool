@@ -3228,6 +3228,7 @@ mod tests {
 
         ensure_test_env();
         let app_context = AppContext::new(
+            crate::app_dir::app_user_data_dir_path().unwrap(),
             Network::Regtest,
             db,
             None,
@@ -3262,7 +3263,7 @@ mod tests {
             wallet_index: None,
             top_ups: BTreeMap::new(),
             status: IdentityStatus::Active,
-            network: Network::Dash,
+            network: Network::Mainnet,
         };
 
         token_creator_ui.selected_identity = Some(mock_identity);
@@ -3541,6 +3542,7 @@ mod tests {
 
         ensure_test_env();
         let app_context = AppContext::new(
+            crate::app_dir::app_user_data_dir_path().unwrap(),
             Network::Regtest,
             db,
             None,
@@ -3575,7 +3577,7 @@ mod tests {
             wallet_index: None,
             top_ups: BTreeMap::new(),
             status: IdentityStatus::Active,
-            network: Network::Dash,
+            network: Network::Mainnet,
         };
 
         token_creator_ui.selected_identity = Some(mock_identity);
@@ -3668,6 +3670,7 @@ mod tests {
 
         ensure_test_env();
         let app_context = AppContext::new(
+            crate::app_dir::app_user_data_dir_path().unwrap(),
             Network::Regtest,
             db,
             None,
@@ -3702,7 +3705,7 @@ mod tests {
             wallet_index: None,
             top_ups: BTreeMap::new(),
             status: IdentityStatus::Active,
-            network: Network::Dash,
+            network: Network::Mainnet,
         };
 
         token_creator_ui.selected_identity = Some(mock_identity);

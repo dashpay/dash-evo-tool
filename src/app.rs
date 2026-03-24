@@ -1,6 +1,6 @@
 #[cfg(not(feature = "testing"))]
-use crate::app_dir::app_user_data_file_path;
-use crate::app_dir::{copy_env_file_if_not_exists, create_app_user_data_directory_if_not_exists};
+use crate::app_dir::data_file_path;
+use crate::app_dir::{app_user_data_dir_path, ensure_data_dir_exists, ensure_env_file};
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::core::CoreItem;
 use crate::backend_task::error::TaskError;
@@ -43,6 +43,7 @@ use derive_more::From;
 use eframe::{App, egui};
 use std::collections::BTreeMap;
 use std::ops::BitOrAssign;
+use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant, SystemTime};
 use std::vec;
@@ -86,6 +87,9 @@ pub struct AppState {
     pub task_result_sender: egui_mpsc::SenderAsync<TaskResult>, // Channel sender for sending task results
     pub task_result_receiver: tokiompsc::Receiver<TaskResult>, // Channel receiver for receiving task results
     pub theme_preference: ThemeMode,                           // Current theme preference
+    resolved_theme: ThemeMode, // Cached resolved theme (Light/Dark, never System)
+    last_applied_theme: Option<ThemeMode>, // Last theme passed to apply_theme; None = force on next frame
+    theme_last_checked: Instant,           // Last time we polled the OS for system theme
     last_scheduled_vote_check: Instant, // Last time we checked if there are scheduled masternode votes to cast
     last_repaint_request: Instant,      // Throttle periodic repaint scheduling to once per second
     pub subtasks: Arc<TaskManager>,     // Subtasks manager for graceful shutdown
@@ -186,13 +190,14 @@ impl AppState {
     /// feature-gated `new()` variant instead.
     #[cfg(not(feature = "testing"))]
     pub fn new(ctx: egui::Context) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        create_app_user_data_directory_if_not_exists()?;
-        copy_env_file_if_not_exists();
+        let data_dir = app_user_data_dir_path()?;
+        ensure_data_dir_exists(&data_dir)?;
+        ensure_env_file(&data_dir);
         initialize_logger();
-        let db_file_path = app_user_data_file_path("data.db")?;
+        let db_file_path = data_file_path(&data_dir, "data.db")?;
         let db = Arc::new(Database::new(&db_file_path)?);
         db.initialize(&db_file_path)?;
-        Self::new_inner(ctx, db)
+        Self::new_inner(ctx, db, data_dir)
     }
 
     /// Creates a new `AppState` using an in-memory database for testing.
@@ -201,18 +206,20 @@ impl AppState {
     /// from reading or writing the production database.
     #[cfg(feature = "testing")]
     pub fn new(ctx: egui::Context) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        create_app_user_data_directory_if_not_exists()?;
-        copy_env_file_if_not_exists();
+        let data_dir = app_user_data_dir_path()?;
+        ensure_data_dir_exists(&data_dir)?;
+        ensure_env_file(&data_dir);
         let db = Arc::new(
             crate::database::test_helpers::create_test_database()
                 .map_err(|e| format!("Failed to create test database: {}", e))?,
         );
-        Self::new_inner(ctx, db)
+        Self::new_inner(ctx, db, data_dir)
     }
 
     fn new_inner(
         ctx: egui::Context,
         db: Arc<Database>,
+        data_dir: PathBuf,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let settings = db.get_settings()?.map(Settings::from).unwrap_or_default();
         let password_info = settings.password_info;
@@ -223,7 +230,8 @@ impl AppState {
         let subtasks = Arc::new(TaskManager::new());
         let connection_status = Arc::new(ConnectionStatus::new());
         let mainnet_app_context = AppContext::new(
-            Network::Dash,
+            data_dir.clone(),
+            Network::Mainnet,
             db.clone(),
             password_info.clone(),
             subtasks.clone(),
@@ -232,6 +240,7 @@ impl AppState {
         )
         .ok_or("Failed to create AppContext for mainnet. Check your Dash configuration.")?;
         let testnet_app_context = AppContext::new(
+            data_dir.clone(),
             Network::Testnet,
             db.clone(),
             password_info.clone(),
@@ -240,6 +249,7 @@ impl AppState {
             ctx.clone(),
         );
         let devnet_app_context = AppContext::new(
+            data_dir.clone(),
             Network::Devnet,
             db.clone(),
             password_info.clone(),
@@ -248,6 +258,7 @@ impl AppState {
             ctx.clone(),
         );
         let local_app_context = AppContext::new(
+            data_dir,
             Network::Regtest,
             db.clone(),
             password_info,
@@ -303,7 +314,7 @@ impl AppState {
             testnet_app_context.as_ref(),
             devnet_app_context.as_ref(),
             local_app_context.as_ref(),
-            Network::Dash,
+            Network::Mainnet,
             overwrite_dash_conf,
         );
 
@@ -315,7 +326,7 @@ impl AppState {
         // Validate that the saved network has an available context.
         // We fail fast instead of silently routing user actions to a different network.
         let chosen_network = match settings.network {
-            Network::Dash => Network::Dash,
+            Network::Mainnet => Network::Mainnet,
             Network::Testnet => {
                 assert!(
                     testnet_app_context.is_some(),
@@ -476,7 +487,7 @@ impl AppState {
             .unwrap_or(false);
         let mainnet_core_zmq_listener = if !mainnet_disable_zmq {
             match CoreZMQListener::spawn_listener(
-                Network::Dash,
+                Network::Mainnet,
                 &mainnet_core_zmq_endpoint,
                 core_message_sender.clone(),
                 Some(mainnet_app_context.sx_zmq_status.clone()),
@@ -712,6 +723,9 @@ impl AppState {
             core_message_receiver,
             task_result_sender,
             task_result_receiver,
+            resolved_theme: crate::ui::theme::resolve_theme_mode(theme_preference),
+            last_applied_theme: None,
+            theme_last_checked: Instant::now(),
             theme_preference,
             last_scheduled_vote_check: Instant::now(),
             last_repaint_request: Instant::now(),
@@ -786,7 +800,7 @@ impl AppState {
         // Invariant: chosen_network must always have a corresponding context.
         // Fail fast on violations to avoid silently routing operations to mainnet.
         match self.chosen_network {
-            Network::Dash => &self.mainnet_app_context,
+            Network::Mainnet => &self.mainnet_app_context,
             Network::Testnet => self.testnet_app_context.as_ref().unwrap_or_else(|| {
                 panic!(
                     "BUG: chosen network is Testnet but testnet_app_context is missing; refusing silent mainnet fallback"
@@ -811,7 +825,7 @@ impl AppState {
 
     fn context_available_for_network(&self, network: Network) -> bool {
         match network {
-            Network::Dash => true, // Mainnet is always available
+            Network::Mainnet => true, // Mainnet is always available
             Network::Testnet => self.testnet_app_context.is_some(),
             Network::Devnet => self.devnet_app_context.is_some(),
             Network::Regtest => self.local_app_context.is_some(),
@@ -975,11 +989,15 @@ impl AppState {
                     Some(MessageBanner::set_global(ctx, msg, MessageType::Warning));
             }
             OverallConnectionState::Error => {
-                self.connection_banner_handle = Some(MessageBanner::set_global(
+                let handle = MessageBanner::set_global(
                     ctx,
-                    "SPV sync error — check connection status for details",
+                    "SPV sync failed. Go to Settings for connection details.",
                     MessageType::Error,
-                ));
+                );
+                if let Some(detail) = connection_status.spv_last_error() {
+                    handle.with_details(detail);
+                }
+                self.connection_banner_handle = Some(handle);
             }
             OverallConnectionState::Synced => {
                 // No banner needed for fully synced state
@@ -1008,7 +1026,7 @@ impl AppState {
     //     task::spawn_blocking(move || {
     //         while let Ok((tx, islock, network)) = instant_send_receiver.recv() {
     //             let app_context = match network {
-    //                 Network::Dash => &mainnet_app_context,
+    //                 Network::Mainnet => &mainnet_app_context,
     //                 Network::Testnet => {
     //                     if let Some(context) = testnet_app_context.as_ref() {
     //                         context
@@ -1074,7 +1092,10 @@ impl App for AppState {
                 ctx.request_repaint();
             }
             // Render a minimal UI that shows the shutdown banner.
-            crate::ui::theme::apply_theme(ctx, self.theme_preference);
+            if self.last_applied_theme != Some(self.resolved_theme) {
+                crate::ui::theme::apply_theme(ctx, self.resolved_theme);
+                self.last_applied_theme = Some(self.resolved_theme);
+            }
             crate::ui::components::styled::island_central_panel(ctx, |_ui| {});
             return;
         }
@@ -1094,8 +1115,23 @@ impl App for AppState {
             return;
         }
 
-        // Apply Dash theme with user preference
-        crate::ui::theme::apply_theme(ctx, self.theme_preference);
+        // Throttle OS theme detection to every 2 s to prevent white flash from
+        // transient dark_light::detect() glitches during high-frequency repaints.
+        if self.theme_preference == ThemeMode::System {
+            let now = Instant::now();
+            if now.duration_since(self.theme_last_checked) >= Duration::from_secs(2) {
+                self.theme_last_checked = now;
+                if let Some(detected) = crate::ui::theme::try_detect_system_theme()
+                    && detected != self.resolved_theme
+                {
+                    self.resolved_theme = detected;
+                }
+            }
+        }
+        if self.last_applied_theme != Some(self.resolved_theme) {
+            crate::ui::theme::apply_theme(ctx, self.resolved_theme);
+            self.last_applied_theme = Some(self.resolved_theme);
+        }
 
         self.enforce_network_context_invariant();
         let active_context = self.current_app_context().clone();
@@ -1125,13 +1161,46 @@ impl App for AppState {
                             self.visible_screen_mut()
                                 .display_task_result(unboxed_message);
                         }
+                        BackendTaskSuccessResult::Progress { .. } => {
+                            // Progress updates only go to the screen — no global banner.
+                            // The screen updates its existing banner handle in-place.
+                            // TODO: Routes via visible_screen_mut(), so if the user
+                            // navigates away from the originating screen, progress
+                            // updates land on the wrong screen. Adding task-to-screen
+                            // affinity would fix this (same limitation as Message).
+                            self.visible_screen_mut()
+                                .display_task_result(unboxed_message);
+                        }
                         BackendTaskSuccessResult::UpdatedThemePreference(new_theme) => {
                             self.theme_preference = new_theme;
-                            MessageBanner::set_global(
-                                ctx,
-                                "Theme preference updated successfully",
-                                MessageType::Success,
-                            );
+                            let mut detection_failed = false;
+                            self.resolved_theme = if new_theme == ThemeMode::System {
+                                match crate::ui::theme::try_detect_system_theme() {
+                                    Some(detected) => detected,
+                                    None => {
+                                        detection_failed = true;
+                                        self.resolved_theme
+                                    }
+                                }
+                            } else {
+                                new_theme
+                            };
+                            self.theme_last_checked = Instant::now();
+                            crate::ui::theme::apply_theme(ctx, self.resolved_theme);
+                            self.last_applied_theme = Some(self.resolved_theme);
+                            if detection_failed {
+                                MessageBanner::set_global(
+                                    ctx,
+                                    "Could not detect your system theme. Using the previous theme for now — it will update automatically when detection succeeds.",
+                                    MessageType::Warning,
+                                );
+                            } else {
+                                MessageBanner::set_global(
+                                    ctx,
+                                    "Theme preference updated successfully",
+                                    MessageType::Success,
+                                );
+                            }
                             self.visible_screen_mut().display_message(
                                 "Theme preference updated successfully",
                                 MessageType::Success,
@@ -1203,7 +1272,7 @@ impl App for AppState {
         // **Poll the instant_send_receiver for any new InstantSend messages**
         while let Ok((message, network)) = self.core_message_receiver.try_recv() {
             let app_context = match network {
-                Network::Dash => &self.mainnet_app_context,
+                Network::Mainnet => &self.mainnet_app_context,
                 Network::Testnet => {
                     if let Some(context) = self.testnet_app_context.as_ref() {
                         context

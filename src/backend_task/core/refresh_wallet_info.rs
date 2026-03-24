@@ -1,11 +1,12 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
-use crate::model::wallet::{DerivationPathHelpers, Wallet};
+use crate::model::wallet::{DerivationPathHelpers, TransactionStatus, Wallet, WalletTransaction};
 use dash_sdk::dashcore_rpc::RpcApi;
+use dash_sdk::dashcore_rpc::json::GetTransactionResultDetailCategory;
 use dash_sdk::dpp::dashcore::hashes::Hash;
-use dash_sdk::dpp::dashcore::{Address, OutPoint, Transaction, TxOut};
-use std::collections::HashMap;
+use dash_sdk::dpp::dashcore::{Address, BlockHash, OutPoint, Transaction, TxOut, Txid};
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 impl AppContext {
@@ -35,6 +36,8 @@ impl AppContext {
             let cwn = wallet_guard.core_wallet_name.clone();
             (addrs, asset_locks, seed, cwn)
         };
+
+        let is_spv_mode = self.core_backend_mode() == crate::spv::CoreBackendMode::Spv;
 
         // Build an RPC client targeting the wallet's Core wallet (if set)
         let client = self.core_client_for_wallet(core_wallet_name.as_deref())?;
@@ -99,7 +102,150 @@ impl AppContext {
             }
         }
 
-        // Step 6: Check which asset locks are stale (no wallet lock needed)
+        // Step 6: Load transaction history from Core RPC (skip in SPV mode)
+        // None = skip update (SPV mode or RPC failure), Some = replace DB/in-memory state
+        let mut tx_truncated = false;
+        let rpc_transactions: Option<Vec<WalletTransaction>> = if is_spv_mode {
+            None
+        } else {
+            let wallet_address_set: HashSet<Address> = addresses.iter().cloned().collect();
+
+            struct TxAggregate {
+                net_amount: i64,
+                fee: Option<u64>,
+                timestamp: u64,
+                height: Option<u32>,
+                block_hash: Option<BlockHash>,
+                label: Option<String>,
+                is_ours: bool,
+            }
+
+            match client.list_transactions(None, Some(200), None, Some(true)) {
+                Ok(list_results) => {
+                    if list_results.len() >= 200 {
+                        tx_truncated = true;
+                        tracing::warn!(
+                            "list_transactions returned 200 entries — transaction history may be truncated"
+                        );
+                    }
+
+                    let mut tx_aggregates: HashMap<Txid, TxAggregate> = HashMap::new();
+
+                    for entry in &list_results {
+                        let txid = entry.info.txid;
+                        let amount_sat = entry.detail.amount.to_sat();
+                        let fee_sat = entry.detail.fee.map(|f| f.to_sat().unsigned_abs());
+
+                        // Safety: list_transactions targets a wallet-scoped RPC endpoint
+                        // (/wallet/<name>), so all entries belong to this wallet. Send
+                        // entries are included unconditionally because outgoing transactions
+                        // may reference external addresses not in our known set.
+                        let entry_involves_wallet = entry
+                            .detail
+                            .address
+                            .as_ref()
+                            .map(|a| wallet_address_set.contains(a.assume_checked_ref()))
+                            .unwrap_or(false)
+                            || entry.detail.category == GetTransactionResultDetailCategory::Send;
+
+                        if !entry_involves_wallet {
+                            continue;
+                        }
+
+                        let is_send =
+                            entry.detail.category == GetTransactionResultDetailCategory::Send;
+                        let addr_is_ours = entry
+                            .detail
+                            .address
+                            .as_ref()
+                            .map(|a| wallet_address_set.contains(a.assume_checked_ref()))
+                            .unwrap_or(false);
+
+                        match tx_aggregates.get_mut(&txid) {
+                            Some(agg) => {
+                                agg.net_amount += amount_sat;
+                                if agg.fee.is_none() {
+                                    agg.fee = fee_sat;
+                                }
+                                if agg.label.is_none() {
+                                    agg.label = entry.detail.label.clone();
+                                }
+                                if is_send || addr_is_ours {
+                                    agg.is_ours = true;
+                                }
+                            }
+                            None => {
+                                tx_aggregates.insert(
+                                    txid,
+                                    TxAggregate {
+                                        net_amount: amount_sat,
+                                        fee: fee_sat,
+                                        timestamp: entry.info.time,
+                                        height: entry.info.blockheight,
+                                        block_hash: entry.info.blockhash,
+                                        label: entry.detail.label.clone(),
+                                        is_ours: is_send || addr_is_ours,
+                                    },
+                                );
+                            }
+                        }
+                    }
+
+                    let mut wallet_txs = Vec::new();
+                    let mut raw_fetch_failed = false;
+                    for (txid, agg) in tx_aggregates {
+                        let raw_tx =
+                            match client.get_raw_transaction(&txid, agg.block_hash.as_ref()) {
+                                Ok(tx) => tx,
+                                Err(e) => {
+                                    tracing::debug!(
+                                        ?e,
+                                        %txid,
+                                        "get_raw_transaction failed, skipping"
+                                    );
+                                    raw_fetch_failed = true;
+                                    continue;
+                                }
+                            };
+
+                        wallet_txs.push(WalletTransaction {
+                            txid,
+                            transaction: raw_tx,
+                            timestamp: agg.timestamp,
+                            height: agg.height,
+                            block_hash: agg.block_hash,
+                            net_amount: agg.net_amount,
+                            fee: agg.fee,
+                            label: agg.label,
+                            is_ours: agg.is_ours,
+                            // RPC only returns confirmed transactions
+                            status: TransactionStatus::from_height(agg.height),
+                        });
+                    }
+
+                    if raw_fetch_failed {
+                        tracing::warn!(
+                            "one or more get_raw_transaction calls failed; \
+                             preserving existing transaction history"
+                        );
+                        tx_truncated = false;
+                        None
+                    } else {
+                        tracing::info!(
+                            rpc_transactions = wallet_txs.len(),
+                            "loaded transaction history from Core RPC"
+                        );
+                        Some(wallet_txs)
+                    }
+                }
+                Err(e) => {
+                    tracing::debug!(?e, "list_transactions failed, skipping transaction load");
+                    None
+                }
+            }
+        };
+
+        // Step 7: Check which asset locks are stale (no wallet lock needed)
         let stale_txids: Vec<_> = {
             asset_lock_txs
                 .iter()
@@ -123,7 +269,7 @@ impl AppContext {
                 .collect()
         };
 
-        // Step 7: Insert UTXOs into database (no wallet lock needed)
+        // Step 8: Insert UTXOs into database (no wallet lock needed)
         for (outpoint, tx_out) in &utxo_map {
             if let Ok(address) = Address::from_script(&tx_out.script_pubkey, self.network) {
                 self.db.insert_utxo(
@@ -137,17 +283,24 @@ impl AppContext {
             }
         }
 
-        // Step 8: Delete stale asset locks from database (no wallet lock needed)
+        // Step 9: Delete stale asset locks from database (no wallet lock needed)
         for txid in &stale_txids {
             if let Err(e) = self.db.delete_asset_lock_transaction(txid.as_byte_array()) {
                 tracing::warn!("Failed to delete stale asset lock from database: {}", e);
             }
         }
 
-        // Step 9: Calculate total balance (no lock needed)
+        // Step 10: Calculate total balance (no lock needed)
         let total_balance: u64 = utxo_map.values().map(|tx_out| tx_out.value).sum();
 
-        // Step 10: Update wallet IN-MEMORY state only (brief write lock, no I/O)
+        // Step 11: Persist transactions to database BEFORE the write lock so we
+        // can move (not clone) rpc_transactions into the wallet afterwards.
+        if let Some(ref txs) = rpc_transactions {
+            self.db
+                .replace_wallet_transactions(&seed_hash, &self.network, txs)?;
+        }
+
+        // Step 12: Update wallet IN-MEMORY state only (brief write lock, no I/O)
         let (changed_balances, changed_total_received): (Vec<_>, Vec<_>) = {
             let mut wallet_guard = wallet.write()?;
 
@@ -199,12 +352,16 @@ impl AppContext {
                 tracing::info!("Removed {} stale asset locks", stale_count);
             }
 
+            if let Some(txs) = rpc_transactions {
+                wallet_guard.set_transactions(txs);
+            }
+
             wallet_guard.update_spv_balances(total_balance, 0, total_balance);
 
             (balance_changes, received_changes)
         };
 
-        // Step 11: Persist all changes to database (no wallet lock needed)
+        // Step 13: Persist remaining changes to database (no wallet lock needed)
         for (address, balance) in &changed_balances {
             self.db
                 .update_address_balance(&seed_hash, address, *balance)?;
@@ -218,6 +375,15 @@ impl AppContext {
         self.db
             .update_wallet_balances(&seed_hash, total_balance, 0, total_balance)?;
 
-        Ok(BackendTaskSuccessResult::RefreshedWallet { warning: None })
+        let warning = if tx_truncated {
+            Some(
+                "Transaction history may be incomplete. The most recent transactions are shown."
+                    .to_string(),
+            )
+        } else {
+            None
+        };
+
+        Ok(BackendTaskSuccessResult::RefreshedWallet { warning })
     }
 }

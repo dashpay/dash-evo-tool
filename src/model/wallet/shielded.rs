@@ -35,7 +35,7 @@ pub fn derive_orchard_keys(
     account: u32,
 ) -> Result<OrchardKeySet, String> {
     let coin_type = match network {
-        Network::Dash => DASH_COIN_TYPE_MAINNET,
+        Network::Mainnet => DASH_COIN_TYPE_MAINNET,
         _ => DASH_COIN_TYPE_TESTNET,
     };
     let account_id =

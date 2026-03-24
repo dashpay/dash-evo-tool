@@ -4,9 +4,9 @@ use rusqlite::{Connection, params};
 use std::fs;
 use std::path::Path;
 
-pub const DEFAULT_DB_VERSION: u16 = 31;
+pub const DEFAULT_DB_VERSION: u16 = 33;
 
-pub const DEFAULT_NETWORK: &str = "dash";
+pub const DEFAULT_NETWORK: &str = "mainnet";
 
 impl Database {
     pub fn initialize(&self, db_file_path: &Path) -> rusqlite::Result<()> {
@@ -51,18 +51,22 @@ impl Database {
 
     fn apply_version_changes(&self, version: u16, tx: &Connection) -> rusqlite::Result<()> {
         match version {
-            31 => {
-                self.add_nullifier_sync_timestamp_column(tx)?;
-            }
-            30 => {
-                self.create_shielded_wallet_meta_table(tx)?;
-            }
-            29 => {
-                self.create_shielded_tables(tx)?;
-            }
-            28 => {
+            // Versions 28-32 were consolidated into v33 to resolve migration
+            // numbering conflicts between the zk and v1.0-dev branches.
+            // If migrating from < 28, these are no-ops that just bump the version.
+            28..=32 => {}
+            33 => {
+                // Consolidated migration: all changes from v28-v32 in one step.
+                // Every sub-migration is idempotent (IF NOT EXISTS / column checks),
+                // so this is safe to run on any DB that already applied some or all
+                // of the individual steps.
                 self.add_core_wallet_name_column(tx)?;
                 self.init_contacts_tables(tx)?;
+                self.create_shielded_tables(tx)?;
+                self.create_shielded_wallet_meta_table(tx)?;
+                self.add_nullifier_sync_timestamp_column(tx)?;
+                self.rename_network_dash_to_mainnet(tx)?;
+                self.add_wallet_transaction_status_column(tx)?;
             }
             27 => {
                 self.add_network_indexes(tx)?;
@@ -907,6 +911,69 @@ impl Database {
             "CREATE INDEX IF NOT EXISTS idx_asset_lock_transaction_network ON asset_lock_transaction (network)",
             [],
         )?;
+        Ok(())
+    }
+
+    /// Migration 30: add `status` column to `wallet_transactions`.
+    fn add_wallet_transaction_status_column(&self, conn: &Connection) -> rusqlite::Result<()> {
+        let has_status: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('wallet_transactions') WHERE name='status'",
+            [],
+            |row| row.get::<_, i32>(0).map(|count| count > 0),
+        )?;
+        if !has_status {
+            conn.execute(
+                // DEFAULT 2 (Confirmed) for migration: existing transactions predate status
+                // tracking and are assumed confirmed. Fresh installs use DEFAULT 0 (Unconfirmed)
+                // in the CREATE TABLE (wallet.rs).
+                "ALTER TABLE wallet_transactions ADD COLUMN status INTEGER NOT NULL DEFAULT 2",
+                [],
+            )?;
+        }
+        Ok(())
+    }
+
+    // Shielded table helpers (create_shielded_tables, create_shielded_wallet_meta_table,
+    // add_nullifier_sync_timestamp_column) are implemented in database/shielded.rs.
+
+    /// Migration 29: rename network value `"dash"` to `"mainnet"` in all tables.
+    ///
+    /// Upstream `dashcore` renamed `Network::Dash` to `Network::Mainnet`,
+    /// changing the `Display`/`FromStr` representation. This migration updates
+    /// every table that stores the network as a string column.
+    fn rename_network_dash_to_mainnet(&self, conn: &Connection) -> rusqlite::Result<()> {
+        let tables = [
+            "settings",
+            "wallet",
+            "identity_token_balances",
+            "platform_address_balances",
+            "utxos",
+            "asset_lock_transaction",
+            "identity",
+            "contested_name",
+            "contestant",
+            "contract",
+            "scheduled_votes",
+            "dashpay_profiles",
+            "dashpay_contact_requests",
+            "dashpay_contacts",
+            "wallet_transactions",
+            "single_key_wallet",
+            "token",
+            "shielded_notes",
+            "shielded_wallet_meta",
+        ];
+        for table in tables {
+            conn.execute(
+                &format!("UPDATE {table} SET network = 'mainnet' WHERE network = 'dash'"),
+                [],
+            )
+            .map_err(|e| {
+                rusqlite::Error::InvalidParameterName(format!(
+                    "migration 29: failed to update network in table `{table}`: {e}"
+                ))
+            })?;
+        }
         Ok(())
     }
 }

@@ -166,6 +166,13 @@ impl ShieldedTabView {
         self.error_message = Some(error.to_string());
     }
 
+    // TODO: Redesign shielded tab layout for visual consistency with other tabs:
+    //   1. Action buttons row at top: Shield, Shield from Core, Transfer, Unshield
+    //   2. Shielded Addresses (collapsible) — diversified addresses in a table
+    //   3. Shielded Notes (collapsible) — notes table (index, value, spent/unspent)
+    // Currently the layout is: balance card -> address card -> buttons -> notes list.
+    // The redesign should move buttons to the top and use collapsible sections.
+
     /// Render the shielded tab content.
     pub fn ui(&mut self, ui: &mut Ui) -> AppAction {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
@@ -494,121 +501,121 @@ impl ShieldedTabView {
                 .unwrap_or_default()
         };
 
-        ui.horizontal(|ui| {
-            ui.label(
-                RichText::new("Shielded Notes")
-                    .size(16.0)
-                    .color(DashColors::text_primary(dark_mode)),
-            );
+        // Shielded Notes (collapsible)
+        let notes_label = if notes_info.is_empty() {
+            "Shielded Notes".to_string()
+        } else {
+            format!(
+                "Shielded Notes (synced to index {}, {} notes)",
+                synced_index,
+                notes_info.len()
+            )
+        };
+        let notes_header = egui::CollapsingHeader::new(
+            RichText::new(notes_label)
+                .size(16.0)
+                .color(DashColors::text_primary(dark_mode)),
+        )
+        .id_salt("shielded_notes")
+        .default_open(true);
+        notes_header.show(ui, |ui| {
+            ui.horizontal(|ui| {
+                // Sync status indicator
+                if self.syncing {
+                    ui.add(egui::Spinner::new().color(DashColors::DASH_BLUE));
+                    ui.label(
+                        RichText::new("Syncing...")
+                            .size(12.0)
+                            .color(DashColors::DASH_BLUE),
+                    );
+                } else if self.tree_synced {
+                    ui.label(
+                        RichText::new("Synced")
+                            .size(12.0)
+                            .color(Color32::DARK_GREEN),
+                    );
+                }
+
+                // Sync buttons
+                if !self.syncing {
+                    if ui.small_button("Sync Notes").clicked() {
+                        self.syncing = true;
+                        self.success_message = None;
+                        self.error_message = None;
+                        action |= AppAction::BackendTask(BackendTask::ShieldedTask(
+                            ShieldedTask::SyncNotes {
+                                seed_hash: self.seed_hash,
+                            },
+                        ));
+                    }
+
+                    if self.app_context.is_developer_mode()
+                        && ui.small_button("Resync Notes").clicked()
+                    {
+                        {
+                            let mut states = self.app_context.shielded_states.lock().unwrap();
+                            states.remove(&self.seed_hash);
+                        }
+                        let network_str = self.app_context.network.to_string();
+                        let _ = self
+                            .app_context
+                            .db
+                            .delete_shielded_notes(&self.seed_hash, &network_str);
+                        let _ = self.app_context.db.clear_commitment_tree_tables();
+
+                        self.shielded_balance = 0;
+                        self.tree_synced = false;
+                        self.is_initialized = false;
+                        self.initializing = true;
+                        self.syncing = false;
+                        self.success_message = None;
+                        self.error_message = None;
+                        action |= AppAction::BackendTask(BackendTask::ShieldedTask(
+                            ShieldedTask::InitializeShieldedWallet {
+                                seed_hash: self.seed_hash,
+                            },
+                        ));
+                    }
+                }
+            });
+            ui.add_space(5.0);
 
             if !notes_info.is_empty() {
+                egui::Grid::new("shielded_notes_grid")
+                    .num_columns(3)
+                    .striped(true)
+                    .spacing([20.0, 4.0])
+                    .show(ui, |ui| {
+                        ui.label(RichText::new("Value").strong());
+                        ui.label(RichText::new("Block").strong());
+                        ui.label(RichText::new("Status").strong());
+                        ui.end_row();
+
+                        for (value, height, is_spent) in &notes_info {
+                            ui.label(format_credits(*value));
+                            ui.label(if *height > 0 {
+                                height.to_string()
+                            } else {
+                                "-".to_string()
+                            });
+                            if *is_spent {
+                                ui.label(
+                                    RichText::new("Spent")
+                                        .color(DashColors::text_secondary(dark_mode)),
+                                );
+                            } else {
+                                ui.label(RichText::new("Unspent").color(Color32::DARK_GREEN));
+                            }
+                            ui.end_row();
+                        }
+                    });
+            } else if !self.syncing {
                 ui.label(
-                    RichText::new(format!(
-                        "(synced to index {}, {} our notes)",
-                        synced_index,
-                        notes_info.len()
-                    ))
-                    .size(12.0)
-                    .color(DashColors::text_secondary(dark_mode)),
+                    RichText::new("No shielded notes yet. Shield some credits to get started.")
+                        .color(DashColors::text_secondary(dark_mode)),
                 );
-            }
-
-            // Sync status indicator
-            if self.syncing {
-                ui.add(egui::Spinner::new().color(DashColors::DASH_BLUE));
-                ui.label(
-                    RichText::new("Syncing...")
-                        .size(12.0)
-                        .color(DashColors::DASH_BLUE),
-                );
-            } else if self.tree_synced {
-                ui.label(
-                    RichText::new("Synced")
-                        .size(12.0)
-                        .color(Color32::DARK_GREEN),
-                );
-            }
-
-            // Sync buttons
-            if !self.syncing {
-                if ui.small_button("Sync Notes").clicked() {
-                    self.syncing = true;
-                    self.success_message = None;
-                    self.error_message = None;
-                    action |= AppAction::BackendTask(BackendTask::ShieldedTask(
-                        ShieldedTask::SyncNotes {
-                            seed_hash: self.seed_hash,
-                        },
-                    ));
-                }
-
-                if self.app_context.is_developer_mode() && ui.small_button("Resync Notes").clicked()
-                {
-                    // Remove in-memory state entirely (will be recreated by init)
-                    {
-                        let mut states = self.app_context.shielded_states.lock().unwrap();
-                        states.remove(&self.seed_hash);
-                    }
-                    // Clear persisted notes and commitment tree data
-                    let network_str = self.app_context.network.to_string();
-                    let _ = self
-                        .app_context
-                        .db
-                        .delete_shielded_notes(&self.seed_hash, &network_str);
-                    let _ = self.app_context.db.clear_commitment_tree_tables();
-
-                    self.shielded_balance = 0;
-                    self.tree_synced = false;
-                    self.is_initialized = false;
-                    self.initializing = true;
-                    self.syncing = false;
-                    self.success_message = None;
-                    self.error_message = None;
-                    // Re-initialize (creates fresh persistent tree) then auto-syncs
-                    action |= AppAction::BackendTask(BackendTask::ShieldedTask(
-                        ShieldedTask::InitializeShieldedWallet {
-                            seed_hash: self.seed_hash,
-                        },
-                    ));
-                }
             }
         });
-        ui.add_space(5.0);
-
-        if !notes_info.is_empty() {
-            egui::Grid::new("shielded_notes_grid")
-                .num_columns(3)
-                .striped(true)
-                .spacing([20.0, 4.0])
-                .show(ui, |ui| {
-                    ui.label(RichText::new("Value").strong());
-                    ui.label(RichText::new("Block").strong());
-                    ui.label(RichText::new("Status").strong());
-                    ui.end_row();
-
-                    for (value, height, is_spent) in &notes_info {
-                        ui.label(format_credits(*value));
-                        ui.label(if *height > 0 {
-                            height.to_string()
-                        } else {
-                            "-".to_string()
-                        });
-                        if *is_spent {
-                            ui.label(
-                                RichText::new("Spent").color(DashColors::text_secondary(dark_mode)),
-                            );
-                        } else {
-                            ui.label(RichText::new("Unspent").color(Color32::DARK_GREEN));
-                        }
-                        ui.end_row();
-                    }
-                });
-        } else if !self.syncing {
-            ui.label(
-                RichText::new("No shielded notes yet. Shield some credits to get started.")
-                    .color(DashColors::text_secondary(dark_mode)),
-            );
-        }
 
         action
     }

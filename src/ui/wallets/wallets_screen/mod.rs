@@ -1127,42 +1127,79 @@ impl WalletsBalancesScreen {
     fn build_account_tabs(&self, summaries: &[AccountSummary]) -> Vec<AccountTab> {
         let developer_mode = self.app_context.is_developer_mode();
         let mut tabs: Vec<AccountTab> = Vec::new();
-        // Track which provider categories we have seen (they get grouped into one tab)
         let mut has_provider = false;
 
-        for summary in summaries {
-            let visible = if developer_mode {
-                true
-            } else {
-                summary.category.is_visible_in_default_mode() && summary.index == Some(0)
-                    || summary.category == AccountCategory::PlatformPayment
-            };
-            if !visible {
-                continue;
+        if developer_mode {
+            // In developer mode, show ALL account categories as tabs — even those
+            // without addresses — so developers can inspect every derivation path.
+            let all_categories = [
+                AccountCategory::Bip44,
+                AccountCategory::PlatformPayment,
+                AccountCategory::Bip32,
+                AccountCategory::CoinJoin,
+                AccountCategory::IdentityRegistration,
+                AccountCategory::IdentitySystem,
+                AccountCategory::IdentityTopup,
+                AccountCategory::IdentityInvitation,
+                AccountCategory::ProviderOwner,
+                AccountCategory::ProviderVoting,
+                AccountCategory::ProviderOperator,
+                AccountCategory::ProviderPlatform,
+            ];
+
+            for cat in &all_categories {
+                let is_provider = matches!(
+                    cat,
+                    AccountCategory::ProviderVoting
+                        | AccountCategory::ProviderOwner
+                        | AccountCategory::ProviderOperator
+                        | AccountCategory::ProviderPlatform
+                );
+                if is_provider {
+                    if has_provider {
+                        continue;
+                    }
+                    has_provider = true;
+                }
+
+                // Use the index from the summary if available, otherwise None
+                let idx = summaries
+                    .iter()
+                    .find(|s| &s.category == cat)
+                    .and_then(|s| s.index);
+
+                // For Bip44, default to index 0 (Dash Core)
+                let idx = match cat {
+                    AccountCategory::Bip44 => idx.or(Some(0)),
+                    _ => idx,
+                };
+
+                tabs.push(AccountTab::Category(cat.clone(), idx));
             }
 
-            // Group all Provider* categories into a single tab
-            let is_provider = matches!(
-                summary.category,
-                AccountCategory::ProviderVoting
-                    | AccountCategory::ProviderOwner
-                    | AccountCategory::ProviderOperator
-                    | AccountCategory::ProviderPlatform
-            );
-            if is_provider {
-                if has_provider {
+            // Also add any summary-only categories not in the fixed list (e.g. Other)
+            for summary in summaries {
+                let tab = AccountTab::Category(summary.category.clone(), summary.index);
+                if !tabs.contains(&tab) {
+                    tabs.push(tab);
+                }
+            }
+        } else {
+            for summary in summaries {
+                let visible = summary.category.is_visible_in_default_mode()
+                    && summary.index == Some(0)
+                    || summary.category == AccountCategory::PlatformPayment;
+                if !visible {
                     continue;
                 }
-                has_provider = true;
+                tabs.push(AccountTab::Category(
+                    summary.category.clone(),
+                    summary.index,
+                ));
             }
-
-            tabs.push(AccountTab::Category(
-                summary.category.clone(),
-                summary.index,
-            ));
         }
 
-        // Always add the Shielded tab (after Dash Core and Platform)
+        // Always add the Shielded tab (after account categories)
         tabs.push(AccountTab::Shielded);
 
         tabs
@@ -1312,29 +1349,56 @@ impl WalletsBalancesScreen {
                     self.selected_account = Some((cat.clone(), *idx));
                 }
 
-                // Addresses heading with zero-balance filter
-                ui.horizontal(|ui| {
-                    let addresses_heading = format!("Addresses ({})", cat.label(*idx));
-                    ui.heading(
-                        RichText::new(addresses_heading).color(DashColors::text_primary(dark_mode)),
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.checkbox(
-                            &mut self.show_zero_balance_addresses,
-                            "Show zero-balance addresses",
-                        );
+                // Addresses (collapsible)
+                let addresses_heading = format!("Addresses ({})", cat.label(*idx));
+                let addr_header = egui::CollapsingHeader::new(
+                    RichText::new(addresses_heading)
+                        .size(16.0)
+                        .color(DashColors::text_primary(dark_mode)),
+                )
+                .id_salt(format!("addresses_{}_{:?}", cat.tab_label(*idx), idx))
+                .default_open(true);
+                addr_header.show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.checkbox(
+                                &mut self.show_zero_balance_addresses,
+                                "Show zero-balance addresses",
+                            );
+                        });
                     });
+                    ui.add_space(4.0);
+                    action |= self.render_address_table(ui);
+                    self.render_bottom_options(ui);
                 });
-                ui.add_space(8.0);
-                action |= self.render_address_table(ui);
 
-                // Bottom options (Add Receiving Address for Dash Core tab)
-                self.render_bottom_options(ui);
-
-                // Asset Locks section — only on the Dash Core tab
+                // Dash Core tab: transaction history + asset locks
                 if *cat == AccountCategory::Bip44 && *idx == Some(0) {
-                    ui.add_space(16.0);
-                    action |= self.render_wallet_asset_locks(ui);
+                    // Transaction History (collapsible)
+                    ui.add_space(10.0);
+                    let tx_header = egui::CollapsingHeader::new(
+                        RichText::new("Transaction History")
+                            .size(16.0)
+                            .color(DashColors::text_primary(dark_mode)),
+                    )
+                    .id_salt("transaction_history")
+                    .default_open(false);
+                    tx_header.show(ui, |ui| {
+                        self.render_transactions_section(ui);
+                    });
+
+                    // Asset Locks (collapsible)
+                    ui.add_space(10.0);
+                    let locks_header = egui::CollapsingHeader::new(
+                        RichText::new("Asset Locks")
+                            .size(16.0)
+                            .color(DashColors::text_primary(dark_mode)),
+                    )
+                    .id_salt("asset_locks")
+                    .default_open(true);
+                    locks_header.show(ui, |ui| {
+                        action |= self.render_wallet_asset_locks(ui);
+                    });
                 }
             }
         }
@@ -1891,21 +1955,7 @@ impl WalletsBalancesScreen {
                         // --- 4. Action Buttons (Send, Receive, Dev Tools) ---
                         action |= self.render_action_buttons(ui, ctx);
 
-                        // --- 5. Dash Core Transaction History (collapsible) ---
-                        ui.add_space(10.0);
-                        ui.separator();
-                        let tx_header = egui::CollapsingHeader::new(
-                            RichText::new("Dash Core Transaction History")
-                                .size(16.0)
-                                .color(DashColors::text_primary(dark_mode)),
-                        )
-                        .id_salt("transaction_history")
-                        .default_open(false);
-                        tx_header.show(ui, |ui| {
-                            self.render_transactions_section(ui);
-                        });
-
-                        // --- 6. Accounts & Addresses (tabs) ---
+                        // --- 5. Accounts & Addresses (tabs) ---
                         ui.add_space(10.0);
                         ui.separator();
 

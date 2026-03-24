@@ -138,8 +138,6 @@ pub struct WalletsBalancesScreen {
     selected_account_tab: AccountTab,
     /// Shielded tab view component (lazily initialized per wallet)
     shielded_tab_view: Option<ShieldedTabView>,
-    /// Whether the balance breakdown section is expanded
-    balance_breakdown_expanded: bool,
     /// Cached platform sync info: (last_sync_timestamp, last_sync_height)
     platform_sync_info: Option<(u64, u64)>,
     /// Core wallet selection dialog (shown when auto-detection fails)
@@ -255,7 +253,6 @@ impl WalletsBalancesScreen {
             refresh_mode: RefreshMode::default(),
             selected_account_tab: AccountTab::default(),
             shielded_tab_view: None,
-            balance_breakdown_expanded: app_context.is_developer_mode(),
             platform_sync_info,
             core_wallet_dialog: None,
             pending_core_wallet_seed_hash: None,
@@ -1328,8 +1325,7 @@ impl WalletsBalancesScreen {
                 let text = if is_selected {
                     RichText::new(&label)
                         .strong()
-                        .underline()
-                        .color(DashColors::DASH_BLUE)
+                        .color(DashColors::text_primary(dark_mode))
                 } else {
                     RichText::new(&label).color(DashColors::text_secondary(dark_mode))
                 };
@@ -1978,7 +1974,7 @@ impl WalletsBalancesScreen {
                 .color(DashColors::text_secondary(dark_mode)),
         )
         .id_salt("balance_breakdown")
-        .default_open(self.balance_breakdown_expanded);
+        .default_open(false);
 
         header.show(ui, |ui| {
             ui.horizontal(|ui| {

@@ -391,6 +391,9 @@ pub struct WalletSendScreen {
     // Wallet unlock
     wallet_unlock_popup: WalletUnlockPopup,
     wallet_open_attempted: bool,
+
+    /// Queued task to dispatch on next frame (e.g., sync shielded notes after send).
+    pending_refresh_task: Option<BackendTask>,
 }
 
 impl WalletSendScreen {
@@ -419,6 +422,7 @@ impl WalletSendScreen {
             send_banner: None,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             wallet_open_attempted: false,
+            pending_refresh_task: None,
         }
     }
 
@@ -2720,7 +2724,13 @@ impl WalletSendScreen {
 
 impl ScreenLike for WalletSendScreen {
     fn ui(&mut self, ctx: &Context) -> AppAction {
-        let mut action = add_top_panel(
+        let mut action = self
+            .pending_refresh_task
+            .take()
+            .map(AppAction::BackendTask)
+            .unwrap_or(AppAction::None);
+
+        action |= add_top_panel(
             ctx,
             &self.app_context,
             vec![("Wallets", AppAction::PopScreen), ("Send", AppAction::None)],
@@ -2847,21 +2857,27 @@ impl ScreenLike for WalletSendScreen {
                     SendStatus::Complete("Platform credits transferred successfully!".to_string());
             }
             crate::backend_task::BackendTaskSuccessResult::ShieldedTransferComplete {
+                seed_hash,
                 amount,
-                ..
             } => {
                 self.send_status = SendStatus::Complete(format!(
                     "Shielded transfer of {} complete!",
                     format_credits_as_dash(amount)
                 ));
+                self.pending_refresh_task = Some(crate::backend_task::BackendTask::ShieldedTask(
+                    crate::backend_task::shielded::ShieldedTask::SyncNotes { seed_hash },
+                ));
             }
             crate::backend_task::BackendTaskSuccessResult::ShieldedCreditsUnshielded {
+                seed_hash,
                 amount,
-                ..
             } => {
                 self.send_status = SendStatus::Complete(format!(
                     "Unshielded {} to platform address!",
                     format_credits_as_dash(amount)
+                ));
+                self.pending_refresh_task = Some(crate::backend_task::BackendTask::ShieldedTask(
+                    crate::backend_task::shielded::ShieldedTask::SyncNotes { seed_hash },
                 ));
             }
             _ => {

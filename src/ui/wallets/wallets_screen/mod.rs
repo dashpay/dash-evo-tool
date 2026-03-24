@@ -1302,8 +1302,50 @@ impl WalletsBalancesScreen {
             return;
         };
 
+        // Defensive check: verify the selected wallet Arc matches the one in
+        // app_context.wallets. If they diverge (stale reference), skip rendering
+        // to avoid showing another wallet's data.
         let wallet_guard = wallet_arc.read().unwrap();
+        let selected_seed_hash = wallet_guard.seed_hash();
+        let arc_matches = self
+            .app_context
+            .wallets
+            .read()
+            .ok()
+            .and_then(|wallets| wallets.get(&selected_seed_hash).cloned())
+            .is_some_and(|canonical| Arc::ptr_eq(wallet_arc, &canonical));
+        if !arc_matches {
+            tracing::warn!(
+                "selected_wallet Arc does not match app_context.wallets — skipping transaction render"
+            );
+            ui.label("Wallet data is being updated. Please re-select the wallet.");
+            return;
+        }
+
         if wallet_guard.transactions.is_empty() {
+            ui.label(
+                "No transactions found. Try refreshing your wallet to load transaction history.",
+            );
+            return;
+        }
+
+        // Filter transactions to only those involving this wallet's addresses.
+        // This prevents showing transactions from other wallets that may have
+        // leaked in via a non-wallet-scoped RPC endpoint.
+        let wallet_addresses: std::collections::HashSet<&Address> =
+            wallet_guard.known_addresses.keys().collect();
+        let relevant_indices: Vec<usize> = (0..wallet_guard.transactions.len())
+            .filter(|&i| {
+                let tx = &wallet_guard.transactions[i];
+                tx.transaction.output.iter().any(|output| {
+                    Address::from_script(&output.script_pubkey, self.app_context.network)
+                        .ok()
+                        .is_some_and(|addr| wallet_addresses.contains(&addr))
+                })
+            })
+            .collect();
+
+        if relevant_indices.is_empty() {
             ui.label(
                 "No transactions found. Try refreshing your wallet to load transaction history.",
             );
@@ -1312,7 +1354,7 @@ impl WalletsBalancesScreen {
 
         let dark_mode = ui.ctx().style().visuals.dark_mode;
         let show_fee = self.app_context.is_developer_mode();
-        let mut order: Vec<usize> = (0..wallet_guard.transactions.len()).collect();
+        let mut order = relevant_indices;
         order.sort_by(|&a, &b| {
             wallet_guard.transactions[b]
                 .timestamp

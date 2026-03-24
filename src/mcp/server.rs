@@ -158,7 +158,7 @@ pub async fn init_app_context() -> Result<Arc<AppContext>, McpError> {
         .ok()
         .flatten()
         .map(|(network, ..)| network)
-        .unwrap_or(Network::Dash);
+        .unwrap_or(Network::Mainnet);
 
     let subtasks = Arc::new(TaskManager::new());
     let connection_status = Arc::new(ConnectionStatus::new());
@@ -223,7 +223,7 @@ pub(crate) fn collect_available(config: &crate::config::Config) -> Vec<&'static 
 pub(crate) fn network_display_name(network: dash_sdk::dpp::dashcore::Network) -> &'static str {
     use dash_sdk::dpp::dashcore::Network;
     match network {
-        Network::Dash => "mainnet",
+        Network::Mainnet => "mainnet",
         Network::Testnet => "testnet",
         Network::Devnet => "devnet",
         Network::Regtest => "local",

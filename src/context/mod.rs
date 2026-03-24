@@ -57,8 +57,8 @@ pub(crate) type SettingsCacheGuard<'a> = RwLockWriteGuard<'a, Option<Settings>>;
 
 #[derive(Debug)]
 pub struct AppContext {
-    pub data_dir: PathBuf,
-    pub network: Network,
+    pub(crate) data_dir: PathBuf,
+    pub(crate) network: Network,
     developer_mode: AtomicBool,
     pub(crate) db: Arc<Database>,
     pub(crate) sdk: ArcSwap<Sdk>,
@@ -376,6 +376,14 @@ impl AppContext {
         self.developer_mode.store(enable, Ordering::Relaxed);
         // Animations are reverse of developer mode
         self.enable_animations(!enable);
+    }
+
+    pub fn data_dir(&self) -> &std::path::Path {
+        &self.data_dir
+    }
+
+    pub fn network(&self) -> Network {
+        self.network
     }
 
     pub fn core_backend_mode(&self) -> CoreBackendMode {

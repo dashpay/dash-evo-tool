@@ -4,7 +4,7 @@ use rusqlite::{Connection, params};
 use std::fs;
 use std::path::Path;
 
-pub const DEFAULT_DB_VERSION: u16 = 34;
+pub const DEFAULT_DB_VERSION: u16 = 33;
 
 pub const DEFAULT_NETWORK: &str = "mainnet";
 
@@ -55,18 +55,6 @@ impl Database {
             // numbering conflicts between the zk and v1.0-dev branches.
             // If migrating from < 28, these are no-ops that just bump the version.
             28..=32 => {}
-            34 => {
-                // Commitment trees are now stored in per-wallet SQLite files
-                // under <data_dir>/shielded/<hex>.db. Drop the old global
-                // tables that were shared across all wallets.
-                let _ = tx.execute(
-                    "DROP TABLE IF EXISTS commitment_tree_checkpoint_marks_removed",
-                    [],
-                );
-                let _ = tx.execute("DROP TABLE IF EXISTS commitment_tree_checkpoints", []);
-                let _ = tx.execute("DROP TABLE IF EXISTS commitment_tree_cap", []);
-                let _ = tx.execute("DROP TABLE IF EXISTS commitment_tree_shards", []);
-            }
             33 => {
                 // Consolidated migration: all changes from v28-v32 in one step.
                 // Every sub-migration is idempotent (IF NOT EXISTS / column checks),
@@ -1005,18 +993,6 @@ mod test {
         assert!(exists, "table `{table}` should exist");
     }
 
-    /// Helper: assert that a table does NOT exist in the database.
-    fn assert_table_not_exists(conn: &Connection, table: &str) {
-        let exists: bool = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
-                params![table],
-                |row| row.get::<_, i32>(0).map(|c| c > 0),
-            )
-            .unwrap();
-        assert!(!exists, "table `{table}` should NOT exist");
-    }
-
     /// Helper: assert that a column exists in a table.
     fn assert_column_exists(conn: &Connection, table: &str, column: &str) {
         let exists: bool = conn
@@ -1066,14 +1042,6 @@ mod test {
 
         // dashpay_contact_requests table (pre-existing, but checked for completeness)
         assert_table_exists(conn, "dashpay_contact_requests");
-    }
-
-    /// v34: global commitment tree tables must be gone (per-wallet DB files now).
-    fn assert_v34_schema(conn: &Connection) {
-        assert_table_not_exists(conn, "commitment_tree_shards");
-        assert_table_not_exists(conn, "commitment_tree_cap");
-        assert_table_not_exists(conn, "commitment_tree_checkpoints");
-        assert_table_not_exists(conn, "commitment_tree_checkpoint_marks_removed");
     }
 
     #[test]
@@ -1160,7 +1128,7 @@ mod test {
     }
 
     #[test]
-    fn test_v34_migration_fresh_install() {
+    fn test_v33_migration_fresh_install() {
         let temp_dir = tempfile::tempdir().unwrap();
         let db_file_path = temp_dir.path().join("fresh.db");
         let db = super::Database::new(&db_file_path).unwrap();
@@ -1168,7 +1136,6 @@ mod test {
 
         let conn = db.conn.lock().unwrap();
 
-        // Version must be 33
         let version: u16 = conn
             .query_row(
                 "SELECT database_version FROM settings WHERE id = 1",
@@ -1177,10 +1144,9 @@ mod test {
             )
             .unwrap();
         assert_eq!(version, DEFAULT_DB_VERSION);
-        assert_eq!(version, 34);
+        assert_eq!(version, 33);
 
         assert_v33_schema(&conn);
-        assert_v34_schema(&conn);
     }
 
     #[test]
@@ -1295,11 +1261,10 @@ mod test {
         );
 
         // Verify final version
-        assert_eq!(db.db_schema_version().unwrap(), 34);
+        assert_eq!(db.db_schema_version().unwrap(), 33);
 
-        // Verify full v33+v34 schema
+        // Verify full v33 schema
         let conn = db.conn.lock().unwrap();
         assert_v33_schema(&conn);
-        assert_v34_schema(&conn);
     }
 }

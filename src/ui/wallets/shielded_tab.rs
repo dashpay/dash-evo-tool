@@ -84,22 +84,46 @@ impl ShieldedTabView {
             .map(AppAction::BackendTask)
             .unwrap_or(AppAction::None);
 
-        // Auto-initialize if the wallet is already open (mirrors the check in ui())
+        // Auto-initialize if the wallet is already open (mirrors the check in ui()).
+        // If the backend already initialized the state eagerly (e.g. in
+        // handle_wallet_unlocked), skip dispatching another init task to avoid
+        // a redundant SyncNotes that can re-append notes already loaded from DB.
         if !self.is_initialized && !self.initializing {
-            let wallet_arc = {
-                let wallets = self.app_context.wallets.read().unwrap();
-                wallets.get(&self.seed_hash).cloned()
-            };
-            if let Some(wallet) = &wallet_arc
-                && !wallet_needs_unlock(wallet)
-            {
-                let _ = try_open_wallet_no_password(wallet);
-                self.initializing = true;
-                action |= AppAction::BackendTask(BackendTask::ShieldedTask(
-                    ShieldedTask::InitializeShieldedWallet {
-                        seed_hash: self.seed_hash,
-                    },
-                ));
+            let already_in_state = self
+                .app_context
+                .shielded_states
+                .lock()
+                .ok()
+                .is_some_and(|states| states.contains_key(&self.seed_hash));
+            if already_in_state {
+                // State was populated eagerly — adopt the cached balance and
+                // mark as initialized without dispatching a backend task.
+                self.is_initialized = true;
+                if let Some(balance) = self
+                    .app_context
+                    .shielded_states
+                    .lock()
+                    .ok()
+                    .and_then(|states| states.get(&self.seed_hash).map(|s| s.shielded_balance))
+                {
+                    self.shielded_balance = balance;
+                }
+            } else {
+                let wallet_arc = {
+                    let wallets = self.app_context.wallets.read().unwrap();
+                    wallets.get(&self.seed_hash).cloned()
+                };
+                if let Some(wallet) = &wallet_arc
+                    && !wallet_needs_unlock(wallet)
+                {
+                    let _ = try_open_wallet_no_password(wallet);
+                    self.initializing = true;
+                    action |= AppAction::BackendTask(BackendTask::ShieldedTask(
+                        ShieldedTask::InitializeShieldedWallet {
+                            seed_hash: self.seed_hash,
+                        },
+                    ));
+                }
             }
         }
 

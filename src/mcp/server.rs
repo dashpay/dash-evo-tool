@@ -141,7 +141,9 @@ pub async fn init_app_context() -> Result<Arc<AppContext>, McpError> {
 
     let env_path = data_dir.join(".env");
     if env_path.exists() {
-        let _ = dotenvy::from_path(&env_path);
+        if let Err(e) = dotenvy::from_path(&env_path) {
+            tracing::warn!("Failed to load .env file at {}: {e}", env_path.display());
+        }
     }
 
     let db_file_path = data_file_path(&data_dir, "data.db")

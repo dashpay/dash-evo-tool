@@ -1702,257 +1702,204 @@ impl WalletsBalancesScreen {
     /// Render a compact sync status panel showing Core, Platform, and Shielded sync progress.
     fn render_sync_status(&self, ui: &mut Ui) {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let secondary = DashColors::text_secondary(dark_mode);
+        let syncing_color = DashColors::DASH_BLUE;
+        let sz = 12.0;
 
         ui.collapsing(
-            RichText::new("Sync Status")
-                .size(12.0)
-                .color(DashColors::text_secondary(dark_mode)),
+            RichText::new("Sync Status").size(sz).color(secondary),
             |ui| {
-                Frame::group(ui.style())
-                    .fill(DashColors::surface(dark_mode))
-                    .inner_margin(Margin::symmetric(16, 8))
-                    .show(ui, |ui| {
-                        // Line 1 -- Core sync status
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new("Core:")
-                                    .size(12.0)
-                                    .strong()
-                                    .color(DashColors::text_primary(dark_mode)),
-                            );
-
-                            match self.app_context.core_backend_mode() {
-                                CoreBackendMode::Rpc => {
-                                    if self.app_context.connection_status().rpc_online() {
-                                        ui.colored_label(
-                                            Color32::DARK_GREEN,
-                                            RichText::new("Connected").size(12.0),
-                                        );
-                                    } else {
-                                        ui.colored_label(
-                                            DashColors::ERROR,
-                                            RichText::new("Disconnected").size(12.0),
-                                        );
-                                    }
-                                }
-                                CoreBackendMode::Spv => {
-                                    let snapshot = self.app_context.spv_manager().status();
-                                    match snapshot.status {
-                                        SpvStatus::Idle | SpvStatus::Stopped => {
-                                            ui.label(
-                                                RichText::new("Disconnected")
-                                                    .size(12.0)
-                                                    .color(DashColors::text_secondary(dark_mode)),
-                                            );
-                                        }
-                                        SpvStatus::Starting => {
-                                            ui.add(
-                                                egui::Spinner::new()
-                                                    .size(12.0)
-                                                    .color(DashColors::DASH_BLUE),
-                                            );
-                                            ui.label(
-                                                RichText::new("Connecting...")
-                                                    .size(12.0)
-                                                    .color(DashColors::DASH_BLUE),
-                                            );
-                                        }
-                                        SpvStatus::Syncing => {
-                                            ui.add(
-                                                egui::Spinner::new()
-                                                    .size(12.0)
-                                                    .color(DashColors::DASH_BLUE),
-                                            );
-                                            let phase_text = snapshot
-                                                .sync_progress
-                                                .as_ref()
-                                                .map(spv_phase_summary)
-                                                .unwrap_or_else(|| "starting...".to_string());
-                                            ui.label(
-                                                RichText::new(format!("Syncing — {phase_text}"))
-                                                    .size(12.0)
-                                                    .color(DashColors::DASH_BLUE),
-                                            );
-                                        }
-                                        SpvStatus::Running => {
-                                            ui.colored_label(
-                                                Color32::DARK_GREEN,
-                                                RichText::new(format!(
-                                                    "Synced — {} peers",
-                                                    snapshot.connected_peers
-                                                ))
-                                                .size(12.0),
-                                            );
-                                        }
-                                        SpvStatus::Stopping => {
-                                            ui.add(
-                                                egui::Spinner::new()
-                                                    .size(12.0)
-                                                    .color(DashColors::DASH_BLUE),
-                                            );
-                                            ui.label(
-                                                RichText::new("Disconnecting...")
-                                                    .size(12.0)
-                                                    .color(DashColors::DASH_BLUE),
-                                            );
-                                        }
-                                        SpvStatus::Error => {
-                                            ui.colored_label(
-                                                DashColors::ERROR,
-                                                RichText::new("Error").size(12.0),
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                        });
-
-                        // Line 2 -- Platform sync status
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new("Platform:")
-                                    .size(12.0)
-                                    .strong()
-                                    .color(DashColors::text_primary(dark_mode)),
-                            );
-
-                            // Addresses
-                            let addr_count = self
-                                .selected_wallet
-                                .as_ref()
-                                .and_then(|w| w.read().ok())
-                                .map(|w| w.platform_address_info.len())
-                                .unwrap_or(0);
-                            if self.refreshing {
-                                ui.add(
-                                    egui::Spinner::new().size(12.0).color(DashColors::DASH_BLUE),
+                // -- Core sync status --
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("•").size(sz).color(secondary));
+                    ui.label(
+                        RichText::new("Core:")
+                            .size(sz)
+                            .strong()
+                            .color(DashColors::text_primary(dark_mode)),
+                    );
+                    match self.app_context.core_backend_mode() {
+                        CoreBackendMode::Rpc => {
+                            if self.app_context.connection_status().rpc_online() {
+                                ui.colored_label(
+                                    Color32::DARK_GREEN,
+                                    RichText::new("Connected").size(sz),
+                                );
+                            } else {
+                                ui.colored_label(
+                                    DashColors::ERROR,
+                                    RichText::new("Disconnected").size(sz),
                                 );
                             }
-                            let addr_text = if let Some((last_sync_ts, sync_height)) =
-                                self.platform_sync_info
-                            {
-                                let ago = Self::format_unix_time_ago(last_sync_ts);
-                                format!(
-                                    "Addresses: {} synced (blk {}, {})",
-                                    addr_count, sync_height, ago
-                                )
-                            } else {
-                                "Addresses: never synced".to_string()
-                            };
-                            ui.label(RichText::new(addr_text).size(12.0).color(
-                                if self.refreshing {
-                                    DashColors::DASH_BLUE
-                                } else {
-                                    DashColors::text_secondary(dark_mode)
-                                },
-                            ));
-
-                            ui.label(
-                                RichText::new("|")
-                                    .size(12.0)
-                                    .color(DashColors::text_secondary(dark_mode)),
-                            );
-
-                            // Shielded notes + nullifiers
-                            let seed_hash = self
-                                .selected_wallet
-                                .as_ref()
-                                .and_then(|w| w.read().ok().map(|g| g.seed_hash()));
-                            let shielded_info = seed_hash.and_then(|hash| {
-                                let states = self.app_context.shielded_states.lock().ok()?;
-                                let state = states.get(&hash)?;
-                                Some((
-                                    state.last_synced_index,
-                                    state.notes.iter().filter(|n| !n.is_spent).count(),
-                                    state.last_nullifier_sync_height,
-                                    state.last_notes_synced_at,
-                                    state.last_nullifiers_synced_at,
-                                ))
-                            });
-                            let shielded_syncing = self
-                                .shielded_tab_view
-                                .as_ref()
-                                .is_some_and(|v| v.is_syncing());
-
-                            match shielded_info {
-                                Some((
-                                    synced_index,
-                                    note_count,
-                                    nf_height,
-                                    notes_synced_at,
-                                    nf_synced_at,
-                                )) => {
-                                    if shielded_syncing {
-                                        ui.add(
-                                            egui::Spinner::new()
-                                                .size(12.0)
-                                                .color(DashColors::DASH_BLUE),
-                                        );
-                                    }
-                                    let notes_text = if let Some(t) = notes_synced_at {
-                                        let ago = Self::format_instant_ago(t);
-                                        format!(
-                                            "Notes: {} synced ({} notes, {})",
-                                            synced_index, note_count, ago
-                                        )
-                                    } else if synced_index > 0 {
-                                        format!(
-                                            "Notes: {} synced ({} notes)",
-                                            synced_index, note_count
-                                        )
-                                    } else {
-                                        "Notes: never synced".to_string()
-                                    };
-                                    ui.label(RichText::new(notes_text).size(12.0).color(
-                                        if shielded_syncing {
-                                            DashColors::DASH_BLUE
-                                        } else {
-                                            DashColors::text_secondary(dark_mode)
-                                        },
-                                    ));
-
+                        }
+                        CoreBackendMode::Spv => {
+                            let snapshot = self.app_context.spv_manager().status();
+                            match snapshot.status {
+                                SpvStatus::Idle | SpvStatus::Stopped => {
                                     ui.label(
-                                        RichText::new("|")
-                                            .size(12.0)
-                                            .color(DashColors::text_secondary(dark_mode)),
+                                        RichText::new("Disconnected").size(sz).color(secondary),
                                     );
-
-                                    let nf_text = if let Some(t) = nf_synced_at {
-                                        let ago = Self::format_instant_ago(t);
-                                        format!("Nullifiers: height {} ({})", nf_height, ago)
-                                    } else if nf_height > 0 {
-                                        format!("Nullifiers: height {}", nf_height)
-                                    } else {
-                                        "Nullifiers: never synced".to_string()
-                                    };
-                                    ui.label(RichText::new(nf_text).size(12.0).color(
-                                        if shielded_syncing {
-                                            DashColors::DASH_BLUE
-                                        } else {
-                                            DashColors::text_secondary(dark_mode)
-                                        },
-                                    ));
                                 }
-                                None => {
+                                SpvStatus::Starting => {
+                                    ui.add(egui::Spinner::new().size(sz).color(syncing_color));
                                     ui.label(
-                                        RichText::new("Notes: never synced")
-                                            .size(12.0)
-                                            .color(DashColors::text_secondary(dark_mode)),
+                                        RichText::new("Connecting...")
+                                            .size(sz)
+                                            .color(syncing_color),
                                     );
+                                }
+                                SpvStatus::Syncing => {
+                                    ui.add(egui::Spinner::new().size(sz).color(syncing_color));
+                                    let phase_text = snapshot
+                                        .sync_progress
+                                        .as_ref()
+                                        .map(spv_phase_summary)
+                                        .unwrap_or_else(|| "starting...".to_string());
                                     ui.label(
-                                        RichText::new("|")
-                                            .size(12.0)
-                                            .color(DashColors::text_secondary(dark_mode)),
+                                        RichText::new(format!("Syncing — {phase_text}"))
+                                            .size(sz)
+                                            .color(syncing_color),
                                     );
+                                }
+                                SpvStatus::Running => {
+                                    ui.colored_label(
+                                        Color32::DARK_GREEN,
+                                        RichText::new(format!(
+                                            "Synced — {} peers",
+                                            snapshot.connected_peers
+                                        ))
+                                        .size(sz),
+                                    );
+                                }
+                                SpvStatus::Stopping => {
+                                    ui.add(egui::Spinner::new().size(sz).color(syncing_color));
                                     ui.label(
-                                        RichText::new("Nullifiers: never synced")
-                                            .size(12.0)
-                                            .color(DashColors::text_secondary(dark_mode)),
+                                        RichText::new("Disconnecting...")
+                                            .size(sz)
+                                            .color(syncing_color),
+                                    );
+                                }
+                                SpvStatus::Error => {
+                                    ui.colored_label(
+                                        DashColors::ERROR,
+                                        RichText::new("Error").size(sz),
                                     );
                                 }
                             }
+                        }
+                    }
+                });
+
+                // -- Platform: Addresses --
+                let addr_count = self
+                    .selected_wallet
+                    .as_ref()
+                    .and_then(|w| w.read().ok())
+                    .map(|w| w.platform_address_info.len())
+                    .unwrap_or(0);
+                let addr_color = if self.refreshing {
+                    syncing_color
+                } else {
+                    secondary
+                };
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("•").size(sz).color(secondary));
+                    if self.refreshing {
+                        ui.add(egui::Spinner::new().size(sz).color(syncing_color));
+                    }
+                    let addr_text =
+                        if let Some((last_sync_ts, sync_height)) = self.platform_sync_info {
+                            let ago = Self::format_unix_time_ago(last_sync_ts);
+                            format!(
+                                "Addresses: {} synced (blk {}, {})",
+                                addr_count, sync_height, ago
+                            )
+                        } else {
+                            "Addresses: never synced".to_string()
+                        };
+                    ui.label(RichText::new(addr_text).size(sz).color(addr_color));
+                });
+
+                // -- Shielded: Notes + Nullifiers --
+                let seed_hash = self
+                    .selected_wallet
+                    .as_ref()
+                    .and_then(|w| w.read().ok().map(|g| g.seed_hash()));
+                let shielded_info = seed_hash.and_then(|hash| {
+                    let states = self.app_context.shielded_states.lock().ok()?;
+                    let state = states.get(&hash)?;
+                    Some((
+                        state.last_synced_index,
+                        state.notes.iter().filter(|n| !n.is_spent).count(),
+                        state.last_nullifier_sync_height,
+                        state.last_notes_synced_at,
+                        state.last_nullifiers_synced_at,
+                    ))
+                });
+                let shielded_syncing = self
+                    .shielded_tab_view
+                    .as_ref()
+                    .is_some_and(|v| v.is_syncing());
+                let shielded_color = if shielded_syncing {
+                    syncing_color
+                } else {
+                    secondary
+                };
+
+                match shielded_info {
+                    Some((synced_index, note_count, nf_height, notes_synced_at, nf_synced_at)) => {
+                        // Notes bullet
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("•").size(sz).color(secondary));
+                            if shielded_syncing {
+                                ui.add(egui::Spinner::new().size(sz).color(syncing_color));
+                            }
+                            let notes_text = if let Some(t) = notes_synced_at {
+                                let ago = Self::format_instant_ago(t);
+                                format!(
+                                    "Notes: {} synced ({} notes, {})",
+                                    synced_index, note_count, ago
+                                )
+                            } else if synced_index > 0 {
+                                format!("Notes: {} synced ({} notes)", synced_index, note_count)
+                            } else {
+                                "Notes: never synced".to_string()
+                            };
+                            ui.label(RichText::new(notes_text).size(sz).color(shielded_color));
                         });
-                    });
+                        // Nullifiers bullet
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("•").size(sz).color(secondary));
+                            let nf_text = if let Some(t) = nf_synced_at {
+                                let ago = Self::format_instant_ago(t);
+                                format!("Nullifiers: height {} ({})", nf_height, ago)
+                            } else if nf_height > 0 {
+                                format!("Nullifiers: height {}", nf_height)
+                            } else {
+                                "Nullifiers: never synced".to_string()
+                            };
+                            ui.label(RichText::new(nf_text).size(sz).color(shielded_color));
+                        });
+                    }
+                    None => {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("•").size(sz).color(secondary));
+                            ui.label(
+                                RichText::new("Notes: never synced")
+                                    .size(sz)
+                                    .color(secondary),
+                            );
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("•").size(sz).color(secondary));
+                            ui.label(
+                                RichText::new("Nullifiers: never synced")
+                                    .size(sz)
+                                    .color(secondary),
+                            );
+                        });
+                    }
+                }
             },
         );
     }

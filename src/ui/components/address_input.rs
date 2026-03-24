@@ -805,9 +805,8 @@ impl AddressInput {
                                         {
                                             let highlighted =
                                                 self.autocomplete_highlight == Some(i);
-                                            ui.horizontal(|ui| {
-                                                let resp = ui
-                                                    .selectable_label(highlighted, label.as_str());
+                                            let row_resp = ui.horizontal(|ui| {
+                                                let _ = ui.selectable_label(highlighted, label.as_str());
                                                 ui.with_layout(
                                                     egui::Layout::right_to_left(
                                                         egui::Align::Center,
@@ -822,10 +821,10 @@ impl AddressInput {
                                                         );
                                                     },
                                                 );
-                                                if resp.clicked() {
-                                                    selected_entry = Some(entry.clone());
-                                                }
                                             });
+                                            if row_resp.response.clicked() {
+                                                selected_entry = Some(entry.clone());
+                                            }
                                         }
                                         if total_entries > 10 {
                                             let remaining = total_entries - 10;

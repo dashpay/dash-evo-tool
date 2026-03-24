@@ -110,10 +110,19 @@ pub async fn sync_notes(
     }
 
     // Persist and record decrypted notes that are new (position >= already_have).
+    // Also skip notes already in memory (loaded from DB during init) to prevent
+    // double-counting when the commitment tree resets but persisted notes remain.
     let mut new_note_count = 0u32;
     for dn in result.decrypted_notes {
         if dn.position < already_have {
             continue; // already stored in a previous sync
+        }
+        if shielded_state
+            .notes
+            .iter()
+            .any(|n| u64::from(n.position) == dn.position)
+        {
+            continue; // already loaded from DB during init
         }
 
         // Compute the spending nullifier from our FVK (dn.nullifier is the rho/nf

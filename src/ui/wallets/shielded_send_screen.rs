@@ -35,6 +35,8 @@ pub struct ShieldedSendScreen {
     success_message: Option<String>,
     /// Queued task to dispatch on next frame (e.g., sync notes after successful send).
     pending_refresh_task: Option<BackendTask>,
+    /// Whether to show the balance-update-pending info banner on the success screen.
+    balance_update_pending: bool,
 }
 
 impl ShieldedSendScreen {
@@ -58,6 +60,7 @@ impl ShieldedSendScreen {
             error_message: None,
             success_message: None,
             pending_refresh_task: None,
+            balance_update_pending: false,
         }
     }
 
@@ -125,6 +128,13 @@ impl ScreenLike for ShieldedSendScreen {
             }
             if let Some(msg) = &self.success_message {
                 ui.colored_label(Color32::DARK_GREEN, msg);
+                if self.balance_update_pending {
+                    ui.add_space(8.0);
+                    ui.label(
+                        "Your remaining balance will update after the next block is confirmed. \
+                         The recipient's balance will also update after the next block and a wallet sync.",
+                    );
+                }
                 ui.add_space(10.0);
                 if ui.button("Done").clicked() {
                     action = AppAction::PopScreen;
@@ -221,6 +231,7 @@ impl ScreenLike for ShieldedSendScreen {
                     Some(BackendTask::ShieldedTask(ShieldedTask::SyncNotes {
                         seed_hash: self.seed_hash,
                     }));
+                self.balance_update_pending = true;
             }
             BackendTaskSuccessResult::ShieldedNotesSynced {
                 seed_hash,

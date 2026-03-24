@@ -561,7 +561,10 @@ impl ShieldedTabView {
                             .app_context
                             .db
                             .delete_shielded_notes(&self.seed_hash, &network_str);
-                        let _ = self.app_context.db.clear_commitment_tree_tables();
+                        let _ = crate::database::Database::clear_commitment_tree_for_wallet(
+                            &self.app_context.data_dir,
+                            &self.seed_hash,
+                        );
 
                         self.shielded_balance = 0;
                         self.tree_synced = false;
@@ -614,6 +617,69 @@ impl ShieldedTabView {
                     RichText::new("No shielded notes yet. Shield some credits to get started.")
                         .color(DashColors::text_secondary(dark_mode)),
                 );
+            }
+
+            // Sync status indicator
+            if self.syncing {
+                ui.add(egui::Spinner::new().color(DashColors::DASH_BLUE));
+                ui.label(
+                    RichText::new("Syncing...")
+                        .size(12.0)
+                        .color(DashColors::DASH_BLUE),
+                );
+            } else if self.tree_synced {
+                ui.label(
+                    RichText::new("Synced")
+                        .size(12.0)
+                        .color(Color32::DARK_GREEN),
+                );
+            }
+
+            // Sync buttons
+            if !self.syncing {
+                if ui.small_button("Sync Notes").clicked() {
+                    self.syncing = true;
+                    self.success_message = None;
+                    self.error_message = None;
+                    action |= AppAction::BackendTask(BackendTask::ShieldedTask(
+                        ShieldedTask::SyncNotes {
+                            seed_hash: self.seed_hash,
+                        },
+                    ));
+                }
+
+                if self.app_context.is_developer_mode() && ui.small_button("Resync Notes").clicked()
+                {
+                    // Remove in-memory state entirely (will be recreated by init)
+                    {
+                        let mut states = self.app_context.shielded_states.lock().unwrap();
+                        states.remove(&self.seed_hash);
+                    }
+                    // Clear persisted notes and commitment tree data
+                    let network_str = self.app_context.network.to_string();
+                    let _ = self
+                        .app_context
+                        .db
+                        .delete_shielded_notes(&self.seed_hash, &network_str);
+                    let _ = crate::database::Database::clear_commitment_tree_for_wallet(
+                        &self.app_context.data_dir,
+                        &self.seed_hash,
+                    );
+
+                    self.shielded_balance = 0;
+                    self.tree_synced = false;
+                    self.is_initialized = false;
+                    self.initializing = true;
+                    self.syncing = false;
+                    self.success_message = None;
+                    self.error_message = None;
+                    // Re-initialize (creates fresh persistent tree) then auto-syncs
+                    action |= AppAction::BackendTask(BackendTask::ShieldedTask(
+                        ShieldedTask::InitializeShieldedWallet {
+                            seed_hash: self.seed_hash,
+                        },
+                    ));
+                }
             }
         });
 

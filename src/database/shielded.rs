@@ -1,6 +1,49 @@
 use crate::database::Database;
 use crate::model::wallet::WalletSeedHash;
 use rusqlite::{Connection, params};
+use std::path::{Path, PathBuf};
+
+/// Return the path to a wallet's dedicated commitment tree SQLite database.
+///
+/// Each wallet gets its own file under `<data_dir>/shielded/` so that
+/// commitment trees are fully isolated between wallets.
+pub fn commitment_tree_db_path(data_dir: &Path, seed_hash: &WalletSeedHash) -> PathBuf {
+    let hex = hex::encode(seed_hash.as_slice());
+    data_dir.join("shielded").join(format!("{hex}.db"))
+}
+
+/// Open (or create) the per-wallet commitment tree SQLite database.
+///
+/// Creates the `<data_dir>/shielded/` directory if it does not exist.
+pub fn open_commitment_tree_connection(
+    data_dir: &Path,
+    seed_hash: &WalletSeedHash,
+) -> Result<rusqlite::Connection, rusqlite::Error> {
+    let db_path = commitment_tree_db_path(data_dir, seed_hash);
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            rusqlite::Error::InvalidParameterName(format!(
+                "Failed to create shielded DB directory: {e}"
+            ))
+        })?;
+    }
+    rusqlite::Connection::open(&db_path)
+}
+
+/// Delete a wallet's dedicated commitment tree database file.
+///
+/// Returns `Ok(true)` if a file was removed, `Ok(false)` if it did not exist.
+pub fn delete_commitment_tree_db(
+    data_dir: &Path,
+    seed_hash: &WalletSeedHash,
+) -> Result<bool, std::io::Error> {
+    let db_path = commitment_tree_db_path(data_dir, seed_hash);
+    match std::fs::remove_file(&db_path) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e),
+    }
+}
 
 impl Database {
     /// Create shielded pool tables (v28 migration).
@@ -163,18 +206,24 @@ impl Database {
         )
     }
 
-    /// Clear all commitment tree SQLite tables (used by resync).
+    /// Clear a wallet's commitment tree data by deleting its dedicated DB file.
     ///
-    /// The `ClientPersistentCommitmentTree` stores its shards, caps, and
-    /// checkpoints in `commitment_tree_*` tables. This deletes all rows so a
-    /// fresh tree can be opened on the same connection.
-    pub fn clear_commitment_tree_tables(&self) -> rusqlite::Result<()> {
-        let conn = self.conn.lock().unwrap();
-        // Tables are created by grovedb on first use; ignore errors if missing.
-        let _ = conn.execute("DELETE FROM commitment_tree_shards", []);
-        let _ = conn.execute("DELETE FROM commitment_tree_cap", []);
-        let _ = conn.execute("DELETE FROM commitment_tree_checkpoints", []);
-        let _ = conn.execute("DELETE FROM commitment_tree_checkpoint_marks_removed", []);
+    /// Each wallet stores its `ClientPersistentCommitmentTree` in a separate
+    /// SQLite file under `<data_dir>/shielded/<hex>.db`. This removes that file
+    /// so a fresh tree can be opened on next initialization.
+    pub fn clear_commitment_tree_for_wallet(
+        data_dir: &Path,
+        seed_hash: &WalletSeedHash,
+    ) -> rusqlite::Result<()> {
+        tracing::warn!(
+            "Clearing commitment tree for wallet {}",
+            hex::encode(seed_hash.as_slice()),
+        );
+        delete_commitment_tree_db(data_dir, seed_hash).map_err(|e| {
+            rusqlite::Error::InvalidParameterName(format!(
+                "Failed to delete commitment tree DB: {e}"
+            ))
+        })?;
         Ok(())
     }
 

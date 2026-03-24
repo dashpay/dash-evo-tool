@@ -26,8 +26,6 @@ pub struct ShieldedTabView {
     tree_synced: bool,
     /// Pending backend task to dispatch on next ui() call (e.g., sync after Resync).
     pending_task: Option<BackendTask>,
-    /// Currently selected diversified address index.
-    selected_address_index: u32,
     /// Number of diversified addresses generated (always >= 1).
     address_count: u32,
 }
@@ -45,7 +43,6 @@ impl ShieldedTabView {
             is_initialized: false,
             tree_synced: false,
             pending_task: None,
-            selected_address_index: 0,
             address_count: 1,
         }
     }
@@ -98,6 +95,110 @@ impl ShieldedTabView {
                 self.syncing = false;
             }
         }
+    }
+
+    /// Render the collapsible shielded addresses section with a table of all
+    /// diversified addresses.
+    fn render_address_section(&mut self, ui: &mut Ui, dark_mode: bool) {
+        let dev_mode = self.app_context.is_developer_mode();
+
+        let header = egui::CollapsingHeader::new(
+            RichText::new("Shielded Addresses")
+                .size(16.0)
+                .color(DashColors::text_primary(dark_mode)),
+        )
+        .id_salt("shielded_addresses")
+        .default_open(dev_mode);
+
+        header.show(ui, |ui| {
+            ui.horizontal(|ui| {
+                if ui
+                    .small_button("+")
+                    .on_hover_text("Generate new diversified address")
+                    .clicked()
+                {
+                    self.address_count += 1;
+                }
+            });
+
+            ui.add_space(4.0);
+
+            // Collect all addresses for the table
+            let addresses: Vec<(u32, String)> = {
+                let states = self.app_context.shielded_states.lock().unwrap();
+                if let Some(state) = states.get(&self.seed_hash) {
+                    (0..self.address_count)
+                        .filter_map(|idx| {
+                            use dash_sdk::dpp::address_funds::OrchardAddress;
+                            use dash_sdk::grovedb_commitment_tree::Scope;
+                            let addr = state.keys.fvk.address_at(idx, Scope::External);
+                            let raw = addr.to_raw_address_bytes();
+                            let orchard_addr = OrchardAddress::from_raw_bytes(&raw).ok()?;
+                            Some((
+                                idx,
+                                orchard_addr.to_bech32m_string(self.app_context.network),
+                            ))
+                        })
+                        .collect()
+                } else {
+                    vec![]
+                }
+            };
+
+            if addresses.is_empty() {
+                ui.label(
+                    RichText::new("No addresses generated yet.")
+                        .color(DashColors::text_secondary(dark_mode)),
+                );
+                return;
+            }
+
+            egui::Grid::new("shielded_addresses_grid")
+                .num_columns(4)
+                .striped(true)
+                .spacing([20.0, 4.0])
+                .show(ui, |ui| {
+                    ui.label(RichText::new("Index").strong());
+                    ui.label(RichText::new("Address").strong());
+                    ui.label(RichText::new("Status").strong());
+                    ui.label(""); // Copy column header
+                    ui.end_row();
+
+                    for (idx, full_addr) in &addresses {
+                        // Index column
+                        if *idx == 0 {
+                            ui.label("0 (Default)");
+                        } else {
+                            ui.label(idx.to_string());
+                        }
+
+                        // Address column: truncated, clickable to copy
+                        let truncated = truncate_address(full_addr);
+                        let addr_response = ui.add(
+                            egui::Label::new(RichText::new(&truncated).monospace())
+                                .sense(egui::Sense::click()),
+                        );
+                        if addr_response.clicked() {
+                            let _ = copy_text_to_clipboard(full_addr);
+                        }
+                        addr_response.on_hover_text(full_addr.as_str());
+
+                        // Status column
+                        if *idx == 0 {
+                            ui.label("Default");
+                        } else {
+                            ui.label("");
+                        }
+
+                        // Copy button column
+                        if ui.small_button("Copy").clicked() {
+                            let _ = copy_text_to_clipboard(full_addr);
+                        }
+
+                        ui.end_row();
+                    }
+                });
+        });
     }
 
     /// Handle backend task results for shielded operations.
@@ -302,67 +403,8 @@ impl ShieldedTabView {
 
         ui.add_space(10.0);
 
-        // Payment address (bech32m encoded: dash1z... or tdash1z...)
-        let address_str = {
-            let states = self.app_context.shielded_states.lock().unwrap();
-            states.get(&self.seed_hash).and_then(|state| {
-                use dash_sdk::dpp::address_funds::OrchardAddress;
-                use dash_sdk::grovedb_commitment_tree::Scope;
-                let addr = state
-                    .keys
-                    .fvk
-                    .address_at(self.selected_address_index, Scope::External);
-                let raw = addr.to_raw_address_bytes();
-                let orchard_addr = OrchardAddress::from_raw_bytes(&raw).ok()?;
-                Some(orchard_addr.to_bech32m_string(self.app_context.network))
-            })
-        };
-
-        if let Some(addr) = &address_str {
-            Frame::new()
-                .fill(DashColors::surface(dark_mode))
-                .inner_margin(Margin::symmetric(16, 12))
-                .corner_radius(8.0)
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new(format!(
-                                "Shielded Payment Address ({})",
-                                self.selected_address_index
-                            ))
-                            .size(14.0)
-                            .color(DashColors::text_secondary(dark_mode)),
-                        );
-
-                        // Address selector: prev/next arrows
-                        if self.selected_address_index > 0 && ui.small_button("<").clicked() {
-                            self.selected_address_index -= 1;
-                        }
-                        if self.selected_address_index + 1 < self.address_count
-                            && ui.small_button(">").clicked()
-                        {
-                            self.selected_address_index += 1;
-                        }
-
-                        // Generate new diversified address
-                        if ui
-                            .small_button("+")
-                            .on_hover_text("Generate new diversified address")
-                            .clicked()
-                        {
-                            self.selected_address_index = self.address_count;
-                            self.address_count += 1;
-                        }
-                    });
-                    ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        ui.monospace(addr);
-                        if ui.small_button("Copy").clicked() {
-                            let _ = copy_text_to_clipboard(addr);
-                        }
-                    });
-                });
-        }
+        // Shielded Addresses (collapsible table)
+        self.render_address_section(ui, dark_mode);
 
         ui.add_space(10.0);
 
@@ -636,6 +678,14 @@ impl ShieldedTabView {
 
         action
     }
+}
+
+/// Truncate a bech32m address for display: first 12 chars + `...` + last 8 chars.
+fn truncate_address(addr: &str) -> String {
+    if addr.len() <= 23 {
+        return addr.to_string();
+    }
+    format!("{}...{}", &addr[..12], &addr[addr.len() - 8..])
 }
 
 fn format_credits(credits: u64) -> String {

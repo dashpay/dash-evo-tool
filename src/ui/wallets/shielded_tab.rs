@@ -125,7 +125,13 @@ impl ShieldedTabView {
 
             // Collect all addresses for the table
             let addresses: Vec<(u32, String)> = {
-                let states = self.app_context.shielded_states.lock().unwrap();
+                let Ok(states) = self.app_context.shielded_states.lock() else {
+                    ui.label(
+                        RichText::new("Unable to read shielded state.")
+                            .color(DashColors::text_secondary(dark_mode)),
+                    );
+                    return;
+                };
                 if let Some(state) = states.get(&self.seed_hash) {
                     (0..self.address_count)
                         .filter_map(|idx| {
@@ -278,11 +284,11 @@ impl ShieldedTabView {
             } if *seed_hash == self.seed_hash => {
                 self.syncing = false;
                 // Update balance from state after nullifier check
-                let states = self.app_context.shielded_states.lock().unwrap();
-                if let Some(state) = states.get(&self.seed_hash) {
+                if let Ok(states) = self.app_context.shielded_states.lock()
+                    && let Some(state) = states.get(&self.seed_hash)
+                {
                     self.shielded_balance = state.shielded_balance;
                 }
-                drop(states);
                 if *spent_count > 0 {
                     self.success_message = Some(format!("Detected {} spent note(s)", spent_count));
                 }
@@ -486,16 +492,19 @@ impl ShieldedTabView {
 
         // Notes section header with sync status and buttons
         let (notes_info, synced_index): (Vec<(u64, u64, bool)>, u64) = {
-            let states = self.app_context.shielded_states.lock().unwrap();
-            states
-                .get(&self.seed_hash)
-                .map(|state| {
-                    let notes = state
-                        .notes
-                        .iter()
-                        .map(|n| (n.value, n.block_height, n.is_spent))
-                        .collect();
-                    (notes, state.last_synced_index)
+            self.app_context
+                .shielded_states
+                .lock()
+                .ok()
+                .and_then(|states| {
+                    states.get(&self.seed_hash).map(|state| {
+                        let notes = state
+                            .notes
+                            .iter()
+                            .map(|n| (n.value, n.block_height, n.is_spent))
+                            .collect();
+                        (notes, state.last_synced_index)
+                    })
                 })
                 .unwrap_or_default()
         };
@@ -551,8 +560,7 @@ impl ShieldedTabView {
                     if self.app_context.is_developer_mode()
                         && ui.small_button("Resync Notes").clicked()
                     {
-                        {
-                            let mut states = self.app_context.shielded_states.lock().unwrap();
+                        if let Ok(mut states) = self.app_context.shielded_states.lock() {
                             states.remove(&self.seed_hash);
                         }
                         let network_str = self.app_context.network.to_string();

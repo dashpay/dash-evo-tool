@@ -186,30 +186,40 @@ impl AppContext {
     }
 
     /// Queue async SyncNotes -> CheckNullifiers for an already-initialized
-    /// shielded wallet. Uses `spawn_blocking` + `block_on` to sidestep
-    /// rust-lang/rust#100013 (`self: &Arc<Self>` futures are not Send).
+    /// shielded wallet. Tracked via `subtasks` so it participates in graceful
+    /// shutdown and cancellation.
     fn queue_shielded_sync(self: &Arc<Self>, seed_hash: WalletSeedHash) {
         let ctx = Arc::clone(self);
-        let handle = tokio::runtime::Handle::current();
-        tokio::task::spawn_blocking(move || {
-            handle.block_on(async {
-                match ctx.sync_shielded_notes(seed_hash).await {
-                    Ok(_) => {
-                        if let Err(e) = ctx.check_nullifiers_task(seed_hash).await {
-                            tracing::debug!(
-                                seed = %hex::encode(seed_hash),
-                                error = %e,
-                                "Shielded nullifier check after init failed"
-                            );
+        self.subtasks.spawn_sync("shielded_sync", async move {
+            let handle = tokio::runtime::Handle::current();
+            let result = tokio::task::spawn_blocking(move || {
+                handle.block_on(async {
+                    match ctx.sync_shielded_notes(seed_hash).await {
+                        Ok(_) => {
+                            if let Err(e) = ctx.check_nullifiers_task(seed_hash).await {
+                                tracing::debug!(
+                                    seed = %hex::encode(seed_hash),
+                                    error = %e,
+                                    "Shielded nullifier check after init failed"
+                                );
+                            }
                         }
+                        Err(e) => tracing::debug!(
+                            seed = %hex::encode(seed_hash),
+                            error = %e,
+                            "Shielded note sync after init failed"
+                        ),
                     }
-                    Err(e) => tracing::debug!(
-                        seed = %hex::encode(seed_hash),
-                        error = %e,
-                        "Shielded note sync after init failed"
-                    ),
-                }
-            });
+                })
+            })
+            .await;
+            if let Err(e) = result {
+                tracing::debug!(
+                    seed = %hex::encode(seed_hash),
+                    error = %e,
+                    "Shielded sync task panicked"
+                );
+            }
         });
     }
 

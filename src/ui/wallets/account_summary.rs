@@ -186,10 +186,7 @@ impl AccountCategory {
     /// Returns true if this is a "system" account category shown only in
     /// developer mode under the consolidated System tab.
     pub fn is_system_category(&self) -> bool {
-        !matches!(
-            self,
-            AccountCategory::Bip44 | AccountCategory::PlatformPayment
-        )
+        !self.is_visible_in_default_mode()
     }
 }
 
@@ -217,9 +214,9 @@ pub(crate) fn categorize_account_path(
 }
 
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub struct AccountSummary {
     pub category: AccountCategory,
+    #[allow(dead_code)]
     pub label: String,
     pub index: Option<u32>,
     pub confirmed_balance: u64,

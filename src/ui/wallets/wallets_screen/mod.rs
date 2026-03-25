@@ -1145,11 +1145,9 @@ impl WalletsBalancesScreen {
         let developer_mode = self.app_context.is_developer_mode();
         let mut tabs: Vec<AccountTab> = Vec::new();
 
-        // Always-visible primary tabs: Dash Core (Bip44 index 0) and Platform
+        // Always-visible primary tabs: all BIP44 accounts and Platform
         for summary in summaries {
-            let visible = summary.category.is_visible_in_default_mode() && summary.index == Some(0)
-                || summary.category == AccountCategory::PlatformPayment;
-            if !visible {
+            if !summary.category.is_visible_in_default_mode() {
                 continue;
             }
             tabs.push(AccountTab::Category(
@@ -1178,8 +1176,8 @@ impl WalletsBalancesScreen {
     }
 
     /// Collect the system account categories to display inside the System tab.
-    /// Returns `(category, index, address_count, balance_duffs)` tuples sorted
-    /// by the category's natural sort order.
+    /// Returns `(category, index, address_count, balance_duffs)` tuples in a
+    /// fixed display order (identity categories first, then provider, then legacy).
     fn system_tab_sections(
         &self,
         summaries: &[AccountSummary],
@@ -1197,10 +1195,15 @@ impl WalletsBalancesScreen {
             AccountCategory::Bip32,
         ];
 
+        // Precompute per-category address counts in a single pass over
+        // watched_addresses to avoid O(num_categories * num_addresses)
+        // per frame.
+        let address_counts = self.precompute_address_counts();
+
         let mut sections = Vec::new();
         for cat in &all_system_categories {
             let matching: Vec<_> = summaries.iter().filter(|s| &s.category == cat).collect();
-            let address_count = self.count_addresses_for_category(cat);
+            let address_count = address_counts.get(cat).copied().unwrap_or(0);
             let balance: u64 = matching.iter().map(|s| s.confirmed_balance).sum();
             let idx = matching.first().and_then(|s| s.index);
             sections.push((cat.clone(), idx, address_count, balance));
@@ -1211,7 +1214,7 @@ impl WalletsBalancesScreen {
             if matches!(summary.category, AccountCategory::Other(_))
                 && !sections.iter().any(|(c, _, _, _)| *c == summary.category)
             {
-                let address_count = self.count_addresses_for_category(&summary.category);
+                let address_count = address_counts.get(&summary.category).copied().unwrap_or(0);
                 sections.push((
                     summary.category.clone(),
                     summary.index,
@@ -1224,27 +1227,27 @@ impl WalletsBalancesScreen {
         sections
     }
 
-    /// Count addresses belonging to a given category in the selected wallet.
-    fn count_addresses_for_category(&self, category: &AccountCategory) -> usize {
+    /// Build a per-category address count map in a single pass over
+    /// `watched_addresses`. Used by `system_tab_sections` to avoid
+    /// O(num_categories * num_addresses) per frame.
+    fn precompute_address_counts(&self) -> std::collections::HashMap<AccountCategory, usize> {
+        let mut counts = std::collections::HashMap::new();
         let Some(wallet_arc) = self.selected_wallet.as_ref() else {
-            return 0;
+            return counts;
         };
         let Ok(wallet) = wallet_arc.read() else {
-            return 0;
+            return counts;
         };
         let network = self.app_context.network;
-        wallet
-            .watched_addresses
-            .iter()
-            .filter(|(path, _info)| {
-                let (cat, _) = crate::ui::wallets::account_summary::categorize_account_path(
-                    path,
-                    network,
-                    _info.path_reference,
-                );
-                &cat == category
-            })
-            .count()
+        for (path, info) in &wallet.watched_addresses {
+            let (cat, _) = crate::ui::wallets::account_summary::categorize_account_path(
+                path,
+                network,
+                info.path_reference,
+            );
+            *counts.entry(cat).or_insert(0) += 1;
+        }
+        counts
     }
 
     /// Format a duffs balance for tab labels: max 4 decimal places, trimmed.
@@ -1262,16 +1265,6 @@ impl WalletsBalancesScreen {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
 
         ui.add_space(14.0);
-
-        if summaries.is_empty()
-            && !matches!(
-                self.selected_account_tab,
-                AccountTab::Shielded | AccountTab::System
-            )
-        {
-            ui.label("No account activity yet.");
-            return action;
-        }
 
         let tabs = self.build_account_tabs(summaries);
 
@@ -1370,6 +1363,19 @@ impl WalletsBalancesScreen {
                 action |= self.render_system_tab_content(ui, summaries);
             }
             AccountTab::Category(cat, idx) => {
+                // Show empty state if no summaries match this category
+                if !summaries
+                    .iter()
+                    .any(|s| s.category == *cat && s.index == *idx)
+                    && !matches!(cat, AccountCategory::Bip44)
+                {
+                    ui.label(
+                        RichText::new("No account activity yet.")
+                            .color(DashColors::text_secondary(dark_mode)),
+                    );
+                    return action;
+                }
+
                 // Show description for the selected account category
                 if let Some(description) = cat.description() {
                     ui.label(
@@ -1929,7 +1935,7 @@ impl WalletsBalancesScreen {
                 .color(DashColors::text_secondary(dark_mode)),
         )
         .id_salt("balance_breakdown")
-        .default_open(false);
+        .default_open(self.app_context.is_developer_mode());
 
         header.show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -2191,11 +2197,17 @@ impl ScreenLike for WalletsBalancesScreen {
 
         // Tick the shielded tab view to drain any pending user-initiated
         // tasks (e.g. Resync) even when the Shielded tab is not active.
-        let shielded_tick_action = self
-            .shielded_tab_view
-            .as_mut()
-            .map(|v| v.tick())
-            .unwrap_or(AppAction::None);
+        // Skip when the Shielded tab IS active — its ui() method already
+        // calls tick(), and double-ticking would acquire the lock twice
+        // per frame for no benefit.
+        let shielded_tick_action = if self.selected_account_tab != AccountTab::Shielded {
+            self.shielded_tab_view
+                .as_mut()
+                .map(|v| v.tick())
+                .unwrap_or(AppAction::None)
+        } else {
+            AppAction::None
+        };
 
         let mut right_buttons = vec![
             (

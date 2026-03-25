@@ -129,10 +129,7 @@ det-cli platform-withdrawals-get status=completed
 # Get full schema and description for a tool
 det-cli tool-describe name=core_funds_send
 
-# Send 0.01 DASH (1,000,000 duffs) to an address
-det-cli core-funds-send wallet-id=savings address=yXyz... amount-duffs=1000000
-
-# Verify you're on testnet before sending
+# Send 0.01 DASH (1,000,000 duffs) to an address (network is required)
 det-cli core-funds-send wallet-id=savings address=yXyz... amount-duffs=1000000 network=testnet
 
 # Run as stdio MCP server for Claude Desktop or Claude Code

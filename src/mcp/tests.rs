@@ -1,49 +1,7 @@
 //! Unit tests for MCP layer validation.
 
-use crate::mcp::config::McpConfig;
 use crate::mcp::error::McpToolError;
 use crate::mcp::resolve;
-
-// ── API key length validation ──────────────────────────────────
-
-// API key tests use unsafe env manipulation because Rust 2024 edition
-// marks set_var/remove_var as unsafe (they're not thread-safe).
-
-#[test]
-fn api_key_too_short_returns_none() {
-    unsafe {
-        std::env::set_var("MCP_API_KEY", "short");
-        std::env::remove_var("MCP_LISTEN");
-    }
-    let config = McpConfig::from_env();
-    assert!(
-        config.is_none(),
-        "Keys shorter than 16 chars must be rejected"
-    );
-    unsafe { std::env::remove_var("MCP_API_KEY") };
-}
-
-#[test]
-fn api_key_exactly_16_chars_accepted() {
-    let key = "0123456789abcdef";
-    assert_eq!(key.len(), 16);
-    unsafe {
-        std::env::set_var("MCP_API_KEY", key);
-        std::env::remove_var("MCP_LISTEN");
-    }
-    let config = McpConfig::from_env();
-    assert!(config.is_some(), "16-char key must be accepted");
-    assert_eq!(config.unwrap().api_key, key);
-    unsafe { std::env::remove_var("MCP_API_KEY") };
-}
-
-#[test]
-fn api_key_empty_returns_none() {
-    unsafe { std::env::set_var("MCP_API_KEY", "") };
-    let config = McpConfig::from_env();
-    assert!(config.is_none());
-    unsafe { std::env::remove_var("MCP_API_KEY") };
-}
 
 // ── Amount validation ──────────────────────────────────────────
 

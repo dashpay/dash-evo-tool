@@ -611,7 +611,26 @@ impl AppState {
         #[cfg(feature = "mcp")]
         let mcp_app_context = {
             if let Some(mcp_config) = crate::mcp::McpConfig::from_env() {
-                let mcp_ctx = Arc::new(arc_swap::ArcSwap::new(mainnet_app_context.clone()));
+                let initial_ctx = match chosen_network {
+                    Network::Mainnet => mainnet_app_context.clone(),
+                    Network::Testnet => testnet_app_context
+                        .as_ref()
+                        .expect("MCP: chosen network is Testnet but no Testnet AppContext")
+                        .clone(),
+                    Network::Devnet => devnet_app_context
+                        .as_ref()
+                        .expect("MCP: chosen network is Devnet but no Devnet AppContext")
+                        .clone(),
+                    Network::Regtest => local_app_context
+                        .as_ref()
+                        .expect("MCP: chosen network is Regtest but no Regtest AppContext")
+                        .clone(),
+                    unsupported => panic!(
+                        "MCP: unsupported network {:?} for initial context",
+                        unsupported
+                    ),
+                };
+                let mcp_ctx = Arc::new(arc_swap::ArcSwap::new(initial_ctx));
                 let ctx_for_server = mcp_ctx.clone();
                 let cancel = subtasks.cancellation_token.clone();
                 subtasks.spawn_sync("mcp-server", async move {

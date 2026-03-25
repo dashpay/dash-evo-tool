@@ -7,7 +7,7 @@ Reference guide for adding new MCP tools that expose existing `BackendTask` vari
 1. **Tools live in `src/mcp/tools/`** — never in the CLI binary (`src/bin/det_cli/`). The CLI discovers tools dynamically; it requires zero code changes when a tool is added.
 2. **Tools must not contain business logic.** A tool is a thin adapter: validate parameters, resolve context, dispatch a `BackendTask`, reshape the result. All domain logic stays in `BackendTask` handlers (e.g. `run_identity_task()`, `run_wallet_task()`).
 3. **One tool struct = one `BackendTask` dispatch.** If a feature needs multiple backend calls, compose them in the backend layer, not in the tool.
-4. **Errors flow through `McpToolError`** — never return raw strings or SDK errors to the client. Use `McpToolError::TaskFailed(e)` for backend errors, `McpToolError::InvalidParams(msg)` for input validation.
+4. **Errors flow through `McpToolError`** — never return raw strings or SDK errors to the client. Use `McpToolError::TaskFailed(e)` for backend errors, `McpToolError::InvalidParam { message }` for input validation.
 5. **No GUI dependencies.** Tool code must not reference `egui`, screens, UI components, or `AppAction`. The only bridge to the app is `AppContext` + `BackendTask`.
 
 ## Checklist

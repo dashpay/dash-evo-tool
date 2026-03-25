@@ -113,7 +113,7 @@ User-facing error messages (shown in `MessageBanner` via `Display`) must follow 
 - **SPV sync**: wallet tools call `resolve::ensure_spv_synced()` before operating — polls SPV status with 1s interval, 10min timeout.
 - **Backend dispatch**: tools reuse the app's `BackendTask` system via `dispatch::dispatch_task()` — creates a throwaway channel, calls `app_context.run_backend_task()`.
 - **Schema quirk**: `schemars` v1 derives bare `true` for `serde_json::Value` fields — some MCP clients reject this. Use `#[schemars(transform)]` to override.
-- **Error type**: `McpToolError` enum (InvalidParams, WalletNotFound, SpvSyncFailed, TaskFailed, Internal) converts to `rmcp::ErrorData` via `From`.
+- **Error type**: `McpToolError` enum (InvalidParam, WalletNotFound, SpvSyncFailed, TaskFailed, Internal) converts to `rmcp::ErrorData` via `From`.
 - **Docs**: `docs/MCP.md` (server config, tool reference), `docs/CLI.md` (usage, examples), `docs/EXPOSING_BACKEND_TASKS.md` (checklist for adding new MCP tools).
 
 ### Key Dependencies

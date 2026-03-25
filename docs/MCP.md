@@ -62,7 +62,7 @@ Set these in the app's `.env` file (see `.env.example`) or as environment variab
 | `core_address_create` | `wallet_id`, `network`? | Generate a new receive address for a wallet. Pass the alias or 64-char hex seed hash. |
 | `core_balances_get` | `wallet_id`, `network`? | Show wallet balances (total, confirmed, unconfirmed) in duffs |
 | `platform_addresses_list` | `wallet_id`, `network`? | Fetch platform address balances (credits and nonces) for a wallet |
-| `core_funds_send` | `wallet_id`, `address`, `amount_duffs`, `network`? | Send DASH from a wallet to an address (amount in duffs) |
+| `core_funds_send` | `wallet_id`, `address`, `amount_duffs`, `network` | Send DASH from a wallet to an address (amount in duffs) |
 | `platform_withdrawals_get` | `status`?, `network`? | Query Platform withdrawal documents. `status` is `"queued"` (default) or `"completed"`. |
 | `tool_describe` | `name` | Return the full MCP tool definition (schema, annotations, description) for a given tool name |
 

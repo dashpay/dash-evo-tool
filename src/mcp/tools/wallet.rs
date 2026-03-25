@@ -170,9 +170,9 @@ pub struct SendFundsParams {
     pub address: String,
     /// Amount to send in duffs (1 DASH = 100,000,000 duffs)
     pub amount_duffs: u64,
-    /// Expected network (e.g. "mainnet", "testnet"). **Required** for send operations
+    /// Expected network (e.g. "mainnet", "testnet"). Required for send operations
     /// to prevent accidental cross-network transfers.
-    pub network: Option<String>,
+    pub network: String,
 }
 
 #[derive(Serialize, schemars::JsonSchema)]
@@ -228,7 +228,7 @@ impl AsyncTool<DashMcpService> for SendCoreFunds {
             .map_err(|e| McpToolError::Internal(e.to_string()))?;
 
         // Network is mandatory for destructive operations
-        resolve::require_network(&ctx, param.network.as_deref())?;
+        resolve::require_network(&ctx, Some(&param.network))?;
 
         // Validate inputs before dispatching
         resolve::validate_amount(param.amount_duffs)?;

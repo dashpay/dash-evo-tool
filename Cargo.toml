@@ -27,6 +27,7 @@ dash-sdk = { git = "https://github.com/dashpay/platform", rev = "93556aa4b", fea
     "core_rpc_client",
     "core_spv",
 ] }
+rs-sdk-trusted-context-provider = { git = "https://github.com/dashpay/platform", rev = "93556aa4b" }
 grovestark = { git = "https://www.github.com/dashpay/grovestark", rev = "5b9e289cca54c79b1305d5f4f40bf1148f1eb0e3" }
 rayon = "1.8"
 thiserror = "2.0.18"

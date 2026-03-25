@@ -15,7 +15,7 @@ const DEADLOCK_TIMEOUT: Duration = Duration::from_secs(10);
 /// Create a minimal testnet NetworkConfig for testing.
 fn test_network_config() -> NetworkConfig {
     NetworkConfig {
-        dapi_addresses: "https://127.0.0.1:1443".to_string(),
+        dapi_addresses: Some("https://127.0.0.1:1443".to_string()),
         core_host: "127.0.0.1".to_string(),
         core_rpc_port: 19998,
         core_rpc_user: "dashrpc".to_string(),

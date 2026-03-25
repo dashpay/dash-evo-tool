@@ -147,8 +147,21 @@ impl AppContext {
             }
         };
 
+        // Resolve DAPI addresses: try explicit config first (sync), fall back to discovery (async)
+        let address_list = match crate::dapi_discovery::resolve_dapi_addresses_sync(
+            network,
+            &network_config.dapi_addresses,
+            network_config.devnet_name.as_deref(),
+        ) {
+            Ok(list) => list,
+            Err(e) => {
+                tracing::error!(?network, error = %e, "Failed to resolve DAPI addresses");
+                return None;
+            }
+        };
+
         // Default to SPV provider initially; UI can switch backend after
-        let sdk = match initialize_sdk(&network_config, network, spv_provider.clone()) {
+        let sdk = match initialize_sdk(address_list, network, spv_provider.clone()) {
             Ok(sdk) => sdk,
             Err(e) => {
                 tracing::error!("Failed to initialize SDK: {e}");
@@ -511,29 +524,33 @@ impl AppContext {
             detail: e.to_string(),
         })?;
 
-        // 3. Rebuild the Sdk with the updated config and current backend mode
+        // 3. Resolve DAPI addresses and rebuild the SDK
+        let address_list = crate::dapi_discovery::resolve_dapi_addresses_sync(
+            self.network,
+            &cfg.dapi_addresses,
+            cfg.devnet_name.as_deref(),
+        )
+        .map_err(|e| TaskError::SdkInitializationFailed { detail: e })?;
+
         let new_sdk = match self.core_backend_mode() {
             CoreBackendMode::Spv => {
-                // Reuse existing SPV provider (rebinding below to ensure context is set)
                 let provider = self.spv_context_provider.read()?.clone();
-                initialize_sdk(&cfg, self.network, provider)
+                initialize_sdk(address_list, self.network, provider)
                     .map_err(|e| TaskError::SdkInitializationFailed { detail: e })?
             }
             CoreBackendMode::Rpc => {
-                // Create a fresh RPC provider with the new config
                 let rpc_provider = RpcProvider::new(self.db.clone(), self.network, &cfg)
                     .map_err(|e| TaskError::RpcProviderCreationFailed { detail: e })?;
-                // Swap in the updated RPC provider for future switches
                 {
                     let mut guard = self.rpc_context_provider.write()?;
                     *guard = rpc_provider.clone();
                 }
-                initialize_sdk(&cfg, self.network, rpc_provider)
+                initialize_sdk(address_list, self.network, rpc_provider)
                     .map_err(|e| TaskError::SdkInitializationFailed { detail: e })?
             }
         };
 
-        // 4. Swap them in
+        // 4. Swap in the new SDK and client
         {
             let mut client_lock = self.core_client.write()?;
             *client_lock = new_client;

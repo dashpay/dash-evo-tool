@@ -196,6 +196,7 @@ impl AppState {
         let data_dir = app_user_data_dir_path()?;
         ensure_data_dir_exists(&data_dir)?;
         ensure_env_file(&data_dir);
+        crate::config::Config::migrate_env_file_if_needed();
         initialize_logger();
         let db_file_path = data_file_path(&data_dir, "data.db")?;
         let db = Arc::new(Database::new(&db_file_path)?);
@@ -212,6 +213,7 @@ impl AppState {
         let data_dir = app_user_data_dir_path()?;
         ensure_data_dir_exists(&data_dir)?;
         ensure_env_file(&data_dir);
+        crate::config::Config::migrate_env_file_if_needed();
         let db = Arc::new(
             crate::database::test_helpers::create_test_database()
                 .map_err(|e| format!("Failed to create test database: {}", e))?,
@@ -232,6 +234,9 @@ impl AppState {
 
         let subtasks = Arc::new(TaskManager::new());
         let connection_status = Arc::new(ConnectionStatus::new());
+        // TODO: Defer initialization of inactive network contexts (testnet, devnet, local)
+        // until the user actually switches to them. Eagerly constructing all contexts at
+        // startup performs DAPI discovery and SDK init for networks the user may never use.
         let mainnet_app_context = AppContext::new(
             data_dir.clone(),
             Network::Mainnet,
@@ -942,6 +947,7 @@ impl AppState {
         }
 
         self.chosen_network = network;
+
         let app_context = self.current_app_context().clone();
 
         // Update MCP server's context to follow network switch

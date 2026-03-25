@@ -378,6 +378,14 @@ impl AppContext {
         self.enable_animations(!enable);
     }
 
+    pub fn data_dir(&self) -> &std::path::Path {
+        &self.data_dir
+    }
+
+    pub fn network(&self) -> Network {
+        self.network
+    }
+
     pub fn core_backend_mode(&self) -> CoreBackendMode {
         self.core_backend_mode.load(Ordering::Relaxed).into()
     }

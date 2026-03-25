@@ -16,6 +16,7 @@ See [docs/personas/](personas/) for full persona descriptions.
 - [Contracts and Documents (DOC)](#contracts-and-documents-doc)
 - [Developer and Power Tools (DEV)](#developer-and-power-tools-dev)
 - [Network and Settings (NET)](#network-and-settings-net)
+- [Programmatic Access (MCP)](#programmatic-access-mcp)
 
 ---
 
@@ -917,3 +918,26 @@ As a developer, I want to fund multiple addresses in one operation so that I can
 
 - Specify N addresses and amount per address.
 - Single action distributes funds.
+
+---
+
+## Programmatic Access (MCP)
+
+### MCP-001: Manage wallets via CLI [Implemented]
+**Persona:** Jordan
+
+As a developer, I want to manage wallets via CLI so that I can automate deployment and testing operations.
+
+- List wallets, check balances, generate addresses, and send funds from the command line.
+- CLI discovers tools dynamically via MCP protocol.
+- Shell completion for tool names and parameters.
+
+### MCP-002: MCP server access for AI agents [Implemented]
+**Persona:** Jordan
+
+As an AI agent, I want MCP server access so that I can assist users with wallet queries and operations.
+
+- HTTP and stdio transports available.
+- Bearer token authentication for HTTP mode.
+- Network verification guard prevents cross-network mistakes.
+- Tools expose wallet, identity, and platform operations.

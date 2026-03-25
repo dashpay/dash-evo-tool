@@ -643,7 +643,11 @@ impl AppState {
                 tracing::debug!("MCP server enabled");
                 Some(mcp_ctx)
             } else {
-                tracing::debug!("MCP server disabled (MCP_API_KEY not set)");
+                let reason = match std::env::var("MCP_API_KEY") {
+                    Ok(ref k) if !k.is_empty() => "MCP_API_KEY is set but invalid (too short)",
+                    _ => "MCP_API_KEY not set",
+                };
+                tracing::debug!("MCP server disabled ({reason})");
                 None
             }
         };

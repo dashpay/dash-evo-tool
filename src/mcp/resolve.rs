@@ -78,16 +78,13 @@ pub(crate) fn wallet(ctx: &AppContext, wallet_id: &str) -> Result<WalletSeedHash
         }
     }
 
-    let detail = if available.is_empty() {
-        "No wallets loaded".to_string()
+    let id = if available.is_empty() {
+        format!("\"{wallet_id}\" (no wallets loaded)")
     } else {
-        format!(
-            "Wallet \"{wallet_id}\" not found. Available wallets:\n{}",
-            available.join("\n")
-        )
+        format!("\"{wallet_id}\" — available: {}", available.join(", "))
     };
 
-    Err(McpToolError::WalletNotFound { id: detail })
+    Err(McpToolError::WalletNotFound { id })
 }
 
 /// Get the `Arc<RwLock<Wallet>>` for a given seed hash.
@@ -100,7 +97,7 @@ pub(crate) fn wallet_arc(
         .get(&seed_hash)
         .cloned()
         .ok_or_else(|| McpToolError::WalletNotFound {
-            id: "Wallet not found".to_string(),
+            id: hex::encode(seed_hash),
         })
 }
 

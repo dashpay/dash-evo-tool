@@ -14,7 +14,7 @@ use crate::mcp::dispatch::dispatch_task;
 use crate::mcp::error::McpToolError;
 use crate::mcp::resolve;
 use crate::mcp::server::DashMcpService;
-use crate::mcp::tools::WalletIdParams;
+use crate::mcp::tools::{NetworkParams, WalletIdParams};
 
 // ---------------------------------------------------------------------------
 // GenerateReceiveAddress
@@ -228,6 +228,13 @@ impl AsyncTool<DashMcpService> for SendCoreFunds {
             .map_err(|e| McpToolError::Internal(e.to_string()))?;
 
         // Network is mandatory for destructive operations
+        if param.network.is_empty() {
+            return Err(McpToolError::InvalidParam {
+                message: "The 'network' parameter must not be empty. \
+                          Use \"mainnet\", \"testnet\", \"devnet\", or \"local\"."
+                    .to_owned(),
+            });
+        }
         resolve::require_network(&ctx, Some(&param.network))?;
 
         // Validate inputs before dispatching
@@ -358,5 +365,66 @@ impl AsyncTool<DashMcpService> for FetchPlatformBalances {
                 "Unexpected task result: {other:?}"
             ))),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ListWalletsTool
+// ---------------------------------------------------------------------------
+
+/// List wallet names currently loaded in the application.
+pub struct ListWalletsTool;
+
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct WalletEntry {
+    seed_hash: String,
+    alias: Option<String>,
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct ListWalletsOutput {
+    wallets: Vec<WalletEntry>,
+}
+
+impl ToolBase for ListWalletsTool {
+    type Parameter = NetworkParams;
+    type Output = ListWalletsOutput;
+    type Error = McpToolError;
+
+    fn name() -> Cow<'static, str> {
+        "core_wallets_list".into()
+    }
+
+    fn description() -> Option<Cow<'static, str>> {
+        Some("List wallet names currently loaded in the application".into())
+    }
+
+    fn annotations() -> Option<ToolAnnotations> {
+        Some(ToolAnnotations::default().read_only(true).open_world(false))
+    }
+}
+
+impl AsyncTool<DashMcpService> for ListWalletsTool {
+    async fn invoke(
+        service: &DashMcpService,
+        param: NetworkParams,
+    ) -> Result<ListWalletsOutput, McpToolError> {
+        let ctx = service
+            .ctx()
+            .await
+            .map_err(|e| McpToolError::Internal(e.to_string()))?;
+        resolve::verify_network(&ctx, param.network.as_deref())?;
+        let wallets = ctx.wallets.read().unwrap_or_else(|e| e.into_inner());
+        let entries: Vec<WalletEntry> = wallets
+            .iter()
+            .map(|(hash, wallet_arc)| {
+                let wallet = wallet_arc.read().unwrap_or_else(|e| e.into_inner());
+                WalletEntry {
+                    seed_hash: hex::encode(hash),
+                    alias: wallet.alias.clone(),
+                }
+            })
+            .collect();
+        Ok(ListWalletsOutput { wallets: entries })
     }
 }

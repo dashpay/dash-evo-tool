@@ -94,10 +94,16 @@ jobs:
         env:
           PROTOC: /usr/local/bin/protoc
 
-      - name: Build project
+      - name: Build GUI
         run: |
-          cargo build --release --features cli --target ${{ matrix.target }}
+          cargo build --release --target ${{ matrix.target }}
           mv target/${{ matrix.target }}/release/dash-evo-tool${{ matrix.ext }} dash-evo-tool/dash-evo-tool${{ matrix.ext }}
+        env:
+          OPENSSL_STATIC: "1"
+
+      - name: Build CLI (det-cli)
+        run: |
+          cargo build --release --features headless --bin det-cli --target ${{ matrix.target }}
           mv target/${{ matrix.target }}/release/det-cli${{ matrix.ext }} dash-evo-tool/det-cli${{ matrix.ext }}
         env:
           OPENSSL_STATIC: "1"
@@ -199,10 +205,14 @@ jobs:
 
       - name: Build ARM64 architecture
         run: |
-          cargo build --release --features cli --target aarch64-apple-darwin
+          cargo build --release --target aarch64-apple-darwin
           mkdir -p build
           cp target/aarch64-apple-darwin/release/dash-evo-tool build/dash-evo-tool
           chmod +x build/dash-evo-tool
+
+      - name: Build CLI (det-cli)
+        run: |
+          cargo build --release --features headless --bin det-cli --target aarch64-apple-darwin
           cp target/aarch64-apple-darwin/release/det-cli build/det-cli
           chmod +x build/det-cli
 

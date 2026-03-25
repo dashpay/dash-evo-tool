@@ -21,6 +21,9 @@ use crate::mcp::server::DashMcpService;
 /// Query withdrawal documents from Platform.
 pub struct QueryWithdrawals;
 
+// TODO: Add pagination support (limit/start_after params) once
+// PlatformInfoTaskRequestType variants accept query parameters.
+// Currently the backend hardcodes limit=50 in DocumentQuery.
 #[derive(Debug, Deserialize, schemars::JsonSchema, Default)]
 pub struct QueryWithdrawalsParams {
     /// Which withdrawals to query: "queued" (default) or "completed"
@@ -36,6 +39,9 @@ fn default_queued() -> String {
     "queued".to_string()
 }
 
+// TODO: Return structured withdrawal data (amount, status, address, timestamps)
+// instead of a pre-formatted text string. Requires a new backend result variant
+// that returns Vec<WithdrawalDocument> rather than TextResult(String).
 #[derive(Serialize, schemars::JsonSchema)]
 pub struct QueryWithdrawalsOutput {
     /// Human-readable withdrawal information
@@ -74,8 +80,6 @@ impl AsyncTool<DashMcpService> for QueryWithdrawals {
             .await
             .map_err(|e| McpToolError::Internal(e.to_string()))?;
         resolve::verify_network(&ctx, params.network.as_deref())?;
-
-        resolve::ensure_spv_synced(&ctx).await?;
 
         let request = match params.status.as_str() {
             "completed" | "complete" => PlatformInfoTaskRequestType::RecentlyCompletedWithdrawals,

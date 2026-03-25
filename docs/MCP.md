@@ -44,6 +44,16 @@ Build: `cargo build --features headless`
 
 The `headless` feature combines `cli` and `mcp`. The same environment variables (`MCP_API_KEY`, `MCP_LISTEN`) apply.
 
+### Performance considerations
+
+Standalone/headless mode skips the GUI event loop and egui rendering, resulting in lower memory usage and CPU overhead. Prefer headless mode for:
+
+- Server or CI environments where no display is available
+- Automated scripts that call tools repeatedly
+- Long-running MCP server deployments
+
+The GUI-embedded HTTP mode shares the app's `AppContext` and follows network switches in real time, which is useful when you want to interactively switch networks from the GUI while MCP clients remain connected.
+
 ## Environment variables
 
 | Variable | Default | Description |
@@ -55,18 +65,48 @@ Set these in the app's `.env` file (see `.env.example`) or as environment variab
 
 ## Available tools
 
-| Tool | Parameters | Description |
-|---|---|---|
-| `network_info` | — | Show active network and available configured networks |
-| `core_wallets_list` | `network`? | List wallets loaded in the app (alias + seed hash) |
-| `core_address_create` | `wallet_id`, `network`? | Generate a new receive address for a wallet. Pass the alias or 64-char hex seed hash. |
-| `core_balances_get` | `wallet_id`, `network`? | Show wallet balances (total, confirmed, unconfirmed) in duffs |
-| `platform_addresses_list` | `wallet_id`, `network`? | Fetch platform address balances (credits and nonces) for a wallet |
-| `core_funds_send` | `wallet_id`, `address`, `amount_duffs`, `network` | Send DASH from a wallet to an address (amount in duffs) |
-| `platform_withdrawals_get` | `status`?, `network`? | Query Platform withdrawal documents. `status` is `"queued"` (default) or `"completed"`. |
-| `tool_describe` | `name` | Return the full MCP tool definition (schema, annotations, description) for a given tool name |
+| Tool | Parameters | det-cli command | Description |
+|---|---|---|---|
+| `network_info` | — | `det-cli network-info` | Show active network and available configured networks |
+| `core_wallets_list` | `network`? | `det-cli core-wallets-list` | List wallets loaded in the app (alias + seed hash) |
+| `core_address_create` | `wallet_id`, `network`? | `det-cli core-address-create` | Generate a new receive address for a wallet |
+| `core_balances_get` | `wallet_id`, `network`? | `det-cli core-balances-get` | Show wallet balances (total, confirmed, unconfirmed) in duffs |
+| `platform_addresses_list` | `wallet_id`, `network`? | `det-cli platform-addresses-list` | Fetch platform address balances (credits and nonces) |
+| `core_funds_send` | `wallet_id`, `address`, `amount_duffs`, `network` | `det-cli core-funds-send` | Send DASH from a wallet to an address (amount in duffs) |
+| `platform_withdrawals_get` | `status`?, `network`? | `det-cli platform-withdrawals-get` | Query Platform withdrawal documents (`"queued"` or `"completed"`) |
+| `tool_describe` | `name` | `det-cli tool-describe` | Return the full MCP tool definition for a given tool name |
 
-Parameters marked `?` are optional.
+Parameters marked `?` are optional. The `det-cli` column shows the equivalent CLI command (underscores become hyphens).
+
+## CLI interface (det-cli)
+
+`det-cli` is the command-line interface for interacting with MCP tools. It can operate in two modes:
+
+- **Direct tool invocation**: Run tools as CLI commands, e.g. `det-cli core-wallets-list --network testnet`
+- **MCP stdio server**: `det-cli serve` starts an MCP server communicating over stdin/stdout
+
+Basic usage:
+
+```bash
+# List available commands
+det-cli --help
+
+# List wallets
+det-cli core-wallets-list
+
+# Check balances for a specific wallet
+det-cli core-balances-get --wallet-id "my-wallet"
+
+# Start as MCP stdio server (for Claude Desktop, Claude Code, etc.)
+det-cli serve
+
+# Start headless HTTP MCP server (requires MCP_API_KEY)
+det-cli headless
+```
+
+Tool names use hyphens in CLI commands (e.g. `core_wallets_list` becomes `core-wallets-list`). The CLI dynamically discovers available tools from the MCP server, so new tools are automatically available without CLI changes.
+
+See [CLI.md](CLI.md) for full documentation.
 
 ## Network verification
 
@@ -145,6 +185,24 @@ curl -s http://127.0.0.1:9527/mcp \
   -H "Accept: application/json" \
   -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"platform_withdrawals_get","arguments":{"status":"queued"}}}'
 ```
+
+## Authentication
+
+The HTTP MCP server uses bearer token authentication via the `MCP_API_KEY` environment variable.
+
+**Setting the key**: Add `MCP_API_KEY=<your-secret>` to the app's `.env` file or export it as an environment variable before launching. The key must be at least 16 characters long.
+
+**Behavior**:
+- **Key not set or empty**: HTTP MCP server is disabled entirely. The log message will indicate "MCP_API_KEY not set".
+- **Key too short** (< 16 chars): HTTP MCP server refuses to start. An error is logged indicating the minimum length requirement.
+- **Key valid**: HTTP MCP server starts. All requests to `/mcp` must include `Authorization: Bearer <key>`.
+- **Stdio mode** (`det-cli serve`): No authentication — security is handled by the process boundary (only the calling process can communicate via stdin/stdout).
+
+**Security considerations**:
+- Generate a strong random key (e.g. `openssl rand -hex 32`).
+- Do not commit `.env` files containing the key to version control.
+- Bearer token comparison uses constant-time equality to prevent timing attacks.
+- The HTTP server binds to `127.0.0.1` by default; change `MCP_LISTEN` only if you understand the exposure implications.
 
 ## Security
 

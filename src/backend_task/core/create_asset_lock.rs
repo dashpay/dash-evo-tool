@@ -16,10 +16,11 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let amount_duffs = amount / CREDITS_PER_DUFF;
 
-        let (asset_lock_transaction, _private_key, _change_address, _used_utxos) = {
+        let (asset_lock_transaction, _private_key, _change_address, used_utxos, wallet_seed_hash) = {
             let mut wallet_guard = wallet.write()?;
+            let seed_hash = wallet_guard.seed_hash();
 
-            wallet_guard
+            let (tx, key, addr, utxos) = wallet_guard
                 .registration_asset_lock_transaction(
                     self,
                     self.network,
@@ -27,29 +28,19 @@ impl AppContext {
                     allow_take_fee_from_amount,
                     identity_index,
                 )
-                .map_err(|e| TaskError::AssetLockTransactionBuildFailed { detail: e })?
+                .map_err(|e| TaskError::AssetLockTransactionBuildFailed { detail: e })?;
+            (tx, key, addr, utxos, seed_hash)
         };
 
-        let tx_id = asset_lock_transaction.txid();
-
-        {
-            let mut proofs = self.transactions_waiting_for_finality.lock()?;
-            proofs.insert(tx_id, None);
-        }
-
-        if let Err(e) = self
-            .broadcast_raw_transaction(&asset_lock_transaction)
-            .await
-        {
-            if let Ok(mut proofs) = self.transactions_waiting_for_finality.lock() {
-                proofs.remove(&tx_id);
-            } else {
-                tracing::warn!(
-                    "Failed to clean up finality tracking for tx {tx_id}: Mutex poisoned"
-                );
-            }
-            return Err(e);
-        }
+        let tx_id = self
+            .broadcast_and_commit_asset_lock(
+                &asset_lock_transaction,
+                amount_duffs,
+                &wallet_seed_hash,
+                &wallet,
+                &used_utxos,
+            )
+            .await?;
 
         Ok(BackendTaskSuccessResult::Message(format!(
             "Asset lock transaction broadcast successfully. TX ID: {}",
@@ -67,10 +58,11 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let amount_duffs = amount / CREDITS_PER_DUFF;
 
-        let (asset_lock_transaction, _private_key, _change_address, _used_utxos) = {
+        let (asset_lock_transaction, _private_key, _change_address, used_utxos, wallet_seed_hash) = {
             let mut wallet_guard = wallet.write()?;
+            let seed_hash = wallet_guard.seed_hash();
 
-            wallet_guard
+            let (tx, key, addr, utxos) = wallet_guard
                 .top_up_asset_lock_transaction(
                     self,
                     self.network,
@@ -79,29 +71,19 @@ impl AppContext {
                     identity_index,
                     top_up_index,
                 )
-                .map_err(|e| TaskError::AssetLockTransactionBuildFailed { detail: e })?
+                .map_err(|e| TaskError::AssetLockTransactionBuildFailed { detail: e })?;
+            (tx, key, addr, utxos, seed_hash)
         };
 
-        let tx_id = asset_lock_transaction.txid();
-
-        {
-            let mut proofs = self.transactions_waiting_for_finality.lock()?;
-            proofs.insert(tx_id, None);
-        }
-
-        if let Err(e) = self
-            .broadcast_raw_transaction(&asset_lock_transaction)
-            .await
-        {
-            if let Ok(mut proofs) = self.transactions_waiting_for_finality.lock() {
-                proofs.remove(&tx_id);
-            } else {
-                tracing::warn!(
-                    "Failed to clean up finality tracking for tx {tx_id}: Mutex poisoned"
-                );
-            }
-            return Err(e);
-        }
+        let tx_id = self
+            .broadcast_and_commit_asset_lock(
+                &asset_lock_transaction,
+                amount_duffs,
+                &wallet_seed_hash,
+                &wallet,
+                &used_utxos,
+            )
+            .await?;
 
         Ok(BackendTaskSuccessResult::Message(format!(
             "Asset lock transaction broadcast successfully. TX ID: {}",

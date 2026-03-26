@@ -428,29 +428,13 @@ impl ShieldedTabView {
                     .fill(DashColors::DASH_BLUE);
             if ui
                 .add_enabled(!self.syncing, shield_btn)
-                .on_hover_text("Shield credits from platform address into the shielded pool")
+                .on_hover_text(
+                    "Shield funds from a platform or core address into the shielded pool",
+                )
                 .clicked()
             {
                 action |= AppAction::AddScreen(
-                    ScreenType::ShieldCreditsScreen(self.seed_hash)
-                        .create_screen(&self.app_context),
-                );
-            }
-
-            let shield_core_btn = egui::Button::new(
-                RichText::new("Shield from Core")
-                    .color(Color32::WHITE)
-                    .size(14.0),
-            )
-            .fill(DashColors::DASH_BLUE);
-            if ui
-                .add_enabled(!self.syncing, shield_core_btn)
-                .on_hover_text("Shield core DASH directly into the shielded pool via asset lock")
-                .clicked()
-            {
-                action |= AppAction::AddScreen(
-                    ScreenType::ShieldFromAssetLockScreen(self.seed_hash)
-                        .create_screen(&self.app_context),
+                    ScreenType::ShieldScreen(self.seed_hash).create_screen(&self.app_context),
                 );
             }
 

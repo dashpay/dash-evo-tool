@@ -78,8 +78,7 @@ use tokens::unfreeze_tokens_screen::UnfreezeTokensScreen;
 use tokens::update_token_config::UpdateTokenConfigScreen;
 use tools::transition_visualizer_screen::TransitionVisualizerScreen;
 use wallets::add_new_wallet_screen::AddNewWalletScreen;
-use wallets::shield_credits_screen::ShieldCreditsScreen;
-use wallets::shield_from_asset_lock_screen::ShieldFromAssetLockScreen;
+use wallets::shield_screen::ShieldScreen;
 use wallets::shielded_send_screen::ShieldedSendScreen;
 use wallets::unshield_credits_screen::UnshieldCreditsScreen;
 
@@ -308,8 +307,7 @@ pub enum ScreenType {
     CreateAssetLock(Arc<RwLock<Wallet>>),
 
     // Shielded screens
-    ShieldCreditsScreen(WalletSeedHash),
-    ShieldFromAssetLockScreen(WalletSeedHash),
+    ShieldScreen(WalletSeedHash),
     ShieldedSendScreen(WalletSeedHash),
     UnshieldCreditsScreen(WalletSeedHash),
 
@@ -429,11 +427,7 @@ impl PartialEq for ScreenType {
             (ScreenType::DashPayQRGenerator, ScreenType::DashPayQRGenerator) => true,
             (ScreenType::DashPayProfileSearch, ScreenType::DashPayProfileSearch) => true,
             // Shielded screens
-            (ScreenType::ShieldCreditsScreen(a), ScreenType::ShieldCreditsScreen(b)) => a == b,
-            (
-                ScreenType::ShieldFromAssetLockScreen(a),
-                ScreenType::ShieldFromAssetLockScreen(b),
-            ) => a == b,
+            (ScreenType::ShieldScreen(a), ScreenType::ShieldScreen(b)) => a == b,
             (ScreenType::ShieldedSendScreen(a), ScreenType::ShieldedSendScreen(b)) => a == b,
             (ScreenType::UnshieldCreditsScreen(a), ScreenType::UnshieldCreditsScreen(b)) => a == b,
             _ => false,
@@ -692,12 +686,9 @@ impl ScreenType {
                 Screen::DashPayProfileSearchScreen(ProfileSearchScreen::new(app_context.clone()))
             }
             // Shielded screens
-            ScreenType::ShieldCreditsScreen(seed_hash) => {
-                Screen::ShieldCreditsScreen(ShieldCreditsScreen::new(*seed_hash, app_context))
+            ScreenType::ShieldScreen(seed_hash) => {
+                Screen::ShieldScreen(ShieldScreen::new(*seed_hash, app_context))
             }
-            ScreenType::ShieldFromAssetLockScreen(seed_hash) => Screen::ShieldFromAssetLockScreen(
-                ShieldFromAssetLockScreen::new(*seed_hash, app_context),
-            ),
             ScreenType::ShieldedSendScreen(seed_hash) => {
                 Screen::ShieldedSendScreen(ShieldedSendScreen::new(*seed_hash, app_context))
             }
@@ -763,8 +754,7 @@ pub enum Screen {
     CreateAssetLockScreen(CreateAssetLockScreen),
 
     // Shielded Screens
-    ShieldCreditsScreen(ShieldCreditsScreen),
-    ShieldFromAssetLockScreen(ShieldFromAssetLockScreen),
+    ShieldScreen(ShieldScreen),
     ShieldedSendScreen(ShieldedSendScreen),
     UnshieldCreditsScreen(UnshieldCreditsScreen),
 
@@ -879,8 +869,7 @@ impl Screen {
             Screen::DashPayQRGeneratorScreen(screen) => screen.app_context = app_context,
             Screen::DashPayProfileSearchScreen(screen) => screen.app_context = app_context,
             // Shielded screens
-            Screen::ShieldCreditsScreen(screen) => screen.app_context = app_context.clone(),
-            Screen::ShieldFromAssetLockScreen(screen) => screen.app_context = app_context.clone(),
+            Screen::ShieldScreen(screen) => screen.app_context = app_context.clone(),
             Screen::ShieldedSendScreen(screen) => {
                 screen.app_context = app_context.clone();
                 screen.invalidate_address_input();
@@ -1108,10 +1097,7 @@ impl Screen {
             Screen::DashPayQRGeneratorScreen(_) => ScreenType::DashPayQRGenerator,
             Screen::DashPayProfileSearchScreen(_) => ScreenType::DashPayProfileSearch,
             // Shielded screens
-            Screen::ShieldCreditsScreen(s) => ScreenType::ShieldCreditsScreen(s.seed_hash),
-            Screen::ShieldFromAssetLockScreen(s) => {
-                ScreenType::ShieldFromAssetLockScreen(s.seed_hash)
-            }
+            Screen::ShieldScreen(s) => ScreenType::ShieldScreen(s.seed_hash),
             Screen::ShieldedSendScreen(s) => ScreenType::ShieldedSendScreen(s.seed_hash),
             Screen::UnshieldCreditsScreen(s) => ScreenType::UnshieldCreditsScreen(s.seed_hash),
         }
@@ -1183,8 +1169,7 @@ impl ScreenLike for Screen {
             Screen::DashPayQRGeneratorScreen(_) => {}
             Screen::DashPayProfileSearchScreen(screen) => screen.refresh(),
             // Shielded screens
-            Screen::ShieldCreditsScreen(_) => {}
-            Screen::ShieldFromAssetLockScreen(_) => {}
+            Screen::ShieldScreen(_) => {}
             Screen::ShieldedSendScreen(_) => {}
             Screen::UnshieldCreditsScreen(_) => {}
         }
@@ -1254,8 +1239,7 @@ impl ScreenLike for Screen {
             Screen::DashPayQRGeneratorScreen(_) => {}
             Screen::DashPayProfileSearchScreen(screen) => screen.refresh_on_arrival(),
             // Shielded screens
-            Screen::ShieldCreditsScreen(_) => {}
-            Screen::ShieldFromAssetLockScreen(_) => {}
+            Screen::ShieldScreen(_) => {}
             Screen::ShieldedSendScreen(_) => {}
             Screen::UnshieldCreditsScreen(_) => {}
         }
@@ -1325,8 +1309,7 @@ impl ScreenLike for Screen {
             Screen::DashPayQRGeneratorScreen(screen) => screen.ui(ctx),
             Screen::DashPayProfileSearchScreen(screen) => screen.ui(ctx),
             // Shielded screens
-            Screen::ShieldCreditsScreen(screen) => screen.ui(ctx),
-            Screen::ShieldFromAssetLockScreen(screen) => screen.ui(ctx),
+            Screen::ShieldScreen(screen) => screen.ui(ctx),
             Screen::ShieldedSendScreen(screen) => screen.ui(ctx),
             Screen::UnshieldCreditsScreen(screen) => screen.ui(ctx),
         }
@@ -1430,10 +1413,7 @@ impl ScreenLike for Screen {
                 screen.display_message(message, message_type)
             }
             // Shielded screens
-            Screen::ShieldCreditsScreen(screen) => screen.display_message(message, message_type),
-            Screen::ShieldFromAssetLockScreen(screen) => {
-                screen.display_message(message, message_type)
-            }
+            Screen::ShieldScreen(screen) => screen.display_message(message, message_type),
             Screen::ShieldedSendScreen(screen) => screen.display_message(message, message_type),
             Screen::UnshieldCreditsScreen(screen) => screen.display_message(message, message_type),
         }
@@ -1607,12 +1587,7 @@ impl ScreenLike for Screen {
                 screen.display_task_result(backend_task_success_result)
             }
             // Shielded screens
-            Screen::ShieldCreditsScreen(screen) => {
-                screen.display_task_result(backend_task_success_result)
-            }
-            Screen::ShieldFromAssetLockScreen(screen) => {
-                screen.display_task_result(backend_task_success_result)
-            }
+            Screen::ShieldScreen(screen) => screen.display_task_result(backend_task_success_result),
             Screen::ShieldedSendScreen(screen) => {
                 screen.display_task_result(backend_task_success_result)
             }
@@ -1687,8 +1662,7 @@ impl ScreenLike for Screen {
             Screen::DashPayProfileSearchScreen(screen) => screen.display_task_error(error),
 
             // Shielded Screens
-            Screen::ShieldCreditsScreen(screen) => screen.display_task_error(error),
-            Screen::ShieldFromAssetLockScreen(screen) => screen.display_task_error(error),
+            Screen::ShieldScreen(screen) => screen.display_task_error(error),
             Screen::ShieldedSendScreen(screen) => screen.display_task_error(error),
             Screen::UnshieldCreditsScreen(screen) => screen.display_task_error(error),
         }
@@ -1758,8 +1732,7 @@ impl ScreenLike for Screen {
             Screen::DashPayQRGeneratorScreen(_) => {}
             Screen::DashPayProfileSearchScreen(_) => {}
             // Shielded screens
-            Screen::ShieldCreditsScreen(_) => {}
-            Screen::ShieldFromAssetLockScreen(_) => {}
+            Screen::ShieldScreen(_) => {}
             Screen::ShieldedSendScreen(_) => {}
             Screen::UnshieldCreditsScreen(_) => {}
         }

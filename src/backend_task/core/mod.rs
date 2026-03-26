@@ -990,8 +990,8 @@ impl AppContext {
 
 /// Sanitize raw RPC error strings for display in connection status.
 ///
-/// Strips OS-level error details like "(os error 111)" and the "RPC error:"
-/// prefix noise, keeping only the meaningful description.
+/// Strips OS-level error details and transport/RPC wrappers, keeping only
+/// the meaningful description for the Networks page status display.
 fn sanitize_rpc_error(raw: &str) -> String {
     let mut s = raw.to_string();
 
@@ -1000,8 +1000,8 @@ fn sanitize_rpc_error(raw: &str) -> String {
         s = s[..pos].trim_end().to_string();
     }
 
-    // Strip nested "transport error:" or "JSON-RPC error:" wrappers
-    for prefix in &["transport error:", "JSON-RPC error:"] {
+    // Strip nested wrapper prefixes to get the actual error message
+    for prefix in &["RPC error:", "transport error:", "JSON-RPC error:"] {
         if let Some(pos) = s.find(prefix) {
             s = s[pos + prefix.len()..].trim_start().to_string();
         }
@@ -1010,6 +1010,6 @@ fn sanitize_rpc_error(raw: &str) -> String {
     if s.is_empty() {
         "Could not reach the node.".to_string()
     } else {
-        format!("RPC: {s}")
+        s
     }
 }

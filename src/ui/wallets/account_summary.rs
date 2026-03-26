@@ -166,23 +166,6 @@ impl AccountCategory {
         )
     }
 
-    /// Returns true if this account category is primarily used for key
-    /// derivation and proofs rather than holding funds.
-    #[allow(dead_code)]
-    pub fn is_key_only(&self) -> bool {
-        matches!(
-            self,
-            AccountCategory::IdentityRegistration
-                | AccountCategory::IdentityTopup
-                | AccountCategory::IdentityInvitation
-                | AccountCategory::IdentitySystem
-                | AccountCategory::ProviderVoting
-                | AccountCategory::ProviderOwner
-                | AccountCategory::ProviderOperator
-                | AccountCategory::ProviderPlatform
-        )
-    }
-
     /// Returns true if this is a "system" account category shown only in
     /// developer mode under the consolidated System tab.
     pub fn is_system_category(&self) -> bool {
@@ -216,8 +199,6 @@ pub(crate) fn categorize_account_path(
 #[derive(Clone, Debug)]
 pub struct AccountSummary {
     pub category: AccountCategory,
-    #[allow(dead_code)]
-    pub label: String,
     pub index: Option<u32>,
     pub confirmed_balance: u64,
     /// Platform credits balance for Platform Payment addresses
@@ -251,11 +232,8 @@ impl AccountSummaryBuilder {
     }
 
     fn build(self) -> AccountSummary {
-        let label = self.key.category.label(self.key.index);
-
         AccountSummary {
             category: self.key.category,
-            label,
             index: self.key.index,
             confirmed_balance: self.confirmed_balance,
             platform_credits: self.platform_credits,

@@ -581,9 +581,12 @@ impl AddressInput {
         use dash_sdk::dpp::address_funds::OrchardAddress;
         match OrchardAddress::from_bech32m_string(trimmed) {
             Ok((_, network)) => {
-                if network != self.network
-                    && !(self.network != Network::Mainnet && network != Network::Mainnet)
-                {
+                // Shielded addresses only encode mainnet vs non-mainnet in the HRP.
+                // Testnet, Devnet, and Local all share "tdash1z" and cannot be
+                // distinguished at the address level. Enforce mainnet isolation only.
+                let same_mainnet_class =
+                    (self.network == Network::Mainnet) == (network == Network::Mainnet);
+                if !same_mainnet_class {
                     (
                         Some("This address belongs to a different network.".to_string()),
                         None,

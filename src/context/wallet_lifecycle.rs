@@ -184,10 +184,9 @@ impl AppContext {
         let ctx = Arc::clone(self);
         self.subtasks.spawn_sync("shielded_init", async move {
             let ctx2 = Arc::clone(&ctx);
-            let init_result = tokio::task::spawn_blocking(move || {
-                ctx2.initialize_shielded_wallet(seed_hash)
-            })
-            .await;
+            let init_result =
+                tokio::task::spawn_blocking(move || ctx2.initialize_shielded_wallet(seed_hash))
+                    .await;
             match init_result {
                 Ok(Ok(_)) => {
                     tracing::trace!(

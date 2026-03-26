@@ -409,7 +409,6 @@ impl WalletsBalancesScreen {
                 && let Ok(wallets) = self.app_context.wallets.read()
                 && wallets.contains_key(&hash)
             {
-        
                 return;
             }
             // HD wallet no longer valid
@@ -423,7 +422,6 @@ impl WalletsBalancesScreen {
                 && let Ok(wallets) = self.app_context.single_key_wallets.read()
                 && wallets.contains_key(&hash)
             {
-        
                 return;
             }
             // Single key wallet no longer valid
@@ -447,11 +445,10 @@ impl WalletsBalancesScreen {
         {
             self.selected_single_key_wallet = Some(wallet);
             self.selected_wallet = None;
-    
+
             self.platform_sync_info = None;
             return;
         }
-
 
         self.platform_sync_info = None;
     }
@@ -1215,7 +1212,12 @@ impl WalletsBalancesScreen {
                 for summary in &matching {
                     let key = (cat.clone(), summary.index);
                     let address_count = address_counts.get(&key).copied().unwrap_or(0);
-                    sections.push((cat.clone(), summary.index, address_count, summary.confirmed_balance));
+                    sections.push((
+                        cat.clone(),
+                        summary.index,
+                        address_count,
+                        summary.confirmed_balance,
+                    ));
                 }
             }
         }

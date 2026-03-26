@@ -197,10 +197,10 @@ impl AppContext {
                     if let Some(task_err) = Self::chain_lock_rpc_error(active_config, e) {
                         return Err(task_err);
                     }
-                    // Non-auth, non-connection error — show the actual error
+                    // Non-auth, non-connection error — show a sanitized message
                     // in the Networks page status display for debugging.
                     tracing::warn!(network = ?self.network, error = %e, "Chain lock query failed on active network");
-                    Some(format!("RPC error: {e}"))
+                    Some(sanitize_rpc_error(&e.to_string()))
                 } else {
                     // Successful chain lock fetch — clear any lingering RPC error
                     // so the connection status recovers after a transient outage.
@@ -985,5 +985,31 @@ impl AppContext {
         size += inputs * 148;
         size += outputs * 34;
         size
+    }
+}
+
+/// Sanitize raw RPC error strings for display in connection status.
+///
+/// Strips OS-level error details like "(os error 111)" and the "RPC error:"
+/// prefix noise, keeping only the meaningful description.
+fn sanitize_rpc_error(raw: &str) -> String {
+    let mut s = raw.to_string();
+
+    // Strip trailing OS error codes: "Connection refused (os error 111)" -> "Connection refused"
+    if let Some(pos) = s.find("(os error") {
+        s = s[..pos].trim_end().to_string();
+    }
+
+    // Strip nested "transport error:" or "JSON-RPC error:" wrappers
+    for prefix in &["transport error:", "JSON-RPC error:"] {
+        if let Some(pos) = s.find(prefix) {
+            s = s[pos + prefix.len()..].trim_start().to_string();
+        }
+    }
+
+    if s.is_empty() {
+        "Could not reach the node.".to_string()
+    } else {
+        format!("RPC: {s}")
     }
 }

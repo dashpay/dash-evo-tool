@@ -16,3 +16,4 @@ mod identity_withdraw;
 mod register_dpns;
 mod send_funds;
 mod spv_wallet;
+mod tx_is_ours;

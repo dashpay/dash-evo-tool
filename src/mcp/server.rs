@@ -81,6 +81,18 @@ impl DashMcpService {
             .with_async_tool::<tools::wallet::SendCoreFunds>()
             .with_async_tool::<tools::platform::QueryWithdrawals>()
             .with_async_tool::<tools::meta::DescribeTool>()
+            // Identity tools
+            .with_async_tool::<tools::identity::IdentityCreditsTopup>()
+            .with_async_tool::<tools::identity::IdentityCreditsTopupFromPlatform>()
+            .with_async_tool::<tools::identity::IdentityCreditsTransfer>()
+            .with_async_tool::<tools::identity::IdentityCreditsWithdraw>()
+            .with_async_tool::<tools::identity::IdentityCreditsToAddress>()
+            // Shielded tools
+            .with_async_tool::<tools::shielded::ShieldedShieldFromCore>()
+            .with_async_tool::<tools::shielded::ShieldedShieldFromPlatform>()
+            .with_async_tool::<tools::shielded::ShieldedTransferTool>()
+            .with_async_tool::<tools::shielded::ShieldedUnshield>()
+            .with_async_tool::<tools::shielded::ShieldedWithdrawTool>()
     }
 }
 

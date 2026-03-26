@@ -818,6 +818,13 @@ impl AppState {
             }
         }
 
+        // Warm up the Halo 2 ProvingKey in a background thread (~30s build).
+        // This ensures the key is ready for the user's first shielded operation.
+        std::thread::spawn(|| {
+            let _ = crate::context::shielded::get_proving_key();
+            tracing::info!("Halo 2 ProvingKey built and cached");
+        });
+
         Ok(app_state)
     }
 
@@ -887,15 +894,21 @@ impl AppState {
         );
     }
 
-    // Handle the backend task and send the result through the channel
+    // Handle the backend task and send the result through the channel.
+    //
+    // Uses spawn_blocking + block_on to avoid Send bound issues with platform
+    // SDK types (DataContract/Sdk references across await points).
     fn handle_backend_task(&self, task: BackendTask) {
         let sender = self.task_result_sender.clone();
         let app_context = self.current_app_context().clone();
-        tokio::spawn(async move {
-            let result = app_context.run_backend_task(task, sender.clone()).await;
-            if let Err(e) = sender.send(result.into()).await {
-                tracing::error!("Failed to send task result: {}", e);
-            }
+        let handle = tokio::runtime::Handle::current();
+        tokio::task::spawn_blocking(move || {
+            handle.block_on(async move {
+                let result = app_context.run_backend_task(task, sender.clone()).await;
+                if let Err(e) = sender.send(result.into()).await {
+                    tracing::error!("Failed to send task result: {}", e);
+                }
+            });
         });
     }
 
@@ -903,26 +916,29 @@ impl AppState {
     fn handle_backend_tasks(&self, tasks: Vec<BackendTask>, mode: BackendTasksExecutionMode) {
         let sender = self.task_result_sender.clone();
         let app_context = self.current_app_context().clone();
+        let handle = tokio::runtime::Handle::current();
 
-        tokio::spawn(async move {
-            let results = match mode {
-                BackendTasksExecutionMode::Sequential => {
-                    app_context
-                        .run_backend_tasks_sequential(tasks, sender.clone())
-                        .await
-                }
-                BackendTasksExecutionMode::Concurrent => {
-                    app_context
-                        .run_backend_tasks_concurrent(tasks, sender.clone())
-                        .await
-                }
-            };
+        tokio::task::spawn_blocking(move || {
+            handle.block_on(async move {
+                let results = match mode {
+                    BackendTasksExecutionMode::Sequential => {
+                        app_context
+                            .run_backend_tasks_sequential(tasks, sender.clone())
+                            .await
+                    }
+                    BackendTasksExecutionMode::Concurrent => {
+                        app_context
+                            .run_backend_tasks_concurrent(tasks, sender.clone())
+                            .await
+                    }
+                };
 
-            for result in results {
-                if let Err(e) = sender.send(result.into()).await {
-                    tracing::error!("Failed to send task result: {}", e);
+                for result in results {
+                    if let Err(e) = sender.send(result.into()).await {
+                        tracing::error!("Failed to send task result: {}", e);
+                    }
                 }
-            }
+            });
         });
     }
 

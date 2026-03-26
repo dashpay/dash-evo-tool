@@ -37,11 +37,20 @@ use egui_extras::{Column, TableBuilder};
 use std::sync::{Arc, RwLock};
 
 use crate::model::wallet::single_key::SingleKeyWallet;
+use crate::ui::wallets::shielded_tab::ShieldedTabView;
 use address_table::{SortColumn, SortOrder};
 use dialogs::{
     FundPlatformAddressDialogState, MineDialogState, PrivateKeyDialogState, ReceiveDialogState,
     SendDialogState,
 };
+
+/// Tab selector for the wallet detail panel.
+#[derive(Default, Clone, Copy, PartialEq)]
+enum WalletViewTab {
+    #[default]
+    Balances,
+    Shielded,
+}
 
 /// Refresh mode for dev mode dropdown - controls what gets refreshed
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -109,6 +118,10 @@ pub struct WalletsBalancesScreen {
     utxo_page: usize,
     /// Selected refresh mode (only shown in dev mode)
     refresh_mode: RefreshMode,
+    /// Currently selected tab in the wallet detail panel
+    selected_tab: WalletViewTab,
+    /// Shielded tab view component (lazily initialized per wallet)
+    shielded_tab_view: Option<ShieldedTabView>,
     /// Cached platform sync info: (last_sync_timestamp, last_sync_height)
     platform_sync_info: Option<(u64, u64)>,
     /// Core wallet selection dialog (shown when auto-detection fails)
@@ -217,6 +230,8 @@ impl WalletsBalancesScreen {
             asset_lock_search_banner: None,
             utxo_page: 0,
             refresh_mode: RefreshMode::default(),
+            selected_tab: WalletViewTab::default(),
+            shielded_tab_view: None,
             platform_sync_info,
             core_wallet_dialog: None,
             pending_core_wallet_seed_hash: None,
@@ -323,6 +338,8 @@ impl WalletsBalancesScreen {
         self.selected_wallet = wallet;
         self.selected_single_key_wallet = None;
         self.selected_account = None;
+        self.selected_tab = WalletViewTab::default();
+        self.shielded_tab_view = None;
 
         if let Some(hash) = seed_hash {
             self.persist_selected_wallet_hash(Some(hash));
@@ -911,6 +928,11 @@ impl WalletsBalancesScreen {
         Amount::dash_from_duffs(amount_duffs).to_string()
     }
 
+    /// Format a `std::time::Instant` as a relative "time ago" string.
+    fn format_instant_ago(instant: std::time::Instant) -> String {
+        Self::format_duration_ago(instant.elapsed())
+    }
+
     /// Format a Unix timestamp (seconds since epoch) as a relative "time ago" string.
     fn format_unix_time_ago(unix_ts: u64) -> String {
         let now = std::time::SystemTime::now()
@@ -1263,6 +1285,7 @@ impl WalletsBalancesScreen {
             });
     }
 
+    /// Render a compact sync status panel showing Core, Platform, and Shielded sync progress.
     fn render_sync_status(&self, ui: &mut Ui) {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
 
@@ -1409,6 +1432,111 @@ impl WalletsBalancesScreen {
                                     DashColors::text_secondary(dark_mode)
                                 },
                             ));
+
+                            ui.label(
+                                RichText::new("|")
+                                    .size(12.0)
+                                    .color(DashColors::text_secondary(dark_mode)),
+                            );
+
+                            // Shielded notes + nullifiers
+                            let seed_hash = self
+                                .selected_wallet
+                                .as_ref()
+                                .and_then(|w| w.read().ok().map(|g| g.seed_hash()));
+                            let shielded_info = seed_hash.and_then(|hash| {
+                                let states = self.app_context.shielded_states.lock().ok()?;
+                                let state = states.get(&hash)?;
+                                Some((
+                                    state.last_synced_index,
+                                    state.notes.iter().filter(|n| !n.is_spent).count(),
+                                    state.last_nullifier_sync_height,
+                                    state.last_notes_synced_at,
+                                    state.last_nullifiers_synced_at,
+                                ))
+                            });
+                            let shielded_syncing = self
+                                .shielded_tab_view
+                                .as_ref()
+                                .is_some_and(|v| v.is_syncing());
+
+                            match shielded_info {
+                                Some((
+                                    synced_index,
+                                    note_count,
+                                    nf_height,
+                                    notes_synced_at,
+                                    nf_synced_at,
+                                )) => {
+                                    if shielded_syncing {
+                                        ui.add(
+                                            egui::Spinner::new()
+                                                .size(12.0)
+                                                .color(DashColors::DASH_BLUE),
+                                        );
+                                    }
+                                    let notes_text = if let Some(t) = notes_synced_at {
+                                        let ago = Self::format_instant_ago(t);
+                                        format!(
+                                            "Notes: {} synced ({} notes, {})",
+                                            synced_index, note_count, ago
+                                        )
+                                    } else if synced_index > 0 {
+                                        format!(
+                                            "Notes: {} synced ({} notes)",
+                                            synced_index, note_count
+                                        )
+                                    } else {
+                                        "Notes: never synced".to_string()
+                                    };
+                                    ui.label(RichText::new(notes_text).size(12.0).color(
+                                        if shielded_syncing {
+                                            DashColors::DASH_BLUE
+                                        } else {
+                                            DashColors::text_secondary(dark_mode)
+                                        },
+                                    ));
+
+                                    ui.label(
+                                        RichText::new("|")
+                                            .size(12.0)
+                                            .color(DashColors::text_secondary(dark_mode)),
+                                    );
+
+                                    let nf_text = if let Some(t) = nf_synced_at {
+                                        let ago = Self::format_instant_ago(t);
+                                        format!("Nullifiers: height {} ({})", nf_height, ago)
+                                    } else if nf_height > 0 {
+                                        format!("Nullifiers: height {}", nf_height)
+                                    } else {
+                                        "Nullifiers: never synced".to_string()
+                                    };
+                                    ui.label(RichText::new(nf_text).size(12.0).color(
+                                        if shielded_syncing {
+                                            DashColors::DASH_BLUE
+                                        } else {
+                                            DashColors::text_secondary(dark_mode)
+                                        },
+                                    ));
+                                }
+                                None => {
+                                    ui.label(
+                                        RichText::new("Notes: never synced")
+                                            .size(12.0)
+                                            .color(DashColors::text_secondary(dark_mode)),
+                                    );
+                                    ui.label(
+                                        RichText::new("|")
+                                            .size(12.0)
+                                            .color(DashColors::text_secondary(dark_mode)),
+                                    );
+                                    ui.label(
+                                        RichText::new("Nullifiers: never synced")
+                                            .size(12.0)
+                                            .color(DashColors::text_secondary(dark_mode)),
+                                    );
+                                }
+                            }
                         });
                     });
             },
@@ -1462,54 +1590,102 @@ impl WalletsBalancesScreen {
                             );
                         });
 
-                        let summaries = {
-                            let wallet = wallet_arc.read().unwrap();
-                            self.render_wallet_overview(ui, &wallet);
-                            collect_account_summaries(&wallet, self.app_context.network)
-                        };
-
-                        self.ensure_account_selection(&summaries);
-                        action |= self.render_action_buttons(ui, ctx);
-                        ui.add_space(10.0);
-                        ui.separator();
-                        self.render_accounts_section(ui, &summaries);
-                        ui.add_space(10.0);
-                        ui.separator();
-                        ui.add_space(10.0);
-                        let addresses_heading = self
-                            .selected_account
-                            .as_ref()
-                            .map(|(category, index)| {
-                                format!("Addresses ({})", category.label(*index))
-                            })
-                            .unwrap_or_else(|| "Addresses".to_string());
+                        // Tab bar: Balances | Shielded
+                        ui.add_space(6.0);
                         ui.horizontal(|ui| {
-                            ui.heading(
-                                RichText::new(addresses_heading)
-                                    .color(DashColors::text_primary(dark_mode)),
-                            );
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    ui.checkbox(
-                                        &mut self.show_zero_balance_addresses,
-                                        "Show zero-balance addresses",
-                                    );
-                                },
-                            );
+                            let balances_text = if self.selected_tab == WalletViewTab::Balances {
+                                RichText::new("Balances")
+                                    .strong()
+                                    .color(DashColors::DASH_BLUE)
+                            } else {
+                                RichText::new("Balances")
+                                    .color(DashColors::text_secondary(dark_mode))
+                            };
+                            if ui
+                                .selectable_label(
+                                    self.selected_tab == WalletViewTab::Balances,
+                                    balances_text,
+                                )
+                                .clicked()
+                            {
+                                self.selected_tab = WalletViewTab::Balances;
+                            }
+
+                            let shielded_text = if self.selected_tab == WalletViewTab::Shielded {
+                                RichText::new("Shielded")
+                                    .strong()
+                                    .color(DashColors::DASH_BLUE)
+                            } else {
+                                RichText::new("Shielded")
+                                    .color(DashColors::text_secondary(dark_mode))
+                            };
+                            if ui
+                                .selectable_label(
+                                    self.selected_tab == WalletViewTab::Shielded,
+                                    shielded_text,
+                                )
+                                .clicked()
+                            {
+                                self.selected_tab = WalletViewTab::Shielded;
+                            }
                         });
-                        ui.add_space(8.0);
-                        action |= self.render_address_table(ui);
-
-                        ui.add_space(10.0);
                         ui.separator();
-                        self.render_transactions_section(ui);
+                        ui.add_space(4.0);
 
-                        ui.add_space(14.0);
-                        self.render_bottom_options(ui);
+                        match self.selected_tab {
+                            WalletViewTab::Balances => {
+                                let summaries = {
+                                    let wallet = wallet_arc.read().unwrap();
+                                    self.render_wallet_overview(ui, &wallet);
+                                    collect_account_summaries(&wallet, self.app_context.network)
+                                };
 
-                        ui.add_space(16.0);
-                        action |= self.render_wallet_asset_locks(ui);
+                                self.ensure_account_selection(&summaries);
+                                action |= self.render_action_buttons(ui, ctx);
+                                ui.add_space(10.0);
+                                ui.separator();
+                                self.render_accounts_section(ui, &summaries);
+                                ui.add_space(10.0);
+                                ui.separator();
+                                ui.add_space(10.0);
+                                let addresses_heading = self
+                                    .selected_account
+                                    .as_ref()
+                                    .map(|(category, index)| {
+                                        format!("Addresses ({})", category.label(*index))
+                                    })
+                                    .unwrap_or_else(|| "Addresses".to_string());
+                                ui.heading(
+                                    RichText::new(addresses_heading)
+                                        .color(DashColors::text_primary(dark_mode)),
+                                );
+                                ui.add_space(8.0);
+                                action |= self.render_address_table(ui);
+
+                                // Transactions section - requires SPV which is dev mode only
+                                if self.app_context.is_developer_mode() {
+                                    ui.add_space(10.0);
+                                    ui.separator();
+                                    self.render_transactions_section(ui);
+                                }
+
+                                ui.add_space(14.0);
+                                self.render_bottom_options(ui);
+
+                                ui.add_space(16.0);
+                                action |= self.render_wallet_asset_locks(ui);
+                            }
+                            WalletViewTab::Shielded => {
+                                let seed_hash = wallet_arc.read().unwrap().seed_hash();
+                                let shielded_view =
+                                    self.shielded_tab_view.get_or_insert_with(|| {
+                                        ShieldedTabView::new(&self.app_context, seed_hash)
+                                    });
+                                shielded_view.update_seed_hash(seed_hash);
+                                shielded_view.update_app_context(&self.app_context);
+                                action |= shielded_view.ui(ui);
+                            }
+                        }
                     });
             });
         });
@@ -1710,8 +1886,8 @@ impl ScreenLike for WalletsBalancesScreen {
 
                     ui.add_space(10.0);
 
-                    // Sync status panel (only for HD wallets, dev mode only)
-                    if self.selected_wallet.is_some() && self.app_context.is_developer_mode() {
+                    // Sync status panel (only for HD wallets)
+                    if self.selected_wallet.is_some() {
                         self.render_sync_status(ui);
                         ui.add_space(6.0);
                     }
@@ -2122,6 +2298,11 @@ impl ScreenLike for WalletsBalancesScreen {
                 self.fund_platform_dialog.status = Some(message.to_string());
                 self.fund_platform_dialog.status_is_error = true;
             }
+
+            // Forward errors to the shielded tab view so it can reset spinner states
+            if let Some(shielded_view) = &mut self.shielded_tab_view {
+                shielded_view.handle_error(message);
+            }
         }
     }
 
@@ -2309,6 +2490,17 @@ impl ScreenLike for WalletsBalancesScreen {
                     format!("Mined {} block(s)", count),
                     MessageType::Success,
                 );
+            }
+            // Shielded pool results
+            result @ (crate::ui::BackendTaskSuccessResult::ShieldedInitialized { .. }
+            | crate::ui::BackendTaskSuccessResult::ShieldedNotesSynced { .. }
+            | crate::ui::BackendTaskSuccessResult::ShieldedCreditsShielded { .. }
+            | crate::ui::BackendTaskSuccessResult::ShieldedTransferComplete { .. }
+            | crate::ui::BackendTaskSuccessResult::ShieldedCreditsUnshielded { .. }
+            | crate::ui::BackendTaskSuccessResult::ShieldedNullifiersChecked { .. }) => {
+                if let Some(shielded_view) = &mut self.shielded_tab_view {
+                    shielded_view.handle_result(&result);
+                }
             }
             crate::ui::BackendTaskSuccessResult::CoreWalletsList(wallets) => {
                 let wallet_hash = self.pending_list_wallet_hash.take();

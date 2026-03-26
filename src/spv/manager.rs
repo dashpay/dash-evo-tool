@@ -3,7 +3,6 @@ use crate::config::NetworkConfig;
 use crate::context::connection_status::ConnectionStatus;
 use crate::model::wallet::WalletSeedHash;
 use crate::utils::tasks::TaskManager;
-use arc_swap::ArcSwapOption;
 use dash_sdk::dash_spv::client::config::MempoolStrategy;
 use dash_sdk::dash_spv::network::NetworkEvent;
 use dash_sdk::dash_spv::network::PeerNetworkManager;
@@ -150,9 +149,8 @@ pub struct SpvManager {
     wallet: Arc<AsyncRwLock<WalletManager<ManagedWalletInfo>>>,
     // Storage manager for direct access to SPV data (shared component from client)
     storage: Arc<Mutex<Option<Arc<tokio::sync::Mutex<DiskStorageManager>>>>>,
-    // Shared reference to the running SPV client (for quorum lookups, etc.)
-    // ArcSwapOption gives wait-free reads (quorum lookups) and atomic set/clear on start/stop.
-    spv_client: ArcSwapOption<SpvClient>,
+    // Clone of the running SPV client for direct queries (quorum lookups, etc.)
+    spv_client: Arc<RwLock<Option<SpvClient>>>,
     status: Arc<RwLock<SpvStatus>>,
     last_error: Arc<RwLock<Option<String>>>,
     started_at: Arc<RwLock<Option<SystemTime>>>,
@@ -316,7 +314,7 @@ impl SpvManager {
                 network,
             ))),
             storage: Arc::new(Mutex::new(None)),
-            spv_client: ArcSwapOption::empty(),
+            spv_client: Arc::new(RwLock::new(None)),
             status: Arc::new(RwLock::new(SpvStatus::Idle)),
             last_error: Arc::new(RwLock::new(None)),
             started_at: Arc::new(RwLock::new(None)),
@@ -587,7 +585,9 @@ impl SpvManager {
             *storage_guard = None;
         }
 
-        // spv_client is cleared asynchronously when the client stops; no action needed here.
+        if let Ok(mut client_guard) = self.spv_client.write() {
+            *client_guard = None;
+        }
 
         if let Ok(mut request_guard) = self.request_tx.lock() {
             *request_guard = None;
@@ -655,6 +655,16 @@ impl SpvManager {
             core_chain_locked_height
         );
 
+        let client = {
+            let guard = self
+                .spv_client
+                .read()
+                .map_err(|e| format!("spv_client lock poisoned: {e}"))?;
+            guard
+                .clone()
+                .ok_or_else(|| "SPV client not initialized".to_string())?
+        };
+
         let llmq_type = LLMQType::from(quorum_type as u8);
         let qh = QuorumHash::from_byte_array(quorum_hash).reverse();
 
@@ -664,11 +674,6 @@ impl SpvManager {
             hex::encode(quorum_hash),
             core_chain_locked_height
         );
-
-        let client = self
-            .spv_client
-            .load_full()
-            .ok_or_else(|| "SPV client not initialized".to_string())?;
 
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async {
@@ -854,9 +859,9 @@ impl SpvManager {
             }
         }
 
-        // Build the client and wrap in Arc for shared access
+        // Build the client (run() will call start() internally)
         let has_wallets = expected_wallet_count > 0;
-        let client = Arc::new(self.build_client(has_wallets).await?);
+        let client = self.build_client(has_wallets).await?;
 
         // Store the shared storage reference for later access
         {
@@ -865,9 +870,6 @@ impl SpvManager {
                 *storage_guard = Some(storage);
             }
         }
-
-        // Store the client reference for quorum lookups (wait-free reads via ArcSwap)
-        self.spv_client.store(Some(Arc::clone(&client)));
 
         // Subscribe to sync events (broadcast)
         let sync_rx = client.subscribe_sync_events().await;
@@ -899,13 +901,26 @@ impl SpvManager {
         // Spawn request handler in a separate task
         self.spawn_request_handler(request_rx, stop_token.clone());
 
+        // Store a clone of the client for external queries (quorum lookups, etc.)
+        {
+            let mut guard = self
+                .spv_client
+                .write()
+                .map_err(|e| format!("spv_client lock poisoned: {e}"))?;
+            *guard = Some(client.clone());
+        }
+
         let _ = self.write_status(SpvStatus::Syncing);
 
-        // Run the client — handles start, monitoring, and stop internally
+        // Run sync and monitor with the client owned in this scope
         let result = self.clone().run_client(client, stop_token).await;
 
         // Clear the client reference and network manager since the client is done
-        self.spv_client.store(None);
+        {
+            if let Ok(mut guard) = self.spv_client.write() {
+                *guard = None;
+            }
+        }
         {
             let mut nm_guard = self.network_manager.write().await;
             *nm_guard = None;
@@ -931,26 +946,48 @@ impl SpvManager {
 
     async fn run_client(
         self: Arc<Self>,
-        client: Arc<SpvClient>,
+        client: SpvClient,
         stop_token: CancellationToken,
     ) -> Result<(), String> {
-        // client.run() handles start, monitoring loop, and stop internally.
-        // It returns when the cancellation token fires or an error occurs.
-        let result = client
-            .run(stop_token)
-            .await
-            .map_err(|e| format!("SPV client error: {e}"));
+        // Run the client continuously - this handles initial sync and ongoing monitoring.
+        // The client's run() method calls start() internally and monitors until the
+        // cancellation token is triggered, then calls stop() before returning.
+        enum Outcome {
+            RunCompleted(Result<(), dash_sdk::dash_spv::SpvError>),
+            Cancelled,
+        }
+
+        let outcome = {
+            let run_cancel = CancellationToken::new();
+            let run_future = client.run(run_cancel.clone());
+            tokio::pin!(run_future);
+
+            // stop_token is a child of global_cancel, so it fires on either
+            // explicit SpvManager::stop() or application-wide shutdown.
+            tokio::select! {
+                result = &mut run_future => Outcome::RunCompleted(result),
+                _ = stop_token.cancelled() => {
+                    run_cancel.cancel();
+                    Outcome::Cancelled
+                },
+            }
+        }; // run_future is dropped here, releasing the borrow
 
         tracing::info!(
             "run_client: outcome = {}",
-            if result.is_ok() { "Ok" } else { "Err" }
+            match &outcome {
+                Outcome::RunCompleted(Ok(())) => "RunCompleted(Ok)",
+                Outcome::RunCompleted(Err(_)) => "RunCompleted(Err)",
+                Outcome::Cancelled => "Cancelled",
+            }
         );
 
-        match &result {
-            Ok(()) => {
+        match outcome {
+            Outcome::RunCompleted(Ok(())) => {
                 let _ = self.write_status(SpvStatus::Stopped);
             }
-            Err(message) => {
+            Outcome::RunCompleted(Err(err)) => {
+                let message = format!("client.run() failed: {err}");
                 let _ = self.write_last_error(Some(message.clone()));
                 let _ = self.write_status(SpvStatus::Error);
                 // Push last_error separately — write_status already pushed the status.
@@ -958,8 +995,11 @@ impl SpvManager {
                     cs.set_spv_last_error(Some(message.clone()));
                 }
             }
+            Outcome::Cancelled => {
+                let _ = self.write_status(SpvStatus::Stopped);
+            }
         }
-        result
+        Ok(())
     }
 
     fn spawn_request_handler(

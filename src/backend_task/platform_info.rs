@@ -44,6 +44,7 @@ pub enum PlatformInfoTaskRequestType {
     CurrentWithdrawalsInQueue,
     RecentlyCompletedWithdrawals,
     BasicPlatformInfo,
+    ShieldedPoolState,
     FetchAddressBalance(String),
 }
 
@@ -675,6 +676,28 @@ impl AppContext {
                     Ok(BackendTaskSuccessResult::PlatformInfo(
                         PlatformInfoTaskResult::TextResult(formatted),
                     ))
+                }
+            }
+            PlatformInfoTaskRequestType::ShieldedPoolState => {
+                use dash_sdk::query_types::ShieldedPoolState;
+
+                match ShieldedPoolState::fetch_current(sdk).await {
+                    Ok(pool_state) => {
+                        let total_credits = pool_state.0;
+                        let dash_amount = total_credits as f64 / (dash_to_credits!(1) as f64);
+                        let formatted = format!(
+                            "Shielded Pool State:\n\n\
+                             • Total Balance: {} credits\n\
+                             • Dash Equivalent: {:.8} DASH",
+                            total_credits, dash_amount,
+                        );
+                        Ok(BackendTaskSuccessResult::PlatformInfo(
+                            PlatformInfoTaskResult::TextResult(formatted),
+                        ))
+                    }
+                    Err(e) => Err(TaskError::ShieldedSyncFailed {
+                        detail: format!("Failed to fetch shielded pool state: {}", e),
+                    }),
                 }
             }
             PlatformInfoTaskRequestType::FetchAddressBalance(address_string) => {

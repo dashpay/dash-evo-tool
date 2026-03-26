@@ -18,7 +18,7 @@ qrcode = "0.14.1"
 nix = { version = "0.31.1", features = ["signal"] }
 eframe = { version = "0.33.3", features = ["persistence", "wgpu"] }
 base64 = "0.22.1"
-dash-sdk = { git = "https://github.com/dashpay/platform", rev = "93556aa4b", features = [
+dash-sdk = { git = "https://github.com/dashpay/platform", branch = "feat/mempool-support", features = [
     "core_key_wallet",
     "core_key_wallet_manager",
     "core_bincode",
@@ -26,7 +26,9 @@ dash-sdk = { git = "https://github.com/dashpay/platform", rev = "93556aa4b", fea
     "core_verification",
     "core_rpc_client",
     "core_spv",
+    "shielded",
 ] }
+zip32 = "0.2.0"
 grovestark = { git = "https://www.github.com/dashpay/grovestark", rev = "5b9e289cca54c79b1305d5f4f40bf1148f1eb0e3" }
 rayon = "1.8"
 thiserror = "2.0.18"
@@ -119,6 +121,7 @@ debug = "line-tables-only"
 [lints.rust.unexpected_cfgs]
 level = "warn"
 check-cfg = ["cfg(tokio_unstable)", "cfg(feature, values(\"testing\", \"mcp\", \"cli\", \"headless\"))"]
+
 
 [lints.clippy]
 uninlined_format_args = "allow"

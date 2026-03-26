@@ -1261,13 +1261,9 @@ impl WalletSendScreen {
                 Some(AppAction::None)
             }
             SendStatus::Error => {
-                // Error message is displayed by the global MessageBanner.
-                // Show a dismiss/retry option.
-                ui.add_space(10.0);
-                if ui.button("Dismiss").clicked() {
-                    self.send_status = SendStatus::NotStarted;
-                }
-                ui.add_space(10.0);
+                // Error is displayed by the global MessageBanner — no extra
+                // UI needed here. Reset status so the form is usable again.
+                self.send_status = SendStatus::NotStarted;
                 None
             }
             SendStatus::NotStarted => None,

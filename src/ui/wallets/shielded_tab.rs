@@ -361,7 +361,10 @@ impl ShieldedTabView {
                 });
             } else {
                 let wallet_locked = {
-                    let wallets = self.app_context.wallets.read().unwrap();
+                    let Some(wallets) = self.app_context.wallets.read().ok() else {
+                        ui.label("Unable to read wallet state. Please try again.");
+                        return action;
+                    };
                     wallets
                         .get(&self.seed_hash)
                         .is_some_and(wallet_needs_unlock)

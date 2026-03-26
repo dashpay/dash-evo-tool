@@ -371,10 +371,27 @@ impl AddressInput {
             });
         }
 
-        // Platform addresses from platform_address_info
-        for (core_addr, info) in &guard.platform_address_info {
+        // Platform addresses: derive from watched_addresses (all bootstrapped
+        // platform payment addresses), with balance from platform_address_info.
+        // This ensures fresh wallets with no on-chain activity still show
+        // their derived platform addresses.
+        use crate::model::wallet::DerivationPathReference;
+        let mut seen_platform = std::collections::HashSet::new();
+        for (_path, addr_info) in &guard.watched_addresses {
+            if addr_info.path_reference != DerivationPathReference::PlatformPayment {
+                continue;
+            }
+            let core_addr = &addr_info.address;
             if let Ok(platform_addr) = PlatformAddress::try_from(core_addr.clone()) {
                 let addr_str = platform_addr.to_bech32m_string(self.network);
+                if !seen_platform.insert(addr_str.clone()) {
+                    continue;
+                }
+                let balance = guard
+                    .platform_address_info
+                    .get(core_addr)
+                    .map(|info| info.balance)
+                    .unwrap_or(0);
                 let display = if self.full_addresses {
                     format!("{}{}", prefix, addr_str)
                 } else {
@@ -385,7 +402,7 @@ impl AddressInput {
                     address_string: addr_str,
                     address_kind: AddressKind::Platform,
                     display_label: display,
-                    balance: info.balance,
+                    balance,
                     validated: ValidatedAddress::Platform {
                         address: platform_addr,
                         bech32m,

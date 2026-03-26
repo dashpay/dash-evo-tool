@@ -921,19 +921,7 @@ impl AppContext {
                         net_amount: record.net_amount,
                         fee: record.fee,
                         label: record.label.clone(),
-                        // SPV transaction history is per-wallet — all entries
-                        // involve our addresses. Upstream sets is_ours only for
-                        // sends (net_amount < 0); we override to true for all.
-                        is_ours: {
-                            if !record.is_ours && record.net_amount >= 0 {
-                                tracing::debug!(
-                                    txid = %record.txid,
-                                    net_amount = record.net_amount,
-                                    "SPV: overriding is_ours to true for receive transaction"
-                                );
-                            }
-                            true
-                        },
+                        is_ours: spv_is_ours_override(record.is_ours, record.net_amount),
                         status,
                     }
                 })
@@ -979,5 +967,53 @@ impl AppContext {
         // Reset the throttle timer so trigger_refresh() starts polling
         // at 200ms intervals and picks up the Stopped transition quickly.
         self.connection_status.reset_timer();
+    }
+}
+
+/// SPV transaction history is per-wallet — all entries involve our addresses
+/// (they passed bloom filter + `check_transaction()` address matching).
+/// Upstream sets `is_ours` only for sends (`net_amount < 0`); we override
+/// to `true` for all matched transactions since address ownership was
+/// already verified by the SPV layer.
+///
+/// Bloom filter false positives are filtered by `check_transaction()` before
+/// records reach this point, so the override is safe. Testing actual bloom
+/// filter FP behavior would require mocking the SPV layer's bloom filter,
+/// which is out of scope for unit tests.
+fn spv_is_ours_override(upstream_is_ours: bool, net_amount: i64) -> bool {
+    if !upstream_is_ours && net_amount >= 0 {
+        tracing::debug!(
+            net_amount,
+            "SPV: overriding is_ours to true for receive transaction"
+        );
+    }
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_ours_override_true_for_outgoing_already_ours() {
+        assert!(spv_is_ours_override(true, -50_000));
+    }
+
+    #[test]
+    fn is_ours_override_true_for_incoming_not_ours() {
+        // Upstream marks receive transactions as !is_ours — we override.
+        assert!(spv_is_ours_override(false, 100_000));
+    }
+
+    #[test]
+    fn is_ours_override_true_for_zero_amount_not_ours() {
+        // Edge case: net_amount == 0 (e.g. self-transfer minus fee)
+        assert!(spv_is_ours_override(false, 0));
+    }
+
+    #[test]
+    fn is_ours_override_true_for_outgoing_not_ours() {
+        // Even if upstream says !is_ours for a send, we override.
+        assert!(spv_is_ours_override(false, -10_000));
     }
 }

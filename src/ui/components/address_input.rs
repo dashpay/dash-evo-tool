@@ -731,9 +731,12 @@ impl AddressInput {
                 if query.is_empty() {
                     return true;
                 }
-                // Substring match against address and label
+                // Substring match against address, label, and type name.
+                // Typing "platform" or "core" filters to that address type.
                 e.address_string.to_lowercase().contains(&query)
                     || e.display_label.to_lowercase().contains(&query)
+                    || e.address_kind.short_label().to_lowercase().contains(&query)
+                    || e.address_kind.display_name().to_lowercase().contains(&query)
             })
             .collect();
 
@@ -873,15 +876,11 @@ impl AddressInput {
                 // Collect filtered entries into an owned snapshot to release the borrow on self
                 let (filtered, total_entries) = self.filtered_entries();
                 let filtered_len = filtered.len();
-                let show_type_suffix = self.enabled_kinds.len() > 1;
                 let entries_snapshot: Vec<(String, String, AddressEntry)> = filtered
                     .iter()
                     .map(|e| {
-                        let label = if show_type_suffix {
-                            format!("{} ({})", e.display_label, e.address_kind.short_label())
-                        } else {
-                            e.display_label.clone()
-                        };
+                        let label =
+                            format!("{} ({})", e.display_label, e.address_kind.short_label());
                         (label, self.format_balance(e), (*e).clone())
                     })
                     .collect();

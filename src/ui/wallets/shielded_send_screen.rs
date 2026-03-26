@@ -64,6 +64,10 @@ impl ShieldedSendScreen {
         }
     }
 
+    pub(crate) fn invalidate_address_input(&mut self) {
+        self.recipient_address_input.clear();
+    }
+
     fn validate_recipient(&self) -> Option<Vec<u8>> {
         let trimmed = self.recipient_address_input.trim();
         if trimmed.is_empty() {

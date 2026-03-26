@@ -429,13 +429,13 @@ impl PartialEq for ScreenType {
             (ScreenType::DashPayQRGenerator, ScreenType::DashPayQRGenerator) => true,
             (ScreenType::DashPayProfileSearch, ScreenType::DashPayProfileSearch) => true,
             // Shielded screens
-            (ScreenType::ShieldCreditsScreen(_), ScreenType::ShieldCreditsScreen(_)) => true,
+            (ScreenType::ShieldCreditsScreen(a), ScreenType::ShieldCreditsScreen(b)) => a == b,
             (
-                ScreenType::ShieldFromAssetLockScreen(_),
-                ScreenType::ShieldFromAssetLockScreen(_),
-            ) => true,
-            (ScreenType::ShieldedSendScreen(_), ScreenType::ShieldedSendScreen(_)) => true,
-            (ScreenType::UnshieldCreditsScreen(_), ScreenType::UnshieldCreditsScreen(_)) => true,
+                ScreenType::ShieldFromAssetLockScreen(a),
+                ScreenType::ShieldFromAssetLockScreen(b),
+            ) => a == b,
+            (ScreenType::ShieldedSendScreen(a), ScreenType::ShieldedSendScreen(b)) => a == b,
+            (ScreenType::UnshieldCreditsScreen(a), ScreenType::UnshieldCreditsScreen(b)) => a == b,
             _ => false,
         }
     }

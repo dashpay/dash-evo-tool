@@ -197,10 +197,10 @@ impl AppContext {
                     if let Some(task_err) = Self::chain_lock_rpc_error(active_config, e) {
                         return Err(task_err);
                     }
-                    // Non-auth, non-connection error — show the actual error
+                    // Non-auth, non-connection error — show a sanitized message
                     // in the Networks page status display for debugging.
                     tracing::warn!(network = ?self.network, error = %e, "Chain lock query failed on active network");
-                    Some(format!("RPC error: {e}"))
+                    Some(sanitize_rpc_error(&e.to_string()))
                 } else {
                     // Successful chain lock fetch — clear any lingering RPC error
                     // so the connection status recovers after a transient outage.
@@ -697,17 +697,15 @@ impl AppContext {
 
         // Get UTXOs and change address from the wallet account
         let (utxos, change_index) = {
-            let managed_info =
-                wm.get_wallet_info(wallet_id)
-                    .ok_or_else(|| TaskError::WalletPaymentFailed {
-                        detail: "Wallet info unavailable".to_string(),
-                    })?;
+            let managed_info = wm
+                .get_wallet_info(wallet_id)
+                .ok_or(TaskError::WalletInfoUnavailable)?;
             let account = managed_info
                 .accounts()
                 .standard_bip44_accounts
                 .get(&DEFAULT_BIP44_ACCOUNT_INDEX)
-                .ok_or_else(|| TaskError::WalletPaymentFailed {
-                    detail: "BIP44 account missing".to_string(),
+                .ok_or(TaskError::MissingBip44Account {
+                    index: DEFAULT_BIP44_ACCOUNT_INDEX,
                 })?;
 
             let utxos: Vec<_> = account.utxos.values().cloned().collect();
@@ -717,21 +715,17 @@ impl AppContext {
 
         let wallet = wm
             .get_wallet(wallet_id)
-            .ok_or_else(|| TaskError::WalletPaymentFailed {
-                detail: "Wallet object not found".to_string(),
-            })?;
+            .ok_or(TaskError::WalletInfoUnavailable)?;
         let wallet_account = wallet
             .accounts
             .standard_bip44_accounts
             .get(&DEFAULT_BIP44_ACCOUNT_INDEX)
-            .ok_or_else(|| TaskError::WalletPaymentFailed {
-                detail: "BIP44 wallet account missing".to_string(),
+            .ok_or(TaskError::MissingBip44Account {
+                index: DEFAULT_BIP44_ACCOUNT_INDEX,
             })?;
         let change_addr = wallet_account
             .derive_change_address(change_index)
-            .map_err(|e| TaskError::WalletPaymentFailed {
-                detail: format!("Failed to derive change address: {e}"),
-            })?;
+            .map_err(|e| TaskError::ChangeAddressDerivation { source: e })?;
 
         loop {
             let scaled_recipients: Vec<(Address, u64)> = recipients
@@ -801,17 +795,15 @@ impl AppContext {
         account_index: u32,
         current_height: u32,
     ) -> Result<u64, TaskError> {
-        let managed_info =
-            wm.get_wallet_info(wallet_id)
-                .ok_or_else(|| TaskError::WalletPaymentFailed {
-                    detail: "Wallet info unavailable".to_string(),
-                })?;
+        let managed_info = wm
+            .get_wallet_info(wallet_id)
+            .ok_or(TaskError::WalletInfoUnavailable)?;
         let collection = managed_info.accounts();
         let account = collection
             .standard_bip44_accounts
             .get(&account_index)
-            .ok_or_else(|| TaskError::WalletPaymentFailed {
-                detail: "BIP44 account missing".to_string(),
+            .ok_or(TaskError::MissingBip44Account {
+                index: account_index,
             })?;
 
         let mut spendable_total = 0u64;
@@ -896,20 +888,16 @@ impl AppContext {
     ) -> Result<Transaction, TaskError> {
         let wallet = wm
             .get_wallet(wallet_id)
-            .ok_or_else(|| TaskError::WalletPaymentFailed {
-                detail: "Wallet object not found".to_string(),
-            })?;
-        let managed_info =
-            wm.get_wallet_info(wallet_id)
-                .ok_or_else(|| TaskError::WalletPaymentFailed {
-                    detail: "Wallet info unavailable".to_string(),
-                })?;
+            .ok_or(TaskError::WalletInfoUnavailable)?;
+        let managed_info = wm
+            .get_wallet_info(wallet_id)
+            .ok_or(TaskError::WalletInfoUnavailable)?;
         let accounts = managed_info.accounts();
         let account = accounts
             .standard_bip44_accounts
             .get(&DEFAULT_BIP44_ACCOUNT_INDEX)
-            .ok_or_else(|| TaskError::WalletPaymentFailed {
-                detail: "BIP44 account missing".to_string(),
+            .ok_or(TaskError::MissingBip44Account {
+                index: DEFAULT_BIP44_ACCOUNT_INDEX,
             })?;
 
         let secp = Secp256k1::new();
@@ -997,5 +985,31 @@ impl AppContext {
         size += inputs * 148;
         size += outputs * 34;
         size
+    }
+}
+
+/// Sanitize raw RPC error strings for display in connection status.
+///
+/// Strips OS-level error details and transport/RPC wrappers, keeping only
+/// the meaningful description for the Networks page status display.
+fn sanitize_rpc_error(raw: &str) -> String {
+    let mut s = raw.to_string();
+
+    // Strip trailing OS error codes: "Connection refused (os error 111)" -> "Connection refused"
+    if let Some(pos) = s.find("(os error") {
+        s = s[..pos].trim_end().to_string();
+    }
+
+    // Strip nested wrapper prefixes to get the actual error message
+    for prefix in &["RPC error:", "transport error:", "JSON-RPC error:"] {
+        if let Some(pos) = s.find(prefix) {
+            s = s[pos + prefix.len()..].trim_start().to_string();
+        }
+    }
+
+    if s.is_empty() {
+        "Could not reach the node.".to_string()
+    } else {
+        s
     }
 }

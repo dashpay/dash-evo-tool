@@ -2,9 +2,26 @@ use dash_sdk::dashcore_rpc::dashcore::Address;
 #[cfg(test)]
 use dash_sdk::dashcore_rpc::dashcore::Network;
 use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
-use dash_sdk::dpp::address_funds::PlatformAddress;
+use dash_sdk::dpp::address_funds::{PLATFORM_HRP_MAINNET, PLATFORM_HRP_TESTNET, PlatformAddress};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
+
+/// Checks if a string looks like a Platform address (bech32m with dash/tdash HRP per DIP-18).
+///
+/// This checks whether the string starts with a known Platform HRP followed by the
+/// bech32 separator '1'. It does NOT fully validate the address — use
+/// `PlatformAddress::from_bech32m_string()` for that.
+pub fn is_platform_address_string(s: &str) -> bool {
+    for hrp in [PLATFORM_HRP_MAINNET, PLATFORM_HRP_TESTNET] {
+        if s.len() > hrp.len()
+            && s[..hrp.len()].eq_ignore_ascii_case(hrp)
+            && s.as_bytes()[hrp.len()] == b'1'
+        {
+            return true;
+        }
+    }
+    false
+}
 
 /// Classification of a Dash address for filtering and display purposes.
 ///
@@ -72,18 +89,36 @@ impl AddressKind {
         }
 
         // 2. Platform (Bech32m per DIP-18, but NOT shielded — already excluded above)
-        if crate::ui::helpers::is_platform_address_string(trimmed) {
+        if is_platform_address_string(trimmed) {
             return Some(AddressKind::Platform);
         }
 
-        // 3. Core (Base58Check)
-        if trimmed.parse::<Address<NetworkUnchecked>>().is_ok() {
-            return Some(AddressKind::Core);
-        }
+        // 3 & 4. Core vs Identity disambiguation.
+        //
+        // Both Core addresses and Identity IDs use Base58. Core addresses
+        // on Dash always start with X/Y (mainnet) or y/8/7 (testnet).
+        // If the input starts with a known Core prefix, try Core first.
+        // Otherwise try Identity first to avoid misclassifying IDs as
+        // Core addresses (they share the Base58 alphabet).
+        let core_prefix = matches!(
+            trimmed.as_bytes().first(),
+            Some(b'X' | b'Y' | b'y' | b'8' | b'7')
+        );
 
-        // 4. Identity (Base58 fallback)
-        if Identifier::from_string(trimmed, Encoding::Base58).is_ok() {
-            return Some(AddressKind::Identity);
+        if core_prefix {
+            if trimmed.parse::<Address<NetworkUnchecked>>().is_ok() {
+                return Some(AddressKind::Core);
+            }
+            if Identifier::from_string(trimmed, Encoding::Base58).is_ok() {
+                return Some(AddressKind::Identity);
+            }
+        } else {
+            if Identifier::from_string(trimmed, Encoding::Base58).is_ok() {
+                return Some(AddressKind::Identity);
+            }
+            if trimmed.parse::<Address<NetworkUnchecked>>().is_ok() {
+                return Some(AddressKind::Core);
+            }
         }
 
         None
@@ -198,6 +233,24 @@ impl std::fmt::Display for ValidatedAddress {
     }
 }
 
+/// Truncate an address string for display, showing a prefix and suffix
+/// separated by an ellipsis.
+///
+/// Assumes ASCII input (Base58 and Bech32/Bech32m addresses are always ASCII).
+/// Addresses shorter than `prefix_len + suffix_len + 3` characters are returned
+/// unchanged (truncation would not save space).
+pub fn truncate_address(addr: &str, prefix_len: usize, suffix_len: usize) -> String {
+    let min_useful = prefix_len + suffix_len + 3; // 3 for "..."
+    if addr.len() < min_useful {
+        return addr.to_string();
+    }
+    format!(
+        "{}...{}",
+        &addr[..prefix_len],
+        &addr[addr.len() - suffix_len..]
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -297,15 +350,49 @@ mod tests {
     }
 
     #[test]
-    fn detect_identity_base58_fallback() {
-        let id = Identifier::random();
-        let id_str = id.to_string(Encoding::Base58);
-        // Some random identifiers parse as Core addresses. Skip those for
-        // this test — only assert identity detection for ones that do not.
-        if AddressKind::detect(&id_str) == Some(AddressKind::Core) {
-            return;
+    fn detect_identity_base58() {
+        // Identity IDs that don't start with a Core prefix (X/Y/y/8/7)
+        // should always detect as Identity, not Core.
+        for _ in 0..20 {
+            let id = Identifier::random();
+            let id_str = id.to_string(Encoding::Base58);
+            let first = id_str.as_bytes()[0];
+            if matches!(first, b'X' | b'Y' | b'y' | b'8' | b'7') {
+                // Core prefix — detection correctly prefers Core. Skip.
+                continue;
+            }
+            assert_eq!(
+                AddressKind::detect(&id_str),
+                Some(AddressKind::Identity),
+                "Non-Core-prefix identifier {id_str} should detect as Identity"
+            );
         }
-        assert_eq!(AddressKind::detect(&id_str), Some(AddressKind::Identity));
+    }
+
+    #[test]
+    fn detect_identity_with_core_prefix_still_works_when_not_valid_core() {
+        // An Identity ID that happens to start with a Core prefix but
+        // doesn't pass Core address parsing should still detect as Identity.
+        // We test this by creating identifiers until we find one starting
+        // with a Core prefix that isn't a valid Core address.
+        for _ in 0..100 {
+            let id = Identifier::random();
+            let id_str = id.to_string(Encoding::Base58);
+            let first = id_str.as_bytes()[0];
+            if !matches!(first, b'X' | b'Y' | b'y' | b'8' | b'7') {
+                continue;
+            }
+            // Has Core prefix — if it doesn't parse as Core, it should be Identity
+            if id_str.parse::<Address<NetworkUnchecked>>().is_err() {
+                assert_eq!(
+                    AddressKind::detect(&id_str),
+                    Some(AddressKind::Identity),
+                    "Core-prefix identifier {id_str} that fails Core parse should detect as Identity"
+                );
+                return;
+            }
+        }
+        // If all 100 parsed as valid Core, that's fine — test is probabilistic
     }
 
     #[test]

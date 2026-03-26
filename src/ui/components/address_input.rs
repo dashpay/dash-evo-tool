@@ -1,7 +1,7 @@
 use crate::model::address::{AddressKind, ValidatedAddress};
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::model::wallet::Wallet;
+use crate::model::wallet::{DerivationPathHelpers, Wallet};
 use crate::ui::components::{Component, ComponentResponse};
 use crate::ui::theme::DashColors;
 use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
@@ -51,6 +51,12 @@ struct AddressEntry {
     balance: u64,
     /// Pre-built ValidatedAddress for immediate use on selection.
     validated: ValidatedAddress,
+    /// Whether this is a change address (BIP44 m/44'/5'/0'/1/x).
+    /// Only meaningful for Core addresses; always false for other types.
+    /// Stored for potential future use in display styling; the "(change)"
+    /// suffix is already baked into `display_label` at construction time.
+    #[allow(dead_code)]
+    is_change: bool,
 }
 
 /// Concrete balance range bounds.
@@ -152,6 +158,7 @@ pub struct AddressInput {
     desired_width: Option<f32>,
     show_validation_errors: bool,
     balance_range: Option<BalanceRange>,
+    exclude_change: bool,
 
     // --- Autocomplete data (set via builder, read each frame) ---
     all_entries: Vec<AddressEntry>,
@@ -194,6 +201,7 @@ impl AddressInput {
             selected_from_autocomplete: false,
             cached_detection: None,
             changed: false,
+            exclude_change: false,
         }
     }
 
@@ -238,9 +246,20 @@ impl AddressInput {
 
     /// Filter autocomplete entries by balance range (in native units).
     ///
-    /// Does not affect manual input validation. Default: no filter.
+    /// All known wallet addresses are included by default (including zero-balance).
+    /// Use `with_balance_range(1..)` to show only funded addresses.
+    /// Does not affect manual input validation. Default: no filter (all addresses).
     pub fn with_balance_range(mut self, range: impl std::ops::RangeBounds<u64>) -> Self {
         self.balance_range = Some(BalanceRange::from_range(&range));
+        self
+    }
+
+    /// Exclude change addresses (BIP44 m/44'/5'/0'/1/x) from autocomplete.
+    ///
+    /// Send inputs should typically exclude change addresses since users
+    /// don't share change addresses with others. Default: false (show all).
+    pub fn with_exclude_change(mut self, exclude: bool) -> Self {
+        self.exclude_change = exclude;
         self
     }
 
@@ -348,13 +367,41 @@ impl AddressInput {
             String::new()
         };
 
-        // Core addresses from address_balances
-        for (address, &balance) in &guard.address_balances {
+        // Build a set of system addresses to exclude from autocomplete.
+        // System addresses (Identity Registration, CoinJoin, Provider keys, etc.)
+        // are internal wallet infrastructure — not for user-facing send/receive.
+        use crate::ui::wallets::account_summary::AccountCategory;
+        let system_addresses: std::collections::HashSet<&Address> = guard
+            .watched_addresses
+            .values()
+            .filter(|info| {
+                AccountCategory::from_reference(info.path_reference).is_system_category()
+            })
+            .map(|info| &info.address)
+            .collect();
+
+        // Core addresses from known_addresses (all derived addresses).
+        // Balance is looked up from address_balances; addresses without UTXOs
+        // get balance 0. Use `with_balance_range(1..)` to show only funded
+        // addresses — do NOT filter at the data source.
+        // Change addresses (BIP44 m/44'/5'/0'/1/x) are tagged and can be
+        // excluded via `with_exclude_change(true)`.
+        // System addresses are always excluded.
+        for (address, derivation_path) in &guard.known_addresses {
+            if system_addresses.contains(address) {
+                continue;
+            }
+            let is_change = derivation_path.is_bip44_change(self.network);
+            if self.exclude_change && is_change {
+                continue;
+            }
+            let balance = guard.address_balances.get(address).copied().unwrap_or(0);
             let addr_str = address.to_string();
+            let change_suffix = if is_change { " (change)" } else { "" };
             let display = if self.full_addresses {
-                format!("{}{}", prefix, addr_str)
+                format!("{}{}{}", prefix, addr_str, change_suffix)
             } else {
-                format!("{}{}", prefix, truncate_address(&addr_str))
+                format!("{}{}{}", prefix, truncate_address(&addr_str), change_suffix)
             };
             self.all_entries.push(AddressEntry {
                 address_string: addr_str,
@@ -362,13 +409,31 @@ impl AddressInput {
                 display_label: display,
                 balance,
                 validated: ValidatedAddress::Core(address.clone()),
+                is_change,
             });
         }
 
-        // Platform addresses from platform_address_info
-        for (core_addr, info) in &guard.platform_address_info {
+        // Platform addresses: derive from watched_addresses (all bootstrapped
+        // platform payment addresses), with balance from platform_address_info.
+        // This ensures fresh wallets with no on-chain activity still show
+        // their derived platform addresses.
+        use crate::model::wallet::DerivationPathReference;
+        let mut seen_platform = std::collections::HashSet::new();
+        for addr_info in guard.watched_addresses.values() {
+            if addr_info.path_reference != DerivationPathReference::PlatformPayment {
+                continue;
+            }
+            let core_addr = &addr_info.address;
             if let Ok(platform_addr) = PlatformAddress::try_from(core_addr.clone()) {
                 let addr_str = platform_addr.to_bech32m_string(self.network);
+                if !seen_platform.insert(addr_str.clone()) {
+                    continue;
+                }
+                let balance = guard
+                    .platform_address_info
+                    .get(core_addr)
+                    .map(|info| info.balance)
+                    .unwrap_or(0);
                 let display = if self.full_addresses {
                     format!("{}{}", prefix, addr_str)
                 } else {
@@ -379,11 +444,12 @@ impl AddressInput {
                     address_string: addr_str,
                     address_kind: AddressKind::Platform,
                     display_label: display,
-                    balance: info.balance,
+                    balance,
                     validated: ValidatedAddress::Platform {
                         address: platform_addr,
                         bech32m,
                     },
+                    is_change: false,
                 });
             }
         }
@@ -412,6 +478,7 @@ impl AddressInput {
                     id,
                     dpns_name: dpns_name.clone(),
                 },
+                is_change: false,
             });
         }
     }
@@ -428,6 +495,7 @@ impl AddressInput {
             display_label: display,
             balance,
             validated: ValidatedAddress::Shielded(address),
+            is_change: false,
         });
     }
 
@@ -465,7 +533,9 @@ impl AddressInput {
 
         if detected == DetectedType::Unknown {
             return (
-                Some("This does not look like a valid address.".to_string()),
+                Some(
+                    "This does not look like a valid address. Please check for typos.".to_string(),
+                ),
                 None,
             );
         }
@@ -499,12 +569,12 @@ impl AddressInput {
             Ok(addr) => match addr.require_network(self.network) {
                 Ok(checked) => (None, Some(ValidatedAddress::Core(checked))),
                 Err(_) => (
-                    Some("This address belongs to a different network.".to_string()),
+                    Some("This address belongs to a different network. Please check you are using the correct network.".to_string()),
                     None,
                 ),
             },
             Err(_) => (
-                Some("This does not look like a valid address.".to_string()),
+                Some("This does not look like a valid address. Please check for typos.".to_string()),
                 None,
             ),
         }
@@ -517,7 +587,7 @@ impl AddressInput {
         if !is_lower && !is_upper {
             return (
                 Some(
-                    "Platform addresses must not mix upper and lower case characters.".to_string(),
+                    "Platform addresses must not mix upper and lower case characters. Please use all lowercase.".to_string(),
                 ),
                 None,
             );
@@ -531,7 +601,7 @@ impl AddressInput {
             || canonical.starts_with(&format!("{}z", expected_prefix))
         {
             return (
-                Some("This address belongs to a different network.".to_string()),
+                Some("This address belongs to a different network. Please check you are using the correct network.".to_string()),
                 None,
             );
         }
@@ -544,7 +614,9 @@ impl AddressInput {
                 }),
             ),
             Err(_) => (
-                Some("This does not look like a valid address.".to_string()),
+                Some(
+                    "This does not look like a valid address. Please check for typos.".to_string(),
+                ),
                 None,
             ),
         }
@@ -557,7 +629,7 @@ impl AddressInput {
         };
         if !trimmed.starts_with(expected_prefix) {
             return (
-                Some("This address belongs to a different network.".to_string()),
+                Some("This address belongs to a different network. Please check you are using the correct network.".to_string()),
                 None,
             );
         }
@@ -574,11 +646,14 @@ impl AddressInput {
         use dash_sdk::dpp::address_funds::OrchardAddress;
         match OrchardAddress::from_bech32m_string(trimmed) {
             Ok((_, network)) => {
-                if network != self.network
-                    && !(self.network != Network::Mainnet && network != Network::Mainnet)
-                {
+                // Shielded addresses only encode mainnet vs non-mainnet in the HRP.
+                // Testnet, Devnet, and Local all share "tdash1z" and cannot be
+                // distinguished at the address level. Enforce mainnet isolation only.
+                let same_mainnet_class =
+                    (self.network == Network::Mainnet) == (network == Network::Mainnet);
+                if !same_mainnet_class {
                     (
-                        Some("This address belongs to a different network.".to_string()),
+                        Some("This address belongs to a different network. Please check you are using the correct network.".to_string()),
                         None,
                     )
                 } else {
@@ -617,7 +692,9 @@ impl AddressInput {
                 )
             }
             Err(_) => (
-                Some("This does not look like a valid address.".to_string()),
+                Some(
+                    "This does not look like a valid address. Please check for typos.".to_string(),
+                ),
                 None,
             ),
         }
@@ -654,9 +731,15 @@ impl AddressInput {
                 if query.is_empty() {
                     return true;
                 }
-                // Substring match against address and label
+                // Substring match against address, label, and type name.
+                // Typing "platform" or "core" filters to that address type.
                 e.address_string.to_lowercase().contains(&query)
                     || e.display_label.to_lowercase().contains(&query)
+                    || e.address_kind.short_label().to_lowercase().contains(&query)
+                    || e.address_kind
+                        .display_name()
+                        .to_lowercase()
+                        .contains(&query)
             })
             .collect();
 
@@ -796,15 +879,11 @@ impl AddressInput {
                 // Collect filtered entries into an owned snapshot to release the borrow on self
                 let (filtered, total_entries) = self.filtered_entries();
                 let filtered_len = filtered.len();
-                let show_type_suffix = self.enabled_kinds.len() > 1;
                 let entries_snapshot: Vec<(String, String, AddressEntry)> = filtered
                     .iter()
                     .map(|e| {
-                        let label = if show_type_suffix {
-                            format!("{} ({})", e.display_label, e.address_kind.short_label())
-                        } else {
-                            e.display_label.clone()
-                        };
+                        let label =
+                            format!("{} ({})", e.display_label, e.address_kind.short_label());
                         (label, self.format_balance(e), (*e).clone())
                     })
                     .collect();
@@ -1032,21 +1111,9 @@ fn detect_address_type(input: &str, identity_enabled: bool) -> DetectedType {
     }
 }
 
-/// Truncate an address string for display, showing prefix and suffix.
+/// Truncate an address for display in the address input component (8 prefix + 6 suffix).
 fn truncate_address(addr: &str) -> String {
-    if addr.chars().count() <= 16 {
-        return addr.to_string();
-    }
-    let prefix: String = addr.chars().take(8).collect();
-    let suffix: String = addr
-        .chars()
-        .rev()
-        .take(6)
-        .collect::<String>()
-        .chars()
-        .rev()
-        .collect();
-    format!("{prefix}...{suffix}")
+    crate::model::address::truncate_address(addr, 8, 6)
 }
 
 #[cfg(test)]
@@ -1163,7 +1230,9 @@ mod tests {
         assert!(val.is_none());
         assert_eq!(
             err.as_deref(),
-            Some("This address belongs to a different network.")
+            Some(
+                "This address belongs to a different network. Please check you are using the correct network."
+            )
         );
     }
 
@@ -1184,7 +1253,9 @@ mod tests {
         assert!(val.is_none());
         assert_eq!(
             err.as_deref(),
-            Some("This address belongs to a different network.")
+            Some(
+                "This address belongs to a different network. Please check you are using the correct network."
+            )
         );
     }
 
@@ -1195,7 +1266,9 @@ mod tests {
         assert!(val.is_none());
         assert_eq!(
             err.as_deref(),
-            Some("This address belongs to a different network.")
+            Some(
+                "This address belongs to a different network. Please check you are using the correct network."
+            )
         );
     }
 
@@ -1313,7 +1386,7 @@ mod tests {
         assert!(val.is_none());
         assert_eq!(
             err.as_deref(),
-            Some("This does not look like a valid address.")
+            Some("This does not look like a valid address. Please check for typos.")
         );
     }
 
@@ -1492,7 +1565,9 @@ mod tests {
         assert!(val.is_none(), "mixed-case bech32m should be rejected");
         assert_eq!(
             err.as_deref(),
-            Some("Platform addresses must not mix upper and lower case characters.")
+            Some(
+                "Platform addresses must not mix upper and lower case characters. Please use all lowercase."
+            )
         );
     }
 
@@ -1503,7 +1578,9 @@ mod tests {
         let (err, _) = input.validate_platform("tdash1qwer1234");
         assert_ne!(
             err.as_deref(),
-            Some("Platform addresses must not mix upper and lower case characters."),
+            Some(
+                "Platform addresses must not mix upper and lower case characters. Please use all lowercase."
+            ),
             "all-lowercase should pass the case check"
         );
     }
@@ -1515,7 +1592,9 @@ mod tests {
         let (err, _) = input.validate_platform("TDASH1QWER1234");
         assert_ne!(
             err.as_deref(),
-            Some("Platform addresses must not mix upper and lower case characters."),
+            Some(
+                "Platform addresses must not mix upper and lower case characters. Please use all lowercase."
+            ),
             "all-uppercase should pass the case check"
         );
     }

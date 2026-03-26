@@ -415,14 +415,18 @@ impl NetworkChooserScreen {
                                 {
                                     app_action = AppAction::SwitchNetwork(Network::Regtest);
                                 }
-                                if self.current_network != prev_network
-                                    && let Ok(config) =
-                                        Config::load_from(&self.mainnet_app_context.data_dir)
-                                    && let Some(network_config) =
-                                        config.config_for_network(self.current_network)
-                                {
-                                    self.dashmate_password_input
-                                        .set_text(network_config.core_rpc_password.clone());
+                                if self.current_network != prev_network {
+                                    let password = Config::load_from(
+                                        &self.mainnet_app_context.data_dir,
+                                    )
+                                    .ok()
+                                    .and_then(|c| {
+                                        c.config_for_network(self.current_network)
+                                            .as_ref()
+                                            .map(|nc| nc.core_rpc_password.clone())
+                                    })
+                                    .unwrap_or_default();
+                                    self.dashmate_password_input.set_text(password);
                                 }
                             });
                         });

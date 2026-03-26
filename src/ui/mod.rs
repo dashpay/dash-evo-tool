@@ -803,7 +803,10 @@ impl Screen {
                 screen.app_context = app_context;
                 screen.reset_core_wallets_cache();
             }
-            Screen::TransferScreen(screen) => screen.app_context = app_context,
+            Screen::TransferScreen(screen) => {
+                screen.app_context = app_context;
+                screen.invalidate_address_input();
+            }
             Screen::TopUpIdentityScreen(screen) => screen.app_context = app_context,
             Screen::WalletsBalancesScreen(screen) => {
                 screen.app_context = app_context;
@@ -836,7 +839,10 @@ impl Screen {
             Screen::DocumentVisualizerScreen(screen) => screen.app_context = app_context,
             Screen::PlatformInfoScreen(screen) => screen.app_context = app_context,
             Screen::GroveSTARKScreen(screen) => screen.app_context = app_context,
-            Screen::AddressBalanceScreen(screen) => screen.app_context = app_context,
+            Screen::AddressBalanceScreen(screen) => {
+                screen.app_context = app_context;
+                screen.invalidate_address_input();
+            }
 
             // Token Screens
             Screen::TokensScreen(screen) => screen.app_context = app_context,
@@ -875,7 +881,10 @@ impl Screen {
             // Shielded screens
             Screen::ShieldCreditsScreen(screen) => screen.app_context = app_context.clone(),
             Screen::ShieldFromAssetLockScreen(screen) => screen.app_context = app_context.clone(),
-            Screen::ShieldedSendScreen(screen) => screen.app_context = app_context.clone(),
+            Screen::ShieldedSendScreen(screen) => {
+                screen.app_context = app_context.clone();
+                screen.invalidate_address_input();
+            }
             Screen::UnshieldCreditsScreen(screen) => {
                 screen.app_context = app_context.clone();
                 screen.invalidate_address_input();

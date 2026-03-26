@@ -150,7 +150,7 @@ impl AppContext {
     }
 
     /// Initialize shielded wallet state by deriving ZIP32 keys from the wallet seed.
-    fn initialize_shielded_wallet(
+    pub(crate) fn initialize_shielded_wallet(
         self: &Arc<Self>,
         seed_hash: WalletSeedHash,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
@@ -277,7 +277,7 @@ impl AppContext {
     }
 
     /// Sync shielded notes from platform.
-    async fn sync_shielded_notes(
+    pub(crate) async fn sync_shielded_notes(
         self: &Arc<Self>,
         seed_hash: WalletSeedHash,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
@@ -539,7 +539,7 @@ impl AppContext {
     }
 
     /// Check nullifiers to detect spent notes.
-    async fn check_nullifiers_task(
+    pub(crate) async fn check_nullifiers_task(
         self: &Arc<Self>,
         seed_hash: WalletSeedHash,
     ) -> Result<BackendTaskSuccessResult, TaskError> {

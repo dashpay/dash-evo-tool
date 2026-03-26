@@ -830,6 +830,16 @@ pub enum TaskError {
         source: Box<dash_sdk::Error>,
     },
 
+    /// The nonce used for a shielded transaction was stale. The wallet's cached
+    /// nonce was behind Platform's expected nonce. Retrying will use the correct nonce.
+    #[error(
+        "The transaction used an outdated sequence number. Please retry — the wallet will use the correct number automatically."
+    )]
+    ShieldedNonceMismatch {
+        #[source]
+        source_error: Box<dash_sdk::Error>,
+    },
+
     /// The address used for a shielded transaction does not have enough locked funds.
     #[error(
         "Not enough funds locked for this shielded transaction. \
@@ -1003,6 +1013,13 @@ pub fn shielded_broadcast_error(e: SdkError) -> TaskError {
         return TaskError::ShieldedAddressInsufficientFunds {
             available: addr_err.balance(),
             required: addr_err.required_balance(),
+            source_error: Box::new(e),
+        };
+    }
+    if let Some(ConsensusError::StateError(StateError::AddressInvalidNonceError(_))) =
+        consensus_error
+    {
+        return TaskError::ShieldedNonceMismatch {
             source_error: Box::new(e),
         };
     }

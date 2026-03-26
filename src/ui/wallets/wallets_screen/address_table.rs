@@ -101,7 +101,11 @@ impl WalletsBalancesScreen {
         categorize_account_path(path, network, reference)
     }
 
-    pub(super) fn render_address_table(&mut self, ui: &mut Ui) -> AppAction {
+    pub(super) fn render_address_table(
+        &mut self,
+        ui: &mut Ui,
+        account_filter: (AccountCategory, Option<u32>),
+    ) -> AppAction {
         let action = AppAction::None;
 
         // Move the data preparation into its own scope
@@ -197,9 +201,10 @@ impl WalletsBalancesScreen {
         // Sort the data
         self.sort_address_data(&mut address_data);
 
-        if let Some((category, index)) = self.selected_account.clone() {
+        {
+            let (ref category, ref index) = account_filter;
             address_data
-                .retain(|data| data.account_category == category && data.account_index == index);
+                .retain(|data| data.account_category == *category && data.account_index == *index);
         }
 
         let account_address_count = address_data.len();
@@ -236,11 +241,7 @@ impl WalletsBalancesScreen {
 
         // Space allocation for UI elements is handled by the layout system
 
-        let is_platform_account = self
-            .selected_account
-            .as_ref()
-            .map(|(cat, _)| *cat == AccountCategory::PlatformPayment)
-            .unwrap_or(false);
+        let is_platform_account = account_filter.0 == AccountCategory::PlatformPayment;
 
         // Reset sort column if it refers to a column not visible for the current account type
         if is_platform_account

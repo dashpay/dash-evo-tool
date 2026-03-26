@@ -247,6 +247,15 @@ impl ScreenLike for ShieldedSendScreen {
                     new_notes,
                     balance,
                 );
+                self.max_balance = balance;
+                self.balance_update_pending = false;
+                let dash = balance as f64 / CREDITS_PER_DUFF as f64 / 1e8;
+                if let Some(msg) = self.success_message.as_mut() {
+                    *msg = format!(
+                        "{}\nBalance updated: {:.8} DASH remaining.",
+                        msg, dash,
+                    );
+                }
             }
             _ => {}
         }

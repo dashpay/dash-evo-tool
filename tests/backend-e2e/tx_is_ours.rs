@@ -88,7 +88,11 @@ async fn test_spv_transactions_is_ours_flag() {
     // Check is_ours on wallet A (sender) — should be true
     {
         let wallets = app_context.wallets().read().expect("wallets lock");
-        let wallet = wallets.get(&hash_a).expect("wallet A").read().expect("lock");
+        let wallet = wallets
+            .get(&hash_a)
+            .expect("wallet A")
+            .read()
+            .expect("lock");
         let tx = wallet
             .transactions
             .iter()
@@ -107,7 +111,11 @@ async fn test_spv_transactions_is_ours_flag() {
     // Check is_ours on wallet B (receiver) — should be true
     {
         let wallets = app_context.wallets().read().expect("wallets lock");
-        let wallet = wallets.get(&hash_b).expect("wallet B").read().expect("lock");
+        let wallet = wallets
+            .get(&hash_b)
+            .expect("wallet B")
+            .read()
+            .expect("lock");
         let tx = wallet
             .transactions
             .iter()

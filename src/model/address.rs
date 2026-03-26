@@ -244,7 +244,11 @@ pub fn truncate_address(addr: &str, prefix_len: usize, suffix_len: usize) -> Str
     if addr.len() < min_useful {
         return addr.to_string();
     }
-    format!("{}...{}", &addr[..prefix_len], &addr[addr.len() - suffix_len..])
+    format!(
+        "{}...{}",
+        &addr[..prefix_len],
+        &addr[addr.len() - suffix_len..]
+    )
 }
 
 #[cfg(test)]

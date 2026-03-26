@@ -2092,7 +2092,7 @@ impl WalletsBalancesScreen {
     /// Returns a SyncNotes backend task if the shielded wallet has been initialized
     /// for the given seed hash.
     fn shielded_sync_task(&self, seed_hash: &WalletSeedHash) -> Option<BackendTask> {
-        let states = self.app_context.shielded_states.lock().unwrap();
+        let states = self.app_context.shielded_states.lock().ok()?;
         if states.contains_key(seed_hash) {
             Some(BackendTask::ShieldedTask(ShieldedTask::SyncNotes {
                 seed_hash: *seed_hash,

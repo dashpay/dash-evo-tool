@@ -1115,18 +1115,16 @@ pub fn show_group_token_success_screen_with_fee(
 
 /// Check if a string looks like a Platform Bech32m address.
 ///
-/// Supports both the current prefix (`dash1`/`tdash1`) and the legacy
-/// prefix (`evo1`/`tevo1`) so that old addresses stored in the DB or
-/// copied from older tools continue to work.
+/// Delegates to [`is_platform_address_string`] which uses the canonical
+/// HRP constants and case-insensitive comparison.
 pub fn is_platform_address(s: &str) -> bool {
-    s.starts_with("dash1")
-        || s.starts_with("tdash1")
-        || s.starts_with("evo1")
-        || s.starts_with("tevo1")
+    is_platform_address_string(s)
 }
 
 /// Human-readable hint for Platform address input fields.
-pub const PLATFORM_ADDRESS_HINT: &str = "dash1... or tdash1...";
+pub const PLATFORM_ADDRESS_HINT: &str =
+    "Enter a Platform address starting with \"dash1\" or \"tdash1\".";
 
 /// Example Platform address prefixes for error messages.
-pub const PLATFORM_ADDRESS_EXAMPLES: &str = "dash1.../tdash1...";
+pub const PLATFORM_ADDRESS_EXAMPLES: &str =
+    "Valid prefixes are \"dash1\" for mainnet and \"tdash1\" for testnet.";

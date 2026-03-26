@@ -676,6 +676,21 @@ pub enum TaskError {
     #[error("Could not complete the payment. Please check your wallet balance and retry.")]
     WalletPaymentFailed { detail: String },
 
+    /// Could not access wallet information from the SPV manager.
+    #[error("Your wallet is still loading. Please wait a moment and try again.")]
+    WalletInfoUnavailable,
+
+    /// Expected BIP44 account not found at the given index.
+    #[error("Your wallet needs to be refreshed before sending. Please refresh and try again.")]
+    MissingBip44Account { index: u32 },
+
+    /// Could not derive a change address from the wallet account.
+    #[error("Could not prepare the transaction. Please refresh your wallet and try again.")]
+    ChangeAddressDerivation {
+        #[source]
+        source: dash_sdk::dpp::key_wallet::Error,
+    },
+
     // ──────────────────────────────────────────────────────────────────────────
     // Token query errors (identity / recipient validation)
     // ──────────────────────────────────────────────────────────────────────────
@@ -828,6 +843,16 @@ pub enum TaskError {
     ShieldedBroadcastFailed {
         #[source]
         source: Box<dash_sdk::Error>,
+    },
+
+    /// The nonce used for a shielded transaction was stale. The wallet's cached
+    /// nonce was behind Platform's expected nonce. Retrying will use the correct nonce.
+    #[error(
+        "The transaction used an outdated sequence number. Please retry — the wallet will use the correct number automatically."
+    )]
+    ShieldedNonceMismatch {
+        #[source]
+        source_error: Box<dash_sdk::Error>,
     },
 
     /// The address used for a shielded transaction does not have enough locked funds.
@@ -1003,6 +1028,13 @@ pub fn shielded_broadcast_error(e: SdkError) -> TaskError {
         return TaskError::ShieldedAddressInsufficientFunds {
             available: addr_err.balance(),
             required: addr_err.required_balance(),
+            source_error: Box::new(e),
+        };
+    }
+    if let Some(ConsensusError::StateError(StateError::AddressInvalidNonceError(_))) =
+        consensus_error
+    {
+        return TaskError::ShieldedNonceMismatch {
             source_error: Box::new(e),
         };
     }

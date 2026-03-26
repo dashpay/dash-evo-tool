@@ -59,6 +59,10 @@ impl ShieldedTabView {
             self.shielded_balance = 0;
             self.error_message = None;
             self.success_message = None;
+            self.initializing = false;
+            self.syncing = false;
+            self.pending_task = None;
+            self.address_count = 1;
         }
     }
 

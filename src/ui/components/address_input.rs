@@ -367,18 +367,22 @@ impl AddressInput {
             String::new()
         };
 
-        // Build a set of system addresses to exclude from autocomplete.
-        // System addresses (Identity Registration, CoinJoin, Provider keys, etc.)
-        // are internal wallet infrastructure — not for user-facing send/receive.
+        // Build sets of addresses to exclude from the Core loop:
+        // 1. System addresses (Identity Registration, CoinJoin, Provider keys, etc.)
+        //    are internal wallet infrastructure — not for user-facing send/receive.
+        // 2. Platform payment addresses are handled in the separate Platform loop
+        //    below — including them here would show them as "(Core)" incorrectly.
         use crate::ui::wallets::account_summary::AccountCategory;
-        let system_addresses: std::collections::HashSet<&Address> = guard
-            .watched_addresses
-            .values()
-            .filter(|info| {
-                AccountCategory::from_reference(info.path_reference).is_system_category()
-            })
-            .map(|info| &info.address)
-            .collect();
+        let mut non_core_addresses: std::collections::HashSet<&Address> =
+            std::collections::HashSet::new();
+        for info in guard.watched_addresses.values() {
+            let cat = AccountCategory::from_reference(info.path_reference);
+            if cat.is_system_category()
+                || cat == AccountCategory::PlatformPayment
+            {
+                non_core_addresses.insert(&info.address);
+            }
+        }
 
         // Core addresses from known_addresses (all derived addresses).
         // Balance is looked up from address_balances; addresses without UTXOs
@@ -388,7 +392,7 @@ impl AddressInput {
         // excluded via `with_exclude_change(true)`.
         // System addresses are always excluded.
         for (address, derivation_path) in &guard.known_addresses {
-            if system_addresses.contains(address) {
+            if non_core_addresses.contains(address) {
                 continue;
             }
             let is_change = derivation_path.is_bip44_change(self.network);

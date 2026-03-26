@@ -736,7 +736,10 @@ impl AddressInput {
                 e.address_string.to_lowercase().contains(&query)
                     || e.display_label.to_lowercase().contains(&query)
                     || e.address_kind.short_label().to_lowercase().contains(&query)
-                    || e.address_kind.display_name().to_lowercase().contains(&query)
+                    || e.address_kind
+                        .display_name()
+                        .to_lowercase()
+                        .contains(&query)
             })
             .collect();
 

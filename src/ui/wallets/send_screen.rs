@@ -1,9 +1,7 @@
 use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
-use crate::backend_task::identity::{
-    IdentityTask, IdentityTopUpInfo, TopUpIdentityFundingMethod,
-};
+use crate::backend_task::identity::{IdentityTask, IdentityTopUpInfo, TopUpIdentityFundingMethod};
 use crate::backend_task::wallet::WalletTask;
 use crate::context::AppContext;
 use crate::model::address::{AddressKind, ValidatedAddress};
@@ -28,8 +26,8 @@ use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
 use dash_sdk::dpp::address_funds::AddressFundsFeeStrategyStep;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::{CREDITS_PER_DUFF, Credits};
-use dash_sdk::dpp::identity::core_script::CoreScript;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::core_script::CoreScript;
 use dash_sdk::dpp::prelude::AddressNonce;
 use dash_sdk::dpp::prelude::AssetLockProof;
 use dash_sdk::dpp::state_transition::StateTransitionEstimatedFeeValidation;
@@ -277,7 +275,7 @@ pub enum SourceSelection {
     /// Use all Platform addresses (stores list of platform address, core address, and balance)
     PlatformAddresses(Vec<(PlatformAddress, Address, u64)>),
     /// Use an identity's credit balance
-    Identity(QualifiedIdentity),
+    Identity(Box<QualifiedIdentity>),
     /// Use shielded pool balance (stores seed_hash and balance in credits)
     Shielded(WalletSeedHash, u64),
 }
@@ -709,9 +707,7 @@ impl WalletSendScreen {
                 "Fund Platform Address"
             }
             (Some(SourceSelection::CoreWallet), Some(AddressKind::Shielded)) => "Shield DASH",
-            (Some(SourceSelection::CoreWallet), Some(AddressKind::Identity)) => {
-                "Top Up Identity"
-            }
+            (Some(SourceSelection::CoreWallet), Some(AddressKind::Identity)) => "Top Up Identity",
             // Platform Addresses source
             (Some(SourceSelection::PlatformAddresses(_)), Some(AddressKind::Platform)) => {
                 "Transfer Credits"
@@ -730,9 +726,7 @@ impl WalletSendScreen {
             (Some(SourceSelection::Identity(_)), Some(AddressKind::Platform)) => {
                 "Transfer to Address"
             }
-            (Some(SourceSelection::Identity(_)), Some(AddressKind::Identity)) => {
-                "Transfer Credits"
-            }
+            (Some(SourceSelection::Identity(_)), Some(AddressKind::Identity)) => "Transfer Credits",
             // Shielded source
             (Some(SourceSelection::Shielded(..)), Some(AddressKind::Core)) => {
                 "Withdraw from Shield"
@@ -843,25 +837,25 @@ impl WalletSendScreen {
                 self.send_shielded_to_core(sh)
             }
             (SourceSelection::Identity(qi), Some(AddressKind::Core)) => {
-                self.send_identity_to_core(qi)
+                self.send_identity_to_core(*qi)
             }
             (SourceSelection::Identity(qi), Some(AddressKind::Platform)) => {
-                self.send_identity_to_platform(qi)
+                self.send_identity_to_platform(*qi)
             }
             (SourceSelection::Identity(qi), Some(AddressKind::Identity)) => {
-                self.send_identity_to_identity(qi)
+                self.send_identity_to_identity(*qi)
             }
             // === Unsupported combinations (defer to v2) ===
-            (SourceSelection::Identity(_), Some(AddressKind::Shielded)) => {
-                Err("Sending from an identity to the shielded pool is not yet supported. \
+            (SourceSelection::Identity(_), Some(AddressKind::Shielded)) => Err(
+                "Sending from an identity to the shielded pool is not yet supported. \
                      Transfer to a Platform address first, then shield from there."
-                    .to_string())
-            }
-            (SourceSelection::Shielded(..), Some(AddressKind::Identity)) => {
-                Err("Sending from the shielded pool to an identity is not yet supported. \
+                    .to_string(),
+            ),
+            (SourceSelection::Shielded(..), Some(AddressKind::Identity)) => Err(
+                "Sending from the shielded pool to an identity is not yet supported. \
                      Transfer to a Platform address first, then top up the identity."
-                    .to_string())
-            }
+                    .to_string(),
+            ),
             _ => Err("Invalid source/destination combination".to_string()),
         }
     }
@@ -1423,10 +1417,7 @@ impl WalletSendScreen {
     // === New send handler methods (8 combinations) ===
 
     /// Shield DASH from Core wallet via asset lock (Core -> Shielded).
-    fn send_core_to_shielded(
-        &mut self,
-        seed_hash: WalletSeedHash,
-    ) -> Result<AppAction, String> {
+    fn send_core_to_shielded(&mut self, seed_hash: WalletSeedHash) -> Result<AppAction, String> {
         let amount_duffs = self
             .amount
             .as_ref()
@@ -1455,10 +1446,7 @@ impl WalletSendScreen {
     }
 
     /// Top up an identity from Core wallet via asset lock (Core -> Identity).
-    fn send_core_to_identity(
-        &mut self,
-        _seed_hash: WalletSeedHash,
-    ) -> Result<AppAction, String> {
+    fn send_core_to_identity(&mut self, _seed_hash: WalletSeedHash) -> Result<AppAction, String> {
         let amount_duffs = self
             .amount
             .as_ref()
@@ -1586,12 +1574,8 @@ impl WalletSendScreen {
             })?;
 
         let fee_estimator = self.app_context.fee_estimator();
-        let allocation = allocate_platform_addresses(
-            &fee_estimator,
-            &addresses,
-            amount_credits,
-            None,
-        );
+        let allocation =
+            allocate_platform_addresses(&fee_estimator, &addresses, amount_credits, None);
         if allocation.shortfall > 0 {
             return Err(format!(
                 "Insufficient platform balance. Need {} (including estimated fee of {}) but short by {}",
@@ -1612,10 +1596,7 @@ impl WalletSendScreen {
     }
 
     /// Withdraw from shielded pool to Core address (Shielded -> Core).
-    fn send_shielded_to_core(
-        &mut self,
-        seed_hash: WalletSeedHash,
-    ) -> Result<AppAction, String> {
+    fn send_shielded_to_core(&mut self, seed_hash: WalletSeedHash) -> Result<AppAction, String> {
         let amount_credits = self
             .amount
             .as_ref()
@@ -1754,12 +1735,7 @@ impl WalletSendScreen {
 
         self.mark_sending();
         Ok(AppAction::BackendTask(BackendTask::IdentityTask(
-            IdentityTask::Transfer(
-                qualified_identity,
-                to_identity_id,
-                amount_credits,
-                None,
-            ),
+            IdentityTask::Transfer(qualified_identity, to_identity_id, amount_credits, None),
         )))
     }
 
@@ -1905,7 +1881,7 @@ impl WalletSendScreen {
                                 .or_else(|| identities.first().cloned())
                             {
                                 self.selected_source =
-                                    Some(SourceSelection::Identity(identity.clone()));
+                                    Some(SourceSelection::Identity(Box::new(identity.clone())));
                                 self.selected_identity = Some(identity);
                             }
                             self.address_input = None;
@@ -2006,7 +1982,7 @@ impl WalletSendScreen {
                                     if ui.selectable_label(is_selected, &label).clicked() {
                                         self.selected_identity = Some(identity.clone());
                                         self.selected_source =
-                                            Some(SourceSelection::Identity(identity.clone()));
+                                            Some(SourceSelection::Identity(Box::new(identity.clone())));
                                         self.address_input = None;
                                         self.validated_destination = None;
                                     }
@@ -2087,10 +2063,18 @@ impl WalletSendScreen {
                     kinds
                 }
                 Some(SourceSelection::Identity(_)) => {
-                    vec![AddressKind::Core, AddressKind::Platform, AddressKind::Identity]
+                    vec![
+                        AddressKind::Core,
+                        AddressKind::Platform,
+                        AddressKind::Identity,
+                    ]
                 }
                 Some(SourceSelection::Shielded(..)) => {
-                    vec![AddressKind::Shielded, AddressKind::Platform, AddressKind::Core]
+                    vec![
+                        AddressKind::Shielded,
+                        AddressKind::Platform,
+                        AddressKind::Core,
+                    ]
                 }
                 None => AddressKind::ALL.to_vec(),
             };

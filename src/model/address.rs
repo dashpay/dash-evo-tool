@@ -12,9 +12,11 @@ use dash_sdk::platform::Identifier;
 /// bech32 separator '1'. It does NOT fully validate the address — use
 /// `PlatformAddress::from_bech32m_string()` for that.
 pub fn is_platform_address_string(s: &str) -> bool {
-    let s = s.to_lowercase();
     for hrp in [PLATFORM_HRP_MAINNET, PLATFORM_HRP_TESTNET] {
-        if s.starts_with(hrp) && s.get(hrp.len()..hrp.len() + 1) == Some("1") {
+        if s.len() > hrp.len()
+            && s[..hrp.len()].eq_ignore_ascii_case(hrp)
+            && s.as_bytes()[hrp.len()] == b'1'
+        {
             return true;
         }
     }

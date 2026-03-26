@@ -1343,9 +1343,13 @@ impl WalletsBalancesScreen {
         ui.separator();
         ui.add_space(4.0);
 
-        // Tab content
-        match &self.selected_account_tab.clone() {
-            AccountTab::Shielded => {
+        // Tab content — extract category data to avoid cloning the whole enum
+        let tab_category = match &self.selected_account_tab {
+            AccountTab::Category(cat, idx) => Some((cat.clone(), *idx)),
+            _ => None,
+        };
+        match (&self.selected_account_tab, tab_category) {
+            (AccountTab::Shielded, _) => {
                 let seed_hash = self
                     .selected_wallet
                     .as_ref()
@@ -1359,14 +1363,14 @@ impl WalletsBalancesScreen {
                     action |= shielded_view.ui(ui);
                 }
             }
-            AccountTab::System => {
+            (AccountTab::System, _) => {
                 action |= self.render_system_tab_content(ui, summaries);
             }
-            AccountTab::Category(cat, idx) => {
+            (AccountTab::Category(..), Some((cat, idx))) => {
                 // Show empty state if no summaries match this category
                 if !summaries
                     .iter()
-                    .any(|s| s.category == *cat && s.index == *idx)
+                    .any(|s| s.category == cat && s.index == idx)
                     && !matches!(cat, AccountCategory::Bip44)
                 {
                     ui.label(
@@ -1387,16 +1391,16 @@ impl WalletsBalancesScreen {
                     ui.add_space(4.0);
                 }
 
-                self.selected_account = Some((cat.clone(), *idx));
+                self.selected_account = Some((cat.clone(), idx));
 
                 // Addresses (collapsible)
-                let addresses_heading = format!("Addresses ({})", cat.label(*idx));
+                let addresses_heading = format!("Addresses ({})", cat.label(idx));
                 let addr_header = egui::CollapsingHeader::new(
                     RichText::new(addresses_heading)
                         .size(16.0)
                         .color(DashColors::text_primary(dark_mode)),
                 )
-                .id_salt(format!("addresses_{}_{:?}", cat.tab_label(*idx), idx))
+                .id_salt(format!("addresses_{}_{:?}", cat.tab_label(idx), idx))
                 .default_open(true);
                 addr_header.show(ui, |ui| {
                     ui.horizontal(|ui| {
@@ -1413,7 +1417,7 @@ impl WalletsBalancesScreen {
                 });
 
                 // Dash Core tab: transaction history + asset locks
-                if *cat == AccountCategory::Bip44 && *idx == Some(0) {
+                if cat == AccountCategory::Bip44 && idx == Some(0) {
                     // Transaction History (collapsible)
                     ui.add_space(10.0);
                     let tx_header = egui::CollapsingHeader::new(
@@ -1441,6 +1445,7 @@ impl WalletsBalancesScreen {
                     });
                 }
             }
+            _ => {}
         }
 
         action

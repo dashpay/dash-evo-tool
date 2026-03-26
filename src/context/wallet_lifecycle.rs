@@ -188,6 +188,12 @@ impl AppContext {
     /// Queue async SyncNotes -> CheckNullifiers for an already-initialized
     /// shielded wallet. Tracked via `subtasks` so it participates in graceful
     /// shutdown and cancellation.
+    ///
+    /// Uses `spawn_blocking(block_on(...))` because the async methods on
+    /// `Arc<Self>` produce futures that borrow `self`, which the compiler
+    /// cannot prove are `'static` (rust-lang/rust#100013). The trampoline
+    /// resolves the futures synchronously on a blocking thread, satisfying
+    /// the `'static` bound required by `spawn_sync`.
     fn queue_shielded_sync(self: &Arc<Self>, seed_hash: WalletSeedHash) {
         let ctx = Arc::clone(self);
         self.subtasks.spawn_sync("shielded_sync", async move {

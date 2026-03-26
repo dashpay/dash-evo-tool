@@ -241,6 +241,67 @@ As a user with a single-key wallet, I want to send Dash to multiple recipients i
 - Per-recipient address and amount.
 - Single transaction broadcast.
 
+### SND-007: Shield DASH from Core wallet [Implemented]
+**Persona:** Jordan
+
+As a developer, I want to shield DASH directly from my Core wallet so that I can fund my shielded pool without intermediate steps.
+
+- Select Core Wallet source and enter a shielded address as destination.
+- System creates an asset lock, waits for proof, and shields the credits.
+- Progress banner shows multi-step operation status.
+- Developer mode required.
+
+### SND-008: Top up identity from Send screen [Implemented]
+**Persona:** Priya, Jordan
+
+As a user, I want to top up an identity directly from the Send screen so that I do not have to navigate to the Identity screen to add credits.
+
+- Select Core Wallet or Platform Addresses as source.
+- Enter an identity ID (Base58) as destination.
+- System uses appropriate backend task (asset lock for Core, direct for Platform).
+
+### SND-009: Shield credits from Platform address [Implemented]
+**Persona:** Jordan
+
+As a developer, I want to shield credits from a Platform address into the shielded pool so that I can make private transactions.
+
+- Select Platform Addresses as source and enter a shielded address as destination.
+- System auto-selects the highest-balance Platform address.
+- Developer mode required.
+
+### SND-010: Withdraw from shielded pool to Core address [Implemented]
+**Persona:** Jordan
+
+As a developer, I want to withdraw from the shielded pool directly to a Core address so that I can convert shielded credits back to spendable DASH.
+
+- Select Shielded Pool as source and enter a Core address as destination.
+- Developer mode required.
+
+### SND-011: Transfer identity credits to another identity [Implemented]
+**Persona:** Priya, Jordan
+
+As a user, I want to transfer credits from one of my identities to another identity using the Send screen.
+
+- Select Identity as source from dropdown of loaded identities.
+- Enter another identity ID as destination.
+- Both identity balances update after the transfer.
+
+### SND-012: Withdraw identity credits to Core address [Implemented]
+**Persona:** Priya, Jordan
+
+As a user, I want to withdraw identity credits to a Core address from the Send screen.
+
+- Select Identity as source and enter a Core address as destination.
+- Withdrawal is queued on Platform and settles after confirmation.
+
+### SND-013: Transfer identity credits to Platform address [Implemented]
+**Persona:** Priya, Jordan
+
+As a user, I want to transfer identity credits to a Platform address from the Send screen.
+
+- Select Identity as source and enter a Platform address (bech32m) as destination.
+- Credits arrive at the Platform address.
+
 ---
 
 ## Asset Locks (ALK)

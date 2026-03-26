@@ -384,12 +384,7 @@ impl AddressInput {
             let display = if self.full_addresses {
                 format!("{}{}{}", prefix, addr_str, change_suffix)
             } else {
-                format!(
-                    "{}{}{}",
-                    prefix,
-                    truncate_address(&addr_str),
-                    change_suffix
-                )
+                format!("{}{}{}", prefix, truncate_address(&addr_str), change_suffix)
             };
             self.all_entries.push(AddressEntry {
                 address_string: addr_str,
@@ -407,7 +402,7 @@ impl AddressInput {
         // their derived platform addresses.
         use crate::model::wallet::DerivationPathReference;
         let mut seen_platform = std::collections::HashSet::new();
-        for (_path, addr_info) in &guard.watched_addresses {
+        for addr_info in guard.watched_addresses.values() {
             if addr_info.path_reference != DerivationPathReference::PlatformPayment {
                 continue;
             }

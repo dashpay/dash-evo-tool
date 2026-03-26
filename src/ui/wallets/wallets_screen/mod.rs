@@ -158,6 +158,8 @@ pub struct WalletsBalancesScreen {
     /// Cached filtered transaction indices for the currently selected wallet.
     /// Invalidated (set to None) on wallet switch or transaction updates.
     cached_tx_indices: Option<Vec<usize>>,
+    /// Whether a Core receive address generation is in progress (disables button)
+    generating_core_address: bool,
 }
 
 impl WalletsBalancesScreen {
@@ -266,6 +268,7 @@ impl WalletsBalancesScreen {
             pending_list_wallet_hash: None,
             pending_list_is_single_key: false,
             cached_tx_indices: None,
+            generating_core_address: false,
         }
     }
 
@@ -464,35 +467,6 @@ impl WalletsBalancesScreen {
         self.mine_dialog.address_input = None;
         self.mine_dialog.validated_address = None;
         self.cached_tx_indices = None;
-    }
-
-    fn add_receiving_address(&mut self) {
-        if let Some(wallet) = &self.selected_wallet {
-            let result = {
-                let mut wallet = wallet.write().unwrap();
-                wallet.receive_address(self.app_context.network, true, Some(&self.app_context))
-            };
-
-            match result {
-                Ok(address) => {
-                    let message = format!("Added new receiving address: {}", address);
-                    MessageBanner::set_global(
-                        self.app_context.egui_ctx(),
-                        &message,
-                        MessageType::Success,
-                    );
-                }
-                Err(e) => {
-                    MessageBanner::set_global(self.app_context.egui_ctx(), &e, MessageType::Error);
-                }
-            }
-        } else {
-            MessageBanner::set_global(
-                self.app_context.egui_ctx(),
-                "No wallet selected",
-                MessageType::Error,
-            );
-        }
     }
 
     fn render_wallet_selection(&mut self, ui: &mut Ui) -> AppAction {
@@ -756,26 +730,85 @@ impl WalletsBalancesScreen {
         &mut self,
         ui: &mut Ui,
         account_filter: &(AccountCategory, Option<u32>),
-    ) {
+    ) -> AppAction {
+        let mut action = AppAction::None;
+
         let wallet_is_open = self
             .selected_wallet
             .as_ref()
             .is_some_and(|wallet_guard| wallet_guard.read().unwrap().is_open());
 
-        // Only show "Add Receiving Address" button for Dash Core account (BIP44 account 0)
-        let is_main_account =
-            account_filter.0 == AccountCategory::Bip44 && account_filter.1 == Some(0);
+        if !wallet_is_open {
+            return action;
+        }
 
-        if wallet_is_open && is_main_account {
-            ui.add_space(10.0);
-            ui.horizontal(|ui| {
+        let is_bip44 = account_filter.0 == AccountCategory::Bip44;
+        let is_platform = account_filter.0 == AccountCategory::PlatformPayment;
+
+        if is_bip44 {
+            ui.add_space(8.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                let button = egui::Button::new(RichText::new("+ New Receive Address").size(13.0))
+                    .min_size(egui::vec2(0.0, 24.0));
                 if ui
-                    .button(RichText::new("➕ Add Receiving Address").size(14.0))
+                    .add_enabled(!self.generating_core_address, button)
                     .clicked()
+                    && let Some(wallet) = &self.selected_wallet
                 {
-                    self.add_receiving_address();
+                    let seed_hash = wallet.read().unwrap().seed_hash();
+                    self.generating_core_address = true;
+                    action = AppAction::BackendTask(BackendTask::WalletTask(
+                        crate::backend_task::wallet::WalletTask::GenerateReceiveAddress {
+                            seed_hash,
+                        },
+                    ));
                 }
             });
+        } else if is_platform {
+            ui.add_space(8.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                let button = egui::Button::new(RichText::new("+ New Platform Address").size(13.0))
+                    .min_size(egui::vec2(0.0, 24.0));
+                if ui.add(button).clicked() {
+                    self.add_new_platform_address();
+                }
+            });
+        }
+
+        action
+    }
+
+    fn add_new_platform_address(&mut self) {
+        if let Some(wallet) = &self.selected_wallet {
+            let result = {
+                let mut wallet = wallet.write().unwrap();
+                wallet.platform_receive_address(
+                    self.app_context.network,
+                    true,
+                    Some(&self.app_context),
+                )
+            };
+            match result {
+                Ok(address) => {
+                    use dash_sdk::dpp::address_funds::PlatformAddress;
+                    let display = PlatformAddress::try_from(address)
+                        .map(|pa| pa.to_bech32m_string(self.app_context.network))
+                        .unwrap_or_else(|_| "new address".to_string());
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        format!("New Platform address generated: {display}"),
+                        MessageType::Success,
+                    );
+                }
+                Err(e) => {
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        "Could not generate a new Platform address. Please try again.",
+                        MessageType::Error,
+                    )
+                    .with_details(e);
+                }
+            }
         }
     }
 
@@ -1427,7 +1460,7 @@ impl WalletsBalancesScreen {
                     });
                     ui.add_space(4.0);
                     action |= self.render_address_table(ui, account_filter.clone());
-                    self.render_bottom_options(ui, &account_filter);
+                    action |= self.render_bottom_options(ui, &account_filter);
                 });
 
                 // Dash Core tab: transaction history + asset locks
@@ -2679,6 +2712,7 @@ impl ScreenLike for WalletsBalancesScreen {
         // Banner display is handled globally by AppState; this is only for side-effects.
         // Always clear refreshing — the originating task is done regardless of result type.
         self.refreshing = false;
+        self.generating_core_address = false;
 
         if matches!(message_type, MessageType::Error | MessageType::Warning) {
             self.asset_lock_search_banner.take_and_clear();
@@ -2801,6 +2835,7 @@ impl ScreenLike for WalletsBalancesScreen {
                 MessageBanner::set_global(self.app_context.egui_ctx(), &msg, MessageType::Success);
             }
             crate::ui::BackendTaskSuccessResult::GeneratedReceiveAddress { seed_hash, address } => {
+                self.generating_core_address = false;
                 if let Some(selected) = &self.selected_wallet
                     && let Ok(wallet) = selected.read()
                     && wallet.seed_hash() == seed_hash
@@ -2821,6 +2856,12 @@ impl ScreenLike for WalletsBalancesScreen {
                     self.receive_dialog.qr_texture = None;
                     self.receive_dialog.qr_address = None;
                     self.receive_dialog.status = None;
+
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        format!("New receive address generated: {address}"),
+                        MessageType::Success,
+                    );
                 }
             }
             crate::ui::BackendTaskSuccessResult::PlatformAddressWithdrawal { .. } => {

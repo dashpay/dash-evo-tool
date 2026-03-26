@@ -118,6 +118,7 @@ pub struct WalletsBalancesScreen {
     fund_platform_dialog: FundPlatformAddressDialogState,
     private_key_dialog: PrivateKeyDialogState,
     mine_dialog: MineDialogState,
+    selected_account: Option<(AccountCategory, Option<u32>)>,
     show_zero_balance_addresses: bool,
     /// Pending refresh of platform address balances (triggered after transfers)
     pending_platform_balance_refresh: Option<WalletSeedHash>,
@@ -158,8 +159,6 @@ pub struct WalletsBalancesScreen {
     /// Cached filtered transaction indices for the currently selected wallet.
     /// Invalidated (set to None) on wallet switch or transaction updates.
     cached_tx_indices: Option<Vec<usize>>,
-    /// Whether a Core receive address generation is in progress (disables button)
-    generating_core_address: bool,
 }
 
 impl WalletsBalancesScreen {
@@ -248,6 +247,7 @@ impl WalletsBalancesScreen {
             fund_platform_dialog: FundPlatformAddressDialogState::default(),
             private_key_dialog: PrivateKeyDialogState::default(),
             mine_dialog: MineDialogState::default(),
+            selected_account: None,
             show_zero_balance_addresses: false,
             pending_platform_balance_refresh: None,
             pending_refresh_after_unlock: false,
@@ -268,7 +268,6 @@ impl WalletsBalancesScreen {
             pending_list_wallet_hash: None,
             pending_list_is_single_key: false,
             cached_tx_indices: None,
-            generating_core_address: false,
         }
     }
 
@@ -366,7 +365,7 @@ impl WalletsBalancesScreen {
             .and_then(|w| w.read().ok().map(|g| g.seed_hash()));
         self.selected_wallet = wallet;
         self.selected_single_key_wallet = None;
-
+        self.selected_account = None;
         self.selected_account_tab = AccountTab::default();
         self.cached_tx_indices = None;
 
@@ -394,7 +393,7 @@ impl WalletsBalancesScreen {
     fn select_single_key_wallet(&mut self, wallet: Arc<RwLock<SingleKeyWallet>>) {
         self.selected_single_key_wallet = Some(wallet.clone());
         self.selected_wallet = None;
-
+        self.selected_account = None;
         self.platform_sync_info = None;
         self.utxo_page = 0;
 
@@ -412,6 +411,7 @@ impl WalletsBalancesScreen {
                 && let Ok(wallets) = self.app_context.wallets.read()
                 && wallets.contains_key(&hash)
             {
+                self.selected_account = None;
                 return;
             }
             // HD wallet no longer valid
@@ -425,6 +425,7 @@ impl WalletsBalancesScreen {
                 && let Ok(wallets) = self.app_context.single_key_wallets.read()
                 && wallets.contains_key(&hash)
             {
+                self.selected_account = None;
                 return;
             }
             // Single key wallet no longer valid
@@ -448,11 +449,12 @@ impl WalletsBalancesScreen {
         {
             self.selected_single_key_wallet = Some(wallet);
             self.selected_wallet = None;
-
+            self.selected_account = None;
             self.platform_sync_info = None;
             return;
         }
 
+        self.selected_account = None;
         self.platform_sync_info = None;
     }
 
@@ -467,6 +469,35 @@ impl WalletsBalancesScreen {
         self.mine_dialog.address_input = None;
         self.mine_dialog.validated_address = None;
         self.cached_tx_indices = None;
+    }
+
+    fn add_receiving_address(&mut self) {
+        if let Some(wallet) = &self.selected_wallet {
+            let result = {
+                let mut wallet = wallet.write().unwrap();
+                wallet.receive_address(self.app_context.network, true, Some(&self.app_context))
+            };
+
+            match result {
+                Ok(address) => {
+                    let message = format!("Added new receiving address: {}", address);
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        &message,
+                        MessageType::Success,
+                    );
+                }
+                Err(e) => {
+                    MessageBanner::set_global(self.app_context.egui_ctx(), &e, MessageType::Error);
+                }
+            }
+        } else {
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "No wallet selected",
+                MessageType::Error,
+            );
+        }
     }
 
     fn render_wallet_selection(&mut self, ui: &mut Ui) -> AppAction {
@@ -726,89 +757,30 @@ impl WalletsBalancesScreen {
         action
     }
 
-    fn render_bottom_options(
-        &mut self,
-        ui: &mut Ui,
-        account_filter: &(AccountCategory, Option<u32>),
-    ) -> AppAction {
-        let mut action = AppAction::None;
-
+    fn render_bottom_options(&mut self, ui: &mut Ui) {
         let wallet_is_open = self
             .selected_wallet
             .as_ref()
             .is_some_and(|wallet_guard| wallet_guard.read().unwrap().is_open());
 
-        if !wallet_is_open {
-            return action;
-        }
+        // Only show "Add Receiving Address" button for Dash Core account (BIP44 account 0)
+        let is_main_account = self
+            .selected_account
+            .as_ref()
+            .is_some_and(|(category, index)| {
+                *category == AccountCategory::Bip44 && *index == Some(0)
+            });
 
-        let is_bip44 = account_filter.0 == AccountCategory::Bip44;
-        let is_platform = account_filter.0 == AccountCategory::PlatformPayment;
-
-        if is_bip44 {
-            ui.add_space(8.0);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                let button = egui::Button::new(RichText::new("+ New Receive Address").size(13.0))
-                    .min_size(egui::vec2(0.0, 24.0));
+        if wallet_is_open && is_main_account {
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
                 if ui
-                    .add_enabled(!self.generating_core_address, button)
+                    .button(RichText::new("➕ Add Receiving Address").size(14.0))
                     .clicked()
-                    && let Some(wallet) = &self.selected_wallet
                 {
-                    let seed_hash = wallet.read().unwrap().seed_hash();
-                    self.generating_core_address = true;
-                    action = AppAction::BackendTask(BackendTask::WalletTask(
-                        crate::backend_task::wallet::WalletTask::GenerateReceiveAddress {
-                            seed_hash,
-                        },
-                    ));
+                    self.add_receiving_address();
                 }
             });
-        } else if is_platform {
-            ui.add_space(8.0);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                let button = egui::Button::new(RichText::new("+ New Platform Address").size(13.0))
-                    .min_size(egui::vec2(0.0, 24.0));
-                if ui.add(button).clicked() {
-                    self.add_new_platform_address();
-                }
-            });
-        }
-
-        action
-    }
-
-    fn add_new_platform_address(&mut self) {
-        if let Some(wallet) = &self.selected_wallet {
-            let result = {
-                let mut wallet = wallet.write().unwrap();
-                wallet.platform_receive_address(
-                    self.app_context.network,
-                    true,
-                    Some(&self.app_context),
-                )
-            };
-            match result {
-                Ok(address) => {
-                    use dash_sdk::dpp::address_funds::PlatformAddress;
-                    let display = PlatformAddress::try_from(address)
-                        .map(|pa| pa.to_bech32m_string(self.app_context.network))
-                        .unwrap_or_else(|_| "new address".to_string());
-                    MessageBanner::set_global(
-                        self.app_context.egui_ctx(),
-                        format!("New Platform address generated: {display}"),
-                        MessageType::Success,
-                    );
-                }
-                Err(e) => {
-                    MessageBanner::set_global(
-                        self.app_context.egui_ctx(),
-                        "Could not generate a new Platform address. Please try again.",
-                        MessageType::Error,
-                    )
-                    .with_details(e);
-                }
-            }
         }
     }
 
@@ -1193,8 +1165,11 @@ impl WalletsBalancesScreen {
             tabs.insert(0, AccountTab::Category(AccountCategory::Bip44, Some(0)));
         }
 
-        // Always add the Shielded tab
-        tabs.push(AccountTab::Shielded);
+        // Add the Shielded tab only when the connected network supports it
+        // (protocol version >= 12, i.e., Platform v3.1+).
+        if self.app_context.supports_shielded() {
+            tabs.push(AccountTab::Shielded);
+        }
 
         // In developer mode, add the consolidated System tab last
         if developer_mode {
@@ -1207,12 +1182,11 @@ impl WalletsBalancesScreen {
     /// Collect the system account categories to display inside the System tab.
     /// Returns `(category, index, address_count, balance_duffs)` tuples in a
     /// fixed display order (identity categories first, then provider, then legacy).
-    /// Each `(category, index)` pair gets its own section with accurate counts.
     fn system_tab_sections(
         &self,
         summaries: &[AccountSummary],
     ) -> Vec<(AccountCategory, Option<u32>, usize, u64)> {
-        let category_order: &[AccountCategory] = &[
+        let all_system_categories = [
             AccountCategory::IdentityRegistration,
             AccountCategory::IdentitySystem,
             AccountCategory::IdentityTopup,
@@ -1225,45 +1199,26 @@ impl WalletsBalancesScreen {
             AccountCategory::Bip32,
         ];
 
-        // Precompute per-(category, index) address counts in a single pass.
+        // Precompute per-category address counts in a single pass over
+        // watched_addresses to avoid O(num_categories * num_addresses)
+        // per frame.
         let address_counts = self.precompute_address_counts();
 
         let mut sections = Vec::new();
-
-        // For each category, emit one section per distinct index found in
-        // summaries. Categories with no summary entries get a single section
-        // with index from the first matching summary (or None).
-        for cat in category_order {
+        for cat in &all_system_categories {
             let matching: Vec<_> = summaries.iter().filter(|s| &s.category == cat).collect();
-            if matching.is_empty() {
-                let address_count = address_counts
-                    .get(&(cat.clone(), None))
-                    .copied()
-                    .unwrap_or(0);
-                sections.push((cat.clone(), None, address_count, 0u64));
-            } else {
-                for summary in &matching {
-                    let key = (cat.clone(), summary.index);
-                    let address_count = address_counts.get(&key).copied().unwrap_or(0);
-                    sections.push((
-                        cat.clone(),
-                        summary.index,
-                        address_count,
-                        summary.confirmed_balance,
-                    ));
-                }
-            }
+            let address_count = address_counts.get(cat).copied().unwrap_or(0);
+            let balance: u64 = matching.iter().map(|s| s.confirmed_balance).sum();
+            let idx = matching.first().and_then(|s| s.index);
+            sections.push((cat.clone(), idx, address_count, balance));
         }
 
         // Also include any Other(...) categories from summaries
         for summary in summaries {
             if matches!(summary.category, AccountCategory::Other(_))
-                && !sections
-                    .iter()
-                    .any(|(c, idx, _, _)| *c == summary.category && *idx == summary.index)
+                && !sections.iter().any(|(c, _, _, _)| *c == summary.category)
             {
-                let key = (summary.category.clone(), summary.index);
-                let address_count = address_counts.get(&key).copied().unwrap_or(0);
+                let address_count = address_counts.get(&summary.category).copied().unwrap_or(0);
                 sections.push((
                     summary.category.clone(),
                     summary.index,
@@ -1276,12 +1231,10 @@ impl WalletsBalancesScreen {
         sections
     }
 
-    /// Build a per-(category, index) address count map in a single pass over
+    /// Build a per-category address count map in a single pass over
     /// `watched_addresses`. Used by `system_tab_sections` to avoid
     /// O(num_categories * num_addresses) per frame.
-    fn precompute_address_counts(
-        &self,
-    ) -> std::collections::HashMap<(AccountCategory, Option<u32>), usize> {
+    fn precompute_address_counts(&self) -> std::collections::HashMap<AccountCategory, usize> {
         let mut counts = std::collections::HashMap::new();
         let Some(wallet_arc) = self.selected_wallet.as_ref() else {
             return counts;
@@ -1291,12 +1244,12 @@ impl WalletsBalancesScreen {
         };
         let network = self.app_context.network;
         for (path, info) in &wallet.watched_addresses {
-            let (cat, idx) = crate::ui::wallets::account_summary::categorize_account_path(
+            let (cat, _) = crate::ui::wallets::account_summary::categorize_account_path(
                 path,
                 network,
                 info.path_reference,
             );
-            *counts.entry((cat, idx)).or_insert(0) += 1;
+            *counts.entry(cat).or_insert(0) += 1;
         }
         counts
     }
@@ -1384,6 +1337,10 @@ impl WalletsBalancesScreen {
                 ui.add_space(4.0);
                 if ui.selectable_label(is_selected, text).clicked() {
                     self.selected_account_tab = tab.clone();
+                    // Sync the selected_account for address_table filtering
+                    if let AccountTab::Category(cat, idx) = tab {
+                        self.selected_account = Some((cat.clone(), *idx));
+                    }
                 }
             }
         });
@@ -1438,7 +1395,7 @@ impl WalletsBalancesScreen {
                     ui.add_space(4.0);
                 }
 
-                let account_filter = (cat.clone(), idx);
+                self.selected_account = Some((cat.clone(), idx));
 
                 // Addresses (collapsible)
                 let addresses_heading = format!("Addresses ({})", cat.label(idx));
@@ -1459,8 +1416,8 @@ impl WalletsBalancesScreen {
                         });
                     });
                     ui.add_space(4.0);
-                    action |= self.render_address_table(ui, account_filter.clone());
-                    action |= self.render_bottom_options(ui, &account_filter);
+                    action |= self.render_address_table(ui, (cat.clone(), idx));
+                    self.render_bottom_options(ui);
                 });
 
                 // Dash Core tab: transaction history + asset locks
@@ -1539,6 +1496,7 @@ impl WalletsBalancesScreen {
                     ui.add_space(4.0);
                 }
 
+                self.selected_account = Some((cat.clone(), *idx));
                 action |= self.render_address_table(ui, (cat.clone(), *idx));
             });
             ui.add_space(2.0);
@@ -2085,10 +2043,23 @@ impl WalletsBalancesScreen {
         action
     }
 
-    fn ensure_account_selection(&mut self, _summaries: &[AccountSummary]) {
-        // The tab bar in `render_account_tabs` already validates
-        // `selected_account_tab` against the built tab list and resets it
-        // to the first tab if invalid. Nothing extra needed here.
+    fn ensure_account_selection(&mut self, summaries: &[AccountSummary]) {
+        if summaries.is_empty() {
+            self.selected_account = None;
+            return;
+        }
+
+        if let Some((cat, idx)) = &self.selected_account
+            && summaries
+                .iter()
+                .any(|summary| &summary.category == cat && summary.index == *idx)
+        {
+            return;
+        }
+
+        if let Some(first) = summaries.first() {
+            self.selected_account = Some((first.category.clone(), first.index));
+        }
     }
 
     fn lock_selected_wallet(&mut self) {
@@ -2712,7 +2683,6 @@ impl ScreenLike for WalletsBalancesScreen {
         // Banner display is handled globally by AppState; this is only for side-effects.
         // Always clear refreshing — the originating task is done regardless of result type.
         self.refreshing = false;
-        self.generating_core_address = false;
 
         if matches!(message_type, MessageType::Error | MessageType::Warning) {
             self.asset_lock_search_banner.take_and_clear();
@@ -2835,7 +2805,6 @@ impl ScreenLike for WalletsBalancesScreen {
                 MessageBanner::set_global(self.app_context.egui_ctx(), &msg, MessageType::Success);
             }
             crate::ui::BackendTaskSuccessResult::GeneratedReceiveAddress { seed_hash, address } => {
-                self.generating_core_address = false;
                 if let Some(selected) = &self.selected_wallet
                     && let Ok(wallet) = selected.read()
                     && wallet.seed_hash() == seed_hash
@@ -2856,12 +2825,6 @@ impl ScreenLike for WalletsBalancesScreen {
                     self.receive_dialog.qr_texture = None;
                     self.receive_dialog.qr_address = None;
                     self.receive_dialog.status = None;
-
-                    MessageBanner::set_global(
-                        self.app_context.egui_ctx(),
-                        format!("New receive address generated: {address}"),
-                        MessageType::Success,
-                    );
                 }
             }
             crate::ui::BackendTaskSuccessResult::PlatformAddressWithdrawal { .. } => {

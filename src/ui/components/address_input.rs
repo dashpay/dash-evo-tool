@@ -216,6 +216,9 @@ impl AddressInput {
     /// Entries are extracted immediately (read lock acquired once per wallet).
     /// Skips gracefully if a wallet lock is poisoned.
     /// When more than one wallet is provided, entries are prefixed with the wallet alias.
+    // TODO: Once shielded state is moved from AppContext::shielded_states into
+    // Wallet, extract shielded addresses here automatically (like Core and
+    // Platform) instead of requiring callers to call with_shielded_balance().
     pub fn with_wallets(mut self, wallets: &[Arc<RwLock<Wallet>>]) -> Self {
         let multi = wallets.len() > 1;
         for wallet in wallets {
@@ -367,28 +370,13 @@ impl AddressInput {
             String::new()
         };
 
-        // Build a set of system addresses to exclude from autocomplete.
-        // System addresses (Identity Registration, CoinJoin, Provider keys, etc.)
-        // are internal wallet infrastructure — not for user-facing send/receive.
-        use crate::ui::wallets::account_summary::AccountCategory;
-        let system_addresses: std::collections::HashSet<&Address> = guard
-            .watched_addresses
-            .values()
-            .filter(|info| {
-                AccountCategory::from_reference(info.path_reference).is_system_category()
-            })
-            .map(|info| &info.address)
-            .collect();
+        // Whitelist approach: only include addresses whose derivation path
+        // matches the expected type. Unknown or unrecognized paths are excluded
+        // — safer to hide an address than to show it with the wrong type.
 
-        // Core addresses from known_addresses (all derived addresses).
-        // Balance is looked up from address_balances; addresses without UTXOs
-        // get balance 0. Use `with_balance_range(1..)` to show only funded
-        // addresses — do NOT filter at the data source.
-        // Change addresses (BIP44 m/44'/5'/0'/1/x) are tagged and can be
-        // excluded via `with_exclude_change(true)`.
-        // System addresses are always excluded.
+        // Core addresses: only BIP44 paths (m/44'/coin'/account'/change/index).
         for (address, derivation_path) in &guard.known_addresses {
-            if system_addresses.contains(address) {
+            if !derivation_path.is_bip44(self.network) {
                 continue;
             }
             let is_change = derivation_path.is_bip44_change(self.network);
@@ -413,8 +401,8 @@ impl AddressInput {
             });
         }
 
-        // Platform addresses: derive from watched_addresses (all bootstrapped
-        // platform payment addresses), with balance from platform_address_info.
+        // Platform addresses: whitelist only PlatformPayment paths from
+        // watched_addresses, with balance from platform_address_info.
         // This ensures fresh wallets with no on-chain activity still show
         // their derived platform addresses.
         use crate::model::wallet::DerivationPathReference;

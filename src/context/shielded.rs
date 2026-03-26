@@ -140,6 +140,61 @@ impl AppContext {
         }
     }
 
+    /// Set the cached nonce for a platform address to a specific value.
+    /// Used during nonce mismatch retry to align the cache with Platform's
+    /// expected nonce.
+    fn set_platform_address_nonce(
+        &self,
+        seed_hash: &WalletSeedHash,
+        from_address: &dash_sdk::dpp::address_funds::PlatformAddress,
+        nonce: u32,
+    ) {
+        let wallets = self.wallets.read().unwrap();
+        let wallet_arc = match wallets.get(seed_hash) {
+            Some(w) => w.clone(),
+            None => return,
+        };
+        drop(wallets);
+
+        let mut wallet = wallet_arc.write().unwrap();
+        for (core_addr, info) in wallet.platform_address_info.iter_mut() {
+            if let Ok(pa) =
+                dash_sdk::dpp::address_funds::PlatformAddress::try_from(core_addr.clone())
+                && &pa == from_address
+            {
+                info.nonce = nonce;
+                let _ = self.db.set_platform_address_info(
+                    seed_hash,
+                    core_addr,
+                    info.balance,
+                    nonce,
+                    &self.network,
+                );
+                break;
+            }
+        }
+    }
+
+    /// Extract the expected nonce from an `AddressInvalidNonceError` inside
+    /// a boxed SDK error. Returns `None` if the error chain doesn't contain
+    /// the expected nonce.
+    fn extract_expected_nonce(sdk_error: &dash_sdk::Error) -> Option<u32> {
+        use dash_sdk::dpp::consensus::ConsensusError;
+        use dash_sdk::dpp::consensus::state::state_error::StateError;
+        let consensus = match sdk_error {
+            dash_sdk::Error::StateTransitionBroadcastError(e) => e.cause.as_ref()?,
+            dash_sdk::Error::Protocol(dash_sdk::dpp::ProtocolError::ConsensusError(ce)) => {
+                ce.as_ref()
+            }
+            _ => return None,
+        };
+        if let ConsensusError::StateError(StateError::AddressInvalidNonceError(e)) = consensus {
+            Some(e.expected_nonce())
+        } else {
+            None
+        }
+    }
+
     /// Get the default shielded payment address for a wallet.
     pub fn shielded_default_address(
         &self,
@@ -331,7 +386,7 @@ impl AppContext {
             state.keys.default_address
         };
 
-        crate::backend_task::shielded::bundle::shield_credits(
+        let result = crate::backend_task::shielded::bundle::shield_credits(
             self,
             &seed_hash,
             &default_address,
@@ -340,11 +395,51 @@ impl AppContext {
             nonce_override,
             None,
         )
-        .await?;
+        .await;
 
-        self.bump_platform_address_nonce(&seed_hash, &from_address);
+        match result {
+            Ok(()) => {
+                self.bump_platform_address_nonce(&seed_hash, &from_address);
+                Ok(BackendTaskSuccessResult::ShieldedCreditsShielded { seed_hash, amount })
+            }
+            Err(TaskError::ShieldedNonceMismatch { ref source_error }) => {
+                // Extract the expected nonce from the error and retry once.
+                // The proof is already built — only the nonce in the state
+                // transition needs updating. Unfortunately the current API
+                // rebuilds the entire transition, but this avoids the user
+                // having to manually retry.
+                let expected_nonce = Self::extract_expected_nonce(source_error);
+                if let Some(nonce) = expected_nonce {
+                    tracing::info!(
+                        "Shield credits: nonce mismatch, retrying with expected nonce {nonce}"
+                    );
+                    // Update cached nonce to expected - 1 so the retry reads expected
+                    self.set_platform_address_nonce(
+                        &seed_hash,
+                        &from_address,
+                        nonce.saturating_sub(1),
+                    );
 
-        Ok(BackendTaskSuccessResult::ShieldedCreditsShielded { seed_hash, amount })
+                    crate::backend_task::shielded::bundle::shield_credits(
+                        self,
+                        &seed_hash,
+                        &default_address,
+                        amount,
+                        from_address,
+                        Some(nonce),
+                        None,
+                    )
+                    .await?;
+
+                    self.bump_platform_address_nonce(&seed_hash, &from_address);
+                    Ok(BackendTaskSuccessResult::ShieldedCreditsShielded { seed_hash, amount })
+                } else {
+                    // Could not extract nonce — surface the original error
+                    Err(result.unwrap_err())
+                }
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// Transfer credits within the shielded pool.

@@ -95,8 +95,9 @@ impl AsyncTool<DashMcpService> for MyNewTool {
 
 **Steps 2–4 are conditional:**
 - Skip `verify_network` only for `network_info` and `tool_describe`.
+- For destructive tools (`read_only: false`), the `network` parameter **must be required** (not optional with `#[serde(default)]`). Use `resolve::require_network()` instead of `resolve::verify_network()` to prevent accidental cross-network operations that could spend funds on the wrong network.
 - Skip wallet resolution if the tool doesn't operate on a wallet.
-- Skip `ensure_spv_synced` if the tool reads only from the database or Platform SDK (no SPV-dependent data).
+- Skip `ensure_spv_synced` if the tool reads only from the database or Platform SDK (no SPV-dependent data). For tools that only dispatch Platform state transitions (not Core UTXO spends), add an `// INTENTIONAL: no SPV sync needed` comment explaining why.
 
 ### 6. Register in `tool_router()`
 

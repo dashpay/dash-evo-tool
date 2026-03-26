@@ -1,11 +1,13 @@
 use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
+use crate::backend_task::identity::{IdentityTask, IdentityTopUpInfo, TopUpIdentityFundingMethod};
 use crate::backend_task::wallet::WalletTask;
 use crate::context::AppContext;
 use crate::model::address::{AddressKind, ValidatedAddress};
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::fee_estimation::format_credits_as_dash;
+use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::ui::components::address_input::AddressInput;
 use crate::ui::components::amount_input::AmountInput;
@@ -24,6 +26,7 @@ use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
 use dash_sdk::dpp::address_funds::AddressFundsFeeStrategyStep;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::{CREDITS_PER_DUFF, Credits};
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::core_script::CoreScript;
 use dash_sdk::dpp::prelude::AddressNonce;
 use dash_sdk::dpp::prelude::AssetLockProof;
@@ -271,6 +274,8 @@ pub enum SourceSelection {
     CoreWallet,
     /// Use all Platform addresses (stores list of platform address, core address, and balance)
     PlatformAddresses(Vec<(PlatformAddress, Address, u64)>),
+    /// Use an identity's credit balance
+    Identity(Box<QualifiedIdentity>),
     /// Use shielded pool balance (stores seed_hash and balance in credits)
     Shielded(WalletSeedHash, u64),
 }
@@ -381,6 +386,9 @@ pub struct WalletSendScreen {
     advanced_outputs: Vec<AdvancedOutput>,
     fee_strategy: PlatformFeeStrategy,
 
+    // Identity source fields
+    selected_identity: Option<QualifiedIdentity>,
+
     // Common options
     subtract_fee: bool,
 
@@ -417,6 +425,7 @@ impl WalletSendScreen {
                 amount: String::new(),
             }],
             fee_strategy: PlatformFeeStrategy::default(),
+            selected_identity: None,
             subtract_fee: false,
             send_status: SendStatus::NotStarted,
             send_banner: None,
@@ -480,6 +489,7 @@ impl WalletSendScreen {
         self.amount = None;
         self.amount_input = None;
         self.selected_source = Some(SourceSelection::CoreWallet);
+        self.selected_identity = None;
         self.advanced_source_type = AdvancedSourceType::Core;
         self.core_inputs.clear();
         self.platform_inputs.clear();
@@ -652,6 +662,26 @@ impl WalletSendScreen {
             .unwrap_or(0)
     }
 
+    /// Get loaded identities for the current wallet, filtered by wallet seed hash.
+    fn get_loaded_identities(&self) -> Vec<QualifiedIdentity> {
+        let Some(wallet_arc) = &self.selected_wallet else {
+            return vec![];
+        };
+        let Ok(wallet) = wallet_arc.read() else {
+            return vec![];
+        };
+        let seed_hash = wallet.seed_hash();
+
+        let Ok(all_identities) = self.app_context.load_local_qualified_identities() else {
+            return vec![];
+        };
+
+        all_identities
+            .into_iter()
+            .filter(|qi| qi.associated_wallets.contains_key(&seed_hash))
+            .collect()
+    }
+
     /// Get Core addresses with their UTXO balances
     fn get_core_addresses(&self) -> Vec<(Address, u64)> {
         let Some(wallet_arc) = &self.selected_wallet else {
@@ -671,21 +701,39 @@ impl WalletSendScreen {
     fn get_transaction_type_description(&self) -> &'static str {
         let dest_kind = self.destination_kind();
         match (&self.selected_source, dest_kind) {
-            (Some(SourceSelection::CoreWallet), Some(AddressKind::Core)) => "Core Transaction",
+            // Core Wallet source
+            (Some(SourceSelection::CoreWallet), Some(AddressKind::Core)) => "Send DASH",
             (Some(SourceSelection::CoreWallet), Some(AddressKind::Platform)) => {
                 "Fund Platform Address"
             }
+            (Some(SourceSelection::CoreWallet), Some(AddressKind::Shielded)) => "Shield DASH",
+            (Some(SourceSelection::CoreWallet), Some(AddressKind::Identity)) => "Top Up Identity",
+            // Platform Addresses source
             (Some(SourceSelection::PlatformAddresses(_)), Some(AddressKind::Platform)) => {
-                "Platform Transfer"
+                "Transfer Credits"
             }
             (Some(SourceSelection::PlatformAddresses(_)), Some(AddressKind::Core)) => {
-                "Withdraw to Core"
+                "Withdraw to Wallet"
             }
-            (Some(SourceSelection::Shielded(..)), Some(AddressKind::Shielded)) => {
-                "Private Transfer (Shielded)"
+            (Some(SourceSelection::PlatformAddresses(_)), Some(AddressKind::Shielded)) => {
+                "Shield Credits"
             }
+            (Some(SourceSelection::PlatformAddresses(_)), Some(AddressKind::Identity)) => {
+                "Top Up Identity"
+            }
+            // Identity source
+            (Some(SourceSelection::Identity(_)), Some(AddressKind::Core)) => "Withdraw Credits",
+            (Some(SourceSelection::Identity(_)), Some(AddressKind::Platform)) => {
+                "Transfer to Address"
+            }
+            (Some(SourceSelection::Identity(_)), Some(AddressKind::Identity)) => "Transfer Credits",
+            // Shielded source
+            (Some(SourceSelection::Shielded(..)), Some(AddressKind::Core)) => {
+                "Withdraw from Shield"
+            }
+            (Some(SourceSelection::Shielded(..)), Some(AddressKind::Shielded)) => "Private Send",
             (Some(SourceSelection::Shielded(..)), Some(AddressKind::Platform)) => {
-                "Unshield to Platform"
+                "Unshield Credits"
             }
             _ => "Send",
         }
@@ -755,6 +803,7 @@ impl WalletSendScreen {
 
         // Route to appropriate handler based on source and destination types
         match (source.clone(), dest_kind) {
+            // === Existing 6 combinations ===
             (SourceSelection::CoreWallet, Some(AddressKind::Core)) => self.send_core_to_core(),
             (SourceSelection::CoreWallet, Some(AddressKind::Platform)) => {
                 self.send_core_to_platform(seed_hash)
@@ -771,6 +820,42 @@ impl WalletSendScreen {
             (SourceSelection::Shielded(sh, _), Some(AddressKind::Platform)) => {
                 self.send_shielded_to_platform(sh)
             }
+            // === New 8 combinations ===
+            (SourceSelection::CoreWallet, Some(AddressKind::Shielded)) => {
+                self.send_core_to_shielded(seed_hash)
+            }
+            (SourceSelection::CoreWallet, Some(AddressKind::Identity)) => {
+                self.send_core_to_identity(seed_hash)
+            }
+            (SourceSelection::PlatformAddresses(addresses), Some(AddressKind::Shielded)) => {
+                self.send_platform_to_shielded(seed_hash, addresses)
+            }
+            (SourceSelection::PlatformAddresses(addresses), Some(AddressKind::Identity)) => {
+                self.send_platform_to_identity(seed_hash, addresses)
+            }
+            (SourceSelection::Shielded(sh, _), Some(AddressKind::Core)) => {
+                self.send_shielded_to_core(sh)
+            }
+            (SourceSelection::Identity(qi), Some(AddressKind::Core)) => {
+                self.send_identity_to_core(*qi)
+            }
+            (SourceSelection::Identity(qi), Some(AddressKind::Platform)) => {
+                self.send_identity_to_platform(*qi)
+            }
+            (SourceSelection::Identity(qi), Some(AddressKind::Identity)) => {
+                self.send_identity_to_identity(*qi)
+            }
+            // === Unsupported combinations (defer to v2) ===
+            (SourceSelection::Identity(_), Some(AddressKind::Shielded)) => Err(
+                "Sending from an identity to the shielded pool is not yet supported. \
+                     Transfer to a Platform address first, then shield from there."
+                    .to_string(),
+            ),
+            (SourceSelection::Shielded(..), Some(AddressKind::Identity)) => Err(
+                "Sending from the shielded pool to an identity is not yet supported. \
+                     Transfer to a Platform address first, then top up the identity."
+                    .to_string(),
+            ),
             _ => Err("Invalid source/destination combination".to_string()),
         }
     }
@@ -1176,13 +1261,9 @@ impl WalletSendScreen {
                 Some(AppAction::None)
             }
             SendStatus::Error => {
-                // Error message is displayed by the global MessageBanner.
-                // Show a dismiss/retry option.
-                ui.add_space(10.0);
-                if ui.button("Dismiss").clicked() {
-                    self.send_status = SendStatus::NotStarted;
-                }
-                ui.add_space(10.0);
+                // Error is displayed by the global MessageBanner — no extra
+                // UI needed here. Reset status so the form is usable again.
+                self.send_status = SendStatus::NotStarted;
                 None
             }
             SendStatus::NotStarted => None,
@@ -1329,6 +1410,348 @@ impl WalletSendScreen {
         ))
     }
 
+    // === New send handler methods (8 combinations) ===
+
+    /// Shield DASH from Core wallet via asset lock (Core -> Shielded).
+    fn send_core_to_shielded(&mut self, seed_hash: WalletSeedHash) -> Result<AppAction, String> {
+        // Shielding from Core always deposits into the wallet's own shielded pool.
+        // Validate the destination is a shielded address (the address input already constrains this).
+        if let Some(ValidatedAddress::Shielded(_)) = &self.validated_destination {
+            // OK: destination is a shielded address (self-shielding)
+        } else {
+            return Err("Please enter a valid shielded address".to_string());
+        }
+
+        let amount_duffs = self
+            .amount
+            .as_ref()
+            .ok_or_else(|| "Amount is required".to_string())?
+            .dash_to_duffs()?;
+        if amount_duffs == 0 {
+            return Err("Amount must be greater than 0".to_string());
+        }
+
+        let balance = self.get_core_balance();
+        if amount_duffs > balance {
+            return Err(format!(
+                "Insufficient balance. Need {} but have {}",
+                Self::format_dash(amount_duffs),
+                Self::format_dash(balance)
+            ));
+        }
+
+        self.mark_sending();
+        Ok(AppAction::BackendTask(BackendTask::ShieldedTask(
+            crate::backend_task::shielded::ShieldedTask::ShieldFromAssetLock {
+                seed_hash,
+                amount_duffs,
+            },
+        )))
+    }
+
+    /// Top up an identity from Core wallet via asset lock (Core -> Identity).
+    fn send_core_to_identity(&mut self, _seed_hash: WalletSeedHash) -> Result<AppAction, String> {
+        let amount_duffs = self
+            .amount
+            .as_ref()
+            .ok_or_else(|| "Amount is required".to_string())?
+            .dash_to_duffs()?;
+        if amount_duffs == 0 {
+            return Err("Amount must be greater than 0".to_string());
+        }
+
+        let balance = self.get_core_balance();
+        if amount_duffs > balance {
+            return Err(format!(
+                "Insufficient balance. Need {} but have {}",
+                Self::format_dash(amount_duffs),
+                Self::format_dash(balance)
+            ));
+        }
+
+        // Resolve identity from destination
+        let identity_id = self
+            .validated_destination
+            .as_ref()
+            .and_then(|v| v.as_identity_id().copied())
+            .ok_or_else(|| "Invalid identity ID".to_string())?;
+
+        let qualified_identity = self
+            .app_context
+            .get_identity_by_id(&identity_id)
+            .map_err(|e| format!("Could not look up identity: {e}"))?
+            .ok_or_else(|| {
+                "No identity found with this ID. Please check the ID and try again.".to_string()
+            })?;
+
+        let identity_index = qualified_identity.wallet_index.unwrap_or(0);
+        let top_up_index = qualified_identity.top_ups.len() as u32;
+
+        let wallet = self
+            .selected_wallet
+            .as_ref()
+            .ok_or("No wallet selected")?
+            .clone();
+
+        self.mark_sending();
+        Ok(AppAction::BackendTask(BackendTask::IdentityTask(
+            IdentityTask::TopUpIdentity(IdentityTopUpInfo {
+                qualified_identity,
+                wallet,
+                identity_funding_method: TopUpIdentityFundingMethod::FundWithWallet(
+                    amount_duffs,
+                    identity_index,
+                    top_up_index,
+                ),
+            }),
+        )))
+    }
+
+    /// Shield credits from Platform address to shielded pool (Platform -> Shielded).
+    fn send_platform_to_shielded(
+        &mut self,
+        seed_hash: WalletSeedHash,
+        addresses: Vec<(PlatformAddress, Address, u64)>,
+    ) -> Result<AppAction, String> {
+        // Shielding from Platform always deposits into the wallet's own shielded pool.
+        if !matches!(
+            &self.validated_destination,
+            Some(ValidatedAddress::Shielded(_))
+        ) {
+            return Err("Please enter a valid shielded address".to_string());
+        }
+
+        let amount_credits = self
+            .amount
+            .as_ref()
+            .ok_or_else(|| "Amount is required".to_string())?
+            .value();
+        if amount_credits == 0 {
+            return Err("Amount must be greater than 0".to_string());
+        }
+
+        // Select the highest-balance platform address as the source
+        let (from_address, from_balance) = addresses
+            .iter()
+            .max_by_key(|(_, _, balance)| *balance)
+            .map(|(platform_addr, _, balance)| (*platform_addr, *balance))
+            .ok_or_else(|| "No platform addresses available".to_string())?;
+
+        // Check that the selected source address has sufficient balance
+        if amount_credits > from_balance {
+            return Err(format!(
+                "Insufficient platform balance. Need {} but highest address has {}",
+                format_credits_as_dash(amount_credits),
+                format_credits_as_dash(from_balance)
+            ));
+        }
+
+        self.mark_sending();
+        Ok(AppAction::BackendTask(BackendTask::ShieldedTask(
+            crate::backend_task::shielded::ShieldedTask::ShieldCredits {
+                seed_hash,
+                amount: amount_credits,
+                from_address,
+                nonce_override: None,
+            },
+        )))
+    }
+
+    /// Top up an identity from Platform addresses (Platform -> Identity).
+    fn send_platform_to_identity(
+        &mut self,
+        seed_hash: WalletSeedHash,
+        addresses: Vec<(PlatformAddress, Address, u64)>,
+    ) -> Result<AppAction, String> {
+        let amount_credits = self
+            .amount
+            .as_ref()
+            .ok_or_else(|| "Amount is required".to_string())?
+            .value();
+        if amount_credits == 0 {
+            return Err("Amount must be greater than 0".to_string());
+        }
+
+        let identity_id = self
+            .validated_destination
+            .as_ref()
+            .and_then(|v| v.as_identity_id().copied())
+            .ok_or_else(|| "Invalid identity ID".to_string())?;
+
+        let qualified_identity = self
+            .app_context
+            .get_identity_by_id(&identity_id)
+            .map_err(|e| format!("Could not look up identity: {e}"))?
+            .ok_or_else(|| {
+                "No identity found with this ID. Please check the ID and try again.".to_string()
+            })?;
+
+        let fee_estimator = self.app_context.fee_estimator();
+        let allocation =
+            allocate_platform_addresses(&fee_estimator, &addresses, amount_credits, None);
+        if allocation.shortfall > 0 {
+            return Err(format!(
+                "Insufficient platform balance. Need {} (including estimated fee of {}) but short by {}",
+                format_credits_as_dash(amount_credits + allocation.estimated_fee),
+                format_credits_as_dash(allocation.estimated_fee),
+                format_credits_as_dash(allocation.shortfall)
+            ));
+        }
+
+        self.mark_sending();
+        Ok(AppAction::BackendTask(BackendTask::IdentityTask(
+            IdentityTask::TopUpIdentityFromPlatformAddresses {
+                identity: qualified_identity,
+                inputs: allocation.inputs,
+                wallet_seed_hash: seed_hash,
+            },
+        )))
+    }
+
+    /// Withdraw from shielded pool to Core address (Shielded -> Core).
+    fn send_shielded_to_core(&mut self, seed_hash: WalletSeedHash) -> Result<AppAction, String> {
+        let amount_credits = self
+            .amount
+            .as_ref()
+            .ok_or_else(|| "Amount is required".to_string())?
+            .value();
+        if amount_credits == 0 {
+            return Err("Amount must be greater than 0".to_string());
+        }
+
+        let core_address = self
+            .validated_destination
+            .as_ref()
+            .and_then(|v| v.as_core().cloned())
+            .ok_or_else(|| "Invalid Core address".to_string())?;
+
+        self.mark_sending();
+        Ok(AppAction::BackendTask(BackendTask::ShieldedTask(
+            crate::backend_task::shielded::ShieldedTask::ShieldedWithdrawal {
+                seed_hash,
+                amount: amount_credits,
+                to_core_address: core_address,
+            },
+        )))
+    }
+
+    /// Withdraw identity credits to Core address (Identity -> Core).
+    fn send_identity_to_core(
+        &mut self,
+        qualified_identity: QualifiedIdentity,
+    ) -> Result<AppAction, String> {
+        let amount_credits = self
+            .amount
+            .as_ref()
+            .ok_or_else(|| "Amount is required".to_string())?
+            .value();
+        if amount_credits == 0 {
+            return Err("Amount must be greater than 0".to_string());
+        }
+
+        let identity_balance = qualified_identity.identity.balance();
+        if amount_credits > identity_balance {
+            return Err(format!(
+                "Insufficient identity balance. Need {} but have {}",
+                format_credits_as_dash(amount_credits),
+                format_credits_as_dash(identity_balance)
+            ));
+        }
+
+        let core_address = self
+            .validated_destination
+            .as_ref()
+            .and_then(|v| v.as_core().cloned())
+            .ok_or_else(|| "Invalid Core address".to_string())?;
+
+        self.mark_sending();
+        Ok(AppAction::BackendTask(BackendTask::IdentityTask(
+            IdentityTask::WithdrawFromIdentity(
+                qualified_identity,
+                Some(core_address),
+                amount_credits,
+                None,
+            ),
+        )))
+    }
+
+    /// Transfer identity credits to Platform address (Identity -> Platform).
+    fn send_identity_to_platform(
+        &mut self,
+        qualified_identity: QualifiedIdentity,
+    ) -> Result<AppAction, String> {
+        let amount_credits = self
+            .amount
+            .as_ref()
+            .ok_or_else(|| "Amount is required".to_string())?
+            .value();
+        if amount_credits == 0 {
+            return Err("Amount must be greater than 0".to_string());
+        }
+
+        let identity_balance = qualified_identity.identity.balance();
+        if amount_credits > identity_balance {
+            return Err(format!(
+                "Insufficient identity balance. Need {} but have {}",
+                format_credits_as_dash(amount_credits),
+                format_credits_as_dash(identity_balance)
+            ));
+        }
+
+        let platform_addr = self
+            .validated_destination
+            .as_ref()
+            .and_then(|v| v.as_platform().copied())
+            .ok_or_else(|| "Invalid Platform address".to_string())?;
+
+        let mut outputs = BTreeMap::new();
+        outputs.insert(platform_addr, amount_credits);
+
+        self.mark_sending();
+        Ok(AppAction::BackendTask(BackendTask::IdentityTask(
+            IdentityTask::TransferToAddresses {
+                identity: qualified_identity,
+                outputs,
+                key_id: None,
+            },
+        )))
+    }
+
+    /// Transfer identity credits to another identity (Identity -> Identity).
+    fn send_identity_to_identity(
+        &mut self,
+        qualified_identity: QualifiedIdentity,
+    ) -> Result<AppAction, String> {
+        let amount_credits = self
+            .amount
+            .as_ref()
+            .ok_or_else(|| "Amount is required".to_string())?
+            .value();
+        if amount_credits == 0 {
+            return Err("Amount must be greater than 0".to_string());
+        }
+
+        let identity_balance = qualified_identity.identity.balance();
+        if amount_credits > identity_balance {
+            return Err(format!(
+                "Insufficient identity balance. Need {} but have {}",
+                format_credits_as_dash(amount_credits),
+                format_credits_as_dash(identity_balance)
+            ));
+        }
+
+        let to_identity_id = self
+            .validated_destination
+            .as_ref()
+            .and_then(|v| v.as_identity_id().copied())
+            .ok_or_else(|| "Invalid identity ID".to_string())?;
+
+        self.mark_sending();
+        Ok(AppAction::BackendTask(BackendTask::IdentityTask(
+            IdentityTask::Transfer(qualified_identity, to_identity_id, amount_credits, None),
+        )))
+    }
+
     fn render_source_selection(&mut self, ui: &mut Ui) {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
 
@@ -1440,9 +1863,152 @@ impl WalletSendScreen {
                 });
         }
 
-        // Shielded balance option
+        // Identity source option — visible when identities exist or developer mode
+        let identities = self.get_loaded_identities();
+        if !identities.is_empty() || self.app_context.is_developer_mode() {
+            ui.add_space(5.0);
+
+            let is_identity_selected =
+                matches!(&self.selected_source, Some(SourceSelection::Identity(_)));
+
+            Frame::group(ui.style())
+                .fill(if is_identity_selected {
+                    DashColors::DASH_BLUE.gamma_multiply(0.1)
+                } else {
+                    DashColors::surface(dark_mode)
+                })
+                .stroke(if is_identity_selected {
+                    egui::Stroke::new(2.0, DashColors::DASH_BLUE)
+                } else {
+                    egui::Stroke::new(1.0, DashColors::border_light(dark_mode))
+                })
+                .inner_margin(Margin::symmetric(12, 8))
+                .corner_radius(5.0)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let mut selected = is_identity_selected;
+                        if ui.radio_value(&mut selected, true, "").changed() && selected {
+                            if let Some(identity) = self
+                                .selected_identity
+                                .clone()
+                                .or_else(|| identities.first().cloned())
+                            {
+                                self.selected_source =
+                                    Some(SourceSelection::Identity(Box::new(identity.clone())));
+                                self.selected_identity = Some(identity);
+                            }
+                            self.address_input = None;
+                            self.validated_destination = None;
+                        }
+                        ui.label(
+                            RichText::new("Identity")
+                                .color(DashColors::text_primary(dark_mode))
+                                .strong(),
+                        );
+                        if let Some(SourceSelection::Identity(qi)) = &self.selected_source {
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.label(
+                                        RichText::new(Self::format_credits(
+                                            qi.identity.balance(),
+                                        ))
+                                        .color(DashColors::SUCCESS)
+                                        .strong(),
+                                    );
+                                },
+                            );
+                        } else if let Some(first) = identities.first() {
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.label(
+                                        RichText::new(Self::format_credits(
+                                            first.identity.balance(),
+                                        ))
+                                        .color(DashColors::SUCCESS)
+                                        .strong(),
+                                    );
+                                },
+                            );
+                        }
+                    });
+
+                    // Identity selector dropdown when multiple identities
+                    if is_identity_selected && identities.len() > 1 {
+                        ui.add_space(4.0);
+                        let current_label = self
+                            .selected_identity
+                            .as_ref()
+                            .map(|qi| {
+                                let name = qi
+                                    .dpns_names
+                                    .first()
+                                    .map(|n| n.name.clone())
+                                    .or_else(|| qi.alias.clone())
+                                    .unwrap_or_else(|| {
+                                        let id_str = qi.identity.id().to_string(
+                                            dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
+                                        );
+                                        format!("{}...", &id_str[..8.min(id_str.len())])
+                                    });
+                                format!(
+                                    "{} ({})",
+                                    name,
+                                    Self::format_credits(qi.identity.balance())
+                                )
+                            })
+                            .unwrap_or_else(|| "Select identity".to_string());
+
+                        egui::ComboBox::from_id_salt("identity_source_selector")
+                            .selected_text(&current_label)
+                            .width(ui.available_width() - 20.0)
+                            .show_ui(ui, |ui| {
+                                for identity in &identities {
+                                    let label = {
+                                        let name = identity
+                                            .dpns_names
+                                            .first()
+                                            .map(|n| n.name.clone())
+                                            .or_else(|| identity.alias.clone())
+                                            .unwrap_or_else(|| {
+                                                let id_str = identity.identity.id().to_string(
+                                                    dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
+                                                );
+                                                format!(
+                                                    "{}...",
+                                                    &id_str[..8.min(id_str.len())]
+                                                )
+                                            });
+                                        format!(
+                                            "{} ({})",
+                                            name,
+                                            Self::format_credits(identity.identity.balance())
+                                        )
+                                    };
+                                    let is_selected = self
+                                        .selected_identity
+                                        .as_ref()
+                                        .is_some_and(|sel| {
+                                            sel.identity.id() == identity.identity.id()
+                                        });
+                                    if ui.selectable_label(is_selected, &label).clicked() {
+                                        self.selected_identity = Some(identity.clone());
+                                        self.selected_source =
+                                            Some(SourceSelection::Identity(Box::new(identity.clone())));
+                                        self.address_input = None;
+                                        self.validated_destination = None;
+                                    }
+                                }
+                            });
+                    }
+                });
+        }
+
+        // Shielded balance option (developer mode only)
         let shielded_balance = self.get_shielded_balance();
-        if let Some((seed_hash, balance)) = shielded_balance
+        if self.app_context.is_developer_mode()
+            && let Some((seed_hash, balance)) = shielded_balance
             && balance > 0
         {
             ui.add_space(5.0);
@@ -1490,16 +2056,38 @@ impl WalletSendScreen {
     }
 
     fn render_destination_input(&mut self, ui: &mut Ui) {
+        let developer_mode = self.app_context.is_developer_mode();
         let addr_input = self.address_input.get_or_insert_with(|| {
             let allowed_kinds = match &self.selected_source {
                 Some(SourceSelection::CoreWallet) => {
-                    vec![AddressKind::Core, AddressKind::Platform]
+                    let mut kinds = vec![AddressKind::Core, AddressKind::Platform];
+                    if developer_mode {
+                        kinds.push(AddressKind::Shielded);
+                    }
+                    kinds.push(AddressKind::Identity);
+                    kinds
                 }
                 Some(SourceSelection::PlatformAddresses(_)) => {
-                    vec![AddressKind::Platform, AddressKind::Core]
+                    let mut kinds = vec![AddressKind::Platform, AddressKind::Core];
+                    if developer_mode {
+                        kinds.push(AddressKind::Shielded);
+                    }
+                    kinds.push(AddressKind::Identity);
+                    kinds
+                }
+                Some(SourceSelection::Identity(_)) => {
+                    vec![
+                        AddressKind::Core,
+                        AddressKind::Platform,
+                        AddressKind::Identity,
+                    ]
                 }
                 Some(SourceSelection::Shielded(..)) => {
-                    vec![AddressKind::Shielded, AddressKind::Platform]
+                    vec![
+                        AddressKind::Shielded,
+                        AddressKind::Platform,
+                        AddressKind::Core,
+                    ]
                 }
                 None => AddressKind::ALL.to_vec(),
             };
@@ -1516,6 +2104,19 @@ impl WalletSendScreen {
                     wallets_guard.values().cloned().collect();
                 if !all_wallets.is_empty() {
                     builder = builder.with_wallets(&all_wallets);
+                }
+            }
+
+            // Add shielded address for autocomplete (if wallet has shielded state)
+            if let Some(seed_hash) = self.selected_wallet_seed_hash
+                && let Ok(states) = self.app_context.shielded_states.lock()
+                && let Some(state) = states.get(&seed_hash)
+            {
+                use dash_sdk::dpp::address_funds::OrchardAddress;
+                let raw = state.keys.default_address.to_raw_address_bytes();
+                if let Ok(orchard_addr) = OrchardAddress::from_raw_bytes(&raw) {
+                    let addr_str = orchard_addr.to_bech32m_string(self.app_context.network);
+                    builder = builder.with_shielded_balance(addr_str, state.shielded_balance);
                 }
             }
 
@@ -1604,12 +2205,25 @@ impl WalletSendScreen {
             Some(SourceSelection::Shielded(_, balance)) => {
                 (Some(*balance), Some("Shielded pool balance".to_string()))
             }
+            Some(SourceSelection::Identity(qi)) => {
+                let balance = qi.identity.balance();
+                let estimated_fee = fee_estimator.estimate_credit_transfer();
+                let available = balance.saturating_sub(estimated_fee);
+                (
+                    Some(available),
+                    Some(format!(
+                        "~{} reserved for fees",
+                        Self::format_credits(estimated_fee)
+                    )),
+                )
+            }
             None => (None, None),
         };
 
         let input_kind = match self.selected_source {
             Some(SourceSelection::CoreWallet) => Some(AddressKind::Core),
             Some(SourceSelection::PlatformAddresses(_)) => Some(AddressKind::Platform),
+            Some(SourceSelection::Identity(_)) => Some(AddressKind::Platform), // credits like platform
             Some(SourceSelection::Shielded(_, _)) => Some(AddressKind::Shielded),
             None => None,
         };
@@ -2884,6 +3498,73 @@ impl ScreenLike for WalletSendScreen {
                 self.send_status = SendStatus::Complete(format!(
                     "Unshielded {} to platform address!\n\n\
                      Your remaining balance will update after the next block is confirmed.",
+                    format_credits_as_dash(amount)
+                ));
+                self.pending_refresh_task = Some(crate::backend_task::BackendTask::ShieldedTask(
+                    crate::backend_task::shielded::ShieldedTask::SyncNotes { seed_hash },
+                ));
+            }
+            // Core->Identity or Platform->Identity top-up result
+            crate::backend_task::BackendTaskSuccessResult::ToppedUpIdentity(
+                _identity,
+                fee_result,
+            ) => {
+                let fee_info = format!(
+                    "\n\nFee: Estimated {} • Actual {}",
+                    format_credits_as_dash(fee_result.estimated_fee),
+                    format_credits_as_dash(fee_result.actual_fee)
+                );
+                self.send_status =
+                    SendStatus::Complete(format!("Identity topped up successfully!{}", fee_info));
+            }
+            // Identity->Core withdrawal result
+            crate::backend_task::BackendTaskSuccessResult::WithdrewFromIdentity(fee_result) => {
+                let fee_info = format!(
+                    "\n\nFee: Estimated {} • Actual {}",
+                    format_credits_as_dash(fee_result.estimated_fee),
+                    format_credits_as_dash(fee_result.actual_fee)
+                );
+                self.send_status = SendStatus::Complete(format!(
+                    "Identity withdrawal initiated. Funds will appear on the Core chain after confirmation.{}",
+                    fee_info
+                ));
+            }
+            // Core->Shielded or Platform->Shielded shield result
+            crate::backend_task::BackendTaskSuccessResult::ShieldedCreditsShielded {
+                seed_hash,
+                amount,
+            } => {
+                self.send_status = SendStatus::Complete(format!(
+                    "{} shielded successfully!\n\n\
+                     Balance will update after the next block.",
+                    format_credits_as_dash(amount)
+                ));
+                self.pending_refresh_task = Some(crate::backend_task::BackendTask::ShieldedTask(
+                    crate::backend_task::shielded::ShieldedTask::SyncNotes { seed_hash },
+                ));
+            }
+            // Core->Shielded via asset lock result
+            crate::backend_task::BackendTaskSuccessResult::ShieldedFromAssetLock {
+                seed_hash,
+                amount,
+            } => {
+                self.send_status = SendStatus::Complete(format!(
+                    "{} shielded from asset lock successfully!\n\n\
+                     Balance will update after the next block.",
+                    format_credits_as_dash(amount)
+                ));
+                self.pending_refresh_task = Some(crate::backend_task::BackendTask::ShieldedTask(
+                    crate::backend_task::shielded::ShieldedTask::SyncNotes { seed_hash },
+                ));
+            }
+            // Shielded->Core withdrawal result
+            crate::backend_task::BackendTaskSuccessResult::ShieldedWithdrawalComplete {
+                seed_hash,
+                amount,
+            } => {
+                self.send_status = SendStatus::Complete(format!(
+                    "Withdrawal of {} from shielded pool initiated.\n\n\
+                     Funds will appear after confirmation.",
                     format_credits_as_dash(amount)
                 ));
                 self.pending_refresh_task = Some(crate::backend_task::BackendTask::ShieldedTask(

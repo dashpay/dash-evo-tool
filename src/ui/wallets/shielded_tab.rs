@@ -631,12 +631,9 @@ impl ShieldedTabView {
     }
 }
 
-/// Truncate a bech32m address for display: first 12 chars + `...` + last 8 chars.
+/// Truncate a bech32m address for display (12 prefix + 8 suffix).
 fn truncate_address(addr: &str) -> String {
-    if addr.len() <= 23 {
-        return addr.to_string();
-    }
-    format!("{}...{}", &addr[..12], &addr[addr.len() - 8..])
+    crate::model::address::truncate_address(addr, 12, 8)
 }
 
 fn format_credits(credits: u64) -> String {

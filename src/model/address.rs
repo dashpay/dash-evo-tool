@@ -233,6 +233,20 @@ impl std::fmt::Display for ValidatedAddress {
     }
 }
 
+/// Truncate an address string for display, showing a prefix and suffix
+/// separated by an ellipsis.
+///
+/// Assumes ASCII input (Base58 and Bech32/Bech32m addresses are always ASCII).
+/// Addresses shorter than `prefix_len + suffix_len + 3` characters are returned
+/// unchanged (truncation would not save space).
+pub fn truncate_address(addr: &str, prefix_len: usize, suffix_len: usize) -> String {
+    let min_useful = prefix_len + suffix_len + 3; // 3 for "..."
+    if addr.len() < min_useful {
+        return addr.to_string();
+    }
+    format!("{}...{}", &addr[..prefix_len], &addr[addr.len() - suffix_len..])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

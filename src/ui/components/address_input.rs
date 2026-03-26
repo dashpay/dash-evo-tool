@@ -1047,21 +1047,9 @@ fn detect_address_type(input: &str, identity_enabled: bool) -> DetectedType {
     }
 }
 
-/// Truncate an address string for display, showing prefix and suffix.
+/// Truncate an address for display in the address input component (8 prefix + 6 suffix).
 fn truncate_address(addr: &str) -> String {
-    if addr.chars().count() <= 16 {
-        return addr.to_string();
-    }
-    let prefix: String = addr.chars().take(8).collect();
-    let suffix: String = addr
-        .chars()
-        .rev()
-        .take(6)
-        .collect::<String>()
-        .chars()
-        .rev()
-        .collect();
-    format!("{prefix}...{suffix}")
+    crate::model::address::truncate_address(addr, 8, 6)
 }
 
 #[cfg(test)]

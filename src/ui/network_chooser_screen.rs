@@ -421,9 +421,10 @@ impl NetworkChooserScreen {
                                     )
                                     .ok()
                                     .and_then(|c| {
-                                        c.config_for_network(self.current_network).cloned()
+                                        c.config_for_network(self.current_network)
+                                            .as_ref()
+                                            .map(|nc| nc.core_rpc_password.clone())
                                     })
-                                    .map(|nc| nc.core_rpc_password)
                                     .unwrap_or_default();
                                     self.dashmate_password_input.set_text(password);
                                 }

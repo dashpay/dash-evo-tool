@@ -393,7 +393,6 @@ impl AddressInput {
                 });
             }
         }
-
     }
 
     fn extract_identity_entries(&mut self, identities: &[QualifiedIdentity]) {
@@ -472,7 +471,9 @@ impl AddressInput {
 
         if detected == DetectedType::Unknown {
             return (
-                Some("This does not look like a valid address. Please check for typos.".to_string()),
+                Some(
+                    "This does not look like a valid address. Please check for typos.".to_string(),
+                ),
                 None,
             );
         }
@@ -551,7 +552,9 @@ impl AddressInput {
                 }),
             ),
             Err(_) => (
-                Some("This does not look like a valid address. Please check for typos.".to_string()),
+                Some(
+                    "This does not look like a valid address. Please check for typos.".to_string(),
+                ),
                 None,
             ),
         }
@@ -627,7 +630,9 @@ impl AddressInput {
                 )
             }
             Err(_) => (
-                Some("This does not look like a valid address. Please check for typos.".to_string()),
+                Some(
+                    "This does not look like a valid address. Please check for typos.".to_string(),
+                ),
                 None,
             ),
         }
@@ -1173,7 +1178,9 @@ mod tests {
         assert!(val.is_none());
         assert_eq!(
             err.as_deref(),
-            Some("This address belongs to a different network. Please check you are using the correct network.")
+            Some(
+                "This address belongs to a different network. Please check you are using the correct network."
+            )
         );
     }
 
@@ -1194,7 +1201,9 @@ mod tests {
         assert!(val.is_none());
         assert_eq!(
             err.as_deref(),
-            Some("This address belongs to a different network. Please check you are using the correct network.")
+            Some(
+                "This address belongs to a different network. Please check you are using the correct network."
+            )
         );
     }
 
@@ -1205,7 +1214,9 @@ mod tests {
         assert!(val.is_none());
         assert_eq!(
             err.as_deref(),
-            Some("This address belongs to a different network. Please check you are using the correct network.")
+            Some(
+                "This address belongs to a different network. Please check you are using the correct network."
+            )
         );
     }
 
@@ -1502,7 +1513,9 @@ mod tests {
         assert!(val.is_none(), "mixed-case bech32m should be rejected");
         assert_eq!(
             err.as_deref(),
-            Some("Platform addresses must not mix upper and lower case characters. Please use all lowercase.")
+            Some(
+                "Platform addresses must not mix upper and lower case characters. Please use all lowercase."
+            )
         );
     }
 
@@ -1513,7 +1526,9 @@ mod tests {
         let (err, _) = input.validate_platform("tdash1qwer1234");
         assert_ne!(
             err.as_deref(),
-            Some("Platform addresses must not mix upper and lower case characters. Please use all lowercase."),
+            Some(
+                "Platform addresses must not mix upper and lower case characters. Please use all lowercase."
+            ),
             "all-lowercase should pass the case check"
         );
     }
@@ -1525,7 +1540,9 @@ mod tests {
         let (err, _) = input.validate_platform("TDASH1QWER1234");
         assert_ne!(
             err.as_deref(),
-            Some("Platform addresses must not mix upper and lower case characters. Please use all lowercase."),
+            Some(
+                "Platform addresses must not mix upper and lower case characters. Please use all lowercase."
+            ),
             "all-uppercase should pass the case check"
         );
     }

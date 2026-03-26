@@ -196,6 +196,8 @@ impl AsyncTool<DashMcpService> for IdentityCreditsTopupFromPlatform {
         resolve::require_network(&ctx, Some(&param.network))?;
         resolve::validate_credits(param.amount_credits)?;
 
+        // INTENTIONAL: no SPV sync needed — this tool only dispatches Platform state transitions,
+        // not Core UTXO spends
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
         let qi = resolve::qualified_identity(&ctx, &param.identity_id)?;
         let identity_id_str = qi
@@ -340,6 +342,8 @@ impl AsyncTool<DashMcpService> for IdentityCreditsTransfer {
             .map_err(|e| McpToolError::Internal(e.to_string()))?;
         resolve::require_network(&ctx, Some(&param.network))?;
         resolve::validate_credits(param.amount_credits)?;
+        // INTENTIONAL: no SPV sync needed — this tool only dispatches Platform state transitions,
+        // not Core UTXO spends
         let _seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
 
         let from_qi = resolve::qualified_identity(&ctx, &param.from_identity_id)?;
@@ -450,6 +454,8 @@ impl AsyncTool<DashMcpService> for IdentityCreditsWithdraw {
         resolve::require_network(&ctx, Some(&param.network))?;
         resolve::validate_credits(param.amount_credits)?;
         resolve::validate_address(&param.to_address)?;
+        // INTENTIONAL: no SPV sync needed — this tool only dispatches Platform state transitions,
+        // not Core UTXO spends
         let _seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
 
         let qi = resolve::qualified_identity(&ctx, &param.identity_id)?;
@@ -561,6 +567,8 @@ impl AsyncTool<DashMcpService> for IdentityCreditsToAddress {
             .map_err(|e| McpToolError::Internal(e.to_string()))?;
         resolve::require_network(&ctx, Some(&param.network))?;
         resolve::validate_credits(param.amount_credits)?;
+        // INTENTIONAL: no SPV sync needed — this tool only dispatches Platform state transitions,
+        // not Core UTXO spends
         let _seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
 
         let qi = resolve::qualified_identity(&ctx, &param.identity_id)?;

@@ -1418,6 +1418,14 @@ impl WalletSendScreen {
 
     /// Shield DASH from Core wallet via asset lock (Core -> Shielded).
     fn send_core_to_shielded(&mut self, seed_hash: WalletSeedHash) -> Result<AppAction, String> {
+        // Shielding from Core always deposits into the wallet's own shielded pool.
+        // Validate the destination is a shielded address (the address input already constrains this).
+        if let Some(ValidatedAddress::Shielded(_)) = &self.validated_destination {
+            // OK: destination is a shielded address (self-shielding)
+        } else {
+            return Err("Please enter a valid shielded address".to_string());
+        }
+
         let amount_duffs = self
             .amount
             .as_ref()
@@ -1477,7 +1485,7 @@ impl WalletSendScreen {
             .get_identity_by_id(&identity_id)
             .map_err(|e| format!("Could not look up identity: {e}"))?
             .ok_or_else(|| {
-                "Identity not found. Load the identity first from the Identity screen.".to_string()
+                "No identity found with this ID. Please check the ID and try again.".to_string()
             })?;
 
         let identity_index = qualified_identity.wallet_index.unwrap_or(0);
@@ -1509,6 +1517,14 @@ impl WalletSendScreen {
         seed_hash: WalletSeedHash,
         addresses: Vec<(PlatformAddress, Address, u64)>,
     ) -> Result<AppAction, String> {
+        // Shielding from Platform always deposits into the wallet's own shielded pool.
+        if !matches!(
+            &self.validated_destination,
+            Some(ValidatedAddress::Shielded(_))
+        ) {
+            return Err("Please enter a valid shielded address".to_string());
+        }
+
         let amount_credits = self
             .amount
             .as_ref()
@@ -1518,18 +1534,19 @@ impl WalletSendScreen {
             return Err("Amount must be greater than 0".to_string());
         }
 
-        let from_address = addresses
+        // Select the highest-balance platform address as the source
+        let (from_address, from_balance) = addresses
             .iter()
             .max_by_key(|(_, _, balance)| *balance)
-            .map(|(platform_addr, _, _)| *platform_addr)
+            .map(|(platform_addr, _, balance)| (*platform_addr, *balance))
             .ok_or_else(|| "No platform addresses available".to_string())?;
 
-        let total_balance: u64 = addresses.iter().map(|(_, _, b)| *b).sum();
-        if amount_credits > total_balance {
+        // Check that the selected source address has sufficient balance
+        if amount_credits > from_balance {
             return Err(format!(
-                "Insufficient platform balance. Need {} but have {}",
+                "Insufficient platform balance. Need {} but highest address has {}",
                 format_credits_as_dash(amount_credits),
-                format_credits_as_dash(total_balance)
+                format_credits_as_dash(from_balance)
             ));
         }
 
@@ -1570,7 +1587,7 @@ impl WalletSendScreen {
             .get_identity_by_id(&identity_id)
             .map_err(|e| format!("Could not look up identity: {e}"))?
             .ok_or_else(|| {
-                "Identity not found. Load the identity first from the Identity screen.".to_string()
+                "No identity found with this ID. Please check the ID and try again.".to_string()
             })?;
 
         let fee_estimator = self.app_context.fee_estimator();
@@ -2181,7 +2198,15 @@ impl WalletSendScreen {
             }
             Some(SourceSelection::Identity(qi)) => {
                 let balance = qi.identity.balance();
-                (Some(balance), Some("Identity credit balance".to_string()))
+                let estimated_fee = fee_estimator.estimate_credit_transfer();
+                let available = balance.saturating_sub(estimated_fee);
+                (
+                    Some(available),
+                    Some(format!(
+                        "~{} reserved for fees",
+                        Self::format_credits(estimated_fee)
+                    )),
+                )
             }
             None => (None, None),
         };

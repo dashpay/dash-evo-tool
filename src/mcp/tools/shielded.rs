@@ -167,13 +167,15 @@ impl AsyncTool<DashMcpService> for ShieldedShieldFromPlatform {
         resolve::require_network(&ctx, Some(&param.network))?;
         resolve::validate_credits(param.amount_credits)?;
 
+        // INTENTIONAL: no SPV sync needed — this tool only dispatches Platform state transitions,
+        // not Core UTXO spends
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
 
-        // Auto-select highest-balance platform address (scope guard to avoid Send issues)
+        // Auto-select highest-balance platform address and verify sufficient balance
         let from_address = {
             let wallet_arc = resolve::wallet_arc(&ctx, seed_hash)?;
             let wallet = wallet_arc.read().unwrap_or_else(|e| e.into_inner());
-            wallet
+            let best = wallet
                 .platform_address_info
                 .iter()
                 .filter_map(|(addr, info)| {
@@ -186,10 +188,20 @@ impl AsyncTool<DashMcpService> for ShieldedShieldFromPlatform {
                     }
                 })
                 .max_by_key(|(_, balance)| *balance)
-                .map(|(pa, _)| pa)
                 .ok_or_else(|| McpToolError::InvalidParam {
                     message: "No Platform addresses with balance found".to_owned(),
-                })?
+                })?;
+
+            if best.1 < param.amount_credits {
+                return Err(McpToolError::InvalidParam {
+                    message: format!(
+                        "Insufficient platform balance. Highest address has {} credits but {} required.",
+                        best.1, param.amount_credits
+                    ),
+                });
+            }
+
+            best.0
         };
 
         let task = BackendTask::ShieldedTask(ShieldedTask::ShieldCredits {
@@ -279,7 +291,8 @@ impl AsyncTool<DashMcpService> for ShieldedTransferTool {
             .map_err(|e| McpToolError::Internal(e.to_string()))?;
         resolve::require_network(&ctx, Some(&param.network))?;
         resolve::validate_credits(param.amount_credits)?;
-
+        // INTENTIONAL: no SPV sync needed — this tool only dispatches Platform state transitions,
+        // not Core UTXO spends
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
 
         let recipient_bytes =
@@ -376,7 +389,8 @@ impl AsyncTool<DashMcpService> for ShieldedUnshield {
             .map_err(|e| McpToolError::Internal(e.to_string()))?;
         resolve::require_network(&ctx, Some(&param.network))?;
         resolve::validate_credits(param.amount_credits)?;
-
+        // INTENTIONAL: no SPV sync needed — this tool only dispatches Platform state transitions,
+        // not Core UTXO spends
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
 
         let (platform_addr, _network) =
@@ -475,7 +489,8 @@ impl AsyncTool<DashMcpService> for ShieldedWithdrawTool {
         resolve::require_network(&ctx, Some(&param.network))?;
         resolve::validate_credits(param.amount_credits)?;
         resolve::validate_address(&param.to_address)?;
-
+        // INTENTIONAL: no SPV sync needed — this tool dispatches a Platform state transition
+        // (withdrawal is queued on Platform and settles after confirmation)
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
 
         let core_address: dash_sdk::dashcore_rpc::dashcore::Address<

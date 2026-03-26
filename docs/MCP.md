@@ -120,7 +120,11 @@ See [CLI.md](CLI.md) for full documentation.
 
 ## Network verification
 
-Most tools accept an optional `network` parameter (e.g. `"mainnet"`, `"testnet"`, `"devnet"`, `"local"`). When provided, the request fails immediately if it does not match the server's active network. This prevents accidentally operating on the wrong network.
+Tools accept a `network` parameter (e.g. `"mainnet"`, `"testnet"`, `"devnet"`, `"local"`). When provided, the request fails immediately if it does not match the server's active network. This prevents accidentally operating on the wrong network.
+
+For **destructive tools** (those that spend funds or modify state — all identity and shielded tools), `network` is **required**. The tool will reject the request if `network` is omitted or does not match the active network. This is a safety measure to prevent accidentally spending funds on the wrong network.
+
+For **read-only tools** (e.g. `core_wallets_list`, `core_balances_get`), `network` is optional. When omitted, the tool operates on whatever network is currently active.
 
 The `network_info` and `tool_describe` tools do not perform this check.
 

@@ -25,10 +25,9 @@ use std::sync::{Arc, Mutex};
 /// DPP builder has room for the transition fee. Without it, sending the full
 /// shielded balance fails with "fee exceeds spendable".
 ///
-/// This is a generous estimate (500M credits ≈ 5 DASH) covering the largest
-/// transition type (withdrawal). The actual fee is calculated by the builder
-/// and any excess stays as change in the shielded pool.
-const SHIELDED_FEE_HEADROOM: u64 = 500_000_000;
+/// Estimated at ~0.1 DASH (10M credits). The actual fee is calculated by
+/// the builder and any excess stays as change in the shielded pool.
+const SHIELDED_FEE_HEADROOM: u64 = 10_000_000;
 
 /// Wrapper around a cached `ProvingKey` that implements `OrchardProver`.
 struct CachedProver {

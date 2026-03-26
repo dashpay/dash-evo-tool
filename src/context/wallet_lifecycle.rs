@@ -903,7 +903,16 @@ impl AppContext {
                         // SPV transaction history is per-wallet — all entries
                         // involve our addresses. Upstream sets is_ours only for
                         // sends (net_amount < 0); we override to true for all.
-                        is_ours: true,
+                        is_ours: {
+                            if !record.is_ours && record.net_amount >= 0 {
+                                tracing::debug!(
+                                    txid = %record.txid,
+                                    net_amount = record.net_amount,
+                                    "SPV: overriding is_ours to true for receive transaction"
+                                );
+                            }
+                            true
+                        },
                         status,
                     }
                 })

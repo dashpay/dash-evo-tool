@@ -216,6 +216,9 @@ impl AddressInput {
     /// Entries are extracted immediately (read lock acquired once per wallet).
     /// Skips gracefully if a wallet lock is poisoned.
     /// When more than one wallet is provided, entries are prefixed with the wallet alias.
+    // TODO: Once shielded state is moved from AppContext::shielded_states into
+    // Wallet, extract shielded addresses here automatically (like Core and
+    // Platform) instead of requiring callers to call with_shielded_balance().
     pub fn with_wallets(mut self, wallets: &[Arc<RwLock<Wallet>>]) -> Self {
         let multi = wallets.len() > 1;
         for wallet in wallets {

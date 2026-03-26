@@ -1533,48 +1533,12 @@ impl WalletsBalancesScreen {
             return;
         }
 
-        // Filter transactions to only those involving this wallet's addresses.
-        // Check both outputs (receives/change) and inputs (spends) so that
-        // send-all transactions with no change output are not dropped.
+        // Filter to transactions involving this wallet's addresses.
+        // The `is_ours` flag is set by both RPC and SPV paths for all
+        // transactions that belong to this wallet (sends and receives).
         let relevant_indices = self.cached_tx_indices.get_or_insert_with(|| {
-            let wallet_addresses: std::collections::HashSet<&Address> =
-                wallet_guard.known_addresses.keys().collect();
-
-            // Build a lookup from OutPoint → Address so we can resolve input addresses
-            // from previous transactions in the same wallet.
-            let mut outpoint_addresses: std::collections::HashMap<
-                dash_sdk::dpp::dashcore::OutPoint,
-                Address,
-            > = std::collections::HashMap::new();
-            let network = self.app_context.network;
-            for wtx in &wallet_guard.transactions {
-                for (vout, output) in wtx.transaction.output.iter().enumerate() {
-                    if let Ok(addr) = Address::from_script(&output.script_pubkey, network) {
-                        outpoint_addresses.insert(
-                            dash_sdk::dpp::dashcore::OutPoint::new(wtx.txid, vout as u32),
-                            addr,
-                        );
-                    }
-                }
-            }
-
             (0..wallet_guard.transactions.len())
-                .filter(|&i| {
-                    let tx = &wallet_guard.transactions[i];
-                    // Check outputs (receives, change)
-                    let output_match = tx.transaction.output.iter().any(|output| {
-                        Address::from_script(&output.script_pubkey, network)
-                            .ok()
-                            .is_some_and(|addr| wallet_addresses.contains(&addr))
-                    });
-                    // Check inputs (spends) via the outpoint lookup
-                    let input_match = tx.transaction.input.iter().any(|input| {
-                        outpoint_addresses
-                            .get(&input.previous_output)
-                            .is_some_and(|addr| wallet_addresses.contains(addr))
-                    });
-                    output_match || input_match
-                })
+                .filter(|&i| wallet_guard.transactions[i].is_ours)
                 .collect()
         });
 

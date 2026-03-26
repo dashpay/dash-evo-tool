@@ -238,7 +238,9 @@ impl AddressInput {
 
     /// Filter autocomplete entries by balance range (in native units).
     ///
-    /// Does not affect manual input validation. Default: no filter.
+    /// All known wallet addresses are included by default (including zero-balance).
+    /// Use `with_balance_range(1..)` to show only funded addresses.
+    /// Does not affect manual input validation. Default: no filter (all addresses).
     pub fn with_balance_range(mut self, range: impl std::ops::RangeBounds<u64>) -> Self {
         self.balance_range = Some(BalanceRange::from_range(&range));
         self
@@ -348,8 +350,12 @@ impl AddressInput {
             String::new()
         };
 
-        // Core addresses from address_balances
-        for (address, &balance) in &guard.address_balances {
+        // Core addresses from known_addresses (all derived addresses).
+        // Balance is looked up from address_balances; addresses without UTXOs
+        // get balance 0. Use `with_balance_range(1..)` to show only funded
+        // addresses — do NOT filter at the data source.
+        for address in guard.known_addresses.keys() {
+            let balance = guard.address_balances.get(address).copied().unwrap_or(0);
             let addr_str = address.to_string();
             let display = if self.full_addresses {
                 format!("{}{}", prefix, addr_str)

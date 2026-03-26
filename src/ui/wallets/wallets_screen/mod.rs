@@ -118,7 +118,6 @@ pub struct WalletsBalancesScreen {
     fund_platform_dialog: FundPlatformAddressDialogState,
     private_key_dialog: PrivateKeyDialogState,
     mine_dialog: MineDialogState,
-    selected_account: Option<(AccountCategory, Option<u32>)>,
     show_zero_balance_addresses: bool,
     /// Pending refresh of platform address balances (triggered after transfers)
     pending_platform_balance_refresh: Option<WalletSeedHash>,
@@ -247,7 +246,6 @@ impl WalletsBalancesScreen {
             fund_platform_dialog: FundPlatformAddressDialogState::default(),
             private_key_dialog: PrivateKeyDialogState::default(),
             mine_dialog: MineDialogState::default(),
-            selected_account: None,
             show_zero_balance_addresses: false,
             pending_platform_balance_refresh: None,
             pending_refresh_after_unlock: false,
@@ -365,7 +363,7 @@ impl WalletsBalancesScreen {
             .and_then(|w| w.read().ok().map(|g| g.seed_hash()));
         self.selected_wallet = wallet;
         self.selected_single_key_wallet = None;
-        self.selected_account = None;
+
         self.selected_account_tab = AccountTab::default();
         self.cached_tx_indices = None;
 
@@ -393,7 +391,7 @@ impl WalletsBalancesScreen {
     fn select_single_key_wallet(&mut self, wallet: Arc<RwLock<SingleKeyWallet>>) {
         self.selected_single_key_wallet = Some(wallet.clone());
         self.selected_wallet = None;
-        self.selected_account = None;
+
         self.platform_sync_info = None;
         self.utxo_page = 0;
 
@@ -411,7 +409,7 @@ impl WalletsBalancesScreen {
                 && let Ok(wallets) = self.app_context.wallets.read()
                 && wallets.contains_key(&hash)
             {
-                self.selected_account = None;
+        
                 return;
             }
             // HD wallet no longer valid
@@ -425,7 +423,7 @@ impl WalletsBalancesScreen {
                 && let Ok(wallets) = self.app_context.single_key_wallets.read()
                 && wallets.contains_key(&hash)
             {
-                self.selected_account = None;
+        
                 return;
             }
             // Single key wallet no longer valid
@@ -449,12 +447,12 @@ impl WalletsBalancesScreen {
         {
             self.selected_single_key_wallet = Some(wallet);
             self.selected_wallet = None;
-            self.selected_account = None;
+    
             self.platform_sync_info = None;
             return;
         }
 
-        self.selected_account = None;
+
         self.platform_sync_info = None;
     }
 
@@ -757,19 +755,19 @@ impl WalletsBalancesScreen {
         action
     }
 
-    fn render_bottom_options(&mut self, ui: &mut Ui) {
+    fn render_bottom_options(
+        &mut self,
+        ui: &mut Ui,
+        account_filter: &(AccountCategory, Option<u32>),
+    ) {
         let wallet_is_open = self
             .selected_wallet
             .as_ref()
             .is_some_and(|wallet_guard| wallet_guard.read().unwrap().is_open());
 
         // Only show "Add Receiving Address" button for Dash Core account (BIP44 account 0)
-        let is_main_account = self
-            .selected_account
-            .as_ref()
-            .is_some_and(|(category, index)| {
-                *category == AccountCategory::Bip44 && *index == Some(0)
-            });
+        let is_main_account =
+            account_filter.0 == AccountCategory::Bip44 && account_filter.1 == Some(0);
 
         if wallet_is_open && is_main_account {
             ui.add_space(10.0);
@@ -1179,11 +1177,12 @@ impl WalletsBalancesScreen {
     /// Collect the system account categories to display inside the System tab.
     /// Returns `(category, index, address_count, balance_duffs)` tuples in a
     /// fixed display order (identity categories first, then provider, then legacy).
+    /// Each `(category, index)` pair gets its own section with accurate counts.
     fn system_tab_sections(
         &self,
         summaries: &[AccountSummary],
     ) -> Vec<(AccountCategory, Option<u32>, usize, u64)> {
-        let all_system_categories = [
+        let category_order: &[AccountCategory] = &[
             AccountCategory::IdentityRegistration,
             AccountCategory::IdentitySystem,
             AccountCategory::IdentityTopup,
@@ -1196,26 +1195,40 @@ impl WalletsBalancesScreen {
             AccountCategory::Bip32,
         ];
 
-        // Precompute per-category address counts in a single pass over
-        // watched_addresses to avoid O(num_categories * num_addresses)
-        // per frame.
+        // Precompute per-(category, index) address counts in a single pass.
         let address_counts = self.precompute_address_counts();
 
         let mut sections = Vec::new();
-        for cat in &all_system_categories {
+
+        // For each category, emit one section per distinct index found in
+        // summaries. Categories with no summary entries get a single section
+        // with index from the first matching summary (or None).
+        for cat in category_order {
             let matching: Vec<_> = summaries.iter().filter(|s| &s.category == cat).collect();
-            let address_count = address_counts.get(cat).copied().unwrap_or(0);
-            let balance: u64 = matching.iter().map(|s| s.confirmed_balance).sum();
-            let idx = matching.first().and_then(|s| s.index);
-            sections.push((cat.clone(), idx, address_count, balance));
+            if matching.is_empty() {
+                let address_count = address_counts
+                    .get(&(cat.clone(), None))
+                    .copied()
+                    .unwrap_or(0);
+                sections.push((cat.clone(), None, address_count, 0u64));
+            } else {
+                for summary in &matching {
+                    let key = (cat.clone(), summary.index);
+                    let address_count = address_counts.get(&key).copied().unwrap_or(0);
+                    sections.push((cat.clone(), summary.index, address_count, summary.confirmed_balance));
+                }
+            }
         }
 
         // Also include any Other(...) categories from summaries
         for summary in summaries {
             if matches!(summary.category, AccountCategory::Other(_))
-                && !sections.iter().any(|(c, _, _, _)| *c == summary.category)
+                && !sections
+                    .iter()
+                    .any(|(c, idx, _, _)| *c == summary.category && *idx == summary.index)
             {
-                let address_count = address_counts.get(&summary.category).copied().unwrap_or(0);
+                let key = (summary.category.clone(), summary.index);
+                let address_count = address_counts.get(&key).copied().unwrap_or(0);
                 sections.push((
                     summary.category.clone(),
                     summary.index,
@@ -1228,10 +1241,12 @@ impl WalletsBalancesScreen {
         sections
     }
 
-    /// Build a per-category address count map in a single pass over
+    /// Build a per-(category, index) address count map in a single pass over
     /// `watched_addresses`. Used by `system_tab_sections` to avoid
     /// O(num_categories * num_addresses) per frame.
-    fn precompute_address_counts(&self) -> std::collections::HashMap<AccountCategory, usize> {
+    fn precompute_address_counts(
+        &self,
+    ) -> std::collections::HashMap<(AccountCategory, Option<u32>), usize> {
         let mut counts = std::collections::HashMap::new();
         let Some(wallet_arc) = self.selected_wallet.as_ref() else {
             return counts;
@@ -1241,12 +1256,12 @@ impl WalletsBalancesScreen {
         };
         let network = self.app_context.network;
         for (path, info) in &wallet.watched_addresses {
-            let (cat, _) = crate::ui::wallets::account_summary::categorize_account_path(
+            let (cat, idx) = crate::ui::wallets::account_summary::categorize_account_path(
                 path,
                 network,
                 info.path_reference,
             );
-            *counts.entry(cat).or_insert(0) += 1;
+            *counts.entry((cat, idx)).or_insert(0) += 1;
         }
         counts
     }
@@ -1334,10 +1349,6 @@ impl WalletsBalancesScreen {
                 ui.add_space(4.0);
                 if ui.selectable_label(is_selected, text).clicked() {
                     self.selected_account_tab = tab.clone();
-                    // Sync the selected_account for address_table filtering
-                    if let AccountTab::Category(cat, idx) = tab {
-                        self.selected_account = Some((cat.clone(), *idx));
-                    }
                 }
             }
         });
@@ -1392,7 +1403,7 @@ impl WalletsBalancesScreen {
                     ui.add_space(4.0);
                 }
 
-                self.selected_account = Some((cat.clone(), idx));
+                let account_filter = (cat.clone(), idx);
 
                 // Addresses (collapsible)
                 let addresses_heading = format!("Addresses ({})", cat.label(idx));
@@ -1413,8 +1424,8 @@ impl WalletsBalancesScreen {
                         });
                     });
                     ui.add_space(4.0);
-                    action |= self.render_address_table(ui);
-                    self.render_bottom_options(ui);
+                    action |= self.render_address_table(ui, account_filter.clone());
+                    self.render_bottom_options(ui, &account_filter);
                 });
 
                 // Dash Core tab: transaction history + asset locks
@@ -1493,8 +1504,7 @@ impl WalletsBalancesScreen {
                     ui.add_space(4.0);
                 }
 
-                self.selected_account = Some((cat.clone(), *idx));
-                action |= self.render_address_table(ui);
+                action |= self.render_address_table(ui, (cat.clone(), *idx));
             });
             ui.add_space(2.0);
         }
@@ -2040,23 +2050,10 @@ impl WalletsBalancesScreen {
         action
     }
 
-    fn ensure_account_selection(&mut self, summaries: &[AccountSummary]) {
-        if summaries.is_empty() {
-            self.selected_account = None;
-            return;
-        }
-
-        if let Some((cat, idx)) = &self.selected_account
-            && summaries
-                .iter()
-                .any(|summary| &summary.category == cat && summary.index == *idx)
-        {
-            return;
-        }
-
-        if let Some(first) = summaries.first() {
-            self.selected_account = Some((first.category.clone(), first.index));
-        }
+    fn ensure_account_selection(&mut self, _summaries: &[AccountSummary]) {
+        // The tab bar in `render_account_tabs` already validates
+        // `selected_account_tab` against the built tab list and resets it
+        // to the first tab if invalid. Nothing extra needed here.
     }
 
     fn lock_selected_wallet(&mut self) {

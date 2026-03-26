@@ -1058,7 +1058,16 @@ impl AppState {
                 self.connection_banner_handle = Some(handle);
             }
             OverallConnectionState::Synced => {
-                // No banner needed for fully synced state
+                // No banner needed for fully synced state.
+                // Fetch epoch info on first sync to populate protocol version
+                // and fee multiplier — needed for feature gating (e.g., shielded
+                // tab requires protocol version >= 12).
+                if state_changed {
+                    let task = BackendTask::PlatformInfo(
+                        crate::backend_task::platform_info::PlatformInfoTaskRequestType::CurrentEpochInfo,
+                    );
+                    self.handle_backend_task(task);
+                }
             }
         }
         self.previous_connection_state = Some(current_state);

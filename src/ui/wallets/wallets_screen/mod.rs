@@ -1165,8 +1165,11 @@ impl WalletsBalancesScreen {
             tabs.insert(0, AccountTab::Category(AccountCategory::Bip44, Some(0)));
         }
 
-        // Always add the Shielded tab
-        tabs.push(AccountTab::Shielded);
+        // Add the Shielded tab only when the connected network supports it
+        // (protocol version >= 12, i.e., Platform v3.1+).
+        if self.app_context.supports_shielded() {
+            tabs.push(AccountTab::Shielded);
+        }
 
         // In developer mode, add the consolidated System tab last
         if developer_mode {

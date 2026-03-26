@@ -43,7 +43,7 @@ use dash_sdk::platform::Identifier;
 use egui::Context;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
 
 use crate::model::settings::Settings;
@@ -105,6 +105,10 @@ pub struct AppContext {
     /// Cached fee multiplier permille from current epoch (1000 = 1x, 2000 = 2x)
     /// Updated when epoch info is fetched from Platform
     fee_multiplier_permille: AtomicU64,
+    /// Cached protocol version from the current epoch on the connected network.
+    /// Updated alongside fee_multiplier when epoch info is fetched.
+    /// 0 means not yet fetched from the network.
+    platform_protocol_version: AtomicU32,
     /// Per-wallet shielded state (initialized lazily, keyed by wallet seed hash)
     pub(crate) shielded_states: Mutex<
         std::collections::HashMap<
@@ -340,6 +344,7 @@ impl AppContext {
             fee_multiplier_permille: AtomicU64::new(
                 PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE,
             ),
+            platform_protocol_version: AtomicU32::new(0),
             shielded_states: Mutex::new(std::collections::HashMap::new()),
             egui_ctx,
         };
@@ -456,6 +461,28 @@ impl AppContext {
     pub fn set_fee_multiplier_permille(&self, multiplier: u64) {
         self.fee_multiplier_permille
             .store(multiplier, Ordering::Relaxed);
+    }
+
+    /// Get the cached platform protocol version from the connected network.
+    /// Returns 0 if not yet fetched from the network.
+    pub fn platform_protocol_version(&self) -> u32 {
+        self.platform_protocol_version.load(Ordering::Relaxed)
+    }
+
+    /// Update the cached platform protocol version from epoch info.
+    pub fn set_platform_protocol_version(&self, version: u32) {
+        self.platform_protocol_version
+            .store(version, Ordering::Relaxed);
+    }
+
+    /// Minimum protocol version required for shielded (ZK) transactions.
+    pub const SHIELDED_MIN_PROTOCOL_VERSION: u32 = 12;
+
+    /// Whether the connected network supports shielded (ZK) transactions.
+    /// Returns `true` when the network's protocol version >= 12.
+    /// Returns `false` when the version hasn't been fetched yet (0).
+    pub fn supports_shielded(&self) -> bool {
+        self.platform_protocol_version() >= Self::SHIELDED_MIN_PROTOCOL_VERSION
     }
 
     /// Get a fee estimator configured with the cached fee multiplier.

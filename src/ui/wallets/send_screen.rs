@@ -471,6 +471,7 @@ impl WalletSendScreen {
     /// Clear the AddressInput widget so it picks up the new network on next frame.
     pub(crate) fn invalidate_address_input(&mut self) {
         self.address_input = None;
+        self.validated_destination = None;
     }
 
     fn reset_form(&mut self) {

@@ -24,7 +24,7 @@ pub(crate) async fn dispatch_task(
     let handle = tokio::runtime::Handle::current();
     tokio::task::spawn_blocking(move || {
         handle.block_on(async move {
-            let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+            let (tx, _) = tokio::sync::mpsc::channel::<TaskResult>(32);
             let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, egui::Context::default());
             app_context.run_backend_task(task, sender).await
         })

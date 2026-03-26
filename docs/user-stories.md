@@ -186,6 +186,43 @@ As a user, I want to withdraw credits from a Platform address back to a Core add
 - Destination Core address input.
 - Fee strategy configuration.
 
+### WAL-021: Navigate wallet accounts via tabs [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want to see clear tabs for Dash Core, Platform, and Shielded so that I can switch between account views without searching through a dropdown.
+
+- Tab bar replaces account category dropdown.
+- Each tab shows its balance in the label.
+- Empty accounts display "(empty)" indicator.
+- Switching tabs is instant with no data reload.
+
+### WAL-022: View system accounts in developer mode [Implemented]
+**Persona:** Jordan
+
+As a developer, I want a System tab that reveals all internal account categories (Identity Registration, CoinJoin, Provider keys, etc.) so that I can inspect low-level wallet structure without cluttering the default view.
+
+- System tab appears only when developer mode is enabled.
+- Each system account category is shown as a collapsible section.
+- Section headers display address count and balance.
+
+### WAL-023: Collapsible transaction history [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want the transaction history to be collapsible so that I can focus on addresses or balances without scrolling past a long list of transactions.
+
+- Transaction history section has a collapsible header.
+- Collapsed by default to reduce visual clutter.
+- Expand/collapse state persists within the session.
+
+### WAL-024: Collapsible balance breakdown [Implemented]
+**Persona:** Priya
+
+As a power user, I want the balance breakdown and address table to be collapsible so that I can focus on the information I need at the moment.
+
+- Address table section has a collapsible header.
+- Asset locks section has a collapsible header.
+- Sections are expanded by default for quick access.
+
 ---
 
 ## Send and Receive (SND)

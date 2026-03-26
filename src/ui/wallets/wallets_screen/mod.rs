@@ -1413,7 +1413,7 @@ impl WalletsBalancesScreen {
                         });
                     });
                     ui.add_space(4.0);
-                    action |= self.render_address_table(ui);
+                    action |= self.render_address_table(ui, (cat.clone(), idx));
                     self.render_bottom_options(ui);
                 });
 
@@ -1494,7 +1494,7 @@ impl WalletsBalancesScreen {
                 }
 
                 self.selected_account = Some((cat.clone(), *idx));
-                action |= self.render_address_table(ui);
+                action |= self.render_address_table(ui, (cat.clone(), *idx));
             });
             ui.add_space(2.0);
         }

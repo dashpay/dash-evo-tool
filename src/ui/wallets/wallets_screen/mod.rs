@@ -467,6 +467,7 @@ impl WalletsBalancesScreen {
     /// Reset all cached AddressInput widgets so they pick up the new network.
     pub(crate) fn invalidate_address_inputs(&mut self) {
         self.mine_dialog.address_input = None;
+        self.mine_dialog.validated_address = None;
         self.cached_tx_indices = None;
     }
 

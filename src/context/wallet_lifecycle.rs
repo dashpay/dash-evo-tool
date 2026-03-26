@@ -157,26 +157,12 @@ impl AppContext {
             // Note: Platform address sync is not done here.
             // Core UTXO refresh is handled at startup in bootstrap_loaded_wallets.
 
-            // Eagerly initialize shielded wallet state so that the cached
-            // balance (from persisted notes) is available to all UI screens
-            // immediately, without requiring the user to visit the Shielded tab.
-            // Then queue async SyncNotes -> CheckNullifiers to refresh from
-            // the network. This is the single init path — the UI never
-            // dispatches InitializeShieldedWallet.
-            match self.initialize_shielded_wallet(seed_hash) {
-                Ok(_) => {
-                    tracing::trace!(
-                        seed = %hex::encode(seed_hash),
-                        "Shielded wallet state initialized on unlock"
-                    );
-                    self.queue_shielded_sync(seed_hash);
-                }
-                Err(e) => tracing::debug!(
-                    seed = %hex::encode(seed_hash),
-                    error = %e,
-                    "Shielded wallet init skipped on unlock"
-                ),
-            }
+            // Initialize shielded wallet on a background thread to avoid
+            // blocking the UI — ZIP32 key derivation and DB reads can stall.
+            // After init completes, queue async SyncNotes -> CheckNullifiers.
+            // This is the single init path — the UI never dispatches
+            // InitializeShieldedWallet.
+            self.queue_shielded_init_and_sync(seed_hash);
         }
     }
 
@@ -191,48 +177,71 @@ impl AppContext {
         self.queue_spv_wallet_unload(seed_hash);
     }
 
-    /// Queue async SyncNotes -> CheckNullifiers for an already-initialized
-    /// shielded wallet. Tracked via `subtasks` so it participates in graceful
-    /// shutdown and cancellation.
-    ///
-    /// Uses `spawn_blocking(block_on(...))` because the async methods on
-    /// `Arc<Self>` produce futures that borrow `self`, which the compiler
-    /// cannot prove are `'static` (rust-lang/rust#100013). The trampoline
-    /// resolves the futures synchronously on a blocking thread, satisfying
-    /// the `'static` bound required by `spawn_sync`.
-    fn queue_shielded_sync(self: &Arc<Self>, seed_hash: WalletSeedHash) {
+    /// Queue shielded wallet initialization on a blocking thread, then
+    /// follow up with note sync + nullifier check. Tracked via `subtasks`
+    /// so it participates in graceful shutdown and cancellation.
+    fn queue_shielded_init_and_sync(self: &Arc<Self>, seed_hash: WalletSeedHash) {
         let ctx = Arc::clone(self);
-        self.subtasks.spawn_sync("shielded_sync", async move {
-            let handle = tokio::runtime::Handle::current();
-            let result = tokio::task::spawn_blocking(move || {
-                handle.block_on(async {
-                    match ctx.sync_shielded_notes(seed_hash).await {
-                        Ok(_) => {
-                            if let Err(e) = ctx.check_nullifiers_task(seed_hash).await {
-                                tracing::debug!(
-                                    seed = %hex::encode(seed_hash),
-                                    error = %e,
-                                    "Shielded nullifier check after init failed"
-                                );
-                            }
-                        }
-                        Err(e) => tracing::debug!(
-                            seed = %hex::encode(seed_hash),
-                            error = %e,
-                            "Shielded note sync after init failed"
-                        ),
-                    }
-                })
+        self.subtasks.spawn_sync("shielded_init", async move {
+            let ctx2 = Arc::clone(&ctx);
+            let init_result = tokio::task::spawn_blocking(move || {
+                ctx2.initialize_shielded_wallet(seed_hash)
             })
             .await;
-            if let Err(e) = result {
-                tracing::debug!(
+            match init_result {
+                Ok(Ok(_)) => {
+                    tracing::trace!(
+                        seed = %hex::encode(seed_hash),
+                        "Shielded wallet state initialized on unlock"
+                    );
+                    ctx.run_shielded_sync(seed_hash).await;
+                }
+                Ok(Err(e)) => tracing::debug!(
                     seed = %hex::encode(seed_hash),
                     error = %e,
-                    "Shielded sync task panicked"
-                );
+                    "Shielded wallet init skipped on unlock"
+                ),
+                Err(e) => tracing::debug!(
+                    seed = %hex::encode(seed_hash),
+                    error = %e,
+                    "Shielded init task panicked"
+                ),
             }
         });
+    }
+
+    /// Run SyncNotes -> CheckNullifiers sequence on a blocking thread.
+    async fn run_shielded_sync(self: &Arc<Self>, seed_hash: WalletSeedHash) {
+        let ctx = Arc::clone(self);
+        let handle = tokio::runtime::Handle::current();
+        let result = tokio::task::spawn_blocking(move || {
+            handle.block_on(async {
+                match ctx.sync_shielded_notes(seed_hash).await {
+                    Ok(_) => {
+                        if let Err(e) = ctx.check_nullifiers_task(seed_hash).await {
+                            tracing::debug!(
+                                seed = %hex::encode(seed_hash),
+                                error = %e,
+                                "Shielded nullifier check after init failed"
+                            );
+                        }
+                    }
+                    Err(e) => tracing::debug!(
+                        seed = %hex::encode(seed_hash),
+                        error = %e,
+                        "Shielded note sync after init failed"
+                    ),
+                }
+            })
+        })
+        .await;
+        if let Err(e) = result {
+            tracing::debug!(
+                seed = %hex::encode(seed_hash),
+                error = %e,
+                "Shielded sync task panicked"
+            );
+        }
     }
 
     fn wallet_seed_snapshot(wallet: &Arc<RwLock<Wallet>>) -> Option<(WalletSeedHash, [u8; 64])> {

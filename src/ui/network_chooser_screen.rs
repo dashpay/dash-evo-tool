@@ -126,9 +126,9 @@ impl NetworkChooserScreen {
             .with_char_limit(40)
             .with_desired_width(280.0);
         if let Ok(config) = Config::load_from(&mainnet_app_context.data_dir)
-            && let Some(local_config) = config.config_for_network(Network::Regtest)
+            && let Some(network_config) = config.config_for_network(current_network)
         {
-            dashmate_password_input.set_text(local_config.core_rpc_password.clone());
+            dashmate_password_input.set_text(network_config.core_rpc_password.clone());
         }
 
         let current_context = match current_network {
@@ -371,6 +371,7 @@ impl NetworkChooserScreen {
 
                         let response = ui.add_enabled_ui(!is_spv_connected, |ui| {
                             network_combo.show_ui(ui, |ui| {
+                                let prev_network = self.current_network;
                                 if ui
                                     .selectable_value(
                                         &mut self.current_network,
@@ -414,6 +415,15 @@ impl NetworkChooserScreen {
                                 {
                                     app_action = AppAction::SwitchNetwork(Network::Regtest);
                                 }
+                                if self.current_network != prev_network
+                                    && let Ok(config) =
+                                        Config::load_from(&self.mainnet_app_context.data_dir)
+                                    && let Some(network_config) =
+                                        config.config_for_network(self.current_network)
+                                {
+                                    self.dashmate_password_input
+                                        .set_text(network_config.core_rpc_password.clone());
+                                }
                             });
                         });
 
@@ -427,28 +437,27 @@ impl NetworkChooserScreen {
                     ui.end_row();
                 });
 
-            // Password input for Local network
+            // Password input for RPC mode (any network)
             let current_backend_mode = *self
                 .backend_modes
                 .entry(self.current_network)
                 .or_insert(CoreBackendMode::Rpc);
-            if self.current_network == Network::Regtest
-                && current_backend_mode == CoreBackendMode::Rpc
-            {
+            if current_backend_mode == CoreBackendMode::Rpc {
                 ui.add_space(20.0);
                 ui.separator();
                 ui.add_space(12.0);
 
                 ui.label(
-                    egui::RichText::new("Local Network Password")
+                    egui::RichText::new("Core RPC Password")
                         .strong()
                         .color(DashColors::text_primary(dark_mode)),
                 );
                 ui.add_space(8.0);
 
                 ui.horizontal(|ui| {
-                    // Reserve space for "Save" and "Auto Update" buttons + item spacing
-                    let buttons_width = 200.0;
+                    // Reserve space for buttons + item spacing
+                    let is_regtest = self.current_network == Network::Regtest;
+                    let buttons_width = if is_regtest { 200.0 } else { 100.0 };
                     let input_width = (ui.available_width() - buttons_width).max(100.0);
                     self.dashmate_password_input.set_desired_width(input_width);
                     self.dashmate_password_input.show(ui);
@@ -456,7 +465,7 @@ impl NetworkChooserScreen {
                     let save_clicked = ui.button("Save").clicked();
 
                     let mut auto_update_succeeded = false;
-                    if ui.button("Auto Update").clicked() {
+                    if is_regtest && ui.button("Auto Update").clicked() {
                         match read_dashmate_rpc_password("local_seed") {
                             Ok(password) => {
                                 self.dashmate_password_input.set_text(password);
@@ -472,38 +481,92 @@ impl NetworkChooserScreen {
                     if (save_clicked || auto_update_succeeded)
                         && let Ok(mut config) =
                             Config::load_from(&self.mainnet_app_context.data_dir)
-                        && let Some(local_cfg) = config.config_for_network(Network::Regtest).clone()
+                        && let Some(network_cfg) =
+                            config.config_for_network(self.current_network).clone()
                     {
-                        let updated_local_config = local_cfg.update_core_rpc_password(
+                        let updated_config = network_cfg.update_core_rpc_password(
                             self.dashmate_password_input.text().to_string(),
                         );
                         config.update_config_for_network(
-                            Network::Regtest,
-                            updated_local_config.clone(),
+                            self.current_network,
+                            updated_config.clone(),
                         );
-                        if let Err(e) = config.save(&self.mainnet_app_context.data_dir) {
+                        let save_failed = if let Err(e) =
+                            config.save(&self.mainnet_app_context.data_dir)
+                        {
                             tracing::error!("Failed to save config to .env: {e}");
-                        }
+                            true
+                        } else {
+                            false
+                        };
 
-                        // Update our local AppContext in memory
-                        if let Some(local_app_context) = &self.local_app_context {
+                        // Update in-memory config and reinit regardless of save
+                        // result, so the password takes effect for this session.
+                        // Only do so when the context for this network already
+                        // exists — otherwise `context_for_network` would silently
+                        // fall back to mainnet and corrupt its config.  The saved
+                        // file-level config will be picked up when the network
+                        // context is created.
+                        let network_context_exists = match self.current_network {
+                            Network::Mainnet => true,
+                            Network::Testnet => self.testnet_app_context.is_some(),
+                            Network::Devnet => self.devnet_app_context.is_some(),
+                            Network::Regtest => self.local_app_context.is_some(),
+                            _ => false,
+                        };
+
+                        let reinit_failed = if network_context_exists {
+                            let app_context = self.context_for_network(self.current_network);
                             {
-                                // Overwrite the config field with the new password
-                                let mut cfg_lock = local_app_context.config.write().unwrap();
-                                *cfg_lock = updated_local_config;
+                                let mut cfg_lock = app_context.config.write().unwrap();
+                                *cfg_lock = updated_config;
                             }
 
-                            // Re-init the client & sdk from the updated config
+                            MessageBanner::clear_all_global(ui.ctx());
                             if let Err(e) =
-                                Arc::clone(local_app_context).reinit_core_client_and_sdk()
+                                Arc::clone(app_context).reinit_core_client_and_sdk()
                             {
                                 tracing::error!(
-                                    "Failed to re-init local RPC client and sdk: {}",
+                                    "Failed to re-init RPC client and sdk for {:?}: {}",
+                                    self.current_network,
                                     e
                                 );
+                                true
                             } else {
-                                // Trigger SwitchNetworks
-                                app_action = AppAction::SwitchNetwork(Network::Regtest);
+                                false
+                            }
+                        } else {
+                            false
+                        };
+
+                        match (save_failed, reinit_failed) {
+                            (false, false) => {
+                                MessageBanner::set_global(
+                                    ui.ctx(),
+                                    "Core RPC password saved successfully.",
+                                    MessageType::Success,
+                                );
+                            }
+                            (false, true) => {
+                                MessageBanner::set_global(
+                                    ui.ctx(),
+                                    "Password saved but the connection could not be re-established. Check that Dash Core is running and retry.",
+                                    MessageType::Warning,
+                                );
+                            }
+                            (true, false) => {
+                                MessageBanner::set_global(
+                                    ui.ctx(),
+                                    "Could not save the configuration file. Your changes will apply for this session only.",
+                                    MessageType::Warning,
+                                );
+                            }
+                            (true, true) => {
+                                MessageBanner::set_global(
+                                    ui.ctx(),
+                                    "Could not save the configuration file and the connection could not be re-established. Check that Dash Core is running and retry.",
+                                    MessageType::Warning,
+                                );
                             }
                         }
                     }
@@ -530,6 +593,7 @@ impl NetworkChooserScreen {
             let zmq_connected = status.zmq_connected();
             let spv_status = status.spv_status();
             let spv_connected = ConnectionStatus::spv_connected(spv_status);
+            let rpc_last_error = status.rpc_last_error();
             let spv_error_detail = status.spv_last_error();
             let snapshot = if current_backend_mode == CoreBackendMode::Spv {
                 Some(ctx.spv_manager().status().clone())
@@ -677,8 +741,14 @@ impl NetworkChooserScreen {
                         } else {
                             DashColors::ERROR
                         };
-                        let rpc_label = if rpc_online { "Connected" } else { "Disconnected" };
-                        ui.colored_label(rpc_color, rpc_label);
+                        let rpc_label = if rpc_online {
+                            "Connected".to_string()
+                        } else if let Some(ref err) = rpc_last_error {
+                            format!("Error: {err}")
+                        } else {
+                            "Disconnected".to_string()
+                        };
+                        ui.colored_label(rpc_color, &rpc_label);
 
                         ui.label(",");
                         ui.label("ZMQ:");
@@ -707,8 +777,14 @@ impl NetworkChooserScreen {
                         } else {
                             DashColors::ERROR
                         };
-                        let label = if rpc_online { "Connected" } else { "Disconnected" };
-                        ui.colored_label(color, label);
+                        let label = if rpc_online {
+                            "Connected".to_string()
+                        } else if let Some(ref err) = rpc_last_error {
+                            format!("Error: {err}")
+                        } else {
+                            "Disconnected".to_string()
+                        };
+                        ui.colored_label(color, &label);
                     });
 
                     ui.horizontal(|ui| {

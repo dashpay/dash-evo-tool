@@ -9,7 +9,7 @@ mod wallet_lifecycle;
 pub(crate) use transaction_processing::get_transaction_info;
 
 use crate::app_dir::core_cookie_path;
-use crate::backend_task::error::TaskError;
+use crate::backend_task::error::{TaskError, is_rpc_connection_error};
 use crate::components::core_zmq_listener::ZMQConnectionEvent;
 use crate::config::{Config, NetworkConfig};
 use crate::context_provider::Provider as RpcProvider;
@@ -622,9 +622,13 @@ impl AppContext {
         label: Option<&str>,
     ) -> Result<(), TaskError> {
         let client = self.core_client_for_wallet(core_wallet_name)?;
-        let info = client.get_address_info(address)?;
+        let info = client
+            .get_address_info(address)
+            .map_err(|e| self.rpc_error_with_url(e))?;
         if !(info.is_watchonly || info.is_mine) {
-            client.import_address(address, label, Some(false))?;
+            client
+                .import_address(address, label, Some(false))
+                .map_err(|e| self.rpc_error_with_url(e))?;
         }
         Ok(())
     }
@@ -641,12 +645,31 @@ impl AppContext {
         }
     }
 
+    /// Convert an RPC error to `TaskError`, enriching connection failures with
+    /// the configured host:port so the user knows which address was unreachable.
+    pub(crate) fn rpc_error_with_url(&self, e: dash_sdk::dashcore_rpc::Error) -> TaskError {
+        if is_rpc_connection_error(&e) {
+            let url = self
+                .config
+                .read()
+                .ok()
+                .map(|c| format!("{}:{}", c.core_host, c.core_rpc_port))
+                .unwrap_or_else(|| "unknown".to_string());
+            TaskError::CoreRpcConnectionFailed {
+                url,
+                source: Some(Box::new(e)),
+            }
+        } else {
+            TaskError::from(e)
+        }
+    }
+
     /// List wallets currently loaded in Dash Core.
     pub fn list_core_wallets(&self) -> Result<Vec<String>, TaskError> {
         let client = self.core_client_for_wallet(None)?;
         client
             .list_wallets()
-            .map_err(|e| TaskError::CoreRpc { source: e })
+            .map_err(|e| self.rpc_error_with_url(e))
     }
 
     /// Try to detect which loaded Core wallet owns the given address.

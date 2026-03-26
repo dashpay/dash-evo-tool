@@ -67,7 +67,7 @@ pub const DASH_BIP44_ACCOUNT_0_PATH_TESTNET: [ChildNumber; 3] = [
 
 /// Check if two networks use the same address format.
 /// Testnet, Devnet, and Regtest all use testnet-style addresses.
-fn networks_address_compatible(a: &Network, b: &Network) -> bool {
+pub(crate) fn networks_address_compatible(a: &Network, b: &Network) -> bool {
     matches!(
         (a, b),
         (Network::Mainnet, Network::Mainnet)
@@ -363,6 +363,9 @@ pub struct Wallet {
     pub confirmed_balance: u64,
     pub unconfirmed_balance: u64,
     pub total_balance: u64,
+    /// True once SPV has reported balances at least once; distinguishes synced
+    /// zero-balance from not-yet-synced.
+    pub spv_balance_known: bool,
     /// DIP-17: Platform address balances and nonces (keyed by Core Address for lookup)
     pub platform_address_info: BTreeMap<Address, PlatformAddressInfo>,
     /// Dash Core wallet name for multi-wallet RPC calls
@@ -399,14 +402,14 @@ impl Wallet {
         // Derive master BIP44 extended public key
         let master_priv = ExtendedPrivKey::new_master(network, &seed).map_err(|e| {
             TaskError::WalletKeyDerivationFailed {
-                detail: e.to_string(),
+                source: Box::new(e),
             }
         })?;
         let bip44_path = Self::bip44_account0_path(network);
         let secp = Secp256k1::new();
         let account_priv = master_priv.derive_priv(&secp, &bip44_path).map_err(|e| {
             TaskError::WalletKeyDerivationFailed {
-                detail: e.to_string(),
+                source: Box::new(e),
             }
         })?;
         let master_bip44_ecdsa_extended_public_key =
@@ -415,7 +418,7 @@ impl Wallet {
         // Derive the first receive address (m/44'/coin'/0'/0/0)
         let (known_addresses, watched_addresses) =
             Self::derive_first_address(&master_bip44_ecdsa_extended_public_key, network, &secp)
-                .map_err(|e| TaskError::WalletKeyDerivationFailed { detail: e })?;
+                .map_err(|e| TaskError::WalletKeyDerivationFailed { source: e.into() })?;
 
         Ok(Wallet {
             wallet_seed: WalletSeed::Open(OpenWalletSeed {
@@ -443,6 +446,7 @@ impl Wallet {
             confirmed_balance: 0,
             unconfirmed_balance: 0,
             total_balance: 0,
+            spv_balance_known: false,
             platform_address_info: Default::default(),
             core_wallet_name: None,
         })
@@ -538,7 +542,10 @@ impl TransactionStatus {
             1 => Self::InstantSendLocked,
             2 => Self::Confirmed,
             3 => Self::ChainLocked,
-            _ => Self::Unconfirmed,
+            _ => {
+                tracing::warn!("Unknown TransactionStatus value {v}, defaulting to Unconfirmed");
+                Self::Unconfirmed
+            }
         }
     }
 
@@ -755,7 +762,7 @@ impl Wallet {
     /// never falls back to `max_balance()` — callers that need certainty
     /// (e.g., test waiters) should use this and retry on `None`.
     pub fn spv_confirmed_balance(&self) -> Option<u64> {
-        if self.total_balance > 0 || self.confirmed_balance > 0 || self.unconfirmed_balance > 0 {
+        if self.spv_balance_known {
             Some(self.confirmed_balance)
         } else {
             None
@@ -778,6 +785,7 @@ impl Wallet {
         self.confirmed_balance = confirmed;
         self.unconfirmed_balance = unconfirmed;
         self.total_balance = total;
+        self.spv_balance_known = true;
     }
 
     pub fn bootstrap_known_addresses(&mut self, app_context: &AppContext) {
@@ -2770,6 +2778,7 @@ mod tests {
             confirmed_balance: 0,
             unconfirmed_balance: 0,
             total_balance: 0,
+            spv_balance_known: false,
             platform_address_info: BTreeMap::new(),
             core_wallet_name: None,
         }
@@ -2912,6 +2921,29 @@ mod tests {
         assert_eq!(wallet.confirmed_balance, 100);
         assert_eq!(wallet.unconfirmed_balance, 50);
         assert_eq!(wallet.total_balance, 150);
+    }
+
+    #[test]
+    fn test_spv_confirmed_balance_none_before_sync() {
+        let wallet = test_wallet();
+        // Before any SPV sync, spv_confirmed_balance must return None regardless
+        // of the UTXO state — callers cannot distinguish synced-zero from unsynced.
+        assert_eq!(wallet.spv_confirmed_balance(), None);
+    }
+
+    #[test]
+    fn test_spv_confirmed_balance_zero_after_sync() {
+        let mut wallet = test_wallet();
+        // After SPV reports zero balance, Some(0) must be returned — not None.
+        wallet.update_spv_balances(0, 0, 0);
+        assert_eq!(wallet.spv_confirmed_balance(), Some(0));
+    }
+
+    #[test]
+    fn test_spv_confirmed_balance_nonzero_after_sync() {
+        let mut wallet = test_wallet();
+        wallet.update_spv_balances(75_000, 5_000, 80_000);
+        assert_eq!(wallet.spv_confirmed_balance(), Some(75_000));
     }
 
     // ========================================================================

@@ -3,7 +3,11 @@ use crate::backend_task::shielded::ShieldedTask;
 use crate::backend_task::shielded::bundle::ShieldStage;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::model::amount::Amount;
 use crate::model::wallet::WalletSeedHash;
+use crate::ui::components::ComponentResponse;
+use crate::ui::components::amount_input::AmountInput;
+use crate::ui::components::component_trait::Component;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
@@ -28,7 +32,8 @@ enum Status {
 pub struct ShieldCreditsScreen {
     pub app_context: Arc<AppContext>,
     pub seed_hash: WalletSeedHash,
-    amount_str: String,
+    amount_input: Option<AmountInput>,
+    amount: Option<Amount>,
     from_address: Option<PlatformAddress>,
     status: Status,
     error_message: Option<String>,
@@ -42,6 +47,8 @@ pub struct ShieldCreditsScreen {
     batch_remaining: u32,
     /// Queued task to dispatch on next frame (for sequential batch mode).
     pending_next_task: Option<BackendTask>,
+    /// Queued sync task to dispatch on next frame after successful operation.
+    pending_refresh_task: Option<BackendTask>,
     /// Per-operation progress for parallel batch mode.
     batch_stages: Option<Vec<Arc<Mutex<ShieldStage>>>>,
     /// JSON of a failed state transition to show in the popup.
@@ -66,7 +73,8 @@ impl ShieldCreditsScreen {
         Self {
             app_context: app_context.clone(),
             seed_hash,
-            amount_str: String::new(),
+            amount_input: None,
+            amount: None,
             from_address,
             status: Status::NotStarted,
             error_message: None,
@@ -78,21 +86,10 @@ impl ShieldCreditsScreen {
             batch_failed: 0,
             batch_remaining: 0,
             pending_next_task: None,
+            pending_refresh_task: None,
             batch_stages: None,
             json_preview: None,
         }
-    }
-
-    fn parse_amount_credits(&self) -> Option<u64> {
-        let trimmed = self.amount_str.trim();
-        if trimmed.is_empty() {
-            return None;
-        }
-        let dash: f64 = trimmed.parse().ok()?;
-        if dash <= 0.0 {
-            return None;
-        }
-        Some((dash * CREDITS_PER_DUFF as f64 * 1e8) as u64)
     }
 
     fn parse_repeat_count(&self) -> u32 {
@@ -159,7 +156,8 @@ impl ShieldCreditsScreen {
     /// Queue the next sequential batch task if any remain.
     fn queue_next_sequential(&mut self) {
         if self.batch_remaining > 0
-            && let (Some(amount), Some(addr)) = (self.parse_amount_credits(), self.from_address)
+            && let (Some(amount), Some(addr)) =
+                (self.amount.as_ref().map(|a| a.value()), self.from_address)
         {
             self.batch_remaining -= 1;
             self.pending_next_task = Some(self.make_shield_task(amount, addr, None));
@@ -359,6 +357,11 @@ impl ScreenLike for ShieldCreditsScreen {
             action = AppAction::BackendTask(task);
         }
 
+        // Dispatch pending refresh task (sync notes after successful shield)
+        if let Some(task) = self.pending_refresh_task.take() {
+            action |= AppAction::BackendTask(task);
+        }
+
         island_central_panel(ctx, |ui| {
             ui.heading("Shield Credits");
             ui.add_space(10.0);
@@ -412,10 +415,18 @@ impl ScreenLike for ShieldCreditsScreen {
             }
 
             // Amount input
-            ui.horizontal(|ui| {
-                ui.label("Amount (DASH):");
-                ui.text_edit_singleline(&mut self.amount_str);
+            let balance_credits = self.read_address_balance();
+            let amount_input = self.amount_input.get_or_insert_with(|| {
+                AmountInput::new(Amount::new_dash(0.0))
+                    .with_label("Amount (DASH):")
+                    .with_hint_text("Enter amount")
+                    .with_desired_width(150.0)
             });
+            if let Some(balance_credits) = balance_credits {
+                amount_input.set_max_amount(Some(balance_credits));
+            }
+            let response = amount_input.show(ui);
+            response.inner.update(&mut self.amount);
             ui.add_space(5.0);
 
             // Dev-mode batch controls
@@ -591,7 +602,7 @@ impl ScreenLike for ShieldCreditsScreen {
 
             // Buttons (only when not busy)
             if !is_busy && self.status == Status::NotStarted {
-                let can_confirm = self.parse_amount_credits().is_some();
+                let can_confirm = self.amount.as_ref().map(|a| a.value()).is_some();
 
                 ui.horizontal(|ui| {
                     if ui
@@ -604,7 +615,7 @@ impl ScreenLike for ShieldCreditsScreen {
                         )
                         .clicked()
                         && let (Some(amount), Some(addr)) =
-                            (self.parse_amount_credits(), self.from_address)
+                            (self.amount.as_ref().map(|a| a.value()), self.from_address)
                     {
                         self.error_message = None;
                         let repeat = if self.app_context.is_developer_mode() {
@@ -697,11 +708,21 @@ impl ScreenLike for ShieldCreditsScreen {
                     self.check_batch_complete();
                     if self.status == Status::BatchInProgress {
                         self.queue_next_sequential();
+                    } else {
+                        // Batch complete — sync shielded notes
+                        self.pending_refresh_task =
+                            Some(BackendTask::ShieldedTask(ShieldedTask::SyncNotes {
+                                seed_hash: self.seed_hash,
+                            }));
                     }
                 } else {
                     self.status = Status::Complete;
                     let dash = amount as f64 / CREDITS_PER_DUFF as f64 / 1e8;
                     self.success_message = Some(format!("Successfully shielded {:.8} DASH", dash));
+                    self.pending_refresh_task =
+                        Some(BackendTask::ShieldedTask(ShieldedTask::SyncNotes {
+                            seed_hash: self.seed_hash,
+                        }));
                 }
             }
             _ => {}

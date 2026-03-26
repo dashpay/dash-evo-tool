@@ -809,12 +809,16 @@ impl Screen {
                 screen.app_context = app_context;
                 screen.reset_pending_list_state();
                 screen.update_selected_wallet_for_network();
+                screen.invalidate_address_inputs();
             }
             Screen::ImportMnemonicScreen(screen) => {
                 screen.app_context = app_context;
                 screen.reset_core_wallets_cache();
             }
-            Screen::WalletSendScreen(screen) => screen.app_context = app_context,
+            Screen::WalletSendScreen(screen) => {
+                screen.app_context = app_context;
+                screen.invalidate_address_input();
+            }
             Screen::SingleKeyWalletSendScreen(screen) => screen.app_context = app_context,
             Screen::ProofLogScreen(screen) => screen.app_context = app_context,
             Screen::AddContractsScreen(screen) => screen.app_context = app_context,
@@ -872,7 +876,10 @@ impl Screen {
             Screen::ShieldCreditsScreen(screen) => screen.app_context = app_context.clone(),
             Screen::ShieldFromAssetLockScreen(screen) => screen.app_context = app_context.clone(),
             Screen::ShieldedSendScreen(screen) => screen.app_context = app_context.clone(),
-            Screen::UnshieldCreditsScreen(screen) => screen.app_context = app_context.clone(),
+            Screen::UnshieldCreditsScreen(screen) => {
+                screen.app_context = app_context.clone();
+                screen.invalidate_address_input();
+            }
         }
     }
 }

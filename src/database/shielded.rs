@@ -163,18 +163,27 @@ impl Database {
         )
     }
 
-    /// Clear all commitment tree SQLite tables (used by resync).
+    /// Clear all commitment tree data from the shared database.
     ///
-    /// The `ClientPersistentCommitmentTree` stores its shards, caps, and
-    /// checkpoints in `commitment_tree_*` tables. This deletes all rows so a
-    /// fresh tree can be opened on the same connection.
+    /// Handles fresh installs where grovedb creates these tables lazily —
+    /// each DELETE is skipped if the table does not exist yet.
     pub fn clear_commitment_tree_tables(&self) -> rusqlite::Result<()> {
         let conn = self.conn.lock().unwrap();
-        // Tables are created by grovedb on first use; ignore errors if missing.
-        let _ = conn.execute("DELETE FROM commitment_tree_shards", []);
-        let _ = conn.execute("DELETE FROM commitment_tree_cap", []);
-        let _ = conn.execute("DELETE FROM commitment_tree_checkpoints", []);
-        let _ = conn.execute("DELETE FROM commitment_tree_checkpoint_marks_removed", []);
+        for table in &[
+            "commitment_tree_shards",
+            "commitment_tree_cap",
+            "commitment_tree_checkpoints",
+            "commitment_tree_checkpoint_marks_removed",
+        ] {
+            let exists: bool = conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+                |row| row.get::<_, i32>(0).map(|c| c > 0),
+            )?;
+            if exists {
+                conn.execute(&format!("DELETE FROM {table}"), [])?;
+            }
+        }
         Ok(())
     }
 

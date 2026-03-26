@@ -69,11 +69,7 @@ impl Database {
         })
     }
 
-    /// Get a shared reference to the underlying connection.
-    ///
-    /// Used by `ClientPersistentCommitmentTree` to share the same SQLite
-    /// connection for the shielded commitment tree tables.
-    pub fn shared_connection(&self) -> Arc<Mutex<Connection>> {
+    pub(crate) fn shared_connection(&self) -> Arc<Mutex<Connection>> {
         self.conn.clone()
     }
 
@@ -188,14 +184,15 @@ impl Database {
             rusqlite::params![&network_str],
         )?;
 
-        // Clear commitment tree tables (persistent shielded tree data).
-        // These tables are created by grovedb on first use, so they may not
-        // exist yet — ignore errors from missing tables.
-        let _ = tx.execute("DELETE FROM commitment_tree_shards", []);
-        let _ = tx.execute("DELETE FROM commitment_tree_cap", []);
-        let _ = tx.execute("DELETE FROM commitment_tree_checkpoints", []);
-        let _ = tx.execute("DELETE FROM commitment_tree_checkpoint_marks_removed", []);
+        tx.commit()?;
 
-        tx.commit()
+        // Commitment tree tables are optional (created lazily by grovedb).
+        // Log and continue if clearing them fails — the main network data
+        // has already been committed above.
+        if let Err(e) = self.clear_commitment_tree_tables() {
+            tracing::warn!("Failed to clear commitment tree tables: {e}");
+        }
+
+        Ok(())
     }
 }

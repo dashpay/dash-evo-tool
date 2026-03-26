@@ -3,10 +3,11 @@ mod asset_locks;
 mod dialogs;
 mod single_key_view;
 
-use crate::app::{AppAction, DesiredAppAction};
+use crate::app::{AppAction, BackendTasksExecutionMode, DesiredAppAction};
 use crate::backend_task::BackendTask;
 use crate::backend_task::core::CoreTask;
 use crate::backend_task::error::TaskError;
+use crate::backend_task::shielded::ShieldedTask;
 use crate::context::AppContext;
 use crate::context::connection_status::spv_phase_summary;
 use crate::model::amount::Amount;
@@ -132,12 +133,17 @@ pub struct WalletsBalancesScreen {
     pending_core_wallet_options: Option<Vec<String>>,
     /// Whether the pending Core wallet selection is for a single-key wallet
     pending_core_wallet_is_single_key: bool,
+    /// Whether a wallet switch should trigger a Core refresh on the next frame
+    pending_wallet_refresh_on_switch: bool,
     /// Whether we need to fire a ListCoreWallets backend task (set on CoreWalletNotConfigured error)
     pending_list_core_wallets: bool,
     /// Wallet hash pending the ListCoreWallets response
     pending_list_wallet_hash: Option<[u8; 32]>,
     /// Whether the wallet pending list is a single-key wallet
     pending_list_is_single_key: bool,
+    /// Cached filtered transaction indices for the currently selected wallet.
+    /// Invalidated (set to None) on wallet switch or transaction updates.
+    cached_tx_indices: Option<Vec<usize>>,
 }
 
 impl WalletsBalancesScreen {
@@ -237,9 +243,11 @@ impl WalletsBalancesScreen {
             pending_core_wallet_seed_hash: None,
             pending_core_wallet_options: None,
             pending_core_wallet_is_single_key: false,
+            pending_wallet_refresh_on_switch: false,
             pending_list_core_wallets: false,
             pending_list_wallet_hash: None,
             pending_list_is_single_key: false,
+            cached_tx_indices: None,
         }
     }
 
@@ -340,10 +348,15 @@ impl WalletsBalancesScreen {
         self.selected_account = None;
         self.selected_tab = WalletViewTab::default();
         self.shielded_tab_view = None;
+        self.cached_tx_indices = None;
 
         if let Some(hash) = seed_hash {
             self.persist_selected_wallet_hash(Some(hash));
             self.refresh_platform_sync_info_cache(&hash);
+            // Trigger a refresh on the next frame for the newly selected wallet
+            if self.app_context.core_backend_mode() == CoreBackendMode::Rpc {
+                self.pending_wallet_refresh_on_switch = true;
+            }
         } else {
             self.persist_selected_wallet_hash(None);
             self.platform_sync_info = None;
@@ -427,6 +440,12 @@ impl WalletsBalancesScreen {
         self.pending_list_core_wallets = false;
         self.pending_list_wallet_hash = None;
         self.pending_list_is_single_key = false;
+    }
+
+    /// Reset all cached AddressInput widgets so they pick up the new network.
+    pub(crate) fn invalidate_address_inputs(&mut self) {
+        self.mine_dialog.address_input = None;
+        self.cached_tx_indices = None;
     }
 
     fn add_receiving_address(&mut self) {
@@ -1171,7 +1190,7 @@ impl WalletsBalancesScreen {
         }
     }
 
-    fn render_transactions_section(&self, ui: &mut Ui) {
+    fn render_transactions_section(&mut self, ui: &mut Ui) {
         ui.add_space(10.0);
         // TODO: Synchronize transactions display with selected account type
         // (main account -> Core transactions, platform account -> platform state transitions, etc.)
@@ -1181,7 +1200,26 @@ impl WalletsBalancesScreen {
             return;
         };
 
+        // Defensive check: verify the selected wallet Arc matches the one in
+        // app_context.wallets. If they diverge (stale reference), skip rendering
+        // to avoid showing another wallet's data.
         let wallet_guard = wallet_arc.read().unwrap();
+        let selected_seed_hash = wallet_guard.seed_hash();
+        let arc_matches = self
+            .app_context
+            .wallets
+            .read()
+            .ok()
+            .and_then(|wallets| wallets.get(&selected_seed_hash).cloned())
+            .is_some_and(|canonical| Arc::ptr_eq(wallet_arc, &canonical));
+        if !arc_matches {
+            tracing::warn!(
+                "selected_wallet Arc does not match app_context.wallets — skipping transaction render"
+            );
+            ui.label("Wallet data is being updated. Please re-select the wallet.");
+            return;
+        }
+
         if wallet_guard.transactions.is_empty() {
             ui.label(
                 "No transactions found. Try refreshing your wallet to load transaction history.",
@@ -1189,8 +1227,34 @@ impl WalletsBalancesScreen {
             return;
         }
 
+        // Filter transactions to only those involving this wallet's addresses.
+        // We check outputs only — transactions are already fetched per-wallet
+        // from SPV/RPC, so inputs are implicitly relevant. The output filter
+        // only excludes transactions that leaked from other wallets' data.
+        let relevant_indices = self.cached_tx_indices.get_or_insert_with(|| {
+            let wallet_addresses: std::collections::HashSet<&Address> =
+                wallet_guard.known_addresses.keys().collect();
+            (0..wallet_guard.transactions.len())
+                .filter(|&i| {
+                    let tx = &wallet_guard.transactions[i];
+                    tx.transaction.output.iter().any(|output| {
+                        Address::from_script(&output.script_pubkey, self.app_context.network)
+                            .ok()
+                            .is_some_and(|addr| wallet_addresses.contains(&addr))
+                    })
+                })
+                .collect()
+        });
+
+        if relevant_indices.is_empty() {
+            ui.label(
+                "No transactions found. Try refreshing your wallet to load transaction history.",
+            );
+            return;
+        }
+
         let dark_mode = ui.ctx().style().visuals.dark_mode;
-        let mut order: Vec<usize> = (0..wallet_guard.transactions.len()).collect();
+        let mut order: Vec<usize> = relevant_indices.clone();
         order.sort_by(|&a, &b| {
             wallet_guard.transactions[b]
                 .timestamp
@@ -1655,10 +1719,21 @@ impl WalletsBalancesScreen {
                                         format!("Addresses ({})", category.label(*index))
                                     })
                                     .unwrap_or_else(|| "Addresses".to_string());
-                                ui.heading(
-                                    RichText::new(addresses_heading)
-                                        .color(DashColors::text_primary(dark_mode)),
-                                );
+                                ui.horizontal(|ui| {
+                                    ui.heading(
+                                        RichText::new(addresses_heading)
+                                            .color(DashColors::text_primary(dark_mode)),
+                                    );
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            ui.checkbox(
+                                                &mut self.show_zero_balance_addresses,
+                                                "Show zero-balance addresses",
+                                            );
+                                        },
+                                    );
+                                });
                                 ui.add_space(8.0);
                                 action |= self.render_address_table(ui);
 
@@ -1748,6 +1823,19 @@ impl WalletsBalancesScreen {
         }
     }
 
+    /// Returns a SyncNotes backend task if the shielded wallet has been initialized
+    /// for the given seed hash.
+    fn shielded_sync_task(&self, seed_hash: &WalletSeedHash) -> Option<BackendTask> {
+        let states = self.app_context.shielded_states.lock().unwrap();
+        if states.contains_key(seed_hash) {
+            Some(BackendTask::ShieldedTask(ShieldedTask::SyncNotes {
+                seed_hash: *seed_hash,
+            }))
+        } else {
+            None
+        }
+    }
+
     /// Creates the appropriate refresh action based on the current refresh mode
     fn create_refresh_action(&self, wallet_arc: &Arc<RwLock<Wallet>>) -> AppAction {
         self.create_refresh_action_for_mode(wallet_arc, self.refresh_mode)
@@ -1769,29 +1857,33 @@ impl WalletsBalancesScreen {
             .map(|w| w.seed_hash())
             .unwrap_or_default();
 
-        match mode {
+        let core_task = match mode {
             RefreshMode::All => {
                 // Core + Platform
-                AppAction::BackendTask(BackendTask::CoreTask(CoreTask::RefreshWalletInfo(
-                    wallet_arc.clone(),
-                    true,
-                )))
+                BackendTask::CoreTask(CoreTask::RefreshWalletInfo(wallet_arc.clone(), true))
             }
             RefreshMode::CoreOnly => {
                 // Core only, no Platform sync
-                AppAction::BackendTask(BackendTask::CoreTask(CoreTask::RefreshWalletInfo(
-                    wallet_arc.clone(),
-                    false,
-                )))
+                BackendTask::CoreTask(CoreTask::RefreshWalletInfo(wallet_arc.clone(), false))
             }
             RefreshMode::PlatformOnly => {
                 // Platform only
-                AppAction::BackendTask(BackendTask::WalletTask(
+                BackendTask::WalletTask(
                     crate::backend_task::wallet::WalletTask::FetchPlatformAddressBalances {
                         seed_hash,
                     },
-                ))
+                )
             }
+        };
+
+        // Also trigger shielded note sync if initialized
+        if let Some(shielded_task) = self.shielded_sync_task(&seed_hash) {
+            AppAction::BackendTasks(
+                vec![core_task, shielded_task],
+                BackendTasksExecutionMode::Concurrent,
+            )
+        } else {
+            AppAction::BackendTask(core_task)
         }
     }
 }
@@ -1805,6 +1897,24 @@ impl ScreenLike for WalletsBalancesScreen {
             AppAction::BackendTask(BackendTask::WalletTask(
                 crate::backend_task::wallet::WalletTask::FetchPlatformAddressBalances { seed_hash },
             ))
+        } else {
+            AppAction::None
+        };
+
+        // Trigger a wallet refresh after a wallet switch
+        let pending_switch_action = if self.pending_wallet_refresh_on_switch {
+            self.pending_wallet_refresh_on_switch = false;
+            if let Some(wallet_arc) = &self.selected_wallet {
+                let is_locked = wallet_arc.read().map(|w| !w.is_open()).unwrap_or(true);
+                if !is_locked {
+                    self.refreshing = true;
+                    self.create_refresh_action(wallet_arc)
+                } else {
+                    AppAction::None
+                }
+            } else {
+                AppAction::None
+            }
         } else {
             AppAction::None
         };
@@ -2279,8 +2389,9 @@ impl ScreenLike for WalletsBalancesScreen {
             }
         }
 
-        // Combine with pending refresh action
+        // Combine with pending actions
         action |= pending_refresh_action;
+        action |= pending_switch_action;
         action
     }
 
@@ -2346,6 +2457,7 @@ impl ScreenLike for WalletsBalancesScreen {
         match backend_task_success_result {
             crate::ui::BackendTaskSuccessResult::RefreshedWallet { warning } => {
                 self.refreshing = false;
+                self.cached_tx_indices = None;
                 // Refresh the cached platform sync info so the panel shows
                 // updated timestamps and block heights after a wallet sync.
                 let seed_hash = self

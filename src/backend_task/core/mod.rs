@@ -7,10 +7,11 @@ mod start_dash_qt;
 
 use crate::app_dir::core_cookie_path;
 use crate::backend_task::BackendTaskSuccessResult;
-use crate::backend_task::error::{TaskError, is_rpc_auth_error};
+use crate::backend_task::error::{TaskError, is_rpc_auth_error, is_rpc_connection_error};
 use crate::config::{Config, NetworkConfig};
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
+use crate::model::wallet::networks_address_compatible;
 use crate::model::wallet::single_key::SingleKeyWallet;
 use crate::spv::CoreBackendMode;
 use dash_sdk::dash_spv::sync::ProgressPercentage;
@@ -38,19 +39,6 @@ use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 
 const DEFAULT_BIP44_ACCOUNT_INDEX: u32 = 0;
-
-/// Check if two networks use the same address format.
-/// Testnet, Devnet, and Regtest all use testnet-style addresses.
-fn networks_address_compatible(a: &Network, b: &Network) -> bool {
-    matches!(
-        (a, b),
-        (Network::Mainnet, Network::Mainnet)
-            | (
-                Network::Testnet | Network::Devnet | Network::Regtest,
-                Network::Testnet | Network::Devnet | Network::Regtest,
-            )
-    )
-}
 
 #[derive(Debug, Clone)]
 pub enum CoreTask {
@@ -150,7 +138,8 @@ pub enum CoreItem {
         Option<ChainLock>,
         Option<ChainLock>,
         Option<ChainLock>,
-    ), // Mainnet, Testnet, Devnet, Local
+        Option<String>,
+    ), // Mainnet, Testnet, Devnet, Local, active network RPC error
     ChainLockedBlock(Block, ChainLock),
 }
 
@@ -178,7 +167,7 @@ impl AppContext {
                         self.network,
                     ))
                 })
-                .map_err(TaskError::from),
+                .map_err(|e| self.rpc_error_with_url(e)),
             CoreTask::GetBestChainLocks => {
                 // Load configs
                 let config = Config::load_from(&self.data_dir)?;
@@ -195,20 +184,26 @@ impl AppContext {
                 let devnet_result = Self::get_best_chain_lock(maybe_devnet_config, Network::Devnet);
                 let local_result = Self::get_best_chain_lock(maybe_local_config, Network::Regtest);
 
-                // Surface auth errors on the active network instead of
-                // silently degrading to "Disconnected".
-                let active_result = match self.network {
-                    Network::Mainnet => &mainnet_result,
-                    Network::Testnet => &testnet_result,
-                    Network::Devnet => &devnet_result,
-                    Network::Regtest => &local_result,
-                    _ => &mainnet_result,
+                // Surface auth and connection errors on the active network
+                // instead of silently degrading to "Disconnected".
+                let (active_result, active_config) = match self.network {
+                    Network::Mainnet => (&mainnet_result, maybe_mainnet_config),
+                    Network::Testnet => (&testnet_result, maybe_testnet_config),
+                    Network::Devnet => (&devnet_result, maybe_devnet_config),
+                    Network::Regtest => (&local_result, maybe_local_config),
+                    _ => (&mainnet_result, maybe_mainnet_config),
                 };
-                if let Err(e) = active_result
-                    && is_rpc_auth_error(e)
-                {
-                    return Err(TaskError::CoreRpcAuthFailed);
-                }
+                let active_rpc_error = if let Err(e) = active_result {
+                    if let Some(task_err) = Self::chain_lock_rpc_error(active_config, e) {
+                        return Err(task_err);
+                    }
+                    // Non-auth, non-connection error — log the raw error but show
+                    // a sanitized message in the UI status display.
+                    tracing::warn!(network = ?self.network, error = %e, "Chain lock query failed on active network");
+                    Some("RPC error — check Dash Core status".to_string())
+                } else {
+                    None
+                };
 
                 // Convert each to Option<ChainLock> (flatten Ok(None) and Err into None)
                 let mainnet_chainlock = mainnet_result.ok().flatten();
@@ -222,6 +217,7 @@ impl AppContext {
                     testnet_chainlock,
                     devnet_chainlock,
                     local_chainlock,
+                    active_rpc_error,
                 )))
             }
             CoreTask::RefreshWalletInfo(wallet, sync_platform) => {
@@ -458,7 +454,7 @@ impl AppContext {
         let client = match Client::new(&addr, Auth::CookieFile(cookie_path.clone())) {
             Ok(client) => client,
             Err(_) => {
-                tracing::info!(
+                tracing::debug!(
                     "Failed to authenticate using .cookie file at {:?}, falling back to user/pass",
                     cookie_path
                 );
@@ -479,6 +475,25 @@ impl AppContext {
         };
 
         client.get_best_chain_lock().map(Some)
+    }
+
+    /// Convert a `dashcore_rpc::Error` from `get_best_chain_lock` into a
+    /// `TaskError`, enriching connection failures with host:port.
+    fn chain_lock_rpc_error(
+        config: &Option<NetworkConfig>,
+        e: &dashcore_rpc::Error,
+    ) -> Option<TaskError> {
+        if is_rpc_auth_error(e) {
+            return Some(TaskError::CoreRpcAuthFailed);
+        }
+        if is_rpc_connection_error(e) {
+            let url = config
+                .as_ref()
+                .map(|c| format!("{}:{} ({})", c.core_host, c.core_rpc_port, e))
+                .unwrap_or_else(|| "unknown".to_string());
+            return Some(TaskError::CoreRpcConnectionFailed { url, source: None });
+        }
+        None
     }
 
     async fn send_wallet_payment(

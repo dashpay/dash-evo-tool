@@ -2,17 +2,20 @@ use crate::app::AppAction;
 use crate::backend_task::shielded::ShieldedTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::model::address::{AddressKind, ValidatedAddress};
+use crate::model::amount::Amount;
 use crate::model::wallet::WalletSeedHash;
+use crate::ui::components::ComponentResponse;
+use crate::ui::components::address_input::AddressInput;
+use crate::ui::components::amount_input::AmountInput;
+use crate::ui::components::component_trait::Component;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
-use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
-use dash_sdk::dpp::dashcore::Address;
 use eframe::egui::{self, Context};
 use egui::{Color32, RichText};
-use std::str::FromStr;
 use std::sync::Arc;
 
 #[derive(PartialEq)]
@@ -22,26 +25,29 @@ enum Status {
     Complete,
 }
 
-/// Which kind of destination was parsed from the address input.
-enum Destination {
-    /// Shielded pool → platform address (Type 17 Unshield)
-    Platform(PlatformAddress),
-    /// Shielded pool → core L1 address (Type 19 ShieldedWithdrawal)
-    Core(Address),
-}
-
 pub struct UnshieldCreditsScreen {
     pub app_context: Arc<AppContext>,
     pub seed_hash: WalletSeedHash,
-    amount_str: String,
-    address_str: String,
+    amount_input: Option<AmountInput>,
+    amount: Option<Amount>,
+    address_input: Option<AddressInput>,
+    validated_destination: Option<ValidatedAddress>,
     max_balance: u64,
     status: Status,
     error_message: Option<String>,
     success_message: Option<String>,
+    /// Queued task to dispatch on next frame (e.g., sync notes after successful unshield).
+    pending_refresh_task: Option<BackendTask>,
+    /// Whether to show the balance-update-pending info on the success screen.
+    balance_update_pending: bool,
 }
 
 impl UnshieldCreditsScreen {
+    /// Clear the AddressInput widget so it picks up the new network on next frame.
+    pub(crate) fn invalidate_address_input(&mut self) {
+        self.address_input = None;
+    }
+
     pub fn new(seed_hash: WalletSeedHash, app_context: &Arc<AppContext>) -> Self {
         let max_balance = {
             let states = app_context.shielded_states.lock().unwrap();
@@ -54,63 +60,29 @@ impl UnshieldCreditsScreen {
         Self {
             app_context: app_context.clone(),
             seed_hash,
-            amount_str: String::new(),
-            address_str: String::new(),
+            amount_input: None,
+            amount: None,
+            address_input: None,
+            validated_destination: None,
             max_balance,
             status: Status::NotStarted,
             error_message: None,
             success_message: None,
+            pending_refresh_task: None,
+            balance_update_pending: false,
         }
-    }
-
-    fn parse_amount_credits(&self) -> Option<u64> {
-        let trimmed = self.amount_str.trim();
-        if trimmed.is_empty() {
-            return None;
-        }
-        if trimmed.contains('.') {
-            let dash: f64 = trimmed.parse().ok()?;
-            if dash <= 0.0 {
-                return None;
-            }
-            Some((dash * CREDITS_PER_DUFF as f64 * 1e8) as u64)
-        } else {
-            let credits: u64 = trimmed.parse().ok()?;
-            if credits == 0 {
-                return None;
-            }
-            Some(credits)
-        }
-    }
-
-    /// Parse the address field into a Destination.
-    ///
-    /// Tries platform address (Bech32m tdash1.../dash1...) first, then falls
-    /// back to a core address (Base58 P2PKH/P2SH).
-    fn parse_destination(&self) -> Option<Destination> {
-        let s = self.address_str.trim();
-        if s.is_empty() {
-            return None;
-        }
-
-        // Try platform address first
-        if let Ok((pa, _network)) = PlatformAddress::from_bech32m_string(s) {
-            return Some(Destination::Platform(pa));
-        }
-
-        // Try core address
-        if let Ok(addr) = Address::from_str(s) {
-            let addr = addr.require_network(self.app_context.network).ok()?;
-            return Some(Destination::Core(addr));
-        }
-
-        None
     }
 }
 
 impl ScreenLike for UnshieldCreditsScreen {
     fn ui(&mut self, ctx: &Context) -> AppAction {
-        let mut action = add_top_panel(
+        let mut action = self
+            .pending_refresh_task
+            .take()
+            .map(AppAction::BackendTask)
+            .unwrap_or(AppAction::None);
+
+        action |= add_top_panel(
             ctx,
             &self.app_context,
             vec![
@@ -148,6 +120,12 @@ impl ScreenLike for UnshieldCreditsScreen {
             }
             if let Some(msg) = &self.success_message {
                 ui.colored_label(Color32::DARK_GREEN, msg);
+                if self.balance_update_pending {
+                    ui.add_space(8.0);
+                    ui.label(
+                        "Your remaining balance will update after the next block is confirmed.",
+                    );
+                }
                 ui.add_space(10.0);
                 if ui.button("Done").clicked() {
                     action = AppAction::PopScreen;
@@ -155,56 +133,59 @@ impl ScreenLike for UnshieldCreditsScreen {
                 return;
             }
 
-            // Destination address input
-            ui.horizontal(|ui| {
-                ui.label("To address:");
-                ui.text_edit_singleline(&mut self.address_str);
+            // Destination address input via AddressInput component
+            let addr_input = self.address_input.get_or_insert_with(|| {
+                let mut builder = AddressInput::new(self.app_context.network)
+                    .with_address_kinds(&[AddressKind::Core, AddressKind::Platform])
+                    .with_label("To address")
+                    .with_hint_text(
+                        "Enter a platform address (tdash1.../dash1...) or core DASH address",
+                    );
+
+                if let Ok(wallets) = self.app_context.wallets.read() {
+                    let all_wallets: Vec<_> = wallets.values().cloned().collect();
+                    builder = builder.with_wallets(&all_wallets);
+                }
+
+                builder
             });
+            let resp = addr_input.show(ui);
+            resp.inner.update(&mut self.validated_destination);
 
             // Show what was parsed
-            match self.parse_destination() {
-                Some(Destination::Platform(_)) => {
+            match self.validated_destination.as_ref().map(|v| v.kind()) {
+                Some(AddressKind::Platform) => {
                     ui.colored_label(
                         Color32::DARK_GREEN,
-                        "Platform address — will unshield to platform (Type 17)",
+                        "Platform address — credits will be moved to this platform address",
                     );
                 }
-                Some(Destination::Core(_)) => {
+                Some(AddressKind::Core) => {
                     ui.colored_label(
                         Color32::DARK_GREEN,
-                        "Core address — will withdraw to core DASH (Type 19)",
+                        "Core address — credits will be withdrawn as DASH to this address",
                     );
                 }
-                None if !self.address_str.trim().is_empty() => {
-                    ui.colored_label(
-                        Color32::from_rgb(255, 100, 100),
-                        "Unrecognised address — enter a platform address (tdash1…/dash1…) or a core DASH address",
-                    );
-                }
-                None => {}
+                _ => {}
             }
             ui.add_space(10.0);
 
             // Amount input
-            ui.horizontal(|ui| {
-                ui.label("Amount (DASH):");
-                ui.text_edit_singleline(&mut self.amount_str);
+            let amount_input = self.amount_input.get_or_insert_with(|| {
+                AmountInput::new(Amount::new_dash(0.0))
+                    .with_label("Amount (DASH):")
+                    .with_hint_text("Enter amount")
+                    .with_max_button(true)
+                    .with_desired_width(150.0)
             });
-            if let Some(credits) = self.parse_amount_credits() {
-                let dash = credits as f64 / CREDITS_PER_DUFF as f64 / 1e8;
-                ui.label(format!("= {:.8} DASH ({} credits)", dash, credits));
-                if credits > self.max_balance {
-                    ui.colored_label(Color32::from_rgb(255, 100, 100), "Exceeds shielded balance");
-                }
-            }
+            amount_input.set_max_amount(Some(self.max_balance));
+            let response = amount_input.show(ui);
+            response.inner.update(&mut self.amount);
             ui.add_space(15.0);
 
-            let amount_ok = self
-                .parse_amount_credits()
-                .is_some_and(|a| a <= self.max_balance);
-            let destination = self.parse_destination();
-            let can_confirm =
-                self.status == Status::NotStarted && amount_ok && destination.is_some();
+            let amount_ok = self.amount.is_some();
+            let has_destination = self.validated_destination.is_some();
+            let can_confirm = self.status == Status::NotStarted && amount_ok && has_destination;
 
             if self.status == Status::WaitingForResult {
                 ui.horizontal(|ui| {
@@ -213,8 +194,8 @@ impl ScreenLike for UnshieldCreditsScreen {
                 });
             } else {
                 ui.horizontal(|ui| {
-                    let btn_label = match &destination {
-                        Some(Destination::Core(_)) => "Withdraw to Core",
+                    let btn_label = match self.validated_destination.as_ref().map(|v| v.kind()) {
+                        Some(AddressKind::Core) => "Withdraw to Core",
                         _ => "Unshield",
                     };
 
@@ -227,32 +208,32 @@ impl ScreenLike for UnshieldCreditsScreen {
                             .fill(crate::ui::theme::DashColors::DASH_BLUE),
                         )
                         .clicked()
-                        && let Some(amount) = self.parse_amount_credits()
+                        && let Some(amount) = self.amount.as_ref().map(|a| a.value())
                     {
-                        match self.parse_destination() {
-                            Some(Destination::Platform(addr)) => {
+                        match &self.validated_destination {
+                            Some(ValidatedAddress::Platform { address: addr, .. }) => {
                                 self.status = Status::WaitingForResult;
                                 self.error_message = None;
                                 action = AppAction::BackendTask(BackendTask::ShieldedTask(
                                     ShieldedTask::UnshieldCredits {
                                         seed_hash: self.seed_hash,
                                         amount,
-                                        to_platform_address: addr,
+                                        to_platform_address: *addr,
                                     },
                                 ));
                             }
-                            Some(Destination::Core(addr)) => {
+                            Some(ValidatedAddress::Core(addr)) => {
                                 self.status = Status::WaitingForResult;
                                 self.error_message = None;
                                 action = AppAction::BackendTask(BackendTask::ShieldedTask(
                                     ShieldedTask::ShieldedWithdrawal {
                                         seed_hash: self.seed_hash,
                                         amount,
-                                        to_core_address: addr,
+                                        to_core_address: addr.clone(),
                                     },
                                 ));
                             }
-                            None => {}
+                            _ => {}
                         }
                     }
 
@@ -278,6 +259,11 @@ impl ScreenLike for UnshieldCreditsScreen {
                     "Successfully unshielded {:.8} DASH to platform address",
                     dash
                 ));
+                self.pending_refresh_task =
+                    Some(BackendTask::ShieldedTask(ShieldedTask::SyncNotes {
+                        seed_hash: self.seed_hash,
+                    }));
+                self.balance_update_pending = true;
             }
             BackendTaskSuccessResult::ShieldedWithdrawalComplete { seed_hash, amount }
                 if seed_hash == self.seed_hash =>
@@ -288,6 +274,11 @@ impl ScreenLike for UnshieldCreditsScreen {
                     "Successfully withdrew {:.8} DASH to core address",
                     dash
                 ));
+                self.pending_refresh_task =
+                    Some(BackendTask::ShieldedTask(ShieldedTask::SyncNotes {
+                        seed_hash: self.seed_hash,
+                    }));
+                self.balance_update_pending = true;
             }
             _ => {}
         }

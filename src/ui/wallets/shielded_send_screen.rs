@@ -2,7 +2,11 @@ use crate::app::AppAction;
 use crate::backend_task::shielded::ShieldedTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::model::amount::Amount;
 use crate::model::wallet::WalletSeedHash;
+use crate::ui::components::ComponentResponse;
+use crate::ui::components::amount_input::AmountInput;
+use crate::ui::components::component_trait::Component;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
@@ -22,12 +26,17 @@ enum Status {
 pub struct ShieldedSendScreen {
     pub app_context: Arc<AppContext>,
     pub seed_hash: WalletSeedHash,
-    amount_str: String,
+    amount_input: Option<AmountInput>,
+    amount: Option<Amount>,
     recipient_address_input: String,
     max_balance: u64,
     status: Status,
     error_message: Option<String>,
     success_message: Option<String>,
+    /// Queued task to dispatch on next frame (e.g., sync notes after successful send).
+    pending_refresh_task: Option<BackendTask>,
+    /// Whether to show the balance-update-pending info banner on the success screen.
+    balance_update_pending: bool,
 }
 
 impl ShieldedSendScreen {
@@ -43,32 +52,15 @@ impl ShieldedSendScreen {
         Self {
             app_context: app_context.clone(),
             seed_hash,
-            amount_str: String::new(),
+            amount_input: None,
+            amount: None,
             recipient_address_input: String::new(),
             max_balance,
             status: Status::NotStarted,
             error_message: None,
             success_message: None,
-        }
-    }
-
-    fn parse_amount_credits(&self) -> Option<u64> {
-        let trimmed = self.amount_str.trim();
-        if trimmed.is_empty() {
-            return None;
-        }
-        if trimmed.contains('.') {
-            let dash: f64 = trimmed.parse().ok()?;
-            if dash <= 0.0 {
-                return None;
-            }
-            Some((dash * CREDITS_PER_DUFF as f64 * 1e8) as u64)
-        } else {
-            let credits: u64 = trimmed.parse().ok()?;
-            if credits == 0 {
-                return None;
-            }
-            Some(credits)
+            pending_refresh_task: None,
+            balance_update_pending: false,
         }
     }
 
@@ -94,7 +86,13 @@ impl ShieldedSendScreen {
 
 impl ScreenLike for ShieldedSendScreen {
     fn ui(&mut self, ctx: &Context) -> AppAction {
-        let mut action = add_top_panel(
+        let mut action = self
+            .pending_refresh_task
+            .take()
+            .map(AppAction::BackendTask)
+            .unwrap_or(AppAction::None);
+
+        action |= add_top_panel(
             ctx,
             &self.app_context,
             vec![
@@ -130,6 +128,13 @@ impl ScreenLike for ShieldedSendScreen {
             }
             if let Some(msg) = &self.success_message {
                 ui.colored_label(Color32::DARK_GREEN, msg);
+                if self.balance_update_pending {
+                    ui.add_space(8.0);
+                    ui.label(
+                        "Your remaining balance will update after the next block is confirmed. \
+                         The recipient's balance will also update after the next block and a wallet sync.",
+                    );
+                }
                 ui.add_space(10.0);
                 if ui.button("Done").clicked() {
                     action = AppAction::PopScreen;
@@ -149,23 +154,20 @@ impl ScreenLike for ShieldedSendScreen {
             ui.add_space(10.0);
 
             // Amount input
-            ui.horizontal(|ui| {
-                ui.label("Amount (DASH or credits):");
-                ui.text_edit_singleline(&mut self.amount_str);
+            let amount_input = self.amount_input.get_or_insert_with(|| {
+                AmountInput::new(Amount::new_dash(0.0))
+                    .with_label("Amount (DASH):")
+                    .with_hint_text("Enter amount")
+                    .with_max_button(true)
+                    .with_desired_width(150.0)
             });
-            if let Some(credits) = self.parse_amount_credits() {
-                let dash = credits as f64 / CREDITS_PER_DUFF as f64 / 1e8;
-                ui.label(format!("= {:.8} DASH ({} credits)", dash, credits));
-                if credits > self.max_balance {
-                    ui.colored_label(Color32::from_rgb(255, 100, 100), "Exceeds shielded balance");
-                }
-            }
+            amount_input.set_max_amount(Some(self.max_balance));
+            let response = amount_input.show(ui);
+            response.inner.update(&mut self.amount);
             ui.add_space(15.0);
 
             // Confirm
-            let amount_ok = self
-                .parse_amount_credits()
-                .is_some_and(|a| a <= self.max_balance);
+            let amount_ok = self.amount.is_some();
             let recipient_ok = self.validate_recipient().is_some();
             let can_confirm = self.status == Status::NotStarted && amount_ok && recipient_ok;
 
@@ -185,8 +187,10 @@ impl ScreenLike for ShieldedSendScreen {
                             .fill(crate::ui::theme::DashColors::DASH_BLUE),
                         )
                         .clicked()
-                        && let (Some(amount), Some(recipient_bytes)) =
-                            (self.parse_amount_credits(), self.validate_recipient())
+                        && let (Some(amount), Some(recipient_bytes)) = (
+                            self.amount.as_ref().map(|a| a.value()),
+                            self.validate_recipient(),
+                        )
                     {
                         self.status = Status::WaitingForResult;
                         self.error_message = None;
@@ -215,10 +219,30 @@ impl ScreenLike for ShieldedSendScreen {
             BackendTaskSuccessResult::ShieldedTransferComplete { seed_hash, amount }
                 if seed_hash == self.seed_hash =>
             {
+                tracing::info!(
+                    "ShieldedSendScreen: transfer complete, amount={} credits, queueing post-transfer note sync",
+                    amount,
+                );
                 self.status = Status::Complete;
                 let dash = amount as f64 / CREDITS_PER_DUFF as f64 / 1e8;
                 self.success_message =
                     Some(format!("Successfully sent {:.8} DASH privately", dash));
+                self.pending_refresh_task =
+                    Some(BackendTask::ShieldedTask(ShieldedTask::SyncNotes {
+                        seed_hash: self.seed_hash,
+                    }));
+                self.balance_update_pending = true;
+            }
+            BackendTaskSuccessResult::ShieldedNotesSynced {
+                seed_hash,
+                new_notes,
+                balance,
+            } if seed_hash == self.seed_hash => {
+                tracing::debug!(
+                    "ShieldedSendScreen: post-transfer sync complete, new_notes={}, balance={} credits",
+                    new_notes,
+                    balance,
+                );
             }
             _ => {}
         }

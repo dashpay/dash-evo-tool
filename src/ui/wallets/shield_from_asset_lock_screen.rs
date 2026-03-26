@@ -2,7 +2,11 @@ use crate::app::AppAction;
 use crate::backend_task::shielded::ShieldedTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::model::amount::Amount;
 use crate::model::wallet::WalletSeedHash;
+use crate::ui::components::ComponentResponse;
+use crate::ui::components::amount_input::AmountInput;
+use crate::ui::components::component_trait::Component;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
@@ -22,11 +26,14 @@ enum Status {
 pub struct ShieldFromAssetLockScreen {
     pub app_context: Arc<AppContext>,
     pub seed_hash: WalletSeedHash,
-    amount_str: String,
+    amount_input: Option<AmountInput>,
+    amount: Option<Amount>,
     core_balance_duffs: u64,
     status: Status,
     error_message: Option<String>,
     success_message: Option<String>,
+    /// Queued task to dispatch on next frame (e.g., sync notes after successful shield).
+    pending_refresh_task: Option<BackendTask>,
 }
 
 impl ShieldFromAssetLockScreen {
@@ -45,35 +52,26 @@ impl ShieldFromAssetLockScreen {
         Self {
             app_context: app_context.clone(),
             seed_hash,
-            amount_str: String::new(),
+            amount_input: None,
+            amount: None,
             core_balance_duffs,
             status: Status::NotStarted,
             error_message: None,
             success_message: None,
+            pending_refresh_task: None,
         }
-    }
-
-    /// Parse amount input as DASH (decimal) and return duffs.
-    fn parse_amount_duffs(&self) -> Option<u64> {
-        let trimmed = self.amount_str.trim();
-        if trimmed.is_empty() {
-            return None;
-        }
-        let dash: f64 = trimmed.parse().ok()?;
-        if dash <= 0.0 {
-            return None;
-        }
-        let duffs = (dash * 1e8) as u64;
-        if duffs == 0 {
-            return None;
-        }
-        Some(duffs)
     }
 }
 
 impl ScreenLike for ShieldFromAssetLockScreen {
     fn ui(&mut self, ctx: &Context) -> AppAction {
-        let mut action = add_top_panel(
+        let mut action = self
+            .pending_refresh_task
+            .take()
+            .map(AppAction::BackendTask)
+            .unwrap_or(AppAction::None);
+
+        action |= add_top_panel(
             ctx,
             &self.app_context,
             vec![
@@ -117,30 +115,21 @@ impl ScreenLike for ShieldFromAssetLockScreen {
             }
 
             // Amount input
-            ui.horizontal(|ui| {
-                ui.label("Amount (DASH):");
-                ui.text_edit_singleline(&mut self.amount_str);
+            let max_credits = self.core_balance_duffs * CREDITS_PER_DUFF;
+            let amount_input = self.amount_input.get_or_insert_with(|| {
+                AmountInput::new(Amount::new_dash(0.0))
+                    .with_label("Amount (DASH):")
+                    .with_hint_text("Enter amount")
+                    .with_max_button(true)
+                    .with_desired_width(150.0)
             });
-            if let Some(duffs) = self.parse_amount_duffs() {
-                let credits = duffs * CREDITS_PER_DUFF;
-                let dash = duffs as f64 / 1e8;
-                ui.label(format!(
-                    "= {:.8} DASH = {} credits on platform",
-                    dash, credits
-                ));
-                if duffs > self.core_balance_duffs {
-                    ui.colored_label(
-                        Color32::from_rgb(255, 100, 100),
-                        "Exceeds core wallet balance",
-                    );
-                }
-            }
+            amount_input.set_max_amount(Some(max_credits));
+            let response = amount_input.show(ui);
+            response.inner.update(&mut self.amount);
             ui.add_space(15.0);
 
             // Confirm
-            let amount_ok = self
-                .parse_amount_duffs()
-                .is_some_and(|a| a <= self.core_balance_duffs);
+            let amount_ok = self.amount.is_some();
             let can_confirm = self.status == Status::NotStarted && amount_ok;
 
             if self.status == Status::WaitingForResult {
@@ -161,8 +150,9 @@ impl ScreenLike for ShieldFromAssetLockScreen {
                             .fill(crate::ui::theme::DashColors::DASH_BLUE),
                         )
                         .clicked()
-                        && let Some(amount_duffs) = self.parse_amount_duffs()
+                        && let Some(amount_credits) = self.amount.as_ref().map(|a| a.value())
                     {
+                        let amount_duffs = amount_credits / CREDITS_PER_DUFF;
                         self.status = Status::WaitingForResult;
                         self.error_message = None;
                         action = AppAction::BackendTask(BackendTask::ShieldedTask(
@@ -195,6 +185,10 @@ impl ScreenLike for ShieldFromAssetLockScreen {
                     "Successfully shielded {:.8} DASH from core wallet",
                     dash
                 ));
+                self.pending_refresh_task =
+                    Some(BackendTask::ShieldedTask(ShieldedTask::SyncNotes {
+                        seed_hash: self.seed_hash,
+                    }));
             }
             _ => {}
         }

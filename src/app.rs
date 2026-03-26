@@ -1301,11 +1301,13 @@ impl App for AppState {
                     if !handled {
                         let msg = err.to_string();
                         let handle = MessageBanner::set_global(ctx, &msg, MessageType::Error);
+                        // Show technical details only in developer mode.
+                        // All user-facing information is in the Display string.
                         if self.current_app_context().is_developer_mode() {
                             // INTENTIONAL(SEC-003): TaskError Debug output is shown to users
-                            // in developer mode. This is a local UI app — no third parties
-                            // see this output. Ensure inner error types don't expose secrets
-                            // (see #667).
+                            // in developer mode. This is a local UI app —
+                            // no third parties see this output. Ensure inner error types
+                            // don't expose secrets (see #667).
                             handle.with_details(&err);
                         }
                         self.visible_screen_mut()

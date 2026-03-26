@@ -204,10 +204,22 @@ impl WalletsBalancesScreen {
 
         let account_address_count = address_data.len();
 
+        // Auto-show zero-balance addresses when the wallet is nearly empty:
+        // fewer than 5 addresses total and none have a balance. This prevents
+        // new/empty wallets from showing a blank address list.
+        let all_zero_balance = !address_data.iter().any(|d| {
+            if d.account_category == AccountCategory::PlatformPayment {
+                d.platform_credits > 0
+            } else {
+                d.balance > 0
+            }
+        });
+        let auto_show = account_address_count < 5 && all_zero_balance;
+
         // INTENTIONAL(CMT-002): Zero-balance filter treats key-only addresses the same as all
         // others. The old exception (always showing key-only addresses) was removed intentionally
         // to reduce UI clutter — key-only accounts with no balance carry no actionable information.
-        if !self.show_zero_balance_addresses {
+        if !self.show_zero_balance_addresses && !auto_show {
             address_data.retain(|data| {
                 if data.account_category == AccountCategory::PlatformPayment {
                     data.platform_credits > 0

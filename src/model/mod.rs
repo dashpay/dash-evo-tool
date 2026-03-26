@@ -1,3 +1,4 @@
+pub mod address;
 pub mod amount;
 pub mod contested_name;
 pub mod fee_estimation;

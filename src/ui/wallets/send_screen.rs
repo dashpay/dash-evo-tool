@@ -2114,8 +2114,7 @@ impl WalletSendScreen {
                         use dash_sdk::dpp::address_funds::OrchardAddress;
                         let raw = state.keys.default_address.to_raw_address_bytes();
                         if let Ok(orchard_addr) = OrchardAddress::from_raw_bytes(&raw) {
-                            let addr_str =
-                                orchard_addr.to_bech32m_string(self.app_context.network);
+                            let addr_str = orchard_addr.to_bech32m_string(self.app_context.network);
                             builder =
                                 builder.with_shielded_balance(addr_str, state.shielded_balance);
                         }

@@ -183,9 +183,9 @@ impl AppContext {
         use dash_sdk::dpp::consensus::state::state_error::StateError;
         let consensus = match sdk_error {
             dash_sdk::Error::StateTransitionBroadcastError(e) => e.cause.as_ref()?,
-            dash_sdk::Error::Protocol(
-                dash_sdk::dpp::ProtocolError::ConsensusError(ce),
-            ) => ce.as_ref(),
+            dash_sdk::Error::Protocol(dash_sdk::dpp::ProtocolError::ConsensusError(ce)) => {
+                ce.as_ref()
+            }
             _ => return None,
         };
         if let ConsensusError::StateError(StateError::AddressInvalidNonceError(e)) = consensus {
@@ -414,7 +414,11 @@ impl AppContext {
                         "Shield credits: nonce mismatch, retrying with expected nonce {nonce}"
                     );
                     // Update cached nonce to expected - 1 so the retry reads expected
-                    self.set_platform_address_nonce(&seed_hash, &from_address, nonce.saturating_sub(1));
+                    self.set_platform_address_nonce(
+                        &seed_hash,
+                        &from_address,
+                        nonce.saturating_sub(1),
+                    );
 
                     crate::backend_task::shielded::bundle::shield_credits(
                         self,

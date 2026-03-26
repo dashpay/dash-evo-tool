@@ -1,7 +1,7 @@
 use crate::model::address::{AddressKind, ValidatedAddress};
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::model::wallet::Wallet;
+use crate::model::wallet::{DerivationPathHelpers, Wallet};
 use crate::ui::components::{Component, ComponentResponse};
 use crate::ui::theme::DashColors;
 use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
@@ -51,6 +51,12 @@ struct AddressEntry {
     balance: u64,
     /// Pre-built ValidatedAddress for immediate use on selection.
     validated: ValidatedAddress,
+    /// Whether this is a change address (BIP44 m/44'/5'/0'/1/x).
+    /// Only meaningful for Core addresses; always false for other types.
+    /// Stored for potential future use in display styling; the "(change)"
+    /// suffix is already baked into `display_label` at construction time.
+    #[allow(dead_code)]
+    is_change: bool,
 }
 
 /// Concrete balance range bounds.
@@ -152,6 +158,7 @@ pub struct AddressInput {
     desired_width: Option<f32>,
     show_validation_errors: bool,
     balance_range: Option<BalanceRange>,
+    exclude_change: bool,
 
     // --- Autocomplete data (set via builder, read each frame) ---
     all_entries: Vec<AddressEntry>,
@@ -194,6 +201,7 @@ impl AddressInput {
             selected_from_autocomplete: false,
             cached_detection: None,
             changed: false,
+            exclude_change: false,
         }
     }
 
@@ -243,6 +251,15 @@ impl AddressInput {
     /// Does not affect manual input validation. Default: no filter (all addresses).
     pub fn with_balance_range(mut self, range: impl std::ops::RangeBounds<u64>) -> Self {
         self.balance_range = Some(BalanceRange::from_range(&range));
+        self
+    }
+
+    /// Exclude change addresses (BIP44 m/44'/5'/0'/1/x) from autocomplete.
+    ///
+    /// Send inputs should typically exclude change addresses since users
+    /// don't share change addresses with others. Default: false (show all).
+    pub fn with_exclude_change(mut self, exclude: bool) -> Self {
+        self.exclude_change = exclude;
         self
     }
 
@@ -354,13 +371,25 @@ impl AddressInput {
         // Balance is looked up from address_balances; addresses without UTXOs
         // get balance 0. Use `with_balance_range(1..)` to show only funded
         // addresses — do NOT filter at the data source.
-        for address in guard.known_addresses.keys() {
+        // Change addresses (BIP44 m/44'/5'/0'/1/x) are tagged and can be
+        // excluded via `with_exclude_change(true)`.
+        for (address, derivation_path) in &guard.known_addresses {
+            let is_change = derivation_path.is_bip44_change(self.network);
+            if self.exclude_change && is_change {
+                continue;
+            }
             let balance = guard.address_balances.get(address).copied().unwrap_or(0);
             let addr_str = address.to_string();
+            let change_suffix = if is_change { " (change)" } else { "" };
             let display = if self.full_addresses {
-                format!("{}{}", prefix, addr_str)
+                format!("{}{}{}", prefix, addr_str, change_suffix)
             } else {
-                format!("{}{}", prefix, truncate_address(&addr_str))
+                format!(
+                    "{}{}{}",
+                    prefix,
+                    truncate_address(&addr_str),
+                    change_suffix
+                )
             };
             self.all_entries.push(AddressEntry {
                 address_string: addr_str,
@@ -368,6 +397,7 @@ impl AddressInput {
                 display_label: display,
                 balance,
                 validated: ValidatedAddress::Core(address.clone()),
+                is_change,
             });
         }
 
@@ -407,6 +437,7 @@ impl AddressInput {
                         address: platform_addr,
                         bech32m,
                     },
+                    is_change: false,
                 });
             }
         }
@@ -435,6 +466,7 @@ impl AddressInput {
                     id,
                     dpns_name: dpns_name.clone(),
                 },
+                is_change: false,
             });
         }
     }
@@ -451,6 +483,7 @@ impl AddressInput {
             display_label: display,
             balance,
             validated: ValidatedAddress::Shielded(address),
+            is_change: false,
         });
     }
 

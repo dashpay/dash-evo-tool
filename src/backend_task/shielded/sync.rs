@@ -112,18 +112,27 @@ pub async fn sync_notes(
     // Persist and record decrypted notes that are new (position >= already_have).
     // Also skip notes already in memory (loaded from DB during init) to prevent
     // double-counting when the commitment tree resets but persisted notes remain.
-    // Build a HashSet of existing positions for O(1) lookups instead of O(n) scans.
-    let existing_positions: std::collections::HashSet<u64> = shielded_state
+    // Build a HashMap of position->value for O(1) lookups and divergence detection.
+    let existing_notes: std::collections::HashMap<u64, u64> = shielded_state
         .notes
         .iter()
-        .map(|n| u64::from(n.position))
+        .map(|n| (u64::from(n.position), n.note.value().inner()))
         .collect();
     let mut new_note_count = 0u32;
     for dn in result.decrypted_notes {
         if dn.position < already_have {
             continue; // already stored in a previous sync
         }
-        if existing_positions.contains(&dn.position) {
+        if let Some(&existing_value) = existing_notes.get(&dn.position) {
+            let new_value = dn.note.value().inner();
+            if new_value != existing_value {
+                tracing::warn!(
+                    position = dn.position,
+                    existing_value,
+                    new_value,
+                    "Shielded note dedup: value divergence at existing position"
+                );
+            }
             continue; // already loaded from DB during init
         }
 

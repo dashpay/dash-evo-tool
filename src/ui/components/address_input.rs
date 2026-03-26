@@ -367,13 +367,30 @@ impl AddressInput {
             String::new()
         };
 
+        // Build a set of system addresses to exclude from autocomplete.
+        // System addresses (Identity Registration, CoinJoin, Provider keys, etc.)
+        // are internal wallet infrastructure — not for user-facing send/receive.
+        use crate::ui::wallets::account_summary::AccountCategory;
+        let system_addresses: std::collections::HashSet<&Address> = guard
+            .watched_addresses
+            .values()
+            .filter(|info| {
+                AccountCategory::from_reference(info.path_reference).is_system_category()
+            })
+            .map(|info| &info.address)
+            .collect();
+
         // Core addresses from known_addresses (all derived addresses).
         // Balance is looked up from address_balances; addresses without UTXOs
         // get balance 0. Use `with_balance_range(1..)` to show only funded
         // addresses — do NOT filter at the data source.
         // Change addresses (BIP44 m/44'/5'/0'/1/x) are tagged and can be
         // excluded via `with_exclude_change(true)`.
+        // System addresses are always excluded.
         for (address, derivation_path) in &guard.known_addresses {
+            if system_addresses.contains(address) {
+                continue;
+            }
             let is_change = derivation_path.is_bip44_change(self.network);
             if self.exclude_change && is_change {
                 continue;

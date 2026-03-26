@@ -676,6 +676,21 @@ pub enum TaskError {
     #[error("Could not complete the payment. Please check your wallet balance and retry.")]
     WalletPaymentFailed { detail: String },
 
+    /// Could not access wallet information from the SPV manager.
+    #[error("Could not access wallet information. Please try again.")]
+    WalletInfoUnavailable,
+
+    /// Expected BIP44 account not found at the given index.
+    #[error("No BIP44 account found at the expected index. Please refresh your wallet.")]
+    MissingBip44Account { index: u32 },
+
+    /// Could not derive a change address from the wallet account.
+    #[error("Could not derive a change address. Please try again.")]
+    ChangeAddressDerivation {
+        #[source]
+        source: dash_sdk::dpp::key_wallet::Error,
+    },
+
     // ──────────────────────────────────────────────────────────────────────────
     // Token query errors (identity / recipient validation)
     // ──────────────────────────────────────────────────────────────────────────

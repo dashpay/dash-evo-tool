@@ -697,17 +697,15 @@ impl AppContext {
 
         // Get UTXOs and change address from the wallet account
         let (utxos, change_index) = {
-            let managed_info =
-                wm.get_wallet_info(wallet_id)
-                    .ok_or_else(|| TaskError::WalletPaymentFailed {
-                        detail: "Wallet info unavailable".to_string(),
-                    })?;
+            let managed_info = wm
+                .get_wallet_info(wallet_id)
+                .ok_or(TaskError::WalletInfoUnavailable)?;
             let account = managed_info
                 .accounts()
                 .standard_bip44_accounts
                 .get(&DEFAULT_BIP44_ACCOUNT_INDEX)
-                .ok_or_else(|| TaskError::WalletPaymentFailed {
-                    detail: "BIP44 account missing".to_string(),
+                .ok_or(TaskError::MissingBip44Account {
+                    index: DEFAULT_BIP44_ACCOUNT_INDEX,
                 })?;
 
             let utxos: Vec<_> = account.utxos.values().cloned().collect();
@@ -717,21 +715,17 @@ impl AppContext {
 
         let wallet = wm
             .get_wallet(wallet_id)
-            .ok_or_else(|| TaskError::WalletPaymentFailed {
-                detail: "Wallet object not found".to_string(),
-            })?;
+            .ok_or(TaskError::WalletInfoUnavailable)?;
         let wallet_account = wallet
             .accounts
             .standard_bip44_accounts
             .get(&DEFAULT_BIP44_ACCOUNT_INDEX)
-            .ok_or_else(|| TaskError::WalletPaymentFailed {
-                detail: "BIP44 wallet account missing".to_string(),
+            .ok_or(TaskError::MissingBip44Account {
+                index: DEFAULT_BIP44_ACCOUNT_INDEX,
             })?;
         let change_addr = wallet_account
             .derive_change_address(change_index)
-            .map_err(|e| TaskError::WalletPaymentFailed {
-                detail: format!("Failed to derive change address: {e}"),
-            })?;
+            .map_err(|e| TaskError::ChangeAddressDerivation { source: e })?;
 
         loop {
             let scaled_recipients: Vec<(Address, u64)> = recipients
@@ -801,17 +795,15 @@ impl AppContext {
         account_index: u32,
         current_height: u32,
     ) -> Result<u64, TaskError> {
-        let managed_info =
-            wm.get_wallet_info(wallet_id)
-                .ok_or_else(|| TaskError::WalletPaymentFailed {
-                    detail: "Wallet info unavailable".to_string(),
-                })?;
+        let managed_info = wm
+            .get_wallet_info(wallet_id)
+            .ok_or(TaskError::WalletInfoUnavailable)?;
         let collection = managed_info.accounts();
         let account = collection
             .standard_bip44_accounts
             .get(&account_index)
-            .ok_or_else(|| TaskError::WalletPaymentFailed {
-                detail: "BIP44 account missing".to_string(),
+            .ok_or(TaskError::MissingBip44Account {
+                index: account_index,
             })?;
 
         let mut spendable_total = 0u64;
@@ -896,20 +888,16 @@ impl AppContext {
     ) -> Result<Transaction, TaskError> {
         let wallet = wm
             .get_wallet(wallet_id)
-            .ok_or_else(|| TaskError::WalletPaymentFailed {
-                detail: "Wallet object not found".to_string(),
-            })?;
-        let managed_info =
-            wm.get_wallet_info(wallet_id)
-                .ok_or_else(|| TaskError::WalletPaymentFailed {
-                    detail: "Wallet info unavailable".to_string(),
-                })?;
+            .ok_or(TaskError::WalletInfoUnavailable)?;
+        let managed_info = wm
+            .get_wallet_info(wallet_id)
+            .ok_or(TaskError::WalletInfoUnavailable)?;
         let accounts = managed_info.accounts();
         let account = accounts
             .standard_bip44_accounts
             .get(&DEFAULT_BIP44_ACCOUNT_INDEX)
-            .ok_or_else(|| TaskError::WalletPaymentFailed {
-                detail: "BIP44 account missing".to_string(),
+            .ok_or(TaskError::MissingBip44Account {
+                index: DEFAULT_BIP44_ACCOUNT_INDEX,
             })?;
 
         let secp = Secp256k1::new();

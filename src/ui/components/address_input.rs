@@ -393,6 +393,10 @@ impl AddressInput {
                 });
             }
         }
+
+        // Sort alphabetically by address string for consistent dropdown order.
+        self.all_entries
+            .sort_by(|a, b| a.address_string.cmp(&b.address_string));
     }
 
     fn extract_identity_entries(&mut self, identities: &[QualifiedIdentity]) {

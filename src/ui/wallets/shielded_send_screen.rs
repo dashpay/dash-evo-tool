@@ -238,7 +238,7 @@ impl ScreenLike for ShieldedSendScreen {
                 new_notes,
                 balance,
             } if seed_hash == self.seed_hash => {
-                tracing::info!(
+                tracing::debug!(
                     "ShieldedSendScreen: post-transfer sync complete, new_notes={}, balance={} credits",
                     new_notes,
                     balance,

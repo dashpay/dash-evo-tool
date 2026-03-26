@@ -570,7 +570,7 @@ impl AppContext {
             if let Ok(client) = Client::new(url, Auth::CookieFile(cookie_path.clone())) {
                 return Ok(client);
             }
-            tracing::trace!(
+            tracing::debug!(
                 "Failed to authenticate using .cookie file at {:?}, falling back to user/pass",
                 cookie_path,
             );

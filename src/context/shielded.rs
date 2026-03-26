@@ -445,7 +445,7 @@ impl AppContext {
         // Panic during shielded operation loses state for the session — restart recovers.
 
         let result = if matches!(result, Err(TaskError::ShieldedAnchorMismatch { .. })) {
-            tracing::info!(
+            tracing::debug!(
                 "Shielded anchor mismatch during {operation_name} — syncing notes and retrying"
             );
             let sync_result = crate::backend_task::shielded::sync::sync_notes(
@@ -485,7 +485,7 @@ impl AppContext {
             let notes_before = state.unspent_notes().len();
             self.mark_notes_spent(seed_hash, &mut state, spent_nullifiers);
             let notes_after = state.unspent_notes().len();
-            tracing::info!(
+            tracing::debug!(
                 "Shielded {operation_name}: marked {} note(s) spent (unspent notes: {} -> {}), new balance: {} credits",
                 spent_nullifiers.len(),
                 notes_before,

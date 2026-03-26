@@ -137,11 +137,17 @@ impl AppContext {
     }
 
     pub fn bootstrap_wallet_addresses(&self, wallet: &Arc<RwLock<Wallet>>) {
-        if let Ok(mut guard) = wallet.write()
-            && guard.known_addresses.is_empty()
-        {
-            tracing::info!(wallet = %hex::encode(guard.seed_hash()), "Bootstrapping wallet addresses");
-            guard.bootstrap_known_addresses(self);
+        if let Ok(mut guard) = wallet.write() {
+            // Bootstrap when no addresses exist (fresh wallet) or when
+            // platform payment addresses haven't been derived yet (wallet
+            // created with only a Core address via new_from_seed).
+            let has_platform_addresses = guard.watched_addresses.values().any(|info| {
+                info.path_reference == crate::model::wallet::DerivationPathReference::PlatformPayment
+            });
+            if guard.known_addresses.is_empty() || !has_platform_addresses {
+                tracing::info!(wallet = %hex::encode(guard.seed_hash()), "Bootstrapping wallet addresses");
+                guard.bootstrap_known_addresses(self);
+            }
         }
     }
 

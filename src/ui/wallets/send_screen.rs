@@ -1534,7 +1534,7 @@ impl WalletSendScreen {
         }
 
         // Sort addresses by balance descending (greedy allocation)
-        let mut sorted_addrs = addresses.clone();
+        let mut sorted_addrs = addresses;
         sorted_addrs.sort_by(|a, b| b.2.cmp(&a.2));
 
         let total_available: u64 = sorted_addrs.iter().map(|(_, _, b)| b).sum();
@@ -2089,20 +2089,29 @@ impl WalletSendScreen {
         } else {
             None
         };
-        let loaded_identities: Vec<_> = self
-            .get_loaded_identities()
-            .into_iter()
-            .filter(|qi| Some(qi.identity.id()) != source_identity_id)
-            .collect();
-        let shielded_info: Option<(String, u64)> = self.selected_wallet_seed_hash.and_then(|sh| {
-            let states = self.app_context.shielded_states.lock().ok()?;
-            let state = states.get(&sh)?;
-            use dash_sdk::dpp::address_funds::OrchardAddress;
-            let raw = state.keys.default_address.to_raw_address_bytes();
-            let addr = OrchardAddress::from_raw_bytes(&raw).ok()?;
-            Some((addr.to_bech32m_string(self.app_context.network), state.shielded_balance))
-        });
-        let addr_input = self.address_input.get_or_insert_with(|| {
+        // Only load identities and shielded state when building a new AddressInput
+        // (get_or_insert_with fires once). Avoids per-frame DB queries.
+        let addr_input = if self.address_input.is_some() {
+            self.address_input.as_mut().unwrap()
+        } else {
+            let loaded_identities: Vec<_> = self
+                .get_loaded_identities()
+                .into_iter()
+                .filter(|qi| Some(qi.identity.id()) != source_identity_id)
+                .collect();
+            let shielded_info: Option<(String, u64)> =
+                self.selected_wallet_seed_hash.and_then(|sh| {
+                    let states = self.app_context.shielded_states.lock().ok()?;
+                    let state = states.get(&sh)?;
+                    use dash_sdk::dpp::address_funds::OrchardAddress;
+                    let raw = state.keys.default_address.to_raw_address_bytes();
+                    let addr = OrchardAddress::from_raw_bytes(&raw).ok()?;
+                    Some((
+                        addr.to_bech32m_string(self.app_context.network),
+                        state.shielded_balance,
+                    ))
+                });
+            self.address_input.get_or_insert_with(|| {
             let allowed_kinds = match &self.selected_source {
                 Some(SourceSelection::CoreWallet) => {
                     let mut kinds = vec![AddressKind::Core, AddressKind::Platform];
@@ -2163,7 +2172,8 @@ impl WalletSendScreen {
             }
 
             builder
-        });
+        })
+        };
 
         let resp = addr_input.show(ui);
         resp.inner.update(&mut self.validated_destination);

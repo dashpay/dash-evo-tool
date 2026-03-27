@@ -360,16 +360,64 @@ impl ShieldScreen {
                         let our_nonce = base_nonce + 1 + i as u32;
                         match state_transition.broadcast(&sdk, None).await {
                             Ok(_) => {
-                                let wait_ok = state_transition
-                                    .wait_for_response::<StateTransitionProofResult>(&sdk, None)
-                                    .await
-                                    .is_ok();
-                                if !wait_ok {
-                                    tokio::time::sleep(Duration::from_secs(3)).await;
+                                // Address nonces are strictly sequential — Platform
+                                // requires block confirmation before accepting the next
+                                // nonce. Retry wait_for_response to ensure the state
+                                // transition is included in a block before proceeding.
+                                let mut confirmed = false;
+                                for attempt in 0..3 {
+                                    match state_transition
+                                        .wait_for_response::<StateTransitionProofResult>(&sdk, None)
+                                        .await
+                                    {
+                                        Ok(_) => {
+                                            confirmed = true;
+                                            break;
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                "Batch item {} wait_for_response attempt {}: {e}",
+                                                i + 1,
+                                                attempt + 1
+                                            );
+                                            if attempt < 2 {
+                                                tokio::time::sleep(Duration::from_secs(5)).await;
+                                            }
+                                        }
+                                    }
                                 }
-                                app_ctx.bump_platform_address_nonce(&seed_hash, &addr);
-                                if let Ok(mut guard) = stage.lock() {
-                                    *guard = ShieldStage::Complete;
+
+                                if confirmed {
+                                    app_ctx.bump_platform_address_nonce(&seed_hash, &addr);
+                                    if let Ok(mut guard) = stage.lock() {
+                                        *guard = ShieldStage::Complete;
+                                    }
+                                } else {
+                                    // Cannot confirm — nonce chain is broken, cascade-fail
+                                    tracing::error!(
+                                        "Batch item {} broadcast succeeded but confirmation failed after 3 attempts",
+                                        i + 1
+                                    );
+                                    if let Ok(mut guard) = stage.lock() {
+                                        *guard = ShieldStage::Failed {
+                                            error: "Broadcast succeeded but could not confirm. \
+                                                 Remaining items skipped to avoid nonce errors."
+                                                .to_string(),
+                                            st_json: st_repr,
+                                        };
+                                    }
+                                    for remaining in stages.iter().skip(i + 1) {
+                                        if let Ok(mut s) = remaining.lock()
+                                            && !s.is_terminal()
+                                        {
+                                            *s = ShieldStage::Failed {
+                                                error: "Skipped: previous item not confirmed"
+                                                    .to_string(),
+                                                st_json: None,
+                                            };
+                                        }
+                                    }
+                                    break;
                                 }
                             }
                             Err(e) => {

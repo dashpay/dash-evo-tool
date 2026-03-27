@@ -366,13 +366,12 @@ impl ShieldScreen {
                             }
                             Err(e) => {
                                 // Check for AddressInvalidNonceError via typed error chain.
-                                // If our nonce is stale (Platform already past it), fail
-                                // this item but continue — the next item may have a valid nonce.
-                                if let Some(expected) = extract_expected_nonce(&e)
-                                    && our_nonce < expected
-                                {
+                                // On any nonce mismatch, fail this item but continue to the
+                                // next — Platform may catch up (nonce-ahead) or the next item
+                                // may have a valid nonce (stale). Only cascade on non-nonce errors.
+                                if let Some(expected) = extract_expected_nonce(&e) {
                                     tracing::warn!(
-                                        "Batch item {} nonce {} is stale (Platform expects {}), skipping",
+                                        "Batch item {} nonce mismatch: ours={}, Platform expects {}",
                                         i + 1,
                                         our_nonce,
                                         expected
@@ -380,7 +379,7 @@ impl ShieldScreen {
                                     if let Ok(mut guard) = stage.lock() {
                                         *guard = ShieldStage::Failed {
                                             error: format!(
-                                                "Nonce {} is stale (Platform expects {})",
+                                                "Nonce mismatch: sent {}, Platform expects {}",
                                                 our_nonce, expected
                                             ),
                                             st_json: st_repr,
@@ -389,7 +388,7 @@ impl ShieldScreen {
                                     continue;
                                 }
 
-                                // Non-nonce error or nonce-ahead — fail and cascade
+                                // Non-nonce error — fail and cascade
                                 if let Ok(mut guard) = stage.lock() {
                                     *guard = ShieldStage::Failed {
                                         error: format!("Broadcast failed: {e}"),

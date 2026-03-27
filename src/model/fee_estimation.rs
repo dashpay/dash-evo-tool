@@ -651,6 +651,21 @@ pub fn format_credits(credits: u64) -> String {
     }
 }
 
+/// Estimate the fee headroom needed for shielded note selection.
+///
+/// Uses `compute_minimum_shielded_fee` from `dpp` with a conservative estimate
+/// of 2 Orchard actions (the privacy minimum) and a 2× safety multiplier.
+/// This covers all realistic scenarios — to exceed the margin, a transaction
+/// would need 11+ input notes.
+///
+/// Returns the headroom in credits to pass to `select_notes_for_amount`.
+pub fn estimate_shielded_fee_headroom(platform_version: &PlatformVersion) -> u64 {
+    use dash_sdk::dpp::shielded::compute_minimum_shielded_fee;
+    // 2 actions is the Orchard privacy minimum (handles 1-2 input notes).
+    // 2× multiplier provides margin for bundles with more inputs.
+    compute_minimum_shielded_fee(2, platform_version).saturating_mul(2)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -733,5 +748,22 @@ mod tests {
         assert_eq!(format_credits_as_dash(100_000_000_000), "1 DASH");
         assert_eq!(format_credits_as_dash(100_000_000), "0.001 DASH");
         assert_eq!(format_credits_as_dash(100_000), "0.000001 DASH");
+    }
+
+    #[test]
+    fn test_estimate_shielded_fee_headroom() {
+        let platform_version = PlatformVersion::latest();
+        let headroom = estimate_shielded_fee_headroom(platform_version);
+        // Should be roughly 2× the minimum fee for 2 actions.
+        // At current constants: proof_verification(100M) + 2 × (processing(3M) + storage(~8.5M)) ≈ 123M
+        // 2× ≈ 246M. Allow for constant evolution.
+        assert!(
+            headroom > 100_000_000,
+            "headroom should be at least 100M credits (>0.001 DASH)"
+        );
+        assert!(
+            headroom < 2_000_000_000,
+            "headroom should be under 2B credits (<0.02 DASH)"
+        );
     }
 }

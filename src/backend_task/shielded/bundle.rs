@@ -1,7 +1,7 @@
 use crate::backend_task::error::{TaskError, shielded_broadcast_error, shielded_build_error};
 use crate::context::AppContext;
 use crate::context::shielded::get_proving_key;
-use crate::model::fee_estimation::format_credits_as_dash;
+use crate::model::fee_estimation::{estimate_shielded_fee_headroom, format_credits_as_dash};
 use crate::model::wallet::WalletSeedHash;
 use crate::model::wallet::shielded::ShieldedWalletState;
 use dash_sdk::dpp::address_funds::{
@@ -19,16 +19,6 @@ use dash_sdk::grovedb_commitment_tree::{Nullifier, PaymentAddress, ProvingKey};
 use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
-
-/// Fee headroom for shielded note selection (in credits).
-///
-/// When selecting notes to cover a send amount, we add this headroom so the
-/// DPP builder has room for the transition fee. Without it, sending the full
-/// shielded balance fails with "fee exceeds spendable".
-///
-/// Estimated at 0.1 DASH (10,000,000,000 credits). The actual fee is
-/// calculated by the builder and any excess stays as change in the shielded pool.
-const SHIELDED_FEE_HEADROOM: u64 = 10_000_000_000;
 
 /// Wrapper around a cached `ProvingKey` that implements `OrchardProver`.
 struct CachedProver {
@@ -257,8 +247,11 @@ pub async fn shielded_transfer(
     let recipient_addr = OrchardAddress::from_raw_bytes(&recipient_bytes)
         .map_err(|_| TaskError::ShieldedInvalidRecipientAddress)?;
 
-    let (spendable_notes, total_input_value) =
-        select_notes_for_amount(shielded_state, amount, SHIELDED_FEE_HEADROOM)?;
+    let (spendable_notes, total_input_value) = select_notes_for_amount(
+        shielded_state,
+        amount,
+        estimate_shielded_fee_headroom(sdk.version()),
+    )?;
     let change_amount = total_input_value.saturating_sub(amount);
 
     tracing::info!(
@@ -351,8 +344,11 @@ pub async fn unshield_credits(
         key: get_proving_key(),
     };
 
-    let (spendable_notes, total_input_value) =
-        select_notes_for_amount(shielded_state, amount, SHIELDED_FEE_HEADROOM)?;
+    let (spendable_notes, total_input_value) = select_notes_for_amount(
+        shielded_state,
+        amount,
+        estimate_shielded_fee_headroom(sdk.version()),
+    )?;
     let change_amount = total_input_value.saturating_sub(amount);
 
     tracing::info!(
@@ -690,8 +686,11 @@ pub async fn shielded_withdrawal(
 
     let output_script = CoreScript::from_bytes(to_core_address.script_pubkey().to_bytes());
 
-    let (spendable_notes, total_input_value) =
-        select_notes_for_amount(shielded_state, amount, SHIELDED_FEE_HEADROOM)?;
+    let (spendable_notes, total_input_value) = select_notes_for_amount(
+        shielded_state,
+        amount,
+        estimate_shielded_fee_headroom(sdk.version()),
+    )?;
     let change_amount = total_input_value.saturating_sub(amount);
 
     tracing::info!(

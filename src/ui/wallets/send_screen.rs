@@ -2059,8 +2059,19 @@ impl WalletSendScreen {
 
     fn render_destination_input(&mut self, ui: &mut Ui) {
         let developer_mode = self.app_context.is_developer_mode();
-        // Pre-load data outside the closure to avoid double-borrow of self
-        let loaded_identities = self.get_loaded_identities();
+        // Pre-load data outside the closure to avoid double-borrow of self.
+        // Filter out the source identity (if any) to prevent self-sends.
+        let source_identity_id = if let Some(SourceSelection::Identity(qi)) = &self.selected_source
+        {
+            Some(qi.identity.id())
+        } else {
+            None
+        };
+        let loaded_identities: Vec<_> = self
+            .get_loaded_identities()
+            .into_iter()
+            .filter(|qi| Some(qi.identity.id()) != source_identity_id)
+            .collect();
         let shielded_info: Option<(String, u64)> = self.selected_wallet_seed_hash.and_then(|sh| {
             let states = self.app_context.shielded_states.lock().ok()?;
             let state = states.get(&sh)?;

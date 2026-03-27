@@ -1,7 +1,7 @@
 use crate::backend_task::error::{TaskError, shielded_broadcast_error, shielded_build_error};
 use crate::context::AppContext;
 use crate::context::shielded::get_proving_key;
-use crate::model::fee_estimation::{estimate_shielded_fee_headroom, format_credits_as_dash};
+use crate::model::fee_estimation::{format_credits_as_dash, shielded_fee_for_actions};
 use crate::model::wallet::WalletSeedHash;
 use crate::model::wallet::shielded::ShieldedWalletState;
 use dash_sdk::dpp::address_funds::{
@@ -13,6 +13,7 @@ use dash_sdk::dpp::shielded::builder::{
     OrchardProver, SpendableNote, build_shield_transition, build_shielded_transfer_transition,
     build_shielded_withdrawal_transition, build_unshield_transition,
 };
+use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::dpp::withdrawal::Pooling;
 use dash_sdk::grovedb_commitment_tree::{Nullifier, PaymentAddress, ProvingKey};
 use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
@@ -246,17 +247,18 @@ pub async fn shielded_transfer(
     let recipient_addr = OrchardAddress::from_raw_bytes(&recipient_bytes)
         .map_err(|_| TaskError::ShieldedInvalidRecipientAddress)?;
 
-    let (spendable_notes, total_input_value) = select_notes_for_amount(
-        shielded_state,
-        amount,
-        estimate_shielded_fee_headroom(sdk.version()),
-    )?;
-    let change_amount = total_input_value.saturating_sub(amount);
+    let (spendable_notes, total_input_value, exact_fee) =
+        select_notes_with_fee(shielded_state, amount, 2, sdk.version())?;
+    let change_amount = total_input_value
+        .saturating_sub(amount)
+        .saturating_sub(exact_fee);
 
     tracing::info!(
-        "Shielded transfer: sending {} ({} credits), spending {} input note(s) totalling {} ({} credits), change: {} ({} credits)",
+        "Shielded transfer: sending {} ({} credits), fee {} ({} credits), spending {} input note(s) totalling {} ({} credits), change: {} ({} credits)",
         format_credits_as_dash(amount),
         amount,
+        format_credits_as_dash(exact_fee),
+        exact_fee,
         spendable_notes.len(),
         format_credits_as_dash(total_input_value),
         total_input_value,
@@ -306,7 +308,7 @@ pub async fn shielded_transfer(
         anchor,
         &prover,
         [0u8; 36],
-        None,
+        Some(exact_fee),
         sdk.version(),
     )
     .map_err(|e| shielded_build_error(e.to_string()))?;
@@ -343,17 +345,18 @@ pub async fn unshield_credits(
         key: get_proving_key(),
     };
 
-    let (spendable_notes, total_input_value) = select_notes_for_amount(
-        shielded_state,
-        amount,
-        estimate_shielded_fee_headroom(sdk.version()),
-    )?;
-    let change_amount = total_input_value.saturating_sub(amount);
+    let (spendable_notes, total_input_value, exact_fee) =
+        select_notes_with_fee(shielded_state, amount, 1, sdk.version())?;
+    let change_amount = total_input_value
+        .saturating_sub(amount)
+        .saturating_sub(exact_fee);
 
     tracing::info!(
-        "Unshield credits: {} ({} credits), spending {} input note(s) totalling {} ({} credits), change: {} ({} credits)",
+        "Unshield credits: {} ({} credits), fee {} ({} credits), spending {} input note(s) totalling {} ({} credits), change: {} ({} credits)",
         format_credits_as_dash(amount),
         amount,
+        format_credits_as_dash(exact_fee),
+        exact_fee,
         spendable_notes.len(),
         format_credits_as_dash(total_input_value),
         total_input_value,
@@ -403,7 +406,7 @@ pub async fn unshield_credits(
         anchor,
         &prover,
         [0u8; 36],
-        None,
+        Some(exact_fee),
         sdk.version(),
     )
     .map_err(|e| shielded_build_error(e.to_string()))?;
@@ -654,17 +657,18 @@ pub async fn shielded_withdrawal(
 
     let output_script = CoreScript::from_bytes(to_core_address.script_pubkey().to_bytes());
 
-    let (spendable_notes, total_input_value) = select_notes_for_amount(
-        shielded_state,
-        amount,
-        estimate_shielded_fee_headroom(sdk.version()),
-    )?;
-    let change_amount = total_input_value.saturating_sub(amount);
+    let (spendable_notes, total_input_value, exact_fee) =
+        select_notes_with_fee(shielded_state, amount, 1, sdk.version())?;
+    let change_amount = total_input_value
+        .saturating_sub(amount)
+        .saturating_sub(exact_fee);
 
     tracing::info!(
-        "Shielded withdrawal: {} ({} credits) to core address, spending {} input note(s) totalling {} ({} credits), change: {} ({} credits)",
+        "Shielded withdrawal: {} ({} credits) to core address, fee {} ({} credits), spending {} input note(s) totalling {} ({} credits), change: {} ({} credits)",
         format_credits_as_dash(amount),
         amount,
+        format_credits_as_dash(exact_fee),
+        exact_fee,
         spendable_notes.len(),
         format_credits_as_dash(total_input_value),
         total_input_value,
@@ -716,7 +720,7 @@ pub async fn shielded_withdrawal(
         anchor,
         &prover,
         [0u8; 36],
-        None,
+        Some(exact_fee),
         sdk.version(),
     )
     .map_err(|e| shielded_build_error(e.to_string()))?;
@@ -735,6 +739,49 @@ pub async fn shielded_withdrawal(
     );
 
     Ok(spent_nullifiers)
+}
+
+/// Select notes sufficient to cover `amount` plus the exact shielded fee.
+///
+/// Uses an iterative approach:
+/// 1. Estimate fee for `min_actions` (the builder's minimum action count)
+/// 2. Select notes for amount + estimated fee
+/// 3. Compute exact fee from actual note count
+/// 4. If insufficient, re-select with exact fee; repeat (converges in 2-3 iterations)
+///
+/// Returns the selected notes, total input value, and the exact fee.
+fn select_notes_with_fee<'a>(
+    shielded_state: &'a ShieldedWalletState,
+    amount: u64,
+    min_actions: usize,
+    platform_version: &PlatformVersion,
+) -> Result<
+    (
+        Vec<&'a crate::model::wallet::shielded::ShieldedNote>,
+        u64,
+        u64,
+    ),
+    TaskError,
+> {
+    let mut fee_estimate = shielded_fee_for_actions(min_actions, platform_version);
+
+    for _ in 0..5 {
+        let (notes, total) = select_notes_for_amount(shielded_state, amount, fee_estimate)?;
+        let num_actions = notes.len().max(min_actions);
+        let exact_fee = shielded_fee_for_actions(num_actions, platform_version);
+
+        if total >= amount.saturating_add(exact_fee) {
+            return Ok((notes, total, exact_fee));
+        }
+
+        fee_estimate = exact_fee;
+    }
+
+    // Final attempt with last computed fee
+    let (notes, total) = select_notes_for_amount(shielded_state, amount, fee_estimate)?;
+    let num_actions = notes.len().max(min_actions);
+    let exact_fee = shielded_fee_for_actions(num_actions, platform_version);
+    Ok((notes, total, exact_fee))
 }
 
 /// Select unspent notes to cover `amount + fee_headroom` using a greedy algorithm.

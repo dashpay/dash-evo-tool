@@ -651,19 +651,13 @@ pub fn format_credits(credits: u64) -> String {
     }
 }
 
-/// Estimate the fee headroom needed for shielded note selection.
+/// Compute the exact shielded fee for a given number of Orchard actions.
 ///
-/// Uses `compute_minimum_shielded_fee` from `dpp` with a conservative estimate
-/// of 2 Orchard actions (the privacy minimum) and a 2× safety multiplier.
-/// This covers all realistic scenarios — to exceed the margin, a transaction
-/// would need 11+ input notes.
-///
-/// Returns the headroom in credits to pass to `select_notes_for_amount`.
-pub fn estimate_shielded_fee_headroom(platform_version: &PlatformVersion) -> u64 {
+/// Wraps `compute_minimum_shielded_fee` from `dpp`. Use this to calculate
+/// the fee after note selection, when the action count is known.
+pub fn shielded_fee_for_actions(num_actions: usize, platform_version: &PlatformVersion) -> u64 {
     use dash_sdk::dpp::shielded::compute_minimum_shielded_fee;
-    // 2 actions is the Orchard privacy minimum (handles 1-2 input notes).
-    // 2× multiplier provides margin for bundles with more inputs.
-    compute_minimum_shielded_fee(2, platform_version).saturating_mul(2)
+    compute_minimum_shielded_fee(num_actions, platform_version)
 }
 
 #[cfg(test)]
@@ -751,19 +745,37 @@ mod tests {
     }
 
     #[test]
-    fn test_estimate_shielded_fee_headroom() {
+    fn test_shielded_fee_for_actions() {
         let platform_version = PlatformVersion::latest();
-        let headroom = estimate_shielded_fee_headroom(platform_version);
-        // Should be roughly 2× the minimum fee for 2 actions.
-        // At current constants: proof_verification(100M) + 2 × (processing(3M) + storage(~8.5M)) ≈ 123M
-        // 2× ≈ 246M. Allow for constant evolution.
+
+        let fee_2 = shielded_fee_for_actions(2, platform_version);
+        let fee_3 = shielded_fee_for_actions(3, platform_version);
+        let fee_5 = shielded_fee_for_actions(5, platform_version);
+        let fee_10 = shielded_fee_for_actions(10, platform_version);
+
+        // Fees should be positive and increase with action count
+        assert!(fee_2 > 0, "fee for 2 actions should be positive");
+        assert!(fee_3 > fee_2, "fee for 3 actions should exceed fee for 2");
+        assert!(fee_5 > fee_3, "fee for 5 actions should exceed fee for 3");
+        assert!(fee_10 > fee_5, "fee for 10 actions should exceed fee for 5");
+
+        // Sanity bounds: fee for 2 actions should be in a reasonable range
         assert!(
-            headroom > 100_000_000,
-            "headroom should be at least 100M credits (>0.001 DASH)"
+            fee_2 > 50_000_000,
+            "fee for 2 actions should be at least 50M credits"
         );
         assert!(
-            headroom < 2_000_000_000,
-            "headroom should be under 2B credits (<0.02 DASH)"
+            fee_2 < 1_000_000_000,
+            "fee for 2 actions should be under 1B credits"
+        );
+
+        // Fee growth should be roughly linear (per-action cost is constant)
+        let per_action_cost_low = (fee_5 - fee_2) / 3;
+        let per_action_cost_high = (fee_10 - fee_5) / 5;
+        let ratio = per_action_cost_low as f64 / per_action_cost_high as f64;
+        assert!(
+            (0.8..=1.2).contains(&ratio),
+            "per-action cost should be roughly constant, got ratio {ratio}"
         );
     }
 }

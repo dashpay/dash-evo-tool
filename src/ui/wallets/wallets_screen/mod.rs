@@ -159,6 +159,9 @@ pub struct WalletsBalancesScreen {
     /// Cached filtered transaction indices for the currently selected wallet.
     /// Invalidated (set to None) on wallet switch or transaction updates.
     cached_tx_indices: Option<Vec<usize>>,
+    /// Transaction count at the time `cached_tx_indices` was last built.
+    /// Used to detect list growth that doesn't make existing indices OOB.
+    cached_tx_source_len: Option<usize>,
 }
 
 impl WalletsBalancesScreen {
@@ -268,6 +271,7 @@ impl WalletsBalancesScreen {
             pending_list_wallet_hash: None,
             pending_list_is_single_key: false,
             cached_tx_indices: None,
+            cached_tx_source_len: None,
         }
     }
 
@@ -368,6 +372,7 @@ impl WalletsBalancesScreen {
         self.selected_account = None;
         self.selected_account_tab = AccountTab::default();
         self.cached_tx_indices = None;
+        self.cached_tx_source_len = None;
 
         self.shielded_tab_view =
             seed_hash.map(|hash| ShieldedTabView::new(&self.app_context, hash));
@@ -469,6 +474,7 @@ impl WalletsBalancesScreen {
         self.mine_dialog.address_input = None;
         self.mine_dialog.validated_address = None;
         self.cached_tx_indices = None;
+        self.cached_tx_source_len = None;
     }
 
     fn add_receiving_address(&mut self) {
@@ -1545,14 +1551,19 @@ impl WalletsBalancesScreen {
         // Filter to transactions involving this wallet's addresses.
         // The `is_ours` flag is set by both RPC and SPV paths for all
         // transactions that belong to this wallet (sends and receives).
-        // Invalidate cache if transaction count changed (wallet refreshed).
-        if let Some(ref cached) = self.cached_tx_indices
-            && cached.iter().any(|&i| i >= wallet_guard.transactions.len())
+        // Invalidate cache when source tx count changes or indices go stale.
+        let tx_len = wallet_guard.transactions.len();
+        if self.cached_tx_source_len != Some(tx_len)
+            || self
+                .cached_tx_indices
+                .as_ref()
+                .is_some_and(|cached| cached.iter().any(|&i| i >= tx_len))
         {
             self.cached_tx_indices = None;
+            self.cached_tx_source_len = Some(tx_len);
         }
         let relevant_indices = self.cached_tx_indices.get_or_insert_with(|| {
-            (0..wallet_guard.transactions.len())
+            (0..tx_len)
                 .filter(|&i| wallet_guard.transactions[i].is_ours)
                 .collect()
         });
@@ -2748,6 +2759,7 @@ impl ScreenLike for WalletsBalancesScreen {
             crate::ui::BackendTaskSuccessResult::RefreshedWallet { warning } => {
                 self.refreshing = false;
                 self.cached_tx_indices = None;
+                self.cached_tx_source_len = None;
                 // Refresh the cached platform sync info so the panel shows
                 // updated timestamps and block heights after a wallet sync.
                 let seed_hash = self

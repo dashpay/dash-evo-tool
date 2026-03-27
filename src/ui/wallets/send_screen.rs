@@ -1446,6 +1446,7 @@ impl WalletSendScreen {
             crate::backend_task::shielded::ShieldedTask::ShieldFromAssetLock {
                 seed_hash,
                 amount_duffs,
+                source_address: None,
             },
         )))
     }
@@ -1746,6 +1747,12 @@ impl WalletSendScreen {
             .as_ref()
             .and_then(|v| v.as_identity_id().copied())
             .ok_or_else(|| "Invalid identity ID".to_string())?;
+
+        if to_identity_id == qualified_identity.identity.id() {
+            return Err(
+                "Cannot transfer to the same identity. Choose a different destination.".to_string(),
+            );
+        }
 
         self.mark_sending();
         Ok(AppAction::BackendTask(BackendTask::IdentityTask(

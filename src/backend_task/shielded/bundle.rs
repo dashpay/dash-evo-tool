@@ -8,6 +8,7 @@ use dash_sdk::dpp::address_funds::{
     AddressFundsFeeStrategy, AddressFundsFeeStrategyStep, OrchardAddress, PlatformAddress,
 };
 use dash_sdk::dpp::dashcore::Address;
+use dash_sdk::dpp::dashcore::{OutPoint, TxOut};
 use dash_sdk::dpp::identity::core_script::CoreScript;
 use dash_sdk::dpp::shielded::builder::{
     OrchardProver, SpendableNote, build_shield_transition, build_shielded_transfer_transition,
@@ -16,7 +17,7 @@ use dash_sdk::dpp::shielded::builder::{
 use dash_sdk::dpp::withdrawal::Pooling;
 use dash_sdk::grovedb_commitment_tree::{Nullifier, PaymentAddress, ProvingKey};
 use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
 /// Fee headroom for shielded note selection (in credits).
@@ -25,9 +26,9 @@ use std::sync::{Arc, Mutex};
 /// DPP builder has room for the transition fee. Without it, sending the full
 /// shielded balance fails with "fee exceeds spendable".
 ///
-/// Estimated at ~0.1 DASH (10M credits). The actual fee is calculated by
-/// the builder and any excess stays as change in the shielded pool.
-const SHIELDED_FEE_HEADROOM: u64 = 10_000_000;
+/// Estimated at 0.1 DASH (10,000,000,000 credits). The actual fee is
+/// calculated by the builder and any excess stays as change in the shielded pool.
+const SHIELDED_FEE_HEADROOM: u64 = 10_000_000_000;
 
 /// Wrapper around a cached `ProvingKey` that implements `OrchardProver`.
 struct CachedProver {
@@ -439,6 +440,7 @@ pub async fn shield_from_asset_lock(
     seed_hash: &WalletSeedHash,
     shielded_state: &ShieldedWalletState,
     amount_duffs: u64,
+    source_address: Option<&Address>,
 ) -> Result<u64, TaskError> {
     use dash_sdk::dashcore_rpc::RpcApi;
     use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
@@ -470,29 +472,63 @@ pub async fn shield_from_asset_lock(
             .write()
             .map_err(|_| TaskError::LockPoisoned { resource: "wallet" })?;
 
-        match wallet.generic_asset_lock_transaction(
+        // If a source address is specified, temporarily restrict the wallet's UTXO map
+        // to that address so `generic_asset_lock_transaction` only draws from it.
+        // We restore the full map after the transaction is built so that Step 4
+        // (outpoint-based UTXO removal) operates on the complete set.
+        let restrict_utxos = |wallet: &mut crate::model::wallet::Wallet,
+                              addr: &Address|
+         -> HashMap<Address, HashMap<OutPoint, TxOut>> {
+            let filtered = wallet
+                .utxos
+                .get(addr)
+                .map(|m| [(addr.clone(), m.clone())].into_iter().collect())
+                .unwrap_or_default();
+            std::mem::replace(&mut wallet.utxos, filtered)
+        };
+
+        // Apply address filter and save original UTXOs for later restoration.
+        let mut saved_utxos = source_address.map(|addr| restrict_utxos(&mut wallet, addr));
+
+        // First attempt
+        let first_result = wallet.generic_asset_lock_transaction(
             app_context.as_ref(),
             app_context.network,
             asset_lock_duffs,
             false,
-        ) {
-            Ok((tx, private_key, address, _change, utxos)) => (tx, private_key, address, utxos),
-            Err(_) => {
-                wallet
-                    .reload_utxos(app_context.as_ref())
-                    .map_err(|detail| TaskError::WalletUtxoReloadFailed { detail })?;
+        );
 
-                let (tx, private_key, address, _change, utxos) = wallet
-                    .generic_asset_lock_transaction(
-                        app_context.as_ref(),
-                        app_context.network,
-                        asset_lock_duffs,
-                        false,
-                    )
-                    .map_err(shielded_build_error)?;
-                (tx, private_key, address, utxos)
+        if first_result.is_err() {
+            // Restore full UTXOs before reload so reload can refresh the complete set.
+            if let Some(orig) = saved_utxos.take() {
+                wallet.utxos = orig;
             }
+            wallet
+                .reload_utxos(app_context.as_ref())
+                .map_err(|detail| TaskError::WalletUtxoReloadFailed { detail })?;
+            // Re-apply address filter on the freshly reloaded UTXOs.
+            saved_utxos = source_address.map(|addr| restrict_utxos(&mut wallet, addr));
         }
+
+        let (tx, private_key, address, _change, utxos) = if let Ok(ok) = first_result {
+            ok
+        } else {
+            wallet
+                .generic_asset_lock_transaction(
+                    app_context.as_ref(),
+                    app_context.network,
+                    asset_lock_duffs,
+                    false,
+                )
+                .map_err(shielded_build_error)?
+        };
+
+        // Restore full UTXO map; Step 4 removes used outpoints by key from the full set.
+        if let Some(orig) = saved_utxos {
+            wallet.utxos = orig;
+        }
+
+        (tx, private_key, address, utxos)
     };
 
     let tx_id = asset_lock_transaction.txid();

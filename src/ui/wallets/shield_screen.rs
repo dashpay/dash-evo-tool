@@ -147,13 +147,17 @@ impl ShieldScreen {
     /// Read the core wallet balance in duffs.
     fn read_core_balance_duffs(&self) -> u64 {
         let wallets = self.app_context.wallets.read().unwrap();
-        wallets
-            .get(&self.seed_hash)
-            .map(|w| {
-                let wallet = w.read().unwrap();
-                wallet.total_balance_duffs()
-            })
-            .unwrap_or(0)
+        let Some(wallet_arc) = wallets.get(&self.seed_hash) else {
+            return 0;
+        };
+        let wallet = wallet_arc.read().unwrap();
+        // If a specific Core address is selected, return its individual balance
+        // so the max-amount display matches the funds actually available for this address.
+        if let Some(addr) = self.validated_source.as_ref().and_then(|v| v.as_core()) {
+            wallet.address_balances.get(addr).copied().unwrap_or(0)
+        } else {
+            wallet.total_balance_duffs()
+        }
     }
 
     /// Build a single ShieldCredits task with optional nonce override.
@@ -724,11 +728,17 @@ impl ScreenLike for ShieldScreen {
                             }
                             Some(AddressKind::Core) => {
                                 let amount_duffs = amount / CREDITS_PER_DUFF;
+                                let source_address = self
+                                    .validated_source
+                                    .as_ref()
+                                    .and_then(|v| v.as_core())
+                                    .cloned();
                                 self.status = Status::WaitingForResult;
                                 action = AppAction::BackendTask(BackendTask::ShieldedTask(
                                     ShieldedTask::ShieldFromAssetLock {
                                         seed_hash: self.seed_hash,
                                         amount_duffs,
+                                        source_address,
                                     },
                                 ));
                             }

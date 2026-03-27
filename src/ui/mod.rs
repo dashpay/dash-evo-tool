@@ -869,7 +869,10 @@ impl Screen {
             Screen::DashPayQRGeneratorScreen(screen) => screen.app_context = app_context,
             Screen::DashPayProfileSearchScreen(screen) => screen.app_context = app_context,
             // Shielded screens
-            Screen::ShieldScreen(screen) => screen.app_context = app_context.clone(),
+            Screen::ShieldScreen(screen) => {
+                screen.app_context = app_context.clone();
+                screen.invalidate_address_input();
+            }
             Screen::ShieldedSendScreen(screen) => {
                 screen.app_context = app_context.clone();
                 screen.invalidate_address_input();

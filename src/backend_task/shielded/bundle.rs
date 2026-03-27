@@ -510,7 +510,9 @@ pub async fn shield_from_asset_lock(
     app_context
         .core_client
         .read()
-        .expect("Core client lock was poisoned")
+        .map_err(|_| TaskError::LockPoisoned {
+            resource: "core_client",
+        })?
         .send_raw_transaction(&asset_lock_transaction)?;
 
     // Step 4: Remove used UTXOs from wallet

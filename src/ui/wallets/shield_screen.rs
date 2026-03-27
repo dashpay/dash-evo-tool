@@ -83,6 +83,14 @@ impl ShieldScreen {
         }
     }
 
+    /// Reset the address and amount inputs — called when AppContext switches network.
+    pub(crate) fn invalidate_address_input(&mut self) {
+        self.address_input = None;
+        self.validated_source = None;
+        self.amount_input = None;
+        self.amount = None;
+    }
+
     fn parse_repeat_count(&self) -> u32 {
         self.repeat_count_str
             .trim()
@@ -482,7 +490,7 @@ impl ScreenLike for ShieldScreen {
 
         // Dispatch pending sequential task from previous frame
         if let Some(task) = self.pending_next_task.take() {
-            action = AppAction::BackendTask(task);
+            action |= AppAction::BackendTask(task);
         }
 
         // Dispatch pending refresh task (sync notes after successful shield)

@@ -29,21 +29,29 @@ use std::time::Duration;
 
 /// Extract the expected nonce from an `AddressInvalidNonceError` buried in an SDK error.
 ///
-/// Walks the error chain: `SdkError::StateTransitionBroadcastError` →
-/// `ConsensusError::StateError` → `StateError::AddressInvalidNonceError`.
+/// The error can arrive via two paths:
+/// 1. `Error::StateTransitionBroadcastError` → `cause: ConsensusError` → `AddressInvalidNonceError`
+/// 2. `Error::Protocol(ProtocolError::ConsensusError(...))` → `AddressInvalidNonceError`
 fn extract_expected_nonce(error: &dash_sdk::Error) -> Option<u32> {
+    use dash_sdk::dpp::ProtocolError;
     use dash_sdk::dpp::consensus::ConsensusError;
     use dash_sdk::dpp::consensus::state::state_error::StateError;
 
-    let broadcast_err = match error {
-        dash_sdk::Error::StateTransitionBroadcastError(e) => e,
-        _ => return None,
-    };
-    let consensus = broadcast_err.cause.as_ref()?;
-    match consensus {
-        ConsensusError::StateError(StateError::AddressInvalidNonceError(e)) => {
-            Some(e.expected_nonce())
+    // Helper: extract from a ConsensusError
+    let from_consensus = |c: &ConsensusError| -> Option<u32> {
+        match c {
+            ConsensusError::StateError(StateError::AddressInvalidNonceError(e)) => {
+                Some(e.expected_nonce())
+            }
+            _ => None,
         }
+    };
+
+    match error {
+        // Path 1: broadcast error with consensus cause
+        dash_sdk::Error::StateTransitionBroadcastError(e) => from_consensus(e.cause.as_ref()?),
+        // Path 2: protocol error wrapping consensus error (boxed)
+        dash_sdk::Error::Protocol(ProtocolError::ConsensusError(c)) => from_consensus(c.as_ref()),
         _ => None,
     }
 }

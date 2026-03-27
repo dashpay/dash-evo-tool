@@ -364,6 +364,7 @@ impl ShieldScreen {
 
     /// Render the batch progress UI (used for Platform batch mode).
     fn render_batch_progress(&mut self, ui: &mut egui::Ui, ctx: &Context, action: &mut AppAction) {
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
         let stages_snapshot = self.batch_stages.clone();
         if let Some(stages) = stages_snapshot {
             let lock_stage = |s: &Arc<Mutex<ShieldStage>>| -> ShieldStage {
@@ -394,7 +395,7 @@ impl ShieldScreen {
             if all_done {
                 if failed > 0 {
                     ui.colored_label(
-                        DashColors::ERROR,
+                        DashColors::error_color(dark_mode),
                         format!(
                             "Batch complete: {} succeeded, {} failed out of {}",
                             succeeded,
@@ -404,7 +405,7 @@ impl ShieldScreen {
                     );
                 } else {
                     ui.colored_label(
-                        DashColors::SUCCESS,
+                        DashColors::success_color(dark_mode),
                         format!("Batch complete: all {} succeeded", stages.len()),
                     );
                 }
@@ -443,12 +444,12 @@ impl ShieldScreen {
                         let text = format!("[{}/{}] {}", i + 1, total, stage.label());
 
                         let color = match stage {
-                            ShieldStage::Queued => DashColors::GRAY,
+                            ShieldStage::Queued => DashColors::muted_color(dark_mode),
                             ShieldStage::BuildingProof { .. } => DashColors::DASH_BLUE,
-                            ShieldStage::WaitingToBroadcast => DashColors::INFO,
-                            ShieldStage::Broadcasting => DashColors::WARNING,
-                            ShieldStage::Complete => DashColors::SUCCESS,
-                            ShieldStage::Failed { .. } => DashColors::ERROR,
+                            ShieldStage::WaitingToBroadcast => DashColors::info_color(dark_mode),
+                            ShieldStage::Broadcasting => DashColors::warning_color(dark_mode),
+                            ShieldStage::Complete => DashColors::success_color(dark_mode),
+                            ShieldStage::Failed { .. } => DashColors::error_color(dark_mode),
                         };
 
                         if let Some(json_str) = st_json {
@@ -535,6 +536,7 @@ impl ScreenLike for ShieldScreen {
         }
 
         island_central_panel(ctx, |ui| {
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
             ui.heading("Shield");
             ui.add_space(10.0);
             ui.label("Move funds from a platform or core address into the shielded pool.");
@@ -587,14 +589,14 @@ impl ScreenLike for ShieldScreen {
                         ui.horizontal(|ui| {
                             ui.label(
                                 RichText::new(format!("Available: {:.8} DASH", balance_dash))
-                                    .color(DashColors::SUCCESS),
+                                    .color(DashColors::success_color(dark_mode)),
                             );
                             if self.app_context.is_developer_mode()
                                 && let Some(nonce) = self.read_base_nonce()
                             {
                                 ui.label(
                                     RichText::new(format!("(nonce: {})", nonce))
-                                        .color(DashColors::GRAY)
+                                        .color(DashColors::muted_color(dark_mode))
                                         .small(),
                                 );
                             }
@@ -611,7 +613,7 @@ impl ScreenLike for ShieldScreen {
                             "Available core wallet balance: {:.8} DASH",
                             dash_balance
                         ))
-                        .color(DashColors::SUCCESS),
+                        .color(DashColors::success_color(dark_mode)),
                     );
                     ui.add_space(5.0);
                 }

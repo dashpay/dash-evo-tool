@@ -1507,13 +1507,16 @@ impl WalletSendScreen {
         )))
     }
 
-    /// Shield credits from Platform address to shielded pool (Platform -> Shielded).
+    /// Shield credits from Platform address(es) to shielded pool (Platform -> Shielded).
+    ///
+    /// When the requested amount exceeds a single address balance, multiple
+    /// addresses are used — one `ShieldCredits` task per address, dispatched
+    /// sequentially.
     fn send_platform_to_shielded(
         &mut self,
         seed_hash: WalletSeedHash,
         addresses: Vec<(PlatformAddress, Address, u64)>,
     ) -> Result<AppAction, String> {
-        // Shielding from Platform always deposits into the wallet's own shielded pool.
         if !matches!(
             &self.validated_destination,
             Some(ValidatedAddress::Shielded(_))
@@ -1530,31 +1533,50 @@ impl WalletSendScreen {
             return Err("Amount must be greater than 0".to_string());
         }
 
-        // Select the highest-balance platform address as the source
-        let (from_address, from_balance) = addresses
-            .iter()
-            .max_by_key(|(_, _, balance)| *balance)
-            .map(|(platform_addr, _, balance)| (*platform_addr, *balance))
-            .ok_or_else(|| "No platform addresses available".to_string())?;
+        // Sort addresses by balance descending (greedy allocation)
+        let mut sorted_addrs = addresses.clone();
+        sorted_addrs.sort_by(|a, b| b.2.cmp(&a.2));
 
-        // Check that the selected source address has sufficient balance
-        if amount_credits > from_balance {
+        let total_available: u64 = sorted_addrs.iter().map(|(_, _, b)| b).sum();
+        if amount_credits > total_available {
             return Err(format!(
-                "Insufficient platform balance. Need {} but highest address has {}",
+                "Insufficient platform balance. Need {} but total available is {}.",
                 format_credits_as_dash(amount_credits),
-                format_credits_as_dash(from_balance)
+                format_credits_as_dash(total_available)
             ));
         }
 
+        // Allocate amount across addresses (highest balance first)
+        let mut remaining = amount_credits;
+        let mut tasks: Vec<BackendTask> = Vec::new();
+        for (platform_addr, _, balance) in &sorted_addrs {
+            if remaining == 0 {
+                break;
+            }
+            let spend = remaining.min(*balance);
+            if spend == 0 {
+                continue;
+            }
+            tasks.push(BackendTask::ShieldedTask(
+                crate::backend_task::shielded::ShieldedTask::ShieldCredits {
+                    seed_hash,
+                    amount: spend,
+                    from_address: *platform_addr,
+                    nonce_override: None,
+                },
+            ));
+            remaining -= spend;
+        }
+
         self.mark_sending();
-        Ok(AppAction::BackendTask(BackendTask::ShieldedTask(
-            crate::backend_task::shielded::ShieldedTask::ShieldCredits {
-                seed_hash,
-                amount: amount_credits,
-                from_address,
-                nonce_override: None,
-            },
-        )))
+        if tasks.len() == 1 {
+            Ok(AppAction::BackendTask(tasks.into_iter().next().unwrap()))
+        } else {
+            Ok(AppAction::BackendTasks(
+                tasks,
+                crate::app::BackendTasksExecutionMode::Sequential,
+            ))
+        }
     }
 
     /// Top up an identity from Platform addresses (Platform -> Identity).

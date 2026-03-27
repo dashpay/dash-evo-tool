@@ -27,6 +27,27 @@ use egui::RichText;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+/// Extract the expected nonce from an `AddressInvalidNonceError` buried in an SDK error.
+///
+/// Walks the error chain: `SdkError::StateTransitionBroadcastError` →
+/// `ConsensusError::StateError` → `StateError::AddressInvalidNonceError`.
+fn extract_expected_nonce(error: &dash_sdk::Error) -> Option<u32> {
+    use dash_sdk::dpp::consensus::ConsensusError;
+    use dash_sdk::dpp::consensus::state::state_error::StateError;
+
+    let broadcast_err = match error {
+        dash_sdk::Error::StateTransitionBroadcastError(e) => e,
+        _ => return None,
+    };
+    let consensus = broadcast_err.cause.as_ref()?;
+    match consensus {
+        ConsensusError::StateError(StateError::AddressInvalidNonceError(e)) => {
+            Some(e.expected_nonce())
+        }
+        _ => None,
+    }
+}
+
 #[derive(PartialEq)]
 enum Status {
     NotStarted,
@@ -328,6 +349,7 @@ impl ShieldScreen {
                                     state_transition.serialize_to_bytes().map(hex::encode).ok()
                                 });
 
+                        let our_nonce = base_nonce + 1 + i as u32;
                         match state_transition.broadcast(&sdk, None).await {
                             Ok(_) => {
                                 let wait_ok = state_transition
@@ -343,6 +365,31 @@ impl ShieldScreen {
                                 }
                             }
                             Err(e) => {
+                                // Check for AddressInvalidNonceError via typed error chain.
+                                // If our nonce is stale (Platform already past it), fail
+                                // this item but continue — the next item may have a valid nonce.
+                                if let Some(expected) = extract_expected_nonce(&e)
+                                    && our_nonce < expected
+                                {
+                                    tracing::warn!(
+                                        "Batch item {} nonce {} is stale (Platform expects {}), skipping",
+                                        i + 1,
+                                        our_nonce,
+                                        expected
+                                    );
+                                    if let Ok(mut guard) = stage.lock() {
+                                        *guard = ShieldStage::Failed {
+                                            error: format!(
+                                                "Nonce {} is stale (Platform expects {})",
+                                                our_nonce, expected
+                                            ),
+                                            st_json: st_repr,
+                                        };
+                                    }
+                                    continue;
+                                }
+
+                                // Non-nonce error or nonce-ahead — fail and cascade
                                 if let Ok(mut guard) = stage.lock() {
                                     *guard = ShieldStage::Failed {
                                         error: format!("Broadcast failed: {e}"),

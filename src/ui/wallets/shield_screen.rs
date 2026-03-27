@@ -5,21 +5,25 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::address::{AddressKind, ValidatedAddress};
 use crate::model::amount::Amount;
+use crate::model::fee_estimation::shielded_fee_for_actions;
 use crate::model::wallet::WalletSeedHash;
 use crate::ui::components::ComponentResponse;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::address_input::AddressInput;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use dash_sdk::dpp::serialization::PlatformSerializable;
 use dash_sdk::dpp::state_transition::proof_result::StateTransitionProofResult;
+use dash_sdk::dpp::version::PlatformVersion;
 use eframe::egui::{self, Context};
-use egui::{Color32, RichText};
+use egui::RichText;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -39,8 +43,6 @@ pub struct ShieldScreen {
     amount_input: Option<AmountInput>,
     amount: Option<Amount>,
     status: Status,
-    error_message: Option<String>,
-    success_message: Option<String>,
     // Batch mode (dev only, Platform flow only)
     repeat_count_str: String,
     parallel: bool,
@@ -68,8 +70,6 @@ impl ShieldScreen {
             amount_input: None,
             amount: None,
             status: Status::NotStarted,
-            error_message: None,
-            success_message: None,
             repeat_count_str: "1".to_string(),
             parallel: false,
             batch_total: 0,
@@ -189,31 +189,53 @@ impl ShieldScreen {
     }
 
     /// Check if the sequential batch is complete and update status accordingly.
-    fn check_batch_complete(&mut self) {
+    fn check_batch_complete(&mut self, ctx: &Context) {
         if self.batch_stages.is_none()
             && self.batch_succeeded + self.batch_failed >= self.batch_total
         {
             self.status = Status::Complete;
-            self.success_message = Some(format!(
-                "Batch complete: {} succeeded, {} failed out of {}",
-                self.batch_succeeded, self.batch_failed, self.batch_total,
-            ));
+            MessageBanner::set_global(
+                ctx,
+                format!(
+                    "Batch complete: {} succeeded, {} failed out of {}",
+                    self.batch_succeeded, self.batch_failed, self.batch_total,
+                ),
+                if self.batch_failed > 0 {
+                    MessageType::Warning
+                } else {
+                    MessageType::Success
+                },
+            );
         }
     }
 
     /// Spawn parallel batch: build proofs in parallel, broadcast in nonce order.
-    fn spawn_parallel_batch(&mut self, amount: u64, addr: PlatformAddress, repeat: u32) {
+    fn spawn_parallel_batch(
+        &mut self,
+        ctx: &Context,
+        amount: u64,
+        addr: PlatformAddress,
+        repeat: u32,
+    ) {
         let base_nonce = match self.read_base_nonce() {
             Some(n) => n,
             None => {
-                self.error_message = Some("Could not read nonce from wallet".to_string());
+                MessageBanner::set_global(
+                    ctx,
+                    "Could not read wallet data. Please try again.",
+                    MessageType::Error,
+                );
                 return;
             }
         };
         let default_address = match self.app_context.shielded_default_address(&self.seed_hash) {
             Some(a) => a,
             None => {
-                self.error_message = Some("Shielded wallet not initialized".to_string());
+                MessageBanner::set_global(
+                    ctx,
+                    "Shielded wallet not initialized. Please set up the shielded wallet first.",
+                    MessageType::Error,
+                );
                 return;
             }
         };
@@ -344,7 +366,17 @@ impl ShieldScreen {
     fn render_batch_progress(&mut self, ui: &mut egui::Ui, ctx: &Context, action: &mut AppAction) {
         let stages_snapshot = self.batch_stages.clone();
         if let Some(stages) = stages_snapshot {
-            let all_done = stages.iter().all(|s| s.lock().unwrap().is_terminal());
+            let lock_stage = |s: &Arc<Mutex<ShieldStage>>| -> ShieldStage {
+                s.lock()
+                    .ok()
+                    .map(|guard| guard.clone())
+                    .unwrap_or(ShieldStage::Failed {
+                        error: "Internal error: lock poisoned".to_string(),
+                        st_json: None,
+                    })
+            };
+
+            let all_done = stages.iter().all(|s| lock_stage(s).is_terminal());
 
             if !all_done {
                 ctx.request_repaint_after(Duration::from_millis(100));
@@ -352,17 +384,17 @@ impl ShieldScreen {
 
             let succeeded = stages
                 .iter()
-                .filter(|s| matches!(*s.lock().unwrap(), ShieldStage::Complete))
+                .filter(|s| matches!(lock_stage(s), ShieldStage::Complete))
                 .count();
             let failed = stages
                 .iter()
-                .filter(|s| matches!(*s.lock().unwrap(), ShieldStage::Failed { .. }))
+                .filter(|s| matches!(lock_stage(s), ShieldStage::Failed { .. }))
                 .count();
 
             if all_done {
                 if failed > 0 {
                     ui.colored_label(
-                        Color32::from_rgb(255, 100, 100),
+                        DashColors::ERROR,
                         format!(
                             "Batch complete: {} succeeded, {} failed out of {}",
                             succeeded,
@@ -372,7 +404,7 @@ impl ShieldScreen {
                     );
                 } else {
                     ui.colored_label(
-                        Color32::from_rgb(50, 180, 50),
+                        DashColors::SUCCESS,
                         format!("Batch complete: all {} succeeded", stages.len()),
                     );
                 }
@@ -390,7 +422,7 @@ impl ShieldScreen {
             let rows: Vec<(ShieldStage, Option<String>)> = stages
                 .iter()
                 .map(|s| {
-                    let s = s.lock().unwrap().clone();
+                    let s = lock_stage(s);
                     let json = if let ShieldStage::Failed { ref st_json, .. } = s {
                         st_json.clone()
                     } else {
@@ -411,14 +443,12 @@ impl ShieldScreen {
                         let text = format!("[{}/{}] {}", i + 1, total, stage.label());
 
                         let color = match stage {
-                            ShieldStage::Queued => Color32::GRAY,
-                            ShieldStage::BuildingProof { .. } => {
-                                crate::ui::theme::DashColors::DASH_BLUE
-                            }
-                            ShieldStage::WaitingToBroadcast => Color32::from_rgb(100, 180, 255),
-                            ShieldStage::Broadcasting => Color32::from_rgb(255, 165, 0),
-                            ShieldStage::Complete => Color32::from_rgb(50, 180, 50),
-                            ShieldStage::Failed { .. } => Color32::from_rgb(220, 60, 60),
+                            ShieldStage::Queued => DashColors::GRAY,
+                            ShieldStage::BuildingProof { .. } => DashColors::DASH_BLUE,
+                            ShieldStage::WaitingToBroadcast => DashColors::INFO,
+                            ShieldStage::Broadcasting => DashColors::WARNING,
+                            ShieldStage::Complete => DashColors::SUCCESS,
+                            ShieldStage::Failed { .. } => DashColors::ERROR,
                         };
 
                         if let Some(json_str) = st_json {
@@ -430,9 +460,11 @@ impl ShieldScreen {
                                     egui::ProgressBar::new(fraction).text(text).fill(color),
                                 );
                                 let btn = egui::Button::new(
-                                    RichText::new("View JSON").color(Color32::WHITE).size(12.0),
+                                    RichText::new("View JSON")
+                                        .color(DashColors::WHITE)
+                                        .size(12.0),
                                 )
-                                .fill(Color32::from_rgb(80, 80, 80));
+                                .fill(DashColors::BUTTON_DISABLED);
                                 if ui
                                     .add_sized([btn_width, 20.0], btn)
                                     .on_hover_text("View state transition JSON")
@@ -508,13 +540,8 @@ impl ScreenLike for ShieldScreen {
             ui.label("Move funds from a platform or core address into the shielded pool.");
             ui.add_space(15.0);
 
-            // Error/success messages
-            if let Some(err) = &self.error_message {
-                ui.colored_label(Color32::from_rgb(255, 100, 100), err);
-                ui.add_space(5.0);
-            }
-            if let Some(msg) = &self.success_message {
-                ui.colored_label(Color32::DARK_GREEN, msg);
+            // When complete, show a Done button below the banner
+            if self.status == Status::Complete {
                 ui.add_space(10.0);
                 if ui.button("Done").clicked() {
                     action = AppAction::PopScreen;
@@ -560,14 +587,14 @@ impl ScreenLike for ShieldScreen {
                         ui.horizontal(|ui| {
                             ui.label(
                                 RichText::new(format!("Available: {:.8} DASH", balance_dash))
-                                    .color(Color32::from_rgb(100, 180, 100)),
+                                    .color(DashColors::SUCCESS),
                             );
                             if self.app_context.is_developer_mode()
                                 && let Some(nonce) = self.read_base_nonce()
                             {
                                 ui.label(
                                     RichText::new(format!("(nonce: {})", nonce))
-                                        .color(Color32::GRAY)
+                                        .color(DashColors::GRAY)
                                         .small(),
                                 );
                             }
@@ -584,7 +611,7 @@ impl ScreenLike for ShieldScreen {
                             "Available core wallet balance: {:.8} DASH",
                             dash_balance
                         ))
-                        .color(Color32::from_rgb(100, 180, 100)),
+                        .color(DashColors::SUCCESS),
                     );
                     ui.add_space(5.0);
                 }
@@ -594,9 +621,27 @@ impl ScreenLike for ShieldScreen {
             // Amount input (only when a source address is selected)
             if self.validated_source.is_some() {
                 let max_credits = match source_kind {
-                    Some(AddressKind::Platform) => self.read_platform_balance(),
+                    Some(AddressKind::Platform) => {
+                        // Use fee for 2 actions (Orchard minimum) with 2× safety margin for UI display
+                        let fee_headroom = shielded_fee_for_actions(2, PlatformVersion::latest())
+                            .saturating_mul(2);
+                        self.read_platform_balance()
+                            .map(|b| b.saturating_sub(fee_headroom))
+                    }
                     Some(AddressKind::Core) => {
-                        Some(self.read_core_balance_duffs() * CREDITS_PER_DUFF)
+                        let balance_duffs = self.read_core_balance_duffs();
+                        let platform_fee_credits = self
+                            .app_context
+                            .fee_estimator()
+                            .min_fees()
+                            .address_funding_asset_lock_cost;
+                        let platform_fee_duffs =
+                            (platform_fee_credits / CREDITS_PER_DUFF).saturating_mul(120) / 100;
+                        let l1_tx_fee_duffs = 500_u64;
+                        let shieldable_duffs = balance_duffs
+                            .saturating_sub(platform_fee_duffs)
+                            .saturating_sub(l1_tx_fee_duffs);
+                        Some(shieldable_duffs * CREDITS_PER_DUFF)
                     }
                     _ => None,
                 };
@@ -671,16 +716,14 @@ impl ScreenLike for ShieldScreen {
                             can_confirm,
                             egui::Button::new(
                                 RichText::new(button_label)
-                                    .color(Color32::WHITE)
+                                    .color(DashColors::WHITE)
                                     .size(16.0),
                             )
-                            .fill(crate::ui::theme::DashColors::DASH_BLUE),
+                            .fill(DashColors::DASH_BLUE),
                         )
                         .clicked()
                         && let Some(amount) = self.amount.as_ref().map(|a| a.value())
                     {
-                        self.error_message = None;
-
                         match source_kind {
                             Some(AddressKind::Platform) => {
                                 let addr = self.selected_platform_address().unwrap();
@@ -698,12 +741,16 @@ impl ScreenLike for ShieldScreen {
                                             total as f64 / CREDITS_PER_DUFF as f64 / 1e8;
                                         let balance_dash =
                                             balance as f64 / CREDITS_PER_DUFF as f64 / 1e8;
-                                        self.error_message = Some(format!(
-                                            "Insufficient balance: {repeat}x {:.8} DASH = {:.8} DASH total, but only {:.8} DASH available",
-                                            amount as f64 / CREDITS_PER_DUFF as f64 / 1e8,
-                                            total_dash,
-                                            balance_dash,
-                                        ));
+                                        MessageBanner::set_global(
+                                            ctx,
+                                            format!(
+                                                "Insufficient balance: {repeat}x {:.8} DASH = {:.8} DASH total, but only {:.8} DASH available. Try a smaller amount.",
+                                                amount as f64 / CREDITS_PER_DUFF as f64 / 1e8,
+                                                total_dash,
+                                                balance_dash,
+                                            ),
+                                            MessageType::Error,
+                                        );
                                         return;
                                     }
                                 }
@@ -714,7 +761,7 @@ impl ScreenLike for ShieldScreen {
                                         self.make_shield_credits_task(amount, addr, None),
                                     );
                                 } else if self.parallel {
-                                    self.spawn_parallel_batch(amount, addr, repeat);
+                                    self.spawn_parallel_batch(ctx, amount, addr, repeat);
                                 } else {
                                     self.batch_total = repeat;
                                     self.batch_succeeded = 0;
@@ -783,13 +830,14 @@ impl ScreenLike for ShieldScreen {
     }
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
+        let ctx = self.app_context.egui_ctx().clone();
         match result {
             BackendTaskSuccessResult::ShieldedCreditsShielded { seed_hash, amount }
                 if seed_hash == self.seed_hash =>
             {
                 if self.status == Status::BatchInProgress {
                     self.batch_succeeded += 1;
-                    self.check_batch_complete();
+                    self.check_batch_complete(&ctx);
                     if self.status == Status::BatchInProgress {
                         self.queue_next_sequential();
                     } else {
@@ -801,7 +849,11 @@ impl ScreenLike for ShieldScreen {
                 } else {
                     self.status = Status::Complete;
                     let dash = amount as f64 / CREDITS_PER_DUFF as f64 / 1e8;
-                    self.success_message = Some(format!("Successfully shielded {:.8} DASH", dash));
+                    MessageBanner::set_global(
+                        &ctx,
+                        format!("Successfully shielded {:.8} DASH", dash),
+                        MessageType::Success,
+                    );
                     self.pending_refresh_task =
                         Some(BackendTask::ShieldedTask(ShieldedTask::SyncNotes {
                             seed_hash: self.seed_hash,
@@ -813,10 +865,11 @@ impl ScreenLike for ShieldScreen {
             {
                 self.status = Status::Complete;
                 let dash = amount as f64 / CREDITS_PER_DUFF as f64 / 1e8;
-                self.success_message = Some(format!(
-                    "Successfully shielded {:.8} DASH from core wallet",
-                    dash
-                ));
+                MessageBanner::set_global(
+                    &ctx,
+                    format!("Successfully shielded {:.8} DASH from core wallet", dash),
+                    MessageType::Success,
+                );
                 self.pending_refresh_task =
                     Some(BackendTask::ShieldedTask(ShieldedTask::SyncNotes {
                         seed_hash: self.seed_hash,
@@ -826,22 +879,17 @@ impl ScreenLike for ShieldScreen {
         }
     }
 
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
-        match message_type {
-            MessageType::Error => {
+    fn display_message(&mut self, _message: &str, message_type: MessageType) {
+        let ctx = self.app_context.egui_ctx().clone();
+        if message_type == MessageType::Error {
+            if self.status == Status::BatchInProgress {
+                self.batch_failed += 1;
+                self.check_batch_complete(&ctx);
                 if self.status == Status::BatchInProgress {
-                    self.batch_failed += 1;
-                    self.check_batch_complete();
-                    if self.status == Status::BatchInProgress {
-                        self.queue_next_sequential();
-                    }
-                } else {
-                    self.status = Status::NotStarted;
-                    self.error_message = Some(message.to_string());
+                    self.queue_next_sequential();
                 }
-            }
-            _ => {
-                self.success_message = Some(message.to_string());
+            } else {
+                self.status = Status::NotStarted;
             }
         }
     }

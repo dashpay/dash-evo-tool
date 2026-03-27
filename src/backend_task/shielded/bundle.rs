@@ -256,7 +256,8 @@ pub async fn shielded_transfer(
     let recipient_addr = OrchardAddress::from_raw_bytes(&recipient_bytes)
         .map_err(|_| TaskError::ShieldedInvalidRecipientAddress)?;
 
-    let (spendable_notes, total_input_value) = select_notes_for_amount(shielded_state, amount, SHIELDED_FEE_HEADROOM)?;
+    let (spendable_notes, total_input_value) =
+        select_notes_for_amount(shielded_state, amount, SHIELDED_FEE_HEADROOM)?;
     let change_amount = total_input_value.saturating_sub(amount);
 
     tracing::info!(
@@ -349,7 +350,8 @@ pub async fn unshield_credits(
         key: get_proving_key(),
     };
 
-    let (spendable_notes, total_input_value) = select_notes_for_amount(shielded_state, amount, SHIELDED_FEE_HEADROOM)?;
+    let (spendable_notes, total_input_value) =
+        select_notes_for_amount(shielded_state, amount, SHIELDED_FEE_HEADROOM)?;
     let change_amount = total_input_value.saturating_sub(amount);
 
     tracing::info!(
@@ -649,7 +651,8 @@ pub async fn shielded_withdrawal(
 
     let output_script = CoreScript::from_bytes(to_core_address.script_pubkey().to_bytes());
 
-    let (spendable_notes, total_input_value) = select_notes_for_amount(shielded_state, amount, SHIELDED_FEE_HEADROOM)?;
+    let (spendable_notes, total_input_value) =
+        select_notes_for_amount(shielded_state, amount, SHIELDED_FEE_HEADROOM)?;
     let change_amount = total_input_value.saturating_sub(amount);
 
     tracing::info!(

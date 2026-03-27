@@ -1546,10 +1546,10 @@ impl WalletsBalancesScreen {
         // The `is_ours` flag is set by both RPC and SPV paths for all
         // transactions that belong to this wallet (sends and receives).
         // Invalidate cache if transaction count changed (wallet refreshed).
-        if let Some(ref cached) = self.cached_tx_indices {
-            if cached.iter().any(|&i| i >= wallet_guard.transactions.len()) {
-                self.cached_tx_indices = None;
-            }
+        if let Some(ref cached) = self.cached_tx_indices
+            && cached.iter().any(|&i| i >= wallet_guard.transactions.len())
+        {
+            self.cached_tx_indices = None;
         }
         let relevant_indices = self.cached_tx_indices.get_or_insert_with(|| {
             (0..wallet_guard.transactions.len())

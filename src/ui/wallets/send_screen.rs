@@ -1416,9 +1416,10 @@ impl WalletSendScreen {
     fn send_core_to_shielded(&mut self, seed_hash: WalletSeedHash) -> Result<AppAction, String> {
         // Shielding from Core always deposits into the wallet's own shielded pool.
         // Validate the destination is a shielded address (the address input already constrains this).
-        if let Some(ValidatedAddress::Shielded(_)) = &self.validated_destination {
-            // OK: destination is a shielded address (self-shielding)
-        } else {
+        if !matches!(
+            &self.validated_destination,
+            Some(ValidatedAddress::Shielded(_))
+        ) {
             return Err("Please enter a valid shielded address".to_string());
         }
 

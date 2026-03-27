@@ -1888,11 +1888,13 @@ impl WalletSendScreen {
                     ui.horizontal(|ui| {
                         let mut selected = is_identity_selected;
                         if ui.radio_value(&mut selected, true, "").changed() && selected {
-                            if let Some(identity) = self
-                                .selected_identity
-                                .clone()
-                                .or_else(|| identities.first().cloned())
-                            {
+                            if let Some(identity) = self.selected_identity.clone().or_else(|| {
+                                // Default to the identity with the highest balance
+                                identities
+                                    .iter()
+                                    .max_by_key(|qi| qi.identity.balance())
+                                    .cloned()
+                            }) {
                                 self.selected_source =
                                     Some(SourceSelection::Identity(Box::new(identity.clone())));
                                 self.selected_identity = Some(identity);

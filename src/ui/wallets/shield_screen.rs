@@ -509,13 +509,16 @@ impl ShieldScreen {
                         let fraction = stage.progress_fraction();
                         let text = format!("[{}/{}] {}", i + 1, total, stage.label());
 
+                        // Progress bar fills need vibrant, saturated colors for contrast
+                        // against bar background — use static constants, not theme-aware
+                        // text colors (which are muted/dark for readability on backgrounds).
                         let color = match stage {
-                            ShieldStage::Queued => DashColors::muted_color(dark_mode),
+                            ShieldStage::Queued => DashColors::GRAY,
                             ShieldStage::BuildingProof { .. } => DashColors::DASH_BLUE,
-                            ShieldStage::WaitingToBroadcast => DashColors::info_color(dark_mode),
-                            ShieldStage::Broadcasting => DashColors::warning_color(dark_mode),
-                            ShieldStage::Complete => DashColors::success_color(dark_mode),
-                            ShieldStage::Failed { .. } => DashColors::error_color(dark_mode),
+                            ShieldStage::WaitingToBroadcast => DashColors::INFO,
+                            ShieldStage::Broadcasting => DashColors::WARNING,
+                            ShieldStage::Complete => DashColors::SUCCESS,
+                            ShieldStage::Failed { .. } => DashColors::ERROR,
                         };
 
                         if let Some(json_str) = st_json {

@@ -8,7 +8,6 @@ use dash_sdk::dpp::address_funds::{
     AddressFundsFeeStrategy, AddressFundsFeeStrategyStep, OrchardAddress, PlatformAddress,
 };
 use dash_sdk::dpp::dashcore::Address;
-use dash_sdk::dpp::dashcore::{OutPoint, TxOut};
 use dash_sdk::dpp::identity::core_script::CoreScript;
 use dash_sdk::dpp::shielded::builder::{
     OrchardProver, SpendableNote, build_shield_transition, build_shielded_transfer_transition,
@@ -17,7 +16,7 @@ use dash_sdk::dpp::shielded::builder::{
 use dash_sdk::dpp::withdrawal::Pooling;
 use dash_sdk::grovedb_commitment_tree::{Nullifier, PaymentAddress, ProvingKey};
 use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 /// Wrapper around a cached `ProvingKey` that implements `OrchardProver`.
@@ -425,22 +424,6 @@ pub async fn unshield_credits(
     Ok(spent_nullifiers)
 }
 
-/// Temporarily swap the wallet's UTXO map to only those entries belonging to `addr`.
-///
-/// Returns the original (full) UTXO map so the caller can restore it after the
-/// operation that needs the filtered view completes.
-fn restrict_utxos(
-    wallet: &mut crate::model::wallet::Wallet,
-    addr: &Address,
-) -> HashMap<Address, HashMap<OutPoint, TxOut>> {
-    let filtered = wallet
-        .utxos
-        .get(addr)
-        .map(|m| [(addr.clone(), m.clone())].into_iter().collect())
-        .unwrap_or_default();
-    std::mem::replace(&mut wallet.utxos, filtered)
-}
-
 /// Build and broadcast a ShieldFromAssetLock transition (core DASH -> shielded pool via asset lock).
 ///
 /// Creates an asset lock transaction from wallet UTXOs, broadcasts it, waits for
@@ -484,46 +467,31 @@ pub async fn shield_from_asset_lock(
             .write()
             .map_err(|_| TaskError::LockPoisoned { resource: "wallet" })?;
 
-        // Apply address filter and save original UTXOs for later restoration.
-        let mut saved_utxos = source_address.map(|addr| restrict_utxos(&mut wallet, addr));
-
-        // First attempt
         let first_result = wallet.generic_asset_lock_transaction(
             app_context.as_ref(),
             app_context.network,
             asset_lock_duffs,
             false,
+            source_address,
         );
 
-        if first_result.is_err() {
-            // Restore full UTXOs before reload so reload can refresh the complete set.
-            if let Some(orig) = saved_utxos.take() {
-                wallet.utxos = orig;
+        let (tx, private_key, address, _change, utxos) = match first_result {
+            Ok(ok) => ok,
+            Err(_) => {
+                wallet
+                    .reload_utxos(app_context.as_ref())
+                    .map_err(|detail| TaskError::WalletUtxoReloadFailed { detail })?;
+                wallet
+                    .generic_asset_lock_transaction(
+                        app_context.as_ref(),
+                        app_context.network,
+                        asset_lock_duffs,
+                        false,
+                        source_address,
+                    )
+                    .map_err(shielded_build_error)?
             }
-            wallet
-                .reload_utxos(app_context.as_ref())
-                .map_err(|detail| TaskError::WalletUtxoReloadFailed { detail })?;
-            // Re-apply address filter on the freshly reloaded UTXOs.
-            saved_utxos = source_address.map(|addr| restrict_utxos(&mut wallet, addr));
-        }
-
-        let (tx, private_key, address, _change, utxos) = if let Ok(ok) = first_result {
-            ok
-        } else {
-            wallet
-                .generic_asset_lock_transaction(
-                    app_context.as_ref(),
-                    app_context.network,
-                    asset_lock_duffs,
-                    false,
-                )
-                .map_err(shielded_build_error)?
         };
-
-        // Restore full UTXO map; Step 4 removes used outpoints by key from the full set.
-        if let Some(orig) = saved_utxos {
-            wallet.utxos = orig;
-        }
 
         (tx, private_key, address, utxos)
     };

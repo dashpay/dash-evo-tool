@@ -29,12 +29,18 @@ impl Wallet {
         amount: u64,
         fee: u64,
         allow_take_fee_from_amount: bool,
+        source_address: Option<&Address>,
     ) -> Option<(BTreeMap<OutPoint, (TxOut, Address)>, Option<u64>)> {
         let target = amount.checked_add(fee)?;
         let mut required: i64 = i64::try_from(target).ok()?;
         let mut selected_utxos = BTreeMap::new();
 
-        for (address, outpoints) in self.utxos.iter() {
+        let iter: Box<dyn Iterator<Item = (&Address, &HashMap<OutPoint, TxOut>)>> =
+            match source_address {
+                Some(addr) => Box::new(self.utxos.get(addr).into_iter().map(move |m| (addr, m))),
+                None => Box::new(self.utxos.iter()),
+            };
+        for (address, outpoints) in iter {
             for (outpoint, tx_out) in outpoints.iter() {
                 if required <= 0 {
                     break;

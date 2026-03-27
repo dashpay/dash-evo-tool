@@ -1768,6 +1768,14 @@ impl WalletSendScreen {
             .and_then(|v| v.as_identity_id().copied())
             .ok_or_else(|| "Invalid identity ID".to_string())?;
 
+        // Prevent self-send (same identity as source and destination)
+        if to_identity_id == qualified_identity.identity.id() {
+            return Err(
+                "You cannot send credits to the same identity. Please choose a different destination."
+                    .to_string(),
+            );
+        }
+
         self.mark_sending();
         Ok(AppAction::BackendTask(BackendTask::IdentityTask(
             IdentityTask::Transfer(qualified_identity, to_identity_id, amount_credits, None),

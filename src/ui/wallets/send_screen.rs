@@ -389,6 +389,9 @@ pub struct WalletSendScreen {
     // Identity source fields
     selected_identity: Option<QualifiedIdentity>,
 
+    // Split transaction options (Platform → Shielded)
+    split_count_str: String,
+
     // Common options
     subtract_fee: bool,
 
@@ -426,6 +429,7 @@ impl WalletSendScreen {
             }],
             fee_strategy: PlatformFeeStrategy::default(),
             selected_identity: None,
+            split_count_str: "1".to_string(),
             subtract_fee: false,
             send_status: SendStatus::NotStarted,
             send_banner: None,
@@ -1300,6 +1304,32 @@ impl WalletSendScreen {
         // Amount
         self.render_amount_input(ui);
 
+        // Split transaction option (Platform → Shielded only)
+        let is_platform_to_shielded = matches!(
+            (&self.selected_source, self.destination_kind()),
+            (Some(SourceSelection::PlatformAddresses(_)), Some(AddressKind::Shielded))
+        );
+        if is_platform_to_shielded {
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.label("Split into");
+                let te = egui::TextEdit::singleline(&mut self.split_count_str)
+                    .desired_width(40.0);
+                ui.add(te);
+                ui.label("transactions");
+            });
+            let split_count = self.split_count_str.trim().parse::<u32>().unwrap_or(1).clamp(1, 100);
+            if split_count > 1 {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Amount will be split into {split_count} randomized transactions for privacy."
+                    ))
+                    .small()
+                    .color(egui::Color32::GRAY),
+                );
+            }
+        }
+
         ui.add_space(10.0);
 
         // Platform source breakdown (shows which addresses will be used)
@@ -1546,15 +1576,54 @@ impl WalletSendScreen {
             ));
         }
 
+        let split_count = self
+            .split_count_str
+            .trim()
+            .parse::<u32>()
+            .unwrap_or(1)
+            .clamp(1, 100);
+
         self.mark_sending();
-        Ok(AppAction::BackendTask(BackendTask::ShieldedTask(
-            crate::backend_task::shielded::ShieldedTask::ShieldCredits {
-                seed_hash,
-                amount: amount_credits,
-                from_address,
-                nonce_override: None,
-            },
-        )))
+
+        if split_count <= 1 {
+            Ok(AppAction::BackendTask(BackendTask::ShieldedTask(
+                crate::backend_task::shielded::ShieldedTask::ShieldCredits {
+                    seed_hash,
+                    amount: amount_credits,
+                    from_address,
+                    nonce_override: None,
+                },
+            )))
+        } else {
+            // Split into randomized sub-amounts (min 0.1 DASH = 10M credits)
+            use crate::model::amount::split_amount_randomized;
+            let min_per_tx = 10_000_000u64; // 0.1 DASH in credits
+            let amounts = split_amount_randomized(amount_credits, split_count, min_per_tx)
+                .ok_or_else(|| {
+                    format!(
+                        "Cannot split into {split_count} transactions. Each must be at least 0.1 DASH."
+                    )
+                })?;
+
+            let tasks: Vec<BackendTask> = amounts
+                .into_iter()
+                .map(|amount| {
+                    BackendTask::ShieldedTask(
+                        crate::backend_task::shielded::ShieldedTask::ShieldCredits {
+                            seed_hash,
+                            amount,
+                            from_address,
+                            nonce_override: None,
+                        },
+                    )
+                })
+                .collect();
+
+            Ok(AppAction::BackendTasks(
+                tasks,
+                crate::app::BackendTasksExecutionMode::Sequential,
+            ))
+        }
     }
 
     /// Top up an identity from Platform addresses (Platform -> Identity).

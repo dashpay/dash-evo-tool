@@ -96,7 +96,7 @@ User-facing error messages (shown in `MessageBanner` via `Display`) must follow 
 - **app.rs** - `AppState`: owns all screens, polls task results each frame, dispatches to visible screen
 - **ui/** - Screens and reusable components (`ui/components/`)
 - **backend_task/** - Async business logic, one submodule per domain (identity, wallet, contract, etc.)
-- **model/** - Data types (amounts, fees, settings, wallet/identity models)
+- **model/** - Data types (amounts, fees, settings, wallet/identity models). **All fee estimation logic must be centralized in `model/fee_estimation.rs`** — both platform state transition fees and shielded fee calculations. Never inline fee math in UI or backend task code.
 - **database/** - SQLite persistence (rusqlite), one module per domain
 - **context/** - `AppContext`: network config, SDK client, database, wallets, settings cache (split into submodules: `identity_db.rs`, `wallet_lifecycle.rs`, `settings_db.rs`, etc.)
 - **spv/** - Simplified Payment Verification for light wallet support

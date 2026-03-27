@@ -13,6 +13,7 @@
 //! endpoint (when available).
 
 use crate::model::amount::Amount;
+use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use dash_sdk::dpp::version::PlatformVersion;
 
 /// Storage fee constants from FEE_STORAGE_VERSION1 in rs-platform-version.
@@ -265,6 +266,19 @@ impl PlatformFeeEstimator {
         let fee_duffs = base_fee_credits / 1000; // Convert credits to duffs
         // Add 50% buffer and ensure minimum of 10,000 duffs based on observed behavior
         fee_duffs.saturating_add(fee_duffs / 2).max(10_000)
+    }
+
+    /// Estimate fees (in duffs) for a shield-from-core asset lock operation.
+    ///
+    /// Returns `(platform_fee_duffs, l1_tx_fee_duffs)`:
+    /// - Platform fee: `address_funding_asset_lock_cost` converted to duffs with 20% buffer
+    /// - L1 tx fee: flat estimate for a typical 1-2 input Core transaction (~500 duffs)
+    pub fn estimate_shield_from_core_fees_duffs(&self) -> (u64, u64) {
+        let platform_fee_duffs = (self.min_fees.address_funding_asset_lock_cost / CREDITS_PER_DUFF)
+            .saturating_mul(120)
+            / 100;
+        let l1_tx_fee_duffs = 500_u64;
+        (platform_fee_duffs, l1_tx_fee_duffs)
     }
 
     /// Estimate fee for identity update (adding/disabling keys)

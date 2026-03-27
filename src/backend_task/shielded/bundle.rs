@@ -449,11 +449,9 @@ pub async fn shield_from_asset_lock(
 
     let proving_key = crate::context::shielded::get_proving_key();
 
-    let platform_fee_credits = app_context
+    let (platform_fee_duffs, _l1_fee_duffs) = app_context
         .fee_estimator()
-        .min_fees()
-        .address_funding_asset_lock_cost;
-    let platform_fee_duffs = (platform_fee_credits / CREDITS_PER_DUFF).saturating_mul(120) / 100;
+        .estimate_shield_from_core_fees_duffs();
     let asset_lock_duffs = amount_duffs.saturating_add(platform_fee_duffs);
 
     // Step 1: Create the asset lock transaction

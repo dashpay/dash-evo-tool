@@ -632,14 +632,10 @@ impl ScreenLike for ShieldScreen {
                     }
                     Some(AddressKind::Core) => {
                         let balance_duffs = self.read_core_balance_duffs();
-                        let platform_fee_credits = self
+                        let (platform_fee_duffs, l1_tx_fee_duffs) = self
                             .app_context
                             .fee_estimator()
-                            .min_fees()
-                            .address_funding_asset_lock_cost;
-                        let platform_fee_duffs =
-                            (platform_fee_credits / CREDITS_PER_DUFF).saturating_mul(120) / 100;
-                        let l1_tx_fee_duffs = 500_u64;
+                            .estimate_shield_from_core_fees_duffs();
                         let shieldable_duffs = balance_duffs
                             .saturating_sub(platform_fee_duffs)
                             .saturating_sub(l1_tx_fee_duffs);

@@ -429,6 +429,22 @@ pub async fn unshield_credits(
     Ok(spent_nullifiers)
 }
 
+/// Temporarily swap the wallet's UTXO map to only those entries belonging to `addr`.
+///
+/// Returns the original (full) UTXO map so the caller can restore it after the
+/// operation that needs the filtered view completes.
+fn restrict_utxos(
+    wallet: &mut crate::model::wallet::Wallet,
+    addr: &Address,
+) -> HashMap<Address, HashMap<OutPoint, TxOut>> {
+    let filtered = wallet
+        .utxos
+        .get(addr)
+        .map(|m| [(addr.clone(), m.clone())].into_iter().collect())
+        .unwrap_or_default();
+    std::mem::replace(&mut wallet.utxos, filtered)
+}
+
 /// Build and broadcast a ShieldFromAssetLock transition (core DASH -> shielded pool via asset lock).
 ///
 /// Creates an asset lock transaction from wallet UTXOs, broadcasts it, waits for
@@ -471,21 +487,6 @@ pub async fn shield_from_asset_lock(
         let mut wallet = wallet_arc
             .write()
             .map_err(|_| TaskError::LockPoisoned { resource: "wallet" })?;
-
-        // If a source address is specified, temporarily restrict the wallet's UTXO map
-        // to that address so `generic_asset_lock_transaction` only draws from it.
-        // We restore the full map after the transaction is built so that Step 4
-        // (outpoint-based UTXO removal) operates on the complete set.
-        let restrict_utxos = |wallet: &mut crate::model::wallet::Wallet,
-                              addr: &Address|
-         -> HashMap<Address, HashMap<OutPoint, TxOut>> {
-            let filtered = wallet
-                .utxos
-                .get(addr)
-                .map(|m| [(addr.clone(), m.clone())].into_iter().collect())
-                .unwrap_or_default();
-            std::mem::replace(&mut wallet.utxos, filtered)
-        };
 
         // Apply address filter and save original UTXOs for later restoration.
         let mut saved_utxos = source_address.map(|addr| restrict_utxos(&mut wallet, addr));

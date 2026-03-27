@@ -265,7 +265,9 @@ impl ShieldScreen {
                     let nonce = base_nonce + 1 + i;
 
                     async move {
-                        *stage.lock().unwrap() = ShieldStage::BuildingProof { nonce };
+                        if let Ok(mut guard) = stage.lock() {
+                            *guard = ShieldStage::BuildingProof { nonce };
+                        }
 
                         let result = tokio::task::spawn_blocking(move || {
                             bundle::build_shield_credit(
@@ -283,13 +285,17 @@ impl ShieldScreen {
 
                         match &result {
                             Ok(_) => {
-                                *stage.lock().unwrap() = ShieldStage::WaitingToBroadcast;
+                                if let Ok(mut guard) = stage.lock() {
+                                    *guard = ShieldStage::WaitingToBroadcast;
+                                }
                             }
                             Err(e) => {
-                                *stage.lock().unwrap() = ShieldStage::Failed {
-                                    error: e.clone(),
-                                    st_json: None,
-                                };
+                                if let Ok(mut guard) = stage.lock() {
+                                    *guard = ShieldStage::Failed {
+                                        error: e.clone(),
+                                        st_json: None,
+                                    };
+                                }
                             }
                         }
 
@@ -306,7 +312,9 @@ impl ShieldScreen {
                 let stage = &stages[i];
                 match result {
                     Ok(state_transition) => {
-                        *stage.lock().unwrap() = ShieldStage::Broadcasting;
+                        if let Ok(mut guard) = stage.lock() {
+                            *guard = ShieldStage::Broadcasting;
+                        }
 
                         let st_repr: Option<String> =
                             serde_json::to_string_pretty(&state_transition)
@@ -325,16 +333,21 @@ impl ShieldScreen {
                                     tokio::time::sleep(Duration::from_secs(3)).await;
                                 }
                                 app_ctx.bump_platform_address_nonce(&seed_hash, &addr);
-                                *stage.lock().unwrap() = ShieldStage::Complete;
+                                if let Ok(mut guard) = stage.lock() {
+                                    *guard = ShieldStage::Complete;
+                                }
                             }
                             Err(e) => {
-                                *stage.lock().unwrap() = ShieldStage::Failed {
-                                    error: format!("Broadcast failed: {e}"),
-                                    st_json: st_repr,
-                                };
+                                if let Ok(mut guard) = stage.lock() {
+                                    *guard = ShieldStage::Failed {
+                                        error: format!("Broadcast failed: {e}"),
+                                        st_json: st_repr,
+                                    };
+                                }
                                 for remaining in stages.iter().skip(i + 1) {
-                                    let mut s = remaining.lock().unwrap();
-                                    if !s.is_terminal() {
+                                    if let Ok(mut s) = remaining.lock()
+                                        && !s.is_terminal()
+                                    {
                                         *s = ShieldStage::Failed {
                                             error: "Skipped: earlier nonce failed".to_string(),
                                             st_json: None,
@@ -347,8 +360,9 @@ impl ShieldScreen {
                     }
                     Err(_) => {
                         for remaining in stages.iter().skip(i + 1) {
-                            let mut s = remaining.lock().unwrap();
-                            if !s.is_terminal() {
+                            if let Ok(mut s) = remaining.lock()
+                                && !s.is_terminal()
+                            {
                                 *s = ShieldStage::Failed {
                                     error: "Skipped: earlier nonce failed".to_string(),
                                     st_json: None,
@@ -605,16 +619,20 @@ impl ScreenLike for ShieldScreen {
                     }
                 }
                 Some(AddressKind::Core) => {
-                    // Core flow: show wallet balance
+                    // Core flow: show balance (per-address or whole wallet)
                     let balance_duffs = self.read_core_balance_duffs();
                     let dash_balance = balance_duffs as f64 / 1e8;
-                    ui.label(
-                        RichText::new(format!(
-                            "Available core wallet balance: {:.8} DASH",
-                            dash_balance
-                        ))
-                        .color(DashColors::success_color(dark_mode)),
-                    );
+                    let label = if self
+                        .validated_source
+                        .as_ref()
+                        .and_then(|v| v.as_core())
+                        .is_some()
+                    {
+                        format!("Available address balance: {:.8} DASH", dash_balance)
+                    } else {
+                        format!("Available core wallet balance: {:.8} DASH", dash_balance)
+                    };
+                    ui.label(RichText::new(label).color(DashColors::success_color(dark_mode)));
                     ui.add_space(5.0);
                 }
                 _ => {}

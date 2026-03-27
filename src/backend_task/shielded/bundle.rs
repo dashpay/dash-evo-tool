@@ -779,6 +779,12 @@ fn select_notes_with_fee<'a>(
     let (notes, total) = select_notes_for_amount(shielded_state, amount, fee_estimate)?;
     let num_actions = notes.len().max(min_actions);
     let exact_fee = shielded_fee_for_actions(num_actions, platform_version);
+    if total < amount.saturating_add(exact_fee) {
+        return Err(TaskError::ShieldedInsufficientBalance {
+            available: total,
+            required: amount.saturating_add(exact_fee),
+        });
+    }
     Ok((notes, total, exact_fee))
 }
 

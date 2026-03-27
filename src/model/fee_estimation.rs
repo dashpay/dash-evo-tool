@@ -272,12 +272,12 @@ impl PlatformFeeEstimator {
     ///
     /// Returns `(platform_fee_duffs, l1_tx_fee_duffs)`:
     /// - Platform fee: `address_funding_asset_lock_cost` converted to duffs with 20% buffer
-    /// - L1 tx fee: flat estimate for a typical 1-2 input Core transaction (~500 duffs)
+    /// - L1 tx fee: flat estimate covering Core minimum relay fee (~3000 duffs)
     pub fn estimate_shield_from_core_fees_duffs(&self) -> (u64, u64) {
         let platform_fee_duffs = (self.min_fees.address_funding_asset_lock_cost / CREDITS_PER_DUFF)
             .saturating_mul(120)
             / 100;
-        let l1_tx_fee_duffs = 500_u64;
+        let l1_tx_fee_duffs = 3_000_u64;
         (platform_fee_duffs, l1_tx_fee_duffs)
     }
 

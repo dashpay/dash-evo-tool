@@ -58,6 +58,10 @@ pub struct ShieldScreen {
     batch_stages: Option<Vec<Arc<Mutex<ShieldStage>>>>,
     /// JSON of a failed state transition to show in the popup.
     json_preview: Option<String>,
+    /// Frozen amount for the current batch (set at batch start, cleared on completion).
+    batch_amount: Option<u64>,
+    /// Frozen platform address for the current batch.
+    batch_address: Option<PlatformAddress>,
 }
 
 impl ShieldScreen {
@@ -80,6 +84,8 @@ impl ShieldScreen {
             pending_refresh_task: None,
             batch_stages: None,
             json_preview: None,
+            batch_amount: None,
+            batch_address: None,
         }
     }
 
@@ -175,13 +181,10 @@ impl ShieldScreen {
         })
     }
 
-    /// Queue the next sequential batch task if any remain.
+    /// Queue the next sequential batch task if any remain, using frozen batch parameters.
     fn queue_next_sequential(&mut self) {
         if self.batch_remaining > 0
-            && let (Some(amount), Some(addr)) = (
-                self.amount.as_ref().map(|a| a.value()),
-                self.selected_platform_address(),
-            )
+            && let (Some(amount), Some(addr)) = (self.batch_amount, self.batch_address)
         {
             self.batch_remaining -= 1;
             self.pending_next_task = Some(self.make_shield_credits_task(amount, addr, None));
@@ -194,6 +197,8 @@ impl ShieldScreen {
             && self.batch_succeeded + self.batch_failed >= self.batch_total
         {
             self.status = Status::Complete;
+            self.batch_amount = None;
+            self.batch_address = None;
             MessageBanner::set_global(
                 ctx,
                 format!(
@@ -565,143 +570,155 @@ impl ScreenLike for ShieldScreen {
                 return;
             }
 
-            // Source address selection via AddressInput
-            let addr_input = self.address_input.get_or_insert_with(|| {
-                let mut builder = AddressInput::new(self.app_context.network)
-                    .with_address_kinds(&[AddressKind::Core, AddressKind::Platform])
-                    .with_label("From address")
-                    .with_hint_text("Select a platform or core wallet address")
-                    .with_selection_only(true)
-                    .with_balance_range(1..)
-                    .with_exclude_change(true);
+            let is_busy =
+                self.status == Status::WaitingForResult || self.status == Status::BatchInProgress;
 
-                if let Ok(wallets) = self.app_context.wallets.read()
-                    && let Some(wallet) = wallets.get(&self.seed_hash)
-                {
-                    builder = builder.with_wallets(std::slice::from_ref(wallet));
-                }
+            // Source address and amount inputs (disabled during batch)
+            let source_kind = ui
+                .add_enabled_ui(!is_busy, |ui| {
+                    let addr_input = self.address_input.get_or_insert_with(|| {
+                        let mut builder = AddressInput::new(self.app_context.network)
+                            .with_address_kinds(&[AddressKind::Core, AddressKind::Platform])
+                            .with_label("From address")
+                            .with_hint_text("Select a platform or core wallet address")
+                            .with_selection_only(true)
+                            .with_balance_range(1..)
+                            .with_exclude_change(true);
 
-                builder
-            });
-            let resp = addr_input.show(ui);
-            if resp.inner.has_changed() {
-                resp.inner.update(&mut self.validated_source);
-                // Reset amount input when source changes (different balance constraints)
-                self.amount_input = None;
-                self.amount = None;
-            }
-            ui.add_space(5.0);
+                        if let Ok(wallets) = self.app_context.wallets.read()
+                            && let Some(wallet) = wallets.get(&self.seed_hash)
+                        {
+                            builder = builder.with_wallets(std::slice::from_ref(wallet));
+                        }
 
-            // Show source-specific info based on selected address type
-            let source_kind = self.validated_source.as_ref().map(|v| v.kind());
-
-            match source_kind {
-                Some(AddressKind::Platform) => {
-                    // Platform flow: show balance and nonce
-                    if let Some(balance_credits) = self.read_platform_balance() {
-                        let balance_dash = balance_credits as f64 / CREDITS_PER_DUFF as f64 / 1e8;
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new(format!("Available: {:.8} DASH", balance_dash))
-                                    .color(DashColors::success_color(dark_mode)),
-                            );
-                            if self.app_context.is_developer_mode()
-                                && let Some(nonce) = self.read_base_nonce()
-                            {
-                                ui.label(
-                                    RichText::new(format!("(nonce: {})", nonce))
-                                        .color(DashColors::muted_color(dark_mode))
-                                        .small(),
-                                );
-                            }
-                        });
-                        ui.add_space(5.0);
-                    }
-                }
-                Some(AddressKind::Core) => {
-                    // Core flow: show balance (per-address or whole wallet)
-                    let balance_duffs = self.read_core_balance_duffs();
-                    let dash_balance = balance_duffs as f64 / 1e8;
-                    let label = if self
-                        .validated_source
-                        .as_ref()
-                        .and_then(|v| v.as_core())
-                        .is_some()
-                    {
-                        format!("Available address balance: {:.8} DASH", dash_balance)
-                    } else {
-                        format!("Available core wallet balance: {:.8} DASH", dash_balance)
-                    };
-                    ui.label(RichText::new(label).color(DashColors::success_color(dark_mode)));
-                    ui.add_space(5.0);
-                }
-                _ => {}
-            }
-
-            // Amount input (only when a source address is selected)
-            if self.validated_source.is_some() {
-                let max_credits = match source_kind {
-                    Some(AddressKind::Platform) => {
-                        // Use fee for 2 actions (Orchard minimum) with 2× safety margin for UI display
-                        let fee_headroom = shielded_fee_for_actions(2, PlatformVersion::latest())
-                            .saturating_mul(2);
-                        self.read_platform_balance()
-                            .map(|b| b.saturating_sub(fee_headroom))
-                    }
-                    Some(AddressKind::Core) => {
-                        let balance_duffs = self.read_core_balance_duffs();
-                        let (platform_fee_duffs, l1_tx_fee_duffs) = self
-                            .app_context
-                            .fee_estimator()
-                            .estimate_shield_from_core_fees_duffs();
-                        let shieldable_duffs = balance_duffs
-                            .saturating_sub(platform_fee_duffs)
-                            .saturating_sub(l1_tx_fee_duffs);
-                        Some(shieldable_duffs * CREDITS_PER_DUFF)
-                    }
-                    _ => None,
-                };
-
-                let amount_input = self.amount_input.get_or_insert_with(|| {
-                    let mut builder = AmountInput::new(Amount::new_dash(0.0))
-                        .with_label("Amount (DASH):")
-                        .with_hint_text("Enter amount")
-                        .with_desired_width(150.0);
-                    if source_kind == Some(AddressKind::Core) {
-                        builder = builder.with_max_button(true);
-                    }
-                    builder
-                });
-                if let Some(max) = max_credits {
-                    amount_input.set_max_amount(Some(max));
-                }
-                let response = amount_input.show(ui);
-                response.inner.update(&mut self.amount);
-                ui.add_space(5.0);
-
-                // Dev-mode batch controls (Platform flow only)
-                if self.app_context.is_developer_mode()
-                    && source_kind == Some(AddressKind::Platform)
-                    && self.status == Status::NotStarted
-                {
-                    ui.add_space(10.0);
-                    ui.horizontal(|ui| {
-                        ui.label("Repeat");
-                        let te = egui::TextEdit::singleline(&mut self.repeat_count_str)
-                            .desired_width(50.0);
-                        ui.add(te);
-                        ui.label("times");
+                        builder
                     });
-                    ui.checkbox(&mut self.parallel, "Parallel");
-                }
-            }
+                    let resp = addr_input.show(ui);
+                    if resp.inner.has_changed() {
+                        resp.inner.update(&mut self.validated_source);
+                        // Reset amount input when source changes (different balance constraints)
+                        self.amount_input = None;
+                        self.amount = None;
+                    }
+                    ui.add_space(5.0);
+
+                    // Show source-specific info based on selected address type
+                    let source_kind = self.validated_source.as_ref().map(|v| v.kind());
+
+                    match source_kind {
+                        Some(AddressKind::Platform) => {
+                            // Platform flow: show balance and nonce
+                            if let Some(balance_credits) = self.read_platform_balance() {
+                                let balance_dash =
+                                    balance_credits as f64 / CREDITS_PER_DUFF as f64 / 1e8;
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "Available: {:.8} DASH",
+                                            balance_dash
+                                        ))
+                                        .color(DashColors::success_color(dark_mode)),
+                                    );
+                                    if self.app_context.is_developer_mode()
+                                        && let Some(nonce) = self.read_base_nonce()
+                                    {
+                                        ui.label(
+                                            RichText::new(format!("(nonce: {})", nonce))
+                                                .color(DashColors::muted_color(dark_mode))
+                                                .small(),
+                                        );
+                                    }
+                                });
+                                ui.add_space(5.0);
+                            }
+                        }
+                        Some(AddressKind::Core) => {
+                            // Core flow: show balance (per-address or whole wallet)
+                            let balance_duffs = self.read_core_balance_duffs();
+                            let dash_balance = balance_duffs as f64 / 1e8;
+                            let label = if self
+                                .validated_source
+                                .as_ref()
+                                .and_then(|v| v.as_core())
+                                .is_some()
+                            {
+                                format!("Available address balance: {:.8} DASH", dash_balance)
+                            } else {
+                                format!("Available core wallet balance: {:.8} DASH", dash_balance)
+                            };
+                            ui.label(
+                                RichText::new(label).color(DashColors::success_color(dark_mode)),
+                            );
+                            ui.add_space(5.0);
+                        }
+                        _ => {}
+                    }
+
+                    // Amount input (only when a source address is selected)
+                    if self.validated_source.is_some() {
+                        let max_credits = match source_kind {
+                            Some(AddressKind::Platform) => {
+                                let fee_headroom =
+                                    shielded_fee_for_actions(2, PlatformVersion::latest())
+                                        .saturating_mul(2);
+                                self.read_platform_balance()
+                                    .map(|b| b.saturating_sub(fee_headroom))
+                            }
+                            Some(AddressKind::Core) => {
+                                let balance_duffs = self.read_core_balance_duffs();
+                                let (platform_fee_duffs, l1_tx_fee_duffs) = self
+                                    .app_context
+                                    .fee_estimator()
+                                    .estimate_shield_from_core_fees_duffs();
+                                let shieldable_duffs = balance_duffs
+                                    .saturating_sub(platform_fee_duffs)
+                                    .saturating_sub(l1_tx_fee_duffs);
+                                Some(shieldable_duffs * CREDITS_PER_DUFF)
+                            }
+                            _ => None,
+                        };
+
+                        let amount_input = self.amount_input.get_or_insert_with(|| {
+                            let mut builder = AmountInput::new(Amount::new_dash(0.0))
+                                .with_label("Amount (DASH):")
+                                .with_hint_text("Enter amount")
+                                .with_desired_width(150.0);
+                            if source_kind == Some(AddressKind::Core) {
+                                builder = builder.with_max_button(true);
+                            }
+                            builder
+                        });
+                        if let Some(max) = max_credits {
+                            amount_input.set_max_amount(Some(max));
+                        }
+                        let response = amount_input.show(ui);
+                        response.inner.update(&mut self.amount);
+                        ui.add_space(5.0);
+
+                        // Dev-mode batch controls (Platform flow only)
+                        if self.app_context.is_developer_mode()
+                            && source_kind == Some(AddressKind::Platform)
+                            && self.status == Status::NotStarted
+                        {
+                            ui.add_space(10.0);
+                            ui.horizontal(|ui| {
+                                ui.label("Repeat");
+                                let te = egui::TextEdit::singleline(&mut self.repeat_count_str)
+                                    .desired_width(50.0);
+                                ui.add(te);
+                                ui.label("times");
+                            });
+                            ui.checkbox(&mut self.parallel, "Parallel");
+                        }
+                    }
+
+                    source_kind
+                })
+                .inner;
 
             ui.add_space(15.0);
 
             // Progress display
-            let is_busy =
-                self.status == Status::WaitingForResult || self.status == Status::BatchInProgress;
-
             if self.status == Status::BatchInProgress {
                 self.render_batch_progress(ui, ctx, &mut action);
             } else if self.status == Status::WaitingForResult {
@@ -777,12 +794,16 @@ impl ScreenLike for ShieldScreen {
                                         self.make_shield_credits_task(amount, addr, None),
                                     );
                                 } else if self.parallel {
+                                    self.batch_amount = Some(amount);
+                                    self.batch_address = Some(addr);
                                     self.spawn_parallel_batch(ctx, amount, addr, repeat);
                                 } else {
                                     self.batch_total = repeat;
                                     self.batch_succeeded = 0;
                                     self.batch_failed = 0;
                                     self.batch_remaining = repeat - 1;
+                                    self.batch_amount = Some(amount);
+                                    self.batch_address = Some(addr);
                                     self.status = Status::BatchInProgress;
                                     action = AppAction::BackendTask(
                                         self.make_shield_credits_task(amount, addr, None),
@@ -904,9 +925,11 @@ impl ScreenLike for ShieldScreen {
                 if self.status == Status::BatchInProgress {
                     self.queue_next_sequential();
                 }
-            } else {
+            } else if self.status == Status::WaitingForResult {
                 self.status = Status::NotStarted;
             }
+            // If status is Complete, leave it — the shield succeeded, a post-success
+            // refresh failure (e.g. SyncNotes) is non-critical.
         }
     }
 }

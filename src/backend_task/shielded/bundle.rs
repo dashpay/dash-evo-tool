@@ -769,8 +769,7 @@ pub async fn shielded_withdrawal(
     Ok(spent_nullifiers)
 }
 
-/// Select notes to cover the requested amount using a greedy algorithm.
-/// Select unspent notes to cover `amount + fee_headroom`.
+/// Select unspent notes to cover `amount + fee_headroom` using a greedy algorithm.
 ///
 /// The `fee_headroom` ensures selected inputs cover both the send amount
 /// and the transition fee. Without it, sending the full balance fails

@@ -1212,9 +1212,10 @@ impl WalletSendScreen {
             self.wallet_open_attempted = true;
         }
         if wallet_needs_unlock(wallet) {
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
             ui.add_space(10.0);
             ui.colored_label(
-                egui::Color32::from_rgb(200, 150, 50),
+                DashColors::warning_color(dark_mode),
                 "Wallet is locked. Please unlock to continue.",
             );
             ui.add_space(8.0);
@@ -1805,7 +1806,7 @@ impl WalletSendScreen {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(
                             RichText::new(Self::format_dash(core_balance))
-                                .color(DashColors::SUCCESS)
+                                .color(DashColors::success_color(dark_mode))
                                 .strong(),
                         );
                     });
@@ -1863,7 +1864,7 @@ impl WalletSendScreen {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.label(
                                 RichText::new(Self::format_credits(total_platform_balance))
-                                    .color(DashColors::SUCCESS)
+                                    .color(DashColors::success_color(dark_mode))
                                     .strong(),
                             );
                         });
@@ -1921,7 +1922,7 @@ impl WalletSendScreen {
                                         RichText::new(Self::format_credits(
                                             qi.identity.balance(),
                                         ))
-                                        .color(DashColors::SUCCESS)
+                                        .color(DashColors::success_color(dark_mode))
                                         .strong(),
                                     );
                                 },
@@ -1934,7 +1935,7 @@ impl WalletSendScreen {
                                         RichText::new(Self::format_credits(
                                             first.identity.balance(),
                                         ))
-                                        .color(DashColors::SUCCESS)
+                                        .color(DashColors::success_color(dark_mode))
                                         .strong(),
                                     );
                                 },
@@ -2054,7 +2055,7 @@ impl WalletSendScreen {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.label(
                                 RichText::new(Self::format_credits(balance))
-                                    .color(DashColors::SUCCESS)
+                                    .color(DashColors::success_color(dark_mode))
                                     .strong(),
                             );
                         });
@@ -2142,32 +2143,51 @@ impl WalletSendScreen {
         // Get max amount and hint based on source selection
         let (max_amount_credits, max_hint) = match &self.selected_source {
             Some(SourceSelection::CoreWallet) => {
-                let max = self.selected_wallet.as_ref().and_then(|w| {
+                let mut max = self.selected_wallet.as_ref().and_then(|w| {
                     w.read()
                         .ok()
                         .map(|wallet| wallet.total_balance_duffs() * CREDITS_PER_DUFF) // duffs to credits
                 });
                 let dest_kind = self.destination_kind();
-                let hint = if dest_kind == Some(AddressKind::Platform) {
-                    let destination = self
-                        .validated_destination
-                        .as_ref()
-                        .and_then(|v| v.as_platform().copied());
-                    if let Some(destination) = destination {
-                        let estimated_fee = estimate_address_funding_fee_from_transition(
-                            self.app_context.platform_version(),
-                            &destination,
-                        );
-                        // max = max.map(|amount| amount.saturating_sub(estimated_fee));
+                let hint = match dest_kind {
+                    Some(AddressKind::Platform) => {
+                        let destination = self
+                            .validated_destination
+                            .as_ref()
+                            .and_then(|v| v.as_platform().copied());
+                        if let Some(destination) = destination {
+                            let estimated_fee = estimate_address_funding_fee_from_transition(
+                                self.app_context.platform_version(),
+                                &destination,
+                            );
+                            max = max.map(|amount| amount.saturating_sub(estimated_fee));
+                            Some(format!(
+                                "Estimated platform fee ~{} (deducted from amount)",
+                                Self::format_credits(estimated_fee)
+                            ))
+                        } else {
+                            None
+                        }
+                    }
+                    Some(AddressKind::Shielded) => {
+                        let (platform_fee_duffs, l1_tx_fee_duffs) =
+                            fee_estimator.estimate_shield_from_core_fees_duffs();
+                        let total_fee_credits =
+                            (platform_fee_duffs + l1_tx_fee_duffs) * CREDITS_PER_DUFF;
+                        max = max.map(|amount| amount.saturating_sub(total_fee_credits));
                         Some(format!(
-                            "Estimated platform fee ~{} (deducted from amount)",
-                            Self::format_credits(estimated_fee)
+                            "~{} reserved for shield fees",
+                            Self::format_credits(total_fee_credits)
                         ))
-                    } else {
+                    }
+                    Some(AddressKind::Core) => {
+                        let (_, l1_tx_fee_duffs) =
+                            fee_estimator.estimate_shield_from_core_fees_duffs();
+                        let l1_fee_credits = l1_tx_fee_duffs * CREDITS_PER_DUFF;
+                        max = max.map(|amount| amount.saturating_sub(l1_fee_credits));
                         None
                     }
-                } else {
-                    None
+                    _ => None,
                 };
                 (max, hint)
             }
@@ -2367,7 +2387,7 @@ impl WalletSendScreen {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.label(
                                 RichText::new(Self::format_credits(*use_amount))
-                                    .color(DashColors::SUCCESS)
+                                    .color(DashColors::success_color(dark_mode))
                                     .size(11.0),
                             );
                         });
@@ -2684,7 +2704,7 @@ impl WalletSendScreen {
                             );
                             ui.label(
                                 RichText::new(format!("({})", Self::format_dash(balance)))
-                                    .color(DashColors::SUCCESS)
+                                    .color(DashColors::success_color(dark_mode))
                                     .size(12.0),
                             );
 
@@ -2812,7 +2832,7 @@ impl WalletSendScreen {
                             );
                             ui.label(
                                 RichText::new(format!("({})", Self::format_credits(balance)))
-                                    .color(DashColors::SUCCESS)
+                                    .color(DashColors::success_color(dark_mode))
                                     .size(12.0),
                             );
 
@@ -2921,7 +2941,7 @@ impl WalletSendScreen {
                                         ("Platform", DashColors::PLATFORM_PURPLE)
                                     }
                                     AddressKind::Shielded => {
-                                        ("Shielded", Color32::from_rgb(0, 180, 120))
+                                        ("Shielded", DashColors::success_color(dark_mode))
                                     }
                                     AddressKind::Identity => {
                                         ("Identity", DashColors::PLATFORM_PURPLE)

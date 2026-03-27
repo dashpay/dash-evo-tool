@@ -2057,6 +2057,16 @@ impl WalletSendScreen {
 
     fn render_destination_input(&mut self, ui: &mut Ui) {
         let developer_mode = self.app_context.is_developer_mode();
+        // Pre-load data outside the closure to avoid double-borrow of self
+        let loaded_identities = self.get_loaded_identities();
+        let shielded_info: Option<(String, u64)> = self.selected_wallet_seed_hash.and_then(|sh| {
+            let states = self.app_context.shielded_states.lock().ok()?;
+            let state = states.get(&sh)?;
+            use dash_sdk::dpp::address_funds::OrchardAddress;
+            let raw = state.keys.default_address.to_raw_address_bytes();
+            let addr = OrchardAddress::from_raw_bytes(&raw).ok()?;
+            Some((addr.to_bech32m_string(self.app_context.network), state.shielded_balance))
+        });
         let addr_input = self.address_input.get_or_insert_with(|| {
             let allowed_kinds = match &self.selected_source {
                 Some(SourceSelection::CoreWallet) => {
@@ -2107,17 +2117,14 @@ impl WalletSendScreen {
                 }
             }
 
+            // Add identities for autocomplete (searchable by alias/DPNS name)
+            if !loaded_identities.is_empty() {
+                builder = builder.with_identities(&loaded_identities);
+            }
+
             // Add shielded address for autocomplete (if wallet has shielded state)
-            if let Some(seed_hash) = self.selected_wallet_seed_hash
-                && let Ok(states) = self.app_context.shielded_states.lock()
-                && let Some(state) = states.get(&seed_hash)
-            {
-                use dash_sdk::dpp::address_funds::OrchardAddress;
-                let raw = state.keys.default_address.to_raw_address_bytes();
-                if let Ok(orchard_addr) = OrchardAddress::from_raw_bytes(&raw) {
-                    let addr_str = orchard_addr.to_bech32m_string(self.app_context.network);
-                    builder = builder.with_shielded_balance(addr_str, state.shielded_balance);
-                }
+            if let Some((addr_str, balance)) = &shielded_info {
+                builder = builder.with_shielded_balance(addr_str.clone(), *balance);
             }
 
             builder

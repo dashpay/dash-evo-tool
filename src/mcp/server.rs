@@ -74,6 +74,8 @@ impl DashMcpService {
     pub fn tool_router() -> ToolRouter<Self> {
         ToolRouter::new()
             .with_async_tool::<tools::network::NetworkTool>()
+            .with_async_tool::<tools::network::NetworkRefreshEndpoints>()
+            .with_async_tool::<tools::network::NetworkReinitSdk>()
             .with_async_tool::<tools::wallet::ListWalletsTool>()
             .with_async_tool::<tools::wallet::GenerateReceiveAddress>()
             .with_async_tool::<tools::wallet::WalletBalancesQuery>()

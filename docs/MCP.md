@@ -68,6 +68,8 @@ Set these in the app's `.env` file (see `.env.example`) or as environment variab
 | Tool | Parameters | det-cli command | Description |
 |---|---|---|---|
 | `network_info` | — | `det-cli network-info` | Show active network and available configured networks |
+| `network_refresh_endpoints` | `network` | `det-cli network-refresh-endpoints` | Fetch fresh DAPI node addresses from DCG discovery service, save to config, and reinit SDK |
+| `network_reinit_sdk` | `network` | `det-cli network-reinit-sdk` | Rebuild Core RPC client and Platform SDK with current config (use after changing credentials) |
 | `core_wallets_list` | `network`? | `det-cli core-wallets-list` | List wallets loaded in the app (alias + seed hash) |
 | `core_address_create` | `wallet_id`, `network`? | `det-cli core-address-create` | Generate a new receive address for a wallet |
 | `core_balances_get` | `wallet_id`, `network`? | `det-cli core-balances-get` | Show wallet balances (total, confirmed, unconfirmed) in duffs |

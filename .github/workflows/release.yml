@@ -171,6 +171,12 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v4
 
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add Rust target
+        run: rustup target add aarch64-apple-darwin
+
       - name: Extract version from Cargo.toml
         id: version
         run: |
@@ -185,16 +191,10 @@ jobs:
             echo "::error::Invalid plist version '$PLIST_VERSION' derived from Cargo version '$VERSION'. Expected numeric x[.y[.z]]."
             exit 1
           fi
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "plist_version=$PLIST_VERSION" >> $GITHUB_OUTPUT
-          echo "build_number=${{ github.run_number }}" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "plist_version=$PLIST_VERSION" >> "$GITHUB_OUTPUT"
+          echo "build_number=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
           echo "Extracted version: $VERSION (plist: $PLIST_VERSION, build: ${{ github.run_number }})"
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Add Rust target
-        run: rustup target add aarch64-apple-darwin
 
       - name: Initial disk cleanup
         run: |
@@ -487,6 +487,12 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v4
 
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add Rust target
+        run: rustup target add x86_64-apple-darwin
+
       - name: Extract version from Cargo.toml
         id: version
         run: |
@@ -501,16 +507,10 @@ jobs:
             echo "::error::Invalid plist version '$PLIST_VERSION' derived from Cargo version '$VERSION'. Expected numeric x[.y[.z]]."
             exit 1
           fi
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "plist_version=$PLIST_VERSION" >> $GITHUB_OUTPUT
-          echo "build_number=${{ github.run_number }}" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "plist_version=$PLIST_VERSION" >> "$GITHUB_OUTPUT"
+          echo "build_number=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
           echo "Extracted version: $VERSION (plist: $PLIST_VERSION, build: ${{ github.run_number }})"
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Add Rust target
-        run: rustup target add x86_64-apple-darwin
 
       - name: Initial disk cleanup
         run: |

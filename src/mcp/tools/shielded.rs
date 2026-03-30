@@ -91,12 +91,13 @@ impl AsyncTool<DashMcpService> for ShieldedShieldFromCore {
                     .parse::<dash_sdk::dashcore_rpc::dashcore::Address<
                         dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked,
                     >>()
-                    .map_err(|e| McpToolError::InvalidParam {
-                        message: format!("Invalid source Core address: {e}"),
+                    .map_err(|_| McpToolError::InvalidParam {
+                        message: "The source Core address is invalid.".to_owned(),
                     })?
                     .require_network(ctx.network())
-                    .map_err(|e| McpToolError::InvalidParam {
-                        message: format!("Source address does not match active network: {e}"),
+                    .map_err(|_| McpToolError::InvalidParam {
+                        message: "The source Core address does not match the active network."
+                            .to_owned(),
                     })
             })
             .transpose()?;
@@ -519,12 +520,12 @@ impl AsyncTool<DashMcpService> for ShieldedWithdrawTool {
             .parse::<dash_sdk::dashcore_rpc::dashcore::Address<
                 dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked,
             >>()
-            .map_err(|e| McpToolError::InvalidParam {
-                message: format!("Invalid Core address: {e}"),
+            .map_err(|_| McpToolError::InvalidParam {
+                message: "The Core address is invalid.".to_owned(),
             })?
             .require_network(ctx.network())
-            .map_err(|e| McpToolError::InvalidParam {
-                message: format!("Core address does not match active network: {e}"),
+            .map_err(|_| McpToolError::InvalidParam {
+                message: "The Core address does not match the active network.".to_owned(),
             })?;
 
         let task = BackendTask::ShieldedTask(ShieldedTask::ShieldedWithdrawal {

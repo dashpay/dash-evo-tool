@@ -1553,10 +1553,13 @@ impl WalletSendScreen {
 
         // Allocate amount across addresses (highest balance first), reserving
         // per-operation fee headroom so each address can cover its own shield fee.
-        let per_op_fee = crate::model::fee_estimation::shielded_fee_for_actions(
+        // Apply the network fee multiplier for consistency with ShieldScreen.
+        let base_fee = crate::model::fee_estimation::shielded_fee_for_actions(
             2,
             dash_sdk::dpp::version::PlatformVersion::latest(),
         );
+        let multiplier = self.app_context.fee_multiplier_permille().max(1000);
+        let per_op_fee = base_fee.saturating_mul(multiplier) / 1000;
         let mut remaining = amount_credits;
         let mut tasks: Vec<BackendTask> = Vec::new();
         for (platform_addr, _, balance) in &sorted_addrs {
@@ -1577,6 +1580,22 @@ impl WalletSendScreen {
                 },
             ));
             remaining -= spend;
+        }
+
+        // Reject if allocation could not cover the full amount after fee deductions
+        if tasks.is_empty() {
+            return Err(
+                "Insufficient platform balance after fees. No address has enough to cover the shield operation fee."
+                    .to_string(),
+            );
+        }
+        if remaining > 0 {
+            let max_sendable = amount_credits.saturating_sub(remaining);
+            return Err(format!(
+                "Insufficient platform balance after fees. Need {} but only {} is available after estimated shield fees.",
+                format_credits_as_dash(amount_credits),
+                format_credits_as_dash(max_sendable),
+            ));
         }
 
         self.mark_sending();

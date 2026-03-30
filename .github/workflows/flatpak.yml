@@ -44,8 +44,10 @@ jobs:
             echo "::error::Failed to extract version from Cargo.toml"
             exit 1
           fi
-          # Use tag date for releases, current date for manual/PR builds
-          if [ "${{ github.ref_type }}" = "tag" ]; then
+          # Use release published date when available, tag commit date for tag pushes, current date otherwise
+          if [ -n "${{ github.event.release.published_at }}" ]; then
+            DATE=$(echo "${{ github.event.release.published_at }}" | cut -dT -f1)
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
             DATE=$(git log -1 --format=%cs "${{ github.ref }}")
           else
             DATE=$(date +%Y-%m-%d)

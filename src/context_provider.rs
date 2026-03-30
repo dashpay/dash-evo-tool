@@ -96,13 +96,14 @@ impl Provider {
         } else {
             // Fall back to the pre-set user / pass if needed
             (
-                config.core_rpc_user.clone(),
-                config.core_rpc_password.clone(),
+                config.core_rpc_user.clone().unwrap_or_default(),
+                config.core_rpc_password.clone().unwrap_or_default(),
             )
         };
 
-        let core_client = CoreClient::new(&config.core_host, config.core_rpc_port, &user, &pass)
-            .map_err(|e| e.to_string())?;
+        let host = config.core_host.as_deref().unwrap_or("127.0.0.1");
+        let port = config.core_rpc_port.unwrap_or(9998);
+        let core_client = CoreClient::new(host, port, &user, &pass).map_err(|e| e.to_string())?;
 
         Ok(Self {
             db,

@@ -134,7 +134,8 @@ impl NetworkChooserScreen {
         if let Ok(config) = Config::load_from(&data_dir)
             && let Some(network_config) = config.config_for_network(current_network)
         {
-            dashmate_password_input.set_text(network_config.core_rpc_password.clone());
+            dashmate_password_input
+                .set_text(network_config.core_rpc_password.clone().unwrap_or_default());
         }
 
         let current_context = contexts.get(&current_network).unwrap_or(any_context);
@@ -361,22 +362,38 @@ impl NetworkChooserScreen {
                                 {
                                     app_action = AppAction::SwitchNetwork(Network::Mainnet);
                                 }
-                                for (network, label) in [
-                                    (Network::Testnet, "Testnet"),
-                                    (Network::Devnet, "Devnet"),
-                                    (Network::Regtest, "Local"),
-                                ] {
-                                    if self.network_contexts.contains_key(&network)
-                                        && ui
-                                            .selectable_value(
-                                                &mut self.current_network,
-                                                network,
-                                                label,
-                                            )
-                                            .clicked()
-                                    {
-                                        app_action = AppAction::SwitchNetwork(network);
-                                    }
+                                // Testnet always visible; Devnet/Local only in dev mode
+                                if ui
+                                    .selectable_value(
+                                        &mut self.current_network,
+                                        Network::Testnet,
+                                        "Testnet",
+                                    )
+                                    .clicked()
+                                {
+                                    app_action = AppAction::SwitchNetwork(Network::Testnet);
+                                }
+                                if self.developer_mode
+                                    && ui
+                                        .selectable_value(
+                                            &mut self.current_network,
+                                            Network::Devnet,
+                                            "Devnet",
+                                        )
+                                        .clicked()
+                                {
+                                    app_action = AppAction::SwitchNetwork(Network::Devnet);
+                                }
+                                if self.developer_mode
+                                    && ui
+                                        .selectable_value(
+                                            &mut self.current_network,
+                                            Network::Regtest,
+                                            "Local",
+                                        )
+                                        .clicked()
+                                {
+                                    app_action = AppAction::SwitchNetwork(Network::Regtest);
                                 }
                                 if self.current_network != prev_network {
                                     let password = Config::load_from(
@@ -386,7 +403,7 @@ impl NetworkChooserScreen {
                                     .and_then(|c| {
                                         c.config_for_network(self.current_network)
                                             .as_ref()
-                                            .map(|nc| nc.core_rpc_password.clone())
+                                            .and_then(|nc| nc.core_rpc_password.clone())
                                     })
                                     .unwrap_or_default();
                                     self.dashmate_password_input.set_text(password);

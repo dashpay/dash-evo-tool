@@ -1,3 +1,26 @@
+//! Dynamic DAPI node discovery via the Dash trusted masternode endpoint.
+//!
+//! When no explicit DAPI addresses are configured in `.env`, this module
+//! contacts a Dash-operated HTTPS service to discover available masternodes:
+//!
+//! - **Mainnet**: `https://quorums.mainnet.networks.dash.org/masternodes`
+//! - **Testnet**: `https://quorums.testnet.networks.dash.org/masternodes`
+//! - **Devnet**: `https://quorums.devnet.<name>.networks.dash.org/masternodes`
+//!
+//! ## Trust model
+//!
+//! The discovery endpoint is operated by DCG (Dash Core Group) and served
+//! over TLS. The application trusts this endpoint to return a correct list
+//! of masternodes. An attacker who compromises the endpoint or performs a
+//! TLS MITM could direct the client to malicious DAPI nodes, which would
+//! then be subject to Platform's own proof-verification before any state
+//! is accepted. Discovery is therefore a *convenience trust* layer, not a
+//! *security trust* layer -- incorrect results degrade availability but
+//! cannot forge Platform proofs.
+//!
+//! Results are not cached across restarts; discovery runs once per
+//! `AppContext` initialization for the active network.
+
 use dash_sdk::dapi_client::{Address as DapiAddress, AddressList};
 use dash_sdk::dpp::dashcore::Network;
 use rs_sdk_trusted_context_provider::TrustedHttpContextProvider;

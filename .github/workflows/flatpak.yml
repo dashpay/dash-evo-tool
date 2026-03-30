@@ -39,7 +39,7 @@ jobs:
 
       - name: Sync metainfo version from Cargo.toml
         run: |
-          VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          VERSION=$(cargo metadata --format-version=1 --no-deps | jq -r '.packages[] | select(.name == "dash-evo-tool") | .version')
           if [ -z "$VERSION" ]; then
             echo "::error::Failed to extract version from Cargo.toml"
             exit 1

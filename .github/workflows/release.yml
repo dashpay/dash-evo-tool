@@ -174,7 +174,7 @@ jobs:
       - name: Extract version from Cargo.toml
         id: version
         run: |
-          VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          VERSION=$(cargo metadata --format-version=1 --no-deps | jq -r '.packages[] | select(.name == "dash-evo-tool") | .version')
           if [ -z "$VERSION" ]; then
             echo "::error::Failed to extract version from Cargo.toml"
             exit 1
@@ -485,7 +485,7 @@ jobs:
       - name: Extract version from Cargo.toml
         id: version
         run: |
-          VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          VERSION=$(cargo metadata --format-version=1 --no-deps | jq -r '.packages[] | select(.name == "dash-evo-tool") | .version')
           if [ -z "$VERSION" ]; then
             echo "::error::Failed to extract version from Cargo.toml"
             exit 1

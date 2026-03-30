@@ -108,6 +108,8 @@ pub struct AppState {
     /// Timestamp when the async shutdown was initiated, used as a hard deadline
     /// to force-close the viewport if the shutdown task stalls.
     shutdown_started: Option<std::time::Instant>,
+    /// Whether accessibility support is enabled (DASH_EVO_TOOL_ACCESSIBILITY=1).
+    accessibility_enabled: bool,
     /// Whether we have already triggered platform-level accessibility activation.
     accessibility_activated: bool,
     /// Shared MCP context -- follows network switches via `ArcSwap`.
@@ -277,7 +279,13 @@ impl AppState {
 
         // Enable AccessKit eagerly so the accessibility tree is populated
         // every frame, even without VoiceOver running.
-        ctx.enable_accesskit();
+        // Gated behind DASH_EVO_TOOL_ACCESSIBILITY=1 to avoid per-frame cost
+        // when not needed.
+        let accessibility_enabled =
+            std::env::var("DASH_EVO_TOOL_ACCESSIBILITY").unwrap_or_default() == "1";
+        if accessibility_enabled {
+            ctx.enable_accesskit();
+        }
 
         // create screens
         let mut identities_screen = IdentitiesScreen::new(&mainnet_app_context);
@@ -790,6 +798,7 @@ impl AppState {
             connection_banner_handle: None,
             shutdown_receiver: None,
             shutdown_started: None,
+            accessibility_enabled,
             accessibility_activated: false,
             #[cfg(feature = "mcp")]
             mcp_app_context,
@@ -1183,7 +1192,7 @@ impl App for AppState {
         // On the first frame, trigger platform-level accessibility activation
         // so tools like Peekaboo can see the AccessKit tree without VoiceOver.
         // Retries each frame until the window is available.
-        if !self.accessibility_activated {
+        if self.accessibility_enabled && !self.accessibility_activated {
             self.accessibility_activated = crate::platform::force_accessibility_activation();
             if !self.accessibility_activated {
                 // Ensure we get another frame to retry, even if egui would otherwise go idle.

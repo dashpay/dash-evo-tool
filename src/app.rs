@@ -327,15 +327,44 @@ impl AppState {
         // Only create the saved/active network eagerly; defer ALL others
         // (including mainnet) until the user switches to them. This avoids
         // DAPI discovery + SDK init for networks the user may never use.
-        let active_context = make_context(saved_network).ok_or_else(|| {
-            format!(
-                "Failed to create AppContext for {:?}. Check your Dash configuration.",
-                saved_network
-            )
-        })?;
-
+        //
+        // If the saved network fails (e.g., no DAPI addresses configured),
+        // try other networks before giving up. The user can fix the config
+        // via the "Fetch Node List" button in Network Settings.
         let mut network_contexts = BTreeMap::new();
-        network_contexts.insert(saved_network, active_context.clone());
+        let try_order = std::iter::once(saved_network).chain(
+            [
+                Network::Mainnet,
+                Network::Testnet,
+                Network::Devnet,
+                Network::Regtest,
+            ]
+            .into_iter()
+            .filter(|n| *n != saved_network),
+        );
+        for net in try_order {
+            if let Some(ctx) = make_context(net) {
+                network_contexts.insert(net, ctx);
+                break;
+            }
+            if net == saved_network {
+                tracing::warn!(
+                    "Could not create context for saved network {:?}. \
+                     Check your node addresses. Trying other networks...",
+                    saved_network
+                );
+            }
+        }
+        if network_contexts.is_empty() {
+            return Err(
+                "No network could be initialized. Check that at least one network has \
+                 DAPI node addresses configured in your settings file. You can use the \
+                 \"Fetch Node List\" button in Network Settings to get addresses."
+                    .into(),
+            );
+        }
+        let chosen_network = *network_contexts.keys().next().unwrap();
+        let active_context = network_contexts.get(&chosen_network).unwrap().clone();
 
         // Store params for lazy context creation when switching networks later.
         let lazy_ctx_params = Some(LazyContextParams {
@@ -400,7 +429,6 @@ impl AppState {
         let wallets_balances_screen = WalletsBalancesScreen::new(&active_context);
 
         let selected_main_screen = settings.root_screen_type;
-        let chosen_network = saved_network;
 
         // // Create a channel with a buffer size of 32 (adjust as needed)
         let (task_result_sender, task_result_receiver) =

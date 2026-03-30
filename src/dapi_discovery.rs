@@ -32,7 +32,9 @@ use std::time::Duration;
 #[derive(Debug, thiserror::Error)]
 pub enum DapiDiscoveryError {
     /// Explicitly configured DAPI addresses could not be parsed.
-    #[error("Could not parse the configured node addresses. Check the DAPI addresses in your network settings.")]
+    #[error(
+        "Could not parse the configured node addresses. Check the DAPI addresses in your network settings."
+    )]
     InvalidAddresses {
         #[source]
         source: AddressListError,
@@ -67,7 +69,9 @@ pub enum DapiDiscoveryError {
     },
 
     /// Discovery succeeded but returned no usable addresses.
-    #[error("No available nodes were found. The network may be temporarily unavailable -- try again later.")]
+    #[error(
+        "No available nodes were found. The network may be temporarily unavailable -- try again later."
+    )]
     NoResults,
 }
 

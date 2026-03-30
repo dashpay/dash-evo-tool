@@ -175,7 +175,15 @@ jobs:
         id: version
         run: |
           VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          if [ -z "$VERSION" ]; then
+            echo "::error::Failed to extract version from Cargo.toml"
+            exit 1
+          fi
+          # Strip prerelease suffix for macOS plist (Apple requires numeric-only)
+          PLIST_VERSION=$(echo "$VERSION" | sed 's/-.*//')
           echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "plist_version=$PLIST_VERSION" >> $GITHUB_OUTPUT
+          echo "Extracted version: $VERSION (plist: $PLIST_VERSION)"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -276,9 +284,9 @@ jobs:
             <key>CFBundleDisplayName</key>
             <string>Dash Evo Tool</string>
             <key>CFBundleVersion</key>
-            <string>${{ steps.version.outputs.version }}</string>
+            <string>${{ steps.version.outputs.plist_version }}</string>
             <key>CFBundleShortVersionString</key>
-            <string>${{ steps.version.outputs.version }}</string>
+            <string>${{ steps.version.outputs.plist_version }}</string>
             <key>CFBundlePackageType</key>
             <string>APPL</string>
             <key>CFBundleSignature</key>
@@ -478,7 +486,15 @@ jobs:
         id: version
         run: |
           VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          if [ -z "$VERSION" ]; then
+            echo "::error::Failed to extract version from Cargo.toml"
+            exit 1
+          fi
+          # Strip prerelease suffix for macOS plist (Apple requires numeric-only)
+          PLIST_VERSION=$(echo "$VERSION" | sed 's/-.*//')
           echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "plist_version=$PLIST_VERSION" >> $GITHUB_OUTPUT
+          echo "Extracted version: $VERSION (plist: $PLIST_VERSION)"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -575,9 +591,9 @@ jobs:
             <key>CFBundleDisplayName</key>
             <string>Dash Evo Tool</string>
             <key>CFBundleVersion</key>
-            <string>${{ steps.version.outputs.version }}</string>
+            <string>${{ steps.version.outputs.plist_version }}</string>
             <key>CFBundleShortVersionString</key>
-            <string>${{ steps.version.outputs.version }}</string>
+            <string>${{ steps.version.outputs.plist_version }}</string>
             <key>CFBundlePackageType</key>
             <string>APPL</string>
             <key>CFBundleSignature</key>

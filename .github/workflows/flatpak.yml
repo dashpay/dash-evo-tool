@@ -40,9 +40,23 @@ jobs:
       - name: Sync metainfo version from Cargo.toml
         run: |
           VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
-          DATE=$(date +%Y-%m-%d)
+          if [ -z "$VERSION" ]; then
+            echo "::error::Failed to extract version from Cargo.toml"
+            exit 1
+          fi
+          # Use tag date for releases, current date for manual/PR builds
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            DATE=$(git log -1 --format=%cs "${{ github.ref }}")
+          else
+            DATE=$(date +%Y-%m-%d)
+          fi
           sed -i "s|<release version=\"[^\"]*\" date=\"[^\"]*\"|<release version=\"${VERSION}\" date=\"${DATE}\"|" \
             flatpak/org.dash.DashEvoTool.metainfo.xml
+          # Verify replacement applied
+          if ! grep -q "version=\"${VERSION}\"" flatpak/org.dash.DashEvoTool.metainfo.xml; then
+            echo "::error::Failed to update metainfo.xml with version ${VERSION}"
+            exit 1
+          fi
           echo "Metainfo version set to ${VERSION}, date ${DATE}"
 
       - name: Install Flatpak and Flatpak Builder

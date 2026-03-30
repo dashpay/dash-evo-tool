@@ -56,6 +56,8 @@ pub enum ConfigError {
 pub struct NetworkConfig {
     /// Hostname of Dash Platform node to connect to.
     /// `None` or empty means dynamic discovery will be used.
+    /// Dynamic discovery is currently supported for Mainnet and Testnet only.
+    /// Devnet and Regtest require explicit addresses.
     pub dapi_addresses: Option<String>,
     /// Host of the Dash Core RPC interface
     pub core_host: String,
@@ -291,16 +293,8 @@ impl Config {
     /// Scans for `MAINNET_dapi_addresses=` and `TESTNET_dapi_addresses=` lines whose
     /// values match a known old hardcoded list. Matching lines are commented out so
     /// that `envy` will no longer parse them and dynamic discovery kicks in.
-    pub fn migrate_env_file_if_needed() {
-        let env_file_path = match app_user_data_file_path(".env") {
-            Ok(p) => p,
-            Err(e) => {
-                eprintln!("[migration] Could not determine .env file path: {e}");
-                return;
-            }
-        };
-
-        let content = match std::fs::read_to_string(&env_file_path) {
+    pub fn migrate_env_file_if_needed(env_file_path: &Path) {
+        let content = match std::fs::read_to_string(env_file_path) {
             Ok(c) => c,
             Err(e) => {
                 eprintln!(
@@ -371,7 +365,7 @@ impl Config {
             eprintln!("[migration] Failed to sync migrated .env file: {e}");
             return;
         }
-        if let Err(e) = tmp.persist(&env_file_path) {
+        if let Err(e) = tmp.persist(env_file_path) {
             eprintln!("[migration] Failed to persist migrated .env file: {e}");
             return;
         }
@@ -381,7 +375,7 @@ impl Config {
         {
             use std::os::unix::fs::PermissionsExt;
             let perms = std::fs::Permissions::from_mode(0o600);
-            if let Err(e) = std::fs::set_permissions(&env_file_path, perms) {
+            if let Err(e) = std::fs::set_permissions(env_file_path, perms) {
                 eprintln!("[migration] Could not set config file permissions to 0600: {e}");
             }
         }
@@ -408,14 +402,6 @@ impl Config {
 }
 
 impl NetworkConfig {
-    /// Check if configuration is set
-    #[allow(dead_code)] // May be used for validation
-    pub fn is_valid(&self) -> bool {
-        !self.core_rpc_user.is_empty()
-            && !self.core_rpc_password.is_empty()
-            && self.core_rpc_port != 0
-    }
-
     /// List of DAPI addresses, if explicitly configured.
     /// Returns `Ok(None)` when absent or empty (dynamic discovery should be used).
     pub fn dapi_address_list(&self) -> Result<Option<AddressList>, String> {
@@ -460,40 +446,6 @@ mod tests {
             devnet_name: None,
             wallet_private_key: None,
         }
-    }
-
-    // ── NetworkConfig::is_valid ──────────────────────────────────────
-
-    #[test]
-    fn test_is_valid_with_all_fields() {
-        let config = make_network_config("https://127.0.0.1:443", 9998);
-        assert!(config.is_valid());
-    }
-
-    #[test]
-    fn test_is_valid_empty_user() {
-        let mut config = make_network_config("https://127.0.0.1:443", 9998);
-        config.core_rpc_user = String::new();
-        assert!(!config.is_valid());
-    }
-
-    #[test]
-    fn test_is_valid_empty_password() {
-        let mut config = make_network_config("https://127.0.0.1:443", 9998);
-        config.core_rpc_password = String::new();
-        assert!(!config.is_valid());
-    }
-
-    #[test]
-    fn test_is_valid_zero_port() {
-        let config = make_network_config("https://127.0.0.1:443", 0);
-        assert!(!config.is_valid());
-    }
-
-    #[test]
-    fn test_is_valid_no_dapi_addresses() {
-        let config = make_network_config("", 9998);
-        assert!(config.is_valid());
     }
 
     // ── NetworkConfig::dapi_address_list ─────────────────────────────

@@ -3,7 +3,7 @@ use crate::context::AppContext;
 use crate::context::shielded::get_proving_key;
 use crate::model::fee_estimation::{format_credits_as_dash, shielded_fee_for_actions};
 use crate::model::wallet::WalletSeedHash;
-use crate::model::wallet::shielded::ShieldedWalletState;
+use crate::model::wallet::shielded::{ShieldedNote, ShieldedWalletState};
 use dash_sdk::dpp::address_funds::{
     AddressFundsFeeStrategy, AddressFundsFeeStrategyStep, OrchardAddress, PlatformAddress,
 };
@@ -13,12 +13,15 @@ use dash_sdk::dpp::shielded::builder::{
     OrchardProver, SpendableNote, build_shield_transition, build_shielded_transfer_transition,
     build_shielded_withdrawal_transition, build_unshield_transition,
 };
+use dash_sdk::dpp::state_transition::proof_result::StateTransitionProofResult;
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::dpp::withdrawal::Pooling;
-use dash_sdk::grovedb_commitment_tree::{Nullifier, PaymentAddress, ProvingKey};
+use dash_sdk::grovedb_commitment_tree::{
+    Anchor, ClientPersistentCommitmentTree, Nullifier, PaymentAddress, ProvingKey,
+};
 use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 /// Wrapper around a cached `ProvingKey` that implements `OrchardProver`.
 struct CachedProver {
@@ -98,7 +101,7 @@ pub fn build_shield_credit(
     let recipient_addr = payment_address_to_orchard(recipient_payment_address)?;
 
     let wallet_arc = {
-        let wallets = app_context.wallets.read().unwrap();
+        let wallets = app_context.wallets.read()?;
         wallets
             .get(seed_hash)
             .cloned()
@@ -111,7 +114,8 @@ pub fn build_shield_credit(
     let fee_strategy: AddressFundsFeeStrategy =
         vec![AddressFundsFeeStrategyStep::DeductFromInput(0)];
 
-    let wallet = wallet_arc.read().unwrap();
+    let wallet = wallet_arc.read()?;
+    // memo: 36-byte structured memo (4-byte type tag + 32-byte payload); all zeros = empty memo
     build_shield_transition(
         &recipient_addr,
         amount,
@@ -148,7 +152,7 @@ pub async fn shield_credits(
     let recipient_addr = payment_address_to_orchard(recipient_payment_address)?;
 
     let wallet_arc = {
-        let wallets = app_context.wallets.read().unwrap();
+        let wallets = app_context.wallets.read()?;
         wallets
             .get(seed_hash)
             .cloned()
@@ -158,7 +162,7 @@ pub async fn shield_credits(
     let nonce: u32 = if let Some(n) = nonce_override {
         n
     } else {
-        let wallet = wallet_arc.read().unwrap();
+        let wallet = wallet_arc.read()?;
         wallet
             .platform_address_info
             .iter()
@@ -187,11 +191,12 @@ pub async fn shield_credits(
     );
 
     if let Some(s) = &stage {
-        *s.lock().unwrap() = ShieldStage::BuildingProof { nonce };
+        *s.lock()? = ShieldStage::BuildingProof { nonce };
     }
 
     let state_transition = {
-        let wallet = wallet_arc.read().unwrap();
+        let wallet = wallet_arc.read()?;
+        // memo: 36-byte structured memo (4-byte type tag + 32-byte payload); all zeros = empty memo
         build_shield_transition(
             &recipient_addr,
             amount,
@@ -207,7 +212,7 @@ pub async fn shield_credits(
     };
 
     if let Some(s) = &stage {
-        *s.lock().unwrap() = ShieldStage::Broadcasting;
+        *s.lock()? = ShieldStage::Broadcasting;
     }
 
     tracing::trace!("Shield credits: state transition built, broadcasting...");
@@ -217,8 +222,16 @@ pub async fn shield_credits(
         .await
         .map_err(shielded_broadcast_error)?;
 
+    state_transition
+        .wait_for_response::<StateTransitionProofResult>(&sdk, None)
+        .await
+        .map_err(|e| {
+            tracing::warn!("Shield credits broadcast succeeded but confirmation wait failed: {e}");
+        })
+        .ok();
+
     tracing::info!(
-        "Shield credits broadcast succeeded: {} — balance will update after the next block is mined and notes are synced",
+        "Shield credits broadcast succeeded: {}",
         format_credits_as_dash(amount),
     );
 
@@ -269,35 +282,13 @@ pub async fn shielded_transfer(
     let spent_nullifiers: Vec<Nullifier> = spendable_notes.iter().map(|n| n.nullifier).collect();
 
     let (spends, anchor) = {
-        let tree = shielded_state.commitment_tree.lock().unwrap();
-        let spends = spendable_notes
-            .iter()
-            .map(|note| {
-                let merkle_path = tree
-                    .witness(note.position, 0)
-                    .map_err(|e| TaskError::ShieldedMerkleWitnessUnavailable {
-                        detail: e.to_string(),
-                    })?
-                    .ok_or(TaskError::ShieldedMerkleWitnessUnavailable {
-                        detail: "No Merkle path available for note".into(),
-                    })?;
-                Ok(SpendableNote {
-                    note: note.note,
-                    merkle_path,
-                })
-            })
-            .collect::<Result<Vec<_>, TaskError>>()?;
-
-        let anchor = tree
-            .anchor()
-            .map_err(|e| TaskError::ShieldedMerkleWitnessUnavailable {
-                detail: e.to_string(),
-            })?;
-        (spends, anchor)
+        let tree = shielded_state.commitment_tree.lock()?;
+        extract_spends_and_anchor(&tree, &spendable_notes)?
     };
 
     let change_addr = payment_address_to_orchard(&shielded_state.keys.default_address)?;
 
+    // memo: 36-byte structured memo (4-byte type tag + 32-byte payload); all zeros = empty memo
     let state_transition = build_shielded_transfer_transition(
         spends,
         &recipient_addr,
@@ -320,8 +311,18 @@ pub async fn shielded_transfer(
         .await
         .map_err(shielded_broadcast_error)?;
 
+    state_transition
+        .wait_for_response::<StateTransitionProofResult>(&sdk, None)
+        .await
+        .map_err(|e| {
+            tracing::warn!(
+                "Shielded transfer broadcast succeeded but confirmation wait failed: {e}"
+            );
+        })
+        .ok();
+
     tracing::info!(
-        "Shielded transfer broadcast succeeded: {} nullifiers created, change={} — balance will update after the next block is mined and notes are synced",
+        "Shielded transfer broadcast succeeded: {} nullifiers created, change={}",
         spent_nullifiers.len(),
         change_amount > 0,
     );
@@ -367,35 +368,13 @@ pub async fn unshield_credits(
     let spent_nullifiers: Vec<Nullifier> = spendable_notes.iter().map(|n| n.nullifier).collect();
 
     let (spends, anchor) = {
-        let tree = shielded_state.commitment_tree.lock().unwrap();
-        let spends = spendable_notes
-            .iter()
-            .map(|note| {
-                let merkle_path = tree
-                    .witness(note.position, 0)
-                    .map_err(|e| TaskError::ShieldedMerkleWitnessUnavailable {
-                        detail: e.to_string(),
-                    })?
-                    .ok_or(TaskError::ShieldedMerkleWitnessUnavailable {
-                        detail: "No Merkle path available for note".into(),
-                    })?;
-                Ok(SpendableNote {
-                    note: note.note,
-                    merkle_path,
-                })
-            })
-            .collect::<Result<Vec<_>, TaskError>>()?;
-
-        let anchor = tree
-            .anchor()
-            .map_err(|e| TaskError::ShieldedMerkleWitnessUnavailable {
-                detail: e.to_string(),
-            })?;
-        (spends, anchor)
+        let tree = shielded_state.commitment_tree.lock()?;
+        extract_spends_and_anchor(&tree, &spendable_notes)?
     };
 
     let change_addr = payment_address_to_orchard(&shielded_state.keys.default_address)?;
 
+    // memo: 36-byte structured memo (4-byte type tag + 32-byte payload); all zeros = empty memo
     let state_transition = build_unshield_transition(
         spends,
         to_platform_address,
@@ -418,8 +397,18 @@ pub async fn unshield_credits(
         .await
         .map_err(shielded_broadcast_error)?;
 
+    state_transition
+        .wait_for_response::<StateTransitionProofResult>(&sdk, None)
+        .await
+        .map_err(|e| {
+            tracing::warn!(
+                "Unshield credits broadcast succeeded but confirmation wait failed: {e}"
+            );
+        })
+        .ok();
+
     tracing::info!(
-        "Unshield credits broadcast succeeded: {} nullifiers created, change={} — balance will update after the next block is mined and notes are synced",
+        "Unshield credits broadcast succeeded: {} nullifiers created, change={}",
         spent_nullifiers.len(),
         change_amount > 0,
     );
@@ -444,7 +433,6 @@ pub async fn shield_from_asset_lock(
     use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
     use dash_sdk::dpp::prelude::AssetLockProof;
     use dash_sdk::dpp::shielded::builder::build_shield_from_asset_lock_transition;
-    use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
     use std::time::Duration;
 
     let proving_key = crate::context::shielded::get_proving_key();
@@ -457,7 +445,7 @@ pub async fn shield_from_asset_lock(
     // Step 1: Create the asset lock transaction
     let (asset_lock_transaction, asset_lock_private_key, _asset_lock_address, used_utxos) = {
         let wallet_arc = {
-            let wallets = app_context.wallets.read().unwrap();
+            let wallets = app_context.wallets.read()?;
             wallets
                 .get(seed_hash)
                 .cloned()
@@ -501,10 +489,7 @@ pub async fn shield_from_asset_lock(
 
     // Step 2: Register this transaction as waiting for finality
     {
-        let mut proofs = app_context
-            .transactions_waiting_for_finality
-            .lock()
-            .unwrap();
+        let mut proofs = app_context.transactions_waiting_for_finality.lock()?;
         proofs.insert(tx_id, None);
     }
 
@@ -520,7 +505,7 @@ pub async fn shield_from_asset_lock(
     // Step 4: Remove used UTXOs from wallet
     {
         let wallet_arc = {
-            let wallets = app_context.wallets.read().unwrap();
+            let wallets = app_context.wallets.read()?;
             wallets
                 .get(seed_hash)
                 .cloned()
@@ -573,7 +558,7 @@ pub async fn shield_from_asset_lock(
                 return Err(TaskError::ShieldedAssetLockTimeout);
             }
             _ = tokio::time::sleep(Duration::from_millis(200)) => {
-                let proofs = app_context.transactions_waiting_for_finality.lock().unwrap();
+                let proofs = app_context.transactions_waiting_for_finality.lock()?;
                 if let Some(Some(proof)) = proofs.get(&tx_id) {
                     asset_lock_proof = proof.clone();
                     break;
@@ -584,10 +569,7 @@ pub async fn shield_from_asset_lock(
 
     // Step 6: Clean up the finality tracking
     {
-        let mut proofs = app_context
-            .transactions_waiting_for_finality
-            .lock()
-            .unwrap();
+        let mut proofs = app_context.transactions_waiting_for_finality.lock()?;
         proofs.remove(&tx_id);
     }
 
@@ -611,6 +593,7 @@ pub async fn shield_from_asset_lock(
         shield_amount_credits,
     );
 
+    // memo: 36-byte structured memo (4-byte type tag + 32-byte payload); all zeros = empty memo
     let state_transition = build_shield_from_asset_lock_transition(
         &recipient,
         shield_amount_credits,
@@ -629,8 +612,18 @@ pub async fn shield_from_asset_lock(
         .await
         .map_err(shielded_broadcast_error)?;
 
+    state_transition
+        .wait_for_response::<StateTransitionProofResult>(&sdk, None)
+        .await
+        .map_err(|e| {
+            tracing::warn!(
+                "Shield from asset lock broadcast succeeded but confirmation wait failed: {e}"
+            );
+        })
+        .ok();
+
     tracing::info!(
-        "Shield from asset lock broadcast succeeded: {} — balance will update after the next block is mined and notes are synced",
+        "Shield from asset lock broadcast succeeded: {}",
         format_credits_as_dash(shield_amount_credits),
     );
 
@@ -677,35 +670,13 @@ pub async fn shielded_withdrawal(
     let spent_nullifiers: Vec<Nullifier> = spendable_notes.iter().map(|n| n.nullifier).collect();
 
     let (spends, anchor) = {
-        let tree = shielded_state.commitment_tree.lock().unwrap();
-        let spends = spendable_notes
-            .iter()
-            .map(|note| {
-                let merkle_path = tree
-                    .witness(note.position, 0)
-                    .map_err(|e| TaskError::ShieldedMerkleWitnessUnavailable {
-                        detail: e.to_string(),
-                    })?
-                    .ok_or(TaskError::ShieldedMerkleWitnessUnavailable {
-                        detail: "No Merkle path available for note".into(),
-                    })?;
-                Ok(SpendableNote {
-                    note: note.note,
-                    merkle_path,
-                })
-            })
-            .collect::<Result<Vec<_>, TaskError>>()?;
-
-        let anchor = tree
-            .anchor()
-            .map_err(|e| TaskError::ShieldedMerkleWitnessUnavailable {
-                detail: e.to_string(),
-            })?;
-        (spends, anchor)
+        let tree = shielded_state.commitment_tree.lock()?;
+        extract_spends_and_anchor(&tree, &spendable_notes)?
     };
 
     let change_addr = payment_address_to_orchard(&shielded_state.keys.default_address)?;
 
+    // memo: 36-byte structured memo (4-byte type tag + 32-byte payload); all zeros = empty memo
     let state_transition = build_shielded_withdrawal_transition(
         spends,
         amount,
@@ -730,8 +701,18 @@ pub async fn shielded_withdrawal(
         .await
         .map_err(shielded_broadcast_error)?;
 
+    state_transition
+        .wait_for_response::<StateTransitionProofResult>(&sdk, None)
+        .await
+        .map_err(|e| {
+            tracing::warn!(
+                "Shielded withdrawal broadcast succeeded but confirmation wait failed: {e}"
+            );
+        })
+        .ok();
+
     tracing::info!(
-        "Shielded withdrawal broadcast succeeded: {} nullifiers created, change={} — balance will update after the next block is mined and notes are synced",
+        "Shielded withdrawal broadcast succeeded: {} nullifiers created, change={}",
         spent_nullifiers.len(),
         change_amount > 0,
     );
@@ -831,6 +812,40 @@ fn select_notes_for_amount(
     }
 
     Ok((selected, accumulated))
+}
+
+/// Extract spendable notes with Merkle witnesses and the tree anchor.
+///
+/// Locks the commitment tree, computes a Merkle path for each selected note,
+/// and returns them alongside the current tree anchor for proof construction.
+fn extract_spends_and_anchor(
+    tree: &MutexGuard<'_, ClientPersistentCommitmentTree>,
+    notes: &[&ShieldedNote],
+) -> Result<(Vec<SpendableNote>, Anchor), TaskError> {
+    let spends = notes
+        .iter()
+        .map(|note| {
+            let merkle_path = tree
+                .witness(note.position, 0)
+                .map_err(|e| TaskError::ShieldedMerkleWitnessUnavailable {
+                    detail: e.to_string(),
+                })?
+                .ok_or(TaskError::ShieldedMerkleWitnessUnavailable {
+                    detail: "No Merkle path available for note".into(),
+                })?;
+            Ok(SpendableNote {
+                note: note.note,
+                merkle_path,
+            })
+        })
+        .collect::<Result<Vec<_>, TaskError>>()?;
+
+    let anchor = tree
+        .anchor()
+        .map_err(|e| TaskError::ShieldedMerkleWitnessUnavailable {
+            detail: e.to_string(),
+        })?;
+    Ok((spends, anchor))
 }
 
 /// Convert a PaymentAddress to an OrchardAddress for the builder functions.

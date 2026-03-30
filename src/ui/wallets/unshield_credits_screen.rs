@@ -50,13 +50,12 @@ impl UnshieldCreditsScreen {
     }
 
     pub fn new(seed_hash: WalletSeedHash, app_context: &Arc<AppContext>) -> Self {
-        let max_balance = {
-            let states = app_context.shielded_states.lock().unwrap();
-            states
-                .get(&seed_hash)
-                .map(|s| s.shielded_balance)
-                .unwrap_or(0)
-        };
+        let max_balance = app_context
+            .shielded_states
+            .lock()
+            .ok()
+            .and_then(|states| states.get(&seed_hash).map(|s| s.shielded_balance))
+            .unwrap_or(0);
 
         Self {
             app_context: app_context.clone(),
@@ -76,6 +75,14 @@ impl UnshieldCreditsScreen {
 }
 
 impl ScreenLike for UnshieldCreditsScreen {
+    fn refresh_on_arrival(&mut self) {
+        if let Ok(states) = self.app_context.shielded_states.lock()
+            && let Some(state) = states.get(&self.seed_hash)
+        {
+            self.max_balance = state.shielded_balance;
+        }
+    }
+
     fn ui(&mut self, ctx: &Context) -> AppAction {
         let mut action = self
             .pending_refresh_task

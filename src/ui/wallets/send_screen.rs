@@ -628,7 +628,9 @@ impl WalletSendScreen {
     fn get_shielded_balance(&self) -> Option<(WalletSeedHash, u64)> {
         let seed_hash = self.selected_wallet_seed_hash?;
         // Try in-memory state first (most accurate, reflects optimistic spend marks)
-        let states = self.app_context.shielded_states.lock().unwrap();
+        let Ok(states) = self.app_context.shielded_states.lock() else {
+            return None;
+        };
         if let Some(state) = states.get(&seed_hash) {
             let balance = state.shielded_balance;
             return if balance > 0 {
@@ -1549,17 +1551,23 @@ impl WalletSendScreen {
             ));
         }
 
-        // Allocate amount across addresses (highest balance first)
+        // Allocate amount across addresses (highest balance first), reserving
+        // per-operation fee headroom so each address can cover its own shield fee.
+        let per_op_fee = crate::model::fee_estimation::shielded_fee_for_actions(
+            2,
+            dash_sdk::dpp::version::PlatformVersion::latest(),
+        );
         let mut remaining = amount_credits;
         let mut tasks: Vec<BackendTask> = Vec::new();
         for (platform_addr, _, balance) in &sorted_addrs {
             if remaining == 0 {
                 break;
             }
-            let spend = remaining.min(*balance);
-            if spend == 0 {
+            let available = balance.saturating_sub(per_op_fee);
+            if available == 0 {
                 continue;
             }
+            let spend = remaining.min(available);
             tasks.push(BackendTask::ShieldedTask(
                 crate::backend_task::shielded::ShieldedTask::ShieldCredits {
                     seed_hash,

@@ -5,7 +5,9 @@
 //!
 //! - **Mainnet**: `https://quorums.mainnet.networks.dash.org/masternodes`
 //! - **Testnet**: `https://quorums.testnet.networks.dash.org/masternodes`
-//! - **Devnet**: `https://quorums.devnet.<name>.networks.dash.org/masternodes`
+//!
+//! Devnet and Regtest do **not** support dynamic discovery and require
+//! explicit DAPI addresses in the `.env` configuration.
 //!
 //! ## Trust model
 //!

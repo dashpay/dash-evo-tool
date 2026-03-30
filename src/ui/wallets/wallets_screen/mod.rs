@@ -11,6 +11,7 @@ use crate::backend_task::shielded::ShieldedTask;
 use crate::context::AppContext;
 use crate::context::connection_status::spv_phase_summary;
 use crate::model::amount::Amount;
+use crate::model::feature_gate::FeatureGate;
 use crate::model::wallet::{TransactionStatus, Wallet, WalletSeedHash, WalletTransaction};
 use crate::spv::{CoreBackendMode, SpvStatus};
 use crate::ui::components::component_trait::Component;
@@ -1173,7 +1174,7 @@ impl WalletsBalancesScreen {
 
         // Add the Shielded tab only when the connected network supports it
         // (protocol version >= 12, i.e., Platform v3.1+).
-        if self.app_context.supports_shielded() {
+        if FeatureGate::Shielded.is_available(&self.app_context) {
             tabs.push(AccountTab::Shielded);
         }
 

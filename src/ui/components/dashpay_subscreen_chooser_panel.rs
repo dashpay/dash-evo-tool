@@ -1,5 +1,6 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
+use crate::model::feature_gate::FeatureGate;
 use crate::ui::RootScreenType;
 use crate::ui::dashpay::dashpay_screen::DashPaySubscreen;
 use crate::ui::theme::{DashColors, Shadow, Shape, Spacing, Typography};
@@ -17,8 +18,8 @@ pub fn add_dashpay_subscreen_chooser_panel(
     // Build subscreens list - Payment History requires SPV which is dev mode only
     let mut subscreens = vec![DashPaySubscreen::Profile, DashPaySubscreen::Contacts];
 
-    // Only show Payment History in developer mode (requires SPV)
-    if app_context.is_developer_mode() {
+    // Only show Payment History when SPV backend is available (currently requires developer mode)
+    if FeatureGate::SpvBackend.is_available(app_context) {
         subscreens.push(DashPaySubscreen::Payments);
     }
 

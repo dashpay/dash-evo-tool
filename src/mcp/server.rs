@@ -70,12 +70,27 @@ impl DashMcpService {
         }
     }
 
+    /// Replace the active context. Used by `network_switch` to point the
+    /// MCP server at a newly created network context.
+    #[allow(unused_variables)]
+    pub(crate) fn swap_context(&self, new_ctx: Arc<AppContext>) {
+        match &self.ctx_provider {
+            #[cfg(feature = "mcp")]
+            ContextProvider::Shared(swap) => swap.store(new_ctx),
+            #[cfg(feature = "cli")]
+            ContextProvider::Lazy(_) => {
+                tracing::warn!("Network switch not supported in stdio/CLI mode");
+            }
+        }
+    }
+
     /// Build the tool router using trait-based tool composition.
     pub fn tool_router() -> ToolRouter<Self> {
         ToolRouter::new()
             .with_async_tool::<tools::network::NetworkTool>()
             .with_async_tool::<tools::network::NetworkRefreshEndpoints>()
             .with_async_tool::<tools::network::NetworkReinitSdk>()
+            .with_async_tool::<tools::network::NetworkSwitch>()
             .with_async_tool::<tools::wallet::ListWalletsTool>()
             .with_async_tool::<tools::wallet::GenerateReceiveAddress>()
             .with_async_tool::<tools::wallet::WalletBalancesQuery>()

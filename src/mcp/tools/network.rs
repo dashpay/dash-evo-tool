@@ -13,6 +13,7 @@ use crate::mcp::error::McpToolError;
 use crate::mcp::resolve;
 use crate::mcp::server::{DashMcpService, collect_available, network_display_name};
 use crate::mcp::tools::EmptyParams;
+use dash_sdk::dpp::dashcore::Network;
 
 // ---------------------------------------------------------------------------
 // NetworkTool
@@ -242,6 +243,107 @@ impl AsyncTool<DashMcpService> for NetworkReinitSdk {
         match result {
             BackendTaskSuccessResult::CoreClientReinitialized => {
                 Ok(ReinitSdkOutput { success: true })
+            }
+            other => Err(McpToolError::Internal(format!(
+                "Unexpected task result: {other:?}"
+            ))),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// NetworkSwitch
+// ---------------------------------------------------------------------------
+
+/// Switch the active network. Creates a new context for the target network
+/// if needed, then swaps the MCP server to use it.
+pub struct NetworkSwitch;
+
+#[derive(Debug, Deserialize, schemars::JsonSchema, Default)]
+pub struct NetworkSwitchParams {
+    /// Target network (e.g. "mainnet", "testnet", "devnet", "local").
+    pub network: String,
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct NetworkSwitchOutput {
+    /// The network that is now active.
+    active: String,
+}
+
+impl ToolBase for NetworkSwitch {
+    type Parameter = NetworkSwitchParams;
+    type Output = NetworkSwitchOutput;
+    type Error = McpToolError;
+
+    fn name() -> Cow<'static, str> {
+        "network_switch".into()
+    }
+
+    fn description() -> Option<Cow<'static, str>> {
+        Some(
+            "Switch the active network. Creates the context if needed (may take \
+             a few seconds). Requires that the target network has DAPI addresses \
+             configured."
+                .into(),
+        )
+    }
+
+    fn annotations() -> Option<ToolAnnotations> {
+        Some(
+            ToolAnnotations::default()
+                .read_only(false)
+                .destructive(false)
+                .idempotent(true)
+                .open_world(true),
+        )
+    }
+}
+
+/// Parse a network name string into a `Network` enum value.
+fn parse_network(name: &str) -> Result<Network, McpToolError> {
+    match name.to_lowercase().as_str() {
+        "mainnet" | "main" => Ok(Network::Mainnet),
+        "testnet" | "test" => Ok(Network::Testnet),
+        "devnet" | "dev" => Ok(Network::Devnet),
+        "regtest" | "local" => Ok(Network::Regtest),
+        other => Err(McpToolError::InvalidParam {
+            message: format!("Unknown network '{other}'. Use mainnet, testnet, devnet, or local."),
+        }),
+    }
+}
+
+impl AsyncTool<DashMcpService> for NetworkSwitch {
+    async fn invoke(
+        service: &DashMcpService,
+        param: NetworkSwitchParams,
+    ) -> Result<NetworkSwitchOutput, McpToolError> {
+        let target = parse_network(&param.network)?;
+
+        let ctx = service
+            .ctx()
+            .await
+            .map_err(|e| McpToolError::Internal(e.to_string()))?;
+
+        // Already on the target network — no-op.
+        if ctx.network() == target {
+            return Ok(NetworkSwitchOutput {
+                active: network_display_name(target).to_owned(),
+            });
+        }
+
+        // Dispatch SwitchNetwork through the standard backend task system.
+        let task = BackendTask::SwitchNetwork(target);
+        let result = dispatch_task(&ctx, task)
+            .await
+            .map_err(McpToolError::TaskFailed)?;
+
+        match result {
+            BackendTaskSuccessResult::NetworkContextCreated { context, .. } => {
+                service.swap_context(context);
+                Ok(NetworkSwitchOutput {
+                    active: network_display_name(target).to_owned(),
+                })
             }
             other => Err(McpToolError::Internal(format!(
                 "Unexpected task result: {other:?}"

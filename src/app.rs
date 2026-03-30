@@ -11,7 +11,6 @@ use crate::context::connection_status::{ConnectionStatus, OverallConnectionState
 use crate::database::Database;
 #[cfg(not(feature = "testing"))]
 use crate::logging::initialize_logger;
-use crate::model::password_info::PasswordInfo;
 use crate::model::settings::Settings;
 use crate::spv::CoreBackendMode;
 use crate::ui::components::{BannerHandle, MessageBanner};
@@ -64,18 +63,6 @@ impl From<Result<BackendTaskSuccessResult, TaskError>> for TaskResult {
             Err(e) => TaskResult::Error(e),
         }
     }
-}
-
-/// Parameters needed for lazy `AppContext` creation when the user switches
-/// to a network whose context was deferred at startup.
-#[derive(Clone)]
-struct LazyContextParams {
-    data_dir: PathBuf,
-    db: Arc<Database>,
-    password_info: Option<PasswordInfo>,
-    subtasks: Arc<TaskManager>,
-    connection_status: Arc<ConnectionStatus>,
-    egui_ctx: egui::Context,
 }
 
 struct ThemeState {
@@ -146,8 +133,6 @@ pub struct AppState {
     pub chosen_network: Network,
     pub connection_status: Arc<ConnectionStatus>,
     pub network_contexts: BTreeMap<Network, Arc<AppContext>>,
-    /// Params kept for lazy AppContext creation when switching networks.
-    lazy_ctx_params: Option<LazyContextParams>,
     /// Network whose context is being created asynchronously. While `Some`,
     /// the UI shows a progress banner and ignores further switch requests.
     network_switch_pending: Option<Network>,
@@ -366,16 +351,6 @@ impl AppState {
         let chosen_network = *network_contexts.keys().next().unwrap();
         let active_context = network_contexts.get(&chosen_network).unwrap().clone();
 
-        // Store params for lazy context creation when switching networks later.
-        let lazy_ctx_params = Some(LazyContextParams {
-            data_dir,
-            db: db.clone(),
-            password_info,
-            subtasks: subtasks.clone(),
-            connection_status: connection_status.clone(),
-            egui_ctx: ctx.clone(),
-        });
-
         // load fonts
         ctx.set_fonts(crate::bundled::fonts().expect("failed to load fonts"));
 
@@ -582,7 +557,6 @@ impl AppState {
             chosen_network,
             connection_status,
             network_contexts,
-            lazy_ctx_params,
             network_switch_pending: None,
             zmq_listeners,
             core_message_sender,
@@ -673,12 +647,6 @@ impl AppState {
     // Uses spawn_blocking + block_on to avoid Send bound issues with platform
     // SDK types (DataContract/Sdk references across await points).
     fn handle_backend_task(&mut self, task: BackendTask) {
-        // Intercept SwitchNetwork — it creates a new context rather than using the current one.
-        if let BackendTask::SwitchNetwork(network) = task {
-            self.change_network(network);
-            return;
-        }
-
         let sender = self.task_result_sender.clone();
         let app_context = self.current_app_context().clone();
         let handle = tokio::runtime::Handle::current();
@@ -778,41 +746,11 @@ impl AppState {
             return;
         }
 
-        // Slow path: create the context on a background thread.
-        let Some(params) = self.lazy_ctx_params.clone() else {
-            tracing::error!(
-                ?network,
-                "Cannot switch network: lazy context params not available"
-            );
-            return;
-        };
-
+        // Slow path: dispatch SwitchNetwork as a backend task. The result
+        // (NetworkContextCreated) comes back through the task result channel
+        // and is handled in update(). Same path used by MCP tools.
         self.network_switch_pending = Some(network);
-        let sender = self.task_result_sender.clone();
-
-        tokio::task::spawn_blocking(move || {
-            let result = AppContext::new(
-                params.data_dir,
-                network,
-                params.db,
-                params.password_info,
-                params.subtasks,
-                params.connection_status,
-                params.egui_ctx,
-            );
-            let task_result = match result {
-                Some(ctx) => {
-                    TaskResult::Success(Box::new(BackendTaskSuccessResult::NetworkContextCreated {
-                        network,
-                        context: ctx,
-                    }))
-                }
-                None => TaskResult::Error(TaskError::NetworkContextCreationFailed { network }),
-            };
-            if let Err(e) = sender.try_send(task_result) {
-                tracing::error!("Failed to send network context creation result: {}", e);
-            }
-        });
+        self.handle_backend_task(BackendTask::SwitchNetwork(network));
     }
 
     /// Complete the network switch after the context is available.

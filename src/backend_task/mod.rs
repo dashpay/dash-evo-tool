@@ -448,8 +448,23 @@ impl AppContext {
                 Arc::clone(self).reinit_core_client_and_sdk()?;
                 Ok(BackendTaskSuccessResult::CoreClientReinitialized)
             }
-            BackendTask::SwitchNetwork(_) => {
-                unreachable!("SwitchNetwork is intercepted by AppState::handle_backend_task")
+            BackendTask::SwitchNetwork(network) => {
+                // Create a new AppContext for the target network, reusing shared
+                // resources (db, subtasks, connection_status) from the current context.
+                let new_ctx = AppContext::new(
+                    self.data_dir.clone(),
+                    network,
+                    self.db.clone(),
+                    self.password_info.clone(),
+                    self.subtasks.clone(),
+                    self.connection_status.clone(),
+                    self.egui_ctx().clone(),
+                )
+                .ok_or(TaskError::NetworkContextCreationFailed { network })?;
+                Ok(BackendTaskSuccessResult::NetworkContextCreated {
+                    network,
+                    context: new_ctx,
+                })
             }
             BackendTask::DiscoverDapiNodes { network } => {
                 let devnet_name = self

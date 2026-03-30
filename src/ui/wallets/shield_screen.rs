@@ -155,11 +155,20 @@ impl ShieldScreen {
 
     /// Refresh cached wallet data (balance, nonce) from the RwLock-protected wallet.
     fn refresh_cached_balances(&mut self) {
-        let wallets = self.app_context.wallets.read().ok();
-        let wallet_guard = wallets
-            .as_ref()
-            .and_then(|w| w.get(&self.seed_hash))
-            .and_then(|arc| arc.read().ok());
+        // Clone the wallet Arc while holding the wallets map read lock, then
+        // drop the map lock before acquiring the per-wallet lock to avoid
+        // lock-order deadlocks with code that holds a wallet lock and needs
+        // wallets write access.
+        let wallet_arc = self
+            .app_context
+            .wallets
+            .read()
+            .ok()
+            .and_then(|w| w.get(&self.seed_hash).cloned());
+        let Some(wallet_arc) = wallet_arc else {
+            return;
+        };
+        let wallet_guard = wallet_arc.read().ok();
 
         if let Some(wallet) = &wallet_guard {
             // Platform nonce and balance for selected address

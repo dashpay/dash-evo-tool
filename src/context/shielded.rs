@@ -80,8 +80,9 @@ impl AppContext {
             ShieldedTask::ShieldFromAssetLock {
                 seed_hash,
                 amount_duffs,
+                source_address,
             } => {
-                self.shield_from_asset_lock_task(seed_hash, amount_duffs)
+                self.shield_from_asset_lock_task(seed_hash, amount_duffs, source_address)
                     .await
             }
 
@@ -606,6 +607,7 @@ impl AppContext {
         self: &Arc<Self>,
         seed_hash: WalletSeedHash,
         amount_duffs: u64,
+        source_address: Option<dash_sdk::dashcore_rpc::dashcore::Address>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let state_ref = {
             let mut states = self.shielded_states.lock().unwrap();
@@ -617,6 +619,7 @@ impl AppContext {
             &seed_hash,
             &state_ref,
             amount_duffs,
+            source_address.as_ref(),
         )
         .await;
 

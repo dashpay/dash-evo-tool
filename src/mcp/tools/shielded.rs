@@ -84,6 +84,7 @@ impl AsyncTool<DashMcpService> for ShieldedShieldFromCore {
         let task = BackendTask::ShieldedTask(ShieldedTask::ShieldFromAssetLock {
             seed_hash,
             amount_duffs: param.amount_duffs,
+            source_address: None,
         });
 
         let result = dispatch_task(&ctx, task)

@@ -776,7 +776,7 @@ impl NetworkChooserScreen {
                                 if zmq_connected { "Connected" } else { "Disconnected" };
                             ui.colored_label(zmq_color, zmq_label);
                         }
-                    });
+                });
                 }
 
                 if current_backend_mode == CoreBackendMode::Spv {

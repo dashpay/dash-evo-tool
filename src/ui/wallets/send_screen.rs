@@ -2123,67 +2123,67 @@ impl WalletSendScreen {
                     ))
                 });
             self.address_input.get_or_insert_with(|| {
-            let allowed_kinds = match &self.selected_source {
-                Some(SourceSelection::CoreWallet) => {
-                    let mut kinds = vec![AddressKind::Core, AddressKind::Platform];
-                    if developer_mode {
-                        kinds.push(AddressKind::Shielded);
+                let allowed_kinds = match &self.selected_source {
+                    Some(SourceSelection::CoreWallet) => {
+                        let mut kinds = vec![AddressKind::Core, AddressKind::Platform];
+                        if developer_mode {
+                            kinds.push(AddressKind::Shielded);
+                        }
+                        kinds.push(AddressKind::Identity);
+                        kinds
                     }
-                    kinds.push(AddressKind::Identity);
-                    kinds
-                }
-                Some(SourceSelection::PlatformAddresses(_)) => {
-                    let mut kinds = vec![AddressKind::Platform, AddressKind::Core];
-                    if developer_mode {
-                        kinds.push(AddressKind::Shielded);
+                    Some(SourceSelection::PlatformAddresses(_)) => {
+                        let mut kinds = vec![AddressKind::Platform, AddressKind::Core];
+                        if developer_mode {
+                            kinds.push(AddressKind::Shielded);
+                        }
+                        kinds.push(AddressKind::Identity);
+                        kinds
                     }
-                    kinds.push(AddressKind::Identity);
-                    kinds
+                    Some(SourceSelection::Identity(_)) => {
+                        vec![
+                            AddressKind::Core,
+                            AddressKind::Platform,
+                            AddressKind::Identity,
+                        ]
+                    }
+                    Some(SourceSelection::Shielded(..)) => {
+                        vec![
+                            AddressKind::Shielded,
+                            AddressKind::Platform,
+                            AddressKind::Core,
+                        ]
+                    }
+                    None => AddressKind::ALL.to_vec(),
+                };
+
+                let mut builder = AddressInput::new(self.app_context.network)
+                    .with_label("Send to")
+                    .with_hint_text("Enter address (X.../y.../dash1.../tdash1...)")
+                    .with_address_kinds(&allowed_kinds)
+                    .with_exclude_change(true);
+
+                // Provide all wallet addresses for autocomplete
+                if let Ok(wallets_guard) = self.app_context.wallets.read() {
+                    let all_wallets: Vec<Arc<RwLock<Wallet>>> =
+                        wallets_guard.values().cloned().collect();
+                    if !all_wallets.is_empty() {
+                        builder = builder.with_wallets(&all_wallets);
+                    }
                 }
-                Some(SourceSelection::Identity(_)) => {
-                    vec![
-                        AddressKind::Core,
-                        AddressKind::Platform,
-                        AddressKind::Identity,
-                    ]
+
+                // Add identities for autocomplete (searchable by alias/DPNS name)
+                if !loaded_identities.is_empty() {
+                    builder = builder.with_identities(&loaded_identities);
                 }
-                Some(SourceSelection::Shielded(..)) => {
-                    vec![
-                        AddressKind::Shielded,
-                        AddressKind::Platform,
-                        AddressKind::Core,
-                    ]
+
+                // Add shielded address for autocomplete (if wallet has shielded state)
+                if let Some((addr_str, balance)) = &shielded_info {
+                    builder = builder.with_shielded_balance(addr_str.clone(), *balance);
                 }
-                None => AddressKind::ALL.to_vec(),
-            };
 
-            let mut builder = AddressInput::new(self.app_context.network)
-                .with_label("Send to")
-                .with_hint_text("Enter address (X.../y.../dash1.../tdash1...)")
-                .with_address_kinds(&allowed_kinds)
-                .with_exclude_change(true);
-
-            // Provide all wallet addresses for autocomplete
-            if let Ok(wallets_guard) = self.app_context.wallets.read() {
-                let all_wallets: Vec<Arc<RwLock<Wallet>>> =
-                    wallets_guard.values().cloned().collect();
-                if !all_wallets.is_empty() {
-                    builder = builder.with_wallets(&all_wallets);
-                }
-            }
-
-            // Add identities for autocomplete (searchable by alias/DPNS name)
-            if !loaded_identities.is_empty() {
-                builder = builder.with_identities(&loaded_identities);
-            }
-
-            // Add shielded address for autocomplete (if wallet has shielded state)
-            if let Some((addr_str, balance)) = &shielded_info {
-                builder = builder.with_shielded_balance(addr_str.clone(), *balance);
-            }
-
-            builder
-        })
+                builder
+            })
         };
 
         let resp = addr_input.show(ui);

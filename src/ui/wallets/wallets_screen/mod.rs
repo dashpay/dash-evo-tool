@@ -1089,7 +1089,7 @@ impl WalletsBalancesScreen {
             }
 
             // Dev-mode buttons: right-aligned, filling all remaining space
-            if self.app_context.is_developer_mode() {
+            if FeatureGate::DeveloperMode.is_available(&self.app_context) {
                 let remaining = ui.available_width();
                 ui.allocate_ui_with_layout(
                     egui::vec2(remaining, ui.min_size().y),
@@ -2010,13 +2010,14 @@ impl WalletsBalancesScreen {
                                             .color(DashColors::text_primary(dark_mode))
                                             .size(25.0),
                                     );
-                                    if self.app_context.is_developer_mode() {
-                                        ui.label(
+                                    ui.add_visible(
+                                        FeatureGate::DeveloperMode.is_available(&self.app_context),
+                                        egui::Label::new(
                                             RichText::new("[DEV]")
                                                 .color(DashColors::text_secondary(dark_mode))
                                                 .size(12.0),
-                                        );
-                                    }
+                                        ),
+                                    );
                                 });
 
                                 // Total balance line

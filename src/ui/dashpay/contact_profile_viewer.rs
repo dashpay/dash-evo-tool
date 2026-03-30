@@ -3,6 +3,7 @@ use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::model::feature_gate::{FeatureGate, FeatureGateUiExt};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
 use crate::ui::components::info_popup::InfoPopup;
@@ -440,11 +441,10 @@ impl ContactProfileViewerScreen {
                         action = self.fetch_profile();
                     }
 
-                    // Pay button - requires SPV which is dev mode only
-                    if self.app_context.is_developer_mode() {
+                    ui.feature_gated(FeatureGate::SpvBackend, &self.app_context, |ui| {
                         let pay_button =
                             egui::Button::new(RichText::new("Pay").color(egui::Color32::WHITE))
-                                .fill(egui::Color32::from_rgb(0, 141, 228)); // Dash blue
+                                .fill(egui::Color32::from_rgb(0, 141, 228));
 
                         if ui.add(pay_button).clicked() {
                             action = AppAction::AddScreen(
@@ -455,7 +455,7 @@ impl ContactProfileViewerScreen {
                                 .create_screen(&self.app_context),
                             );
                         }
-                    }
+                    });
                 });
             } else if !self.loading {
                 // No profile loaded and not loading
@@ -472,11 +472,10 @@ impl ContactProfileViewerScreen {
                             action = self.fetch_profile();
                         }
 
-                        // Pay button - requires SPV which is dev mode only
-                        if self.app_context.is_developer_mode() {
+                        ui.feature_gated(FeatureGate::SpvBackend, &self.app_context, |ui| {
                             let pay_button =
                                 egui::Button::new(RichText::new("Pay").color(egui::Color32::WHITE))
-                                    .fill(egui::Color32::from_rgb(0, 141, 228)); // Dash blue
+                                    .fill(egui::Color32::from_rgb(0, 141, 228));
 
                             if ui.add(pay_button).clicked() {
                                 action = AppAction::AddScreen(
@@ -487,7 +486,7 @@ impl ContactProfileViewerScreen {
                                     .create_screen(&self.app_context),
                                 );
                             }
-                        }
+                        });
                     });
                 });
             }

@@ -11,6 +11,7 @@ use crate::backend_task::system_task::SystemTask;
 use crate::backend_task::wallet::WalletTask;
 use crate::context::AppContext;
 use dash_sdk::dpp::dashcore::Address;
+use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::dashcore::address::NetworkChecked;
 use dash_sdk::dpp::dashcore::bls_sig_utils::BLSSignature;
 use dash_sdk::dpp::dashcore::network::message_qrinfo::QRInfo;
@@ -97,10 +98,13 @@ pub enum BackendTask {
     GroveSTARKTask(GroveSTARKTask),
     WalletTask(WalletTask),
     ShieldedTask(ShieldedTask),
+    /// Create a new network context and switch to it.
+    /// Intercepted by `AppState` — never dispatched to `AppContext::run_backend_task`.
+    SwitchNetwork(Network),
     None,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
 pub enum BackendTaskSuccessResult {
     // General results
@@ -330,6 +334,12 @@ pub enum BackendTaskSuccessResult {
         amount: u64,
     },
     ProvingKeyReady,
+
+    /// A new network context was created asynchronously during a network switch.
+    NetworkContextCreated {
+        network: Network,
+        context: Arc<AppContext>,
+    },
 }
 
 impl BackendTaskSuccessResult {}
@@ -414,6 +424,9 @@ impl AppContext {
             BackendTask::WalletTask(wallet_task) => Ok(self.run_wallet_task(wallet_task).await?),
             BackendTask::ShieldedTask(shielded_task) => {
                 Ok(self.run_shielded_task(shielded_task).await?)
+            }
+            BackendTask::SwitchNetwork(_) => {
+                unreachable!("SwitchNetwork is intercepted by AppState::handle_backend_task")
             }
             BackendTask::None => Ok(BackendTaskSuccessResult::None),
         }

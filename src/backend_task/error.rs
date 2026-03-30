@@ -14,6 +14,7 @@ use dash_sdk::dpp::consensus::ConsensusError;
 use dash_sdk::dpp::consensus::basic::basic_error::BasicError;
 use dash_sdk::dpp::consensus::state::state_error::StateError;
 use dash_sdk::dpp::dashcore;
+use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use thiserror::Error;
 
@@ -910,6 +911,13 @@ pub enum TaskError {
     /// Nullifier sync failed.
     #[error("Could not check for spent shielded notes. Please check your connection and retry.")]
     ShieldedNullifierSyncFailed { detail: String },
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Network context errors
+    // ──────────────────────────────────────────────────────────────────────────
+    /// Creating a network context failed during a network switch.
+    #[error("Could not connect to {network:?}. Check your network configuration and retry.")]
+    NetworkContextCreationFailed { network: Network },
 }
 
 /// Returns `true` when a `dashcore_rpc::Error` wraps an HTTP 401 response,

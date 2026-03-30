@@ -68,6 +68,7 @@ impl From<Result<BackendTaskSuccessResult, TaskError>> for TaskResult {
 
 /// Parameters needed for lazy `AppContext` creation when the user switches
 /// to a network whose context was deferred at startup.
+#[derive(Clone)]
 struct LazyContextParams {
     data_dir: PathBuf,
     db: Arc<Database>,
@@ -147,8 +148,12 @@ pub struct AppState {
     pub network_contexts: BTreeMap<Network, Arc<AppContext>>,
     /// Params kept for lazy AppContext creation when switching networks.
     lazy_ctx_params: Option<LazyContextParams>,
+    /// Network whose context is being created asynchronously. While `Some`,
+    /// the UI shows a progress banner and ignores further switch requests.
+    network_switch_pending: Option<Network>,
     #[allow(dead_code)] // Kept alive for the lifetime of the app
     zmq_listeners: BTreeMap<Network, CoreZMQListener>,
+    core_message_sender: egui_mpsc::SenderSync<(ZMQMessage, Network)>,
     pub core_message_receiver: mpsc::Receiver<(ZMQMessage, Network)>,
     pub task_result_sender: egui_mpsc::SenderAsync<TaskResult>, // Channel sender for sending task results
     pub task_result_receiver: tokiompsc::Receiver<TaskResult>, // Channel receiver for receiving task results
@@ -550,7 +555,9 @@ impl AppState {
             connection_status,
             network_contexts,
             lazy_ctx_params,
+            network_switch_pending: None,
             zmq_listeners,
+            core_message_sender,
             core_message_receiver,
             task_result_sender,
             task_result_receiver,
@@ -637,7 +644,13 @@ impl AppState {
     //
     // Uses spawn_blocking + block_on to avoid Send bound issues with platform
     // SDK types (DataContract/Sdk references across await points).
-    fn handle_backend_task(&self, task: BackendTask) {
+    fn handle_backend_task(&mut self, task: BackendTask) {
+        // Intercept SwitchNetwork — it creates a new context rather than using the current one.
+        if let BackendTask::SwitchNetwork(network) = task {
+            self.change_network(network);
+            return;
+        }
+
         let sender = self.task_result_sender.clone();
         let app_context = self.current_app_context().clone();
         let handle = tokio::runtime::Handle::current();
@@ -726,31 +739,56 @@ impl AppState {
     }
 
     pub fn change_network(&mut self, network: Network) {
-        // Lazily create the AppContext if this network was deferred at startup.
-        if !self.context_available_for_network(network) {
-            if let Some(ref params) = self.lazy_ctx_params
-                && let Some(ctx) = AppContext::new(
-                    params.data_dir.clone(),
-                    network,
-                    params.db.clone(),
-                    params.password_info.clone(),
-                    params.subtasks.clone(),
-                    params.connection_status.clone(),
-                    params.egui_ctx.clone(),
-                )
-            {
-                self.network_contexts.insert(network, ctx);
-            }
-
-            if !self.context_available_for_network(network) {
-                tracing::error!(
-                    "Cannot switch to {:?}: network context not available. Staying on current network.",
-                    network
-                );
-                return;
-            }
+        // Ignore if we're already switching to this network.
+        if self.network_switch_pending == Some(network) {
+            return;
         }
 
+        // Fast path: context already exists — switch immediately.
+        if self.context_available_for_network(network) {
+            self.finalize_network_switch(network);
+            return;
+        }
+
+        // Slow path: create the context on a background thread.
+        let Some(params) = self.lazy_ctx_params.clone() else {
+            tracing::error!(
+                ?network,
+                "Cannot switch network: lazy context params not available"
+            );
+            return;
+        };
+
+        self.network_switch_pending = Some(network);
+        let sender = self.task_result_sender.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let result = AppContext::new(
+                params.data_dir,
+                network,
+                params.db,
+                params.password_info,
+                params.subtasks,
+                params.connection_status,
+                params.egui_ctx,
+            );
+            let task_result = match result {
+                Some(ctx) => {
+                    TaskResult::Success(Box::new(BackendTaskSuccessResult::NetworkContextCreated {
+                        network,
+                        context: ctx,
+                    }))
+                }
+                None => TaskResult::Error(TaskError::NetworkContextCreationFailed { network }),
+            };
+            if let Err(e) = sender.try_send(task_result) {
+                tracing::error!("Failed to send network context creation result: {}", e);
+            }
+        });
+    }
+
+    /// Complete the network switch after the context is available.
+    fn finalize_network_switch(&mut self, network: Network) {
         self.chosen_network = network;
 
         let app_context = self.current_app_context().clone();
@@ -780,6 +818,19 @@ impl AppState {
             handle.clear();
         }
         self.previous_connection_state = None;
+
+        // Spawn a ZMQ listener for the newly created network context.
+        if !self.zmq_listeners.contains_key(&network)
+            && let Some(listener) =
+                Self::spawn_zmq_listener(&app_context, network, &self.core_message_sender)
+        {
+            self.zmq_listeners.insert(network, listener);
+        }
+
+        // Persist the network choice.
+        app_context
+            .update_settings(RootScreenType::RootScreenNetworkChooser)
+            .ok();
     }
 
     /// Update the connection status banner when the overall connection state
@@ -1062,6 +1113,11 @@ impl App for AppState {
                             );
                             self.visible_screen_mut().refresh();
                         }
+                        BackendTaskSuccessResult::NetworkContextCreated { network, context } => {
+                            self.network_contexts.insert(network, context);
+                            self.network_switch_pending = None;
+                            self.finalize_network_switch(network);
+                        }
                         _ => {
                             // For all other success results, let the screen decide how to display
                             // the outcome without showing a generic global success banner.
@@ -1075,6 +1131,10 @@ impl App for AppState {
                     self.visible_screen_mut()
                         .display_message(&msg, MessageType::Success);
                     self.visible_screen_mut().refresh();
+                }
+                TaskResult::Error(err @ TaskError::NetworkContextCreationFailed { .. }) => {
+                    self.network_switch_pending = None;
+                    MessageBanner::set_global(ctx, err.to_string(), MessageType::Error);
                 }
                 TaskResult::Error(err) => {
                     // Let the screen handle specific error types first.
@@ -1101,6 +1161,15 @@ impl App for AppState {
                     self.visible_screen_mut().refresh();
                 }
             }
+        }
+
+        // Show a progress banner while a network switch is in progress.
+        if let Some(pending_network) = self.network_switch_pending {
+            MessageBanner::set_global(
+                ctx,
+                format!("Connecting to {pending_network:?}..."),
+                MessageType::Info,
+            );
         }
 
         // Schedule a periodic repaint every ~1 second so timed messages update
@@ -1288,9 +1357,6 @@ impl App for AppState {
                 }
                 AppAction::SwitchNetwork(network) => {
                     self.change_network(network);
-                    self.current_app_context()
-                        .update_settings(RootScreenType::RootScreenNetworkChooser)
-                        .ok();
                 }
                 AppAction::PopThenAddScreenToMainScreen(root_screen_type, screen) => {
                     self.screen_stack = vec![screen];

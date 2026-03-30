@@ -229,7 +229,8 @@ impl AppContext {
 
         let addr = format!(
             "http://{}:{}",
-            network_config.core_host, network_config.core_rpc_port
+            network_config.core_host.as_deref().unwrap_or("127.0.0.1"),
+            network_config.core_rpc_port.unwrap_or(9998)
         );
         let core_client = match Self::create_core_rpc_client(
             &addr,
@@ -551,10 +552,17 @@ impl AppContext {
         // Note: developer_mode is now global and managed separately
 
         // 2. Rebuild the RPC client with the new password
-        let addr = format!("http://{}:{}", cfg.core_host, cfg.core_rpc_port);
+        let addr = format!(
+            "http://{}:{}",
+            cfg.core_host.as_deref().unwrap_or("127.0.0.1"),
+            cfg.core_rpc_port.unwrap_or(9998)
+        );
         let new_client = Client::new(
             &addr,
-            Auth::UserPass(cfg.core_rpc_user.clone(), cfg.core_rpc_password.clone()),
+            Auth::UserPass(
+                cfg.core_rpc_user.clone().unwrap_or_default(),
+                cfg.core_rpc_password.clone().unwrap_or_default(),
+            ),
         )
         .map_err(|e| TaskError::RpcProviderCreationFailed {
             detail: e.to_string(),
@@ -628,7 +636,10 @@ impl AppContext {
         }
         Client::new(
             url,
-            Auth::UserPass(cfg.core_rpc_user.clone(), cfg.core_rpc_password.clone()),
+            Auth::UserPass(
+                cfg.core_rpc_user.clone().unwrap_or_default(),
+                cfg.core_rpc_password.clone().unwrap_or_default(),
+            ),
         )
         .map_err(|e| TaskError::CoreRpc { source: e })
     }
@@ -639,7 +650,11 @@ impl AppContext {
         let cfg = self.config.read().map_err(|_| TaskError::LockPoisoned {
             resource: "NetworkConfig",
         })?;
-        let base = format!("http://{}:{}", cfg.core_host, cfg.core_rpc_port);
+        let base = format!(
+            "http://{}:{}",
+            cfg.core_host.as_deref().unwrap_or("127.0.0.1"),
+            cfg.core_rpc_port.unwrap_or(9998)
+        );
         let url = match wallet_name {
             Some(name) if !name.is_empty() => {
                 if name.contains("..") {
@@ -696,7 +711,13 @@ impl AppContext {
                 .config
                 .read()
                 .ok()
-                .map(|c| format!("{}:{}", c.core_host, c.core_rpc_port))
+                .map(|c| {
+                    format!(
+                        "{}:{}",
+                        c.core_host.as_deref().unwrap_or("127.0.0.1"),
+                        c.core_rpc_port.unwrap_or(9998)
+                    )
+                })
                 .unwrap_or_else(|| "unknown".to_string());
             TaskError::CoreRpcConnectionFailed {
                 url,

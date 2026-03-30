@@ -128,7 +128,8 @@ impl NetworkChooserScreen {
         if let Ok(config) = Config::load_from(&mainnet_app_context.data_dir)
             && let Some(network_config) = config.config_for_network(current_network)
         {
-            dashmate_password_input.set_text(network_config.core_rpc_password.clone());
+            dashmate_password_input
+                .set_text(network_config.core_rpc_password.clone().unwrap_or_default());
         }
 
         let current_context = match current_network {
@@ -382,18 +383,17 @@ impl NetworkChooserScreen {
                                 {
                                     app_action = AppAction::SwitchNetwork(Network::Mainnet);
                                 }
-                                if self.testnet_app_context.is_some()
-                                    && ui
-                                        .selectable_value(
-                                            &mut self.current_network,
-                                            Network::Testnet,
-                                            "Testnet",
-                                        )
-                                        .clicked()
+                                if ui
+                                    .selectable_value(
+                                        &mut self.current_network,
+                                        Network::Testnet,
+                                        "Testnet",
+                                    )
+                                    .clicked()
                                 {
                                     app_action = AppAction::SwitchNetwork(Network::Testnet);
                                 }
-                                if self.devnet_app_context.is_some()
+                                if self.developer_mode
                                     && ui
                                         .selectable_value(
                                             &mut self.current_network,
@@ -404,7 +404,7 @@ impl NetworkChooserScreen {
                                 {
                                     app_action = AppAction::SwitchNetwork(Network::Devnet);
                                 }
-                                if self.local_app_context.is_some()
+                                if self.developer_mode
                                     && ui
                                         .selectable_value(
                                             &mut self.current_network,
@@ -423,7 +423,7 @@ impl NetworkChooserScreen {
                                     .and_then(|c| {
                                         c.config_for_network(self.current_network)
                                             .as_ref()
-                                            .map(|nc| nc.core_rpc_password.clone())
+                                            .and_then(|nc| nc.core_rpc_password.clone())
                                     })
                                     .unwrap_or_default();
                                     self.dashmate_password_input.set_text(password);

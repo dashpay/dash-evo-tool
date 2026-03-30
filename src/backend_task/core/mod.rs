@@ -442,7 +442,8 @@ impl AppContext {
 
         let addr = format!(
             "http://{}:{}",
-            network_config.core_host, network_config.core_rpc_port
+            network_config.core_host.as_deref().unwrap_or("127.0.0.1"),
+            network_config.core_rpc_port.unwrap_or(9998)
         );
 
         let cookie_path = match core_cookie_path(network, &network_config.devnet_name) {
@@ -464,8 +465,8 @@ impl AppContext {
                 match Client::new(
                     &addr,
                     Auth::UserPass(
-                        network_config.core_rpc_user.to_string(),
-                        network_config.core_rpc_password.to_string(),
+                        network_config.core_rpc_user.clone().unwrap_or_default(),
+                        network_config.core_rpc_password.clone().unwrap_or_default(),
                     ),
                 ) {
                     Ok(c) => c,
@@ -492,7 +493,14 @@ impl AppContext {
         if is_rpc_connection_error(e) {
             let url = config
                 .as_ref()
-                .map(|c| format!("{}:{} ({})", c.core_host, c.core_rpc_port, e))
+                .map(|c| {
+                    format!(
+                        "{}:{} ({})",
+                        c.core_host.as_deref().unwrap_or("127.0.0.1"),
+                        c.core_rpc_port.unwrap_or(9998),
+                        e
+                    )
+                })
                 .unwrap_or_else(|| "unknown".to_string());
             return Some(TaskError::CoreRpcConnectionFailed { url, source: None });
         }

@@ -1463,7 +1463,7 @@ impl SpvManager {
     fn primary_peer_socket(&self) -> Option<std::net::SocketAddr> {
         let config = self.config.read().ok()?;
 
-        let host = config.core_host.as_str();
+        let host = config.core_host.as_deref().unwrap_or("127.0.0.1");
         let port = match self.network {
             Network::Mainnet => 9999,
             Network::Testnet => 19999,

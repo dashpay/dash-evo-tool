@@ -956,9 +956,23 @@ impl AppState {
 
     pub fn change_network(&mut self, network: Network) {
         if !self.context_available_for_network(network) {
+            let network_name = match network {
+                Network::Mainnet => "Mainnet",
+                Network::Testnet => "Testnet",
+                Network::Devnet => "Devnet",
+                Network::Regtest => "Local",
+                _ => "Unknown",
+            };
             tracing::error!(
                 "Cannot switch to {:?}: network context not available. Staying on current network.",
                 network
+            );
+            MessageBanner::set_global(
+                self.mainnet_app_context.egui_ctx(),
+                format!(
+                    "Could not connect to {network_name}. Check your network settings and retry."
+                ),
+                MessageType::Error,
             );
             return;
         }

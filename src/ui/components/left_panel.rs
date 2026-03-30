@@ -261,7 +261,6 @@ pub fn add_left_panel(
                                                             egui::CursorIcon::PointingHand,
                                                         );
                                                     }
-                                                    added.on_hover_text(*label);
                                                     // Put the label beneath the icon
                                                     let color = if is_selected {
                                                         DashColors::DASH_BLUE

@@ -112,6 +112,8 @@ pub struct AppState {
     accessibility_enabled: bool,
     /// Whether we have already triggered platform-level accessibility activation.
     accessibility_activated: bool,
+    /// How many frames we have attempted accessibility activation.
+    accessibility_retries: u32,
     /// Shared MCP context -- follows network switches via `ArcSwap`.
     #[cfg(feature = "mcp")]
     pub mcp_app_context: Option<Arc<arc_swap::ArcSwap<AppContext>>>,
@@ -800,6 +802,7 @@ impl AppState {
             shutdown_started: None,
             accessibility_enabled,
             accessibility_activated: false,
+            accessibility_retries: 0,
             #[cfg(feature = "mcp")]
             mcp_app_context,
         };
@@ -1191,12 +1194,24 @@ impl App for AppState {
 
         // On the first frame, trigger platform-level accessibility activation
         // so tools like Peekaboo can see the AccessKit tree without VoiceOver.
-        // Retries each frame until the window is available.
-        if self.accessibility_enabled && !self.accessibility_activated {
+        // Retries up to 60 frames, then gives up to avoid indefinite repaints.
+        const MAX_ACCESSIBILITY_RETRIES: u32 = 60;
+        if self.accessibility_enabled
+            && !self.accessibility_activated
+            && self.accessibility_retries < MAX_ACCESSIBILITY_RETRIES
+        {
+            self.accessibility_retries += 1;
             self.accessibility_activated = crate::platform::force_accessibility_activation();
             if !self.accessibility_activated {
-                // Ensure we get another frame to retry, even if egui would otherwise go idle.
-                ctx.request_repaint();
+                if self.accessibility_retries >= MAX_ACCESSIBILITY_RETRIES {
+                    tracing::warn!(
+                        "Accessibility activation failed after {} frames, giving up",
+                        MAX_ACCESSIBILITY_RETRIES
+                    );
+                } else {
+                    // Ensure we get another frame to retry, even if egui would otherwise go idle.
+                    ctx.request_repaint();
+                }
             }
         }
 

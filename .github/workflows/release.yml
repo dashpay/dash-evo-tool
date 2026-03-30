@@ -171,6 +171,12 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v4
 
+      - name: Extract version from Cargo.toml
+        id: version
+        run: |
+          VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -270,9 +276,9 @@ jobs:
             <key>CFBundleDisplayName</key>
             <string>Dash Evo Tool</string>
             <key>CFBundleVersion</key>
-            <string>1.0.0</string>
+            <string>${{ steps.version.outputs.version }}</string>
             <key>CFBundleShortVersionString</key>
-            <string>1.0.0</string>
+            <string>${{ steps.version.outputs.version }}</string>
             <key>CFBundlePackageType</key>
             <string>APPL</string>
             <key>CFBundleSignature</key>
@@ -468,6 +474,12 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v4
 
+      - name: Extract version from Cargo.toml
+        id: version
+        run: |
+          VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -563,9 +575,9 @@ jobs:
             <key>CFBundleDisplayName</key>
             <string>Dash Evo Tool</string>
             <key>CFBundleVersion</key>
-            <string>1.0.0</string>
+            <string>${{ steps.version.outputs.version }}</string>
             <key>CFBundleShortVersionString</key>
-            <string>1.0.0</string>
+            <string>${{ steps.version.outputs.version }}</string>
             <key>CFBundlePackageType</key>
             <string>APPL</string>
             <key>CFBundleSignature</key>

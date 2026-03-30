@@ -54,6 +54,10 @@ pub enum TaskError {
     #[error("An internal operation failed unexpectedly. Please restart the application.")]
     JoinError(#[from] tokio::task::JoinError),
 
+    /// DAPI node discovery or address resolution failed.
+    #[error(transparent)]
+    DapiDiscovery(#[from] crate::dapi_discovery::DapiDiscoveryError),
+
     /// Core wallet not configured for this wallet on a multi-wallet Core node.
     #[error(
         "Core wallet not configured for this wallet. Go to the Wallets screen and refresh to auto-detect the Core wallet association."

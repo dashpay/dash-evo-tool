@@ -565,8 +565,7 @@ impl AppContext {
             self.network,
             &cfg.dapi_addresses,
             cfg.devnet_name.as_deref(),
-        )
-        .map_err(|e| TaskError::SdkInitializationFailed { detail: e })?;
+        )?;
 
         let new_sdk = match self.core_backend_mode() {
             CoreBackendMode::Spv => {

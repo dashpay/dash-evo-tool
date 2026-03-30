@@ -2228,8 +2228,12 @@ impl ScreenLike for NetworkChooserScreen {
         action
     }
 
-    fn display_message(&mut self, _message: &str, _message_type: MessageType) {
-        self.discovery_in_progress = false;
+    fn display_message(&mut self, _message: &str, message_type: MessageType) {
+        // Only reset discovery state on errors — other message types (success,
+        // info) may be unrelated global banners (theme change, scheduled votes, etc.)
+        if matches!(message_type, MessageType::Error) && self.discovery_in_progress {
+            self.discovery_in_progress = false;
+        }
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {

@@ -41,10 +41,9 @@ pub enum ConfigError {
 #[derive(Debug, Default, Deserialize, Clone)]
 #[serde(default)]
 pub struct NetworkConfig {
-    /// Hostname of Dash Platform node to connect to.
-    /// `None` or empty means dynamic discovery will be used.
-    /// Dynamic discovery is currently supported for Mainnet and Testnet only.
-    /// Devnet and Regtest require explicit addresses.
+    /// Comma-separated DAPI node URLs (e.g., `https://host:443,https://host2:443`).
+    /// Required for the app to connect. Use "Refresh DAPI endpoints" in Network
+    /// Settings to fetch addresses for Mainnet/Testnet.
     pub dapi_addresses: Option<String>,
     /// Host of the Dash Core RPC interface (only needed in RPC mode)
     pub core_host: Option<String>,

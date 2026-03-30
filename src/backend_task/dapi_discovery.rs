@@ -78,6 +78,12 @@ pub async fn try_discover_nodes(
     network: Network,
     devnet_name: Option<&str>,
 ) -> Result<Vec<String>, DapiDiscoveryError> {
+    // Only Mainnet/Testnet have DCG discovery endpoints
+    match network {
+        Network::Mainnet | Network::Testnet => {}
+        _ => return Err(DapiDiscoveryError::AddressesRequired { network }),
+    }
+
     let provider = TrustedHttpContextProvider::new(
         network,
         devnet_name.map(|s| s.to_string()),

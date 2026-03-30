@@ -1805,7 +1805,7 @@ impl Wallet {
         // the transaction is fully built and signed, so that a failure at any later
         // step cannot permanently drop UTXOs from the wallet.
         let (utxos, change_option) = self
-            .select_unspent_utxos_for(amount, fee, subtract_fee_from_amount)
+            .select_unspent_utxos_for(amount, fee, subtract_fee_from_amount, None)
             .ok_or_else(|| "Insufficient funds".to_string())?;
 
         let send_value = if change_option.is_none() && subtract_fee_from_amount {
@@ -1939,7 +1939,7 @@ impl Wallet {
         // the transaction is fully built and signed, so that a failure at any later
         // step cannot permanently drop UTXOs from the wallet.
         let (utxos, change_option) = self
-            .select_unspent_utxos_for(total_amount, fee, subtract_fee_from_amount)
+            .select_unspent_utxos_for(total_amount, fee, subtract_fee_from_amount, None)
             .ok_or_else(|| "Insufficient funds".to_string())?;
 
         // Build outputs for each recipient
@@ -2954,7 +2954,7 @@ mod tests {
     fn test_select_utxos_exact_amount() {
         let wallet = test_wallet_with_utxo(100_000);
 
-        let result = wallet.select_unspent_utxos_for(90_000, 10_000, false);
+        let result = wallet.select_unspent_utxos_for(90_000, 10_000, false, None);
         assert!(result.is_some());
         let (utxos, change) = result.unwrap();
         assert_eq!(utxos.len(), 1);
@@ -2967,7 +2967,7 @@ mod tests {
     fn test_select_utxos_with_change() {
         let wallet = test_wallet_with_utxo(200_000);
 
-        let result = wallet.select_unspent_utxos_for(90_000, 10_000, false);
+        let result = wallet.select_unspent_utxos_for(90_000, 10_000, false, None);
         assert!(result.is_some());
         let (utxos, change) = result.unwrap();
         assert_eq!(utxos.len(), 1);
@@ -2978,7 +2978,7 @@ mod tests {
     fn test_select_utxos_insufficient_funds() {
         let wallet = test_wallet_with_utxo(50_000);
 
-        let result = wallet.select_unspent_utxos_for(90_000, 10_000, false);
+        let result = wallet.select_unspent_utxos_for(90_000, 10_000, false, None);
         assert!(result.is_none());
     }
 
@@ -2991,7 +2991,7 @@ mod tests {
         add_utxo(&mut wallet, &addr2, 2, 0, 40_000);
         add_utxo(&mut wallet, &addr1, 3, 0, 50_000);
 
-        let result = wallet.select_unspent_utxos_for(100_000, 10_000, false);
+        let result = wallet.select_unspent_utxos_for(100_000, 10_000, false, None);
         assert!(result.is_some());
         let (utxos, change) = result.unwrap();
         let total_collected: u64 = utxos.values().map(|(tx_out, _)| tx_out.value).sum();
@@ -3007,7 +3007,7 @@ mod tests {
 
         // Request 100k amount + 10k fee = 110k total, but only 100k available
         // With allow_take_fee_from_amount=true, should still succeed since total >= amount
-        let result = wallet.select_unspent_utxos_for(100_000, 10_000, true);
+        let result = wallet.select_unspent_utxos_for(100_000, 10_000, true, None);
         assert!(result.is_some());
         let (_utxos, change) = result.unwrap();
         assert!(change.is_none());
@@ -3019,7 +3019,7 @@ mod tests {
 
         // Request 100k amount + 10k fee = 110k, only 50k available
         // Even with take_fee_from_amount, 50k < 100k amount, so should fail
-        let result = wallet.select_unspent_utxos_for(100_000, 10_000, true);
+        let result = wallet.select_unspent_utxos_for(100_000, 10_000, true, None);
         assert!(result.is_none());
     }
 
@@ -3027,7 +3027,7 @@ mod tests {
     fn test_select_utxos_zero_amount() {
         let wallet = test_wallet_with_utxo(50_000);
 
-        let result = wallet.select_unspent_utxos_for(0, 0, false);
+        let result = wallet.select_unspent_utxos_for(0, 0, false, None);
         assert!(result.is_some());
         let (utxos, change) = result.unwrap();
         assert!(utxos.is_empty());
@@ -3073,7 +3073,7 @@ mod tests {
             .expect("store test wallet");
         register_test_address(&db, &wallet, &addr);
         let (selected, _) = wallet
-            .select_unspent_utxos_for(90_000, 10_000, false)
+            .select_unspent_utxos_for(90_000, 10_000, false, None)
             .unwrap();
         wallet
             .remove_selected_utxos(&selected, &db, Network::Testnet)
@@ -3095,7 +3095,7 @@ mod tests {
             .expect("store test wallet");
         register_test_address(&db, &wallet, &addr);
         let (selected, _) = wallet
-            .select_unspent_utxos_for(90_000, 10_000, false)
+            .select_unspent_utxos_for(90_000, 10_000, false, None)
             .unwrap();
         wallet
             .remove_selected_utxos(&selected, &db, Network::Testnet)

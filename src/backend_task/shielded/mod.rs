@@ -45,6 +45,8 @@ pub enum ShieldedTask {
     ShieldFromAssetLock {
         seed_hash: WalletSeedHash,
         amount_duffs: u64,
+        /// If set, restrict UTXO selection to this Core address.
+        source_address: Option<Address>,
     },
 
     /// Withdraw from the shielded pool directly to a core L1 address (Type 19)

@@ -66,6 +66,7 @@ scripts/safe-cargo.sh +nightly fmt --all
 * When a method takes `&AppContext` (or `Option<&AppContext>`), place it as the first parameter after `self`.
 * Screen constructors handle errors internally via `MessageBanner` and return `Self` with degraded state. Keep `create_screen()` clean — no error handling at callsites.
 * **i18n-ready strings**: All user-facing strings (labels, messages, tooltips, errors) must be simple, complete sentences. Avoid concatenating fragments, positional assumptions, or grammar that breaks in other languages. Each string should be extractable as a single translation unit with named placeholders for dynamic values and no logic in the text itself. Current code uses standard Rust format specifiers (`{name}`, `{max}`). When i18n extraction happens later, these will become Fluent-style placeholders (`{ $name }`, `{ $max }`).
+* **Never parse error strings** to extract information. Always use the typed error chain (downcast, match on variants, access structured fields). If no typed variant exists for the information you need, define a new `TaskError` variant or extend the existing error type. String parsing is fragile, breaks on message changes, and bypasses the type system.
 
 ### Error messages
 
@@ -96,7 +97,7 @@ User-facing error messages (shown in `MessageBanner` via `Display`) must follow 
 - **app.rs** - `AppState`: owns all screens, polls task results each frame, dispatches to visible screen
 - **ui/** - Screens and reusable components (`ui/components/`)
 - **backend_task/** - Async business logic, one submodule per domain (identity, wallet, contract, etc.)
-- **model/** - Data types (amounts, fees, settings, wallet/identity models)
+- **model/** - Data types (amounts, fees, settings, wallet/identity models). **All fee estimation logic must be centralized in `model/fee_estimation.rs`** — both platform state transition fees and shielded fee calculations. Never inline fee math in UI or backend task code.
 - **database/** - SQLite persistence (rusqlite), one module per domain
 - **context/** - `AppContext`: network config, SDK client, database, wallets, settings cache (split into submodules: `identity_db.rs`, `wallet_lifecycle.rs`, `settings_db.rs`, etc.)
 - **spv/** - Simplified Payment Verification for light wallet support

@@ -91,11 +91,15 @@ pub struct ShieldScreen {
     batch_amount: Option<u64>,
     /// Frozen platform address for the current batch.
     batch_address: Option<PlatformAddress>,
+    // Cached wallet data to avoid per-frame RwLock reads (CODE-007)
+    cached_base_nonce: Option<u32>,
+    cached_platform_balance: Option<u64>,
+    cached_core_balance: Option<u64>,
 }
 
 impl ShieldScreen {
     pub fn new(seed_hash: WalletSeedHash, app_context: &Arc<AppContext>) -> Self {
-        Self {
+        let mut screen = Self {
             app_context: app_context.clone(),
             seed_hash,
             address_input: None,
@@ -115,7 +119,12 @@ impl ShieldScreen {
             json_preview: None,
             batch_amount: None,
             batch_address: None,
-        }
+            cached_base_nonce: None,
+            cached_platform_balance: None,
+            cached_core_balance: None,
+        };
+        screen.refresh_cached_balances();
+        screen
     }
 
     /// Reset the address and amount inputs — called when AppContext switches network.
@@ -124,6 +133,9 @@ impl ShieldScreen {
         self.validated_source = None;
         self.amount_input = None;
         self.amount = None;
+        self.cached_base_nonce = None;
+        self.cached_platform_balance = None;
+        self.cached_core_balance = None;
     }
 
     fn parse_repeat_count(&self) -> u32 {
@@ -141,58 +153,67 @@ impl ShieldScreen {
             .and_then(|v| v.as_platform().copied())
     }
 
-    /// Read the current nonce for the selected platform address from the wallet.
-    fn read_base_nonce(&self) -> Option<u32> {
-        let from_address = self.selected_platform_address()?;
-        let wallets = self.app_context.wallets.read().unwrap();
-        let wallet_arc = wallets.get(&self.seed_hash)?;
-        let wallet = wallet_arc.read().unwrap();
-        wallet
-            .platform_address_info
-            .iter()
-            .find_map(|(addr, info)| {
-                let platform_addr = PlatformAddress::try_from(addr.clone()).ok()?;
-                if platform_addr == from_address {
-                    Some(info.nonce)
-                } else {
-                    None
-                }
-            })
-    }
-
-    /// Read the current balance (in credits) for the selected platform address.
-    fn read_platform_balance(&self) -> Option<u64> {
-        let from_address = self.selected_platform_address()?;
-        let wallets = self.app_context.wallets.read().unwrap();
-        let wallet_arc = wallets.get(&self.seed_hash)?;
-        let wallet = wallet_arc.read().unwrap();
-        wallet
-            .platform_address_info
-            .iter()
-            .find_map(|(addr, info)| {
-                let platform_addr = PlatformAddress::try_from(addr.clone()).ok()?;
-                if platform_addr == from_address {
-                    Some(info.balance)
-                } else {
-                    None
-                }
-            })
-    }
-
-    /// Read the core wallet balance in duffs.
-    fn read_core_balance_duffs(&self) -> u64 {
-        let wallets = self.app_context.wallets.read().unwrap();
-        let Some(wallet_arc) = wallets.get(&self.seed_hash) else {
-            return 0;
+    /// Refresh cached wallet data (balance, nonce) from the RwLock-protected wallet.
+    fn refresh_cached_balances(&mut self) {
+        // Clone the wallet Arc while holding the wallets map read lock, then
+        // drop the map lock before acquiring the per-wallet lock to avoid
+        // lock-order deadlocks with code that holds a wallet lock and needs
+        // wallets write access.
+        let wallet_arc = self
+            .app_context
+            .wallets
+            .read()
+            .ok()
+            .and_then(|w| w.get(&self.seed_hash).cloned());
+        let Some(wallet_arc) = wallet_arc else {
+            return;
         };
-        let wallet = wallet_arc.read().unwrap();
-        // If a specific Core address is selected, return its individual balance
-        // so the max-amount display matches the funds actually available for this address.
-        if let Some(addr) = self.validated_source.as_ref().and_then(|v| v.as_core()) {
-            wallet.address_balances.get(addr).copied().unwrap_or(0)
+        let wallet_guard = wallet_arc.read().ok();
+
+        if let Some(wallet) = &wallet_guard {
+            // Platform nonce and balance for selected address
+            if let Some(from_address) = self.selected_platform_address() {
+                let info = wallet
+                    .platform_address_info
+                    .iter()
+                    .find_map(|(addr, info)| {
+                        let platform_addr = PlatformAddress::try_from(addr.clone()).ok()?;
+                        (platform_addr == from_address).then_some(info)
+                    });
+                self.cached_base_nonce = info.map(|i| i.nonce);
+                self.cached_platform_balance = info.map(|i| i.balance);
+            } else {
+                self.cached_base_nonce = None;
+                self.cached_platform_balance = None;
+            }
+
+            // Core balance
+            if let Some(addr) = self.validated_source.as_ref().and_then(|v| v.as_core()) {
+                self.cached_core_balance =
+                    Some(wallet.address_balances.get(addr).copied().unwrap_or(0));
+            } else {
+                self.cached_core_balance = Some(wallet.total_balance_duffs());
+            }
         } else {
-            wallet.total_balance_duffs()
+            self.cached_base_nonce = None;
+            self.cached_platform_balance = None;
+            self.cached_core_balance = Some(0);
         }
+    }
+
+    /// Return the cached nonce for the selected platform address.
+    fn read_base_nonce(&self) -> Option<u32> {
+        self.cached_base_nonce
+    }
+
+    /// Return the cached balance (credits) for the selected platform address.
+    fn read_platform_balance(&self) -> Option<u64> {
+        self.cached_platform_balance
+    }
+
+    /// Return the cached core wallet balance in duffs.
+    fn read_core_balance_duffs(&self) -> u64 {
+        self.cached_core_balance.unwrap_or(0)
     }
 
     /// Build a single ShieldCredits task with optional nonce override.
@@ -704,6 +725,7 @@ impl ScreenLike for ShieldScreen {
                         // Reset amount input when source changes (different balance constraints)
                         self.amount_input = None;
                         self.amount = None;
+                        self.refresh_cached_balances();
                     }
                     ui.add_space(5.0);
 
@@ -763,9 +785,11 @@ impl ScreenLike for ShieldScreen {
                     if self.validated_source.is_some() {
                         let max_credits = match source_kind {
                             Some(AddressKind::Platform) => {
-                                let fee_headroom =
-                                    shielded_fee_for_actions(2, PlatformVersion::latest())
-                                        .saturating_mul(2);
+                                let base_fee =
+                                    shielded_fee_for_actions(2, PlatformVersion::latest());
+                                let multiplier =
+                                    self.app_context.fee_multiplier_permille().max(1000);
+                                let fee_headroom = base_fee.saturating_mul(multiplier) / 1000;
                                 self.read_platform_balance()
                                     .map(|b| b.saturating_sub(fee_headroom))
                             }
@@ -841,7 +865,11 @@ impl ScreenLike for ShieldScreen {
 
             // Buttons (only when not busy and source is selected)
             if !is_busy && self.status == Status::NotStarted && self.validated_source.is_some() {
-                let can_confirm = self.amount.as_ref().map(|a| a.value()).is_some();
+                let can_confirm = self
+                    .amount
+                    .as_ref()
+                    .map(|a| a.value())
+                    .is_some_and(|v| v > 0);
 
                 ui.horizontal(|ui| {
                     let button_label = match source_kind {
@@ -971,7 +999,12 @@ impl ScreenLike for ShieldScreen {
         action
     }
 
+    fn refresh_on_arrival(&mut self) {
+        self.refresh_cached_balances();
+    }
+
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
+        self.refresh_cached_balances();
         let ctx = self.app_context.egui_ctx().clone();
         match result {
             BackendTaskSuccessResult::ShieldedCreditsShielded { seed_hash, amount }

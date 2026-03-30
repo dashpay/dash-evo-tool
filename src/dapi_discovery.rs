@@ -71,12 +71,35 @@ pub enum DapiDiscoveryError {
     NoResults,
 }
 
+/// Hardcoded fallback seed nodes for mainnet (a small subset of known-good
+/// masternodes). Used only when dynamic discovery fails so the app can still
+/// start in a degraded state.
+const MAINNET_SEED_NODES: &[&str] = &[
+    "https://52.33.9.172:443",
+    "https://134.255.182.186:443",
+    "https://168.119.102.10:443",
+    "https://65.108.246.145:443",
+    "https://37.27.83.17:443",
+    "https://135.181.110.216:443",
+];
+
+/// Hardcoded fallback seed nodes for testnet.
+const TESTNET_SEED_NODES: &[&str] = &[
+    "https://34.214.48.68:1443",
+    "https://52.12.176.90:1443",
+    "https://52.34.144.50:1443",
+    "https://44.240.98.102:1443",
+    "https://54.201.32.131:1443",
+    "https://52.10.229.11:1443",
+];
+
 /// Resolve DAPI addresses synchronously.
 ///
 /// If explicit addresses are configured, parses them directly. For mainnet and
 /// testnet without explicit config, attempts dynamic discovery via
-/// `tokio::task::block_in_place` (requires a tokio runtime). Returns an error
-/// if discovery fails or no runtime is available.
+/// `tokio::task::block_in_place` (requires a tokio runtime). When discovery
+/// fails for mainnet or testnet, falls back to hardcoded seed nodes so the
+/// app can still start. Returns an error only if all resolution methods fail.
 pub fn resolve_dapi_addresses_sync(
     network: Network,
     dapi_addresses: &Option<String>,
@@ -95,12 +118,51 @@ pub fn resolve_dapi_addresses_sync(
         _ => return Err(DapiDiscoveryError::AddressesRequired { network }),
     }
 
-    match tokio::runtime::Handle::try_current() {
+    let discovery_result = match tokio::runtime::Handle::try_current() {
         Ok(handle) => tokio::task::block_in_place(|| {
             handle.block_on(try_discover_nodes(network, devnet_name))
         }),
         Err(_) => Err(DapiDiscoveryError::NoRuntime),
+    };
+
+    match discovery_result {
+        Ok(list) => Ok(list),
+        Err(e) => {
+            tracing::warn!(
+                ?network,
+                error = %e,
+                "Dynamic DAPI discovery failed, falling back to seed nodes"
+            );
+            fallback_seed_nodes(network)
+        }
     }
+}
+
+/// Build an `AddressList` from hardcoded seed nodes for the given network.
+fn fallback_seed_nodes(network: Network) -> Result<AddressList, DapiDiscoveryError> {
+    let seeds = match network {
+        Network::Mainnet => MAINNET_SEED_NODES,
+        Network::Testnet => TESTNET_SEED_NODES,
+        _ => return Err(DapiDiscoveryError::AddressesRequired { network }),
+    };
+
+    let mut list = AddressList::new();
+    for seed in seeds {
+        if let Ok(addr) = DapiAddress::from_str(seed) {
+            list.add(addr);
+        }
+    }
+
+    if list.is_empty() {
+        return Err(DapiDiscoveryError::NoResults);
+    }
+
+    tracing::info!(
+        ?network,
+        count = list.len(),
+        "Using fallback seed nodes for DAPI"
+    );
+    Ok(list)
 }
 
 async fn try_discover_nodes(

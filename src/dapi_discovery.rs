@@ -6,8 +6,9 @@
 //! - **Mainnet**: `https://quorums.mainnet.networks.dash.org/masternodes`
 //! - **Testnet**: `https://quorums.testnet.networks.dash.org/masternodes`
 //!
-//! Devnet and Regtest do **not** support dynamic discovery and require
-//! explicit DAPI addresses in the `.env` configuration.
+//! Devnet supports dynamic discovery when a `devnet_name` is configured.
+//! Regtest does **not** support dynamic discovery and requires explicit
+//! DAPI addresses in the `.env` configuration.
 //!
 //! ## Trust model
 //!
@@ -101,11 +102,13 @@ const TESTNET_SEED_NODES: &[&str] = &[
 
 /// Resolve DAPI addresses synchronously.
 ///
-/// If explicit addresses are configured, parses them directly. For mainnet and
-/// testnet without explicit config, attempts dynamic discovery via
-/// `tokio::task::block_in_place` (requires a tokio runtime). When discovery
-/// fails for mainnet or testnet, falls back to hardcoded seed nodes so the
-/// app can still start. Returns an error only if all resolution methods fail.
+/// If explicit addresses are configured, parses them directly. For mainnet,
+/// testnet, and devnet (when `devnet_name` is set) without explicit config,
+/// attempts dynamic discovery via `tokio::task::block_in_place` (requires a
+/// multi-thread tokio runtime). When discovery fails for mainnet or testnet,
+/// falls back to hardcoded seed nodes so the app can still start. Devnet has
+/// no seed-node fallback, so discovery failure is final. Returns an error
+/// only if all resolution methods fail.
 pub fn resolve_dapi_addresses_sync(
     network: Network,
     dapi_addresses: &Option<String>,
@@ -121,19 +124,32 @@ pub fn resolve_dapi_addresses_sync(
 
     match network {
         Network::Mainnet | Network::Testnet => {}
+        Network::Devnet if devnet_name.is_some() => {}
         _ => return Err(DapiDiscoveryError::AddressesRequired { network }),
     }
 
     let discovery_result = match tokio::runtime::Handle::try_current() {
-        Ok(handle) => tokio::task::block_in_place(|| {
-            handle.block_on(try_discover_nodes(network, devnet_name))
-        }),
+        Ok(handle) => {
+            // block_in_place requires a multi-thread runtime; on current-thread
+            // it would panic.  Guard defensively for future callers.
+            if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::CurrentThread {
+                Err(DapiDiscoveryError::NoRuntime)
+            } else {
+                tokio::task::block_in_place(|| {
+                    handle.block_on(try_discover_nodes(network, devnet_name))
+                })
+            }
+        }
         Err(_) => Err(DapiDiscoveryError::NoRuntime),
     };
 
     match discovery_result {
         Ok(list) => Ok(list),
         Err(e) => {
+            // Devnet has no hardcoded seed nodes -- discovery failure is final.
+            if network == Network::Devnet {
+                return Err(e);
+            }
             tracing::warn!(
                 ?network,
                 error = %e,

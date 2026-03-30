@@ -1,5 +1,6 @@
 use crate::app::AppAction;
 use crate::backend_task::BackendTask;
+use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::core::CoreTask;
 use crate::backend_task::system_task::SystemTask;
 use crate::config::Config;
@@ -7,7 +8,6 @@ use crate::context::AppContext;
 use crate::context::connection_status::{ConnectionStatus, OverallConnectionState};
 use crate::model::wallet::DerivationPathHelpers;
 use crate::spv::{CoreBackendMode, SpvStatus, SpvStatusSnapshot};
-use crate::ui::components::MessageBanner;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::password_input::PasswordInput;
@@ -15,6 +15,7 @@ use crate::ui::components::styled::{
     ConfirmationDialog, ConfirmationStatus, StyledCard, StyledCheckbox, island_central_panel,
 };
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::theme::{DashColors, ResponseExt, Shape, ThemeMode};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use crate::utils::path::format_path_for_display;
@@ -111,6 +112,11 @@ pub struct NetworkChooserScreen {
     use_local_spv_node: bool,
     auto_start_spv: bool,
     close_dash_qt_on_exit: bool,
+    /// Tracks whether the last config save to disk failed (needed to show the
+    /// correct banner when the async reinit completes).
+    config_save_failed: bool,
+    /// Progress banner shown while reinit runs in the background.
+    reinit_banner: Option<BannerHandle>,
 }
 
 impl NetworkChooserScreen {
@@ -196,6 +202,8 @@ impl NetworkChooserScreen {
             use_local_spv_node,
             auto_start_spv,
             close_dash_qt_on_exit,
+            config_save_failed: false,
+            reinit_banner: None,
         }
     }
 
@@ -484,67 +492,43 @@ impl NetworkChooserScreen {
                             false
                         };
 
-                        // Update in-memory config and reinit regardless of save
-                        // result, so the password takes effect for this session.
-                        // Only do so when the context for this network already
-                        // exists — otherwise `context_for_network` would silently
-                        // fall back to mainnet and corrupt its config.  The saved
-                        // file-level config will be picked up when the network
-                        // context is created.
-                        let reinit_failed =
-                            if let Some(app_context) = self.context_for_network(self.current_network)
+                        // Update in-memory config and dispatch an async reinit
+                        // so the password takes effect for this session without
+                        // blocking the UI thread.  Only do so when the context
+                        // for this network already exists — otherwise
+                        // `context_for_network` would silently fall back to
+                        // mainnet and corrupt its config.  The saved file-level
+                        // config will be picked up when the network context is
+                        // created.
+                        if let Some(app_context) = self.context_for_network(self.current_network)
+                        {
                             {
-                                {
-                                    let mut cfg_lock = app_context.config.write().unwrap();
-                                    *cfg_lock = updated_config;
-                                }
+                                let mut cfg_lock = app_context.config.write().unwrap();
+                                *cfg_lock = updated_config;
+                            }
 
-                                MessageBanner::clear_all_global(ui.ctx());
-                                if let Err(e) =
-                                    Arc::clone(app_context).reinit_core_client_and_sdk()
-                                {
-                                    tracing::error!(
-                                        "Failed to re-init RPC client and sdk for {:?}: {}",
-                                        self.current_network,
-                                        e
-                                    );
-                                    true
-                                } else {
-                                    false
-                                }
-                            } else {
-                                false
-                            };
-
-                        match (save_failed, reinit_failed) {
-                            (false, false) => {
-                                MessageBanner::set_global(
-                                    ui.ctx(),
-                                    "Core RPC password saved successfully.",
-                                    MessageType::Success,
-                                );
-                            }
-                            (false, true) => {
-                                MessageBanner::set_global(
-                                    ui.ctx(),
-                                    "Password saved but the connection could not be re-established. Check that Dash Core is running and retry.",
-                                    MessageType::Warning,
-                                );
-                            }
-                            (true, false) => {
-                                MessageBanner::set_global(
-                                    ui.ctx(),
-                                    "Could not save the configuration file. Your changes will apply for this session only.",
-                                    MessageType::Warning,
-                                );
-                            }
-                            (true, true) => {
-                                MessageBanner::set_global(
-                                    ui.ctx(),
-                                    "Could not save the configuration file and the connection could not be re-established. Check that Dash Core is running and retry.",
-                                    MessageType::Warning,
-                                );
-                            }
+                            MessageBanner::clear_all_global(ui.ctx());
+                            self.config_save_failed = save_failed;
+                            self.reinit_banner = Some(MessageBanner::set_global(
+                                ui.ctx(),
+                                "Reconnecting to Dash Core...",
+                                MessageType::Info,
+                            ));
+                            app_action = AppAction::BackendTask(
+                                BackendTask::ReinitCoreClientAndSdk,
+                            );
+                        } else if save_failed {
+                            MessageBanner::set_global(
+                                ui.ctx(),
+                                "Could not save the configuration file. Your changes will apply when this network is activated.",
+                                MessageType::Warning,
+                            );
+                        } else {
+                            MessageBanner::set_global(
+                                ui.ctx(),
+                                "Core RPC password saved successfully.",
+                                MessageType::Success,
+                            );
                         }
                     }
                 });
@@ -2100,5 +2084,40 @@ impl ScreenLike for NetworkChooserScreen {
         }
 
         action
+    }
+
+    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
+        if !matches!(
+            backend_task_success_result,
+            BackendTaskSuccessResult::CoreClientReinitialized
+        ) {
+            return;
+        }
+
+        self.reinit_banner.take_and_clear();
+        let save_failed = std::mem::take(&mut self.config_save_failed);
+
+        // Reinit succeeded -- show the appropriate message based on
+        // whether the config file was saved successfully.  AppState
+        // does not show a generic success banner for this variant, so
+        // we set it ourselves.
+        if save_failed {
+            MessageBanner::set_global(
+                self.current_app_context().egui_ctx(),
+                "Could not save the configuration file. Your changes will apply for this session only.",
+                MessageType::Warning,
+            );
+        } else {
+            MessageBanner::set_global(
+                self.current_app_context().egui_ctx(),
+                "Core RPC password saved successfully.",
+                MessageType::Success,
+            );
+        }
+    }
+
+    fn display_message(&mut self, _msg: &str, _msg_type: MessageType) {
+        self.reinit_banner.take_and_clear();
+        self.config_save_failed = false;
     }
 }

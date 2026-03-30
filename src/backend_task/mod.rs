@@ -98,6 +98,10 @@ pub enum BackendTask {
     GroveSTARKTask(GroveSTARKTask),
     WalletTask(WalletTask),
     ShieldedTask(ShieldedTask),
+    /// Rebuild the Core RPC client and SDK on the current network context.
+    /// Dispatched when the user saves a new RPC password so the reinit
+    /// (which includes DAPI discovery) runs off the UI thread.
+    ReinitCoreClientAndSdk,
     /// Create a new network context and switch to it.
     /// Intercepted by `AppState` — never dispatched to `AppContext::run_backend_task`.
     SwitchNetwork(Network),
@@ -335,6 +339,9 @@ pub enum BackendTaskSuccessResult {
     },
     ProvingKeyReady,
 
+    /// Core RPC client and SDK were successfully rebuilt (e.g. after password change).
+    CoreClientReinitialized,
+
     /// A new network context was created asynchronously during a network switch.
     NetworkContextCreated {
         network: Network,
@@ -424,6 +431,10 @@ impl AppContext {
             BackendTask::WalletTask(wallet_task) => Ok(self.run_wallet_task(wallet_task).await?),
             BackendTask::ShieldedTask(shielded_task) => {
                 Ok(self.run_shielded_task(shielded_task).await?)
+            }
+            BackendTask::ReinitCoreClientAndSdk => {
+                Arc::clone(self).reinit_core_client_and_sdk()?;
+                Ok(BackendTaskSuccessResult::CoreClientReinitialized)
             }
             BackendTask::SwitchNetwork(_) => {
                 unreachable!("SwitchNetwork is intercepted by AppState::handle_backend_task")

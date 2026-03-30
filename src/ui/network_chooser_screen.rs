@@ -853,9 +853,8 @@ impl NetworkChooserScreen {
                     .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                     .show(ui.ctx(), |ui| {
                         ui.label(format!(
-                            "This will fetch a fresh list of DAPI nodes from a centralized \
-                             server managed by Dash Core Group, replacing your current {} \
-                             configured addresses.",
+                            "This will fetch a fresh list of DAPI nodes, replacing your current {} \
+                            configured addresses in the config file.",
                             dapi_total
                         ));
                         ui.add_space(12.0);

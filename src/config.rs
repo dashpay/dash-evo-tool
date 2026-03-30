@@ -295,7 +295,7 @@ impl Config {
         let env_file_path = match app_user_data_file_path(".env") {
             Ok(p) => p,
             Err(e) => {
-                tracing::warn!(error = %e, "Could not determine .env file path for migration");
+                eprintln!("[migration] Could not determine .env file path: {e}");
                 return;
             }
         };
@@ -303,7 +303,10 @@ impl Config {
         let content = match std::fs::read_to_string(&env_file_path) {
             Ok(c) => c,
             Err(e) => {
-                tracing::warn!(error = %e, path = ?env_file_path, "Could not read .env file for migration");
+                eprintln!(
+                    "[migration] Could not read .env file at {}: {e}",
+                    env_file_path.display()
+                );
                 return;
             }
         };
@@ -340,7 +343,10 @@ impl Config {
         let parent_dir = match env_file_path.parent() {
             Some(p) => p,
             None => {
-                tracing::warn!(path = ?env_file_path, "No parent directory for .env file during migration");
+                eprintln!(
+                    "[migration] No parent directory for .env file at {}",
+                    env_file_path.display()
+                );
                 return;
             }
         };
@@ -353,20 +359,20 @@ impl Config {
         let mut tmp = match NamedTempFile::new_in(parent_dir) {
             Ok(t) => t,
             Err(e) => {
-                tracing::warn!(error = %e, "Failed to create temp file for .env migration");
+                eprintln!("[migration] Failed to create temp file for .env migration: {e}");
                 return;
             }
         };
         if let Err(e) = tmp.write_all(new_content.as_bytes()) {
-            tracing::warn!(error = %e, "Failed to write migrated .env file");
+            eprintln!("[migration] Failed to write migrated .env file: {e}");
             return;
         }
         if let Err(e) = tmp.as_file().sync_all() {
-            tracing::warn!(error = %e, "Failed to sync migrated .env file");
+            eprintln!("[migration] Failed to sync migrated .env file: {e}");
             return;
         }
         if let Err(e) = tmp.persist(&env_file_path) {
-            tracing::warn!(error = %e, "Failed to persist migrated .env file");
+            eprintln!("[migration] Failed to persist migrated .env file: {e}");
             return;
         }
 

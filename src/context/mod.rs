@@ -578,12 +578,14 @@ impl AppContext {
         // 3. Parse DAPI addresses from config and rebuild the SDK
         let address_list = match &cfg.dapi_addresses {
             Some(addrs) if !addrs.trim().is_empty() => AddressList::from_str(addrs.trim())
-                .map_err(
-                    |source| crate::dapi_discovery::DapiDiscoveryError::InvalidAddresses { source },
-                )?,
+                .map_err(|source| {
+                    crate::backend_task::dapi_discovery::DapiDiscoveryError::InvalidAddresses {
+                        source,
+                    }
+                })?,
             _ => {
                 return Err(
-                    crate::dapi_discovery::DapiDiscoveryError::AddressesRequired {
+                    crate::backend_task::dapi_discovery::DapiDiscoveryError::AddressesRequired {
                         network: self.network,
                     }
                     .into(),

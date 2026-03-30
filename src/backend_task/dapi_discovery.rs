@@ -113,3 +113,17 @@ pub async fn try_discover_nodes(
 
     Ok(valid_urls)
 }
+
+/// Discover DAPI nodes and return them as a comma-separated string
+/// suitable for storing in `NetworkConfig::dapi_addresses`.
+///
+/// Returns `(count, csv)` on success.
+pub async fn discover_and_format(
+    network: Network,
+    devnet_name: Option<&str>,
+) -> Result<(usize, String), DapiDiscoveryError> {
+    let urls = try_discover_nodes(network, devnet_name).await?;
+    let count = urls.len();
+    let csv = urls.join(",");
+    Ok((count, csv))
+}

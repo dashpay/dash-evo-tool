@@ -56,7 +56,7 @@ pub enum TaskError {
 
     /// DAPI node discovery or address resolution failed.
     #[error(transparent)]
-    DapiDiscovery(#[from] crate::dapi_discovery::DapiDiscoveryError),
+    DapiDiscovery(#[from] crate::backend_task::dapi_discovery::DapiDiscoveryError),
 
     /// Core wallet not configured for this wallet on a multi-wallet Core node.
     #[error(

@@ -270,7 +270,7 @@ impl AppState {
         let data_dir = app_user_data_dir_path()?;
         ensure_data_dir_exists(&data_dir)?;
         ensure_env_file(&data_dir);
-        crate::config::Config::migrate_env_file_if_needed(&data_dir);
+
         initialize_logger();
         let db_file_path = data_file_path(&data_dir, "data.db")?;
         let db = Arc::new(Database::new(&db_file_path)?);
@@ -287,7 +287,7 @@ impl AppState {
         let data_dir = app_user_data_dir_path()?;
         ensure_data_dir_exists(&data_dir)?;
         ensure_env_file(&data_dir);
-        crate::config::Config::migrate_env_file_if_needed(&data_dir);
+
         let db = Arc::new(
             crate::database::test_helpers::create_test_database()
                 .map_err(|e| format!("Failed to create test database: {}", e))?,

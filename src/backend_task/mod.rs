@@ -47,6 +47,7 @@ pub mod broadcast_state_transition;
 pub mod contested_names;
 pub mod contract;
 pub mod core;
+pub mod dapi_discovery;
 pub mod dashpay;
 pub mod document;
 pub mod error;
@@ -105,6 +106,10 @@ pub enum BackendTask {
     /// Create a new network context and switch to it.
     /// Intercepted by `AppState` — never dispatched to `AppContext::run_backend_task`.
     SwitchNetwork(Network),
+    /// Discover DAPI nodes from the DCG-operated HTTPS service.
+    DiscoverDapiNodes {
+        network: Network,
+    },
     None,
 }
 
@@ -347,6 +352,13 @@ pub enum BackendTaskSuccessResult {
         network: Network,
         context: Arc<AppContext>,
     },
+
+    /// Fresh DAPI node addresses discovered from the DCG service.
+    DapiNodesDiscovered {
+        network: Network,
+        count: usize,
+        addresses_csv: String,
+    },
 }
 
 impl BackendTaskSuccessResult {}
@@ -438,6 +450,23 @@ impl AppContext {
             }
             BackendTask::SwitchNetwork(_) => {
                 unreachable!("SwitchNetwork is intercepted by AppState::handle_backend_task")
+            }
+            BackendTask::DiscoverDapiNodes { network } => {
+                let devnet_name = self
+                    .config
+                    .read()
+                    .map_err(|_| TaskError::LockPoisoned {
+                        resource: "NetworkConfig",
+                    })?
+                    .devnet_name
+                    .clone();
+                let (count, addresses_csv) =
+                    dapi_discovery::discover_and_format(network, devnet_name.as_deref()).await?;
+                Ok(BackendTaskSuccessResult::DapiNodesDiscovered {
+                    network,
+                    count,
+                    addresses_csv,
+                })
             }
             BackendTask::None => Ok(BackendTaskSuccessResult::None),
         }

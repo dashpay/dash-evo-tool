@@ -194,7 +194,9 @@ impl AppContext {
                     _ => (&mainnet_result, maybe_mainnet_config),
                 };
                 let active_rpc_error = if let Err(e) = active_result {
-                    if let Some(task_err) = Self::chain_lock_rpc_error(active_config, e) {
+                    if let Some(task_err) =
+                        Self::chain_lock_rpc_error(active_config, self.network, e)
+                    {
                         return Err(task_err);
                     }
                     // Non-auth, non-connection error — show the actual error
@@ -442,8 +444,8 @@ impl AppContext {
 
         let addr = format!(
             "http://{}:{}",
-            network_config.core_host.as_deref().unwrap_or("127.0.0.1"),
-            network_config.core_rpc_port.unwrap_or(9998)
+            network_config.rpc_host(),
+            network_config.rpc_port(network)
         );
 
         let cookie_path = match core_cookie_path(network, &network_config.devnet_name) {
@@ -458,8 +460,8 @@ impl AppContext {
         let client = match Client::new(&addr, Auth::CookieFile(cookie_path.clone())) {
             Ok(client) => client,
             Err(_) => {
-                tracing::debug!(
-                    "Failed to authenticate using .cookie file at {:?}, falling back to user/pass",
+                tracing::trace!(
+                    "Cookie auth unavailable at {:?}, using user/pass",
                     cookie_path
                 );
                 match Client::new(
@@ -485,6 +487,7 @@ impl AppContext {
     /// `TaskError`, enriching connection failures with host:port.
     fn chain_lock_rpc_error(
         config: &Option<NetworkConfig>,
+        network: Network,
         e: &dashcore_rpc::Error,
     ) -> Option<TaskError> {
         if is_rpc_auth_error(e) {
@@ -493,14 +496,7 @@ impl AppContext {
         if is_rpc_connection_error(e) {
             let url = config
                 .as_ref()
-                .map(|c| {
-                    format!(
-                        "{}:{} ({})",
-                        c.core_host.as_deref().unwrap_or("127.0.0.1"),
-                        c.core_rpc_port.unwrap_or(9998),
-                        e
-                    )
-                })
+                .map(|c| format!("{}:{}", c.rpc_host(), c.rpc_port(network)))
                 .unwrap_or_else(|| "unknown".to_string());
             return Some(TaskError::CoreRpcConnectionFailed { url, source: None });
         }

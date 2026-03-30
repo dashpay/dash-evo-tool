@@ -1,8 +1,7 @@
 use crate::app::AppAction;
-use crate::backend_task::BackendTask;
-use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::core::CoreTask;
 use crate::backend_task::system_task::SystemTask;
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::config::Config;
 use crate::context::AppContext;
 use crate::context::connection_status::{ConnectionStatus, OverallConnectionState};
@@ -117,6 +116,8 @@ pub struct NetworkChooserScreen {
     config_save_failed: bool,
     /// Progress banner shown while reinit runs in the background.
     reinit_banner: Option<BannerHandle>,
+    discovery_in_progress: bool,
+    show_fetch_confirmation: bool,
 }
 
 impl NetworkChooserScreen {
@@ -204,6 +205,8 @@ impl NetworkChooserScreen {
             close_dash_qt_on_exit,
             config_save_failed: false,
             reinit_banner: None,
+            discovery_in_progress: false,
+            show_fetch_confirmation: false,
         }
     }
 
@@ -694,7 +697,7 @@ impl NetworkChooserScreen {
             ui.add_space(10.0);
 
             ui.vertical(|ui| {
-                if current_backend_mode == CoreBackendMode::Rpc && !self.developer_mode {
+                if current_backend_mode == CoreBackendMode::Rpc {
                     ui.horizontal(|ui| {
                         ui.label("Core RPC:");
                         let rpc_color = if rpc_online {
@@ -710,42 +713,6 @@ impl NetworkChooserScreen {
                             "Disconnected".to_string()
                         };
                         ui.colored_label(rpc_color, &rpc_label);
-
-                        ui.label(",");
-                        ui.label("ZMQ:");
-                        if disable_zmq {
-                            ui.colored_label(DashColors::text_secondary(dark_mode), "Disabled");
-                        } else {
-                            let zmq_color = if zmq_connected {
-                                DashColors::SUCCESS
-                            } else {
-                                DashColors::ERROR
-                            };
-                            let zmq_label = if zmq_connected { "Connected" } else { "Disconnected" };
-                            ui.colored_label(zmq_color, zmq_label);
-                        }
-
-                        ui.label(",");
-                        add_dapi_status_label(ui, dapi_total, dapi_available, &dapi_label, dark_mode);
-                    });
-                }
-
-                if current_backend_mode == CoreBackendMode::Rpc && self.developer_mode {
-                    ui.horizontal(|ui| {
-                        ui.label("Dash Core RPC:");
-                        let color = if rpc_online {
-                            DashColors::SUCCESS
-                        } else {
-                            DashColors::ERROR
-                        };
-                        let label = if rpc_online {
-                            "Connected".to_string()
-                        } else if let Some(ref err) = rpc_last_error {
-                            format!("Error: {err}")
-                        } else {
-                            "Disconnected".to_string()
-                        };
-                        ui.colored_label(color, &label);
                     });
 
                     ui.horizontal(|ui| {
@@ -756,19 +723,16 @@ impl NetworkChooserScreen {
                                 "Disabled",
                             );
                         } else {
-                            let color = if zmq_connected {
+                            let zmq_color = if zmq_connected {
                                 DashColors::SUCCESS
                             } else {
                                 DashColors::ERROR
                             };
-                            let label = if zmq_connected { "Connected" } else { "Disconnected" };
-                            ui.colored_label(color, label);
+                            let zmq_label =
+                                if zmq_connected { "Connected" } else { "Disconnected" };
+                            ui.colored_label(zmq_color, zmq_label);
                         }
-                    });
-
-                    ui.horizontal(|ui| {
-                        add_dapi_status_label(ui, dapi_total, dapi_available, &dapi_label, dark_mode);
-                    });
+                });
                 }
 
                 if current_backend_mode == CoreBackendMode::Spv {
@@ -789,12 +753,83 @@ impl NetworkChooserScreen {
                         };
                         ui.colored_label(color, label);
                     });
+                }
 
-                    ui.horizontal(|ui| {
-                        add_dapi_status_label(ui, dapi_total, dapi_available, &dapi_label, dark_mode);
-                    });
+                // DAPI line (all modes)
+                ui.horizontal(|ui| {
+                    add_dapi_status_label(
+                        ui,
+                        dapi_total,
+                        dapi_available,
+                        &dapi_label,
+                        dark_mode,
+                    );
+                });
+
+                // "Refresh DAPI endpoints" button — Mainnet/Testnet only
+                let is_discoverable = matches!(
+                    self.current_network,
+                    Network::Mainnet | Network::Testnet
+                );
+                if is_discoverable {
+                    ui.add_space(8.0);
+                    let button_text = if self.discovery_in_progress {
+                        "Fetching..."
+                    } else {
+                        "Refresh DAPI endpoints"
+                    };
+                    let button =
+                        egui::Button::new(button_text).corner_radius(Shape::RADIUS_MD);
+
+                    let response = ui.add_enabled(!self.discovery_in_progress, button);
+                    let clicked = response.clicked();
+                    response.on_hover_text(
+                        "Updates list of DAPI nodes using a centralized server managed by Dash Core Group.",
+                    );
+                    if clicked {
+                        if dapi_total > 0 {
+                            self.show_fetch_confirmation = true;
+                        } else {
+                            self.discovery_in_progress = true;
+                            app_action = AppAction::BackendTask(
+                                BackendTask::DiscoverDapiNodes {
+                                    network: self.current_network,
+                                },
+                            );
+                        }
+                    }
                 }
             });
+
+            // Fetch confirmation dialog
+            if self.show_fetch_confirmation {
+                egui::Window::new("Update Node Addresses?")
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                    .show(ui.ctx(), |ui| {
+                        ui.label(format!(
+                            "This will fetch a fresh list of DAPI nodes, replacing your current {} \
+                            configured addresses in the config file.",
+                            dapi_total
+                        ));
+                        ui.add_space(12.0);
+                        ui.horizontal(|ui| {
+                            if ui.button("Cancel").clicked() {
+                                self.show_fetch_confirmation = false;
+                            }
+                            if ui.button("Fetch").clicked() {
+                                self.show_fetch_confirmation = false;
+                                self.discovery_in_progress = true;
+                                app_action = AppAction::BackendTask(
+                                    BackendTask::DiscoverDapiNodes {
+                                        network: self.current_network,
+                                    },
+                                );
+                            }
+                        });
+                    });
+            }
         });
 
         // Advanced Settings section with clean dropdown
@@ -2087,37 +2122,79 @@ impl ScreenLike for NetworkChooserScreen {
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        if !matches!(
-            backend_task_success_result,
+        // Handle CoreClientReinitialized (from RPC password save)
+        if matches!(
+            &backend_task_success_result,
             BackendTaskSuccessResult::CoreClientReinitialized
         ) {
-            return;
+            self.reinit_banner.take_and_clear();
+            let save_failed = std::mem::take(&mut self.config_save_failed);
+
+            if save_failed {
+                MessageBanner::set_global(
+                    self.current_app_context().egui_ctx(),
+                    "Could not save the configuration file. Your changes will apply for this session only.",
+                    MessageType::Warning,
+                );
+            } else {
+                MessageBanner::set_global(
+                    self.current_app_context().egui_ctx(),
+                    "Core RPC password saved successfully.",
+                    MessageType::Success,
+                );
+            }
         }
 
-        self.reinit_banner.take_and_clear();
-        let save_failed = std::mem::take(&mut self.config_save_failed);
+        // Handle DapiNodesDiscovered (from "Refresh DAPI endpoints" button)
+        if let BackendTaskSuccessResult::DapiNodesDiscovered {
+            network,
+            count,
+            addresses_csv,
+        } = backend_task_success_result
+        {
+            self.discovery_in_progress = false;
 
-        // Reinit succeeded -- show the appropriate message based on
-        // whether the config file was saved successfully.  AppState
-        // does not show a generic success banner for this variant, so
-        // we set it ourselves.
-        if save_failed {
-            MessageBanner::set_global(
-                self.current_app_context().egui_ctx(),
-                "Could not save the configuration file. Your changes will apply for this session only.",
-                MessageType::Warning,
-            );
-        } else {
-            MessageBanner::set_global(
-                self.current_app_context().egui_ctx(),
-                "Core RPC password saved successfully.",
-                MessageType::Success,
-            );
+            // Update config with new addresses
+            let data_dir = &self.current_app_context().data_dir;
+            if let Ok(mut config) = Config::load_from(data_dir)
+                && let Some(mut network_cfg) = config.config_for_network(network).clone()
+            {
+                network_cfg.dapi_addresses = Some(addresses_csv);
+                config.update_config_for_network(network, network_cfg.clone());
+
+                if let Err(e) = config.save(data_dir) {
+                    tracing::error!("Failed to save config after DAPI discovery: {e}");
+                }
+
+                // Update in-memory config and reinit SDK if context exists
+                if let Some(app_context) = self.context_for_network(network) {
+                    if let Ok(mut cfg_lock) = app_context.config.write() {
+                        *cfg_lock = network_cfg;
+                    }
+                    if let Err(e) = Arc::clone(app_context).reinit_core_client_and_sdk() {
+                        tracing::error!(
+                            "Failed to reinit SDK after DAPI discovery for {:?}: {}",
+                            network,
+                            e
+                        );
+                    }
+                }
+
+                MessageBanner::set_global(
+                    self.current_app_context().egui_ctx(),
+                    format!("Updated to {count} node addresses."),
+                    MessageType::Success,
+                );
+            }
         }
     }
 
-    fn display_message(&mut self, _msg: &str, _msg_type: MessageType) {
+    fn display_message(&mut self, _msg: &str, msg_type: MessageType) {
         self.reinit_banner.take_and_clear();
         self.config_save_failed = false;
+        // Only reset discovery state on errors — other message types may be unrelated
+        if matches!(msg_type, MessageType::Error) && self.discovery_in_progress {
+            self.discovery_in_progress = false;
+        }
     }
 }

@@ -27,6 +27,7 @@ use arc_swap::ArcSwap;
 use connection_status::ConnectionStatus;
 use crossbeam_channel::{Receiver, Sender};
 use dash_sdk::Sdk;
+use dash_sdk::dapi_client::AddressList;
 use dash_sdk::dashcore_rpc::{Auth, Client, RpcApi};
 use dash_sdk::dpp::dashcore::{Address, Network, Txid};
 #[cfg(any(test, feature = "testing"))]
@@ -43,6 +44,7 @@ use dash_sdk::platform::Identifier;
 use egui::Context;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::str::FromStr as _;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
 
@@ -159,15 +161,24 @@ impl AppContext {
             }
         };
 
-        // Resolve DAPI addresses: try explicit config first (sync), fall back to discovery (async)
-        let address_list = match crate::dapi_discovery::resolve_dapi_addresses_sync(
-            network,
-            &network_config.dapi_addresses,
-            network_config.devnet_name.as_deref(),
-        ) {
-            Ok(list) => list,
-            Err(e) => {
-                tracing::error!(?network, error = %e, "Failed to resolve DAPI addresses");
+        // Parse configured DAPI addresses directly (no auto-discovery at startup)
+        let address_list = match &network_config.dapi_addresses {
+            Some(addrs) if !addrs.trim().is_empty() => match AddressList::from_str(addrs.trim()) {
+                Ok(list) => list,
+                Err(e) => {
+                    tracing::error!(
+                        ?network,
+                        error = %e,
+                        "Failed to parse configured DAPI addresses"
+                    );
+                    return None;
+                }
+            },
+            _ => {
+                tracing::error!(
+                    ?network,
+                    "No DAPI addresses configured. Use Refresh DAPI endpoints in Network Settings or add addresses to .env."
+                );
                 return None;
             }
         };
@@ -229,8 +240,8 @@ impl AppContext {
 
         let addr = format!(
             "http://{}:{}",
-            network_config.core_host.as_deref().unwrap_or("127.0.0.1"),
-            network_config.core_rpc_port.unwrap_or(9998)
+            network_config.rpc_host(),
+            network_config.rpc_port(network)
         );
         let core_client = match Self::create_core_rpc_client(
             &addr,
@@ -552,11 +563,7 @@ impl AppContext {
         // Note: developer_mode is now global and managed separately
 
         // 2. Rebuild the RPC client with the new password
-        let addr = format!(
-            "http://{}:{}",
-            cfg.core_host.as_deref().unwrap_or("127.0.0.1"),
-            cfg.core_rpc_port.unwrap_or(9998)
-        );
+        let addr = format!("http://{}:{}", cfg.rpc_host(), cfg.rpc_port(self.network));
         let new_client = Client::new(
             &addr,
             Auth::UserPass(
@@ -568,12 +575,23 @@ impl AppContext {
             detail: e.to_string(),
         })?;
 
-        // 3. Resolve DAPI addresses and rebuild the SDK
-        let address_list = crate::dapi_discovery::resolve_dapi_addresses_sync(
-            self.network,
-            &cfg.dapi_addresses,
-            cfg.devnet_name.as_deref(),
-        )?;
+        // 3. Parse DAPI addresses from config and rebuild the SDK
+        let address_list = match &cfg.dapi_addresses {
+            Some(addrs) if !addrs.trim().is_empty() => AddressList::from_str(addrs.trim())
+                .map_err(|source| {
+                    crate::backend_task::dapi_discovery::DapiDiscoveryError::InvalidAddresses {
+                        source,
+                    }
+                })?,
+            _ => {
+                return Err(
+                    crate::backend_task::dapi_discovery::DapiDiscoveryError::AddressesRequired {
+                        network: self.network,
+                    }
+                    .into(),
+                );
+            }
+        };
 
         let new_sdk = match self.core_backend_mode() {
             CoreBackendMode::Spv => {
@@ -629,8 +647,8 @@ impl AppContext {
             if let Ok(client) = Client::new(url, Auth::CookieFile(cookie_path.clone())) {
                 return Ok(client);
             }
-            tracing::debug!(
-                "Failed to authenticate using .cookie file at {:?}, falling back to user/pass",
+            tracing::trace!(
+                "Cookie auth unavailable at {:?}, using user/pass",
                 cookie_path,
             );
         }
@@ -650,11 +668,7 @@ impl AppContext {
         let cfg = self.config.read().map_err(|_| TaskError::LockPoisoned {
             resource: "NetworkConfig",
         })?;
-        let base = format!(
-            "http://{}:{}",
-            cfg.core_host.as_deref().unwrap_or("127.0.0.1"),
-            cfg.core_rpc_port.unwrap_or(9998)
-        );
+        let base = format!("http://{}:{}", cfg.rpc_host(), cfg.rpc_port(self.network));
         let url = match wallet_name {
             Some(name) if !name.is_empty() => {
                 if name.contains("..") {
@@ -711,13 +725,7 @@ impl AppContext {
                 .config
                 .read()
                 .ok()
-                .map(|c| {
-                    format!(
-                        "{}:{}",
-                        c.core_host.as_deref().unwrap_or("127.0.0.1"),
-                        c.core_rpc_port.unwrap_or(9998)
-                    )
-                })
+                .map(|c| format!("{}:{}", c.rpc_host(), c.rpc_port(self.network)))
                 .unwrap_or_else(|| "unknown".to_string());
             TaskError::CoreRpcConnectionFailed {
                 url,

@@ -1201,9 +1201,9 @@ impl ScreenLike for Screen {
             Screen::DashPayQRGeneratorScreen(_) => {}
             Screen::DashPayProfileSearchScreen(screen) => screen.refresh(),
             // Shielded screens
-            Screen::ShieldScreen(_) => {}
-            Screen::ShieldedSendScreen(_) => {}
-            Screen::UnshieldCreditsScreen(_) => {}
+            Screen::ShieldScreen(screen) => screen.refresh(),
+            Screen::ShieldedSendScreen(screen) => screen.refresh(),
+            Screen::UnshieldCreditsScreen(screen) => screen.refresh(),
         }
     }
 
@@ -1271,9 +1271,9 @@ impl ScreenLike for Screen {
             Screen::DashPayQRGeneratorScreen(_) => {}
             Screen::DashPayProfileSearchScreen(screen) => screen.refresh_on_arrival(),
             // Shielded screens
-            Screen::ShieldScreen(_) => {}
-            Screen::ShieldedSendScreen(_) => {}
-            Screen::UnshieldCreditsScreen(_) => {}
+            Screen::ShieldScreen(screen) => screen.refresh_on_arrival(),
+            Screen::ShieldedSendScreen(screen) => screen.refresh_on_arrival(),
+            Screen::UnshieldCreditsScreen(screen) => screen.refresh_on_arrival(),
         }
     }
 

@@ -137,11 +137,21 @@ impl AppContext {
     }
 
     pub fn bootstrap_wallet_addresses(&self, wallet: &Arc<RwLock<Wallet>>) {
-        if let Ok(mut guard) = wallet.write()
-            && guard.known_addresses.is_empty()
-        {
-            tracing::info!(wallet = %hex::encode(guard.seed_hash()), "Bootstrapping wallet addresses");
-            guard.bootstrap_known_addresses(self);
+        if let Ok(mut guard) = wallet.write() {
+            // Bootstrap when no addresses exist (fresh wallet) or when
+            // platform payment addresses haven't been derived yet (wallet
+            // created with only a Core address via new_from_seed).
+            // INTENTIONAL(CODE-006): Bootstrap checks only PlatformPayment address type.
+            // Other platform address types may trigger redundant re-derivation, but
+            // bootstrap_known_addresses() is idempotent so this is safe.
+            let has_platform_addresses = guard.watched_addresses.values().any(|info| {
+                info.path_reference
+                    == crate::model::wallet::DerivationPathReference::PlatformPayment
+            });
+            if guard.known_addresses.is_empty() || !has_platform_addresses {
+                tracing::info!(wallet = %hex::encode(guard.seed_hash()), "Bootstrapping wallet addresses");
+                guard.bootstrap_known_addresses(self);
+            }
         }
     }
 
@@ -151,25 +161,25 @@ impl AppContext {
             // Note: Platform address sync is not done here.
             // Core UTXO refresh is handled at startup in bootstrap_loaded_wallets.
 
-            // Eagerly initialize shielded wallet state so that the cached
-            // balance (from persisted notes) is available to all UI screens
-            // immediately, without requiring the user to visit the Shielded tab.
-            // Then queue async SyncNotes -> CheckNullifiers to refresh from
-            // the network. This is the single init path — the UI never
-            // dispatches InitializeShieldedWallet.
-            match self.initialize_shielded_wallet(seed_hash) {
-                Ok(_) => {
-                    tracing::trace!(
+            // Initialize shielded wallet state only when the network supports it
+            // (protocol version >= 12, i.e., Platform v3.1+). On mainnet (which
+            // doesn't support shielded transactions yet), skip entirely to avoid
+            // unnecessary sync attempts and log noise.
+            if self.supports_shielded() {
+                match self.initialize_shielded_wallet(seed_hash) {
+                    Ok(_) => {
+                        tracing::trace!(
+                            seed = %hex::encode(seed_hash),
+                            "Shielded wallet state initialized on unlock"
+                        );
+                        self.queue_shielded_sync(seed_hash);
+                    }
+                    Err(e) => tracing::debug!(
                         seed = %hex::encode(seed_hash),
-                        "Shielded wallet state initialized on unlock"
-                    );
-                    self.queue_shielded_sync(seed_hash);
+                        error = %e,
+                        "Shielded wallet init skipped on unlock"
+                    ),
                 }
-                Err(e) => tracing::debug!(
-                    seed = %hex::encode(seed_hash),
-                    error = %e,
-                    "Shielded wallet init skipped on unlock"
-                ),
             }
         }
     }

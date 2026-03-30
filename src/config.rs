@@ -369,7 +369,18 @@ impl Config {
             tracing::warn!(error = %e, "Failed to persist migrated .env file");
             return;
         }
-        tracing::info!("Migrated old hardcoded DAPI addresses to dynamic discovery");
+
+        // Restrict file permissions on Unix (config contains RPC credentials).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o600);
+            if let Err(e) = std::fs::set_permissions(&env_file_path, perms) {
+                eprintln!("[migration] Could not set config file permissions to 0600: {e}");
+            }
+        }
+
+        eprintln!("[migration] Migrated old hardcoded DAPI addresses to dynamic discovery");
     }
 
     /// Update (overwrite) the configuration for a particular network.

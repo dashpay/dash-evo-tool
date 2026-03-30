@@ -2025,6 +2025,7 @@ dependencies = [
  "itertools 0.14.0",
  "native-dialog",
  "nix",
+ "objc2 0.6.4",
  "qrcode",
  "rand 0.9.2",
  "raw-cpuid",

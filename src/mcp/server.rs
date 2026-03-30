@@ -7,24 +7,51 @@ use rmcp::model::*;
 use rmcp::{ErrorData as McpError, RoleServer, ServerHandler, service::RequestContext};
 use std::sync::Arc;
 
-/// Abstracts how the MCP service obtains its AppContext.
+/// Abstracts how the MCP service stores and swaps its AppContext.
+/// Both variants support `load` and `store` for network switching.
 #[derive(Clone)]
-enum ContextProvider {
-    /// HTTP mode: context provided by the GUI app, follows network switches.
+enum ContextHolder {
+    /// HTTP mode: shared with the GUI app via the same `ArcSwap`.
+    /// GUI calls `store()` on network switch; MCP sees it immediately.
     #[cfg(feature = "mcp")]
     Shared(Arc<arc_swap::ArcSwap<AppContext>>),
-    /// Stdio/CLI mode: lazily initialized on first use.
+    /// Stdio/CLI mode: standalone, lazily initialized on first tool call.
     #[cfg(feature = "cli")]
-    Lazy(Arc<tokio::sync::OnceCell<Arc<AppContext>>>),
+    Standalone(Arc<arc_swap::ArcSwapOption<AppContext>>),
+}
+
+impl ContextHolder {
+    fn load(&self) -> Option<Arc<AppContext>> {
+        match self {
+            #[cfg(feature = "mcp")]
+            Self::Shared(swap) => Some(swap.load_full()),
+            #[cfg(feature = "cli")]
+            Self::Standalone(swap) => swap.load_full(),
+        }
+    }
+
+    fn store(&self, ctx: Arc<AppContext>) {
+        match self {
+            #[cfg(feature = "mcp")]
+            Self::Shared(swap) => swap.store(ctx),
+            #[cfg(feature = "cli")]
+            Self::Standalone(swap) => swap.store(Some(ctx)),
+        }
+    }
 }
 
 /// MCP service backed by the app's context.
 ///
-/// Works with both transports: HTTP (shared ArcSwap context from the GUI app)
-/// and stdio (lazily initialized standalone context).
+/// HTTP mode shares the GUI's `ArcSwap` so network switches propagate
+/// bidirectionally. Stdio/CLI mode uses a standalone `ArcSwapOption` with
+/// lazy initialization. Both modes support `swap_context` for the
+/// `network_switch` tool.
 #[derive(Clone)]
 pub struct DashMcpService {
-    ctx_provider: ContextProvider,
+    ctx: ContextHolder,
+    /// Guards lazy initialization in stdio/CLI mode.
+    #[cfg(feature = "cli")]
+    init_guard: Arc<tokio::sync::OnceCell<()>>,
     pub(crate) tool_router: ToolRouter<DashMcpService>,
 }
 
@@ -35,11 +62,13 @@ impl std::fmt::Debug for DashMcpService {
 }
 
 impl DashMcpService {
-    /// For HTTP mode: wrap an existing shared context.
+    /// For HTTP mode: wrap the GUI's shared ArcSwap (same reference).
     #[cfg(feature = "mcp")]
     pub fn new_shared(app_context: Arc<arc_swap::ArcSwap<AppContext>>) -> Self {
         Self {
-            ctx_provider: ContextProvider::Shared(app_context),
+            ctx: ContextHolder::Shared(app_context),
+            #[cfg(feature = "cli")]
+            init_guard: Arc::new(tokio::sync::OnceCell::const_new_with(())),
             tool_router: Self::tool_router(),
         }
     }
@@ -48,40 +77,37 @@ impl DashMcpService {
     #[cfg(feature = "cli")]
     pub fn new_lazy() -> Self {
         Self {
-            ctx_provider: ContextProvider::Lazy(Arc::new(tokio::sync::OnceCell::new())),
+            ctx: ContextHolder::Standalone(Arc::new(arc_swap::ArcSwapOption::empty())),
+            init_guard: Arc::new(tokio::sync::OnceCell::new()),
             tool_router: Self::tool_router(),
         }
     }
 
-    /// Get the current AppContext. In HTTP mode, loads from ArcSwap.
-    /// In stdio mode, initializes on first call.
+    /// Get the current AppContext.
     ///
-    /// Each tool must call this exactly once and pass the resulting `Arc` to
-    /// both validation and the operation to avoid TOCTOU issues with ArcSwap.
+    /// In HTTP mode, loads from the shared ArcSwap (always initialized).
+    /// In stdio/CLI mode, initializes on first call, then loads.
     pub(crate) async fn ctx(&self) -> Result<Arc<AppContext>, McpError> {
-        match &self.ctx_provider {
-            #[cfg(feature = "mcp")]
-            ContextProvider::Shared(swap) => Ok(swap.load_full()),
-            #[cfg(feature = "cli")]
-            ContextProvider::Lazy(cell) => cell
-                .get_or_try_init(|| async { init_app_context().await })
-                .await
-                .cloned(),
+        #[cfg(feature = "cli")]
+        if let ContextHolder::Standalone(_) = &self.ctx {
+            let ctx_holder = self.ctx.clone();
+            self.init_guard
+                .get_or_try_init(|| async {
+                    let app_context = init_app_context().await?;
+                    ctx_holder.store(app_context);
+                    Ok::<(), McpError>(())
+                })
+                .await?;
         }
+        self.ctx
+            .load()
+            .ok_or_else(|| McpError::internal_error("AppContext not initialized", None))
     }
 
     /// Replace the active context. Used by `network_switch` to point the
-    /// MCP server at a newly created network context.
-    #[allow(unused_variables)]
+    /// server at a newly created network context. Works in all modes.
     pub(crate) fn swap_context(&self, new_ctx: Arc<AppContext>) {
-        match &self.ctx_provider {
-            #[cfg(feature = "mcp")]
-            ContextProvider::Shared(swap) => swap.store(new_ctx),
-            #[cfg(feature = "cli")]
-            ContextProvider::Lazy(_) => {
-                tracing::warn!("Network switch not supported in stdio/CLI mode");
-            }
-        }
+        self.ctx.store(new_ctx);
     }
 
     /// Build the tool router using trait-based tool composition.

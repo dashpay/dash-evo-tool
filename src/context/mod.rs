@@ -438,13 +438,26 @@ impl AppContext {
     }
 
     pub fn set_core_backend_mode(self: &Arc<Self>, mode: CoreBackendMode) {
+        self.set_core_backend_mode_inner(mode, true);
+    }
+
+    /// Switch the backend mode in-memory only, without persisting to the DB.
+    /// Used by headless (MCP/CLI) mode to force SPV without overwriting the
+    /// GUI's saved preference.
+    pub fn set_core_backend_mode_volatile(self: &Arc<Self>, mode: CoreBackendMode) {
+        self.set_core_backend_mode_inner(mode, false);
+    }
+
+    fn set_core_backend_mode_inner(self: &Arc<Self>, mode: CoreBackendMode, persist: bool) {
         self.core_backend_mode
             .store(mode.as_u8(), Ordering::Relaxed);
 
-        // Persist the mode to the database (hold the guard to ensure cache invalidation)
-        let _guard = self.invalidate_settings_cache();
-        if let Err(e) = self.db.update_core_backend_mode(mode.as_u8()) {
-            tracing::error!("Failed to persist core backend mode: {}", e);
+        if persist {
+            // Persist the mode to the database (hold the guard to ensure cache invalidation)
+            let _guard = self.invalidate_settings_cache();
+            if let Err(e) = self.db.update_core_backend_mode(mode.as_u8()) {
+                tracing::error!("Failed to persist core backend mode: {}", e);
+            }
         }
 
         // Switch SDK context provider to match the selected backend.

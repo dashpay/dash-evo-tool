@@ -2,6 +2,7 @@
 
 use crate::context::AppContext;
 use crate::mcp::tools;
+use crate::spv::CoreBackendMode;
 use rmcp::handler::server::tool::{ToolCallContext, ToolRouter};
 use rmcp::model::*;
 use rmcp::{ErrorData as McpError, RoleServer, ServerHandler, service::RequestContext};
@@ -250,6 +251,13 @@ pub async fn init_app_context() -> Result<Arc<AppContext>, McpError> {
             None,
         )
     })?;
+
+    // Headless mode has no Dash Core RPC — force SPV backend so wallet
+    // tools work without a local node.
+    if app_context.core_backend_mode() != CoreBackendMode::Spv {
+        tracing::info!("Headless mode: forcing SPV backend (was RPC)");
+        app_context.set_core_backend_mode_volatile(CoreBackendMode::Spv);
+    }
 
     if let Err(e) = app_context.start_spv() {
         tracing::warn!("SPV start failed (wallet tools may not work): {e}");

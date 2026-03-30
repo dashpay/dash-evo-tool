@@ -108,8 +108,8 @@ pub struct AppState {
     /// Timestamp when the async shutdown was initiated, used as a hard deadline
     /// to force-close the viewport if the shutdown task stalls.
     shutdown_started: Option<std::time::Instant>,
-    /// Whether accessibility support is enabled (DASH_EVO_TOOL_ACCESSIBILITY=1).
-    accessibility_enabled: bool,
+    /// Whether accessibility is force-enabled (DASH_EVO_TOOL_ACCESSIBILITY=1). When unset, accessibility still works normally via VoiceOver or other assistive technology — this flag forces it on unconditionally.
+    accessibility_enforced: bool,
     /// Whether we have already triggered platform-level accessibility activation.
     accessibility_activated: bool,
     /// How many frames we have attempted accessibility activation.
@@ -279,13 +279,15 @@ impl AppState {
         // load fonts
         ctx.set_fonts(crate::bundled::fonts().expect("failed to load fonts"));
 
-        // Enable AccessKit eagerly so the accessibility tree is populated
-        // every frame, even without VoiceOver running.
+        // Force-enable AccessKit so the accessibility tree is populated every
+        // frame, even without VoiceOver or other assistive technology running.
+        // Without this flag, AccessKit activates lazily when a real assistive
+        // client connects (which is the normal behavior).
         // Gated behind DASH_EVO_TOOL_ACCESSIBILITY=1 to avoid per-frame cost
-        // when not needed.
-        let accessibility_enabled =
+        // when not needed for automation tooling.
+        let accessibility_enforced =
             std::env::var("DASH_EVO_TOOL_ACCESSIBILITY").unwrap_or_default() == "1";
-        if accessibility_enabled {
+        if accessibility_enforced {
             ctx.enable_accesskit();
         }
 
@@ -800,7 +802,7 @@ impl AppState {
             connection_banner_handle: None,
             shutdown_receiver: None,
             shutdown_started: None,
-            accessibility_enabled,
+            accessibility_enforced,
             accessibility_activated: false,
             accessibility_retries: 0,
             #[cfg(feature = "mcp")]
@@ -1196,7 +1198,7 @@ impl App for AppState {
         // so tools like Peekaboo can see the AccessKit tree without VoiceOver.
         // Retries up to 60 frames, then gives up to avoid indefinite repaints.
         const MAX_ACCESSIBILITY_RETRIES: u32 = 60;
-        if self.accessibility_enabled
+        if self.accessibility_enforced
             && !self.accessibility_activated
             && self.accessibility_retries < MAX_ACCESSIBILITY_RETRIES
         {

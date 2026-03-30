@@ -1,6 +1,6 @@
 //! Dynamic DAPI node discovery via the Dash trusted masternode endpoint.
 //!
-//! When the user clicks "Fetch Node List" in Network Settings, this module
+//! When the user clicks "Refresh DAPI endpoints" in Network Settings, this module
 //! contacts a Dash-operated HTTPS service to discover available masternodes:
 //!
 //! - **Mainnet**: `https://quorums.mainnet.networks.dash.org/masternodes`

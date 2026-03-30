@@ -177,7 +177,7 @@ impl AppContext {
             _ => {
                 tracing::error!(
                     ?network,
-                    "No DAPI addresses configured. Use Fetch Node List in Network Settings or add addresses to .env."
+                    "No DAPI addresses configured. Use Refresh DAPI endpoints in Network Settings or add addresses to .env."
                 );
                 return None;
             }

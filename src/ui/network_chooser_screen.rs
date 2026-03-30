@@ -810,7 +810,7 @@ impl NetworkChooserScreen {
                     );
                 });
 
-                // "Fetch Node List" button — Mainnet/Testnet only
+                // "Refresh DAPI endpoints" button — Mainnet/Testnet only
                 let is_discoverable = matches!(
                     self.current_network,
                     Network::Mainnet | Network::Testnet
@@ -820,7 +820,7 @@ impl NetworkChooserScreen {
                     let button_text = if self.discovery_in_progress {
                         "Fetching..."
                     } else {
-                        "Fetch Node List"
+                        "Refresh DAPI endpoints"
                     };
                     let button =
                         egui::Button::new(button_text).corner_radius(Shape::RADIUS_MD);

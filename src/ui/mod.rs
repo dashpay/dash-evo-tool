@@ -51,6 +51,7 @@ use contracts_documents::add_contracts_screen::AddContractsScreen;
 use contracts_documents::group_actions_screen::GroupActionsScreen;
 use contracts_documents::register_contract_screen::RegisterDataContractScreen;
 use contracts_documents::update_contract_screen::UpdateDataContractScreen;
+use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::prelude::IdentityPublicKey;
 use dash_sdk::platform::Identifier;
@@ -780,7 +781,17 @@ impl Screen {
             Screen::WithdrawalScreen(screen) => screen.app_context = app_context,
             Screen::TransitionVisualizerScreen(screen) => screen.app_context = app_context,
             Screen::ContractVisualizerScreen(screen) => screen.app_context = app_context,
-            Screen::NetworkChooserScreen(screen) => screen.current_network = app_context.network,
+            Screen::NetworkChooserScreen(screen) => {
+                let network = app_context.network;
+                match network {
+                    Network::Mainnet => screen.mainnet_app_context = Some(app_context),
+                    Network::Testnet => screen.testnet_app_context = Some(app_context),
+                    Network::Devnet => screen.devnet_app_context = Some(app_context),
+                    Network::Regtest => screen.local_app_context = Some(app_context),
+                    _ => {}
+                }
+                screen.current_network = network;
+            }
             Screen::AddKeyScreen(screen) => screen.app_context = app_context,
             Screen::DocumentQueryScreen(screen) => screen.app_context = app_context,
             Screen::AddNewIdentityScreen(screen) => screen.app_context = app_context,

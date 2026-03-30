@@ -83,10 +83,14 @@ fn add_dapi_status_label(
 }
 
 pub struct NetworkChooserScreen {
-    pub mainnet_app_context: Arc<AppContext>,
+    pub mainnet_app_context: Option<Arc<AppContext>>,
     pub testnet_app_context: Option<Arc<AppContext>>,
     pub devnet_app_context: Option<Arc<AppContext>>,
     pub local_app_context: Option<Arc<AppContext>>,
+    /// Shared data directory (same for all networks).
+    data_dir: PathBuf,
+    /// Shared database handle (same for all networks).
+    db: Arc<crate::database::Database>,
     dashmate_password_input: PasswordInput,
     pub current_network: Network,
     pub recheck_time: Option<TimestampMillis>,
@@ -114,29 +118,45 @@ pub struct NetworkChooserScreen {
 
 impl NetworkChooserScreen {
     pub fn new(
-        mainnet_app_context: &Arc<AppContext>,
+        mainnet_app_context: Option<&Arc<AppContext>>,
         testnet_app_context: Option<&Arc<AppContext>>,
         devnet_app_context: Option<&Arc<AppContext>>,
         local_app_context: Option<&Arc<AppContext>>,
         current_network: Network,
         overwrite_dash_conf: bool,
     ) -> Self {
+        // Pick whichever context is available for the current network; fall back
+        // to any available context. At least one must exist at startup.
+        let any_context = [
+            mainnet_app_context,
+            testnet_app_context,
+            devnet_app_context,
+            local_app_context,
+        ]
+        .into_iter()
+        .flatten()
+        .next()
+        .expect("BUG: NetworkChooserScreen requires at least one AppContext");
+
+        let data_dir = any_context.data_dir.clone();
+        let db = any_context.db.clone();
+
         let mut dashmate_password_input = PasswordInput::new()
             .with_hint_text("Core RPC password")
             .with_char_limit(40)
             .with_desired_width(280.0);
-        if let Ok(config) = Config::load_from(&mainnet_app_context.data_dir)
+        if let Ok(config) = Config::load_from(&data_dir)
             && let Some(network_config) = config.config_for_network(current_network)
         {
             dashmate_password_input.set_text(network_config.core_rpc_password.clone());
         }
 
         let current_context = match current_network {
-            Network::Mainnet => mainnet_app_context,
-            Network::Testnet => testnet_app_context.unwrap_or(mainnet_app_context),
-            Network::Devnet => devnet_app_context.unwrap_or(mainnet_app_context),
-            Network::Regtest => local_app_context.unwrap_or(mainnet_app_context),
-            _ => mainnet_app_context,
+            Network::Mainnet => mainnet_app_context.unwrap_or(any_context),
+            Network::Testnet => testnet_app_context.unwrap_or(any_context),
+            Network::Devnet => devnet_app_context.unwrap_or(any_context),
+            Network::Regtest => local_app_context.unwrap_or(any_context),
+            _ => any_context,
         };
         let developer_mode = current_context.is_developer_mode();
 
@@ -149,18 +169,17 @@ impl NetworkChooserScreen {
         let theme_preference = settings.theme_mode;
         let disable_zmq = settings.disable_zmq;
         let custom_dash_qt_path = settings.dash_qt_path;
-        let use_local_spv_node = mainnet_app_context
-            .db
-            .get_use_local_spv_node()
-            .unwrap_or(false);
-        let auto_start_spv = mainnet_app_context.db.get_auto_start_spv().unwrap_or(false);
-        let close_dash_qt_on_exit = mainnet_app_context
-            .db
-            .get_close_dash_qt_on_exit()
-            .unwrap_or(true);
+        let use_local_spv_node = db.get_use_local_spv_node().unwrap_or(false);
+        let auto_start_spv = db.get_auto_start_spv().unwrap_or(false);
+        let close_dash_qt_on_exit = db.get_close_dash_qt_on_exit().unwrap_or(true);
 
         let mut backend_modes = HashMap::new();
-        backend_modes.insert(Network::Mainnet, mainnet_app_context.core_backend_mode());
+        backend_modes.insert(
+            Network::Mainnet,
+            mainnet_app_context
+                .map(|ctx| ctx.core_backend_mode())
+                .unwrap_or_default(),
+        );
         backend_modes.insert(
             Network::Testnet,
             testnet_app_context
@@ -181,10 +200,12 @@ impl NetworkChooserScreen {
         );
 
         Self {
-            mainnet_app_context: mainnet_app_context.clone(),
+            mainnet_app_context: mainnet_app_context.cloned(),
             testnet_app_context: testnet_app_context.cloned(),
             devnet_app_context: devnet_app_context.cloned(),
             local_app_context: local_app_context.cloned(),
+            data_dir,
+            db,
             dashmate_password_input,
             current_network,
             recheck_time: None,
@@ -211,24 +232,31 @@ impl NetworkChooserScreen {
         }
     }
 
-    pub fn context_for_network(&self, network: Network) -> &Arc<AppContext> {
+    pub fn context_for_network(&self, network: Network) -> Option<&Arc<AppContext>> {
         match network {
-            Network::Mainnet => &self.mainnet_app_context,
-            Network::Testnet if self.testnet_app_context.is_some() => {
-                self.testnet_app_context.as_ref().unwrap()
-            }
-            Network::Devnet if self.devnet_app_context.is_some() => {
-                self.devnet_app_context.as_ref().unwrap()
-            }
-            Network::Regtest if self.local_app_context.is_some() => {
-                self.local_app_context.as_ref().unwrap()
-            }
-            _ => &self.mainnet_app_context,
+            Network::Mainnet => self.mainnet_app_context.as_ref(),
+            Network::Testnet => self.testnet_app_context.as_ref(),
+            Network::Devnet => self.devnet_app_context.as_ref(),
+            Network::Regtest => self.local_app_context.as_ref(),
+            _ => None,
         }
     }
 
+    /// Returns the AppContext for the current network.
+    /// Falls back to any available context (should always succeed while the app is running).
     pub fn current_app_context(&self) -> &Arc<AppContext> {
         self.context_for_network(self.current_network)
+            .or_else(|| {
+                [
+                    &self.mainnet_app_context,
+                    &self.testnet_app_context,
+                    &self.devnet_app_context,
+                    &self.local_app_context,
+                ]
+                .into_iter()
+                .find_map(|o| o.as_ref())
+            })
+            .expect("BUG: no AppContext available for any network")
     }
 
     /// Save the current settings to the database
@@ -417,7 +445,7 @@ impl NetworkChooserScreen {
                                 }
                                 if self.current_network != prev_network {
                                     let password = Config::load_from(
-                                        &self.mainnet_app_context.data_dir,
+                                        &self.data_dir,
                                     )
                                     .ok()
                                     .and_then(|c| {
@@ -484,7 +512,7 @@ impl NetworkChooserScreen {
 
                     if (save_clicked || auto_update_succeeded)
                         && let Ok(mut config) =
-                            Config::load_from(&self.mainnet_app_context.data_dir)
+                            Config::load_from(&self.data_dir)
                         && let Some(network_cfg) =
                             config.config_for_network(self.current_network).clone()
                     {
@@ -496,7 +524,7 @@ impl NetworkChooserScreen {
                             updated_config.clone(),
                         );
                         let save_failed = if let Err(e) =
-                            config.save(&self.mainnet_app_context.data_dir)
+                            config.save(&self.data_dir)
                         {
                             tracing::error!("Failed to save config to .env: {e}");
                             true
@@ -511,37 +539,30 @@ impl NetworkChooserScreen {
                         // fall back to mainnet and corrupt its config.  The saved
                         // file-level config will be picked up when the network
                         // context is created.
-                        let network_context_exists = match self.current_network {
-                            Network::Mainnet => true,
-                            Network::Testnet => self.testnet_app_context.is_some(),
-                            Network::Devnet => self.devnet_app_context.is_some(),
-                            Network::Regtest => self.local_app_context.is_some(),
-                            _ => false,
-                        };
-
-                        let reinit_failed = if network_context_exists {
-                            let app_context = self.context_for_network(self.current_network);
+                        let reinit_failed =
+                            if let Some(app_context) = self.context_for_network(self.current_network)
                             {
-                                let mut cfg_lock = app_context.config.write().unwrap();
-                                *cfg_lock = updated_config;
-                            }
+                                {
+                                    let mut cfg_lock = app_context.config.write().unwrap();
+                                    *cfg_lock = updated_config;
+                                }
 
-                            MessageBanner::clear_all_global(ui.ctx());
-                            if let Err(e) =
-                                Arc::clone(app_context).reinit_core_client_and_sdk()
-                            {
-                                tracing::error!(
-                                    "Failed to re-init RPC client and sdk for {:?}: {}",
-                                    self.current_network,
-                                    e
-                                );
-                                true
+                                MessageBanner::clear_all_global(ui.ctx());
+                                if let Err(e) =
+                                    Arc::clone(app_context).reinit_core_client_and_sdk()
+                                {
+                                    tracing::error!(
+                                        "Failed to re-init RPC client and sdk for {:?}: {}",
+                                        self.current_network,
+                                        e
+                                    );
+                                    true
+                                } else {
+                                    false
+                                }
                             } else {
                                 false
-                            }
-                        } else {
-                            false
-                        };
+                            };
 
                         match (save_failed, reinit_failed) {
                             (false, false) => {
@@ -1132,22 +1153,22 @@ impl NetworkChooserScreen {
                         .clicked()
                     {
                         // Always update all contexts first to keep UI in sync
-                        self.mainnet_app_context
-                            .enable_developer_mode(self.developer_mode);
-                        if let Some(ref ctx) = self.testnet_app_context {
-                            ctx.enable_developer_mode(self.developer_mode);
-                        }
-                        if let Some(ref ctx) = self.devnet_app_context {
-                            ctx.enable_developer_mode(self.developer_mode);
-                        }
-                        if let Some(ref ctx) = self.local_app_context {
+                        for ctx in [
+                            &self.mainnet_app_context,
+                            &self.testnet_app_context,
+                            &self.devnet_app_context,
+                            &self.local_app_context,
+                        ]
+                        .into_iter()
+                        .flatten()
+                        {
                             ctx.enable_developer_mode(self.developer_mode);
                         }
 
                         // Persist to config file (non-blocking for UI)
-                        if let Ok(mut config) = Config::load_from(&self.mainnet_app_context.data_dir) {
+                        if let Ok(mut config) = Config::load_from(&self.data_dir) {
                             config.developer_mode = Some(self.developer_mode);
-                            if let Err(e) = config.save(&self.mainnet_app_context.data_dir) {
+                            if let Err(e) = config.save(&self.data_dir) {
                                 tracing::error!("Failed to save config: {e}");
                             }
                         }
@@ -1156,32 +1177,19 @@ impl NetworkChooserScreen {
                         // Remove this block once SPV is production-ready.
                         if !self.developer_mode {
                             // Stop SPV and switch to RPC for all network contexts
-                            self.mainnet_app_context.stop_spv();
-                            if self.mainnet_app_context.core_backend_mode() == CoreBackendMode::Spv {
-                                self.mainnet_app_context.set_core_backend_mode(CoreBackendMode::Rpc);
-                            }
-                            self.backend_modes.insert(Network::Mainnet, CoreBackendMode::Rpc);
-
-                            if let Some(ref ctx) = self.testnet_app_context {
-                                ctx.stop_spv();
-                                if ctx.core_backend_mode() == CoreBackendMode::Spv {
-                                    ctx.set_core_backend_mode(CoreBackendMode::Rpc);
+                            for (network, ctx_opt) in [
+                                (Network::Mainnet, &self.mainnet_app_context),
+                                (Network::Testnet, &self.testnet_app_context),
+                                (Network::Devnet, &self.devnet_app_context),
+                                (Network::Regtest, &self.local_app_context),
+                            ] {
+                                if let Some(ctx) = ctx_opt {
+                                    ctx.stop_spv();
+                                    if ctx.core_backend_mode() == CoreBackendMode::Spv {
+                                        ctx.set_core_backend_mode(CoreBackendMode::Rpc);
+                                    }
                                 }
-                                self.backend_modes.insert(Network::Testnet, CoreBackendMode::Rpc);
-                            }
-                            if let Some(ref ctx) = self.devnet_app_context {
-                                ctx.stop_spv();
-                                if ctx.core_backend_mode() == CoreBackendMode::Spv {
-                                    ctx.set_core_backend_mode(CoreBackendMode::Rpc);
-                                }
-                                self.backend_modes.insert(Network::Devnet, CoreBackendMode::Rpc);
-                            }
-                            if let Some(ref ctx) = self.local_app_context {
-                                ctx.stop_spv();
-                                if ctx.core_backend_mode() == CoreBackendMode::Spv {
-                                    ctx.set_core_backend_mode(CoreBackendMode::Rpc);
-                                }
-                                self.backend_modes.insert(Network::Regtest, CoreBackendMode::Rpc);
+                                self.backend_modes.insert(network, CoreBackendMode::Rpc);
                             }
                         }
                     }
@@ -1275,7 +1283,6 @@ impl NetworkChooserScreen {
                     {
                         // Save to database
                         match self
-                            .mainnet_app_context
                             .db
                             .update_close_dash_qt_on_exit(self.close_dash_qt_on_exit)
                         {
@@ -1333,21 +1340,19 @@ impl NetworkChooserScreen {
                         {
                             // Save to database
                             let _ = self
-                                .mainnet_app_context
                                 .db
                                 .update_use_local_spv_node(self.use_local_spv_node);
 
                             // Update all network contexts
-                            self.mainnet_app_context
-                                .spv_manager()
-                                .set_use_local_node(self.use_local_spv_node);
-                            if let Some(ref ctx) = self.testnet_app_context {
-                                ctx.spv_manager().set_use_local_node(self.use_local_spv_node);
-                            }
-                            if let Some(ref ctx) = self.devnet_app_context {
-                                ctx.spv_manager().set_use_local_node(self.use_local_spv_node);
-                            }
-                            if let Some(ref ctx) = self.local_app_context {
+                            for ctx in [
+                                &self.mainnet_app_context,
+                                &self.testnet_app_context,
+                                &self.devnet_app_context,
+                                &self.local_app_context,
+                            ]
+                            .into_iter()
+                            .flatten()
+                            {
                                 ctx.spv_manager().set_use_local_node(self.use_local_spv_node);
                             }
                         }
@@ -1397,7 +1402,6 @@ impl NetworkChooserScreen {
                         {
                             // Save to database
                             let _ = self
-                                .mainnet_app_context
                                 .db
                                 .update_auto_start_spv(self.auto_start_spv);
                         }
@@ -2127,21 +2131,15 @@ impl ScreenLike for NetworkChooserScreen {
             self.theme_preference = settings.theme_mode;
         }
 
-        self.backend_modes.insert(
-            Network::Mainnet,
-            self.mainnet_app_context.core_backend_mode(),
-        );
-        if let Some(ctx) = &self.testnet_app_context {
-            self.backend_modes
-                .insert(Network::Testnet, ctx.core_backend_mode());
-        }
-        if let Some(ctx) = &self.devnet_app_context {
-            self.backend_modes
-                .insert(Network::Devnet, ctx.core_backend_mode());
-        }
-        if let Some(ctx) = &self.local_app_context {
-            self.backend_modes
-                .insert(Network::Regtest, ctx.core_backend_mode());
+        for (network, ctx_opt) in [
+            (Network::Mainnet, &self.mainnet_app_context),
+            (Network::Testnet, &self.testnet_app_context),
+            (Network::Devnet, &self.devnet_app_context),
+            (Network::Regtest, &self.local_app_context),
+        ] {
+            if let Some(ctx) = ctx_opt {
+                self.backend_modes.insert(network, ctx.core_backend_mode());
+            }
         }
     }
 

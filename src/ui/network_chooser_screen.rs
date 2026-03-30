@@ -445,118 +445,6 @@ impl NetworkChooserScreen {
                     ui.end_row();
                 });
 
-            // Node Addresses section
-            {
-                ui.add_space(20.0);
-                ui.separator();
-                ui.add_space(12.0);
-
-                ui.label(
-                    egui::RichText::new("Node Addresses")
-                        .strong()
-                        .color(DashColors::text_primary(dark_mode)),
-                );
-                ui.add_space(8.0);
-
-                let ctx_ref = self.current_app_context().clone();
-                let status = ctx_ref.connection_status();
-                let dapi_total = status.dapi_total_endpoints();
-                let dapi_available = status.dapi_available_endpoints();
-
-                ui.horizontal(|ui| {
-                    let status_text =
-                        format!("DAPI: {dapi_available}/{dapi_total} reachable");
-                    let status_color = if dapi_available > 0 {
-                        DashColors::SUCCESS
-                    } else if dapi_total > 0 {
-                        DashColors::WARNING
-                    } else {
-                        DashColors::text_secondary(dark_mode)
-                    };
-                    ui.colored_label(status_color, &status_text);
-
-                    let is_discoverable = matches!(
-                        self.current_network,
-                        Network::Mainnet | Network::Testnet
-                    );
-
-                    if is_discoverable {
-                        let button_text = if self.discovery_in_progress {
-                            "Fetching..."
-                        } else {
-                            "Fetch Node List"
-                        };
-                        let button = egui::Button::new(button_text)
-                            .corner_radius(Shape::RADIUS_MD);
-
-                        if ui
-                            .add_enabled(!self.discovery_in_progress, button)
-                            .clicked()
-                        {
-                            if dapi_total > 0 {
-                                self.show_fetch_confirmation = true;
-                            } else {
-                                self.discovery_in_progress = true;
-                                app_action = AppAction::BackendTask(
-                                    BackendTask::DiscoverDapiNodes {
-                                        network: self.current_network,
-                                    },
-                                );
-                            }
-                        }
-
-                        ui.add_space(4.0);
-                        let info_label = ui.label(
-                            egui::RichText::new("(i)")
-                                .color(DashColors::text_secondary(dark_mode))
-                                .size(12.0),
-                        );
-                        info_label.on_hover_text(
-                            "Fetches available nodes from a service operated by Dash Core Group (DCG) over HTTPS. This is a convenience service -- Platform proofs are verified independently.",
-                        );
-                    } else {
-                        ui.label(
-                            egui::RichText::new(
-                                "Enter node addresses manually for this network.",
-                            )
-                            .color(DashColors::text_secondary(dark_mode))
-                            .size(12.0),
-                        );
-                    }
-                });
-            }
-
-            // Fetch confirmation dialog
-            if self.show_fetch_confirmation {
-                let ctx_ref = self.current_app_context().clone();
-                let dapi_total = ctx_ref.connection_status().dapi_total_endpoints();
-
-                egui::Window::new("Update Node Addresses?")
-                    .collapsible(false)
-                    .resizable(false)
-                    .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-                    .show(ui.ctx(), |ui| {
-                        ui.label(format!(
-                            "This will replace your current {dapi_total} node addresses with a fresh list from the Dash network service."
-                        ));
-                        ui.add_space(12.0);
-                        ui.horizontal(|ui| {
-                            if ui.button("Cancel").clicked() {
-                                self.show_fetch_confirmation = false;
-                            }
-                            if ui.button("Fetch").clicked() {
-                                self.show_fetch_confirmation = false;
-                                self.discovery_in_progress = true;
-                                app_action = AppAction::BackendTask(
-                                    BackendTask::DiscoverDapiNodes {
-                                        network: self.current_network,
-                                    },
-                                );
-                            }
-                        });
-                    });
-            }
-
             // Password input for RPC mode (any network)
             let current_backend_mode = *self
                 .backend_modes
@@ -853,7 +741,7 @@ impl NetworkChooserScreen {
             ui.add_space(10.0);
 
             ui.vertical(|ui| {
-                if current_backend_mode == CoreBackendMode::Rpc && !self.developer_mode {
+                if current_backend_mode == CoreBackendMode::Rpc {
                     ui.horizontal(|ui| {
                         ui.label("Core RPC:");
                         let rpc_color = if rpc_online {
@@ -869,42 +757,6 @@ impl NetworkChooserScreen {
                             "Disconnected".to_string()
                         };
                         ui.colored_label(rpc_color, &rpc_label);
-
-                        ui.label(",");
-                        ui.label("ZMQ:");
-                        if disable_zmq {
-                            ui.colored_label(DashColors::text_secondary(dark_mode), "Disabled");
-                        } else {
-                            let zmq_color = if zmq_connected {
-                                DashColors::SUCCESS
-                            } else {
-                                DashColors::ERROR
-                            };
-                            let zmq_label = if zmq_connected { "Connected" } else { "Disconnected" };
-                            ui.colored_label(zmq_color, zmq_label);
-                        }
-
-                        ui.label(",");
-                        add_dapi_status_label(ui, dapi_total, dapi_available, &dapi_label, dark_mode);
-                    });
-                }
-
-                if current_backend_mode == CoreBackendMode::Rpc && self.developer_mode {
-                    ui.horizontal(|ui| {
-                        ui.label("Dash Core RPC:");
-                        let color = if rpc_online {
-                            DashColors::SUCCESS
-                        } else {
-                            DashColors::ERROR
-                        };
-                        let label = if rpc_online {
-                            "Connected".to_string()
-                        } else if let Some(ref err) = rpc_last_error {
-                            format!("Error: {err}")
-                        } else {
-                            "Disconnected".to_string()
-                        };
-                        ui.colored_label(color, &label);
                     });
 
                     ui.horizontal(|ui| {
@@ -915,18 +767,15 @@ impl NetworkChooserScreen {
                                 "Disabled",
                             );
                         } else {
-                            let color = if zmq_connected {
+                            let zmq_color = if zmq_connected {
                                 DashColors::SUCCESS
                             } else {
                                 DashColors::ERROR
                             };
-                            let label = if zmq_connected { "Connected" } else { "Disconnected" };
-                            ui.colored_label(color, label);
+                            let zmq_label =
+                                if zmq_connected { "Connected" } else { "Disconnected" };
+                            ui.colored_label(zmq_color, zmq_label);
                         }
-                    });
-
-                    ui.horizontal(|ui| {
-                        add_dapi_status_label(ui, dapi_total, dapi_available, &dapi_label, dark_mode);
                     });
                 }
 
@@ -948,12 +797,84 @@ impl NetworkChooserScreen {
                         };
                         ui.colored_label(color, label);
                     });
+                }
 
-                    ui.horizontal(|ui| {
-                        add_dapi_status_label(ui, dapi_total, dapi_available, &dapi_label, dark_mode);
-                    });
+                // DAPI line (all modes)
+                ui.horizontal(|ui| {
+                    add_dapi_status_label(
+                        ui,
+                        dapi_total,
+                        dapi_available,
+                        &dapi_label,
+                        dark_mode,
+                    );
+                });
+
+                // "Fetch Node List" button — Mainnet/Testnet only
+                let is_discoverable = matches!(
+                    self.current_network,
+                    Network::Mainnet | Network::Testnet
+                );
+                if is_discoverable {
+                    ui.add_space(8.0);
+                    let button_text = if self.discovery_in_progress {
+                        "Fetching..."
+                    } else {
+                        "Fetch Node List"
+                    };
+                    let button =
+                        egui::Button::new(button_text).corner_radius(Shape::RADIUS_MD);
+
+                    let response = ui.add_enabled(!self.discovery_in_progress, button);
+                    let clicked = response.clicked();
+                    response.on_hover_text(
+                        "Updates list of DAPI nodes using a centralized server managed by Dash Core Group.",
+                    );
+                    if clicked {
+                        if dapi_total > 0 {
+                            self.show_fetch_confirmation = true;
+                        } else {
+                            self.discovery_in_progress = true;
+                            app_action = AppAction::BackendTask(
+                                BackendTask::DiscoverDapiNodes {
+                                    network: self.current_network,
+                                },
+                            );
+                        }
+                    }
                 }
             });
+
+            // Fetch confirmation dialog
+            if self.show_fetch_confirmation {
+                egui::Window::new("Update Node Addresses?")
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                    .show(ui.ctx(), |ui| {
+                        ui.label(format!(
+                            "This will fetch a fresh list of DAPI nodes from a centralized \
+                             server managed by Dash Core Group, replacing your current {} \
+                             configured addresses.",
+                            dapi_total
+                        ));
+                        ui.add_space(12.0);
+                        ui.horizontal(|ui| {
+                            if ui.button("Cancel").clicked() {
+                                self.show_fetch_confirmation = false;
+                            }
+                            if ui.button("Fetch").clicked() {
+                                self.show_fetch_confirmation = false;
+                                self.discovery_in_progress = true;
+                                app_action = AppAction::BackendTask(
+                                    BackendTask::DiscoverDapiNodes {
+                                        network: self.current_network,
+                                    },
+                                );
+                            }
+                        });
+                    });
+            }
         });
 
         // Advanced Settings section with clean dropdown

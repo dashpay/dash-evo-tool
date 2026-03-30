@@ -99,7 +99,6 @@ raw-cpuid = "11.5.0"
 
 [features]
 testing = []
-e2e = []
 mcp = ["dep:rmcp", "rmcp/server", "rmcp/macros", "rmcp/transport-streamable-http-server", "dep:axum", "dep:subtle"]
 cli = ["dep:rmcp", "rmcp/server", "rmcp/macros", "rmcp/client", "rmcp/transport-io", "rmcp/transport-streamable-http-client-reqwest", "dep:clap", "dep:clap_complete"]
 headless = ["cli", "mcp"]
@@ -119,7 +118,6 @@ winres = "0.1"
 [[test]]
 name = "frontend-e2e"
 path = "tests/frontend-e2e/main.rs"
-required-features = ["e2e"]
 
 # Keep full debuginfo for our code, but only line tables for dependencies.
 # This shrinks DWARF from ~790MB to a fraction, letting gimli (std's backtrace
@@ -129,7 +127,7 @@ debug = "line-tables-only"
 
 [lints.rust.unexpected_cfgs]
 level = "warn"
-check-cfg = ["cfg(tokio_unstable)", "cfg(feature, values(\"testing\", \"e2e\", \"mcp\", \"cli\", \"headless\"))"]
+check-cfg = ["cfg(tokio_unstable)", "cfg(feature, values(\"testing\", \"mcp\", \"cli\", \"headless\"))"]
 
 [lints.clippy]
 uninlined_format_args = "allow"

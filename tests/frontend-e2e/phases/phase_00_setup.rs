@@ -1,10 +1,10 @@
 use crate::helpers::context::{TestContext, seed_hash_prefix};
 use crate::helpers::harness::*;
 use dash_evo_tool::app::AppState;
+use dash_evo_tool::model::wallet::Wallet;
 use dash_evo_tool::model::wallet::WalletSeedHash;
 use dash_evo_tool::spv::CoreBackendMode;
 use dash_evo_tool::spv::SpvStatus;
-use dash_evo_tool::ui::{Screen, ScreenType};
 use dash_sdk::dash_spv::sync::ProgressPercentage;
 use dash_sdk::dpp::dashcore::Network;
 use egui_kittest::Harness;
@@ -24,71 +24,64 @@ fn find_existing_e2e_wallet(harness: &Harness<'_, AppState>) -> Option<WalletSee
         .map(|(seed_hash, _)| *seed_hash)
 }
 
-/// Import a wallet by pushing ImportMnemonicScreen and setting values directly.
-/// AccessKit interactions (button clicks, text input via hint_text) are unreliable
-/// in egui_kittest, so we manipulate the screen state programmatically.
-fn import_wallet_via_ui(
+/// Import a wallet through the AppContext/model layer (no UI screen setters).
+/// Parses the mnemonic, creates a Wallet, and registers it via AppContext.
+fn import_wallet_via_context(
     harness: &mut Harness<'_, AppState>,
     ctx: &mut TestContext,
     words: &[&str],
 ) {
-    // Capture wallet keys before import so we can diff to find the new one
     let initial_wallet_keys: BTreeSet<WalletSeedHash> = {
         let app_ctx = harness.state().current_app_context();
         app_ctx.wallets().read().unwrap().keys().copied().collect()
     };
 
-    // Push ImportMnemonicScreen and configure it directly
-    push_screen(harness, ScreenType::ImportMnemonic);
+    let phrase = words.join(" ");
+    let mnemonic = bip39::Mnemonic::parse_normalized(&phrase)
+        .unwrap_or_else(|e| panic!("Invalid mnemonic: {}", e));
+    let seed = mnemonic.to_seed("");
 
-    if let Some(Screen::ImportMnemonicScreen(screen)) = harness.state_mut().screen_stack.last_mut()
-    {
-        screen.set_seed_phrase_words(words);
-        screen.set_alias(E2E_WALLET_ALIAS);
-        println!(
-            "  Set {} mnemonic words + alias '{}'",
-            words.len(),
-            E2E_WALLET_ALIAS
-        );
+    let app_ctx = harness.state().current_app_context().clone();
+    let wallet = Wallet::new_from_seed(
+        seed,
+        app_ctx.network(),
+        Some(E2E_WALLET_ALIAS.to_string()),
+        None,
+    )
+    .unwrap_or_else(|e| panic!("Wallet creation failed: {}", e));
 
-        screen
-            .trigger_save()
-            .unwrap_or_else(|e| panic!("Wallet import failed: {}", e));
-        println!("  Wallet saved to DB");
-    } else {
-        panic!("Expected ImportMnemonicScreen on screen stack");
-    }
+    println!(
+        "  Parsed {} mnemonic words, alias '{}'",
+        words.len(),
+        E2E_WALLET_ALIAS
+    );
 
-    // Let the UI process the save
+    let (new_seed_hash, _wallet_arc) = app_ctx
+        .register_wallet(wallet)
+        .unwrap_or_else(|e| panic!("Wallet registration failed: {}", e));
+    println!("  Wallet registered via AppContext");
+
+    // Let the UI pick up the new wallet
     harness.run_steps(SETTLE_STEPS);
 
-    // Verify wallet appeared in AppContext
+    // Verify wallet appeared
     {
-        let app_ctx = harness.state().current_app_context();
         let wallets = app_ctx.wallets().read().unwrap();
         assert!(
             wallets.len() > initial_wallet_keys.len(),
-            "Wallet count didn't increase after save (still {})",
+            "Wallet count didn't increase after registration (still {})",
             initial_wallet_keys.len()
         );
-        let current_keys: BTreeSet<WalletSeedHash> = wallets.keys().copied().collect();
-        let new_keys: Vec<_> = current_keys.difference(&initial_wallet_keys).collect();
-        assert_eq!(
-            new_keys.len(),
-            1,
-            "Expected exactly 1 new wallet after import, found {}",
-            new_keys.len()
+        assert!(
+            wallets.contains_key(&new_seed_hash),
+            "Registered wallet not found in AppContext"
         );
-        ctx.wallet_seed_hash = Some(*new_keys[0]);
+        ctx.wallet_seed_hash = Some(new_seed_hash);
     }
     println!(
         "  Wallet imported. Seed hash prefix: {}",
         seed_hash_prefix(ctx.seed_hash())
     );
-
-    // Pop the import screen
-    harness.state_mut().screen_stack.pop();
-    harness.run_steps(5);
 }
 
 pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
@@ -149,8 +142,8 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
             println!("  Wallet bootstrapped for SPV");
         }
     } else {
-        // 5–10. Import wallet via UI
-        import_wallet_via_ui(harness, ctx, &words);
+        // 5–10. Import wallet via AppContext
+        import_wallet_via_context(harness, ctx, &words);
     }
 
     // 11. Clear stale cached wallet state so the balance/UTXO check below only

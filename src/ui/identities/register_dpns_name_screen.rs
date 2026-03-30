@@ -64,9 +64,8 @@ pub struct RegisterDpnsNameScreen {
     refresh_banner: Option<BannerHandle>,
 }
 
-#[cfg(feature = "e2e")]
 impl RegisterDpnsNameScreen {
-    /// Set the DPNS name input for E2E tests.
+    /// Set the DPNS name input.
     pub fn set_name_input(&mut self, name: String) {
         self.name_input = name;
     }

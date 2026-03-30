@@ -460,15 +460,18 @@ impl AsyncTool<DashMcpService> for IdentityCreditsWithdraw {
 
         let qi = resolve::qualified_identity(&ctx, &param.identity_id)?;
 
-        let core_address: dash_sdk::dashcore_rpc::dashcore::Address<
-            dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked,
-        > = param
+        let core_address = param
             .to_address
-            .parse()
+            .parse::<dash_sdk::dashcore_rpc::dashcore::Address<
+                dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked,
+            >>()
             .map_err(|e| McpToolError::InvalidParam {
                 message: format!("Invalid Core address: {e}"),
+            })?
+            .require_network(ctx.network())
+            .map_err(|e| McpToolError::InvalidParam {
+                message: format!("Core address does not match active network: {e}"),
             })?;
-        let core_address = core_address.assume_checked();
 
         let task = BackendTask::IdentityTask(IdentityTask::WithdrawFromIdentity(
             qi,

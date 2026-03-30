@@ -141,6 +141,9 @@ impl AppContext {
             // Bootstrap when no addresses exist (fresh wallet) or when
             // platform payment addresses haven't been derived yet (wallet
             // created with only a Core address via new_from_seed).
+            // INTENTIONAL(CODE-006): Bootstrap checks only PlatformPayment address type.
+            // Other platform address types may trigger redundant re-derivation, but
+            // bootstrap_known_addresses() is idempotent so this is safe.
             let has_platform_addresses = guard.watched_addresses.values().any(|info| {
                 info.path_reference
                     == crate::model::wallet::DerivationPathReference::PlatformPayment

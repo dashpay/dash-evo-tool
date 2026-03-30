@@ -101,6 +101,12 @@ When the application runs for the first time, it creates an application director
 | Windows | `C:\Users\<User>\AppData\Roaming\Dash-Evo-Tool\config` |
 | Linux | `/home/<user>/.config/dash-evo-tool/` |
 
+## Environment Variables
+
+| Variable | Values | Default | Description |
+| - | - | - | - |
+| `DASH_EVO_TOOL_ACCESSIBILITY` | `1` / unset | unset | Enable accessibility support. Activates AccessKit eagerly so the UI element tree is populated every frame and (on macOS) forces the platform accessibility adapter to initialize without VoiceOver. Required for AXUIElement-based automation tools (e.g. Peekaboo) and useful for screen readers on all platforms. |
+
 ## Contributing
 
 Contributions are welcome! See the [Contributing Guide](CONTRIBUTING.md) for details.

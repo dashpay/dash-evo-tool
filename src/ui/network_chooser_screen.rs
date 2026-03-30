@@ -22,7 +22,7 @@ use dash_sdk::dash_spv::sync::{ProgressPercentage, SyncProgress as SpvSyncProgre
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::TimestampMillis;
 use eframe::egui::{self, Context, Ui};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -83,10 +83,7 @@ fn add_dapi_status_label(
 }
 
 pub struct NetworkChooserScreen {
-    pub mainnet_app_context: Option<Arc<AppContext>>,
-    pub testnet_app_context: Option<Arc<AppContext>>,
-    pub devnet_app_context: Option<Arc<AppContext>>,
-    pub local_app_context: Option<Arc<AppContext>>,
+    pub network_contexts: BTreeMap<Network, Arc<AppContext>>,
     /// Shared data directory (same for all networks).
     data_dir: PathBuf,
     /// Shared database handle (same for all networks).
@@ -118,25 +115,14 @@ pub struct NetworkChooserScreen {
 
 impl NetworkChooserScreen {
     pub fn new(
-        mainnet_app_context: Option<&Arc<AppContext>>,
-        testnet_app_context: Option<&Arc<AppContext>>,
-        devnet_app_context: Option<&Arc<AppContext>>,
-        local_app_context: Option<&Arc<AppContext>>,
+        contexts: &BTreeMap<Network, Arc<AppContext>>,
         current_network: Network,
         overwrite_dash_conf: bool,
     ) -> Self {
-        // Pick whichever context is available for the current network; fall back
-        // to any available context. At least one must exist at startup.
-        let any_context = [
-            mainnet_app_context,
-            testnet_app_context,
-            devnet_app_context,
-            local_app_context,
-        ]
-        .into_iter()
-        .flatten()
-        .next()
-        .expect("BUG: NetworkChooserScreen requires at least one AppContext");
+        let any_context = contexts
+            .values()
+            .next()
+            .expect("BUG: NetworkChooserScreen requires at least one AppContext");
 
         let data_dir = any_context.data_dir.clone();
         let db = any_context.db.clone();
@@ -151,16 +137,9 @@ impl NetworkChooserScreen {
             dashmate_password_input.set_text(network_config.core_rpc_password.clone());
         }
 
-        let current_context = match current_network {
-            Network::Mainnet => mainnet_app_context.unwrap_or(any_context),
-            Network::Testnet => testnet_app_context.unwrap_or(any_context),
-            Network::Devnet => devnet_app_context.unwrap_or(any_context),
-            Network::Regtest => local_app_context.unwrap_or(any_context),
-            _ => any_context,
-        };
+        let current_context = contexts.get(&current_network).unwrap_or(any_context);
         let developer_mode = current_context.is_developer_mode();
 
-        // Load settings including theme preference and dash_qt_path
         let settings = current_context
             .get_settings()
             .ok()
@@ -174,36 +153,23 @@ impl NetworkChooserScreen {
         let close_dash_qt_on_exit = db.get_close_dash_qt_on_exit().unwrap_or(true);
 
         let mut backend_modes = HashMap::new();
-        backend_modes.insert(
+        for network in [
             Network::Mainnet,
-            mainnet_app_context
-                .map(|ctx| ctx.core_backend_mode())
-                .unwrap_or_default(),
-        );
-        backend_modes.insert(
             Network::Testnet,
-            testnet_app_context
-                .map(|ctx| ctx.core_backend_mode())
-                .unwrap_or_default(),
-        );
-        backend_modes.insert(
             Network::Devnet,
-            devnet_app_context
-                .map(|ctx| ctx.core_backend_mode())
-                .unwrap_or_default(),
-        );
-        backend_modes.insert(
             Network::Regtest,
-            local_app_context
-                .map(|ctx| ctx.core_backend_mode())
-                .unwrap_or_default(),
-        );
+        ] {
+            backend_modes.insert(
+                network,
+                contexts
+                    .get(&network)
+                    .map(|ctx| ctx.core_backend_mode())
+                    .unwrap_or_default(),
+            );
+        }
 
         Self {
-            mainnet_app_context: mainnet_app_context.cloned(),
-            testnet_app_context: testnet_app_context.cloned(),
-            devnet_app_context: devnet_app_context.cloned(),
-            local_app_context: local_app_context.cloned(),
+            network_contexts: contexts.clone(),
             data_dir,
             db,
             dashmate_password_input,
@@ -233,29 +199,14 @@ impl NetworkChooserScreen {
     }
 
     pub fn context_for_network(&self, network: Network) -> Option<&Arc<AppContext>> {
-        match network {
-            Network::Mainnet => self.mainnet_app_context.as_ref(),
-            Network::Testnet => self.testnet_app_context.as_ref(),
-            Network::Devnet => self.devnet_app_context.as_ref(),
-            Network::Regtest => self.local_app_context.as_ref(),
-            _ => None,
-        }
+        self.network_contexts.get(&network)
     }
 
     /// Returns the AppContext for the current network.
     /// Falls back to any available context (should always succeed while the app is running).
     pub fn current_app_context(&self) -> &Arc<AppContext> {
         self.context_for_network(self.current_network)
-            .or_else(|| {
-                [
-                    &self.mainnet_app_context,
-                    &self.testnet_app_context,
-                    &self.devnet_app_context,
-                    &self.local_app_context,
-                ]
-                .into_iter()
-                .find_map(|o| o.as_ref())
-            })
+            .or_else(|| self.network_contexts.values().next())
             .expect("BUG: no AppContext available for any network")
     }
 
@@ -410,38 +361,22 @@ impl NetworkChooserScreen {
                                 {
                                     app_action = AppAction::SwitchNetwork(Network::Mainnet);
                                 }
-                                if self.testnet_app_context.is_some()
-                                    && ui
-                                        .selectable_value(
-                                            &mut self.current_network,
-                                            Network::Testnet,
-                                            "Testnet",
-                                        )
-                                        .clicked()
-                                {
-                                    app_action = AppAction::SwitchNetwork(Network::Testnet);
-                                }
-                                if self.devnet_app_context.is_some()
-                                    && ui
-                                        .selectable_value(
-                                            &mut self.current_network,
-                                            Network::Devnet,
-                                            "Devnet",
-                                        )
-                                        .clicked()
-                                {
-                                    app_action = AppAction::SwitchNetwork(Network::Devnet);
-                                }
-                                if self.local_app_context.is_some()
-                                    && ui
-                                        .selectable_value(
-                                            &mut self.current_network,
-                                            Network::Regtest,
-                                            "Local",
-                                        )
-                                        .clicked()
-                                {
-                                    app_action = AppAction::SwitchNetwork(Network::Regtest);
+                                for (network, label) in [
+                                    (Network::Testnet, "Testnet"),
+                                    (Network::Devnet, "Devnet"),
+                                    (Network::Regtest, "Local"),
+                                ] {
+                                    if self.network_contexts.contains_key(&network)
+                                        && ui
+                                            .selectable_value(
+                                                &mut self.current_network,
+                                                network,
+                                                label,
+                                            )
+                                            .clicked()
+                                    {
+                                        app_action = AppAction::SwitchNetwork(network);
+                                    }
                                 }
                                 if self.current_network != prev_network {
                                     let password = Config::load_from(
@@ -1152,16 +1087,7 @@ impl NetworkChooserScreen {
                         .clickable_tooltip("Show advanced options for power users and developers")
                         .clicked()
                     {
-                        // Always update all contexts first to keep UI in sync
-                        for ctx in [
-                            &self.mainnet_app_context,
-                            &self.testnet_app_context,
-                            &self.devnet_app_context,
-                            &self.local_app_context,
-                        ]
-                        .into_iter()
-                        .flatten()
-                        {
+                        for ctx in self.network_contexts.values() {
                             ctx.enable_developer_mode(self.developer_mode);
                         }
 
@@ -1176,18 +1102,10 @@ impl NetworkChooserScreen {
                         // TODO: When developer mode is disabled, stop SPV and switch to RPC.
                         // Remove this block once SPV is production-ready.
                         if !self.developer_mode {
-                            // Stop SPV and switch to RPC for all network contexts
-                            for (network, ctx_opt) in [
-                                (Network::Mainnet, &self.mainnet_app_context),
-                                (Network::Testnet, &self.testnet_app_context),
-                                (Network::Devnet, &self.devnet_app_context),
-                                (Network::Regtest, &self.local_app_context),
-                            ] {
-                                if let Some(ctx) = ctx_opt {
-                                    ctx.stop_spv();
-                                    if ctx.core_backend_mode() == CoreBackendMode::Spv {
-                                        ctx.set_core_backend_mode(CoreBackendMode::Rpc);
-                                    }
+                            for (&network, ctx) in &self.network_contexts {
+                                ctx.stop_spv();
+                                if ctx.core_backend_mode() == CoreBackendMode::Spv {
+                                    ctx.set_core_backend_mode(CoreBackendMode::Rpc);
                                 }
                                 self.backend_modes.insert(network, CoreBackendMode::Rpc);
                             }
@@ -1343,16 +1261,7 @@ impl NetworkChooserScreen {
                                 .db
                                 .update_use_local_spv_node(self.use_local_spv_node);
 
-                            // Update all network contexts
-                            for ctx in [
-                                &self.mainnet_app_context,
-                                &self.testnet_app_context,
-                                &self.devnet_app_context,
-                                &self.local_app_context,
-                            ]
-                            .into_iter()
-                            .flatten()
-                            {
+                            for ctx in self.network_contexts.values() {
                                 ctx.spv_manager().set_use_local_node(self.use_local_spv_node);
                             }
                         }
@@ -2029,13 +1938,7 @@ impl NetworkChooserScreen {
     }
 
     fn has_context_for(&self, network: Network) -> bool {
-        match network {
-            Network::Mainnet => true,
-            Network::Testnet => self.testnet_app_context.is_some(),
-            Network::Devnet => self.devnet_app_context.is_some(),
-            Network::Regtest => self.local_app_context.is_some(),
-            _ => false,
-        }
+        self.network_contexts.contains_key(&network)
     }
 
     fn spv_status_detail(&self, snapshot: &SpvStatusSnapshot) -> Option<String> {
@@ -2131,15 +2034,8 @@ impl ScreenLike for NetworkChooserScreen {
             self.theme_preference = settings.theme_mode;
         }
 
-        for (network, ctx_opt) in [
-            (Network::Mainnet, &self.mainnet_app_context),
-            (Network::Testnet, &self.testnet_app_context),
-            (Network::Devnet, &self.devnet_app_context),
-            (Network::Regtest, &self.local_app_context),
-        ] {
-            if let Some(ctx) = ctx_opt {
-                self.backend_modes.insert(network, ctx.core_backend_mode());
-            }
+        for (&network, ctx) in &self.network_contexts {
+            self.backend_modes.insert(network, ctx.core_backend_mode());
         }
     }
 

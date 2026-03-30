@@ -236,6 +236,11 @@ impl AsyncTool<DashMcpService> for NetworkSwitch {
 
         match result {
             BackendTaskSuccessResult::NetworkContextCreated { context, .. } => {
+                // Persist the network choice so the next CLI invocation
+                // starts on the same network.
+                context
+                    .update_settings(crate::ui::RootScreenType::RootScreenNetworkChooser)
+                    .ok();
                 service.swap_context(context);
                 Ok(NetworkSwitchOutput {
                     active: network_display_name(target).to_owned(),

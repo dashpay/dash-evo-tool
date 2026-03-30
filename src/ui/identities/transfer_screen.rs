@@ -121,6 +121,10 @@ impl TransferScreen {
         }
     }
 
+    pub(crate) fn invalidate_address_input(&mut self) {
+        self.platform_address_input.clear();
+    }
+
     fn render_key_selection(&mut self, ui: &mut Ui) -> AppAction {
         add_key_chooser(
             ui,
@@ -249,7 +253,7 @@ impl TransferScreen {
                 egui::TextEdit::singleline(&mut self.platform_address_input)
                     .hint_text(
                         if self.app_context.network
-                            == dash_sdk::dashcore_rpc::dashcore::Network::Dash
+                            == dash_sdk::dashcore_rpc::dashcore::Network::Mainnet
                         {
                             "Enter Platform address (dash1...)"
                         } else {

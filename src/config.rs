@@ -61,7 +61,7 @@ pub struct NetworkConfig {
 impl Config {
     pub fn config_for_network(&self, network: Network) -> &Option<NetworkConfig> {
         match network {
-            Network::Dash => &self.mainnet_config,
+            Network::Mainnet => &self.mainnet_config,
             Network::Testnet => &self.testnet_config,
             Network::Devnet => &self.devnet_config,
             Network::Regtest => &self.local_config,
@@ -191,6 +191,16 @@ impl Config {
             .persist(&env_file_path)
             .map_err(|e| ConfigError::SaveError { source: e.error })?;
 
+        // Restrict file permissions on Unix (config contains RPC credentials).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o600);
+            if let Err(e) = std::fs::set_permissions(&env_file_path, perms) {
+                tracing::warn!("Could not set config file permissions to 0600: {e}");
+            }
+        }
+
         tracing::info!("Successfully saved configuration to {:?}", env_file_path);
         Ok(())
     }
@@ -220,50 +230,24 @@ impl Config {
             tracing::info!("Successfully loaded .env file");
         }
 
-        // Load individual network configs and log if they fail
-        let mainnet_config = match envy::prefixed("MAINNET_").from_env::<NetworkConfig>() {
-            Ok(config) => {
-                tracing::info!("Mainnet configuration loaded successfully");
-                Some(config)
-            }
-            Err(err) => {
-                tracing::error!(?err, "Failed to load mainnet configuration");
-                None
-            }
-        };
-
-        let testnet_config = match envy::prefixed("TESTNET_").from_env::<NetworkConfig>() {
-            Ok(config) => {
-                tracing::info!("Testnet configuration loaded successfully");
-                Some(config)
-            }
-            Err(err) => {
-                tracing::error!(?err, "Failed to load testnet configuration");
-                None
-            }
-        };
-
-        let devnet_config = match envy::prefixed("DEVNET_").from_env::<NetworkConfig>() {
-            Ok(config) => {
-                tracing::info!("Devnet configuration loaded successfully");
-                Some(config)
-            }
-            Err(err) => {
-                tracing::error!(?err, "Failed to load devnet configuration");
-                None
-            }
-        };
-
-        let local_config = match envy::prefixed("LOCAL_").from_env::<NetworkConfig>() {
-            Ok(config) => {
-                tracing::info!("Local configuration loaded successfully");
-                Some(config)
-            }
-            Err(err) => {
-                tracing::error!(?err, "Failed to load local configuration");
-                None
-            }
-        };
+        // Load each network config. Missing configs are normal — not every
+        // user configures all networks. Only fail if nothing is configured at all.
+        let mainnet_config = envy::prefixed("MAINNET_")
+            .from_env::<NetworkConfig>()
+            .inspect_err(|e| tracing::debug!("Failed to parse mainnet config: {e}"))
+            .ok();
+        let testnet_config = envy::prefixed("TESTNET_")
+            .from_env::<NetworkConfig>()
+            .inspect_err(|e| tracing::debug!("Failed to parse testnet config: {e}"))
+            .ok();
+        let devnet_config = envy::prefixed("DEVNET_")
+            .from_env::<NetworkConfig>()
+            .inspect_err(|e| tracing::debug!("Failed to parse devnet config: {e}"))
+            .ok();
+        let local_config = envy::prefixed("LOCAL_")
+            .from_env::<NetworkConfig>()
+            .inspect_err(|e| tracing::debug!("Failed to parse local config: {e}"))
+            .ok();
 
         if mainnet_config.is_none()
             && testnet_config.is_none()
@@ -271,22 +255,6 @@ impl Config {
             && local_config.is_none()
         {
             return Err(ConfigError::NoValidConfigs);
-        } else if mainnet_config.is_none() {
-            return Err(ConfigError::LoadError(
-                "Failed to load mainnet configuration".into(),
-            ));
-        } else if testnet_config.is_none() {
-            tracing::warn!(
-                "Failed to load testnet configuration, but successfully loaded mainnet config"
-            );
-        } else if devnet_config.is_none() {
-            tracing::warn!(
-                "Failed to load devnet configuration, but successfully loaded mainnet config"
-            );
-        } else if local_config.is_none() {
-            tracing::warn!(
-                "Failed to load local configuration, but successfully loaded mainnet config"
-            );
         }
 
         // Load global developer mode
@@ -306,7 +274,7 @@ impl Config {
     /// Update (overwrite) the configuration for a particular network.
     pub fn update_config_for_network(&mut self, network: Network, new_config: NetworkConfig) {
         match network {
-            Network::Dash => self.mainnet_config = Some(new_config),
+            Network::Mainnet => self.mainnet_config = Some(new_config),
             Network::Testnet => self.testnet_config = Some(new_config),
             Network::Devnet => self.devnet_config = Some(new_config),
             Network::Regtest => self.local_config = Some(new_config),
@@ -456,7 +424,7 @@ mod tests {
             local_config: None,
             developer_mode: None,
         };
-        assert!(config.config_for_network(Network::Dash).is_some());
+        assert!(config.config_for_network(Network::Mainnet).is_some());
         assert!(config.config_for_network(Network::Testnet).is_none());
         assert!(config.config_for_network(Network::Devnet).is_none());
         assert!(config.config_for_network(Network::Regtest).is_none());
@@ -471,7 +439,10 @@ mod tests {
             local_config: Some(make_network_config("http://127.0.0.1:2443", 20302)),
             developer_mode: Some(true),
         };
-        let main = config.config_for_network(Network::Dash).as_ref().unwrap();
+        let main = config
+            .config_for_network(Network::Mainnet)
+            .as_ref()
+            .unwrap();
         assert_eq!(main.core_rpc_port, 9998);
         let test = config
             .config_for_network(Network::Testnet)
@@ -500,7 +471,7 @@ mod tests {
         };
         assert!(config.mainnet_config.is_none());
         let new_cfg = make_network_config("https://1.1.1.1:443", 9998);
-        config.update_config_for_network(Network::Dash, new_cfg);
+        config.update_config_for_network(Network::Mainnet, new_cfg);
         assert!(config.mainnet_config.is_some());
         assert_eq!(config.mainnet_config.as_ref().unwrap().core_rpc_port, 9998);
     }
@@ -515,7 +486,7 @@ mod tests {
             developer_mode: None,
         };
         let new_cfg = make_network_config("https://new.example.com:443", 2222);
-        config.update_config_for_network(Network::Dash, new_cfg);
+        config.update_config_for_network(Network::Mainnet, new_cfg);
         let main = config.mainnet_config.as_ref().unwrap();
         assert_eq!(main.core_rpc_port, 2222);
         assert_eq!(main.dapi_addresses, "https://new.example.com:443");

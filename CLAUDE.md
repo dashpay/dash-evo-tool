@@ -102,6 +102,20 @@ User-facing error messages (shown in `MessageBanner` via `Display`) must follow 
 - **spv/** - Simplified Payment Verification for light wallet support
 - **components/core_zmq_listener** - Real-time Dash Core event listening via ZMQ
 
+### MCP Server & CLI (`src/mcp/`, `src/bin/det_cli/`)
+
+- **Dual transport**: HTTP (`mcp` feature, embedded in GUI via ArcSwap) and stdio (`cli` feature, lazy-init standalone). `headless` combines both.
+- **CLI ≠ MCP**: `src/bin/det_cli/` is a separate client that talks to the MCP server — it must work over HTTP too, not just in-process. Never put tool logic in the CLI binary; tools live in `src/mcp/tools/` and the CLI discovers them dynamically via `tools/list`.
+- **Tool architecture**: each tool is a struct implementing `ToolBase` (metadata) + `AsyncTool<DashMcpService>` (invocation). Adding a tool requires only the struct + registering in `tool_router()` — zero CLI changes.
+- **Tool naming**: `{domain}_{object}_{action}` — e.g. `core_address_create`, `platform_withdrawals_get`, `tool_describe`. CLI converts underscores to hyphens.
+- **Context provider**: `ContextProvider::Shared(ArcSwap)` for HTTP mode (follows GUI network switches), `ContextProvider::Lazy(OnceCell)` for stdio (init on first tool call).
+- **Network safety**: tools accept optional `network` param — request fails if it doesn't match the active network. Exempt: `network_info`, `tool_describe`.
+- **SPV sync**: wallet tools call `resolve::ensure_spv_synced()` before operating — polls SPV status with 1s interval, 10min timeout.
+- **Backend dispatch**: tools reuse the app's `BackendTask` system via `dispatch::dispatch_task()` — creates a throwaway channel, calls `app_context.run_backend_task()`.
+- **Schema quirk**: `schemars` v1 derives bare `true` for `serde_json::Value` fields — some MCP clients reject this. Use `#[schemars(transform)]` to override.
+- **Error type**: `McpToolError` enum (InvalidParam, WalletNotFound, SpvSyncFailed, TaskFailed, Internal) converts to `rmcp::ErrorData` via `From`.
+- **Docs**: `docs/MCP.md` (server config, tool reference), `docs/CLI.md` (usage, examples), `docs/EXPOSING_BACKEND_TASKS.md` (checklist for adding new MCP tools).
+
 ### Key Dependencies
 
 - `dash-sdk` - Dash blockchain SDK (git dep from dashpay/platform)
@@ -165,6 +179,12 @@ Screens hold `Arc<AppContext>` and manage their own UI state.
 - `connection_status`, `developer_mode`, `fee_multiplier_permille`
 - Per-network instances (mainnet always present, others created on demand)
 
+### ConnectionStatus (single source of truth for connection health)
+
+`ConnectionStatus` (`src/context/connection_status.rs`) is the **single source of truth** for all high-level connection health state — RPC, ZMQ, SPV, and DAPI. For connection health (status, peer counts, errors, overall state), always read from `ConnectionStatus`, not directly from `SpvManager` or other subsystems.
+
+SPV status is **push-based**: `SpvManager` event handlers write directly to `ConnectionStatus` atomics (status, peer count, errors) as events arrive. The UI frame loop calls `refresh_state()` to recompute `overall_state` from these atomics, but does not poll SPV for health. This means `ConnectionStatus` is up-to-date in both GUI and headless/test contexts. Detailed SPV sync progress (heights, phase summaries used by tooltips) may still be read directly from `SpvManager.status()` until that progress reporting is migrated into `ConnectionStatus`.
+
 ## UI Component Pattern
 
 Components follow a lazy initialization pattern (see `docs/COMPONENT_DESIGN_PATTERN.md`):
@@ -189,6 +209,10 @@ response.inner.update(&mut self.amount);
 - Support both light and dark mode via `ComponentStyles`
 
 **Anti-patterns:** public mutable fields, eager initialization, not clearing invalid data
+
+### UI Components Catalog
+
+See `src/ui/components/README.md` for a complete reference of available components, their APIs, and usage patterns. **Always consult this file before creating new UI elements** to avoid duplicating existing components.
 
 ## Message Display
 

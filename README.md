@@ -42,6 +42,11 @@ See the [user documentation](https://docs.dash.org/en/stable/docs/user/network/d
 - View platform information and masternode quorum details
 - Check Core address balances
 
+## Programmatic Access (MCP)
+
+- [MCP Server](docs/MCP.md) — expose wallet and core operations via Model Context Protocol (HTTP or stdio)
+- [CLI Client](docs/CLI.md) — command-line tool to call MCP operations from scripts and terminals
+
 ## Getting prebuilt binaries
 
 Download the latest release from the [Releases](https://github.com/dashpay/dash-evo-tool/releases) page.

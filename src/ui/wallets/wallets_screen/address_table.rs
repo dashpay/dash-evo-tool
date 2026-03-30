@@ -101,7 +101,11 @@ impl WalletsBalancesScreen {
         categorize_account_path(path, network, reference)
     }
 
-    pub(super) fn render_address_table(&mut self, ui: &mut Ui) -> AppAction {
+    pub(super) fn render_address_table(
+        &mut self,
+        ui: &mut Ui,
+        account_filter: (AccountCategory, Option<u32>),
+    ) -> AppAction {
         let action = AppAction::None;
 
         // Move the data preparation into its own scope
@@ -197,19 +201,32 @@ impl WalletsBalancesScreen {
         // Sort the data
         self.sort_address_data(&mut address_data);
 
-        if let Some((category, index)) = self.selected_account.clone() {
+        {
+            let (ref category, ref index) = account_filter;
             address_data
-                .retain(|data| data.account_category == category && data.account_index == index);
+                .retain(|data| data.account_category == *category && data.account_index == *index);
         }
 
         let account_address_count = address_data.len();
 
-        if !self.show_zero_balance_addresses {
+        // Auto-show zero-balance addresses when the wallet is nearly empty:
+        // fewer than 5 addresses total and none have a balance. This prevents
+        // new/empty wallets from showing a blank address list.
+        let all_zero_balance = !address_data.iter().any(|d| {
+            if d.account_category == AccountCategory::PlatformPayment {
+                d.platform_credits > 0
+            } else {
+                d.balance > 0
+            }
+        });
+        let auto_show = account_address_count < 5 && all_zero_balance;
+
+        // INTENTIONAL(CMT-002): Zero-balance filter treats key-only addresses the same as all
+        // others. The old exception (always showing key-only addresses) was removed intentionally
+        // to reduce UI clutter — key-only accounts with no balance carry no actionable information.
+        if !self.show_zero_balance_addresses && !auto_show {
             address_data.retain(|data| {
-                let is_platform_payment = data.account_category == AccountCategory::PlatformPayment;
-                if data.account_category.is_key_only() {
-                    true
-                } else if is_platform_payment {
+                if data.account_category == AccountCategory::PlatformPayment {
                     data.platform_credits > 0
                 } else {
                     data.balance > 0
@@ -224,11 +241,7 @@ impl WalletsBalancesScreen {
 
         // Space allocation for UI elements is handled by the layout system
 
-        let is_platform_account = self
-            .selected_account
-            .as_ref()
-            .map(|(cat, _)| *cat == AccountCategory::PlatformPayment)
-            .unwrap_or(false);
+        let is_platform_account = account_filter.0 == AccountCategory::PlatformPayment;
 
         // Reset sort column if it refers to a column not visible for the current account type
         if is_platform_account
@@ -371,7 +384,6 @@ impl WalletsBalancesScreen {
                 let network = self.app_context.network;
                 for data in &address_data {
                     body.row(25.0, |mut row| {
-                        let is_key_only = data.account_category.is_key_only();
                         let is_platform_payment =
                             data.account_category == AccountCategory::PlatformPayment;
 
@@ -379,9 +391,7 @@ impl WalletsBalancesScreen {
                             ui.label(data.display_address(network));
                         });
                         row.col(|ui| {
-                            if is_key_only {
-                                ui.label("N/A");
-                            } else if is_platform_payment {
+                            if is_platform_payment {
                                 let dash_balance =
                                     data.platform_credits as f64 / CREDITS_PER_DUFF as f64 / 1e8;
                                 ui.label(format!("{:.8}", dash_balance));
@@ -396,19 +406,11 @@ impl WalletsBalancesScreen {
                             });
                         } else {
                             row.col(|ui| {
-                                if is_key_only {
-                                    ui.label("N/A");
-                                } else {
-                                    ui.label(format!("{}", data.utxo_count));
-                                }
+                                ui.label(format!("{}", data.utxo_count));
                             });
                             row.col(|ui| {
-                                if is_key_only {
-                                    ui.label("N/A");
-                                } else {
-                                    let dash_received = data.total_received as f64 * 1e-8;
-                                    ui.label(format!("{:.8}", dash_received));
-                                }
+                                let dash_received = data.total_received as f64 * 1e-8;
+                                ui.label(format!("{:.8}", dash_received));
                             });
                         };
                         row.col(|ui| {

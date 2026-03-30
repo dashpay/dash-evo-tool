@@ -18,7 +18,7 @@ qrcode = "0.14.1"
 nix = { version = "0.31.1", features = ["signal"] }
 eframe = { version = "0.33.3", features = ["persistence", "wgpu"] }
 base64 = "0.22.1"
-dash-sdk = { git = "https://github.com/dashpay/platform", rev = "aa86b74f7e28dd0444fec9ceb13373bd22f768d9", features = [
+dash-sdk = { git = "https://github.com/dashpay/platform", branch = "feat/mempool-support", features = [
     "core_key_wallet",
     "core_key_wallet_manager",
     "core_bincode",
@@ -26,7 +26,9 @@ dash-sdk = { git = "https://github.com/dashpay/platform", rev = "aa86b74f7e28dd0
     "core_verification",
     "core_rpc_client",
     "core_spv",
+    "shielded",
 ] }
+zip32 = "0.2.0"
 grovestark = { git = "https://www.github.com/dashpay/grovestark", rev = "5b9e289cca54c79b1305d5f4f40bf1148f1eb0e3" }
 rayon = "1.8"
 thiserror = "2.0.18"
@@ -76,6 +78,11 @@ tempfile = "3.20.0"
 arc-swap = "1"
 urlencoding = "2"
 region = "3.0.2"
+rmcp = { version = "1.2", optional = true, default-features = false }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"], optional = true }
+subtle = { version = "2.6", optional = true }
+clap = { version = "4", features = ["derive"], optional = true }
+clap_complete = { version = "4", optional = true }
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 zmq = "0.10.0"
@@ -92,10 +99,18 @@ raw-cpuid = "11.5.0"
 
 [features]
 testing = []
+mcp = ["dep:rmcp", "rmcp/server", "rmcp/macros", "rmcp/transport-streamable-http-server", "dep:axum", "dep:subtle"]
+cli = ["dep:rmcp", "rmcp/server", "rmcp/macros", "rmcp/client", "rmcp/transport-io", "rmcp/transport-streamable-http-client-reqwest", "dep:clap", "dep:clap_complete"]
+headless = ["cli", "mcp"]
 
 [dev-dependencies]
 egui_kittest = { version = "0.33.3", features = ["eframe"] }
 tokio-shared-rt = "=0.1.0"
+
+[[bin]]
+name = "det-cli"
+path = "src/bin/det_cli/main.rs"
+required-features = ["cli"]
 
 [build-dependencies]
 winres = "0.1"
@@ -108,7 +123,9 @@ debug = "line-tables-only"
 
 [lints.rust.unexpected_cfgs]
 level = "warn"
-check-cfg = ["cfg(tokio_unstable)", "cfg(feature, values(\"testing\"))"]
+check-cfg = ["cfg(tokio_unstable)", "cfg(feature, values(\"testing\", \"mcp\", \"cli\", \"headless\"))"]
+
 
 [lints.clippy]
 uninlined_format_args = "allow"
+

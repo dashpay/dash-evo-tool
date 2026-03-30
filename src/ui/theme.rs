@@ -1,7 +1,4 @@
-use egui::{
-    Button, Color32, CursorIcon, FontData, FontDefinitions, FontFamily, FontId, RichText, Stroke,
-    Vec2, WidgetText,
-};
+use egui::{Button, Color32, CursorIcon, FontFamily, FontId, RichText, Stroke, Vec2, WidgetText};
 
 /// Theme mode enumeration
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -18,6 +15,21 @@ pub fn detect_system_theme() -> Result<ThemeMode, String> {
         dark_light::Mode::Dark => Ok(ThemeMode::Dark),
         dark_light::Mode::Light => Ok(ThemeMode::Light),
         dark_light::Mode::Unspecified => Ok(ThemeMode::Light), // Default to light if unknown
+    }
+}
+
+/// Detect system theme, returning `None` only on detection errors.
+/// Use this for polling: a `None` means "keep the previous theme" rather than
+/// flipping to an arbitrary default. `Unspecified` maps to Light (common on
+/// Linux where `dark_light` often can't determine the theme).
+pub fn try_detect_system_theme() -> Option<ThemeMode> {
+    match dark_light::detect() {
+        Ok(dark_light::Mode::Dark) => Some(ThemeMode::Dark),
+        Ok(dark_light::Mode::Light | dark_light::Mode::Unspecified) => Some(ThemeMode::Light),
+        Err(e) => {
+            tracing::debug!("OS theme detection failed: {e}");
+            None
+        }
     }
 }
 
@@ -477,7 +489,7 @@ impl DashColors {
         dark_mode: bool,
     ) -> Color32 {
         match network {
-            dash_sdk::dashcore_rpc::dashcore::Network::Dash => {
+            dash_sdk::dashcore_rpc::dashcore::Network::Mainnet => {
                 if dark_mode {
                     Self::DASH_BLUE_DARK
                 } else {
@@ -1008,29 +1020,6 @@ impl ResponseExt for egui::Response {
     }
 }
 
-/// Configure fonts for the application
-pub fn configure_fonts() -> FontDefinitions {
-    let mut fonts = FontDefinitions::default();
-
-    // Load Noto Sans font for better international support
-    fonts.font_data.insert(
-        "NotoSans".to_owned(),
-        FontData::from_static(include_bytes!(
-            "../../assets/Fonts/Noto_Sans/NotoSans-VariableFont.ttf"
-        ))
-        .into(),
-    );
-
-    // Add NotoSans to the proportional font family (used for UI text)
-    fonts
-        .families
-        .get_mut(&FontFamily::Proportional)
-        .unwrap()
-        .insert(0, "NotoSans".to_owned());
-
-    fonts
-}
-
 /// Apply the modern Dash theme to the egui context
 pub fn apply_theme(ctx: &egui::Context, theme_mode: ThemeMode) {
     // Resolve the actual theme to use
@@ -1150,5 +1139,4 @@ pub fn apply_theme(ctx: &egui::Context, theme_mode: ThemeMode) {
     style.visuals.faint_bg_color = DashColors::background(dark_mode);
 
     ctx.set_style(style);
-    ctx.set_fonts(configure_fonts());
 }

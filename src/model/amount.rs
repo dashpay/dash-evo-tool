@@ -320,7 +320,14 @@ impl Amount {
     ///
     /// This is a special case where we get Duffs (eg. from Core) and want to convert it to an Amount representing DASH.
     pub fn dash_from_duffs(duffs: Duffs) -> Self {
-        let credits = duffs * CREDITS_PER_DUFF;
+        Self::dash_from_credits(duffs * CREDITS_PER_DUFF)
+    }
+
+    /// Return Amount representing Dash currency equal to the given credits.
+    ///
+    /// 1 DASH = 10^11 credits (100 billion). Canonical constructor for
+    /// DASH amounts from the internal credit representation.
+    pub fn dash_from_credits(credits: u64) -> Self {
         Self::new(credits, DASH_DECIMAL_PLACES).with_unit_name("DASH")
     }
 

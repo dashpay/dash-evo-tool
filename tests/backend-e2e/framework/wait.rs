@@ -14,7 +14,9 @@ pub async fn wait_for_balance(
     min_balance: u64,
     wait_timeout: Duration,
 ) -> Result<u64, String> {
+    let start = std::time::Instant::now();
     timeout(wait_timeout, async {
+        let mut poll_count = 0u32;
         loop {
             // Trigger reconcile so DET wallet model reflects latest SPV state
             if let Err(e) = app_context.reconcile_spv_wallets().await {
@@ -28,10 +30,26 @@ pub async fn wait_for_balance(
                     wallet.total_balance_duffs()
                 })
             };
+            poll_count += 1;
             if let Some(b) = balance
                 && b >= min_balance
             {
+                tracing::trace!(
+                    elapsed_ms = start.elapsed().as_millis(),
+                    polls = poll_count,
+                    balance = b,
+                    "wait_for_balance: satisfied"
+                );
                 return b;
+            }
+            if poll_count.is_multiple_of(5) {
+                tracing::trace!(
+                    elapsed_ms = start.elapsed().as_millis(),
+                    polls = poll_count,
+                    current = ?balance,
+                    target = min_balance,
+                    "wait_for_balance: polling..."
+                );
             }
             tokio::time::sleep(Duration::from_secs(2)).await;
         }
@@ -56,7 +74,9 @@ pub async fn wait_for_spendable_balance(
     min_balance: u64,
     wait_timeout: Duration,
 ) -> Result<u64, String> {
+    let start = std::time::Instant::now();
     timeout(wait_timeout, async {
+        let mut poll_count = 0u32;
         loop {
             // Trigger reconcile so DET wallet model reflects latest SPV state
             if let Err(e) = app_context.reconcile_spv_wallets().await {
@@ -70,10 +90,26 @@ pub async fn wait_for_spendable_balance(
                     wallet.spv_confirmed_balance()
                 })
             };
+            poll_count += 1;
             if let Some(b) = balance
                 && b >= min_balance
             {
+                tracing::trace!(
+                    elapsed_ms = start.elapsed().as_millis(),
+                    polls = poll_count,
+                    balance = b,
+                    "wait_for_spendable_balance: satisfied"
+                );
                 return b;
+            }
+            if poll_count.is_multiple_of(5) {
+                tracing::trace!(
+                    elapsed_ms = start.elapsed().as_millis(),
+                    polls = poll_count,
+                    current = ?balance,
+                    target = min_balance,
+                    "wait_for_spendable_balance: polling..."
+                );
             }
             tokio::time::sleep(Duration::from_secs(2)).await;
         }
@@ -119,6 +155,32 @@ pub async fn wait_for_wallet_in_spv(
     })
     .await
     .map_err(|_| "Timed out waiting for wallet in SPV".to_string())
+}
+
+/// Wait for SPV to complete initial sync (all managers including masternodes).
+///
+/// `SpvStatus::Running` is set after `SyncComplete` fires, which means
+/// MempoolManager is activated and bloom filter is built.
+pub async fn wait_for_spv_running(
+    app_context: &Arc<AppContext>,
+    wait_timeout: Duration,
+) -> Result<(), String> {
+    use dash_evo_tool::spv::SpvStatus;
+    timeout(wait_timeout, async {
+        loop {
+            if app_context.connection_status().spv_status() == SpvStatus::Running {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    })
+    .await
+    .map_err(|_| {
+        format!(
+            "Timed out after {:?} waiting for SPV to reach Running state",
+            wait_timeout
+        )
+    })
 }
 
 /// Wait for SPV to connect to at least one peer.

@@ -38,6 +38,7 @@ use dash_sdk::query_types::{Documents, IndexMap};
 use futures::future::join_all;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use shielded::ShieldedTask;
 use tokens::TokenTask;
 use grovestark::GroveSTARKTask;
 
@@ -53,6 +54,7 @@ pub mod identity;
 pub mod mnlist;
 pub mod platform_info;
 pub mod register_contract;
+pub mod shielded;
 pub mod system_task;
 pub mod tokens;
 pub mod update_data_contract;
@@ -94,6 +96,7 @@ pub enum BackendTask {
     PlatformInfo(PlatformInfoTaskRequestType),
     GroveSTARKTask(GroveSTARKTask),
     WalletTask(WalletTask),
+    ShieldedTask(ShieldedTask),
     None,
 }
 
@@ -103,8 +106,21 @@ pub enum BackendTaskSuccessResult {
     // General results
     None,
     Refresh,
-    Message(String), // Used for: progress messages during long operations, placeholder messages for
+    Message(String), // Used for: placeholder messages for
     // not-yet-implemented functionality, and DashPay operations that would need their own typed variants.
+    /// Progress updates during long-running operations (e.g. batch identity search).
+    /// By convention, the app routes `Progress` results to the visible screen's
+    /// `display_task_result` without creating a global banner at the app level
+    /// (unlike `Message`). Screens may create a banner handle on first receipt
+    /// and update it in-place on subsequent updates to avoid stacking.
+    Progress {
+        /// Human-readable progress message
+        message: String,
+        /// Current step (1-based)
+        current: u32,
+        /// Total steps
+        total: u32,
+    },
     WalletPayment {
         txid: String,
         /// List of (address, amount) pairs for each recipient
@@ -278,6 +294,42 @@ pub enum BackendTaskSuccessResult {
 
     // Core wallet list (async fetch of loaded Core wallets)
     CoreWalletsList(Vec<String>),
+
+    // Shielded pool results
+    ShieldedInitialized {
+        seed_hash: WalletSeedHash,
+        balance: u64,
+    },
+    ShieldedNotesSynced {
+        seed_hash: WalletSeedHash,
+        new_notes: u32,
+        balance: u64,
+    },
+    ShieldedCreditsShielded {
+        seed_hash: WalletSeedHash,
+        amount: u64,
+    },
+    ShieldedTransferComplete {
+        seed_hash: WalletSeedHash,
+        amount: u64,
+    },
+    ShieldedCreditsUnshielded {
+        seed_hash: WalletSeedHash,
+        amount: u64,
+    },
+    ShieldedNullifiersChecked {
+        seed_hash: WalletSeedHash,
+        spent_count: u32,
+    },
+    ShieldedFromAssetLock {
+        seed_hash: WalletSeedHash,
+        amount: u64,
+    },
+    ShieldedWithdrawalComplete {
+        seed_hash: WalletSeedHash,
+        amount: u64,
+    },
+    ProvingKeyReady,
 }
 
 impl BackendTaskSuccessResult {}
@@ -360,6 +412,9 @@ impl AppContext {
                 Ok(grovestark::run_grovestark_task(grovestark_task, &sdk).await?)
             }
             BackendTask::WalletTask(wallet_task) => Ok(self.run_wallet_task(wallet_task).await?),
+            BackendTask::ShieldedTask(shielded_task) => {
+                Ok(self.run_shielded_task(shielded_task).await?)
+            }
             BackendTask::None => Ok(BackendTaskSuccessResult::None),
         }
     }

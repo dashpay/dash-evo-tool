@@ -59,6 +59,7 @@ pub struct ConnectionStatus {
     // NOTE: Mutex (not RwLock) is intentional — single reader (tooltip hover),
     // single writer (poll cycle), minimal contention. RwLock overhead not justified.
     spv_last_error: Mutex<Option<String>>,
+    rpc_last_error: Mutex<Option<String>>,
     last_update: Mutex<Instant>,
     spv_connected_peers: AtomicU16,
     /// When SPV first entered an active state (`Starting`/`Syncing`) with zero
@@ -78,6 +79,7 @@ impl ConnectionStatus {
             disable_zmq: AtomicBool::new(false),
             overall_state: AtomicU8::new(OverallConnectionState::Disconnected as u8),
             spv_last_error: Mutex::new(None),
+            rpc_last_error: Mutex::new(None),
             last_update: Mutex::new(Instant::now()),
             spv_connected_peers: AtomicU16::new(0),
             spv_no_peers_since: Mutex::new(None),
@@ -113,6 +115,9 @@ impl ConnectionStatus {
         if let Ok(mut err) = self.spv_last_error.lock() {
             *err = None;
         }
+        if let Ok(mut err) = self.rpc_last_error.lock() {
+            *err = None;
+        }
         // Set last_update to epoch so the next trigger_refresh fires immediately
         *self.last_update.lock().unwrap_or_else(|e| e.into_inner()) =
             Instant::now() - REFRESH_CONNECTED;
@@ -124,6 +129,23 @@ impl ConnectionStatus {
 
     pub fn set_rpc_online(&self, online: bool) {
         self.rpc_online.store(online, Ordering::Relaxed);
+        if online {
+            self.set_rpc_last_error(None);
+        }
+    }
+
+    /// Set the last RPC error message (from chain lock polling).
+    pub fn set_rpc_last_error(&self, error: Option<String>) {
+        let mut err = self
+            .rpc_last_error
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        *err = error;
+    }
+
+    /// Get the last RPC error message, if any.
+    pub fn rpc_last_error(&self) -> Option<String> {
+        self.rpc_last_error.lock().ok().and_then(|g| g.clone())
     }
 
     pub fn zmq_connected(&self) -> bool {
@@ -145,6 +167,45 @@ impl ConnectionStatus {
 
     pub fn set_spv_status(&self, status: SpvStatus) {
         self.spv_status.store(status as u8, Ordering::Relaxed);
+        // Clear the "no peers" timer when SPV leaves an active state to avoid
+        // stale peer-degraded warnings in tooltips.
+        if !status.is_active() {
+            let mut since = self
+                .spv_no_peers_since
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            *since = None;
+        }
+    }
+
+    /// Set the last SPV error message (push-based from SpvManager event handlers).
+    pub fn set_spv_last_error(&self, error: Option<String>) {
+        let mut err = self
+            .spv_last_error
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        *err = error;
+    }
+
+    /// Get the last SPV error message, if any.
+    pub fn spv_last_error(&self) -> Option<String> {
+        self.spv_last_error.lock().ok().and_then(|g| g.clone())
+    }
+
+    /// Update SPV connected peer count and maintain `spv_no_peers_since` tracking.
+    ///
+    /// Called from SpvManager's network event handler when peer count changes.
+    pub fn set_spv_connected_peers(&self, count: u16) {
+        self.spv_connected_peers.store(count, Ordering::Relaxed);
+        let mut since = self
+            .spv_no_peers_since
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if count > 0 || !self.spv_status().is_active() {
+            *since = None;
+        } else if since.is_none() {
+            *since = Some(Instant::now());
+        }
     }
 
     pub fn backend_mode(&self) -> CoreBackendMode {
@@ -319,10 +380,7 @@ impl ConnectionStatus {
                     OverallConnectionState::Syncing => "Syncing".into(),
                     OverallConnectionState::Error => {
                         let detail = self
-                            .spv_last_error
-                            .lock()
-                            .ok()
-                            .and_then(|g| g.clone())
+                            .spv_last_error()
                             .unwrap_or_else(|| "unknown error".to_string());
                         format!("SPV sync error: {detail}").into()
                     }
@@ -360,7 +418,7 @@ impl ConnectionStatus {
         local_chainlock: &Option<ChainLock>,
     ) {
         let online = match network {
-            Network::Dash => mainnet_chainlock.is_some(),
+            Network::Mainnet => mainnet_chainlock.is_some(),
             Network::Testnet => testnet_chainlock.is_some(),
             Network::Devnet => devnet_chainlock.is_some(),
             Network::Regtest => local_chainlock.is_some(),
@@ -378,6 +436,7 @@ impl ConnectionStatus {
                     testnet_chainlock,
                     devnet_chainlock,
                     local_chainlock,
+                    rpc_error,
                 )) => {
                     self.update_from_chainlocks(
                         active_network,
@@ -386,6 +445,9 @@ impl ConnectionStatus {
                         devnet_chainlock,
                         local_chainlock,
                     );
+                    // INTENTIONAL(SEC-005): RPC error strings shown as-is in network
+                    // status tooltip. Acceptable for desktop app — helps debugging.
+                    self.set_rpc_last_error(rpc_error.clone());
                     self.refresh_state();
                 }
                 BackendTaskSuccessResult::CoreItem(CoreItem::ChainLock(_, network)) => {
@@ -435,28 +497,9 @@ impl ConnectionStatus {
 
         match backend_mode {
             CoreBackendMode::Spv => {
-                let snapshot = app_context.spv_manager().status();
-                tracing::trace!(
-                    "ConnectionStatus: polled SPV status = {:?}",
-                    snapshot.status
-                );
-                self.set_spv_status(snapshot.status);
-                if let Ok(mut err) = self.spv_last_error.lock() {
-                    *err = snapshot.last_error;
-                }
-                let peers = (snapshot.connected_peers).min(u16::MAX as usize) as u16;
-                self.spv_connected_peers.store(peers, Ordering::Relaxed);
-
-                // Track how long we've been active with zero peers.
-                let mut since = self
-                    .spv_no_peers_since
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
-                if peers > 0 || !snapshot.status.is_active() {
-                    *since = None;
-                } else if since.is_none() {
-                    *since = Some(Instant::now());
-                }
+                // SPV status is push-based: SpvManager event handlers call
+                // set_spv_status / set_spv_connected_peers / set_spv_last_error
+                // directly, so no polling is needed here.
             }
             CoreBackendMode::Rpc => {
                 // Update ZMQ status if there's a new event

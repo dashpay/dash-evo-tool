@@ -60,6 +60,24 @@ Run the application:
 cargo run
 ```
 
+## Feature flags
+
+The default `cargo build` produces only the `dash-evo-tool` GUI binary. Optional features enable additional capabilities:
+
+| Feature | Binary | What it adds |
+|---|---|---|
+| _(none)_ | `dash-evo-tool` | GUI application (default) |
+| `mcp` | `dash-evo-tool` | Embeds an MCP HTTP server in the GUI app. Activated at runtime by setting `MCP_API_KEY`. See [docs/MCP.md](docs/MCP.md). |
+| `cli` | `det-cli` | Standalone CLI binary. Includes an in-process MCP service (no server needed), HTTP client mode, `det-cli serve` stdio server, tool caching, and shell completion. See [docs/CLI.md](docs/CLI.md). |
+| `headless` | `det-cli` | Combines `cli` + `mcp` for headless HTTP server mode via `det-cli headless`. No GUI required; `MCP_API_KEY` must be set. See [docs/MCP.md](docs/MCP.md). |
+| `testing` | — | Test-only utilities (not for production builds) |
+
+`mcp` and `cli` are independent of each other. `headless` depends on both `cli` and `mcp` (it enables both automatically).
+
+### Adding MCP tools
+
+To expose a `BackendTask` as a new MCP/CLI tool, follow the step-by-step checklist in [docs/EXPOSING_BACKEND_TASKS.md](docs/EXPOSING_BACKEND_TASKS.md). It covers architecture rules, the standard invocation pattern, registration, and common pitfalls.
+
 ## Code quality
 
 Before submitting changes, run the formatter and linter:

@@ -2,11 +2,13 @@ use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
 use crate::backend_task::wallet::WalletTask;
+use crate::model::address::{AddressKind, ValidatedAddress};
 use crate::model::amount::Amount;
 use crate::model::secret::Secret;
 use crate::model::wallet::{DerivationPathHelpers, Wallet};
 use crate::ui::MessageType;
 use crate::ui::components::MessageBanner;
+use crate::ui::components::address_input::AddressInput;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::helpers::clicked_outside_window;
@@ -88,8 +90,8 @@ pub(super) struct FundPlatformAddressDialogState {
 #[derive(Default)]
 pub(super) struct MineDialogState {
     pub is_open: bool,
-    pub core_addresses: Vec<(String, u64)>,
-    pub selected_address_index: usize,
+    pub address_input: Option<AddressInput>,
+    pub validated_address: Option<ValidatedAddress>,
     pub block_count_str: String,
     pub error: Option<String>,
 }
@@ -153,7 +155,7 @@ impl WalletsBalancesScreen {
             .open(&mut open)
             .show(ctx, |ui| {
                 ui.label("Recipient Address");
-                let hint = if self.app_context.network == Network::Dash {
+                let hint = if self.app_context.network == Network::Mainnet {
                     "Enter Core address (X.../7...)"
                 } else {
                     "Enter Core address (y.../8...)"
@@ -1027,7 +1029,10 @@ impl WalletsBalancesScreen {
                 match PlatformAddress::from_bech32m_string(selected_addr) {
                     Ok((addr, network)) => {
                         // Validate that address network matches app network
-                        if network != self.app_context.network {
+                        if !crate::model::wallet::networks_address_compatible(
+                            &network,
+                            &self.app_context.network,
+                        ) {
                             self.fund_platform_dialog.status = Some(format!(
                                 "Address network mismatch: address is for {:?} but app is on {:?}",
                                 network, self.app_context.network
@@ -1280,38 +1285,20 @@ impl WalletsBalancesScreen {
             return;
         };
 
+        let address_input = AddressInput::new(self.app_context.network)
+            .with_label("Mine to address:")
+            .with_address_kinds(&[AddressKind::Core])
+            .with_wallets(&[wallet])
+            .with_selection_only(true)
+            .with_full_addresses(true);
+
         self.mine_dialog = MineDialogState {
             is_open: true,
+            address_input: Some(address_input),
+            validated_address: None,
             block_count_str: "1".to_string(),
-            ..Default::default()
+            error: None,
         };
-
-        // Reuse the same address loading pattern as receive dialog
-        self.load_core_addresses_for_mine(&wallet);
-    }
-
-    fn load_core_addresses_for_mine(&mut self, wallet: &Arc<RwLock<Wallet>>) {
-        match self.load_bip44_external_addresses(wallet) {
-            Ok(addresses) if addresses.is_empty() => {
-                match self.generate_new_core_receive_address(wallet) {
-                    Ok((address, balance)) => {
-                        self.mine_dialog.core_addresses = vec![(address, balance)];
-                        self.mine_dialog.selected_address_index = 0;
-                    }
-                    Err(err) => {
-                        self.mine_dialog.error = Some(err);
-                        self.mine_dialog.core_addresses.clear();
-                    }
-                }
-            }
-            Ok(addresses) => {
-                self.mine_dialog.core_addresses = addresses;
-                self.mine_dialog.selected_address_index = 0;
-            }
-            Err(err) => {
-                self.mine_dialog.error = Some(err);
-            }
-        }
     }
 
     pub(super) fn render_mine_dialog(&mut self, ctx: &Context) -> AppAction {
@@ -1340,46 +1327,10 @@ impl WalletsBalancesScreen {
                     );
                     ui.add_space(10.0);
 
-                    // Address selector
-                    if !self.mine_dialog.core_addresses.is_empty() {
-                        ui.label("Address:");
-                        ComboBox::from_id_salt("mine_addr_selector")
-                            .selected_text(
-                                self.mine_dialog
-                                    .core_addresses
-                                    .get(self.mine_dialog.selected_address_index)
-                                    .map(|(addr, balance)| {
-                                        let balance_dash = *balance as f64 / 1e8;
-                                        format!(
-                                            "{}... ({:.4} DASH)",
-                                            &addr[..12.min(addr.len())],
-                                            balance_dash
-                                        )
-                                    })
-                                    .unwrap_or_default(),
-                            )
-                            .width(ui.available_width() - 16.0)
-                            .show_ui(ui, |ui| {
-                                for (idx, (addr, balance)) in
-                                    self.mine_dialog.core_addresses.iter().enumerate()
-                                {
-                                    let balance_dash = *balance as f64 / 1e8;
-                                    let label = format!(
-                                        "{}... ({:.4} DASH)",
-                                        &addr[..12.min(addr.len())],
-                                        balance_dash
-                                    );
-                                    if ui
-                                        .selectable_label(
-                                            idx == self.mine_dialog.selected_address_index,
-                                            label,
-                                        )
-                                        .clicked()
-                                    {
-                                        self.mine_dialog.selected_address_index = idx;
-                                    }
-                                }
-                            });
+                    // Address selector using AddressInput component
+                    if let Some(address_input) = self.mine_dialog.address_input.as_mut() {
+                        let resp = address_input.show(ui);
+                        resp.inner.update(&mut self.mine_dialog.validated_address);
                     }
 
                     ui.add_space(10.0);
@@ -1430,7 +1381,6 @@ impl WalletsBalancesScreen {
                         ui.add_space(8.0);
 
                         if ComponentStyles::add_primary_button(ui, "Mine").clicked() {
-                            // Validate and dispatch
                             const MAX_MINE_BLOCKS: u64 = 1_000;
                             let block_count: u64 =
                                 match self.mine_dialog.block_count_str.trim().parse() {
@@ -1450,25 +1400,15 @@ impl WalletsBalancesScreen {
                                     }
                                 };
 
-                            let Some((addr_str, _)) = self
-                                .mine_dialog
-                                .core_addresses
-                                .get(self.mine_dialog.selected_address_index)
-                            else {
-                                self.mine_dialog.error = Some("No address selected".to_string());
+                            let Some(validated) = &self.mine_dialog.validated_address else {
+                                self.mine_dialog.error =
+                                    Some("Select an address first".to_string());
                                 return;
                             };
 
-                            let address = match addr_str
-                                .parse::<Address<NetworkUnchecked>>()
-                                .and_then(|a| a.require_network(self.app_context.network))
-                            {
-                                Ok(addr) => addr,
-                                Err(e) => {
-                                    self.mine_dialog.error =
-                                        Some(format!("Invalid address: {}", e));
-                                    return;
-                                }
+                            let Some(address) = validated.as_core().cloned() else {
+                                self.mine_dialog.error = Some("Select a Core address".to_string());
+                                return;
                             };
 
                             let Some(wallet) = self.selected_wallet.clone() else {
@@ -1495,8 +1435,6 @@ impl WalletsBalancesScreen {
             open = false;
         }
 
-        // X button sets `open` to false; Cancel/Mine reset dialog state
-        // (which sets is_open to false) inside the closure.
         if !open || !self.mine_dialog.is_open {
             self.mine_dialog = MineDialogState::default();
         }

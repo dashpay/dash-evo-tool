@@ -7,13 +7,15 @@ mod start_dash_qt;
 
 use crate::app_dir::core_cookie_path;
 use crate::backend_task::BackendTaskSuccessResult;
-use crate::backend_task::error::TaskError;
+use crate::backend_task::error::{TaskError, is_rpc_auth_error, is_rpc_connection_error};
 use crate::config::{Config, NetworkConfig};
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
+use crate::model::wallet::networks_address_compatible;
 use crate::model::wallet::single_key::SingleKeyWallet;
 use crate::spv::CoreBackendMode;
 use dash_sdk::dash_spv::sync::ProgressPercentage;
+use dash_sdk::dashcore_rpc;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dashcore_rpc::{Auth, Client};
 use dash_sdk::dpp::dashcore::secp256k1::{Message, Secp256k1};
@@ -23,33 +25,20 @@ use dash_sdk::dpp::dashcore::{
 };
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::key_wallet::Network as WalletNetwork;
+use dash_sdk::dpp::key_wallet::account::ECDSAAddressDerivation;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::coin_selection::SelectionStrategy;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::fee::FeeRate;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_builder::{
     BuilderError, TransactionBuilder,
 };
-use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_building::AccountTypePreference;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
-use dash_sdk::dpp::key_wallet_manager::wallet_manager::{WalletError, WalletId, WalletManager};
+use dash_sdk::dpp::key_wallet_manager::manager::{WalletError, WalletId, WalletManager};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 
 const DEFAULT_BIP44_ACCOUNT_INDEX: u32 = 0;
-
-/// Check if two networks use the same address format.
-/// Testnet, Devnet, and Regtest all use testnet-style addresses.
-fn networks_address_compatible(a: &Network, b: &Network) -> bool {
-    matches!(
-        (a, b),
-        (Network::Dash, Network::Dash)
-            | (
-                Network::Testnet | Network::Devnet | Network::Regtest,
-                Network::Testnet | Network::Devnet | Network::Regtest,
-            )
-    )
-}
 
 #[derive(Debug, Clone)]
 pub enum CoreTask {
@@ -149,7 +138,8 @@ pub enum CoreItem {
         Option<ChainLock>,
         Option<ChainLock>,
         Option<ChainLock>,
-    ), // Mainnet, Testnet, Devnet, Local
+        Option<String>,
+    ), // Mainnet, Testnet, Devnet, Local, active network RPC error
     ChainLockedBlock(Block, ChainLock),
 }
 
@@ -177,27 +167,52 @@ impl AppContext {
                         self.network,
                     ))
                 })
-                .map_err(TaskError::from),
+                .map_err(|e| self.rpc_error_with_url(e)),
             CoreTask::GetBestChainLocks => {
                 // Load configs
                 let config = Config::load_from(&self.data_dir)?;
 
-                let maybe_mainnet_config = config.config_for_network(Network::Dash);
+                let maybe_mainnet_config = config.config_for_network(Network::Mainnet);
                 let maybe_testnet_config = config.config_for_network(Network::Testnet);
                 let maybe_devnet_config = config.config_for_network(Network::Devnet);
                 let maybe_local_config = config.config_for_network(Network::Regtest);
 
-                let mainnet_result = Self::get_best_chain_lock(maybe_mainnet_config, Network::Dash);
+                let mainnet_result =
+                    Self::get_best_chain_lock(maybe_mainnet_config, Network::Mainnet);
                 let testnet_result =
                     Self::get_best_chain_lock(maybe_testnet_config, Network::Testnet);
                 let devnet_result = Self::get_best_chain_lock(maybe_devnet_config, Network::Devnet);
                 let local_result = Self::get_best_chain_lock(maybe_local_config, Network::Regtest);
 
-                // Convert each to Option<ChainLock>
-                let mainnet_chainlock = mainnet_result.ok();
-                let testnet_chainlock = testnet_result.ok();
-                let devnet_chainlock = devnet_result.ok();
-                let local_chainlock = local_result.ok();
+                // Surface auth and connection errors on the active network
+                // instead of silently degrading to "Disconnected".
+                let (active_result, active_config) = match self.network {
+                    Network::Mainnet => (&mainnet_result, maybe_mainnet_config),
+                    Network::Testnet => (&testnet_result, maybe_testnet_config),
+                    Network::Devnet => (&devnet_result, maybe_devnet_config),
+                    Network::Regtest => (&local_result, maybe_local_config),
+                    _ => (&mainnet_result, maybe_mainnet_config),
+                };
+                let active_rpc_error = if let Err(e) = active_result {
+                    if let Some(task_err) = Self::chain_lock_rpc_error(active_config, e) {
+                        return Err(task_err);
+                    }
+                    // Non-auth, non-connection error — show the actual error
+                    // in the Networks page status display for debugging.
+                    tracing::warn!(network = ?self.network, error = %e, "Chain lock query failed on active network");
+                    Some(format!("RPC error: {e}"))
+                } else {
+                    // Successful chain lock fetch — clear any lingering RPC error
+                    // so the connection status recovers after a transient outage.
+                    self.connection_status.set_rpc_last_error(None);
+                    None
+                };
+
+                // Convert each to Option<ChainLock> (flatten Ok(None) and Err into None)
+                let mainnet_chainlock = mainnet_result.ok().flatten();
+                let testnet_chainlock = testnet_result.ok().flatten();
+                let devnet_chainlock = devnet_result.ok().flatten();
+                let local_chainlock = local_result.ok().flatten();
 
                 // Return whatever we have — even all-None is valid.
                 Ok(BackendTaskSuccessResult::CoreItem(CoreItem::ChainLocks(
@@ -205,6 +220,7 @@ impl AppContext {
                     testnet_chainlock,
                     devnet_chainlock,
                     local_chainlock,
+                    active_rpc_error,
                 )))
             }
             CoreTask::RefreshWalletInfo(wallet, sync_platform) => {
@@ -419,41 +435,68 @@ impl AppContext {
     fn get_best_chain_lock(
         config: &Option<NetworkConfig>,
         network: Network,
-    ) -> Result<ChainLock, String> {
-        if let Some(network_config) = config {
-            let addr = format!(
-                "http://{}:{}",
-                network_config.core_host, network_config.core_rpc_port
-            );
+    ) -> Result<Option<ChainLock>, dashcore_rpc::Error> {
+        let Some(network_config) = config else {
+            return Ok(None);
+        };
 
-            let cookie_path = core_cookie_path(network, &network_config.devnet_name)
-                .map_err(|e| format!("Failed to get core cookie path: {}", e))?;
+        let addr = format!(
+            "http://{}:{}",
+            network_config.core_host, network_config.core_rpc_port
+        );
 
-            // Try cookie authentication first
-            let client = match Client::new(&addr, Auth::CookieFile(cookie_path.clone())) {
-                Ok(client) => Ok(client),
-                Err(_) => {
-                    tracing::info!(
-                        "Failed to authenticate using .cookie file at {:?}, falling back to user/pass",
-                        cookie_path
-                    );
-                    Client::new(
-                        &addr,
-                        Auth::UserPass(
-                            network_config.core_rpc_user.to_string(),
-                            network_config.core_rpc_password.to_string(),
-                        ),
-                    )
+        let cookie_path = match core_cookie_path(network, &network_config.devnet_name) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!("Failed to get core cookie path for {network}: {e}");
+                return Ok(None);
+            }
+        };
+
+        // Try cookie authentication first
+        let client = match Client::new(&addr, Auth::CookieFile(cookie_path.clone())) {
+            Ok(client) => client,
+            Err(_) => {
+                tracing::debug!(
+                    "Failed to authenticate using .cookie file at {:?}, falling back to user/pass",
+                    cookie_path
+                );
+                match Client::new(
+                    &addr,
+                    Auth::UserPass(
+                        network_config.core_rpc_user.to_string(),
+                        network_config.core_rpc_password.to_string(),
+                    ),
+                ) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        tracing::warn!("Failed to create {network} client: {e}");
+                        return Ok(None);
+                    }
                 }
             }
-                .map_err(|_| format!("Failed to create {} client", network))?;
+        };
 
-            client
-                .get_best_chain_lock()
-                .map_err(|e| format!("Failed to get best chain lock for {}: {}", network, e))
-        } else {
-            Err(format!("{} config not found", network))
+        client.get_best_chain_lock().map(Some)
+    }
+
+    /// Convert a `dashcore_rpc::Error` from `get_best_chain_lock` into a
+    /// `TaskError`, enriching connection failures with host:port.
+    fn chain_lock_rpc_error(
+        config: &Option<NetworkConfig>,
+        e: &dashcore_rpc::Error,
+    ) -> Option<TaskError> {
+        if is_rpc_auth_error(e) {
+            return Some(TaskError::CoreRpcAuthFailed);
         }
+        if is_rpc_connection_error(e) {
+            let url = config
+                .as_ref()
+                .map(|c| format!("{}:{} ({})", c.core_host, c.core_rpc_port, e))
+                .unwrap_or_else(|| "unknown".to_string());
+            return Some(TaskError::CoreRpcConnectionFailed { url, source: None });
+        }
+        None
     }
 
     async fn send_wallet_payment(
@@ -631,7 +674,7 @@ impl AppContext {
     ) -> Result<Transaction, TaskError> {
         const FALLBACK_STEP: u64 = 100;
 
-        let network = self.wallet_network_key();
+        let _network = self.wallet_network_key();
         let current_height = self
             .spv_manager()
             .status()
@@ -647,53 +690,83 @@ impl AppContext {
             .ok_or_else(|| TaskError::WalletPaymentFailed {
                 detail: "Cannot build transaction: SPV sync height is not yet known".to_string(),
             })?;
-        const MAX_FEE_ITERATIONS: usize = 50;
 
         let total_amount: u64 = recipients.iter().map(|(_, amt)| *amt).sum();
         let mut scale_factor = 1.0f64;
         let mut attempted_fallback = false;
 
-        // Obtain change address once before the retry loop to avoid marking
-        // multiple addresses as used on failed fee-adjustment attempts.
-        let change_result = wm
-            .get_change_address(
-                wallet_id,
-                DEFAULT_BIP44_ACCOUNT_INDEX,
-                AccountTypePreference::BIP44,
-                true,
-            )
-            .map_err(|e| TaskError::WalletPaymentFailed {
-                detail: format!("Failed to get change address: {e}"),
-            })?;
-        let change_address =
-            change_result
-                .address
+        // Get UTXOs and change address from the wallet account
+        let (utxos, change_index) = {
+            let managed_info =
+                wm.get_wallet_info(wallet_id)
+                    .ok_or_else(|| TaskError::WalletPaymentFailed {
+                        detail: "Wallet info unavailable".to_string(),
+                    })?;
+            let account = managed_info
+                .accounts()
+                .standard_bip44_accounts
+                .get(&DEFAULT_BIP44_ACCOUNT_INDEX)
                 .ok_or_else(|| TaskError::WalletPaymentFailed {
-                    detail: "No change address generated".to_string(),
+                    detail: "BIP44 account missing".to_string(),
                 })?;
 
-        for _ in 0..MAX_FEE_ITERATIONS {
+            let utxos: Vec<_> = account.utxos.values().cloned().collect();
+            let change_index = account.get_next_change_address_index().unwrap_or(0);
+            (utxos, change_index)
+        };
+
+        let wallet = wm
+            .get_wallet(wallet_id)
+            .ok_or_else(|| TaskError::WalletPaymentFailed {
+                detail: "Wallet object not found".to_string(),
+            })?;
+        let wallet_account = wallet
+            .accounts
+            .standard_bip44_accounts
+            .get(&DEFAULT_BIP44_ACCOUNT_INDEX)
+            .ok_or_else(|| TaskError::WalletPaymentFailed {
+                detail: "BIP44 wallet account missing".to_string(),
+            })?;
+        let change_addr = wallet_account
+            .derive_change_address(change_index)
+            .map_err(|e| TaskError::WalletPaymentFailed {
+                detail: format!("Failed to derive change address: {e}"),
+            })?;
+
+        loop {
             let scaled_recipients: Vec<(Address, u64)> = recipients
                 .iter()
                 .map(|(addr, amt)| (addr.clone(), (*amt as f64 * scale_factor) as u64))
                 .collect();
 
-            match Self::build_unsigned_payment_tx(
-                wm,
-                wallet_id,
-                DEFAULT_BIP44_ACCOUNT_INDEX,
-                scaled_recipients,
-                current_height,
-                &change_address,
-            ) {
+            let build_result = (|| -> Result<Transaction, BuilderError> {
+                let mut builder = TransactionBuilder::new()
+                    .set_fee_rate(FeeRate::normal())
+                    .set_change_address(change_addr.clone());
+
+                for (addr, amt) in &scaled_recipients {
+                    builder = builder.add_output(addr, *amt)?;
+                }
+
+                builder = builder.select_inputs(
+                    &utxos,
+                    SelectionStrategy::LargestFirst,
+                    current_height,
+                    |_| None, // No private keys for unsigned tx
+                )?;
+
+                builder.build()
+            })();
+
+            match build_result {
                 Ok(tx) => return Ok(tx),
-                Err(WalletError::InsufficientFunds) if request.subtract_fee_from_amount => {
+                Err(BuilderError::InsufficientFunds { .. }) if request.subtract_fee_from_amount => {
                     let next_scale = if !attempted_fallback {
                         attempted_fallback = true;
                         let fallback_amount = self.estimate_fallback_amount(
                             wm,
                             wallet_id,
-                            network,
+                            _network,
                             DEFAULT_BIP44_ACCOUNT_INDEX,
                             current_height,
                         )?;
@@ -718,10 +791,6 @@ impl AppContext {
                 }
             }
         }
-
-        Err(TaskError::WalletPaymentFailed {
-            detail: "Could not build transaction after maximum fee adjustment attempts".to_string(),
-        })
     }
 
     fn estimate_fallback_amount(
@@ -766,6 +835,7 @@ impl AppContext {
     }
 
     /// Build an unsigned payment transaction using TransactionBuilder.
+    #[allow(dead_code)]
     fn build_unsigned_payment_tx(
         wm: &mut WalletManager<ManagedWalletInfo>,
         wallet_id: &WalletId,

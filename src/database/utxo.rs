@@ -219,7 +219,7 @@ mod tests {
     fn test_utxo_network_filtering() {
         let db = create_test_database().expect("Failed to create test database");
         let testnet_address = create_test_address(Network::Testnet);
-        let mainnet_address = create_test_address(Network::Dash);
+        let mainnet_address = create_test_address(Network::Mainnet);
         let txid = create_test_txid();
 
         // Insert UTXO for testnet
@@ -240,7 +240,7 @@ mod tests {
             &mainnet_address,
             200_000_000,
             mainnet_address.script_pubkey().as_bytes(),
-            Network::Dash,
+            Network::Mainnet,
         )
         .expect("Failed to insert mainnet UTXO");
 
@@ -253,7 +253,7 @@ mod tests {
 
         // Query mainnet UTXOs
         let mainnet_utxos = db
-            .get_utxos_by_address(&mainnet_address.to_string(), "dash")
+            .get_utxos_by_address(&mainnet_address.to_string(), "mainnet")
             .expect("Failed to get mainnet UTXOs");
         assert_eq!(mainnet_utxos.len(), 1);
         assert_eq!(mainnet_utxos[0].1.value, 200_000_000);

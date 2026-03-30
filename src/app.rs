@@ -11,6 +11,7 @@ use crate::context::connection_status::{ConnectionStatus, OverallConnectionState
 use crate::database::Database;
 #[cfg(not(feature = "testing"))]
 use crate::logging::initialize_logger;
+use crate::model::password_info::PasswordInfo;
 use crate::model::settings::Settings;
 use crate::spv::CoreBackendMode;
 use crate::ui::components::{BannerHandle, MessageBanner};
@@ -65,6 +66,17 @@ impl From<Result<BackendTaskSuccessResult, TaskError>> for TaskResult {
     }
 }
 
+/// Parameters needed for lazy `AppContext` creation when the user switches
+/// to a network whose context was deferred at startup.
+struct LazyContextParams {
+    data_dir: PathBuf,
+    db: Arc<Database>,
+    password_info: Option<PasswordInfo>,
+    subtasks: Arc<TaskManager>,
+    connection_status: Arc<ConnectionStatus>,
+    egui_ctx: egui::Context,
+}
+
 pub struct AppState {
     pub main_screens: BTreeMap<RootScreenType, Screen>,
     pub selected_main_screen: RootScreenType,
@@ -75,6 +87,8 @@ pub struct AppState {
     pub testnet_app_context: Option<Arc<AppContext>>,
     pub devnet_app_context: Option<Arc<AppContext>>,
     pub local_app_context: Option<Arc<AppContext>>,
+    /// Params kept for lazy AppContext creation when switching networks.
+    lazy_ctx_params: Option<LazyContextParams>,
     #[allow(dead_code)] // Kept alive for the lifetime of the app
     pub mainnet_core_zmq_listener: Option<CoreZMQListener>,
     #[allow(dead_code)] // Kept alive for the lifetime of the app
@@ -240,46 +254,54 @@ impl AppState {
 
         let subtasks = Arc::new(TaskManager::new());
         let connection_status = Arc::new(ConnectionStatus::new());
-        // TODO: Defer initialization of inactive network contexts (testnet, devnet, local)
-        // until the user actually switches to them. Eagerly constructing all contexts at
-        // startup performs DAPI discovery and SDK init for networks the user may never use.
-        let mainnet_app_context = AppContext::new(
-            data_dir.clone(),
-            Network::Mainnet,
-            db.clone(),
-            password_info.clone(),
-            subtasks.clone(),
-            connection_status.clone(),
-            ctx.clone(),
-        )
-        .ok_or("Failed to create AppContext for mainnet. Check your Dash configuration.")?;
-        let testnet_app_context = AppContext::new(
-            data_dir.clone(),
-            Network::Testnet,
-            db.clone(),
-            password_info.clone(),
-            subtasks.clone(),
-            connection_status.clone(),
-            ctx.clone(),
-        );
-        let devnet_app_context = AppContext::new(
-            data_dir.clone(),
-            Network::Devnet,
-            db.clone(),
-            password_info.clone(),
-            subtasks.clone(),
-            connection_status.clone(),
-            ctx.clone(),
-        );
-        let local_app_context = AppContext::new(
+
+        let saved_network = settings.network;
+
+        // Build a helper to create AppContext for a given network.
+        let make_context = |network: Network| -> Option<Arc<AppContext>> {
+            AppContext::new(
+                data_dir.clone(),
+                network,
+                db.clone(),
+                password_info.clone(),
+                subtasks.clone(),
+                connection_status.clone(),
+                ctx.clone(),
+            )
+        };
+
+        // Always create mainnet eagerly (required, non-optional).
+        let mainnet_app_context = make_context(Network::Mainnet)
+            .ok_or("Failed to create AppContext for mainnet. Check your Dash configuration.")?;
+
+        // Only create the saved/active network eagerly; defer others until the
+        // user switches to them. This avoids DAPI discovery + SDK init for
+        // networks the user may never use, eliminating potential startup delays.
+        let testnet_app_context = if saved_network == Network::Testnet {
+            make_context(Network::Testnet)
+        } else {
+            None
+        };
+        let devnet_app_context = if saved_network == Network::Devnet {
+            make_context(Network::Devnet)
+        } else {
+            None
+        };
+        let local_app_context = if saved_network == Network::Regtest {
+            make_context(Network::Regtest)
+        } else {
+            None
+        };
+
+        // Store params for lazy context creation when switching networks later.
+        let lazy_ctx_params = Some(LazyContextParams {
             data_dir,
-            Network::Regtest,
-            db.clone(),
+            db: db.clone(),
             password_info,
-            subtasks.clone(),
-            connection_status.clone(),
-            ctx.clone(),
-        );
+            subtasks: subtasks.clone(),
+            connection_status: connection_status.clone(),
+            egui_ctx: ctx.clone(),
+        });
 
         // load fonts
         ctx.set_fonts(crate::bundled::fonts().expect("failed to load fonts"));
@@ -787,6 +809,7 @@ impl AppState {
             testnet_app_context,
             devnet_app_context,
             local_app_context,
+            lazy_ctx_params,
             mainnet_core_zmq_listener,
             testnet_core_zmq_listener,
             devnet_core_zmq_listener,
@@ -976,12 +999,33 @@ impl AppState {
     }
 
     pub fn change_network(&mut self, network: Network) {
+        // Lazily create the AppContext if this network was deferred at startup.
         if !self.context_available_for_network(network) {
-            tracing::error!(
-                "Cannot switch to {:?}: network context not available. Staying on current network.",
-                network
-            );
-            return;
+            if let Some(ref params) = self.lazy_ctx_params {
+                let ctx = AppContext::new(
+                    params.data_dir.clone(),
+                    network,
+                    params.db.clone(),
+                    params.password_info.clone(),
+                    params.subtasks.clone(),
+                    params.connection_status.clone(),
+                    params.egui_ctx.clone(),
+                );
+                match network {
+                    Network::Testnet => self.testnet_app_context = ctx,
+                    Network::Devnet => self.devnet_app_context = ctx,
+                    Network::Regtest => self.local_app_context = ctx,
+                    _ => {}
+                }
+            }
+
+            if !self.context_available_for_network(network) {
+                tracing::error!(
+                    "Cannot switch to {:?}: network context not available. Staying on current network.",
+                    network
+                );
+                return;
+            }
         }
 
         self.chosen_network = network;

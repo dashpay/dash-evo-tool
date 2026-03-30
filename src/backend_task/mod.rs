@@ -461,6 +461,11 @@ impl AppContext {
                     self.egui_ctx().clone(),
                 )
                 .ok_or(TaskError::NetworkContextCreationFailed { network })?;
+                // Persist the network choice so subsequent startups (GUI, CLI,
+                // MCP) all begin on the same network.
+                new_ctx
+                    .update_settings(crate::ui::RootScreenType::RootScreenNetworkChooser)
+                    .ok();
                 Ok(BackendTaskSuccessResult::NetworkContextCreated {
                     network,
                     context: new_ctx,

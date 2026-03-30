@@ -38,6 +38,7 @@ use dash_sdk::query_types::{Documents, IndexMap};
 use futures::future::join_all;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use shielded::ShieldedTask;
 use tokens::TokenTask;
 use grovestark::GroveSTARKTask;
 
@@ -53,6 +54,7 @@ pub mod identity;
 pub mod mnlist;
 pub mod platform_info;
 pub mod register_contract;
+pub mod shielded;
 pub mod system_task;
 pub mod tokens;
 pub mod update_data_contract;
@@ -94,6 +96,7 @@ pub enum BackendTask {
     PlatformInfo(PlatformInfoTaskRequestType),
     GroveSTARKTask(GroveSTARKTask),
     WalletTask(WalletTask),
+    ShieldedTask(ShieldedTask),
     None,
 }
 
@@ -291,6 +294,42 @@ pub enum BackendTaskSuccessResult {
 
     // Core wallet list (async fetch of loaded Core wallets)
     CoreWalletsList(Vec<String>),
+
+    // Shielded pool results
+    ShieldedInitialized {
+        seed_hash: WalletSeedHash,
+        balance: u64,
+    },
+    ShieldedNotesSynced {
+        seed_hash: WalletSeedHash,
+        new_notes: u32,
+        balance: u64,
+    },
+    ShieldedCreditsShielded {
+        seed_hash: WalletSeedHash,
+        amount: u64,
+    },
+    ShieldedTransferComplete {
+        seed_hash: WalletSeedHash,
+        amount: u64,
+    },
+    ShieldedCreditsUnshielded {
+        seed_hash: WalletSeedHash,
+        amount: u64,
+    },
+    ShieldedNullifiersChecked {
+        seed_hash: WalletSeedHash,
+        spent_count: u32,
+    },
+    ShieldedFromAssetLock {
+        seed_hash: WalletSeedHash,
+        amount: u64,
+    },
+    ShieldedWithdrawalComplete {
+        seed_hash: WalletSeedHash,
+        amount: u64,
+    },
+    ProvingKeyReady,
 }
 
 impl BackendTaskSuccessResult {}
@@ -373,6 +412,9 @@ impl AppContext {
                 Ok(grovestark::run_grovestark_task(grovestark_task, &sdk).await?)
             }
             BackendTask::WalletTask(wallet_task) => Ok(self.run_wallet_task(wallet_task).await?),
+            BackendTask::ShieldedTask(shielded_task) => {
+                Ok(self.run_shielded_task(shielded_task).await?)
+            }
             BackendTask::None => Ok(BackendTaskSuccessResult::None),
         }
     }

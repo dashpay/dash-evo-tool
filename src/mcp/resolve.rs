@@ -4,7 +4,10 @@ use crate::context::AppContext;
 use crate::context::connection_status::OverallConnectionState;
 use crate::mcp::error::McpToolError;
 use crate::mcp::server::network_display_name;
+use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::WalletSeedHash;
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use dash_sdk::dpp::prelude::Identifier;
 use std::sync::{Arc, RwLock};
 
 /// Poll interval for waiting on SPV connection -- matches ConnectionStatus throttle.
@@ -154,6 +157,37 @@ pub(crate) fn validate_address(address: &str) -> Result<(), McpToolError> {
                 "address '{address}' does not look like a valid Dash address \
                  (expected to start with X, 7, y, 8, or 9)"
             ),
+        });
+    }
+    Ok(())
+}
+
+/// Resolve an identity ID string to a QualifiedIdentity from the local database.
+pub(crate) fn qualified_identity(
+    ctx: &AppContext,
+    identity_id_str: &str,
+) -> Result<QualifiedIdentity, McpToolError> {
+    let identifier = Identifier::from_string(identity_id_str, Encoding::Base58).map_err(|_| {
+        McpToolError::InvalidParam {
+            message: format!("Invalid identity ID: {identity_id_str}"),
+        }
+    })?;
+
+    ctx.get_identity_by_id(&identifier)
+        .map_err(|e| McpToolError::Internal(e.to_string()))?
+        .ok_or_else(|| McpToolError::InvalidParam {
+            message: format!(
+                "Identity not found locally: {identity_id_str}. \
+                 Load the identity first using the identity screen or CLI."
+            ),
+        })
+}
+
+/// Validate amount in credits for sending operations.
+pub(crate) fn validate_credits(amount_credits: u64) -> Result<(), McpToolError> {
+    if amount_credits == 0 {
+        return Err(McpToolError::InvalidParam {
+            message: "amount_credits must be greater than zero".to_owned(),
         });
     }
     Ok(())

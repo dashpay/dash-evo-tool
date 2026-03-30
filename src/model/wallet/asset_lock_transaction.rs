@@ -117,12 +117,18 @@ impl Wallet {
         &self,
         amount: u64,
         allow_take_fee_from_amount: bool,
+        source_address: Option<&Address>,
     ) -> Result<(BTreeMap<OutPoint, (TxOut, Address)>, AssetLockFeeResult), String> {
         let mut fee_estimate = MIN_ASSET_LOCK_FEE;
 
         for _ in 0..2 {
             let (utxos, _) = self
-                .select_unspent_utxos_for(amount, fee_estimate, allow_take_fee_from_amount)
+                .select_unspent_utxos_for(
+                    amount,
+                    fee_estimate,
+                    allow_take_fee_from_amount,
+                    source_address,
+                )
                 .ok_or_else(|| {
                     format!(
                         "Not enough spendable funds to create asset lock transaction: \
@@ -168,6 +174,7 @@ impl Wallet {
         amount: u64,
         allow_take_fee_from_amount: bool,
         identity_index: u32,
+        source_address: Option<&Address>,
     ) -> Result<
         (
             Transaction,
@@ -185,10 +192,11 @@ impl Wallet {
             amount,
             allow_take_fee_from_amount,
             private_key,
+            source_address,
         )
     }
 
-    #[allow(clippy::type_complexity)]
+    #[allow(clippy::type_complexity, clippy::too_many_arguments)]
     pub fn top_up_asset_lock_transaction(
         &mut self,
         app_context: &AppContext,
@@ -197,6 +205,7 @@ impl Wallet {
         allow_take_fee_from_amount: bool,
         identity_index: u32,
         top_up_index: u32,
+        source_address: Option<&Address>,
     ) -> Result<
         (
             Transaction,
@@ -218,6 +227,7 @@ impl Wallet {
             amount,
             allow_take_fee_from_amount,
             private_key,
+            source_address,
         )
     }
 
@@ -230,6 +240,7 @@ impl Wallet {
         network: Network,
         amount: u64,
         allow_take_fee_from_amount: bool,
+        source_address: Option<&Address>,
     ) -> Result<
         (
             Transaction,
@@ -258,6 +269,7 @@ impl Wallet {
                 amount,
                 allow_take_fee_from_amount,
                 private_key,
+                source_address,
             )?;
 
         Ok((
@@ -277,6 +289,7 @@ impl Wallet {
         amount: u64,
         allow_take_fee_from_amount: bool,
         private_key: PrivateKey,
+        source_address: Option<&Address>,
     ) -> Result<
         (
             Transaction,
@@ -305,7 +318,7 @@ impl Wallet {
         // the selected UTXOs are insufficient, we retry once with the computed fee
         // so that marginal UTXOs are not missed.
         let (utxos, fee_result) =
-            self.select_utxos_with_fee_retry(amount, allow_take_fee_from_amount)?;
+            self.select_utxos_with_fee_retry(amount, allow_take_fee_from_amount, source_address)?;
 
         let actual_amount = fee_result.actual_amount;
         let change_option = fee_result.change;

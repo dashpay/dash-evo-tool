@@ -580,6 +580,7 @@ impl Database {
                     confirmed_balance: confirmed_balance as u64,
                     unconfirmed_balance: unconfirmed_balance as u64,
                     total_balance: total_balance as u64,
+                    spv_balance_known: false,
                     platform_address_info: BTreeMap::new(),
                     core_wallet_name,
                 },

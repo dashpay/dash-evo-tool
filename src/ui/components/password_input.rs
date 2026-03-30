@@ -68,10 +68,15 @@ impl PasswordInput {
         self
     }
 
-    /// Set the desired width of the text field.
+    /// Set the desired width of the text field (builder pattern).
     pub fn with_desired_width(mut self, width: f32) -> Self {
         self.desired_width = Some(width);
         self
+    }
+
+    /// Update the desired width of the text field on an existing instance.
+    pub fn set_desired_width(&mut self, width: f32) {
+        self.desired_width = Some(width);
     }
 
     /// Render the text in a monospace font (useful for WIF keys).

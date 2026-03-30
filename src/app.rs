@@ -108,6 +108,12 @@ pub struct AppState {
     /// Timestamp when the async shutdown was initiated, used as a hard deadline
     /// to force-close the viewport if the shutdown task stalls.
     shutdown_started: Option<std::time::Instant>,
+    /// Whether accessibility is force-enabled (DASH_EVO_TOOL_ACCESSIBILITY=1). When unset, accessibility still works normally via VoiceOver or other assistive technology — this flag forces it on unconditionally.
+    accessibility_enforced: bool,
+    /// Whether we have already triggered platform-level accessibility activation.
+    accessibility_activated: bool,
+    /// How many frames we have attempted accessibility activation.
+    accessibility_retries: u32,
     /// Shared MCP context -- follows network switches via `ArcSwap`.
     #[cfg(feature = "mcp")]
     pub mcp_app_context: Option<Arc<arc_swap::ArcSwap<AppContext>>>,
@@ -277,6 +283,18 @@ impl AppState {
 
         // load fonts
         ctx.set_fonts(crate::bundled::fonts().expect("failed to load fonts"));
+
+        // Force-enable AccessKit so the accessibility tree is populated every
+        // frame, even without VoiceOver or other assistive technology running.
+        // Without this flag, AccessKit activates lazily when a real assistive
+        // client connects (which is the normal behavior).
+        // Gated behind DASH_EVO_TOOL_ACCESSIBILITY=1 to avoid per-frame cost
+        // when not needed for automation tooling.
+        let accessibility_enforced =
+            std::env::var("DASH_EVO_TOOL_ACCESSIBILITY").unwrap_or_default() == "1";
+        if accessibility_enforced {
+            ctx.enable_accesskit();
+        }
 
         // create screens
         let mut identities_screen = IdentitiesScreen::new(&mainnet_app_context);
@@ -789,6 +807,9 @@ impl AppState {
             connection_banner_handle: None,
             shutdown_receiver: None,
             shutdown_started: None,
+            accessibility_enforced,
+            accessibility_activated: false,
+            accessibility_retries: 0,
             #[cfg(feature = "mcp")]
             mcp_app_context,
         };
@@ -822,6 +843,14 @@ impl AppState {
                 screen.refresh_on_arrival();
             }
         }
+
+        // Warm up the Halo 2 ProvingKey in a background thread (~30s build).
+        // This ensures the key is ready for the user's first shielded operation.
+        #[cfg(not(feature = "testing"))]
+        std::thread::spawn(|| {
+            let _ = crate::context::shielded::get_proving_key();
+            tracing::info!("Halo 2 ProvingKey built and cached");
+        });
 
         Ok(app_state)
     }
@@ -892,15 +921,21 @@ impl AppState {
         );
     }
 
-    // Handle the backend task and send the result through the channel
+    // Handle the backend task and send the result through the channel.
+    //
+    // Uses spawn_blocking + block_on to avoid Send bound issues with platform
+    // SDK types (DataContract/Sdk references across await points).
     fn handle_backend_task(&self, task: BackendTask) {
         let sender = self.task_result_sender.clone();
         let app_context = self.current_app_context().clone();
-        tokio::spawn(async move {
-            let result = app_context.run_backend_task(task, sender.clone()).await;
-            if let Err(e) = sender.send(result.into()).await {
-                tracing::error!("Failed to send task result: {}", e);
-            }
+        let handle = tokio::runtime::Handle::current();
+        tokio::task::spawn_blocking(move || {
+            handle.block_on(async move {
+                let result = app_context.run_backend_task(task, sender.clone()).await;
+                if let Err(e) = sender.send(result.into()).await {
+                    tracing::error!("Failed to send task result: {}", e);
+                }
+            });
         });
     }
 
@@ -908,26 +943,29 @@ impl AppState {
     fn handle_backend_tasks(&self, tasks: Vec<BackendTask>, mode: BackendTasksExecutionMode) {
         let sender = self.task_result_sender.clone();
         let app_context = self.current_app_context().clone();
+        let handle = tokio::runtime::Handle::current();
 
-        tokio::spawn(async move {
-            let results = match mode {
-                BackendTasksExecutionMode::Sequential => {
-                    app_context
-                        .run_backend_tasks_sequential(tasks, sender.clone())
-                        .await
-                }
-                BackendTasksExecutionMode::Concurrent => {
-                    app_context
-                        .run_backend_tasks_concurrent(tasks, sender.clone())
-                        .await
-                }
-            };
+        tokio::task::spawn_blocking(move || {
+            handle.block_on(async move {
+                let results = match mode {
+                    BackendTasksExecutionMode::Sequential => {
+                        app_context
+                            .run_backend_tasks_sequential(tasks, sender.clone())
+                            .await
+                    }
+                    BackendTasksExecutionMode::Concurrent => {
+                        app_context
+                            .run_backend_tasks_concurrent(tasks, sender.clone())
+                            .await
+                    }
+                };
 
-            for result in results {
-                if let Err(e) = sender.send(result.into()).await {
-                    tracing::error!("Failed to send task result: {}", e);
+                for result in results {
+                    if let Err(e) = sender.send(result.into()).await {
+                        tracing::error!("Failed to send task result: {}", e);
+                    }
                 }
-            }
+            });
         });
     }
 
@@ -1047,7 +1085,16 @@ impl AppState {
                 self.connection_banner_handle = Some(handle);
             }
             OverallConnectionState::Synced => {
-                // No banner needed for fully synced state
+                // No banner needed for fully synced state.
+                // Fetch epoch info on first sync to populate protocol version
+                // and fee multiplier — needed for feature gating (e.g., shielded
+                // tab requires protocol version >= 12).
+                if state_changed {
+                    let task = BackendTask::PlatformInfo(
+                        crate::backend_task::platform_info::PlatformInfoTaskRequestType::CurrentEpochInfo,
+                    );
+                    self.handle_backend_task(task);
+                }
             }
         }
         self.previous_connection_state = Some(current_state);
@@ -1160,6 +1207,29 @@ impl App for AppState {
             self.shutdown_started = Some(std::time::Instant::now());
             ctx.request_repaint();
             return;
+        }
+
+        // On the first frame, trigger platform-level accessibility activation
+        // so tools like Peekaboo can see the AccessKit tree without VoiceOver.
+        // Retries up to 60 frames, then gives up to avoid indefinite repaints.
+        const MAX_ACCESSIBILITY_RETRIES: u32 = 60;
+        if self.accessibility_enforced
+            && !self.accessibility_activated
+            && self.accessibility_retries < MAX_ACCESSIBILITY_RETRIES
+        {
+            self.accessibility_retries += 1;
+            self.accessibility_activated = crate::platform::force_accessibility_activation();
+            if !self.accessibility_activated {
+                if self.accessibility_retries >= MAX_ACCESSIBILITY_RETRIES {
+                    tracing::warn!(
+                        "Accessibility activation failed after {} frames, giving up",
+                        MAX_ACCESSIBILITY_RETRIES
+                    );
+                } else {
+                    // Ensure we get another frame to retry, even if egui would otherwise go idle.
+                    ctx.request_repaint();
+                }
+            }
         }
 
         // Throttle OS theme detection to every 2 s to prevent white flash from
@@ -1291,11 +1361,13 @@ impl App for AppState {
                     if !handled {
                         let msg = err.to_string();
                         let handle = MessageBanner::set_global(ctx, &msg, MessageType::Error);
+                        // Show technical details only in developer mode.
+                        // All user-facing information is in the Display string.
                         if self.current_app_context().is_developer_mode() {
                             // INTENTIONAL(SEC-003): TaskError Debug output is shown to users
-                            // in developer mode. This is a local UI app — no third parties
-                            // see this output. Ensure inner error types don't expose secrets
-                            // (see #667).
+                            // in developer mode. This is a local UI app —
+                            // no third parties see this output. Ensure inner error types
+                            // don't expose secrets (see #667).
                             handle.with_details(&err);
                         }
                         self.visible_screen_mut()

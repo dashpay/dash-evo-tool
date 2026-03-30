@@ -13,6 +13,7 @@ use dash_sdk::dpp::shielded::builder::{
     OrchardProver, SpendableNote, build_shield_transition, build_shielded_transfer_transition,
     build_shielded_withdrawal_transition, build_unshield_transition,
 };
+use dash_sdk::dpp::state_transition::proof_result::StateTransitionProofResult;
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::dpp::withdrawal::Pooling;
 use dash_sdk::grovedb_commitment_tree::{
@@ -221,8 +222,16 @@ pub async fn shield_credits(
         .await
         .map_err(shielded_broadcast_error)?;
 
+    state_transition
+        .wait_for_response::<StateTransitionProofResult>(&sdk, None)
+        .await
+        .map_err(|e| {
+            tracing::warn!("Shield credits broadcast succeeded but confirmation wait failed: {e}");
+        })
+        .ok();
+
     tracing::info!(
-        "Shield credits broadcast succeeded: {} — balance will update after the next block is mined and notes are synced",
+        "Shield credits broadcast succeeded: {}",
         format_credits_as_dash(amount),
     );
 
@@ -302,8 +311,18 @@ pub async fn shielded_transfer(
         .await
         .map_err(shielded_broadcast_error)?;
 
+    state_transition
+        .wait_for_response::<StateTransitionProofResult>(&sdk, None)
+        .await
+        .map_err(|e| {
+            tracing::warn!(
+                "Shielded transfer broadcast succeeded but confirmation wait failed: {e}"
+            );
+        })
+        .ok();
+
     tracing::info!(
-        "Shielded transfer broadcast succeeded: {} nullifiers created, change={} — balance will update after the next block is mined and notes are synced",
+        "Shielded transfer broadcast succeeded: {} nullifiers created, change={}",
         spent_nullifiers.len(),
         change_amount > 0,
     );
@@ -378,8 +397,18 @@ pub async fn unshield_credits(
         .await
         .map_err(shielded_broadcast_error)?;
 
+    state_transition
+        .wait_for_response::<StateTransitionProofResult>(&sdk, None)
+        .await
+        .map_err(|e| {
+            tracing::warn!(
+                "Unshield credits broadcast succeeded but confirmation wait failed: {e}"
+            );
+        })
+        .ok();
+
     tracing::info!(
-        "Unshield credits broadcast succeeded: {} nullifiers created, change={} — balance will update after the next block is mined and notes are synced",
+        "Unshield credits broadcast succeeded: {} nullifiers created, change={}",
         spent_nullifiers.len(),
         change_amount > 0,
     );
@@ -404,7 +433,6 @@ pub async fn shield_from_asset_lock(
     use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
     use dash_sdk::dpp::prelude::AssetLockProof;
     use dash_sdk::dpp::shielded::builder::build_shield_from_asset_lock_transition;
-    use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
     use std::time::Duration;
 
     let proving_key = crate::context::shielded::get_proving_key();
@@ -584,8 +612,18 @@ pub async fn shield_from_asset_lock(
         .await
         .map_err(shielded_broadcast_error)?;
 
+    state_transition
+        .wait_for_response::<StateTransitionProofResult>(&sdk, None)
+        .await
+        .map_err(|e| {
+            tracing::warn!(
+                "Shield from asset lock broadcast succeeded but confirmation wait failed: {e}"
+            );
+        })
+        .ok();
+
     tracing::info!(
-        "Shield from asset lock broadcast succeeded: {} — balance will update after the next block is mined and notes are synced",
+        "Shield from asset lock broadcast succeeded: {}",
         format_credits_as_dash(shield_amount_credits),
     );
 
@@ -663,8 +701,18 @@ pub async fn shielded_withdrawal(
         .await
         .map_err(shielded_broadcast_error)?;
 
+    state_transition
+        .wait_for_response::<StateTransitionProofResult>(&sdk, None)
+        .await
+        .map_err(|e| {
+            tracing::warn!(
+                "Shielded withdrawal broadcast succeeded but confirmation wait failed: {e}"
+            );
+        })
+        .ok();
+
     tracing::info!(
-        "Shielded withdrawal broadcast succeeded: {} nullifiers created, change={} — balance will update after the next block is mined and notes are synced",
+        "Shielded withdrawal broadcast succeeded: {} nullifiers created, change={}",
         spent_nullifiers.len(),
         change_amount > 0,
     );

@@ -101,8 +101,8 @@ impl Provider {
             )
         };
 
-        let host = config.core_host.as_deref().unwrap_or("127.0.0.1");
-        let port = config.core_rpc_port.unwrap_or(9998);
+        let host = config.rpc_host();
+        let port = config.rpc_port(network);
         let core_client = CoreClient::new(host, port, &user, &pass).map_err(|e| e.to_string())?;
 
         Ok(Self {

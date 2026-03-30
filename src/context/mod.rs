@@ -229,8 +229,8 @@ impl AppContext {
 
         let addr = format!(
             "http://{}:{}",
-            network_config.core_host.as_deref().unwrap_or("127.0.0.1"),
-            network_config.core_rpc_port.unwrap_or(9998)
+            network_config.rpc_host(),
+            network_config.rpc_port(network)
         );
         let core_client = match Self::create_core_rpc_client(
             &addr,
@@ -552,11 +552,7 @@ impl AppContext {
         // Note: developer_mode is now global and managed separately
 
         // 2. Rebuild the RPC client with the new password
-        let addr = format!(
-            "http://{}:{}",
-            cfg.core_host.as_deref().unwrap_or("127.0.0.1"),
-            cfg.core_rpc_port.unwrap_or(9998)
-        );
+        let addr = format!("http://{}:{}", cfg.rpc_host(), cfg.rpc_port(self.network));
         let new_client = Client::new(
             &addr,
             Auth::UserPass(
@@ -650,11 +646,7 @@ impl AppContext {
         let cfg = self.config.read().map_err(|_| TaskError::LockPoisoned {
             resource: "NetworkConfig",
         })?;
-        let base = format!(
-            "http://{}:{}",
-            cfg.core_host.as_deref().unwrap_or("127.0.0.1"),
-            cfg.core_rpc_port.unwrap_or(9998)
-        );
+        let base = format!("http://{}:{}", cfg.rpc_host(), cfg.rpc_port(self.network));
         let url = match wallet_name {
             Some(name) if !name.is_empty() => {
                 if name.contains("..") {
@@ -711,13 +703,7 @@ impl AppContext {
                 .config
                 .read()
                 .ok()
-                .map(|c| {
-                    format!(
-                        "{}:{}",
-                        c.core_host.as_deref().unwrap_or("127.0.0.1"),
-                        c.core_rpc_port.unwrap_or(9998)
-                    )
-                })
+                .map(|c| format!("{}:{}", c.rpc_host(), c.rpc_port(self.network)))
                 .unwrap_or_else(|| "unknown".to_string());
             TaskError::CoreRpcConnectionFailed {
                 url,

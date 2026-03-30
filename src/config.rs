@@ -76,6 +76,36 @@ pub struct NetworkConfig {
     pub wallet_private_key: Option<String>,
 }
 
+impl NetworkConfig {
+    /// Default Core RPC port for the given network.
+    ///
+    /// Returns the well-known port when `core_rpc_port` is not explicitly set:
+    /// - Mainnet: 9998
+    /// - Testnet: 19998
+    /// - Devnet: 29998
+    /// - Regtest: 19898
+    pub fn default_rpc_port(network: Network) -> u16 {
+        match network {
+            Network::Mainnet => 9998,
+            Network::Testnet => 19998,
+            Network::Devnet => 29998,
+            Network::Regtest => 19898,
+            _ => 9998,
+        }
+    }
+
+    /// Resolved Core RPC port — explicit config or network-aware default.
+    pub fn rpc_port(&self, network: Network) -> u16 {
+        self.core_rpc_port
+            .unwrap_or_else(|| Self::default_rpc_port(network))
+    }
+
+    /// Resolved Core RPC host — explicit config or localhost.
+    pub fn rpc_host(&self) -> &str {
+        self.core_host.as_deref().unwrap_or("127.0.0.1")
+    }
+}
+
 impl Config {
     pub fn config_for_network(&self, network: Network) -> &Option<NetworkConfig> {
         match network {

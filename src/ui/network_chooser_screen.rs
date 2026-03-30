@@ -1,7 +1,7 @@
 use crate::app::AppAction;
-use crate::backend_task::BackendTask;
 use crate::backend_task::core::CoreTask;
 use crate::backend_task::system_task::SystemTask;
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::config::Config;
 use crate::context::AppContext;
 use crate::context::connection_status::{ConnectionStatus, OverallConnectionState};
@@ -110,6 +110,8 @@ pub struct NetworkChooserScreen {
     use_local_spv_node: bool,
     auto_start_spv: bool,
     close_dash_qt_on_exit: bool,
+    discovery_in_progress: bool,
+    show_fetch_confirmation: bool,
 }
 
 impl NetworkChooserScreen {
@@ -209,6 +211,8 @@ impl NetworkChooserScreen {
             use_local_spv_node,
             auto_start_spv,
             close_dash_qt_on_exit,
+            discovery_in_progress: false,
+            show_fetch_confirmation: false,
         }
     }
 
@@ -440,6 +444,118 @@ impl NetworkChooserScreen {
 
                     ui.end_row();
                 });
+
+            // Node Addresses section
+            {
+                ui.add_space(20.0);
+                ui.separator();
+                ui.add_space(12.0);
+
+                ui.label(
+                    egui::RichText::new("Node Addresses")
+                        .strong()
+                        .color(DashColors::text_primary(dark_mode)),
+                );
+                ui.add_space(8.0);
+
+                let ctx_ref = self.current_app_context().clone();
+                let status = ctx_ref.connection_status();
+                let dapi_total = status.dapi_total_endpoints();
+                let dapi_available = status.dapi_available_endpoints();
+
+                ui.horizontal(|ui| {
+                    let status_text =
+                        format!("DAPI: {dapi_available}/{dapi_total} reachable");
+                    let status_color = if dapi_available > 0 {
+                        DashColors::SUCCESS
+                    } else if dapi_total > 0 {
+                        DashColors::WARNING
+                    } else {
+                        DashColors::text_secondary(dark_mode)
+                    };
+                    ui.colored_label(status_color, &status_text);
+
+                    let is_discoverable = matches!(
+                        self.current_network,
+                        Network::Mainnet | Network::Testnet
+                    );
+
+                    if is_discoverable {
+                        let button_text = if self.discovery_in_progress {
+                            "Fetching..."
+                        } else {
+                            "Fetch Node List"
+                        };
+                        let button = egui::Button::new(button_text)
+                            .corner_radius(Shape::RADIUS_MD);
+
+                        if ui
+                            .add_enabled(!self.discovery_in_progress, button)
+                            .clicked()
+                        {
+                            if dapi_total > 0 {
+                                self.show_fetch_confirmation = true;
+                            } else {
+                                self.discovery_in_progress = true;
+                                app_action = AppAction::BackendTask(
+                                    BackendTask::DiscoverDapiNodes {
+                                        network: self.current_network,
+                                    },
+                                );
+                            }
+                        }
+
+                        ui.add_space(4.0);
+                        let info_label = ui.label(
+                            egui::RichText::new("(i)")
+                                .color(DashColors::text_secondary(dark_mode))
+                                .size(12.0),
+                        );
+                        info_label.on_hover_text(
+                            "Fetches available nodes from a service operated by Dash Core Group (DCG) over HTTPS. This is a convenience service -- Platform proofs are verified independently.",
+                        );
+                    } else {
+                        ui.label(
+                            egui::RichText::new(
+                                "Enter node addresses manually for this network.",
+                            )
+                            .color(DashColors::text_secondary(dark_mode))
+                            .size(12.0),
+                        );
+                    }
+                });
+            }
+
+            // Fetch confirmation dialog
+            if self.show_fetch_confirmation {
+                let ctx_ref = self.current_app_context().clone();
+                let dapi_total = ctx_ref.connection_status().dapi_total_endpoints();
+
+                egui::Window::new("Update Node Addresses?")
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                    .show(ui.ctx(), |ui| {
+                        ui.label(format!(
+                            "This will replace your current {dapi_total} node addresses with a fresh list from the Dash network service."
+                        ));
+                        ui.add_space(12.0);
+                        ui.horizontal(|ui| {
+                            if ui.button("Cancel").clicked() {
+                                self.show_fetch_confirmation = false;
+                            }
+                            if ui.button("Fetch").clicked() {
+                                self.show_fetch_confirmation = false;
+                                self.discovery_in_progress = true;
+                                app_action = AppAction::BackendTask(
+                                    BackendTask::DiscoverDapiNodes {
+                                        network: self.current_network,
+                                    },
+                                );
+                            }
+                        });
+                    });
+            }
 
             // Password input for RPC mode (any network)
             let current_backend_mode = *self
@@ -2189,5 +2305,64 @@ impl ScreenLike for NetworkChooserScreen {
         }
 
         action
+    }
+
+    fn display_message(&mut self, _message: &str, _message_type: MessageType) {
+        self.discovery_in_progress = false;
+    }
+
+    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
+        if let BackendTaskSuccessResult::DapiNodesDiscovered {
+            network,
+            count,
+            addresses_csv,
+        } = backend_task_success_result
+        {
+            self.discovery_in_progress = false;
+
+            // Update config with new addresses
+            if let Ok(mut config) = Config::load_from(&self.mainnet_app_context.data_dir)
+                && let Some(mut network_cfg) = config.config_for_network(network).clone()
+            {
+                network_cfg.dapi_addresses = Some(addresses_csv);
+                config.update_config_for_network(network, network_cfg.clone());
+
+                if let Err(e) = config.save(&self.mainnet_app_context.data_dir) {
+                    tracing::error!("Failed to save config after DAPI discovery: {e}");
+                }
+
+                // Update in-memory config and reinit SDK
+                let network_context_exists = match network {
+                    Network::Mainnet => true,
+                    Network::Testnet => self.testnet_app_context.is_some(),
+                    Network::Devnet => self.devnet_app_context.is_some(),
+                    Network::Regtest => self.local_app_context.is_some(),
+                    _ => false,
+                };
+
+                if network_context_exists {
+                    let app_context = self.context_for_network(network);
+                    {
+                        if let Ok(mut cfg_lock) = app_context.config.write() {
+                            *cfg_lock = network_cfg;
+                        }
+                    }
+
+                    if let Err(e) = Arc::clone(app_context).reinit_core_client_and_sdk() {
+                        tracing::error!(
+                            "Failed to reinit SDK after DAPI discovery for {:?}: {}",
+                            network,
+                            e
+                        );
+                    }
+                }
+
+                MessageBanner::set_global(
+                    self.mainnet_app_context.egui_ctx(),
+                    format!("Updated to {count} node addresses."),
+                    MessageType::Success,
+                );
+            }
+        }
     }
 }

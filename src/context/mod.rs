@@ -27,6 +27,7 @@ use arc_swap::ArcSwap;
 use connection_status::ConnectionStatus;
 use crossbeam_channel::{Receiver, Sender};
 use dash_sdk::Sdk;
+use dash_sdk::dapi_client::AddressList;
 use dash_sdk::dashcore_rpc::{Auth, Client, RpcApi};
 use dash_sdk::dpp::dashcore::{Address, Network, Txid};
 #[cfg(any(test, feature = "testing"))]
@@ -43,6 +44,7 @@ use dash_sdk::platform::Identifier;
 use egui::Context;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::str::FromStr as _;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
 
@@ -159,15 +161,24 @@ impl AppContext {
             }
         };
 
-        // Resolve DAPI addresses: try explicit config first (sync), fall back to discovery (async)
-        let address_list = match crate::dapi_discovery::resolve_dapi_addresses_sync(
-            network,
-            &network_config.dapi_addresses,
-            network_config.devnet_name.as_deref(),
-        ) {
-            Ok(list) => list,
-            Err(e) => {
-                tracing::error!(?network, error = %e, "Failed to resolve DAPI addresses");
+        // Parse configured DAPI addresses directly (no auto-discovery at startup)
+        let address_list = match &network_config.dapi_addresses {
+            Some(addrs) if !addrs.trim().is_empty() => match AddressList::from_str(addrs.trim()) {
+                Ok(list) => list,
+                Err(e) => {
+                    tracing::error!(
+                        ?network,
+                        error = %e,
+                        "Failed to parse configured DAPI addresses"
+                    );
+                    return None;
+                }
+            },
+            _ => {
+                tracing::error!(
+                    ?network,
+                    "No DAPI addresses configured. Use Fetch Node List in Network Settings or add addresses to .env."
+                );
                 return None;
             }
         };
@@ -564,12 +575,21 @@ impl AppContext {
             detail: e.to_string(),
         })?;
 
-        // 3. Resolve DAPI addresses and rebuild the SDK
-        let address_list = crate::dapi_discovery::resolve_dapi_addresses_sync(
-            self.network,
-            &cfg.dapi_addresses,
-            cfg.devnet_name.as_deref(),
-        )?;
+        // 3. Parse DAPI addresses from config and rebuild the SDK
+        let address_list = match &cfg.dapi_addresses {
+            Some(addrs) if !addrs.trim().is_empty() => AddressList::from_str(addrs.trim())
+                .map_err(
+                    |source| crate::dapi_discovery::DapiDiscoveryError::InvalidAddresses { source },
+                )?,
+            _ => {
+                return Err(
+                    crate::dapi_discovery::DapiDiscoveryError::AddressesRequired {
+                        network: self.network,
+                    }
+                    .into(),
+                );
+            }
+        };
 
         let new_sdk = match self.core_backend_mode() {
             CoreBackendMode::Spv => {

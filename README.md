@@ -42,6 +42,11 @@ See the [user documentation](https://docs.dash.org/en/stable/docs/user/network/d
 - View platform information and masternode quorum details
 - Check Core address balances
 
+## Programmatic Access (MCP)
+
+- [MCP Server](docs/MCP.md) — expose wallet and core operations via Model Context Protocol (HTTP or stdio)
+- [CLI Client](docs/CLI.md) — command-line tool to call MCP operations from scripts and terminals
+
 ## Getting prebuilt binaries
 
 Download the latest release from the [Releases](https://github.com/dashpay/dash-evo-tool/releases) page.
@@ -95,6 +100,12 @@ When the application runs for the first time, it creates an application director
 | macOS | `~/Library/Application Support/Dash-Evo-Tool/` |
 | Windows | `C:\Users\<User>\AppData\Roaming\Dash-Evo-Tool\config` |
 | Linux | `/home/<user>/.config/dash-evo-tool/` |
+
+## Environment Variables
+
+| Variable | Values | Default | Description |
+| - | - | - | - |
+| `DASH_EVO_TOOL_ACCESSIBILITY` | `1` / unset | unset | Force-enable accessibility support. Activates AccessKit eagerly so the UI element tree is populated every frame and (on macOS) forces the platform accessibility adapter to initialize. Without this flag, accessibility still works normally — VoiceOver and other assistive technologies trigger AccessKit's lazy activation automatically. This flag is needed for tools that query the accessibility tree without registering as assistive technology clients (e.g. AXUIElement-based automation like Peekaboo). |
 
 ## Contributing
 

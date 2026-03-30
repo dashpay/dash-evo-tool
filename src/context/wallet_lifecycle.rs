@@ -150,6 +150,27 @@ impl AppContext {
             self.queue_spv_wallet_load(seed_hash, seed_bytes);
             // Note: Platform address sync is not done here.
             // Core UTXO refresh is handled at startup in bootstrap_loaded_wallets.
+
+            // Eagerly initialize shielded wallet state so that the cached
+            // balance (from persisted notes) is available to all UI screens
+            // immediately, without requiring the user to visit the Shielded tab.
+            // Then queue async SyncNotes -> CheckNullifiers to refresh from
+            // the network. This is the single init path — the UI never
+            // dispatches InitializeShieldedWallet.
+            match self.initialize_shielded_wallet(seed_hash) {
+                Ok(_) => {
+                    tracing::trace!(
+                        seed = %hex::encode(seed_hash),
+                        "Shielded wallet state initialized on unlock"
+                    );
+                    self.queue_shielded_sync(seed_hash);
+                }
+                Err(e) => tracing::debug!(
+                    seed = %hex::encode(seed_hash),
+                    error = %e,
+                    "Shielded wallet init skipped on unlock"
+                ),
+            }
         }
     }
 
@@ -162,6 +183,50 @@ impl AppContext {
             }
         };
         self.queue_spv_wallet_unload(seed_hash);
+    }
+
+    /// Queue async SyncNotes -> CheckNullifiers for an already-initialized
+    /// shielded wallet. Tracked via `subtasks` so it participates in graceful
+    /// shutdown and cancellation.
+    ///
+    /// Uses `spawn_blocking(block_on(...))` because the async methods on
+    /// `Arc<Self>` produce futures that borrow `self`, which the compiler
+    /// cannot prove are `'static` (rust-lang/rust#100013). The trampoline
+    /// resolves the futures synchronously on a blocking thread, satisfying
+    /// the `'static` bound required by `spawn_sync`.
+    fn queue_shielded_sync(self: &Arc<Self>, seed_hash: WalletSeedHash) {
+        let ctx = Arc::clone(self);
+        self.subtasks.spawn_sync("shielded_sync", async move {
+            let handle = tokio::runtime::Handle::current();
+            let result = tokio::task::spawn_blocking(move || {
+                handle.block_on(async {
+                    match ctx.sync_shielded_notes(seed_hash).await {
+                        Ok(_) => {
+                            if let Err(e) = ctx.check_nullifiers_task(seed_hash).await {
+                                tracing::debug!(
+                                    seed = %hex::encode(seed_hash),
+                                    error = %e,
+                                    "Shielded nullifier check after init failed"
+                                );
+                            }
+                        }
+                        Err(e) => tracing::debug!(
+                            seed = %hex::encode(seed_hash),
+                            error = %e,
+                            "Shielded note sync after init failed"
+                        ),
+                    }
+                })
+            })
+            .await;
+            if let Err(e) = result {
+                tracing::debug!(
+                    seed = %hex::encode(seed_hash),
+                    error = %e,
+                    "Shielded sync task panicked"
+                );
+            }
+        });
     }
 
     fn wallet_seed_snapshot(wallet: &Arc<RwLock<Wallet>>) -> Option<(WalletSeedHash, [u8; 64])> {
@@ -841,7 +906,19 @@ impl AppContext {
                         net_amount: record.net_amount,
                         fee: record.fee,
                         label: record.label.clone(),
-                        is_ours: record.is_ours,
+                        // SPV transaction history is per-wallet — all entries
+                        // involve our addresses. Upstream sets is_ours only for
+                        // sends (net_amount < 0); we override to true for all.
+                        is_ours: {
+                            if !record.is_ours && record.net_amount >= 0 {
+                                tracing::debug!(
+                                    txid = %record.txid,
+                                    net_amount = record.net_amount,
+                                    "SPV: overriding is_ours to true for receive transaction"
+                                );
+                            }
+                            true
+                        },
                         status,
                     }
                 })

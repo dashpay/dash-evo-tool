@@ -489,7 +489,7 @@ pub(crate) fn build_identity_registration(
             identity_index,
             0,
         )
-        .map_err(|e| TaskError::WalletKeyDerivationFailed { detail: e })?;
+        .map_err(|e| TaskError::WalletKeyDerivationFailed { source: e.into() })?;
 
     let mut keys_input: Vec<KeyInput> = Vec::new();
     for (i, (key_type, purpose, security_level, contract_bounds)) in
@@ -503,7 +503,7 @@ pub(crate) fn build_identity_registration(
                 identity_index,
                 key_index,
             )
-            .map_err(|e| TaskError::WalletKeyDerivationFailed { detail: e })?;
+            .map_err(|e| TaskError::WalletKeyDerivationFailed { source: e.into() })?;
         keys_input.push((
             (private_key, derivation_path),
             key_type,

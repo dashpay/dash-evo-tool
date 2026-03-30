@@ -54,7 +54,7 @@ impl AccountCategory {
     pub fn label(&self, index: Option<u32>) -> String {
         match self {
             AccountCategory::Bip44 => match index {
-                Some(0) => "Main Account".to_string(),
+                Some(0) => "Dash Core".to_string(),
                 Some(idx) => format!("BIP44 Account #{}", idx),
                 None => "BIP44 Account".to_string(),
             },
@@ -71,7 +71,7 @@ impl AccountCategory {
             AccountCategory::ProviderOwner => "Provider Owner".to_string(),
             AccountCategory::ProviderOperator => "Provider Operator".to_string(),
             AccountCategory::ProviderPlatform => "Provider Platform".to_string(),
-            AccountCategory::PlatformPayment => "Platform Account".to_string(),
+            AccountCategory::PlatformPayment => "Platform".to_string(),
             AccountCategory::Other(reference) => format!("{:?}", reference),
         }
     }
@@ -136,21 +136,40 @@ impl AccountCategory {
         }
     }
 
-    /// Returns true if this account category is primarily used for key
-    /// derivation and proofs rather than holding funds. Used for account
-    /// dropdown label formatting.
-    pub fn is_key_only(&self) -> bool {
+    /// Returns a short label suitable for tab headers.
+    pub fn tab_label(&self, index: Option<u32>) -> &'static str {
+        match self {
+            AccountCategory::Bip44 => match index {
+                Some(0) => "Dash Core",
+                _ => "BIP44",
+            },
+            AccountCategory::Bip32 => "Legacy BIP32",
+            AccountCategory::CoinJoin => "CoinJoin",
+            AccountCategory::IdentityRegistration => "Identity Registration",
+            AccountCategory::IdentitySystem => "Identity System",
+            AccountCategory::IdentityTopup => "Identity Top-up",
+            AccountCategory::IdentityInvitation => "Identity Invitation",
+            AccountCategory::ProviderVoting
+            | AccountCategory::ProviderOwner
+            | AccountCategory::ProviderOperator
+            | AccountCategory::ProviderPlatform => "Provider",
+            AccountCategory::PlatformPayment => "Platform",
+            AccountCategory::Other(_) => "Other",
+        }
+    }
+
+    /// Whether this account tab is visible in default (non-developer) mode.
+    pub fn is_visible_in_default_mode(&self) -> bool {
         matches!(
             self,
-            AccountCategory::IdentityRegistration
-                | AccountCategory::IdentityTopup
-                | AccountCategory::IdentityInvitation
-                | AccountCategory::IdentitySystem
-                | AccountCategory::ProviderVoting
-                | AccountCategory::ProviderOwner
-                | AccountCategory::ProviderOperator
-                | AccountCategory::ProviderPlatform
+            AccountCategory::Bip44 | AccountCategory::PlatformPayment
         )
+    }
+
+    /// Returns true if this is a "system" account category shown only in
+    /// developer mode under the consolidated System tab.
+    pub fn is_system_category(&self) -> bool {
+        !self.is_visible_in_default_mode()
     }
 }
 
@@ -180,7 +199,6 @@ pub(crate) fn categorize_account_path(
 #[derive(Clone, Debug)]
 pub struct AccountSummary {
     pub category: AccountCategory,
-    pub label: String,
     pub index: Option<u32>,
     pub confirmed_balance: u64,
     /// Platform credits balance for Platform Payment addresses
@@ -214,11 +232,8 @@ impl AccountSummaryBuilder {
     }
 
     fn build(self) -> AccountSummary {
-        let label = self.key.category.label(self.key.index);
-
         AccountSummary {
             category: self.key.category,
-            label,
             index: self.key.index,
             confirmed_balance: self.confirmed_balance,
             platform_credits: self.platform_credits,
@@ -273,7 +288,7 @@ mod tests {
     use dash_sdk::dpp::key_wallet::bip32::ChildNumber;
 
     #[test]
-    fn bip44_without_account_index_is_not_main_account() {
+    fn bip44_without_account_index_is_not_dash_core() {
         assert_eq!(AccountCategory::Bip44.label(None), "BIP44 Account");
     }
 

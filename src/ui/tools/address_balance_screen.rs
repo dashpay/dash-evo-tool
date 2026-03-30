@@ -35,6 +35,11 @@ impl AddressBalanceScreen {
         }
     }
 
+    pub(crate) fn invalidate_address_input(&mut self) {
+        self.address_input.clear();
+        self.result = None;
+    }
+
     fn trigger_fetch(&mut self) -> AppAction {
         let address = self.address_input.trim().to_string();
         if address.is_empty() {

@@ -94,10 +94,17 @@ jobs:
         env:
           PROTOC: /usr/local/bin/protoc
 
-      - name: Build project
+      - name: Build GUI
         run: |
           cargo build --release --target ${{ matrix.target }}
           mv target/${{ matrix.target }}/release/dash-evo-tool${{ matrix.ext }} dash-evo-tool/dash-evo-tool${{ matrix.ext }}
+        env:
+          OPENSSL_STATIC: "1"
+
+      - name: Build CLI (det-cli)
+        run: |
+          cargo build --release --features headless --bin det-cli --target ${{ matrix.target }}
+          mv target/${{ matrix.target }}/release/det-cli${{ matrix.ext }} dash-evo-tool/det-cli${{ matrix.ext }}
         env:
           OPENSSL_STATIC: "1"
 
@@ -203,6 +210,12 @@ jobs:
           cp target/aarch64-apple-darwin/release/dash-evo-tool build/dash-evo-tool
           chmod +x build/dash-evo-tool
 
+      - name: Build CLI (det-cli)
+        run: |
+          cargo build --release --features headless --bin det-cli --target aarch64-apple-darwin
+          cp target/aarch64-apple-darwin/release/det-cli build/det-cli
+          chmod +x build/det-cli
+
           # Targeted cleanup - only remove build artifacts we don't need
           rm -rf target/aarch64-apple-darwin/release/deps
           rm -rf target/aarch64-apple-darwin/release/build
@@ -213,6 +226,7 @@ jobs:
 
           # Remove the actual binary from target since we copied it
           rm -f target/aarch64-apple-darwin/release/dash-evo-tool
+          rm -f target/aarch64-apple-darwin/release/det-cli
 
           # Create app bundle structure
           mkdir -p "build/Dash Evo Tool.app/Contents/MacOS"
@@ -220,6 +234,7 @@ jobs:
 
           # Move binary into app bundle
           cp build/dash-evo-tool "build/Dash Evo Tool.app/Contents/MacOS/dash-evo-tool"
+          cp build/det-cli "build/Dash Evo Tool.app/Contents/MacOS/det-cli"
 
           # Create icon set and convert to ICNS
           mkdir -p AppIcon.iconset
@@ -487,10 +502,12 @@ jobs:
 
       - name: Build x86_64 architecture
         run: |
-          cargo build --release --target x86_64-apple-darwin
+          cargo build --release --features cli --target x86_64-apple-darwin
           mkdir -p build
           cp target/x86_64-apple-darwin/release/dash-evo-tool build/dash-evo-tool
           chmod +x build/dash-evo-tool
+          cp target/x86_64-apple-darwin/release/det-cli build/det-cli
+          chmod +x build/det-cli
 
           # Targeted cleanup - only remove build artifacts we don't need
           rm -rf target/x86_64-apple-darwin/release/deps
@@ -502,6 +519,7 @@ jobs:
 
           # Remove the actual binary from target since we copied it
           rm -f target/x86_64-apple-darwin/release/dash-evo-tool
+          rm -f target/x86_64-apple-darwin/release/det-cli
 
           # Create app bundle structure
           mkdir -p "build/Dash Evo Tool.app/Contents/MacOS"
@@ -509,6 +527,7 @@ jobs:
 
           # Move binary into app bundle
           cp build/dash-evo-tool "build/Dash Evo Tool.app/Contents/MacOS/dash-evo-tool"
+          cp build/det-cli "build/Dash Evo Tool.app/Contents/MacOS/det-cli"
 
           # Create icon set and convert to ICNS
           mkdir -p AppIcon.iconset

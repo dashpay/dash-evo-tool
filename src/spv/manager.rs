@@ -336,8 +336,17 @@ impl SpvManager {
 
     /// Set whether to use local Dash Core node for SPV sync instead of DNS seed discovery.
     /// Note: This only takes effect when starting a new SPV sync session.
+    ///
+    /// When enabled, also sets `core_host` to `127.0.0.1` if it is not already configured,
+    /// so that `primary_peer_socket()` has an explicit host to connect to.
     pub fn set_use_local_node(&self, use_local: bool) {
         self.use_local_node.store(use_local, Ordering::SeqCst);
+        if use_local
+            && let Ok(mut cfg) = self.config.write()
+            && cfg.core_host.is_none()
+        {
+            cfg.core_host = Some("127.0.0.1".to_string());
+        }
     }
 
     /// Get whether to use local Dash Core node for SPV sync.
@@ -1424,15 +1433,21 @@ impl SpvManager {
         // Devnet/Regtest always need explicit peers since they're local networks.
         // Mainnet/Testnet can use DNS seed discovery (default) or local node.
         if self.network == Network::Devnet || self.network == Network::Regtest {
-            // Local networks always need explicit peer configuration
-            if let Some(peer) = self.primary_peer_socket() {
-                config.add_peer(peer);
-            }
+            // Local networks require explicit peer configuration — no DNS seeds exist.
+            let peer = self.primary_peer_socket().ok_or_else(|| {
+                format!(
+                    "No peer address available for {:?}. Configure a Core host or DAPI addresses in Network Settings.",
+                    self.network
+                )
+            })?;
+            config.add_peer(peer);
         } else if self.use_local_node() {
-            // User has chosen to use their local Dash Core node
-            if let Some(peer) = self.primary_peer_socket() {
-                config.add_peer(peer);
-            }
+            // User has chosen to use their local Dash Core node.
+            // set_use_local_node(true) ensures core_host is set to 127.0.0.1.
+            let peer = self.primary_peer_socket().ok_or_else(|| {
+                "Local node mode is enabled but no peer address could be resolved. Check your Core host setting.".to_string()
+            })?;
+            config.add_peer(peer);
         }
         // Otherwise, no peers are added and SPV will use DNS seed discovery
 
@@ -1466,8 +1481,7 @@ impl SpvManager {
         let host = config
             .core_host
             .as_deref()
-            .or_else(|| Self::first_dapi_host(config.dapi_addresses.as_deref()?))
-            .unwrap_or("127.0.0.1");
+            .or_else(|| Self::first_dapi_host(config.dapi_addresses.as_deref()?))?;
         let port = match self.network {
             Network::Mainnet => 9999,
             Network::Testnet => 19999,

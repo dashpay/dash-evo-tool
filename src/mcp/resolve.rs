@@ -105,6 +105,11 @@ pub(crate) fn wallet_arc(
 }
 
 /// Wait for SPV to reach fully-synced (green) state.
+///
+/// Only required for tools that operate on the **core chain** (UTXOs, sending
+/// Dash, generating receive addresses).  Platform-only tools that query DAPI
+/// (e.g. `platform_addresses_list`, `platform_withdrawals_get`) must **not**
+/// call this — they work without SPV.
 pub(crate) async fn ensure_spv_synced(ctx: &AppContext) -> Result<(), McpToolError> {
     let deadline = tokio::time::Instant::now() + SPV_WAIT_TIMEOUT;
     loop {

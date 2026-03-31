@@ -74,8 +74,10 @@ impl AsyncTool<DashMcpService> for MyNewTool {
         // 3. Resolve wallet if needed
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
 
-        // 4. Wait for SPV sync if tool needs wallet/chain data
+        // 4. Wait for SPV sync — ONLY for core-chain tools (see SPV gate rule)
         resolve::ensure_spv_synced(&ctx).await?;
+        // For platform-only tools, skip this step and add:
+        // // No SPV gate — queries DAPI directly
 
         // 5. Build and dispatch the backend task
         let task = BackendTask::DomainTask(DomainTask::MyVariant { ... });
@@ -97,7 +99,7 @@ impl AsyncTool<DashMcpService> for MyNewTool {
 - Skip `verify_network` only for `network_info` and `tool_describe`.
 - For destructive tools (`read_only: false`), the `network` parameter **must be required** (not optional with `#[serde(default)]`). Use `resolve::require_network()` instead of `resolve::verify_network()` to prevent accidental cross-network operations that could spend funds on the wrong network.
 - Skip wallet resolution if the tool doesn't operate on a wallet.
-- Skip `ensure_spv_synced` if the tool reads only from the database or Platform SDK (no SPV-dependent data). For tools that only dispatch Platform state transitions (not Core UTXO spends), add an `// INTENTIONAL: no SPV sync needed` comment explaining why.
+- **SPV gate rule**: Call `ensure_spv_synced` **only** for tools that operate on the core chain — sending Dash, generating receive addresses, reading core balances, creating asset lock transactions. Skip it for tools that query DAPI / Platform directly (platform address balances, withdrawals, identity credit operations, shielded transfers). When skipping, add a comment: `// No SPV gate — queries DAPI directly`.
 
 ### 6. Register in `tool_router()`
 

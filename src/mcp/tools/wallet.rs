@@ -342,7 +342,9 @@ impl AsyncTool<DashMcpService> for FetchPlatformBalances {
         resolve::verify_network(&ctx, param.network.as_deref())?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
 
-        resolve::ensure_spv_synced(&ctx).await?;
+        // No SPV gate — platform address balances are fetched from DAPI, not the
+        // local SPV chain.  Requiring SPV here caused the tool to hang when SPV
+        // was unavailable (e.g. stale lock on the data directory).
 
         let task = BackendTask::WalletTask(WalletTask::FetchPlatformAddressBalances { seed_hash });
         let result = dispatch_task(&ctx, task)

@@ -90,6 +90,10 @@ Set these in the app's `.env` file (see `.env.example`) or as environment variab
 
 Parameters marked `?` are optional. The `det-cli` column shows the equivalent CLI command (underscores become hyphens).
 
+### SPV requirements
+
+Core-chain tools (`core_address_create`, `core_balances_get`, `core_funds_send`, `identity_credits_topup`, `shielded_shield_from_core`) wait for SPV to fully sync before executing. Platform-only tools (`platform_addresses_list`, `platform_withdrawals_get`, `identity_credits_*` except topup, `shielded_shield_from_platform`, `shielded_transfer`, `shielded_unshield`, `shielded_withdraw`) query DAPI directly and do **not** require SPV.
+
 ## CLI interface (det-cli)
 
 `det-cli` is the command-line interface for interacting with MCP tools. It can operate in two modes:

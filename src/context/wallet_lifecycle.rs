@@ -195,6 +195,46 @@ impl AppContext {
         self.queue_spv_wallet_unload(seed_hash);
     }
 
+    /// Initialize shielded state for unlocked wallets that were skipped
+    /// because the protocol version wasn't known at unlock time.
+    /// Called when the protocol version first crosses the shielded threshold.
+    pub(crate) fn init_missing_shielded_wallets(self: &Arc<Self>) {
+        // Collect candidate seed hashes while holding locks, then release
+        // before calling initialize_shielded_wallet (which re-acquires both).
+        let candidates: Vec<WalletSeedHash> = (|| {
+            let wallets = self.wallets.read().ok()?;
+            let existing = self.shielded_states.lock().ok()?;
+            Some(
+                wallets
+                    .iter()
+                    .filter(|(hash, wallet_arc)| {
+                        !existing.contains_key(*hash)
+                            && wallet_arc.read().ok().map(|w| w.is_open()).unwrap_or(false)
+                    })
+                    .map(|(hash, _)| *hash)
+                    .collect(),
+            )
+        })()
+        .unwrap_or_default();
+
+        for seed_hash in candidates {
+            match self.initialize_shielded_wallet(seed_hash) {
+                Ok(_) => {
+                    tracing::info!(
+                        seed = %hex::encode(seed_hash),
+                        "Shielded wallet initialized after protocol version update"
+                    );
+                    self.queue_shielded_sync(seed_hash);
+                }
+                Err(e) => tracing::debug!(
+                    seed = %hex::encode(seed_hash),
+                    error = %e,
+                    "Shielded wallet init failed after protocol version update"
+                ),
+            }
+        }
+    }
+
     /// Queue async SyncNotes -> CheckNullifiers for an already-initialized
     /// shielded wallet. Tracked via `subtasks` so it participates in graceful
     /// shutdown and cancellation.

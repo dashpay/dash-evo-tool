@@ -508,9 +508,20 @@ impl AppContext {
     }
 
     /// Update the cached platform protocol version from epoch info.
-    pub fn set_platform_protocol_version(&self, version: u32) {
-        self.platform_protocol_version
-            .store(version, Ordering::Relaxed);
+    ///
+    /// When the version crosses the shielded threshold for the first time,
+    /// retroactively initializes shielded wallets that were unlocked before
+    /// the protocol version was known.
+    pub fn set_platform_protocol_version(self: &Arc<Self>, version: u32) {
+        let old = self
+            .platform_protocol_version
+            .swap(version, Ordering::Relaxed);
+
+        if old < Self::SHIELDED_MIN_PROTOCOL_VERSION
+            && version >= Self::SHIELDED_MIN_PROTOCOL_VERSION
+        {
+            self.init_missing_shielded_wallets();
+        }
     }
 
     /// Minimum protocol version required for shielded (ZK) transactions.

@@ -129,7 +129,9 @@ pub enum SendRoutingError {
         available_formatted: String,
     },
 
-    #[error("No fee context provided for this route. This is a programming error.")]
+    #[error(
+        "This transfer route is not available in the current mode. Try using the wallet screen instead."
+    )]
     MissingFeeContext,
 
     #[error("Invalid shielded address. Check the address and try again.")]
@@ -1747,6 +1749,96 @@ mod tests {
                     assert_eq!(*outputs.get(&dest).unwrap(), 3_000_000);
                 }
                 other => panic!("Expected TransferToAddresses, got {other:?}"),
+            }
+        }
+    }
+
+    // =========================================================================
+    // Multi-input platform allocation boundary (TC-SR-035..038)
+    // =========================================================================
+    mod multi_input_platform {
+        use super::*;
+
+        #[test]
+        fn max_platform_inputs_boundary() {
+            // Create MAX_PLATFORM_INPUTS + 2 addresses, each with small balance
+            let mut addresses = Vec::new();
+            for i in 0..(MAX_PLATFORM_INPUTS + 2) {
+                let mut pkh = [0u8; 20];
+                pkh[0] = (i + 10) as u8; // unique addresses
+                addresses.push((
+                    PlatformAddress::P2pkh(pkh),
+                    testnet_core_address(),
+                    1_000_000u64, // 1M credits each
+                ));
+            }
+
+            let dest = test_platform_address_2();
+            let result = resolve_send(SendRequest {
+                source: SendSource::PlatformAddresses {
+                    seed_hash: test_seed_hash(),
+                    addresses,
+                },
+                destination: ValidatedAddress::Platform {
+                    address: dest,
+                    bech32m: "tdash1dest".to_string(),
+                },
+                // Request amount that needs all addresses but MAX_PLATFORM_INPUTS caps it
+                amount: (MAX_PLATFORM_INPUTS as u64 + 1) * 1_000_000,
+                resolved_identity: None,
+                fee_context: Some(FeeContext::PlatformTransfer(PlatformFeeEstimator::default())),
+            });
+
+            // Should get TooManyInputs or InsufficientAfterFees because we can only
+            // use MAX_PLATFORM_INPUTS addresses but need more
+            assert!(
+                matches!(
+                    result,
+                    Err(SendRoutingError::TooManyInputs { .. })
+                        | Err(SendRoutingError::InsufficientAfterFees { .. })
+                        | Err(SendRoutingError::InsufficientBalance { .. })
+                ),
+                "Expected TooManyInputs or InsufficientBalance/AfterFees, got {result:?}"
+            );
+        }
+
+        #[test]
+        fn multi_input_within_limit_succeeds() {
+            // 3 addresses, well within MAX_PLATFORM_INPUTS, with large balances
+            let mut addresses = Vec::new();
+            for i in 0..3 {
+                let mut pkh = [0u8; 20];
+                pkh[0] = (i + 10) as u8;
+                addresses.push((
+                    PlatformAddress::P2pkh(pkh),
+                    testnet_core_address(),
+                    1_000_000_000u64, // 1B credits each — plenty for fees
+                ));
+            }
+
+            let dest = test_platform_address_2();
+            let result = resolve_send(SendRequest {
+                source: SendSource::PlatformAddresses {
+                    seed_hash: test_seed_hash(),
+                    addresses,
+                },
+                destination: ValidatedAddress::Platform {
+                    address: dest,
+                    bech32m: "tdash1dest".to_string(),
+                },
+                amount: 5_000_000,
+                resolved_identity: None,
+                fee_context: Some(FeeContext::PlatformTransfer(PlatformFeeEstimator::default())),
+            });
+
+            match result {
+                Ok(SendResult::Single(BackendTask::WalletTask(
+                    WalletTask::TransferPlatformCredits { inputs, .. },
+                ))) => {
+                    assert!(!inputs.is_empty());
+                    assert!(inputs.len() <= MAX_PLATFORM_INPUTS);
+                }
+                other => panic!("Expected TransferPlatformCredits, got {other:?}"),
             }
         }
     }

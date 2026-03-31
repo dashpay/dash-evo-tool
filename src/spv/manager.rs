@@ -174,6 +174,9 @@ pub struct SpvManager {
     connected_peers: Arc<RwLock<usize>>,
     // Push SPV status updates to ConnectionStatus (set after construction)
     connection_status: Mutex<Option<Arc<ConnectionStatus>>>,
+    // Holds the tempdir handle when falling back from a locked data directory.
+    // Kept alive so the OS doesn't reclaim the directory while SPV is running.
+    _fallback_tempdir: Mutex<Option<tempfile::TempDir>>,
 }
 
 /// Requests that can be sent to the SPV runtime thread
@@ -329,6 +332,7 @@ impl SpvManager {
             network_manager: Arc::new(AsyncRwLock::new(None)),
             connected_peers: Arc::new(RwLock::new(0)),
             connection_status: Mutex::new(None),
+            _fallback_tempdir: Mutex::new(None),
         });
 
         Ok(manager)
@@ -1446,9 +1450,53 @@ impl SpvManager {
             *nm_guard = Some(network_manager.clone());
         }
 
-        let storage_manager = DiskStorageManager::new(&config)
-            .await
-            .map_err(|e| format!("Failed to initialize SPV storage: {e}"))?;
+        let (storage_manager, config) = match DiskStorageManager::new(&config).await {
+            Ok(sm) => (sm, config),
+            Err(e) => {
+                let err_str = e.to_string();
+                if err_str.contains("locked") || err_str.contains("already in use") {
+                    tracing::warn!(
+                        original_dir = %self.data_dir.display(),
+                        "SPV data directory is locked by another process, falling back to a temporary directory"
+                    );
+                    let tmpdir = tempfile::Builder::new()
+                        .prefix("dash-evo-tool-spv-")
+                        .tempdir()
+                        .map_err(|e| format!("Failed to create SPV fallback tempdir: {e}"))?;
+                    let tmpdir_path = tmpdir.path().to_path_buf();
+
+                    // Rebuild config with the tempdir path
+                    let mut fallback_config = ClientConfig::new(self.network)
+                        .with_storage_path(tmpdir_path)
+                        .with_validation_mode(ValidationMode::Full)
+                        .with_start_height(start_height)
+                        .with_mempool_tracking(MempoolStrategy::BloomFilter);
+                    // Re-apply peer configuration (devnet/regtest always need explicit
+                    // peers; mainnet/testnet use them when the user chose local node)
+                    let needs_explicit_peer =
+                        matches!(self.network, Network::Devnet | Network::Regtest)
+                            || self.use_local_node();
+                    if needs_explicit_peer && let Some(peer) = self.primary_peer_socket() {
+                        fallback_config.add_peer(peer);
+                    }
+
+                    let sm = DiskStorageManager::new(&fallback_config)
+                        .await
+                        .map_err(|e| {
+                            format!("Failed to initialize SPV storage in fallback tempdir: {e}")
+                        })?;
+
+                    // Keep the TempDir handle alive so the OS doesn't reclaim it
+                    if let Ok(mut guard) = self._fallback_tempdir.lock() {
+                        *guard = Some(tmpdir);
+                    }
+
+                    (sm, fallback_config)
+                } else {
+                    return Err(format!("Failed to initialize SPV storage: {e}"));
+                }
+            }
+        };
 
         DashSpvClient::new(
             config,

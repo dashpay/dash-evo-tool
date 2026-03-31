@@ -7,7 +7,6 @@ use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::KeyID;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dash_sdk::platform::Identifier;
-use dash_sdk::platform::transition::transfer::TransferToIdentity;
 
 use super::BackendTaskSuccessResult;
 
@@ -19,21 +18,22 @@ impl AppContext {
         credits: Credits,
         id: Option<KeyID>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        let sdk = self.sdk.load().as_ref().clone();
-
         let balance_before = qualified_identity.identity.balance();
         let estimated_fee = PlatformFeeEstimator::new().estimate_credit_transfer();
 
-        let (sender_balance, receiver_balance) = qualified_identity
-            .identity
-            .clone()
-            .transfer_credits(
-                &sdk,
+        let signing_key =
+            id.and_then(|key_id| qualified_identity.identity.get_public_key_by_id(key_id));
+
+        let platform_wallet = self.platform_wallet_for_identity(&qualified_identity)?;
+        let identity_wallet = platform_wallet.identity();
+
+        let (sender_balance, receiver_balance) = identity_wallet
+            .transfer_credits_with_signer(
+                &qualified_identity.identity,
                 to_identifier,
                 credits,
-                id.and_then(|key_id| qualified_identity.identity.get_public_key_by_id(key_id)),
+                signing_key,
                 qualified_identity.clone(),
-                None,
             )
             .await?;
 

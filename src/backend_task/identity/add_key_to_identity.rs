@@ -6,35 +6,28 @@ use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
-use dash_sdk::Error as SdkError;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::{
     IdentityPublicKeyGettersV0, IdentityPublicKeySettersV0,
 };
-use dash_sdk::dpp::prelude::UserFeeIncrease;
-use dash_sdk::dpp::state_transition::identity_update_transition::IdentityUpdateTransition;
-use dash_sdk::dpp::state_transition::identity_update_transition::methods::IdentityUpdateTransitionMethodsV0;
 use dash_sdk::dpp::state_transition::proof_result::StateTransitionProofResult;
-use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
 use dash_sdk::platform::{Fetch, Identity};
 
 impl AppContext {
     pub(super) async fn add_key_to_identity(
         &self,
-        sdk: &Sdk,
+        _sdk: &Sdk,
         mut qualified_identity: QualifiedIdentity,
         mut public_key_to_add: QualifiedIdentityPublicKey,
         private_key: [u8; 32],
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        let new_identity_nonce = sdk
-            .get_identity_nonce(qualified_identity.identity.id(), true, None)
-            .await?;
+        let sdk = self.sdk.load().as_ref().clone();
         let Some(master_key) = qualified_identity.can_sign_with_master_key() else {
             return Err(TaskError::MasterKeyNotFound);
         };
         let master_key_id = master_key.identity_public_key.id();
-        let identity = Identity::fetch_by_identifier(sdk, qualified_identity.identity.id())
+        let identity = Identity::fetch_by_identifier(&sdk, qualified_identity.identity.id())
             .await?
             .ok_or(TaskError::IdentityNotFoundLocally)?;
         qualified_identity.identity = identity;
@@ -53,22 +46,18 @@ impl AppContext {
         let balance_before = qualified_identity.identity.balance();
         let estimated_fee = PlatformFeeEstimator::new().estimate_identity_update();
 
-        let state_transition = IdentityUpdateTransition::try_from_identity_with_signer(
-            &qualified_identity.identity,
-            &master_key_id,
-            vec![public_key_to_add.identity_public_key.clone()],
-            vec![],
-            new_identity_nonce,
-            UserFeeIncrease::default(),
-            &qualified_identity,
-            sdk.version(),
-            None,
-        )
-        .map_err(|e| TaskError::IdentityUpdateTransitionError {
-            source_error: Box::new(SdkError::Protocol(e)),
-        })?;
+        let platform_wallet = self.platform_wallet_for_identity(&qualified_identity)?;
+        let identity_wallet = platform_wallet.identity();
 
-        let result = state_transition.broadcast_and_wait(sdk, None).await?;
+        let result = identity_wallet
+            .update_identity_with_signer(
+                &qualified_identity.identity,
+                &master_key_id,
+                vec![public_key_to_add.identity_public_key.clone()],
+                vec![],
+                &qualified_identity,
+            )
+            .await?;
 
         // Log and handle the proof result
         tracing::info!("AddKeyToIdentity proof result: {}", result);

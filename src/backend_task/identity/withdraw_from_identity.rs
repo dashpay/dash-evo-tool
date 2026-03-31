@@ -9,7 +9,6 @@ use dash_sdk::dpp::identity::KeyID;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::platform::transition::withdraw_from_identity::WithdrawFromIdentity;
 use dash_sdk::platform::{Fetch, Identity};
 
 use super::BackendTaskSuccessResult;
@@ -76,17 +75,16 @@ impl AppContext {
         let balance_before = qualified_identity.identity.balance();
         let estimated_fee = PlatformFeeEstimator::new().estimate_credit_withdrawal();
 
-        let remaining_balance = qualified_identity
-            .identity
-            .clone()
-            .withdraw(
-                &sdk,
+        let platform_wallet = self.platform_wallet_for_identity(&qualified_identity)?;
+        let identity_wallet = platform_wallet.identity();
+
+        let remaining_balance = identity_wallet
+            .withdraw_credits_with_signer(
+                &qualified_identity.identity,
                 to_address,
                 credits,
-                Some(1),
                 signing_key,
                 qualified_identity.clone(),
-                None,
             )
             .await?;
 

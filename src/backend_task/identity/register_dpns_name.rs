@@ -1,131 +1,37 @@
-use std::collections::BTreeMap;
-
 use crate::backend_task::FeeResult;
 use crate::backend_task::error::TaskError;
 use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::{context::AppContext, model::qualified_identity::DPNSNameInfo};
-use bip39::rand::{Rng, SeedableRng, rngs::StdRng};
 use dash_sdk::{
     Sdk,
     dpp::{
-        data_contract::{
-            accessors::v0::DataContractV0Getters, document_type::accessors::DocumentTypeV0Getters,
-        },
-        document::{DocumentV0, DocumentV0Getters},
+        data_contract::accessors::v0::DataContractV0Getters,
+        document::DocumentV0Getters,
         identity::accessors::IdentityGettersV0,
-        platform_value::{Bytes32, Value},
-        util::{hash::hash_double, strings::convert_to_homograph_safe_chars},
+        platform_value::Value,
     },
     drive::query::{WhereClause, WhereOperator},
     platform::Fetch,
-    platform::{Document, DocumentQuery, FetchMany, transition::put_document::PutDocument},
+    platform::{Document, DocumentQuery, FetchMany},
 };
 
 use super::{BackendTaskSuccessResult, RegisterDpnsNameInput};
 impl AppContext {
     pub(super) async fn register_dpns_name(
         &self,
-        sdk: &Sdk,
+        _sdk: &Sdk,
         input: RegisterDpnsNameInput,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        let mut rng = StdRng::from_entropy();
-        let dpns_contract = self.dpns_contract.clone();
-
+        let sdk = self.sdk.load().as_ref().clone();
         let mut qualified_identity = input.qualified_identity;
 
-        let entropy = Bytes32::random_with_rng(&mut rng);
-        let preorder_document_type = dpns_contract
-            .document_type_for_name("preorder")
-            .map_err(|_| TaskError::DataContractNotFound)?;
-        let domain_document_type = dpns_contract
-            .document_type_for_name("domain")
-            .map_err(|_| TaskError::DataContractNotFound)?;
-
-        let preorder_id = Document::generate_document_id_v0(
-            &dpns_contract.id(),
-            &qualified_identity.identity.id(),
-            preorder_document_type.name().as_str(),
-            entropy.as_slice(),
-        );
-        let domain_id = Document::generate_document_id_v0(
-            &dpns_contract.id(),
-            &qualified_identity.identity.id(),
-            domain_document_type.name().as_str(),
-            entropy.as_slice(),
-        );
-
-        let salt: [u8; 32] = rng.r#gen();
-        let mut salted_domain_buffer: Vec<u8> = vec![];
-        salted_domain_buffer.extend(salt);
-        salted_domain_buffer
-            .extend((convert_to_homograph_safe_chars(&input.name_input) + ".dash").as_bytes());
-        let salted_domain_hash = hash_double(salted_domain_buffer);
-
-        let preorder_document = Document::V0(DocumentV0 {
-            id: preorder_id,
-            owner_id: qualified_identity.identity.id(),
-            creator_id: None,
-            properties: BTreeMap::from([(
-                "saltedDomainHash".to_string(),
-                salted_domain_hash.into(),
-            )]),
-            revision: None,
-            created_at: None,
-            updated_at: None,
-            transferred_at: None,
-            created_at_block_height: None,
-            updated_at_block_height: None,
-            transferred_at_block_height: None,
-            created_at_core_block_height: None,
-            updated_at_core_block_height: None,
-            transferred_at_core_block_height: None,
-        });
-        let domain_document = Document::V0(DocumentV0 {
-            id: domain_id,
-            owner_id: qualified_identity.identity.id(),
-            creator_id: None,
-            properties: BTreeMap::from([
-                ("parentDomainName".to_string(), "dash".into()),
-                ("normalizedParentDomainName".to_string(), "dash".into()),
-                ("label".to_string(), input.name_input.clone().into()),
-                (
-                    "normalizedLabel".to_string(),
-                    convert_to_homograph_safe_chars(&input.name_input).into(),
-                ),
-                ("preorderSalt".to_string(), salt.into()),
-                (
-                    "records".to_string(),
-                    BTreeMap::from([(
-                        "identity".to_string(),
-                        Into::<dash_sdk::dpp::platform_value::Value>::into(
-                            qualified_identity.identity.id(),
-                        ),
-                    )])
-                    .into(),
-                ),
-                (
-                    "subdomainRules".to_string(),
-                    BTreeMap::from([(
-                        "allowSubdomains".to_string(),
-                        Into::<dash_sdk::dpp::platform_value::Value>::into(false),
-                    )])
-                    .into(),
-                ),
-            ]),
-            revision: None,
-            created_at: None,
-            updated_at: None,
-            transferred_at: None,
-            created_at_block_height: None,
-            updated_at_block_height: None,
-            transferred_at_block_height: None,
-            created_at_core_block_height: None,
-            updated_at_core_block_height: None,
-            transferred_at_core_block_height: None,
-        });
-
         let public_key = qualified_identity
-            .document_signing_key(&preorder_document_type)
+            .document_signing_key(
+                &self
+                    .dpns_contract
+                    .document_type_for_name("preorder")
+                    .map_err(|_| TaskError::DataContractNotFound)?,
+            )
             .ok_or(TaskError::NoDocumentSigningKey)?;
 
         let fee_estimator = PlatformFeeEstimator::new();
@@ -133,30 +39,21 @@ impl AppContext {
 
         let balance_before = qualified_identity.identity.balance();
 
-        let _ = preorder_document
-            .put_to_platform_and_wait_for_response(
-                sdk,
-                preorder_document_type.to_owned_document_type(),
-                Some(entropy.0),
+        // Use platform-wallet's register_name_with_signer which handles
+        // preorder + domain document creation and broadcasting internally.
+        let platform_wallet = self.platform_wallet_for_identity(&qualified_identity)?;
+        let identity_wallet = platform_wallet.identity();
+
+        let _full_domain_name = identity_wallet
+            .register_name_with_signer(
+                qualified_identity.identity.clone(),
+                &input.name_input,
                 public_key.clone(),
-                None,
-                &qualified_identity,
-                None,
+                qualified_identity.clone(),
             )
             .await?;
 
-        let _ = domain_document
-            .put_to_platform_and_wait_for_response(
-                sdk,
-                domain_document_type.to_owned_document_type(),
-                Some(entropy.0),
-                public_key.clone(),
-                None,
-                &qualified_identity,
-                None,
-            )
-            .await?;
-
+        // Fetch owned DPNS names to update the local qualified identity.
         let dpns_names_document_query = DocumentQuery {
             data_contract: self.dpns_contract.clone(),
             document_type_name: "domain".to_string(),
@@ -170,7 +67,7 @@ impl AppContext {
             start: None,
         };
 
-        let owned_dpns_names = Document::fetch_many(sdk, dpns_names_document_query)
+        let owned_dpns_names = Document::fetch_many(&sdk, dpns_names_document_query)
             .await
             .map(|document_map| {
                 document_map
@@ -208,7 +105,7 @@ impl AppContext {
         }
 
         let refreshed_identity = dash_sdk::platform::Identity::fetch_by_identifier(
-            sdk,
+            &sdk,
             qualified_identity.identity.id(),
         )
         .await?

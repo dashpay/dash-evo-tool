@@ -165,6 +165,8 @@ pub struct NetworkSwitchParams {
 pub struct NetworkSwitchOutput {
     /// The network that is now active.
     active: String,
+    /// Whether SPV was successfully started on the new network context.
+    spv_started: bool,
 }
 
 impl ToolBase for NetworkSwitch {
@@ -225,20 +227,29 @@ impl AsyncTool<DashMcpService> for NetworkSwitch {
         if ctx.network() == target {
             return Ok(NetworkSwitchOutput {
                 active: network_display_name(target).to_owned(),
+                spv_started: true,
             });
         }
 
         // Dispatch SwitchNetwork through the standard backend task system.
-        let task = BackendTask::SwitchNetwork(target);
+        let task = BackendTask::SwitchNetwork {
+            network: target,
+            start_spv: true,
+        };
         let result = dispatch_task(&ctx, task)
             .await
             .map_err(McpToolError::TaskFailed)?;
 
         match result {
-            BackendTaskSuccessResult::NetworkContextCreated { context, .. } => {
+            BackendTaskSuccessResult::NetworkContextCreated {
+                context,
+                spv_started,
+                ..
+            } => {
                 service.swap_context(context);
                 Ok(NetworkSwitchOutput {
                     active: network_display_name(target).to_owned(),
+                    spv_started,
                 })
             }
             other => Err(McpToolError::Internal(format!(

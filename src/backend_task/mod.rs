@@ -10,6 +10,7 @@ use crate::backend_task::platform_info::{PlatformInfoTaskRequestType, PlatformIn
 use crate::backend_task::system_task::SystemTask;
 use crate::backend_task::wallet::WalletTask;
 use crate::context::AppContext;
+use crate::spv::CoreBackendMode;
 use dash_sdk::dpp::dashcore::Address;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::dashcore::address::NetworkChecked;
@@ -105,7 +106,11 @@ pub enum BackendTask {
     ReinitCoreClientAndSdk,
     /// Create a new network context and switch to it.
     /// Intercepted by `AppState` — never dispatched to `AppContext::run_backend_task`.
-    SwitchNetwork(Network),
+    /// When `start_spv` is true, SPV sync is started on the new context automatically.
+    SwitchNetwork {
+        network: Network,
+        start_spv: bool,
+    },
     /// Discover DAPI nodes from the DCG-operated HTTPS service.
     DiscoverDapiNodes {
         network: Network,
@@ -351,6 +356,7 @@ pub enum BackendTaskSuccessResult {
     NetworkContextCreated {
         network: Network,
         context: Arc<AppContext>,
+        spv_started: bool,
     },
 
     /// Fresh DAPI node addresses discovered from the DCG service.
@@ -448,7 +454,7 @@ impl AppContext {
                 Arc::clone(self).reinit_core_client_and_sdk()?;
                 Ok(BackendTaskSuccessResult::CoreClientReinitialized)
             }
-            BackendTask::SwitchNetwork(network) => {
+            BackendTask::SwitchNetwork { network, start_spv } => {
                 // Create a new AppContext for the target network, reusing shared
                 // resources (db, subtasks, connection_status) from the current context.
                 let new_ctx = AppContext::new(
@@ -466,9 +472,28 @@ impl AppContext {
                 new_ctx
                     .update_settings(crate::ui::RootScreenType::RootScreenNetworkChooser)
                     .ok();
+
+                let spv_started = if start_spv {
+                    if new_ctx.core_backend_mode() != CoreBackendMode::Spv {
+                        new_ctx.set_core_backend_mode_volatile(CoreBackendMode::Spv);
+                    }
+                    match new_ctx.start_spv() {
+                        Ok(()) => {
+                            tracing::info!(?network, "SPV started after network switch");
+                            true
+                        }
+                        Err(e) => {
+                            tracing::warn!(?network, "SPV start failed after network switch: {e}");
+                            false
+                        }
+                    }
+                } else {
+                    false
+                };
                 Ok(BackendTaskSuccessResult::NetworkContextCreated {
                     network,
                     context: new_ctx,
+                    spv_started,
                 })
             }
             BackendTask::DiscoverDapiNodes { network } => {

@@ -750,7 +750,12 @@ impl AppState {
         // (NetworkContextCreated) comes back through the task result channel
         // and is handled in update(). Same path used by MCP tools.
         self.network_switch_pending = Some(network);
-        self.handle_backend_task(BackendTask::SwitchNetwork(network));
+        let start_spv = self
+            .current_app_context()
+            .db
+            .get_auto_start_spv()
+            .unwrap_or(false);
+        self.handle_backend_task(BackendTask::SwitchNetwork { network, start_spv });
     }
 
     /// Complete the network switch after the context is available.
@@ -1080,7 +1085,11 @@ impl App for AppState {
                             );
                             self.visible_screen_mut().refresh();
                         }
-                        BackendTaskSuccessResult::NetworkContextCreated { network, context } => {
+                        BackendTaskSuccessResult::NetworkContextCreated {
+                            network,
+                            context,
+                            ..
+                        } => {
                             self.network_contexts.insert(network, context);
                             self.network_switch_pending = None;
                             self.finalize_network_switch(network);

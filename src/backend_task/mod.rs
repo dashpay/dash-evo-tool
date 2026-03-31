@@ -10,8 +10,7 @@ use crate::backend_task::platform_info::{PlatformInfoTaskRequestType, PlatformIn
 use crate::backend_task::system_task::SystemTask;
 use crate::backend_task::wallet::WalletTask;
 use crate::context::AppContext;
-use dash_sdk::dpp::dashcore::Address;
-use dash_sdk::dpp::dashcore::address::NetworkChecked;
+use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::dashcore::bls_sig_utils::BLSSignature;
 use dash_sdk::dpp::dashcore::network::message_qrinfo::QRInfo;
 use dash_sdk::dpp::dashcore::BlockHash;
@@ -193,8 +192,8 @@ pub enum BackendTaskSuccessResult {
     /// Platform address balances fetched from Platform
     PlatformAddressBalances {
         seed_hash: WalletSeedHash,
-        /// Map of address to (balance, nonce)
-        balances: BTreeMap<Address<NetworkChecked>, (u64, u32)>,
+        /// Map of platform address to (balance, nonce)
+        balances: BTreeMap<PlatformAddress, (u64, u32)>,
     },
     /// Platform credits transferred between addresses
     PlatformCreditsTransferred {

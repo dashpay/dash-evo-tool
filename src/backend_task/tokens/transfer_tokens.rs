@@ -11,7 +11,6 @@ use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::Value;
-use dash_sdk::platform::tokens::builders::transfer::TokenTransferTransitionBuilder;
 use dash_sdk::platform::tokens::transitions::TransferResult;
 use dash_sdk::platform::{DataContract, Identifier, IdentityPublicKey};
 use std::sync::Arc;
@@ -27,28 +26,24 @@ impl AppContext {
         token_position: u16,
         signing_key: IdentityPublicKey,
         public_note: Option<String>,
-        sdk: &Sdk,
+        _sdk: &Sdk,
         _sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        let mut builder = TokenTransferTransitionBuilder::new(
-            data_contract.clone(),
-            token_position,
-            sending_identity.identity.id(),
-            recipient_id,
-            amount,
-        );
+        let platform_wallet = self.platform_wallet_for_identity(sending_identity)?;
+        let token_wallet = platform_wallet.tokens();
 
-        if let Some(note) = public_note {
-            builder = builder.with_public_note(note);
-        }
-
-        let maybe_options = self.state_transition_options();
-        if let Some(options) = maybe_options {
-            builder = builder.with_state_transition_creation_options(options);
-        }
-
-        let result = sdk
-            .token_transfer(builder, &signing_key, sending_identity)
+        let result = token_wallet
+            .transfer_with_signer(
+                data_contract.clone(),
+                token_position,
+                sending_identity.identity.id(),
+                recipient_id,
+                amount,
+                &signing_key,
+                sending_identity,
+                public_note,
+                self.state_transition_options(),
+            )
             .await
             .map_err(|e| self.log_drive_proof_error(e, RequestType::BroadcastStateTransition))?;
 

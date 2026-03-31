@@ -11,7 +11,6 @@ use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::Value;
-use dash_sdk::platform::tokens::builders::purchase::TokenDirectPurchaseTransitionBuilder;
 use dash_sdk::platform::tokens::transitions::DirectPurchaseResult;
 use dash_sdk::platform::{DataContract, Identifier, IdentityPublicKey};
 use std::sync::Arc;
@@ -26,23 +25,23 @@ impl AppContext {
         signing_key: IdentityPublicKey,
         amount: TokenAmount,
         total_agreed_price: Credits,
-        sdk: &Sdk,
+        _sdk: &Sdk,
         _sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        let mut builder = TokenDirectPurchaseTransitionBuilder::new(
-            data_contract.clone(),
-            token_position,
-            sending_identity.identity.id(),
-            amount,
-            total_agreed_price,
-        );
+        let platform_wallet = self.platform_wallet_for_identity(sending_identity)?;
+        let token_wallet = platform_wallet.tokens();
 
-        if let Some(options) = self.state_transition_options() {
-            builder = builder.with_state_transition_creation_options(options);
-        }
-
-        let result = sdk
-            .token_purchase(builder, &signing_key, sending_identity)
+        let result = token_wallet
+            .purchase_with_signer(
+                data_contract.clone(),
+                token_position,
+                sending_identity.identity.id(),
+                amount,
+                total_agreed_price,
+                &signing_key,
+                sending_identity,
+                self.state_transition_options(),
+            )
             .await
             .map_err(|e| self.log_drive_proof_error(e, RequestType::BroadcastStateTransition))?;
 

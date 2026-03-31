@@ -9,7 +9,6 @@ use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::tokens::info::v0::IdentityTokenInfoV0Accessors;
-use dash_sdk::platform::tokens::builders::unfreeze::TokenUnfreezeTransitionBuilder;
 use dash_sdk::platform::tokens::transitions::UnfreezeResult;
 use dash_sdk::platform::{DataContract, Identifier, IdentityPublicKey};
 use std::sync::Arc;
@@ -25,30 +24,24 @@ impl AppContext {
         public_note: Option<String>,
         unfreeze_identity: Identifier,
         group_info: Option<GroupStateTransitionInfoStatus>,
-        sdk: &Sdk,
+        _sdk: &Sdk,
         _sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        let mut builder = TokenUnfreezeTransitionBuilder::new(
-            data_contract.clone(),
-            token_position,
-            actor_identity.identity.id(),
-            unfreeze_identity,
-        );
+        let platform_wallet = self.platform_wallet_for_identity(actor_identity)?;
+        let token_wallet = platform_wallet.tokens();
 
-        if let Some(note) = public_note {
-            builder = builder.with_public_note(note);
-        }
-
-        if let Some(group_info) = group_info {
-            builder = builder.with_using_group_info(group_info);
-        }
-
-        if let Some(options) = self.state_transition_options() {
-            builder = builder.with_state_transition_creation_options(options);
-        }
-
-        let result = sdk
-            .token_unfreeze_identity(builder, &signing_key, actor_identity)
+        let result = token_wallet
+            .unfreeze_with_signer(
+                data_contract.clone(),
+                token_position,
+                actor_identity.identity.id(),
+                unfreeze_identity,
+                &signing_key,
+                actor_identity,
+                public_note,
+                group_info,
+                self.state_transition_options(),
+            )
             .await
             .map_err(|e| self.log_drive_proof_error(e, RequestType::BroadcastStateTransition))?;
 

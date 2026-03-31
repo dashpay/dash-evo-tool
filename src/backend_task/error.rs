@@ -546,6 +546,13 @@ pub enum TaskError {
     #[error("Could not retrieve token information from the platform. Please retry.")]
     TokenQueryError { detail: String },
 
+    /// A token operation via the platform wallet failed.
+    #[error("The token operation could not be completed. Please check your input and retry.")]
+    PlatformWalletTokenError {
+        #[source]
+        source: Box<SdkError>,
+    },
+
     // ──────────────────────────────────────────────────────────────────────────
     // Contract schema errors
     // ──────────────────────────────────────────────────────────────────────────

@@ -38,6 +38,7 @@ pub use platform_wallet::PlatformWalletManager;
 
 pub use platform_wallet::CoreWallet;
 pub use platform_wallet::CoreAddressInfo;
+pub use platform_wallet::TokenWallet;
 pub use platform_wallet::wallet::WalletId;
 
 // ── Supporting types ───────────────────────────────────────────────────

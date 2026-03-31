@@ -11,7 +11,6 @@ use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
 use dash_sdk::dpp::group::group_action_status::GroupActionStatus;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::Value;
-use dash_sdk::platform::tokens::builders::burn::TokenBurnTransitionBuilder;
 use dash_sdk::platform::tokens::transitions::BurnResult;
 use dash_sdk::platform::{DataContract, Identifier, IdentityPublicKey};
 use std::sync::Arc;
@@ -27,31 +26,24 @@ impl AppContext {
         public_note: Option<String>,
         amount: u64,
         group_info: Option<GroupStateTransitionInfoStatus>,
-        sdk: &Sdk,
+        _sdk: &Sdk,
         _sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        let mut builder = TokenBurnTransitionBuilder::new(
-            data_contract.clone(),
-            token_position,
-            owner_identity.identity.id(),
-            amount,
-        );
+        let platform_wallet = self.platform_wallet_for_identity(owner_identity)?;
+        let token_wallet = platform_wallet.tokens();
 
-        if let Some(note) = public_note {
-            builder = builder.with_public_note(note);
-        }
-
-        if let Some(group_info) = group_info {
-            builder = builder.with_using_group_info(group_info);
-        }
-
-        let maybe_options = self.state_transition_options();
-        if let Some(options) = maybe_options {
-            builder = builder.with_state_transition_creation_options(options);
-        }
-
-        let result = sdk
-            .token_burn(builder, &signing_key, owner_identity)
+        let result = token_wallet
+            .burn_with_signer(
+                data_contract.clone(),
+                token_position,
+                owner_identity.identity.id(),
+                amount,
+                &signing_key,
+                owner_identity,
+                public_note,
+                group_info,
+                self.state_transition_options(),
+            )
             .await
             .map_err(|e| self.log_drive_proof_error(e, RequestType::BroadcastStateTransition))?;
 

@@ -9,7 +9,6 @@ use dash_sdk::dpp::data_contract::associated_token::token_distribution_key::Toke
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::Value;
-use dash_sdk::platform::tokens::builders::claim::TokenClaimTransitionBuilder;
 use dash_sdk::platform::tokens::transitions::ClaimResult;
 use dash_sdk::platform::{DataContract, Identifier, IdentityPublicKey};
 use std::sync::Arc;
@@ -24,27 +23,22 @@ impl AppContext {
         distribution_type: TokenDistributionType,
         signing_key: IdentityPublicKey,
         public_note: Option<String>,
-        sdk: &Sdk,
+        _sdk: &Sdk,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        // Build
-        let mut builder = TokenClaimTransitionBuilder::new(
-            data_contract.clone(),
-            token_position,
-            actor_identity.identity.id(),
-            distribution_type,
-        );
+        let platform_wallet = self.platform_wallet_for_identity(actor_identity)?;
+        let token_wallet = platform_wallet.tokens();
 
-        if let Some(note) = public_note {
-            builder = builder.with_public_note(note);
-        }
-
-        let maybe_options = self.state_transition_options();
-        if let Some(options) = maybe_options {
-            builder = builder.with_state_transition_creation_options(options);
-        }
-
-        let result = sdk
-            .token_claim(builder, &signing_key, actor_identity)
+        let result = token_wallet
+            .claim_with_signer(
+                data_contract.clone(),
+                token_position,
+                actor_identity.identity.id(),
+                distribution_type,
+                &signing_key,
+                actor_identity,
+                public_note,
+                self.state_transition_options(),
+            )
             .await
             .map_err(|e| self.log_drive_proof_error(e, RequestType::BroadcastStateTransition))?;
 

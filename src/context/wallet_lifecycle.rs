@@ -77,6 +77,24 @@ impl AppContext {
             .ok_or(TaskError::WalletNotFound)
     }
 
+    /// Get a `PlatformWallet` for the given `QualifiedIdentity`.
+    ///
+    /// Resolves the wallet seed hash from the identity's key derivation paths,
+    /// then looks it up in the platform wallet bridge map.
+    pub(crate) fn platform_wallet_for_identity(
+        &self,
+        identity: &crate::model::qualified_identity::QualifiedIdentity,
+    ) -> Result<PlatformWallet, TaskError> {
+        let (seed_hash, _) = identity
+            .determine_wallet_info()
+            .map_err(|e| {
+                tracing::error!("Failed to determine wallet info: {}", e);
+                TaskError::WalletNotFound
+            })?
+            .ok_or(TaskError::WalletNotFound)?;
+        self.require_platform_wallet(&seed_hash)
+    }
+
     pub fn start_spv(self: &Arc<Self>) -> Result<(), TaskError> {
         // Skip if SPV is already active — avoids orphaned listener tasks from
         // re-registering channels while existing handlers still hold old senders.

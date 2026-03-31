@@ -1,13 +1,15 @@
 use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
-use crate::backend_task::identity::{IdentityTask, IdentityTopUpInfo, TopUpIdentityFundingMethod};
 use crate::backend_task::wallet::WalletTask;
 use crate::context::AppContext;
 use crate::model::address::{AddressKind, ValidatedAddress};
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
-use crate::model::fee_estimation::format_credits_as_dash;
+use crate::model::fee_estimation::{PlatformFeeEstimator, format_credits_as_dash};
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::send_routing::{
+    self, FeeContext, MAX_PLATFORM_INPUTS, SendRequest, SendResult, SendSource,
+};
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::ui::components::address_input::AddressInput;
 use crate::ui::components::amount_input::AmountInput;
@@ -28,74 +30,14 @@ use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::{CREDITS_PER_DUFF, Credits};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::core_script::CoreScript;
-use dash_sdk::dpp::prelude::AddressNonce;
 use dash_sdk::dpp::prelude::AssetLockProof;
 use dash_sdk::dpp::state_transition::StateTransitionEstimatedFeeValidation;
-use dash_sdk::dpp::state_transition::address_credit_withdrawal_transition::AddressCreditWithdrawalTransition;
-use dash_sdk::dpp::state_transition::address_credit_withdrawal_transition::v0::AddressCreditWithdrawalTransitionV0;
 use dash_sdk::dpp::state_transition::address_funding_from_asset_lock_transition::AddressFundingFromAssetLockTransition;
 use dash_sdk::dpp::state_transition::address_funding_from_asset_lock_transition::v0::AddressFundingFromAssetLockTransitionV0;
-use dash_sdk::dpp::withdrawal::Pooling;
 use eframe::egui::{self, Context, RichText, Ui};
 use egui::{Color32, Frame, Margin};
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
-
-/// Maximum number of platform address inputs allowed per state transition
-const MAX_PLATFORM_INPUTS: usize = 16;
-
-use crate::model::fee_estimation::PlatformFeeEstimator;
-
-/// Estimated serialized bytes per input (address + signature/witness data)
-const ESTIMATED_BYTES_PER_INPUT: usize = 225;
-
-/// Calculate the estimated fee for a platform address funds transfer.
-///
-/// Uses PlatformFeeEstimator for base costs (input/output fees) plus storage fees.
-fn estimate_platform_fee(estimator: &PlatformFeeEstimator, input_count: usize) -> u64 {
-    let inputs = input_count.max(1);
-
-    // Base fee from Platform's min fee structure
-    // - 500,000 credits per input (address_funds_transfer_input_cost)
-    // - 6,000,000 credits per output (address_funds_transfer_output_cost)
-    let base_fee = estimator.estimate_address_funds_transfer(inputs, 1);
-
-    // Add storage fees for serialized input bytes only
-    // (outputs don't add significant serialization overhead)
-    let estimated_bytes = inputs * ESTIMATED_BYTES_PER_INPUT;
-    let storage_fee = estimator.estimate_storage_based_fee(estimated_bytes, inputs);
-
-    // Total with 20% safety buffer
-    let total = base_fee.saturating_add(storage_fee);
-    total.saturating_add(total / 5)
-}
-
-/// Calculate the estimated fee for a Platform address withdrawal using a constructed state transition.
-fn estimate_withdrawal_fee_from_transition(
-    platform_version: &dash_sdk::dpp::version::PlatformVersion,
-    inputs: &BTreeMap<PlatformAddress, u64>,
-    output_script: &CoreScript,
-) -> u64 {
-    let inputs_with_nonce: BTreeMap<PlatformAddress, (AddressNonce, Credits)> = inputs
-        .iter()
-        .map(|(addr, amount)| (*addr, (0, *amount)))
-        .collect();
-
-    let transition = AddressCreditWithdrawalTransition::V0(AddressCreditWithdrawalTransitionV0 {
-        inputs: inputs_with_nonce,
-        output: None,
-        fee_strategy: vec![AddressFundsFeeStrategyStep::DeductFromInput(0)],
-        core_fee_per_byte: 1,
-        pooling: Pooling::Never,
-        output_script: output_script.clone(),
-        user_fee_increase: 0,
-        input_witnesses: Vec::new(),
-    });
-
-    transition
-        .calculate_min_required_fee(platform_version)
-        .unwrap_or(0)
-}
 
 /// Calculate the estimated fee for funding a Platform address from an asset lock.
 fn estimate_address_funding_fee_from_transition(
@@ -118,153 +60,6 @@ fn estimate_address_funding_fee_from_transition(
     transition
         .calculate_min_required_fee(platform_version)
         .unwrap_or(0)
-}
-
-/// Result of allocating platform addresses for a transfer.
-#[derive(Debug, Clone)]
-struct AddressAllocationResult {
-    /// Map of platform address to amount to transfer from each
-    inputs: BTreeMap<PlatformAddress, u64>,
-    /// Index of the fee payer in BTreeMap iteration order
-    fee_payer_index: u16,
-    /// Estimated fee for this transaction
-    estimated_fee: u64,
-    /// Amount that couldn't be covered (0 if fully covered)
-    shortfall: u64,
-    /// Addresses sorted by balance descending (for UI display)
-    sorted_addresses: Vec<(PlatformAddress, Address, u64)>,
-}
-
-/// Allocates platform addresses for a transfer, using a custom fee calculator.
-fn allocate_platform_addresses_with_fee<F>(
-    addresses: &[(PlatformAddress, Address, u64)],
-    amount_credits: u64,
-    destination: Option<&PlatformAddress>,
-    fee_for_inputs: F,
-) -> AddressAllocationResult
-where
-    F: Fn(&BTreeMap<PlatformAddress, u64>) -> u64,
-{
-    // Filter out the destination address if provided (protocol doesn't allow same address as input and output)
-    let filtered: Vec<_> = addresses
-        .iter()
-        .filter(|(platform_addr, _, _)| destination != Some(platform_addr))
-        .cloned()
-        .collect();
-
-    // Sort addresses by balance descending so the largest balance is used first
-    let mut sorted_addresses = filtered;
-    sorted_addresses.sort_by(|a, b| b.2.cmp(&a.2));
-
-    // Early return if no addresses available after filtering
-    if sorted_addresses.is_empty() {
-        return AddressAllocationResult {
-            inputs: BTreeMap::new(),
-            fee_payer_index: 0,
-            estimated_fee: fee_for_inputs(&BTreeMap::new()),
-            shortfall: amount_credits,
-            sorted_addresses: vec![],
-        };
-    }
-
-    // The highest-balance address (first in sorted order) will pay the fee
-    let fee_payer_addr = sorted_addresses.first().map(|(addr, _, _)| *addr);
-
-    let mut estimated_fee = fee_for_inputs(&BTreeMap::new());
-    let mut inputs: BTreeMap<PlatformAddress, u64> = BTreeMap::new();
-
-    // Iterate until fee estimate stabilizes (input count affects fee)
-    for _ in 0..=MAX_PLATFORM_INPUTS {
-        inputs.clear();
-        let mut remaining = amount_credits;
-
-        for (idx, (platform_addr, _, balance)) in sorted_addresses.iter().enumerate() {
-            if remaining == 0 || inputs.len() >= MAX_PLATFORM_INPUTS {
-                break;
-            }
-            let is_fee_payer = idx == 0;
-            let available = if is_fee_payer {
-                balance.saturating_sub(estimated_fee)
-            } else {
-                *balance
-            };
-            let use_amount = remaining.min(available);
-            if use_amount > 0 || is_fee_payer {
-                inputs.insert(*platform_addr, use_amount);
-                remaining = remaining.saturating_sub(use_amount);
-            }
-        }
-
-        let new_fee = fee_for_inputs(&inputs);
-        if new_fee == estimated_fee {
-            break;
-        }
-        estimated_fee = new_fee;
-    }
-
-    // Calculate shortfall (amount we couldn't allocate)
-    let total_allocated: u64 = inputs.values().sum();
-    let allocation_shortfall = amount_credits.saturating_sub(total_allocated);
-
-    // Check if fee payer can actually afford the fee from their remaining balance.
-    let fee_deficit = if let Some(fee_payer) = fee_payer_addr {
-        let fee_payer_balance = sorted_addresses.first().map(|(_, _, b)| *b).unwrap_or(0);
-        let fee_payer_contribution = inputs.get(&fee_payer).copied().unwrap_or(0);
-        let fee_payer_remaining = fee_payer_balance.saturating_sub(fee_payer_contribution);
-        estimated_fee.saturating_sub(fee_payer_remaining)
-    } else {
-        estimated_fee
-    };
-
-    let shortfall = allocation_shortfall.saturating_add(fee_deficit);
-
-    // Find the index of the fee payer in BTreeMap order (required by backend)
-    let fee_payer_index = fee_payer_addr
-        .and_then(|payer| {
-            inputs
-                .keys()
-                .enumerate()
-                .find(|(_, addr)| **addr == payer)
-                .map(|(idx, _)| idx as u16)
-        })
-        .unwrap_or(0);
-
-    AddressAllocationResult {
-        inputs,
-        fee_payer_index,
-        estimated_fee,
-        shortfall,
-        sorted_addresses,
-    }
-}
-
-/// Allocates platform addresses for a transfer, selecting which addresses to use
-/// and how much from each.
-///
-/// Algorithm:
-/// 1. Filters out the destination address (can't be both input and output)
-/// 2. Sorts addresses by balance descending (largest first)
-/// 3. The highest-balance address pays the fee
-/// 4. Iteratively allocates until fee estimate converges
-/// 5. Fee payer is always included in inputs (even with 0 contribution) so fee can be deducted
-///
-/// Returns the allocation result with inputs, fee payer index, and any shortfall.
-fn allocate_platform_addresses(
-    estimator: &PlatformFeeEstimator,
-    addresses: &[(PlatformAddress, Address, u64)],
-    amount_credits: u64,
-    destination: Option<&PlatformAddress>,
-) -> AddressAllocationResult {
-    let max_inputs = addresses
-        .iter()
-        .filter(|(platform_addr, _, _)| destination != Some(platform_addr))
-        .count()
-        .min(MAX_PLATFORM_INPUTS);
-
-    allocate_platform_addresses_with_fee(addresses, amount_credits, destination, |_| {
-        // Keep the legacy behavior: use a worst-case fee based on max possible inputs.
-        estimate_platform_fee(estimator, max_inputs.max(1))
-    })
 }
 
 /// Source selection for sending
@@ -450,7 +245,7 @@ impl WalletSendScreen {
 
         let usable_count = sorted_addresses.len().min(MAX_PLATFORM_INPUTS);
         if usable_count == 0 {
-            return estimate_platform_fee(fee_estimator, 1);
+            return send_routing::estimate_platform_fee(fee_estimator, 1);
         }
 
         let dest_kind = self.validated_destination.as_ref().map(|v| v.kind());
@@ -466,7 +261,7 @@ impl WalletSendScreen {
                     .take(usable_count)
                     .map(|(addr, _, _)| (*addr, 0))
                     .collect();
-                return estimate_withdrawal_fee_from_transition(
+                return send_routing::estimate_withdrawal_fee(
                     self.app_context.platform_version(),
                     &max_fee_inputs,
                     &output_script,
@@ -474,7 +269,7 @@ impl WalletSendScreen {
             }
         }
 
-        estimate_platform_fee(fee_estimator, usable_count)
+        send_routing::estimate_platform_fee(fee_estimator, usable_count)
     }
 
     /// Clear the AddressInput widget so it picks up the new network on next frame.
@@ -746,15 +541,6 @@ impl WalletSendScreen {
         self.validated_destination.as_ref().map(|v| v.kind())
     }
 
-    /// Returns the destination address string, from the validated address if
-    /// available or an empty string otherwise.
-    fn destination_address_string(&self) -> String {
-        self.validated_destination
-            .as_ref()
-            .map(|v| v.to_address_string())
-            .unwrap_or_default()
-    }
-
     /// Clear the current send banner and show a new "Sending transaction..." progress banner.
     ///
     /// Called before dispatching any send backend task so the elapsed counter always starts fresh.
@@ -765,7 +551,10 @@ impl WalletSendScreen {
         self.send_banner = Some(handle);
     }
 
-    /// Validate and execute the send based on detected types
+    /// Validate and execute the send based on detected types.
+    ///
+    /// Delegates routing to `resolve_send()` which maps source+destination to the
+    /// correct `BackendTask` variant(s).
     fn validate_and_send(&mut self) -> Result<AppAction, String> {
         let wallet = self.selected_wallet.as_ref().ok_or("No wallet selected")?;
 
@@ -778,419 +567,165 @@ impl WalletSendScreen {
         let seed_hash = wallet_guard.seed_hash();
 
         // Validate source
-        let source = self
+        let source_selection = self
             .selected_source
             .as_ref()
-            .ok_or("Please select a source")?;
+            .ok_or("Please select a source")?
+            .clone();
 
         // Validate destination
-        let dest_kind = self.destination_kind();
-        if dest_kind.is_none() {
-            return Err(
+        let destination = self
+            .validated_destination
+            .clone()
+            .ok_or_else(|| {
                 "Invalid destination address. Use a Dash address (X.../y...) or Platform address (dash1.../tdash1...)"
-                    .to_string(),
-            );
-        }
+                    .to_string()
+            })?;
 
         // Validate amount
-        let amount = self
+        let amount_obj = self
             .amount
             .as_ref()
             .ok_or_else(|| "Please enter an amount".to_string())?;
-        if amount.value() == 0 {
+        if amount_obj.value() == 0 {
             return Err("Amount must be greater than 0".to_string());
         }
 
         drop(wallet_guard);
 
-        // Route to appropriate handler based on source and destination types
-        match (source.clone(), dest_kind) {
-            // === Existing 6 combinations ===
-            (SourceSelection::CoreWallet, Some(AddressKind::Core)) => self.send_core_to_core(),
-            (SourceSelection::CoreWallet, Some(AddressKind::Platform)) => {
-                self.send_core_to_platform(seed_hash)
-            }
-            (SourceSelection::PlatformAddresses(addresses), Some(AddressKind::Platform)) => {
-                self.send_platform_to_platform(seed_hash, addresses)
-            }
-            (SourceSelection::PlatformAddresses(addresses), Some(AddressKind::Core)) => {
-                self.send_platform_to_core(seed_hash, addresses)
-            }
-            (SourceSelection::Shielded(sh, _), Some(AddressKind::Shielded)) => {
-                self.send_shielded_to_shielded(sh)
-            }
-            (SourceSelection::Shielded(sh, _), Some(AddressKind::Platform)) => {
-                self.send_shielded_to_platform(sh)
-            }
-            // === New 8 combinations ===
-            (SourceSelection::CoreWallet, Some(AddressKind::Shielded)) => {
-                self.send_core_to_shielded(seed_hash)
-            }
-            (SourceSelection::CoreWallet, Some(AddressKind::Identity)) => {
-                self.send_core_to_identity(seed_hash)
-            }
-            (SourceSelection::PlatformAddresses(addresses), Some(AddressKind::Shielded)) => {
-                self.send_platform_to_shielded(seed_hash, addresses)
-            }
-            (SourceSelection::PlatformAddresses(addresses), Some(AddressKind::Identity)) => {
-                self.send_platform_to_identity(seed_hash, addresses)
-            }
-            (SourceSelection::Shielded(sh, _), Some(AddressKind::Core)) => {
-                self.send_shielded_to_core(sh)
-            }
-            (SourceSelection::Identity(qi), Some(AddressKind::Core)) => {
-                self.send_identity_to_core(*qi)
-            }
-            (SourceSelection::Identity(qi), Some(AddressKind::Platform)) => {
-                self.send_identity_to_platform(*qi)
-            }
-            (SourceSelection::Identity(qi), Some(AddressKind::Identity)) => {
-                self.send_identity_to_identity(*qi)
-            }
-            // === Unsupported combinations (defer to v2) ===
-            (SourceSelection::Identity(_), Some(AddressKind::Shielded)) => Err(
-                "Sending from an identity to the shielded pool is not yet supported. \
-                     Transfer to a Platform address first, then shield from there."
-                    .to_string(),
-            ),
-            (SourceSelection::Shielded(..), Some(AddressKind::Identity)) => Err(
-                "Sending from the shielded pool to an identity is not yet supported. \
-                     Transfer to a Platform address first, then top up the identity."
-                    .to_string(),
-            ),
-            _ => Err("Invalid source/destination combination".to_string()),
-        }
-    }
+        // Convert SourceSelection to SendSource
+        let source = self.build_send_source(source_selection, seed_hash)?;
 
-    fn send_core_to_core(&mut self) -> Result<AppAction, String> {
-        let amount_duffs = self
-            .amount
-            .as_ref()
-            .ok_or_else(|| "Amount is required".to_string())?
-            .dash_to_duffs()?;
-        if amount_duffs == 0 {
-            return Err("Amount must be greater than 0".to_string());
-        }
-
-        // Check balance
-        let balance = self.get_core_balance();
-        if amount_duffs > balance {
-            return Err(format!(
-                "Insufficient balance. Need {} but have {}",
-                Self::format_dash(amount_duffs),
-                Self::format_dash(balance)
-            ));
-        }
-
-        let wallet = self
-            .selected_wallet
-            .as_ref()
-            .ok_or("No wallet selected")?
-            .clone();
-
-        let recipient = PaymentRecipient {
-            address: self.destination_address_string(),
-            amount_duffs,
+        // For Core wallet sources, amount is in duffs; otherwise it's already in credits
+        let amount = match &source {
+            SendSource::CoreWallet { .. } => self
+                .amount
+                .as_ref()
+                .ok_or_else(|| "Amount is required".to_string())?
+                .dash_to_duffs()?,
+            _ => amount_obj.value(),
         };
 
-        self.mark_sending();
+        // Resolve identity for identity-destination routes
+        let resolved_identity = self.resolve_destination_identity(&destination)?;
 
-        Ok(AppAction::BackendTask(BackendTask::CoreTask(
-            CoreTask::SendWalletPayment {
-                wallet,
-                request: WalletPaymentRequest {
-                    recipients: vec![recipient],
-                    subtract_fee_from_amount: self.subtract_fee,
-                    memo: None,
-                    override_fee: None,
-                },
-            },
-        )))
+        // Build fee context for Platform source routes
+        let fee_context = self.build_fee_context(&source, &destination);
+
+        let request = SendRequest {
+            source,
+            destination,
+            amount,
+            resolved_identity,
+            fee_context,
+        };
+
+        match send_routing::resolve_send(request) {
+            Ok(SendResult::Single(task)) => {
+                self.mark_sending();
+                Ok(AppAction::BackendTask(task))
+            }
+            Ok(SendResult::Sequential(tasks)) => {
+                self.mark_sending();
+                Ok(AppAction::BackendTasks(
+                    tasks,
+                    crate::app::BackendTasksExecutionMode::Sequential,
+                ))
+            }
+            Err(e) => Err(e.to_string()),
+        }
     }
 
-    fn send_core_to_platform(&mut self, seed_hash: WalletSeedHash) -> Result<AppAction, String> {
-        let amount_duffs = self
-            .amount
-            .as_ref()
-            .ok_or_else(|| "Amount is required".to_string())?
-            .dash_to_duffs()?;
-        if amount_duffs == 0 {
-            return Err("Amount must be greater than 0".to_string());
-        }
-
-        // Extract validated platform address
-        let destination = self
-            .validated_destination
-            .as_ref()
-            .and_then(|v| v.as_platform().copied())
-            .ok_or_else(|| "Invalid platform address".to_string())?;
-
-        // Check balance; fees will be subtracted from amount
-        let required = amount_duffs;
-        let balance = self.get_core_balance();
-        if required > balance {
-            return Err(format!(
-                "Insufficient balance. Need {} (including fee) but have {}",
-                Self::format_dash(required),
-                Self::format_dash(balance)
-            ));
-        }
-
-        self.mark_sending();
-
-        Ok(AppAction::BackendTask(BackendTask::WalletTask(
-            WalletTask::FundPlatformAddressFromWalletUtxos {
-                seed_hash,
-                amount: amount_duffs,
-                destination,
-                // In simple mode, default to deducting fees from output (current behavior)
-                fee_deduct_from_output: true,
-            },
-        )))
-    }
-
-    fn send_platform_to_platform(
-        &mut self,
+    /// Convert UI-layer `SourceSelection` to routing-layer `SendSource`.
+    fn build_send_source(
+        &self,
+        source: SourceSelection,
         seed_hash: WalletSeedHash,
-        addresses: Vec<(PlatformAddress, Address, u64)>,
-    ) -> Result<AppAction, String> {
-        // Amount in credits (Amount stores in credits for DASH with 11 decimal places)
-        let amount_credits = self
-            .amount
-            .as_ref()
-            .ok_or_else(|| "Amount is required".to_string())?
-            .value();
-        if amount_credits == 0 {
-            return Err("Amount must be greater than 0".to_string());
-        }
-
-        // Get fee estimator with current network multiplier
-        let fee_estimator = self.app_context.fee_estimator();
-
-        // Calculate total balance across all platform addresses
-        let total_balance: u64 = addresses.iter().map(|(_, _, balance)| *balance).sum();
-
-        tracing::debug!(
-            "Platform transfer: {} requested, {} total balance across {} addresses",
-            Self::format_credits(amount_credits),
-            Self::format_credits(total_balance),
-            addresses.len()
-        );
-
-        if amount_credits > total_balance {
-            return Err(format!(
-                "Insufficient balance. Need {} but have {}",
-                Self::format_credits(amount_credits),
-                Self::format_credits(total_balance)
-            ));
-        }
-
-        // Extract validated platform address
-        let destination = self
-            .validated_destination
-            .as_ref()
-            .and_then(|v| v.as_platform().copied())
-            .ok_or_else(|| "Invalid platform address".to_string())?;
-
-        // Allocate addresses using the helper function
-        let allocation = allocate_platform_addresses(
-            &fee_estimator,
-            &addresses,
-            amount_credits,
-            Some(&destination),
-        );
-
-        if allocation.sorted_addresses.is_empty() {
-            return Err(
-                "Cannot send to your own address. The destination must be different from your source addresses."
-                    .to_string(),
-            );
-        }
-
-        // Check available balance after filtering out destination
-        let available_balance: u64 = allocation.sorted_addresses.iter().map(|(_, _, b)| *b).sum();
-        if amount_credits > available_balance {
-            return Err(format!(
-                "Insufficient balance from other addresses. Need {} but have {} (excluding destination address)",
-                Self::format_credits(amount_credits),
-                Self::format_credits(available_balance)
-            ));
-        }
-
-        if allocation.shortfall > 0 {
-            // Calculate the max we can send with MAX_PLATFORM_INPUTS addresses (minus fees)
-            let addresses_available = allocation.sorted_addresses.len().min(MAX_PLATFORM_INPUTS);
-            let max_balance: u64 = allocation
-                .sorted_addresses
-                .iter()
-                .take(MAX_PLATFORM_INPUTS)
-                .map(|(_, _, b)| *b)
-                .sum();
-            let max_fee = self.estimate_max_fee_for_platform_send(
-                &fee_estimator,
-                &allocation.sorted_addresses,
-                Some(&destination),
-            );
-            let max_sendable = max_balance.saturating_sub(max_fee);
-
-            return Err(format!(
-                "Requested amount {} exceeds maximum {} for a single transaction.\n\n\
-                 Details:\n\
-                 • You have {} addresses with a combined balance of {}\n\
-                 • Protocol limit: {} input addresses per transaction\n\
-                 • Estimated fee: {} (for {} inputs)\n\
-                 • Shortfall: {}\n\n\
-                 Try reducing the amount slightly to account for fees.",
-                Self::format_credits(amount_credits),
-                Self::format_credits(max_sendable),
-                addresses_available,
-                Self::format_credits(max_balance),
-                MAX_PLATFORM_INPUTS,
-                Self::format_credits(allocation.estimated_fee),
-                allocation.inputs.len(),
-                Self::format_credits(allocation.shortfall)
-            ));
-        }
-
-        let mut outputs = BTreeMap::new();
-        outputs.insert(destination, amount_credits);
-
-        // Log transfer summary
-        let total_input: u64 = allocation.inputs.values().sum();
-        tracing::debug!(
-            "Platform transfer: {} inputs totaling {}, output {}, fee {} (payer idx {})",
-            allocation.inputs.len(),
-            Self::format_credits(total_input),
-            Self::format_credits(amount_credits),
-            Self::format_credits(allocation.estimated_fee),
-            allocation.fee_payer_index
-        );
-
-        self.mark_sending();
-
-        Ok(AppAction::BackendTask(BackendTask::WalletTask(
-            WalletTask::TransferPlatformCredits {
+    ) -> Result<SendSource, String> {
+        match source {
+            SourceSelection::CoreWallet => {
+                let wallet = self
+                    .selected_wallet
+                    .as_ref()
+                    .ok_or("No wallet selected")?
+                    .clone();
+                let balance_duffs = self.get_core_balance();
+                Ok(SendSource::CoreWallet {
+                    wallet,
+                    balance_duffs,
+                    seed_hash,
+                })
+            }
+            SourceSelection::PlatformAddresses(addresses) => Ok(SendSource::PlatformAddresses {
                 seed_hash,
-                inputs: allocation.inputs,
-                outputs,
-                fee_payer_index: allocation.fee_payer_index,
-            },
-        )))
+                addresses,
+            }),
+            SourceSelection::Identity(qi) => Ok(SendSource::Identity {
+                qualified_identity: *qi,
+            }),
+            SourceSelection::Shielded(sh, balance_credits) => Ok(SendSource::Shielded {
+                seed_hash: sh,
+                balance_credits,
+            }),
+        }
     }
 
-    fn send_platform_to_core(
-        &mut self,
-        seed_hash: WalletSeedHash,
-        addresses: Vec<(PlatformAddress, Address, u64)>,
-    ) -> Result<AppAction, String> {
-        // Amount in credits
-        let amount_credits = self
-            .amount
-            .as_ref()
-            .ok_or_else(|| "Amount is required".to_string())?
-            .value();
-        if amount_credits == 0 {
-            return Err("Amount must be greater than 0".to_string());
+    /// Resolve the destination identity from the local database, if the
+    /// destination is an identity address.
+    fn resolve_destination_identity(
+        &self,
+        destination: &ValidatedAddress,
+    ) -> Result<Option<QualifiedIdentity>, String> {
+        let identity_id = match destination.as_identity_id() {
+            Some(id) => *id,
+            None => return Ok(None),
+        };
+
+        let qi = self
+            .app_context
+            .get_identity_by_id(&identity_id)
+            .map_err(|e| format!("Could not look up identity: {e}"))?
+            .ok_or_else(|| {
+                "No identity found with this ID. Please check the ID and try again.".to_string()
+            })?;
+
+        Ok(Some(qi))
+    }
+
+    /// Build the appropriate `FeeContext` for Platform-source routes.
+    fn build_fee_context(
+        &self,
+        source: &SendSource,
+        destination: &ValidatedAddress,
+    ) -> Option<FeeContext> {
+        let SendSource::PlatformAddresses { .. } = source else {
+            return None;
+        };
+
+        match destination.kind() {
+            AddressKind::Platform | AddressKind::Identity => Some(FeeContext::PlatformTransfer(
+                self.app_context.fee_estimator(),
+            )),
+            AddressKind::Core => {
+                let output_script = destination
+                    .as_core()
+                    .map(|addr| CoreScript::new(addr.script_pubkey()))
+                    .unwrap_or_else(|| CoreScript::new(vec![].into()));
+                Some(FeeContext::Withdrawal {
+                    output_script,
+                    platform_version: self.app_context.platform_version(),
+                })
+            }
+            AddressKind::Shielded => {
+                let base_fee = crate::model::fee_estimation::shielded_fee_for_actions(
+                    2,
+                    dash_sdk::dpp::version::PlatformVersion::latest(),
+                );
+                let multiplier = self.app_context.fee_multiplier_permille().max(1000);
+                let per_op_fee_credits = base_fee.saturating_mul(multiplier) / 1000;
+                Some(FeeContext::Shield { per_op_fee_credits })
+            }
         }
-
-        // Calculate total balance across all platform addresses
-        let total_balance: u64 = addresses.iter().map(|(_, _, balance)| *balance).sum();
-
-        tracing::debug!(
-            "Platform withdrawal: {} requested, {} total balance across {} addresses",
-            Self::format_credits(amount_credits),
-            Self::format_credits(total_balance),
-            addresses.len()
-        );
-
-        if amount_credits > total_balance {
-            return Err(format!(
-                "Insufficient balance. Need {} but have {}",
-                Self::format_credits(amount_credits),
-                Self::format_credits(total_balance)
-            ));
-        }
-
-        // Extract validated Core address
-        let dest_address = self
-            .validated_destination
-            .as_ref()
-            .and_then(|v| v.as_core())
-            .ok_or_else(|| "Invalid Core address".to_string())?;
-
-        let output_script = CoreScript::new(dest_address.script_pubkey());
-
-        let platform_version = self.app_context.platform_version();
-
-        // Allocate addresses using state-transition-based fee estimation (no destination filter)
-        let allocation =
-            allocate_platform_addresses_with_fee(&addresses, amount_credits, None, |inputs| {
-                estimate_withdrawal_fee_from_transition(platform_version, inputs, &output_script)
-            });
-
-        if allocation.shortfall > 0 {
-            // Calculate the max we can send with MAX_PLATFORM_INPUTS addresses (minus fees)
-            let addresses_available = allocation.sorted_addresses.len().min(MAX_PLATFORM_INPUTS);
-            let max_balance: u64 = allocation
-                .sorted_addresses
-                .iter()
-                .take(MAX_PLATFORM_INPUTS)
-                .map(|(_, _, b)| *b)
-                .sum();
-            let max_fee_inputs: BTreeMap<PlatformAddress, u64> = allocation
-                .sorted_addresses
-                .iter()
-                .take(addresses_available)
-                .map(|(addr, _, _)| (*addr, 0))
-                .collect();
-            let max_fee = estimate_withdrawal_fee_from_transition(
-                platform_version,
-                &max_fee_inputs,
-                &output_script,
-            );
-            let max_sendable = max_balance.saturating_sub(max_fee);
-
-            return Err(format!(
-                "Requested withdrawal {} exceeds maximum {} for a single transaction.\n\n\
-                 Details:\n\
-                 • You have {} Platform addresses with a combined balance of {}\n\
-                 • Protocol limit: {} input addresses per transaction\n\
-                 • Estimated fee: {} (for {} inputs)\n\
-                 • Shortfall: {}\n\n\
-                 Try reducing the amount slightly to account for fees.",
-                Self::format_credits(amount_credits),
-                Self::format_credits(max_sendable),
-                addresses_available,
-                Self::format_credits(max_balance),
-                MAX_PLATFORM_INPUTS,
-                Self::format_credits(allocation.estimated_fee),
-                allocation.inputs.len(),
-                Self::format_credits(allocation.shortfall)
-            ));
-        }
-
-        // Log withdrawal summary
-        let total_input: u64 = allocation.inputs.values().sum();
-        tracing::debug!(
-            "Platform withdrawal: {} inputs totaling {}, withdraw {}, fee {} (payer idx {})",
-            allocation.inputs.len(),
-            Self::format_credits(total_input),
-            Self::format_credits(amount_credits),
-            Self::format_credits(allocation.estimated_fee),
-            allocation.fee_payer_index
-        );
-
-        self.mark_sending();
-
-        Ok(AppAction::BackendTask(BackendTask::WalletTask(
-            WalletTask::WithdrawFromPlatformAddress {
-                seed_hash,
-                inputs: allocation.inputs,
-                output_script,
-                core_fee_per_byte: 1,
-                fee_payer_index: allocation.fee_payer_index,
-            },
-        )))
     }
 
     fn render_unlock_gate(&mut self, ui: &mut Ui) -> bool {
@@ -1350,466 +885,6 @@ impl WalletSendScreen {
             ui.add_space(10.0);
             ui.separator();
         }
-    }
-
-    /// Send from shielded pool to another shielded address (private transfer).
-    fn send_shielded_to_shielded(
-        &mut self,
-        seed_hash: WalletSeedHash,
-    ) -> Result<AppAction, String> {
-        let amount_credits = self
-            .amount
-            .as_ref()
-            .ok_or_else(|| "Amount is required".to_string())?
-            .value();
-
-        let recipient = self.destination_address_string();
-        let recipient_bytes = if let Ok((addr, _)) =
-            dash_sdk::dpp::address_funds::OrchardAddress::from_bech32m_string(&recipient)
-        {
-            addr.to_raw_bytes().to_vec()
-        } else {
-            return Err("Invalid shielded address".to_string());
-        };
-
-        self.send_status = SendStatus::WaitingForResult;
-        Ok(AppAction::BackendTask(
-            crate::backend_task::BackendTask::ShieldedTask(
-                crate::backend_task::shielded::ShieldedTask::ShieldedTransfer {
-                    seed_hash,
-                    amount: amount_credits,
-                    recipient_address_bytes: recipient_bytes,
-                },
-            ),
-        ))
-    }
-
-    /// Send from shielded pool to a platform address (unshield).
-    fn send_shielded_to_platform(
-        &mut self,
-        seed_hash: WalletSeedHash,
-    ) -> Result<AppAction, String> {
-        let amount_credits = self
-            .amount
-            .as_ref()
-            .ok_or_else(|| "Amount is required".to_string())?
-            .value();
-
-        let platform_addr = self
-            .validated_destination
-            .as_ref()
-            .and_then(|v| v.as_platform().copied())
-            .ok_or_else(|| "Invalid platform address".to_string())?;
-
-        self.send_status = SendStatus::WaitingForResult;
-        Ok(AppAction::BackendTask(
-            crate::backend_task::BackendTask::ShieldedTask(
-                crate::backend_task::shielded::ShieldedTask::UnshieldCredits {
-                    seed_hash,
-                    amount: amount_credits,
-                    to_platform_address: platform_addr,
-                },
-            ),
-        ))
-    }
-
-    // === New send handler methods (8 combinations) ===
-
-    /// Shield DASH from Core wallet via asset lock (Core -> Shielded).
-    fn send_core_to_shielded(&mut self, seed_hash: WalletSeedHash) -> Result<AppAction, String> {
-        // Shielding from Core always deposits into the wallet's own shielded pool.
-        // Validate the destination is a shielded address (the address input already constrains this).
-        if !matches!(
-            &self.validated_destination,
-            Some(ValidatedAddress::Shielded(_))
-        ) {
-            return Err("Please enter a valid shielded address".to_string());
-        }
-
-        let amount_duffs = self
-            .amount
-            .as_ref()
-            .ok_or_else(|| "Amount is required".to_string())?
-            .dash_to_duffs()?;
-        if amount_duffs == 0 {
-            return Err("Amount must be greater than 0".to_string());
-        }
-
-        let balance = self.get_core_balance();
-        if amount_duffs > balance {
-            return Err(format!(
-                "Insufficient balance. Need {} but have {}",
-                Self::format_dash(amount_duffs),
-                Self::format_dash(balance)
-            ));
-        }
-
-        self.mark_sending();
-        Ok(AppAction::BackendTask(BackendTask::ShieldedTask(
-            crate::backend_task::shielded::ShieldedTask::ShieldFromAssetLock {
-                seed_hash,
-                amount_duffs,
-                source_address: None,
-            },
-        )))
-    }
-
-    /// Top up an identity from Core wallet via asset lock (Core -> Identity).
-    fn send_core_to_identity(&mut self, _seed_hash: WalletSeedHash) -> Result<AppAction, String> {
-        let amount_duffs = self
-            .amount
-            .as_ref()
-            .ok_or_else(|| "Amount is required".to_string())?
-            .dash_to_duffs()?;
-        if amount_duffs == 0 {
-            return Err("Amount must be greater than 0".to_string());
-        }
-
-        let balance = self.get_core_balance();
-        if amount_duffs > balance {
-            return Err(format!(
-                "Insufficient balance. Need {} but have {}",
-                Self::format_dash(amount_duffs),
-                Self::format_dash(balance)
-            ));
-        }
-
-        // Resolve identity from destination
-        let identity_id = self
-            .validated_destination
-            .as_ref()
-            .and_then(|v| v.as_identity_id().copied())
-            .ok_or_else(|| "Invalid identity ID".to_string())?;
-
-        let qualified_identity = self
-            .app_context
-            .get_identity_by_id(&identity_id)
-            .map_err(|e| format!("Could not look up identity: {e}"))?
-            .ok_or_else(|| {
-                "No identity found with this ID. Please check the ID and try again.".to_string()
-            })?;
-
-        let identity_index = qualified_identity.wallet_index.unwrap_or(0);
-        let top_up_index = qualified_identity.top_ups.len() as u32;
-
-        let wallet = self
-            .selected_wallet
-            .as_ref()
-            .ok_or("No wallet selected")?
-            .clone();
-
-        self.mark_sending();
-        Ok(AppAction::BackendTask(BackendTask::IdentityTask(
-            IdentityTask::TopUpIdentity(IdentityTopUpInfo {
-                qualified_identity,
-                wallet,
-                identity_funding_method: TopUpIdentityFundingMethod::FundWithWallet(
-                    amount_duffs,
-                    identity_index,
-                    top_up_index,
-                ),
-            }),
-        )))
-    }
-
-    /// Shield credits from Platform address(es) to shielded pool (Platform -> Shielded).
-    ///
-    /// When the requested amount exceeds a single address balance, multiple
-    /// addresses are used — one `ShieldCredits` task per address, dispatched
-    /// sequentially.
-    fn send_platform_to_shielded(
-        &mut self,
-        seed_hash: WalletSeedHash,
-        addresses: Vec<(PlatformAddress, Address, u64)>,
-    ) -> Result<AppAction, String> {
-        if !matches!(
-            &self.validated_destination,
-            Some(ValidatedAddress::Shielded(_))
-        ) {
-            return Err("Please enter a valid shielded address".to_string());
-        }
-
-        let amount_credits = self
-            .amount
-            .as_ref()
-            .ok_or_else(|| "Amount is required".to_string())?
-            .value();
-        if amount_credits == 0 {
-            return Err("Amount must be greater than 0".to_string());
-        }
-
-        // Sort addresses by balance descending (greedy allocation)
-        let mut sorted_addrs = addresses;
-        sorted_addrs.sort_by(|a, b| b.2.cmp(&a.2));
-
-        let total_available: u64 = sorted_addrs.iter().map(|(_, _, b)| b).sum();
-        if amount_credits > total_available {
-            return Err(format!(
-                "Insufficient platform balance. Need {} but total available is {}.",
-                format_credits_as_dash(amount_credits),
-                format_credits_as_dash(total_available)
-            ));
-        }
-
-        // Allocate amount across addresses (highest balance first), reserving
-        // per-operation fee headroom so each address can cover its own shield fee.
-        // Apply the network fee multiplier for consistency with ShieldScreen.
-        let base_fee = crate::model::fee_estimation::shielded_fee_for_actions(
-            2,
-            dash_sdk::dpp::version::PlatformVersion::latest(),
-        );
-        let multiplier = self.app_context.fee_multiplier_permille().max(1000);
-        let per_op_fee = base_fee.saturating_mul(multiplier) / 1000;
-        let mut remaining = amount_credits;
-        let mut tasks: Vec<BackendTask> = Vec::new();
-        for (platform_addr, _, balance) in &sorted_addrs {
-            if remaining == 0 {
-                break;
-            }
-            let available = balance.saturating_sub(per_op_fee);
-            if available == 0 {
-                continue;
-            }
-            let spend = remaining.min(available);
-            tasks.push(BackendTask::ShieldedTask(
-                crate::backend_task::shielded::ShieldedTask::ShieldCredits {
-                    seed_hash,
-                    amount: spend,
-                    from_address: *platform_addr,
-                    nonce_override: None,
-                },
-            ));
-            remaining -= spend;
-        }
-
-        // Reject if allocation could not cover the full amount after fee deductions
-        if tasks.is_empty() {
-            return Err(
-                "Insufficient platform balance after fees. No address has enough to cover the shield operation fee."
-                    .to_string(),
-            );
-        }
-        if remaining > 0 {
-            let max_sendable = amount_credits.saturating_sub(remaining);
-            return Err(format!(
-                "Insufficient platform balance after fees. Need {} but only {} is available after estimated shield fees.",
-                format_credits_as_dash(amount_credits),
-                format_credits_as_dash(max_sendable),
-            ));
-        }
-
-        self.mark_sending();
-        if tasks.len() == 1 {
-            Ok(AppAction::BackendTask(tasks.into_iter().next().unwrap()))
-        } else {
-            Ok(AppAction::BackendTasks(
-                tasks,
-                crate::app::BackendTasksExecutionMode::Sequential,
-            ))
-        }
-    }
-
-    /// Top up an identity from Platform addresses (Platform -> Identity).
-    fn send_platform_to_identity(
-        &mut self,
-        seed_hash: WalletSeedHash,
-        addresses: Vec<(PlatformAddress, Address, u64)>,
-    ) -> Result<AppAction, String> {
-        let amount_credits = self
-            .amount
-            .as_ref()
-            .ok_or_else(|| "Amount is required".to_string())?
-            .value();
-        if amount_credits == 0 {
-            return Err("Amount must be greater than 0".to_string());
-        }
-
-        let identity_id = self
-            .validated_destination
-            .as_ref()
-            .and_then(|v| v.as_identity_id().copied())
-            .ok_or_else(|| "Invalid identity ID".to_string())?;
-
-        let qualified_identity = self
-            .app_context
-            .get_identity_by_id(&identity_id)
-            .map_err(|e| format!("Could not look up identity: {e}"))?
-            .ok_or_else(|| {
-                "No identity found with this ID. Please check the ID and try again.".to_string()
-            })?;
-
-        let fee_estimator = self.app_context.fee_estimator();
-        let allocation =
-            allocate_platform_addresses(&fee_estimator, &addresses, amount_credits, None);
-        if allocation.shortfall > 0 {
-            return Err(format!(
-                "Insufficient platform balance. Need {} (including estimated fee of {}) but short by {}",
-                format_credits_as_dash(amount_credits + allocation.estimated_fee),
-                format_credits_as_dash(allocation.estimated_fee),
-                format_credits_as_dash(allocation.shortfall)
-            ));
-        }
-
-        self.mark_sending();
-        Ok(AppAction::BackendTask(BackendTask::IdentityTask(
-            IdentityTask::TopUpIdentityFromPlatformAddresses {
-                identity: qualified_identity,
-                inputs: allocation.inputs,
-                wallet_seed_hash: seed_hash,
-            },
-        )))
-    }
-
-    /// Withdraw from shielded pool to Core address (Shielded -> Core).
-    fn send_shielded_to_core(&mut self, seed_hash: WalletSeedHash) -> Result<AppAction, String> {
-        let amount_credits = self
-            .amount
-            .as_ref()
-            .ok_or_else(|| "Amount is required".to_string())?
-            .value();
-        if amount_credits == 0 {
-            return Err("Amount must be greater than 0".to_string());
-        }
-
-        let core_address = self
-            .validated_destination
-            .as_ref()
-            .and_then(|v| v.as_core().cloned())
-            .ok_or_else(|| "Invalid Core address".to_string())?;
-
-        self.mark_sending();
-        Ok(AppAction::BackendTask(BackendTask::ShieldedTask(
-            crate::backend_task::shielded::ShieldedTask::ShieldedWithdrawal {
-                seed_hash,
-                amount: amount_credits,
-                to_core_address: core_address,
-            },
-        )))
-    }
-
-    /// Withdraw identity credits to Core address (Identity -> Core).
-    fn send_identity_to_core(
-        &mut self,
-        qualified_identity: QualifiedIdentity,
-    ) -> Result<AppAction, String> {
-        let amount_credits = self
-            .amount
-            .as_ref()
-            .ok_or_else(|| "Amount is required".to_string())?
-            .value();
-        if amount_credits == 0 {
-            return Err("Amount must be greater than 0".to_string());
-        }
-
-        let identity_balance = qualified_identity.identity.balance();
-        if amount_credits > identity_balance {
-            return Err(format!(
-                "Insufficient identity balance. Need {} but have {}",
-                format_credits_as_dash(amount_credits),
-                format_credits_as_dash(identity_balance)
-            ));
-        }
-
-        let core_address = self
-            .validated_destination
-            .as_ref()
-            .and_then(|v| v.as_core().cloned())
-            .ok_or_else(|| "Invalid Core address".to_string())?;
-
-        self.mark_sending();
-        Ok(AppAction::BackendTask(BackendTask::IdentityTask(
-            IdentityTask::WithdrawFromIdentity(
-                qualified_identity,
-                Some(core_address),
-                amount_credits,
-                None,
-            ),
-        )))
-    }
-
-    /// Transfer identity credits to Platform address (Identity -> Platform).
-    fn send_identity_to_platform(
-        &mut self,
-        qualified_identity: QualifiedIdentity,
-    ) -> Result<AppAction, String> {
-        let amount_credits = self
-            .amount
-            .as_ref()
-            .ok_or_else(|| "Amount is required".to_string())?
-            .value();
-        if amount_credits == 0 {
-            return Err("Amount must be greater than 0".to_string());
-        }
-
-        let identity_balance = qualified_identity.identity.balance();
-        if amount_credits > identity_balance {
-            return Err(format!(
-                "Insufficient identity balance. Need {} but have {}",
-                format_credits_as_dash(amount_credits),
-                format_credits_as_dash(identity_balance)
-            ));
-        }
-
-        let platform_addr = self
-            .validated_destination
-            .as_ref()
-            .and_then(|v| v.as_platform().copied())
-            .ok_or_else(|| "Invalid Platform address".to_string())?;
-
-        let mut outputs = BTreeMap::new();
-        outputs.insert(platform_addr, amount_credits);
-
-        self.mark_sending();
-        Ok(AppAction::BackendTask(BackendTask::IdentityTask(
-            IdentityTask::TransferToAddresses {
-                identity: qualified_identity,
-                outputs,
-                key_id: None,
-            },
-        )))
-    }
-
-    /// Transfer identity credits to another identity (Identity -> Identity).
-    fn send_identity_to_identity(
-        &mut self,
-        qualified_identity: QualifiedIdentity,
-    ) -> Result<AppAction, String> {
-        let amount_credits = self
-            .amount
-            .as_ref()
-            .ok_or_else(|| "Amount is required".to_string())?
-            .value();
-        if amount_credits == 0 {
-            return Err("Amount must be greater than 0".to_string());
-        }
-
-        let identity_balance = qualified_identity.identity.balance();
-        if amount_credits > identity_balance {
-            return Err(format!(
-                "Insufficient identity balance. Need {} but have {}",
-                format_credits_as_dash(amount_credits),
-                format_credits_as_dash(identity_balance)
-            ));
-        }
-
-        let to_identity_id = self
-            .validated_destination
-            .as_ref()
-            .and_then(|v| v.as_identity_id().copied())
-            .ok_or_else(|| "Invalid identity ID".to_string())?;
-
-        // Prevent self-send (same identity as source and destination)
-        if to_identity_id == qualified_identity.identity.id() {
-            return Err(
-                "You cannot send credits to the same identity. Please choose a different destination."
-                    .to_string(),
-            );
-        }
-
-        self.mark_sending();
-        Ok(AppAction::BackendTask(BackendTask::IdentityTask(
-            IdentityTask::Transfer(qualified_identity, to_identity_id, amount_credits, None),
-        )))
     }
 
     fn render_source_selection(&mut self, ui: &mut Ui) {
@@ -2426,7 +1501,7 @@ impl WalletSendScreen {
             .and_then(|v| v.as_platform().copied());
 
         // Use the same allocation algorithm as the send logic, filtering out the destination
-        let allocation = allocate_platform_addresses(
+        let allocation = send_routing::allocate_platform_addresses(
             &fee_estimator,
             addresses,
             amount_credits,

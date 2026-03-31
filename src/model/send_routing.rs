@@ -27,6 +27,7 @@ pub enum SendSource {
     CoreWallet {
         wallet: Arc<RwLock<Wallet>>,
         balance_duffs: u64,
+        seed_hash: WalletSeedHash,
     },
     /// Platform L2 addresses with their balances (in credits).
     PlatformAddresses {
@@ -137,23 +138,23 @@ pub enum SendRoutingError {
 
 /// Result of allocating platform addresses for a transfer.
 #[derive(Debug, Clone)]
-struct AddressAllocationResult {
+pub struct AddressAllocationResult {
     /// Map of platform address to amount to transfer from each.
-    inputs: BTreeMap<PlatformAddress, u64>,
+    pub inputs: BTreeMap<PlatformAddress, u64>,
     /// Index of the fee payer in BTreeMap iteration order.
-    fee_payer_index: u16,
+    pub fee_payer_index: u16,
     /// Estimated fee for this transaction.
-    estimated_fee: u64,
+    pub estimated_fee: u64,
     /// Amount that couldn't be covered (0 if fully covered).
-    shortfall: u64,
+    pub shortfall: u64,
     /// Addresses sorted by balance descending (for UI display).
-    sorted_addresses: Vec<(PlatformAddress, Address, u64)>,
+    pub sorted_addresses: Vec<(PlatformAddress, Address, u64)>,
 }
 
 /// Allocates platform addresses for a transfer, using a custom fee calculator.
 ///
 /// Iterates until the fee estimate stabilizes (input count affects fee).
-fn allocate_platform_addresses_with_fee<F>(
+pub fn allocate_platform_addresses_with_fee<F>(
     addresses: &[(PlatformAddress, Address, u64)],
     amount_credits: u64,
     destination: Option<&PlatformAddress>,
@@ -248,7 +249,7 @@ where
 }
 
 /// Allocates platform addresses for a transfer using the standard platform fee estimator.
-fn allocate_platform_addresses(
+pub fn allocate_platform_addresses(
     estimator: &PlatformFeeEstimator,
     addresses: &[(PlatformAddress, Address, u64)],
     amount_credits: u64,
@@ -269,7 +270,7 @@ fn allocate_platform_addresses(
 const ESTIMATED_BYTES_PER_INPUT: usize = 225;
 
 /// Calculate the estimated fee for a platform address funds transfer.
-fn estimate_platform_fee(estimator: &PlatformFeeEstimator, input_count: usize) -> u64 {
+pub fn estimate_platform_fee(estimator: &PlatformFeeEstimator, input_count: usize) -> u64 {
     let inputs = input_count.max(1);
     let base_fee = estimator.estimate_address_funds_transfer(inputs, 1);
     let estimated_bytes = inputs * ESTIMATED_BYTES_PER_INPUT;
@@ -280,7 +281,7 @@ fn estimate_platform_fee(estimator: &PlatformFeeEstimator, input_count: usize) -
 
 /// Calculate the estimated fee for a Platform address withdrawal using a
 /// constructed state transition.
-fn estimate_withdrawal_fee(
+pub fn estimate_withdrawal_fee(
     platform_version: &PlatformVersion,
     inputs: &BTreeMap<PlatformAddress, u64>,
     output_script: &CoreScript,
@@ -343,6 +344,7 @@ pub fn resolve_send(request: SendRequest) -> Result<SendResult, SendRoutingError
             SendSource::CoreWallet {
                 wallet,
                 balance_duffs,
+                ..
             },
             ValidatedAddress::Core(addr),
         ) => {
@@ -367,15 +369,17 @@ pub fn resolve_send(request: SendRequest) -> Result<SendResult, SendRoutingError
         }
 
         (
-            SendSource::CoreWallet { balance_duffs, .. },
+            SendSource::CoreWallet {
+                balance_duffs,
+                seed_hash,
+                ..
+            },
             ValidatedAddress::Platform {
                 address: destination,
                 ..
             },
         ) => {
             check_balance(balance_duffs, amount, true)?;
-
-            let seed_hash = core_wallet_seed_hash_placeholder();
 
             Ok(SendResult::Single(BackendTask::WalletTask(
                 WalletTask::FundPlatformAddressFromWalletUtxos {
@@ -387,10 +391,15 @@ pub fn resolve_send(request: SendRequest) -> Result<SendResult, SendRoutingError
             )))
         }
 
-        (SendSource::CoreWallet { balance_duffs, .. }, ValidatedAddress::Shielded(_)) => {
+        (
+            SendSource::CoreWallet {
+                balance_duffs,
+                seed_hash,
+                ..
+            },
+            ValidatedAddress::Shielded(_),
+        ) => {
             check_balance(balance_duffs, amount, true)?;
-
-            let seed_hash = core_wallet_seed_hash_placeholder();
 
             Ok(SendResult::Single(BackendTask::ShieldedTask(
                 ShieldedTask::ShieldFromAssetLock {
@@ -405,6 +414,7 @@ pub fn resolve_send(request: SendRequest) -> Result<SendResult, SendRoutingError
             SendSource::CoreWallet {
                 wallet,
                 balance_duffs,
+                ..
             },
             ValidatedAddress::Identity { .. },
         ) => {
@@ -769,15 +779,6 @@ fn platform_shortfall_error(
     })
 }
 
-/// Placeholder: CoreWallet source currently doesn't carry seed_hash directly.
-/// The caller must set it from the wallet before calling resolve_send for
-/// Core-to-Platform and Core-to-Shielded routes. For now, return a zeroed hash.
-///
-/// TODO: Add seed_hash field to SendSource::CoreWallet when refactoring send_screen.
-fn core_wallet_seed_hash_placeholder() -> WalletSeedHash {
-    [0u8; 32]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -834,6 +835,7 @@ mod tests {
                 source: SendSource::CoreWallet {
                     wallet,
                     balance_duffs: 100_000,
+                    seed_hash: [0u8; 32],
                 },
                 destination: ValidatedAddress::Core(testnet_core_address()),
                 amount: 0,
@@ -951,6 +953,7 @@ mod tests {
                 source: SendSource::CoreWallet {
                     wallet,
                     balance_duffs: 10_000,
+                    seed_hash: [0u8; 32],
                 },
                 destination: ValidatedAddress::Core(testnet_core_address()),
                 amount: 50_000,
@@ -1267,6 +1270,7 @@ mod tests {
                 source: SendSource::CoreWallet {
                     wallet,
                     balance_duffs: 100_000,
+                    seed_hash: [0u8; 32],
                 },
                 destination: ValidatedAddress::Core(addr.clone()),
                 amount: 50_000,
@@ -1295,6 +1299,7 @@ mod tests {
                 source: SendSource::CoreWallet {
                     wallet,
                     balance_duffs: 10_000,
+                    seed_hash: [0u8; 32],
                 },
                 destination: ValidatedAddress::Platform {
                     address: dest,
@@ -1322,6 +1327,7 @@ mod tests {
                 source: SendSource::CoreWallet {
                     wallet,
                     balance_duffs: 100_000,
+                    seed_hash: [0u8; 32],
                 },
                 destination: ValidatedAddress::Shielded("tdash1z_test".to_string()),
                 amount: 1,
@@ -1346,6 +1352,7 @@ mod tests {
                 source: SendSource::CoreWallet {
                     wallet,
                     balance_duffs: 100_000,
+                    seed_hash: [0u8; 32],
                 },
                 destination: ValidatedAddress::Identity {
                     id: test_identity_id(),
@@ -1368,6 +1375,7 @@ mod tests {
                 source: SendSource::CoreWallet {
                     wallet,
                     balance_duffs: 100_000,
+                    seed_hash: [0u8; 32],
                 },
                 destination: ValidatedAddress::Identity {
                     id,
@@ -1404,6 +1412,7 @@ mod tests {
                 source: SendSource::CoreWallet {
                     wallet,
                     balance_duffs: 1,
+                    seed_hash: [0u8; 32],
                 },
                 destination: ValidatedAddress::Core(testnet_core_address()),
                 amount: 1,
@@ -1435,6 +1444,7 @@ mod tests {
                 source: SendSource::CoreWallet {
                     wallet,
                     balance_duffs: u64::MAX,
+                    seed_hash: [0u8; 32],
                 },
                 destination: ValidatedAddress::Core(testnet_core_address()),
                 amount: u64::MAX - 1,
@@ -1498,6 +1508,7 @@ mod tests {
                 source: SendSource::CoreWallet {
                     wallet,
                     balance_duffs: 100_000,
+                    seed_hash: [0u8; 32],
                 },
                 destination: ValidatedAddress::Platform {
                     address: dest,

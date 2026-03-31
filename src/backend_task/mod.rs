@@ -447,7 +447,7 @@ impl AppContext {
                     Ok(this.run_wallet_task(wallet_task).await?)
                 }
                 BackendTask::ShieldedTask(shielded_task) => {
-                    Ok(self.run_shielded_task(shielded_task).await?)
+                    Ok(this.run_shielded_task(shielded_task).await?)
                 }
                 BackendTask::None => Ok(BackendTaskSuccessResult::None),
             }

@@ -564,6 +564,7 @@ impl AsyncTool<DashMcpService> for WalletFundsSend {
                     SendSource::CoreWallet {
                         wallet: wallet_arc,
                         balance_duffs: balance,
+                        seed_hash,
                     },
                     param.amount_duffs,
                 )

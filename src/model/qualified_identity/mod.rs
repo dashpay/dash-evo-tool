@@ -780,3 +780,34 @@ impl QualifiedIdentity {
         Ok(wallet_info)
     }
 }
+
+#[cfg(test)]
+impl QualifiedIdentity {
+    /// Create a minimal test identity with the given credit balance.
+    pub fn new_test_identity(balance: u64) -> Self {
+        use dash_sdk::dpp::identity::accessors::IdentitySettersV0;
+        use dash_sdk::dpp::version::PlatformVersion;
+        use dash_sdk::platform::Identifier;
+
+        let id = Identifier::random();
+        let mut identity = Identity::create_basic_identity(id, PlatformVersion::latest())
+            .expect("create test identity");
+        identity.set_balance(balance);
+
+        QualifiedIdentity {
+            identity,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: None,
+            private_keys: KeyStorage::default(),
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            wallet_index: Some(0),
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: Network::Testnet,
+        }
+    }
+}

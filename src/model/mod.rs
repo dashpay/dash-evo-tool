@@ -8,5 +8,6 @@ pub mod proof_log_item;
 pub mod qualified_contract;
 pub mod qualified_identity;
 pub mod secret;
+pub mod send_routing;
 pub mod settings;
 pub mod wallet;

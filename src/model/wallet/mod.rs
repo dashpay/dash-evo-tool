@@ -2722,6 +2722,62 @@ impl AddressProvider for WalletAddressProvider {
 }
 
 #[cfg(test)]
+impl Wallet {
+    /// Create a minimal test wallet for unit tests outside this module.
+    pub fn new_test_wallet() -> Self {
+        use dash_sdk::dpp::key_wallet::bip32::{ExtendedPrivKey, ExtendedPubKey};
+        let seed = [42u8; 64];
+        let network = Network::Testnet;
+        let secp = Secp256k1::new();
+
+        let master_private_key =
+            ExtendedPrivKey::new_master(network, &seed).expect("master key derivation");
+        let bip44_account_path = DerivationPath::from(vec![
+            ChildNumber::Hardened { index: 44 },
+            ChildNumber::Hardened { index: 1 },
+            ChildNumber::Hardened { index: 0 },
+        ]);
+        let bip44_account_private = master_private_key
+            .derive_priv(&secp, &bip44_account_path)
+            .expect("bip44 derivation");
+        let master_bip44_ecdsa_extended_public_key =
+            ExtendedPubKey::from_priv(&secp, &bip44_account_private);
+        let seed_hash = ClosedKeyItem::compute_seed_hash(&seed);
+
+        Wallet {
+            wallet_seed: WalletSeed::Open(OpenWalletSeed {
+                seed,
+                wallet_info: ClosedKeyItem {
+                    seed_hash,
+                    encrypted_seed: seed.to_vec(),
+                    salt: vec![],
+                    nonce: vec![],
+                    password_hint: None,
+                },
+            }),
+            uses_password: false,
+            master_bip44_ecdsa_extended_public_key,
+            address_balances: BTreeMap::new(),
+            address_total_received: BTreeMap::new(),
+            known_addresses: BTreeMap::new(),
+            watched_addresses: BTreeMap::new(),
+            unused_asset_locks: Vec::new(),
+            alias: Some("Test Wallet".to_string()),
+            identities: HashMap::new(),
+            utxos: HashMap::new(),
+            transactions: Vec::new(),
+            is_main: true,
+            confirmed_balance: 0,
+            unconfirmed_balance: 0,
+            total_balance: 0,
+            spv_balance_known: false,
+            platform_address_info: BTreeMap::new(),
+            core_wallet_name: None,
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use dash_sdk::dpp::dashcore::hashes::Hash;

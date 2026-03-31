@@ -2,6 +2,7 @@
 
 use std::borrow::Cow;
 
+use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use rmcp::handler::server::router::tool::{AsyncTool, ToolBase};
 use rmcp::model::ToolAnnotations;
 use rmcp::schemars;
@@ -15,6 +16,8 @@ use crate::mcp::error::McpToolError;
 use crate::mcp::resolve;
 use crate::mcp::server::DashMcpService;
 use crate::mcp::tools::{NetworkParams, WalletIdParams};
+use crate::model::address::AddressKind;
+use crate::model::send_routing::{SendRequest, SendResult, SendSource};
 
 // ---------------------------------------------------------------------------
 // GenerateReceiveAddress
@@ -426,5 +429,379 @@ impl AsyncTool<DashMcpService> for ListWalletsTool {
             })
             .collect();
         Ok(ListWalletsOutput { wallets: entries })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// WalletFundsSend — unified send via send_routing
+// ---------------------------------------------------------------------------
+
+fn default_core_source() -> String {
+    "core".to_string()
+}
+
+/// Send funds from any source (Core wallet, Platform addresses, shielded pool,
+/// or identity balance) to any supported destination address type.
+/// Uses unified send routing to determine the correct backend operation.
+pub struct WalletFundsSend;
+
+#[derive(Debug, Deserialize, schemars::JsonSchema, Default)]
+pub struct WalletFundsSendParams {
+    /// Wallet alias or 64-char hex seed hash (sender)
+    pub wallet_id: String,
+    /// Destination address: Core (X.../y...), Platform (dash1.../tdash1...),
+    /// Shielded (dash1z.../tdash1z...), or Identity ID (Base58)
+    pub address: String,
+    /// Amount in duffs (1 DASH = 100,000,000 duffs). For non-Core sources the
+    /// tool converts to credits internally (1 duff = 1,000 credits).
+    pub amount_duffs: u64,
+    /// Required: mainnet, testnet, devnet, local
+    pub network: String,
+    /// Source type: "core" (default), "platform", "shielded", "identity"
+    #[serde(default = "default_core_source")]
+    pub source: String,
+    /// Identity ID in Base58 (required when source="identity")
+    pub identity_id: Option<String>,
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct WalletFundsSendOutput {
+    /// Which route was taken (e.g. "core->core", "platform->shielded")
+    route: String,
+    /// Amount sent (in the source's native unit)
+    amount: u64,
+    /// Transaction ID if available (Core-to-Core sends)
+    txid: Option<String>,
+    /// Number of sequential tasks dispatched (>1 for multi-address Platform-to-Shielded)
+    tasks_dispatched: u32,
+}
+
+impl ToolBase for WalletFundsSend {
+    type Parameter = WalletFundsSendParams;
+    type Output = WalletFundsSendOutput;
+    type Error = McpToolError;
+
+    fn name() -> Cow<'static, str> {
+        "wallet_funds_send".into()
+    }
+
+    fn description() -> Option<Cow<'static, str>> {
+        Some(
+            "Send funds from any source to any destination address type. \
+             Sources: core (default), platform, shielded, identity. \
+             Destinations: Core address, Platform address, Shielded address, or Identity ID. \
+             Amount is always specified in duffs (converted to credits internally for non-Core sources). \
+             The 'network' parameter is required."
+                .into(),
+        )
+    }
+
+    fn annotations() -> Option<ToolAnnotations> {
+        Some(
+            ToolAnnotations::default()
+                .read_only(false)
+                .destructive(true)
+                .idempotent(false)
+                .open_world(true),
+        )
+    }
+}
+
+impl AsyncTool<DashMcpService> for WalletFundsSend {
+    async fn invoke(
+        service: &DashMcpService,
+        param: WalletFundsSendParams,
+    ) -> Result<WalletFundsSendOutput, McpToolError> {
+        let ctx = service
+            .ctx()
+            .await
+            .map_err(|e| McpToolError::Internal(e.to_string()))?;
+
+        // Network is mandatory for destructive operations
+        if param.network.is_empty() {
+            return Err(McpToolError::InvalidParam {
+                message: "The 'network' parameter must not be empty. \
+                          Use \"mainnet\", \"testnet\", \"devnet\", or \"local\"."
+                    .to_owned(),
+            });
+        }
+        resolve::require_network(&ctx, Some(&param.network))?;
+
+        // Validate amount
+        resolve::validate_amount(param.amount_duffs)?;
+
+        // Resolve wallet
+        let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
+
+        // SPV required for all wallet operations
+        resolve::ensure_spv_synced(&ctx).await?;
+
+        // Detect and validate destination address
+        let dest_kind =
+            AddressKind::detect(&param.address).ok_or_else(|| McpToolError::InvalidParam {
+                message: format!(
+                    "Could not detect address type for '{}'. \
+                     Supported: Core (X/y/7/8), Platform (dash1/tdash1), \
+                     Shielded (dash1z/tdash1z), Identity (Base58 ID).",
+                    param.address
+                ),
+            })?;
+        let destination = build_validated_address(&param.address, dest_kind, &ctx)
+            .map_err(|msg| McpToolError::InvalidParam { message: msg })?;
+
+        let source_str = param.source.to_lowercase();
+        let source_label = source_str.as_str();
+
+        // Build SendSource based on source param
+        let (source, amount) = match source_label {
+            "core" => {
+                let wallet_arc = resolve::wallet_arc(&ctx, seed_hash)?;
+                let balance = {
+                    let w = wallet_arc.read().unwrap_or_else(|e| e.into_inner());
+                    w.confirmed_balance_duffs()
+                };
+                (
+                    SendSource::CoreWallet {
+                        wallet: wallet_arc,
+                        balance_duffs: balance,
+                    },
+                    param.amount_duffs,
+                )
+            }
+            "platform" => {
+                // Fetch platform address balances via backend task
+                let task =
+                    BackendTask::WalletTask(WalletTask::FetchPlatformAddressBalances { seed_hash });
+                let result = dispatch_task(&ctx, task)
+                    .await
+                    .map_err(McpToolError::TaskFailed)?;
+
+                let addresses = match result {
+                    BackendTaskSuccessResult::PlatformAddressBalances { balances, .. } => {
+                        platform_balances_to_address_tuples(&ctx, seed_hash, balances)?
+                    }
+                    other => {
+                        return Err(McpToolError::Internal(format!(
+                            "Unexpected task result: {other:?}"
+                        )));
+                    }
+                };
+
+                let amount_credits = duffs_to_credits(param.amount_duffs)?;
+
+                (
+                    SendSource::PlatformAddresses {
+                        seed_hash,
+                        addresses,
+                    },
+                    amount_credits,
+                )
+            }
+            "shielded" => {
+                let balance = shielded_balance(&ctx, seed_hash);
+                let amount_credits = duffs_to_credits(param.amount_duffs)?;
+
+                (
+                    SendSource::Shielded {
+                        seed_hash,
+                        balance_credits: balance,
+                    },
+                    amount_credits,
+                )
+            }
+            "identity" => {
+                let identity_id_str =
+                    param
+                        .identity_id
+                        .as_deref()
+                        .ok_or_else(|| McpToolError::InvalidParam {
+                            message:
+                                "The 'identity_id' parameter is required when source is 'identity'."
+                                    .to_owned(),
+                        })?;
+                let qi = resolve::qualified_identity(&ctx, identity_id_str)?;
+
+                let amount_credits = duffs_to_credits(param.amount_duffs)?;
+
+                (
+                    SendSource::Identity {
+                        qualified_identity: qi,
+                    },
+                    amount_credits,
+                )
+            }
+            other => {
+                return Err(McpToolError::InvalidParam {
+                    message: format!(
+                        "Unknown source '{other}'. Supported: core, platform, shielded, identity."
+                    ),
+                });
+            }
+        };
+
+        // Resolve destination identity if needed
+        let resolved_identity = match &destination {
+            crate::model::address::ValidatedAddress::Identity { id, .. } => {
+                Some(resolve::qualified_identity(
+                    &ctx,
+                    &id.to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58),
+                )?)
+            }
+            _ => None,
+        };
+
+        let route_label = format!(
+            "{}->{}",
+            source_label,
+            dest_kind.short_label().to_lowercase()
+        );
+
+        // Build and dispatch the send request
+        let request = SendRequest {
+            source,
+            destination,
+            amount,
+            resolved_identity,
+            fee_context: None,
+        };
+
+        let send_result = crate::model::send_routing::resolve_send(request).map_err(|e| {
+            McpToolError::InvalidParam {
+                message: e.to_string(),
+            }
+        })?;
+
+        match send_result {
+            SendResult::Single(task) => {
+                let result = dispatch_task(&ctx, task)
+                    .await
+                    .map_err(McpToolError::TaskFailed)?;
+
+                let txid = extract_txid(&result);
+
+                Ok(WalletFundsSendOutput {
+                    route: route_label,
+                    amount: param.amount_duffs,
+                    txid,
+                    tasks_dispatched: 1,
+                })
+            }
+            SendResult::Sequential(tasks) => {
+                let count = tasks.len() as u32;
+                for task in tasks {
+                    dispatch_task(&ctx, task)
+                        .await
+                        .map_err(McpToolError::TaskFailed)?;
+                }
+
+                Ok(WalletFundsSendOutput {
+                    route: route_label,
+                    amount: param.amount_duffs,
+                    txid: None,
+                    tasks_dispatched: count,
+                })
+            }
+        }
+    }
+}
+
+/// Convert duffs to credits (1 duff = 1,000 credits).
+fn duffs_to_credits(duffs: u64) -> Result<u64, McpToolError> {
+    duffs
+        .checked_mul(CREDITS_PER_DUFF)
+        .ok_or_else(|| McpToolError::InvalidParam {
+            message: format!("Amount {duffs} duffs overflows when converting to credits."),
+        })
+}
+
+/// Extract a transaction ID from a backend task result, if available.
+fn extract_txid(result: &BackendTaskSuccessResult) -> Option<String> {
+    match result {
+        BackendTaskSuccessResult::WalletPayment { txid, .. } => Some(txid.clone()),
+        _ => None,
+    }
+}
+
+/// Convert platform balance map (from FetchPlatformAddressBalances) to the
+/// tuple format expected by `SendSource::PlatformAddresses`.
+fn platform_balances_to_address_tuples(
+    ctx: &crate::context::AppContext,
+    seed_hash: crate::model::wallet::WalletSeedHash,
+    balances: std::collections::BTreeMap<dash_sdk::dpp::dashcore::Address, (u64, u32)>,
+) -> Result<
+    Vec<(
+        dash_sdk::dpp::address_funds::PlatformAddress,
+        dash_sdk::dpp::dashcore::Address,
+        u64,
+    )>,
+    McpToolError,
+> {
+    let wallet_arc = resolve::wallet_arc(ctx, seed_hash)?;
+    let wallet = wallet_arc.read().unwrap_or_else(|e| e.into_inner());
+    let platform_addrs = wallet.platform_addresses(ctx.network());
+
+    let mut result = Vec::new();
+    for (core_addr, platform_addr) in &platform_addrs {
+        if let Some((balance, _nonce)) = balances.get(core_addr) {
+            result.push((*platform_addr, core_addr.clone(), *balance));
+        }
+    }
+    Ok(result)
+}
+
+/// Get the shielded balance for a wallet (0 if not initialized).
+fn shielded_balance(
+    ctx: &crate::context::AppContext,
+    seed_hash: crate::model::wallet::WalletSeedHash,
+) -> u64 {
+    let states = ctx
+        .shielded_states
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    states
+        .get(&seed_hash)
+        .map(|s| s.shielded_balance)
+        .unwrap_or(0)
+}
+
+/// Build a `ValidatedAddress` from a raw address string and its detected kind.
+fn build_validated_address(
+    address: &str,
+    kind: AddressKind,
+    ctx: &crate::context::AppContext,
+) -> Result<crate::model::address::ValidatedAddress, String> {
+    use crate::model::address::ValidatedAddress;
+    use dash_sdk::dpp::address_funds::PlatformAddress;
+    use dash_sdk::dpp::dashcore::address::NetworkUnchecked;
+    use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+    use dash_sdk::platform::Identifier;
+
+    match kind {
+        AddressKind::Core => {
+            let unchecked: dash_sdk::dpp::dashcore::Address<NetworkUnchecked> = address
+                .parse()
+                .map_err(|e| format!("Invalid Core address '{address}': {e}"))?;
+            let checked = unchecked
+                .require_network(ctx.network())
+                .map_err(|e| format!("Address network mismatch: {e}"))?;
+            Ok(ValidatedAddress::Core(checked))
+        }
+        AddressKind::Platform => {
+            let (platform_addr, _) = PlatformAddress::from_bech32m_string(address)
+                .map_err(|e| format!("Invalid Platform address '{address}': {e}"))?;
+            Ok(ValidatedAddress::Platform {
+                address: platform_addr,
+                bech32m: address.to_string(),
+            })
+        }
+        AddressKind::Shielded => Ok(ValidatedAddress::Shielded(address.to_string())),
+        AddressKind::Identity => {
+            let id = Identifier::from_string(address, Encoding::Base58)
+                .map_err(|e| format!("Invalid Identity ID '{address}': {e}"))?;
+            Ok(ValidatedAddress::Identity {
+                id,
+                dpns_name: None,
+            })
+        }
     }
 }

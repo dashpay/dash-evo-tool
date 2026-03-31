@@ -79,6 +79,7 @@ impl DashMcpService {
             .with_async_tool::<tools::wallet::WalletBalancesQuery>()
             .with_async_tool::<tools::wallet::FetchPlatformBalances>()
             .with_async_tool::<tools::wallet::SendCoreFunds>()
+            .with_async_tool::<tools::wallet::WalletFundsSend>()
             .with_async_tool::<tools::platform::QueryWithdrawals>()
             .with_async_tool::<tools::meta::DescribeTool>()
             // Identity tools

@@ -19,7 +19,7 @@ use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::{
     ManagedWalletInfo, transaction_building::AccountTypePreference,
     wallet_info_interface::WalletInfoInterface,
 };
-use dash_sdk::dpp::key_wallet_manager::manager::{
+use dash_sdk::dpp::key_wallet_manager::{
     WalletError, WalletEvent, WalletId, WalletInterface, WalletManager,
 };
 use std::fmt;
@@ -126,6 +126,7 @@ type SpvClient =
     DashSpvClient<WalletManager<ManagedWalletInfo>, PeerNetworkManager, DiskStorageManager>;
 
 /// Events forwarded from SPV to AppContext for asset lock proof construction.
+#[allow(dead_code)] // Variants will be used when EventHandler is fully implemented
 pub(crate) enum AssetLockFinalityEvent {
     InstantLock {
         txid: Txid,
@@ -875,24 +876,14 @@ impl SpvManager {
             }
         }
 
-        // Subscribe to sync events (broadcast)
-        let sync_rx = client.subscribe_sync_events().await;
-        self.spawn_sync_event_handler(sync_rx);
-
         // Subscribe to wallet events (broadcast from WalletManager)
+        // Note: sync/network/progress events are now dispatched internally by
+        // DashSpvClient via the EventHandler trait — no manual subscription needed.
         {
             let wm = self.wallet.read().await;
             let wallet_rx = wm.subscribe_events();
             self.spawn_wallet_event_handler(wallet_rx);
         }
-
-        // Subscribe to network events (broadcast)
-        let net_rx = client.subscribe_network_events().await;
-        self.spawn_network_event_handler(net_rx);
-
-        // Set up progress handler using watch channel
-        let progress_rx = client.subscribe_progress().await;
-        self.spawn_progress_watcher(progress_rx);
 
         // Set up request handler with access to shared components
         let (request_tx, request_rx) = mpsc::channel(32);
@@ -1083,6 +1074,7 @@ impl SpvManager {
     }
 
     /// Identify which sync manager phase is in Error state, if any.
+    #[allow(dead_code)] // Will be used when EventHandler is fully implemented
     /// Checks masternodes first as the most common failure point,
     /// rather than pipeline execution order used by `spv_phase_summary()`.
     fn failed_manager_name(progress: &SpvSyncProgress) -> &'static str {
@@ -1118,7 +1110,7 @@ impl SpvManager {
         }
         "unknown phase"
     }
-
+    #[allow(dead_code)]
     fn spawn_progress_watcher(
         &self,
         mut progress_rx: tokio::sync::watch::Receiver<SpvSyncProgress>,
@@ -1218,6 +1210,7 @@ impl SpvManager {
         });
     }
 
+    #[allow(dead_code)]
     fn spawn_sync_event_handler(&self, mut sync_rx: tokio::sync::broadcast::Receiver<SyncEvent>) {
         let reconcile_tx = self.reconcile_tx.lock().ok().and_then(|g| g.clone());
         let finality_tx = self.finality_tx.lock().ok().and_then(|g| g.clone());
@@ -1361,6 +1354,7 @@ impl SpvManager {
             });
     }
 
+    #[allow(dead_code)]
     fn spawn_network_event_handler(
         &self,
         mut net_rx: tokio::sync::broadcast::Receiver<NetworkEvent>,
@@ -1503,6 +1497,7 @@ impl SpvManager {
             network_manager,
             storage_manager,
             Arc::clone(&self.wallet),
+            Arc::new(()),
         )
         .await
         .map_err(|e| format!("Failed to create SPV client: {e}"))

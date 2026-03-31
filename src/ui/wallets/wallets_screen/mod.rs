@@ -2881,9 +2881,11 @@ impl ScreenLike for WalletsBalancesScreen {
                     && let Ok(mut wallet) = selected.write()
                     && wallet.seed_hash() == seed_hash
                 {
-                    // Update balances in the wallet
-                    for (addr, (balance, nonce)) in balances {
-                        wallet.set_platform_address_info(addr, balance, nonce);
+                    // Convert PlatformAddress back to Core Address for wallet storage
+                    let network = self.app_context.network();
+                    for (platform_addr, (balance, nonce)) in balances {
+                        let core_addr = platform_addr.to_address_with_network(network);
+                        wallet.set_platform_address_info(core_addr, balance, nonce);
                     }
                 }
                 self.refresh_platform_sync_info_cache(&seed_hash);

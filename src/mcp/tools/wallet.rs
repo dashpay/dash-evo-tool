@@ -354,10 +354,11 @@ impl AsyncTool<DashMcpService> for FetchPlatformBalances {
 
         match result {
             BackendTaskSuccessResult::PlatformAddressBalances { balances, .. } => {
+                let network = ctx.network();
                 let entries = balances
                     .into_iter()
                     .map(|(addr, (balance, nonce))| PlatformAddressBalance {
-                        address: addr.to_string(),
+                        address: addr.to_bech32m_string(network),
                         balance,
                         nonce,
                     })

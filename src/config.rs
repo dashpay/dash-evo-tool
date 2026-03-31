@@ -328,7 +328,7 @@ impl Config {
 
 impl NetworkConfig {
     /// List of DAPI addresses, if explicitly configured.
-    /// Returns `Ok(None)` when absent or empty (dynamic discovery should be used).
+    /// Returns `Ok(None)` when absent or empty (not configured; the user may trigger discovery from Network Settings).
     pub fn dapi_address_list(&self) -> Result<Option<AddressList>, String> {
         let addrs = match self.dapi_addresses.as_deref() {
             Some(a) => a.trim(),

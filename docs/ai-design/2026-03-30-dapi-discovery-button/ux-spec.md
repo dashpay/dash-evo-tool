@@ -18,21 +18,21 @@ Dash Evo Tool connects to the Dash Platform network through DAPI nodes (masterno
 
 ### Alex (Everyday User)
 
-Alex opens Network Settings because the app said it could not connect to the network. Alex sees the Connection Settings card and notices a message near the empty node address area: "No node addresses configured." Next to it is a clearly labeled button. Alex clicks it, sees a brief spinner, and the field fills with addresses. Alex clicks Save and the app connects. Alex never needs to understand what DAPI means or where the addresses came from.
+Alex opens Network Settings because the app said it could not connect to the network. Alex sees the Connection Settings card and notices a message near the empty node address area: "No node addresses configured." Next to it is a clearly labeled button. Alex clicks it, sees a brief spinner, and the app saves new addresses and reconnects automatically. Alex never needs to understand what DAPI means or where the addresses came from.
 
 **Key need**: A single clear action that fixes the "can't connect" problem. No jargon.
 
 ### Priya (Power User)
 
-Priya opens Network Settings to refresh her node list after a network upgrade. She sees the "Fetch Node List" button and the info icon next to it. She hovers the info icon and reads that addresses come from a DCG-operated service. She clicks the button. A confirmation dialog appears because she already has addresses configured -- it tells her the current count and the count about to be fetched. She confirms, reviews the new addresses in the text field, and saves.
+Priya opens Network Settings to refresh her node list after a network upgrade. She sees the "Refresh DAPI endpoints" button and the info icon next to it. She hovers the info icon and reads that addresses come from a DCG-operated service. She clicks the button. A confirmation dialog appears because she already has addresses configured -- it tells her the current count and asks to confirm replacement. She confirms, the new addresses are fetched, saved, and the SDK reconnects automatically.
 
-**Key need**: Transparency about what is happening, confirmation before overwriting, ability to review and edit the result.
+**Key need**: Transparency about what is happening, confirmation before overwriting.
 
 ### Jordan (Platform Developer)
 
-Jordan is on a Devnet tab. The Fetch Node List button is not visible -- Jordan knows devnet addresses must be entered manually. On Testnet, Jordan uses the button occasionally but is just as likely to paste addresses directly. Jordan appreciates that the button does not auto-save -- it populates the field and lets Jordan edit before committing.
+Jordan is on a Devnet tab. The Refresh DAPI endpoints button is not visible -- Jordan knows devnet addresses must be entered manually. On Testnet, Jordan uses the button occasionally but is just as likely to paste addresses directly.
 
-**Key need**: Button stays out of the way on devnets. Does not auto-save; just populates.
+**Key need**: Button stays out of the way on devnets.
 
 ## 3. Design
 
@@ -48,7 +48,7 @@ Connection Settings Card
 |                                                        |
 | --- Node Addresses ---                                 |
 | [multiline text field with current DAPI addresses]     |
-| [Fetch Node List]  (i)                                 |
+| [Refresh DAPI endpoints]  (i)                                 |
 |   ^secondary btn    ^info icon with tooltip            |
 |                                                        |
 | --- Core RPC Password --- (RPC mode only)              |
@@ -66,17 +66,16 @@ Connection Settings Card
 
 | Property | Value |
 |----------|-------|
-| **Label** | "Fetch Node List" |
+| **Label** | "Refresh DAPI endpoints" |
 | **Variant** | Secondary (outlined, `StyledButton` `ButtonVariant::Secondary`) |
 | **Size** | Medium |
 | **Icon** | None (egui icon support is limited; keep it text-only) |
 | **Min width** | 160px |
 
-**Rationale for "Fetch Node List"**:
-- Avoids "DAPI" jargon -- Alex does not know what DAPI is
-- "Fetch" communicates a network operation (important for trust/timing expectations)
-- "Node List" is more concrete than "Discover Nodes" -- it describes what you get
-- Secondary variant ensures it does not compete visually with the primary "Save" button in the password section
+**Rationale for "Refresh DAPI endpoints"**:
+- "Refresh" communicates an update operation -- the user is refreshing their known node list
+- "DAPI endpoints" is technically precise for power users; everyday users see it as "the list of nodes"
+- Secondary variant ensures it does not compete visually with other primary actions
 
 **Visibility rules:**
 - **Mainnet, Testnet**: Button visible and enabled
@@ -99,9 +98,9 @@ When the text field is empty AND the current network is Mainnet or Testnet, show
 ```
 [text field -- empty, showing placeholder "No node addresses configured"]
 
-  Use "Fetch Node List" to get the current addresses, or enter them manually.
+  Use "Refresh DAPI endpoints" to get the current addresses, or enter them manually.
 
-[Fetch Node List]  (i)
+[Refresh DAPI endpoints]  (i)
 ```
 
 The hint text is rendered in `DashColors::text_secondary(dark_mode)`, `Typography::SCALE_SM`, italics. It disappears once the field has content.
@@ -116,7 +115,7 @@ For Devnet/Regtest with an empty field:
 
 ### 3.5 Loading State
 
-When the user clicks "Fetch Node List":
+When the user clicks "Refresh DAPI endpoints":
 
 1. Button text changes to "Fetching..." with a spinner (`ui.spinner()`) to the left of the button text
 2. Button is disabled (prevents double-submit per UX patterns)
@@ -129,16 +128,16 @@ When the user clicks "Fetch Node List":
 
 When the field was empty before the fetch:
 
-1. Text field is populated with the fetched addresses (comma-separated)
-2. Button returns to default state
-3. A success banner appears: "Found {count} node addresses. Review them below and save your settings."
-4. The field is **not** auto-saved -- the user must click the existing Save mechanism (or the addresses are saved when the network config is saved)
+1. Fetched addresses are saved to config and applied immediately
+2. SDK reconnects with the new addresses
+3. Button returns to default state
+4. A success banner appears: "Updated to {count} node addresses."
 
-**Important**: The fetched addresses populate the field but do not persist until the user explicitly saves. This gives all personas a chance to review and edit.
+**Important**: Addresses are auto-saved and applied immediately. If saving fails, an error banner is shown. If the SDK reconnection fails, a warning banner is shown suggesting restart.
 
 ### 3.7 Success State (Existing Addresses -- Confirmation Dialog)
 
-When the field already contains addresses and the user clicks "Fetch Node List":
+When the field already contains addresses and the user clicks "Refresh DAPI endpoints":
 
 1. A `ConfirmationDialog` appears before the fetch begins
 2. Dialog content:
@@ -149,11 +148,10 @@ When the field already contains addresses and the user clicks "Fetch Node List":
 |                                                    |
 |  This will replace your current node addresses     |
 |  with a fresh list fetched from the Dash network   |
-|  service.                                          |
+|  service. New addresses will be saved and applied  |
+|  immediately.                                      |
 |                                                    |
 |  You currently have {N} addresses configured.      |
-|  You can review and edit the new list before       |
-|  saving.                                           |
 |                                                    |
 |            [Cancel]          [Fetch]               |
 +---------------------------------------------------+
@@ -164,16 +162,16 @@ When the field already contains addresses and the user clicks "Fetch Node List":
 | Title | "Update Node Addresses?" |
 | Confirm label | "Fetch" |
 | Cancel label | "Cancel" |
-| Danger mode | No (this is not destructive -- old addresses are only replaced in the field, not saved) |
+| Danger mode | No (old addresses are replaced and saved, but not destructive -- the operation can be repeated) |
 | Escape/X | Cancels |
 
-**After confirmation**, the fetch proceeds and the field is populated with new addresses. The old addresses are replaced in the field but not persisted until Save.
+**After confirmation**, the fetch proceeds and new addresses are saved to config and applied immediately. The SDK reconnects with the new addresses.
 
 ### 3.8 Error State
 
 When the fetch fails:
 
-1. Button returns to default state ("Fetch Node List", enabled)
+1. Button returns to default state ("Refresh DAPI endpoints", enabled)
 2. An error banner appears via `MessageBanner::set_global()`:
    - **Timeout**: "Node list fetch timed out. Check your internet connection and try again."
    - **Network error**: "Could not fetch the node list. Check your internet connection and try again."
@@ -183,23 +181,15 @@ When the fetch fails:
 
 These messages align with the existing `DapiDiscoveryError` variants in `src/dapi_discovery.rs`.
 
-### 3.9 Interaction with Save
+### 3.9 Auto-Save Behavior
 
-The node addresses field needs a Save mechanism. Two options:
+Fetched addresses are saved to config immediately upon successful discovery -- no separate Save button is needed for this section. The flow:
 
-**Recommended approach**: Add the node addresses field to the existing config save flow. When the Core RPC Password "Save" button is clicked (or a new dedicated "Save" is added for this section), persist the current contents of the node addresses field to the `.env` config file using `Config::update_config_for_network()`.
+1. Discovery succeeds → config is updated and saved to disk
+2. In-memory config is updated → SDK reinitializes with new addresses
+3. Success banner confirms the operation
 
-If the Node Addresses section is above the Core RPC Password section, adding a small "Save" button on the same row as the Fetch button keeps the interaction local:
-
-```
-[Fetch Node List]  (i)                    [Save]
-```
-
-The Save button here:
-- Uses `StyledButton` Secondary variant, same size as Fetch
-- Saves the current text field content to the config file
-- Shows success/error via `MessageBanner`
-- Is always enabled (even if the field has not changed -- simpler, and egui does not trivially track dirty state)
+If saving fails, an error banner is shown and no SDK reinit is attempted. If the network context does not exist yet (e.g., fetching for a network that hasn't been initialized), addresses are saved to disk and an info banner suggests restarting.
 
 ### 3.10 State Diagram
 
@@ -210,7 +200,7 @@ The Save button here:
                     | Button: enabled  |
                     +--------+---------+
                              |
-                    User clicks "Fetch Node List"
+                    User clicks "Refresh DAPI endpoints"
                              |
                     +--------v---------+
               yes   | Field has        |  no
@@ -259,11 +249,11 @@ Accessibility:
   - Placeholder text visible when empty
 ```
 
-### 4.2 Fetch Node List Button
+### 4.2 Refresh DAPI endpoints Button
 
 ```
 Component: StyledButton (Secondary variant)
-Label: "Fetch Node List"
+Label: "Refresh DAPI endpoints"
 States:
   - default: outlined secondary button, enabled
   - hover: pointing hand cursor (automatic from StyledButton)
@@ -289,15 +279,7 @@ Accessibility:
 
 ### 4.4 Save Button (Node Addresses)
 
-```
-Component: StyledButton (Secondary variant)
-Label: "Save"
-Purpose: Persist node addresses to config file
-States:
-  - default: enabled
-  - hover: pointing hand cursor
-Placement: right-aligned on the button row
-```
+Not needed — addresses auto-save on successful discovery. See section 3.9.
 
 ### 4.5 Confirmation Dialog
 
@@ -389,7 +371,7 @@ The Node Addresses section uses `ui.available_width()` for the text field (full 
 - [ ] Add `BackendTaskSuccessResult::DapiNodesDiscovered` result variant
 - [ ] Wire `display_task_result()` to populate the text field on success
 - [ ] Add `ConfirmationDialog` for overwrite confirmation
-- [ ] Add Save button that persists `node_addresses_text` to config
+- [x] Auto-save addresses on successful discovery (no separate Save button needed)
 - [ ] Hide Fetch button and show manual-entry hint on Devnet/Regtest
 - [ ] Show empty-state guidance when no addresses are configured
 - [ ] Test light and dark themes

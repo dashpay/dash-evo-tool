@@ -2252,7 +2252,13 @@ impl ScreenLike for NetworkChooserScreen {
                 config.update_config_for_network(network, network_cfg.clone());
 
                 if let Err(e) = config.save(&self.mainnet_app_context.data_dir) {
-                    tracing::error!("Failed to save config after DAPI discovery: {e}");
+                    MessageBanner::set_global(
+                        self.mainnet_app_context.egui_ctx(),
+                        format!("Discovered {count} node addresses but failed to save settings. Addresses will be lost on restart."),
+                        MessageType::Error,
+                    )
+                    .with_details(e);
+                    return;
                 }
 
                 // Update in-memory config and reinit SDK
@@ -2264,21 +2270,32 @@ impl ScreenLike for NetworkChooserScreen {
                     _ => false,
                 };
 
-                if network_context_exists {
-                    let app_context = self.context_for_network(network);
-                    {
-                        if let Ok(mut cfg_lock) = app_context.config.write() {
-                            *cfg_lock = network_cfg;
-                        }
-                    }
+                if !network_context_exists {
+                    MessageBanner::set_global(
+                        self.mainnet_app_context.egui_ctx(),
+                        format!(
+                            "Discovered {count} node addresses. Restart the app to apply them."
+                        ),
+                        MessageType::Info,
+                    );
+                    return;
+                }
 
-                    if let Err(e) = Arc::clone(app_context).reinit_core_client_and_sdk() {
-                        tracing::error!(
-                            "Failed to reinit SDK after DAPI discovery for {:?}: {}",
-                            network,
-                            e
-                        );
+                let app_context = self.context_for_network(network);
+                {
+                    if let Ok(mut cfg_lock) = app_context.config.write() {
+                        *cfg_lock = network_cfg;
                     }
+                }
+
+                if let Err(e) = Arc::clone(app_context).reinit_core_client_and_sdk() {
+                    MessageBanner::set_global(
+                        self.mainnet_app_context.egui_ctx(),
+                        format!("Updated to {count} node addresses but reconnection failed. You may need to restart the app."),
+                        MessageType::Warning,
+                    )
+                    .with_details(e);
+                    return;
                 }
 
                 MessageBanner::set_global(

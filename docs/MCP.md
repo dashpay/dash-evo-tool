@@ -92,7 +92,9 @@ Parameters marked `?` are optional. The `det-cli` column shows the equivalent CL
 
 ### SPV requirements
 
-Core-chain tools (`core_address_create`, `core_balances_get`, `core_funds_send`, `identity_credits_topup`, `shielded_shield_from_core`) wait for SPV to fully sync before executing. Platform-only tools (`platform_addresses_list`, `platform_withdrawals_get`, `identity_credits_*` except topup, `shielded_shield_from_platform`, `shielded_transfer`, `shielded_unshield`, `shielded_withdraw`) query DAPI directly and do **not** require SPV.
+All wallet-facing tools wait for SPV to fully sync before executing. This includes both core-chain tools (`core_address_create`, `core_balances_get`, `core_funds_send`) and platform tools (`platform_addresses_list`, `identity_credits_topup`, `shielded_shield_from_core`). Even DAPI-only operations need SPV because the SDK verifies DAPI proofs against quorum and masternode list data from the synced chain. When another DET instance is already running, SPV falls back to a temporary directory and must sync from scratch.
+
+Only metadata tools that make no network calls (`core_wallets_list`, `network_info`, `tool_describe`) skip the SPV gate.
 
 ## CLI interface (det-cli)
 

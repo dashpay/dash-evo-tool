@@ -1,6 +1,6 @@
 #[cfg(not(feature = "testing"))]
-use crate::app_dir::app_user_data_file_path;
-use crate::app_dir::{copy_env_file_if_not_exists, create_app_user_data_directory_if_not_exists};
+use crate::app_dir::data_file_path;
+use crate::app_dir::{app_user_data_dir_path, ensure_data_dir_exists, ensure_env_file};
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::core::CoreItem;
 use crate::backend_task::error::TaskError;
@@ -43,6 +43,7 @@ use derive_more::From;
 use eframe::{App, egui};
 use std::collections::BTreeMap;
 use std::ops::BitOrAssign;
+use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant, SystemTime};
 use std::vec;
@@ -86,6 +87,9 @@ pub struct AppState {
     pub task_result_sender: egui_mpsc::SenderAsync<TaskResult>, // Channel sender for sending task results
     pub task_result_receiver: tokiompsc::Receiver<TaskResult>, // Channel receiver for receiving task results
     pub theme_preference: ThemeMode,                           // Current theme preference
+    resolved_theme: ThemeMode, // Cached resolved theme (Light/Dark, never System)
+    last_applied_theme: Option<ThemeMode>, // Last theme passed to apply_theme; None = force on next frame
+    theme_last_checked: Instant,           // Last time we polled the OS for system theme
     last_scheduled_vote_check: Instant, // Last time we checked if there are scheduled masternode votes to cast
     last_repaint_request: Instant,      // Throttle periodic repaint scheduling to once per second
     pub subtasks: Arc<TaskManager>,     // Subtasks manager for graceful shutdown
@@ -104,6 +108,15 @@ pub struct AppState {
     /// Timestamp when the async shutdown was initiated, used as a hard deadline
     /// to force-close the viewport if the shutdown task stalls.
     shutdown_started: Option<std::time::Instant>,
+    /// Whether accessibility is force-enabled (DASH_EVO_TOOL_ACCESSIBILITY=1). When unset, accessibility still works normally via VoiceOver or other assistive technology — this flag forces it on unconditionally.
+    accessibility_enforced: bool,
+    /// Whether we have already triggered platform-level accessibility activation.
+    accessibility_activated: bool,
+    /// How many frames we have attempted accessibility activation.
+    accessibility_retries: u32,
+    /// Shared MCP context -- follows network switches via `ArcSwap`.
+    #[cfg(feature = "mcp")]
+    pub mcp_app_context: Option<Arc<arc_swap::ArcSwap<AppContext>>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -186,13 +199,14 @@ impl AppState {
     /// feature-gated `new()` variant instead.
     #[cfg(not(feature = "testing"))]
     pub fn new(ctx: egui::Context) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        create_app_user_data_directory_if_not_exists()?;
-        copy_env_file_if_not_exists();
+        let data_dir = app_user_data_dir_path()?;
+        ensure_data_dir_exists(&data_dir)?;
+        ensure_env_file(&data_dir);
         initialize_logger();
-        let db_file_path = app_user_data_file_path("data.db")?;
+        let db_file_path = data_file_path(&data_dir, "data.db")?;
         let db = Arc::new(Database::new(&db_file_path)?);
         db.initialize(&db_file_path)?;
-        Self::new_inner(ctx, db)
+        Self::new_inner(ctx, db, data_dir)
     }
 
     /// Creates a new `AppState` using an in-memory database for testing.
@@ -201,18 +215,20 @@ impl AppState {
     /// from reading or writing the production database.
     #[cfg(feature = "testing")]
     pub fn new(ctx: egui::Context) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        create_app_user_data_directory_if_not_exists()?;
-        copy_env_file_if_not_exists();
+        let data_dir = app_user_data_dir_path()?;
+        ensure_data_dir_exists(&data_dir)?;
+        ensure_env_file(&data_dir);
         let db = Arc::new(
             crate::database::test_helpers::create_test_database()
                 .map_err(|e| format!("Failed to create test database: {}", e))?,
         );
-        Self::new_inner(ctx, db)
+        Self::new_inner(ctx, db, data_dir)
     }
 
     fn new_inner(
         ctx: egui::Context,
         db: Arc<Database>,
+        data_dir: PathBuf,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let settings = db.get_settings()?.map(Settings::from).unwrap_or_default();
         let password_info = settings.password_info;
@@ -223,6 +239,7 @@ impl AppState {
         let subtasks = Arc::new(TaskManager::new());
         let connection_status = Arc::new(ConnectionStatus::new());
         let mainnet_app_context = AppContext::new(
+            data_dir.clone(),
             Network::Mainnet,
             db.clone(),
             password_info.clone(),
@@ -232,6 +249,7 @@ impl AppState {
         )
         .ok_or("Failed to create AppContext for mainnet. Check your Dash configuration.")?;
         let testnet_app_context = AppContext::new(
+            data_dir.clone(),
             Network::Testnet,
             db.clone(),
             password_info.clone(),
@@ -240,6 +258,7 @@ impl AppState {
             ctx.clone(),
         );
         let devnet_app_context = AppContext::new(
+            data_dir.clone(),
             Network::Devnet,
             db.clone(),
             password_info.clone(),
@@ -248,6 +267,7 @@ impl AppState {
             ctx.clone(),
         );
         let local_app_context = AppContext::new(
+            data_dir,
             Network::Regtest,
             db.clone(),
             password_info,
@@ -258,6 +278,18 @@ impl AppState {
 
         // load fonts
         ctx.set_fonts(crate::bundled::fonts().expect("failed to load fonts"));
+
+        // Force-enable AccessKit so the accessibility tree is populated every
+        // frame, even without VoiceOver or other assistive technology running.
+        // Without this flag, AccessKit activates lazily when a real assistive
+        // client connects (which is the normal behavior).
+        // Gated behind DASH_EVO_TOOL_ACCESSIBILITY=1 to avoid per-frame cost
+        // when not needed for automation tooling.
+        let accessibility_enforced =
+            std::env::var("DASH_EVO_TOOL_ACCESSIBILITY").unwrap_or_default() == "1";
+        if accessibility_enforced {
+            ctx.enable_accesskit();
+        }
 
         // create screens
         let mut identities_screen = IdentitiesScreen::new(&mainnet_app_context);
@@ -593,6 +625,51 @@ impl AppState {
             None
         };
 
+        // MCP server (feature-gated, opt-in via MCP_API_KEY env var)
+        #[cfg(feature = "mcp")]
+        let mcp_app_context = {
+            if let Some(mcp_config) = crate::mcp::McpConfig::from_env() {
+                let initial_ctx = match chosen_network {
+                    Network::Mainnet => mainnet_app_context.clone(),
+                    Network::Testnet => testnet_app_context
+                        .as_ref()
+                        .expect("MCP: chosen network is Testnet but no Testnet AppContext")
+                        .clone(),
+                    Network::Devnet => devnet_app_context
+                        .as_ref()
+                        .expect("MCP: chosen network is Devnet but no Devnet AppContext")
+                        .clone(),
+                    Network::Regtest => local_app_context
+                        .as_ref()
+                        .expect("MCP: chosen network is Regtest but no Regtest AppContext")
+                        .clone(),
+                    unsupported => panic!(
+                        "MCP: unsupported network {:?} for initial context",
+                        unsupported
+                    ),
+                };
+                let mcp_ctx = Arc::new(arc_swap::ArcSwap::new(initial_ctx));
+                let ctx_for_server = mcp_ctx.clone();
+                let cancel = subtasks.cancellation_token.clone();
+                subtasks.spawn_sync("mcp-server", async move {
+                    if let Err(e) =
+                        crate::mcp::start_http_server(ctx_for_server, mcp_config, cancel).await
+                    {
+                        tracing::error!("MCP server failed: {e}");
+                    }
+                });
+                tracing::debug!("MCP server enabled");
+                Some(mcp_ctx)
+            } else {
+                let reason = match std::env::var("MCP_API_KEY") {
+                    Ok(ref k) if !k.is_empty() => "MCP_API_KEY is set but invalid (too short)",
+                    _ => "MCP_API_KEY not set",
+                };
+                tracing::debug!("MCP server disabled ({reason})");
+                None
+            }
+        };
+
         let mut app_state = Self {
             main_screens: [
                 (
@@ -712,6 +789,9 @@ impl AppState {
             core_message_receiver,
             task_result_sender,
             task_result_receiver,
+            resolved_theme: crate::ui::theme::resolve_theme_mode(theme_preference),
+            last_applied_theme: None,
+            theme_last_checked: Instant::now(),
             theme_preference,
             last_scheduled_vote_check: Instant::now(),
             last_repaint_request: Instant::now(),
@@ -722,6 +802,11 @@ impl AppState {
             connection_banner_handle: None,
             shutdown_receiver: None,
             shutdown_started: None,
+            accessibility_enforced,
+            accessibility_activated: false,
+            accessibility_retries: 0,
+            #[cfg(feature = "mcp")]
+            mcp_app_context,
         };
 
         // Initialize welcome screen if needed (after mainnet_app_context is owned by the struct)
@@ -753,6 +838,14 @@ impl AppState {
                 screen.refresh_on_arrival();
             }
         }
+
+        // Warm up the Halo 2 ProvingKey in a background thread (~30s build).
+        // This ensures the key is ready for the user's first shielded operation.
+        #[cfg(not(feature = "testing"))]
+        std::thread::spawn(|| {
+            let _ = crate::context::shielded::get_proving_key();
+            tracing::info!("Halo 2 ProvingKey built and cached");
+        });
 
         Ok(app_state)
     }
@@ -823,17 +916,21 @@ impl AppState {
         );
     }
 
-    // Handle the backend task and send the result through the channel
+    // Handle the backend task and send the result through the channel.
+    //
+    // Uses spawn_blocking + block_on to avoid Send bound issues with platform
+    // SDK types (DataContract/Sdk references across await points).
     fn handle_backend_task(&self, task: BackendTask) {
         let sender = self.task_result_sender.clone();
         let app_context = self.current_app_context().clone();
-        tokio::spawn(async move {
-            let result = app_context.run_backend_task(task, sender.clone()).await;
-
-            // Send the result back to the main thread
-            if let Err(e) = sender.send(result.into()).await {
-                tracing::error!("Failed to send task result: {}", e);
-            }
+        let handle = tokio::runtime::Handle::current();
+        tokio::task::spawn_blocking(move || {
+            handle.block_on(async move {
+                let result = app_context.run_backend_task(task, sender.clone()).await;
+                if let Err(e) = sender.send(result.into()).await {
+                    tracing::error!("Failed to send task result: {}", e);
+                }
+            });
         });
     }
 
@@ -841,27 +938,29 @@ impl AppState {
     fn handle_backend_tasks(&self, tasks: Vec<BackendTask>, mode: BackendTasksExecutionMode) {
         let sender = self.task_result_sender.clone();
         let app_context = self.current_app_context().clone();
+        let handle = tokio::runtime::Handle::current();
 
-        tokio::spawn(async move {
-            let results = match mode {
-                BackendTasksExecutionMode::Sequential => {
-                    app_context
-                        .run_backend_tasks_sequential(tasks, sender.clone())
-                        .await
-                }
-                BackendTasksExecutionMode::Concurrent => {
-                    app_context
-                        .run_backend_tasks_concurrent(tasks, sender.clone())
-                        .await
-                }
-            };
+        tokio::task::spawn_blocking(move || {
+            handle.block_on(async move {
+                let results = match mode {
+                    BackendTasksExecutionMode::Sequential => {
+                        app_context
+                            .run_backend_tasks_sequential(tasks, sender.clone())
+                            .await
+                    }
+                    BackendTasksExecutionMode::Concurrent => {
+                        app_context
+                            .run_backend_tasks_concurrent(tasks, sender.clone())
+                            .await
+                    }
+                };
 
-            // Send the results back to the main thread
-            for result in results {
-                if let Err(e) = sender.send(result.into()).await {
-                    tracing::error!("Failed to send task result: {}", e);
+                for result in results {
+                    if let Err(e) = sender.send(result.into()).await {
+                        tracing::error!("Failed to send task result: {}", e);
+                    }
                 }
-            }
+            });
         });
     }
 
@@ -882,6 +981,13 @@ impl AppState {
 
         self.chosen_network = network;
         let app_context = self.current_app_context().clone();
+
+        // Update MCP server's context to follow network switch
+        #[cfg(feature = "mcp")]
+        if let Some(ref mcp_ctx) = self.mcp_app_context {
+            mcp_ctx.store(app_context.clone());
+            tracing::debug!("MCP context switched to {:?}", network);
+        }
 
         // INTENTIONAL(SEC-004): Clear stale banners from the previous network context.
         // A backend task completing after the switch could set a new banner in the new
@@ -962,14 +1068,27 @@ impl AppState {
                     Some(MessageBanner::set_global(ctx, msg, MessageType::Warning));
             }
             OverallConnectionState::Error => {
-                self.connection_banner_handle = Some(MessageBanner::set_global(
+                let handle = MessageBanner::set_global(
                     ctx,
-                    "SPV sync error — check connection status for details",
+                    "SPV sync failed. Go to Settings for connection details.",
                     MessageType::Error,
-                ));
+                );
+                if let Some(detail) = connection_status.spv_last_error() {
+                    handle.with_details(detail);
+                }
+                self.connection_banner_handle = Some(handle);
             }
             OverallConnectionState::Synced => {
-                // No banner needed for fully synced state
+                // No banner needed for fully synced state.
+                // Fetch epoch info on first sync to populate protocol version
+                // and fee multiplier — needed for feature gating (e.g., shielded
+                // tab requires protocol version >= 12).
+                if state_changed {
+                    let task = BackendTask::PlatformInfo(
+                        crate::backend_task::platform_info::PlatformInfoTaskRequestType::CurrentEpochInfo,
+                    );
+                    self.handle_backend_task(task);
+                }
             }
         }
         self.previous_connection_state = Some(current_state);
@@ -1061,7 +1180,10 @@ impl App for AppState {
                 ctx.request_repaint();
             }
             // Render a minimal UI that shows the shutdown banner.
-            crate::ui::theme::apply_theme(ctx, self.theme_preference);
+            if self.last_applied_theme != Some(self.resolved_theme) {
+                crate::ui::theme::apply_theme(ctx, self.resolved_theme);
+                self.last_applied_theme = Some(self.resolved_theme);
+            }
             crate::ui::components::styled::island_central_panel(ctx, |_ui| {});
             return;
         }
@@ -1081,8 +1203,46 @@ impl App for AppState {
             return;
         }
 
-        // Apply Dash theme with user preference
-        crate::ui::theme::apply_theme(ctx, self.theme_preference);
+        // On the first frame, trigger platform-level accessibility activation
+        // so tools like Peekaboo can see the AccessKit tree without VoiceOver.
+        // Retries up to 60 frames, then gives up to avoid indefinite repaints.
+        const MAX_ACCESSIBILITY_RETRIES: u32 = 60;
+        if self.accessibility_enforced
+            && !self.accessibility_activated
+            && self.accessibility_retries < MAX_ACCESSIBILITY_RETRIES
+        {
+            self.accessibility_retries += 1;
+            self.accessibility_activated = crate::platform::force_accessibility_activation();
+            if !self.accessibility_activated {
+                if self.accessibility_retries >= MAX_ACCESSIBILITY_RETRIES {
+                    tracing::warn!(
+                        "Accessibility activation failed after {} frames, giving up",
+                        MAX_ACCESSIBILITY_RETRIES
+                    );
+                } else {
+                    // Ensure we get another frame to retry, even if egui would otherwise go idle.
+                    ctx.request_repaint();
+                }
+            }
+        }
+
+        // Throttle OS theme detection to every 2 s to prevent white flash from
+        // transient dark_light::detect() glitches during high-frequency repaints.
+        if self.theme_preference == ThemeMode::System {
+            let now = Instant::now();
+            if now.duration_since(self.theme_last_checked) >= Duration::from_secs(2) {
+                self.theme_last_checked = now;
+                if let Some(detected) = crate::ui::theme::try_detect_system_theme()
+                    && detected != self.resolved_theme
+                {
+                    self.resolved_theme = detected;
+                }
+            }
+        }
+        if self.last_applied_theme != Some(self.resolved_theme) {
+            crate::ui::theme::apply_theme(ctx, self.resolved_theme);
+            self.last_applied_theme = Some(self.resolved_theme);
+        }
 
         self.enforce_network_context_invariant();
         let active_context = self.current_app_context().clone();
@@ -1112,13 +1272,46 @@ impl App for AppState {
                             self.visible_screen_mut()
                                 .display_task_result(unboxed_message);
                         }
+                        BackendTaskSuccessResult::Progress { .. } => {
+                            // Progress updates only go to the screen — no global banner.
+                            // The screen updates its existing banner handle in-place.
+                            // TODO: Routes via visible_screen_mut(), so if the user
+                            // navigates away from the originating screen, progress
+                            // updates land on the wrong screen. Adding task-to-screen
+                            // affinity would fix this (same limitation as Message).
+                            self.visible_screen_mut()
+                                .display_task_result(unboxed_message);
+                        }
                         BackendTaskSuccessResult::UpdatedThemePreference(new_theme) => {
                             self.theme_preference = new_theme;
-                            MessageBanner::set_global(
-                                ctx,
-                                "Theme preference updated successfully",
-                                MessageType::Success,
-                            );
+                            let mut detection_failed = false;
+                            self.resolved_theme = if new_theme == ThemeMode::System {
+                                match crate::ui::theme::try_detect_system_theme() {
+                                    Some(detected) => detected,
+                                    None => {
+                                        detection_failed = true;
+                                        self.resolved_theme
+                                    }
+                                }
+                            } else {
+                                new_theme
+                            };
+                            self.theme_last_checked = Instant::now();
+                            crate::ui::theme::apply_theme(ctx, self.resolved_theme);
+                            self.last_applied_theme = Some(self.resolved_theme);
+                            if detection_failed {
+                                MessageBanner::set_global(
+                                    ctx,
+                                    "Could not detect your system theme. Using the previous theme for now — it will update automatically when detection succeeds.",
+                                    MessageType::Warning,
+                                );
+                            } else {
+                                MessageBanner::set_global(
+                                    ctx,
+                                    "Theme preference updated successfully",
+                                    MessageType::Success,
+                                );
+                            }
                             self.visible_screen_mut().display_message(
                                 "Theme preference updated successfully",
                                 MessageType::Success,
@@ -1162,11 +1355,13 @@ impl App for AppState {
                     if !handled {
                         let msg = err.to_string();
                         let handle = MessageBanner::set_global(ctx, &msg, MessageType::Error);
+                        // Show technical details only in developer mode.
+                        // All user-facing information is in the Display string.
                         if self.current_app_context().is_developer_mode() {
                             // INTENTIONAL(SEC-003): TaskError Debug output is shown to users
-                            // in developer mode. This is a local UI app — no third parties
-                            // see this output. Ensure inner error types don't expose secrets
-                            // (see #667).
+                            // in developer mode. This is a local UI app —
+                            // no third parties see this output. Ensure inner error types
+                            // don't expose secrets (see #667).
                             handle.with_details(&err);
                         }
                         self.visible_screen_mut()

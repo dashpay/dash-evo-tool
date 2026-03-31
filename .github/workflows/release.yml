@@ -94,15 +94,59 @@ jobs:
         env:
           PROTOC: /usr/local/bin/protoc
 
-      - name: Windows libsql
-        if: ${{ matrix.target == 'x86_64-pc-windows-gnu' }}
-        run: curl -OL https://www.sqlite.org/2024/sqlite-dll-win-x64-3460100.zip && sudo unzip -o sqlite-dll-win-x64-3460100.zip -d winlibs && sudo chown -R runner:docker winlibs/ && pwd && ls -lah && cd winlibs && x86_64-w64-mingw32-dlltool -d sqlite3.def -l libsqlite3.a && ls -lah && cd .. && sudo cp winlibs/libsqlite3.a /usr/x86_64-w64-mingw32/lib/libsqlite3.a
-
-      - name: Build project
+      - name: Build GUI
         run: |
           cargo build --release --target ${{ matrix.target }}
           mv target/${{ matrix.target }}/release/dash-evo-tool${{ matrix.ext }} dash-evo-tool/dash-evo-tool${{ matrix.ext }}
-          if [ -f winlibs/sqlite3.dll ]; then cp winlibs/sqlite3.dll dash-evo-tool/sqlite3.dll; fi
+        env:
+          OPENSSL_STATIC: "1"
+
+      - name: Build CLI (det-cli)
+        run: |
+          cargo build --release --features headless --bin det-cli --target ${{ matrix.target }}
+          mv target/${{ matrix.target }}/release/det-cli${{ matrix.ext }} dash-evo-tool/det-cli${{ matrix.ext }}
+        env:
+          OPENSSL_STATIC: "1"
+
+      - name: Verify Windows binary is self-contained
+        if: ${{ matrix.target == 'x86_64-pc-windows-gnu' }}
+        run: |
+          echo "Checking DLL imports..."
+          IMPORTS=$(x86_64-w64-mingw32-objdump -p dash-evo-tool/dash-evo-tool.exe | grep "DLL Name:" | sort -u)
+          echo "$IMPORTS"
+          # Fail if any null DLL imports (broken import table)
+          if echo "$IMPORTS" | grep -q "(null)"; then
+            echo "::error::Binary has null DLL imports — broken import table detected"
+            exit 1
+          fi
+          # Fail if MinGW runtime DLLs are dynamically linked
+          for dll in libgcc_s_seh-1.dll libwinpthread-1.dll libstdc++-6.dll; do
+            if echo "$IMPORTS" | grep -qi "$dll"; then
+              echo "::error::Binary dynamically links $dll — must be statically linked"
+              exit 1
+            fi
+          done
+          echo "✅ Binary is self-contained — no MinGW runtime or null DLL dependencies"
+
+      - name: Verify Linux binary dependencies
+        if: ${{ contains(matrix.target, 'linux') }}
+        run: |
+          echo "Checking shared library dependencies..."
+          DEPS=$(ldd dash-evo-tool/dash-evo-tool)
+          echo "$DEPS"
+          # Allowlist: only standard system libraries should appear
+          UNEXPECTED=$(echo "$DEPS" | grep "=>" | grep -v "not found" | awk '{print $1}' | grep -Ev "^(linux-vdso|libm|libc|libdl|librt|libpthread|libgcc_s|libstdc\+\+|ld-linux|libz|libssl|libcrypto)\.so" || true)
+          if [ -n "$UNEXPECTED" ]; then
+            echo "::warning::Unexpected shared dependencies found:"
+            echo "$UNEXPECTED"
+          fi
+          # Fail on missing libraries
+          if echo "$DEPS" | grep -q "not found"; then
+            echo "::error::Binary has missing shared library dependencies"
+            echo "$DEPS" | grep "not found"
+            exit 1
+          fi
+          echo "✅ Linux binary dependencies look clean"
 
       - name: Package release
         run: |
@@ -132,6 +176,25 @@ jobs:
 
       - name: Add Rust target
         run: rustup target add aarch64-apple-darwin
+
+      - name: Extract version from Cargo.toml
+        id: version
+        run: |
+          VERSION=$(cargo metadata --format-version=1 --no-deps | jq -r '.packages[] | select(.name == "dash-evo-tool") | .version')
+          if [ -z "$VERSION" ]; then
+            echo "::error::Failed to extract version from Cargo.toml"
+            exit 1
+          fi
+          # Strip prerelease and build metadata suffixes for macOS plist (Apple requires numeric-only)
+          PLIST_VERSION=$(echo "$VERSION" | sed 's/[-+].*//')
+          if ! echo "$PLIST_VERSION" | grep -Eq '^[0-9]+(\.[0-9]+){0,2}$'; then
+            echo "::error::Invalid plist version '$PLIST_VERSION' derived from Cargo version '$VERSION'. Expected numeric x[.y[.z]]."
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "plist_version=$PLIST_VERSION" >> "$GITHUB_OUTPUT"
+          echo "build_number=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          echo "Extracted version: $VERSION (plist: $PLIST_VERSION, build: ${{ github.run_number }})"
 
       - name: Initial disk cleanup
         run: |
@@ -166,6 +229,12 @@ jobs:
           cp target/aarch64-apple-darwin/release/dash-evo-tool build/dash-evo-tool
           chmod +x build/dash-evo-tool
 
+      - name: Build CLI (det-cli)
+        run: |
+          cargo build --release --features headless --bin det-cli --target aarch64-apple-darwin
+          cp target/aarch64-apple-darwin/release/det-cli build/det-cli
+          chmod +x build/det-cli
+
           # Targeted cleanup - only remove build artifacts we don't need
           rm -rf target/aarch64-apple-darwin/release/deps
           rm -rf target/aarch64-apple-darwin/release/build
@@ -176,6 +245,7 @@ jobs:
 
           # Remove the actual binary from target since we copied it
           rm -f target/aarch64-apple-darwin/release/dash-evo-tool
+          rm -f target/aarch64-apple-darwin/release/det-cli
 
           # Create app bundle structure
           mkdir -p "build/Dash Evo Tool.app/Contents/MacOS"
@@ -183,6 +253,7 @@ jobs:
 
           # Move binary into app bundle
           cp build/dash-evo-tool "build/Dash Evo Tool.app/Contents/MacOS/dash-evo-tool"
+          cp build/det-cli "build/Dash Evo Tool.app/Contents/MacOS/det-cli"
 
           # Create icon set and convert to ICNS
           mkdir -p AppIcon.iconset
@@ -218,9 +289,9 @@ jobs:
             <key>CFBundleDisplayName</key>
             <string>Dash Evo Tool</string>
             <key>CFBundleVersion</key>
-            <string>1.0.0</string>
+            <string>${{ steps.version.outputs.build_number }}</string>
             <key>CFBundleShortVersionString</key>
-            <string>1.0.0</string>
+            <string>${{ steps.version.outputs.plist_version }}</string>
             <key>CFBundlePackageType</key>
             <string>APPL</string>
             <key>CFBundleSignature</key>
@@ -234,6 +305,27 @@ jobs:
           </dict>
           </plist>
           EOF
+
+
+      - name: Verify macOS binary dependencies
+        run: |
+          echo "Checking dynamic library dependencies..."
+          DEPS=$(otool -L build/dash-evo-tool)
+          echo "$DEPS"
+          # Only system libraries (/usr/lib/) and frameworks (/System/Library/) are allowed
+          UNEXPECTED=$(echo "$DEPS" | tail -n +2 | awk '{print $1}' | grep -Ev "^(/usr/lib/|/System/Library/|@rpath/)" || true)
+          if [ -n "$UNEXPECTED" ]; then
+            echo "::error::Binary links non-system libraries:"
+            echo "$UNEXPECTED"
+            exit 1
+          fi
+          # Warn on @rpath dependencies (acceptable for frameworks but worth noting)
+          RPATH=$(echo "$DEPS" | tail -n +2 | awk '{print $1}' | grep "^@rpath/" || true)
+          if [ -n "$RPATH" ]; then
+            echo "::warning::Binary has @rpath dependencies (verify these are bundled):"
+            echo "$RPATH"
+          fi
+          echo "✅ macOS binary dependencies look clean"
 
       - name: Import signing certificates
         uses: Apple-Actions/import-codesign-certs@v3
@@ -401,6 +493,25 @@ jobs:
       - name: Add Rust target
         run: rustup target add x86_64-apple-darwin
 
+      - name: Extract version from Cargo.toml
+        id: version
+        run: |
+          VERSION=$(cargo metadata --format-version=1 --no-deps | jq -r '.packages[] | select(.name == "dash-evo-tool") | .version')
+          if [ -z "$VERSION" ]; then
+            echo "::error::Failed to extract version from Cargo.toml"
+            exit 1
+          fi
+          # Strip prerelease and build metadata suffixes for macOS plist (Apple requires numeric-only)
+          PLIST_VERSION=$(echo "$VERSION" | sed 's/[-+].*//')
+          if ! echo "$PLIST_VERSION" | grep -Eq '^[0-9]+(\.[0-9]+){0,2}$'; then
+            echo "::error::Invalid plist version '$PLIST_VERSION' derived from Cargo version '$VERSION'. Expected numeric x[.y[.z]]."
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "plist_version=$PLIST_VERSION" >> "$GITHUB_OUTPUT"
+          echo "build_number=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          echo "Extracted version: $VERSION (plist: $PLIST_VERSION, build: ${{ github.run_number }})"
+
       - name: Initial disk cleanup
         run: |
           echo "Disk usage before initial cleanup:"
@@ -429,10 +540,12 @@ jobs:
 
       - name: Build x86_64 architecture
         run: |
-          cargo build --release --target x86_64-apple-darwin
+          cargo build --release --features cli --target x86_64-apple-darwin
           mkdir -p build
           cp target/x86_64-apple-darwin/release/dash-evo-tool build/dash-evo-tool
           chmod +x build/dash-evo-tool
+          cp target/x86_64-apple-darwin/release/det-cli build/det-cli
+          chmod +x build/det-cli
 
           # Targeted cleanup - only remove build artifacts we don't need
           rm -rf target/x86_64-apple-darwin/release/deps
@@ -444,6 +557,7 @@ jobs:
 
           # Remove the actual binary from target since we copied it
           rm -f target/x86_64-apple-darwin/release/dash-evo-tool
+          rm -f target/x86_64-apple-darwin/release/det-cli
 
           # Create app bundle structure
           mkdir -p "build/Dash Evo Tool.app/Contents/MacOS"
@@ -451,6 +565,7 @@ jobs:
 
           # Move binary into app bundle
           cp build/dash-evo-tool "build/Dash Evo Tool.app/Contents/MacOS/dash-evo-tool"
+          cp build/det-cli "build/Dash Evo Tool.app/Contents/MacOS/det-cli"
 
           # Create icon set and convert to ICNS
           mkdir -p AppIcon.iconset
@@ -486,9 +601,9 @@ jobs:
             <key>CFBundleDisplayName</key>
             <string>Dash Evo Tool</string>
             <key>CFBundleVersion</key>
-            <string>1.0.0</string>
+            <string>${{ steps.version.outputs.build_number }}</string>
             <key>CFBundleShortVersionString</key>
-            <string>1.0.0</string>
+            <string>${{ steps.version.outputs.plist_version }}</string>
             <key>CFBundlePackageType</key>
             <string>APPL</string>
             <key>CFBundleSignature</key>
@@ -502,6 +617,27 @@ jobs:
           </dict>
           </plist>
           EOF
+
+
+      - name: Verify macOS binary dependencies
+        run: |
+          echo "Checking dynamic library dependencies..."
+          DEPS=$(otool -L build/dash-evo-tool)
+          echo "$DEPS"
+          # Only system libraries (/usr/lib/) and frameworks (/System/Library/) are allowed
+          UNEXPECTED=$(echo "$DEPS" | tail -n +2 | awk '{print $1}' | grep -Ev "^(/usr/lib/|/System/Library/|@rpath/)" || true)
+          if [ -n "$UNEXPECTED" ]; then
+            echo "::error::Binary links non-system libraries:"
+            echo "$UNEXPECTED"
+            exit 1
+          fi
+          # Warn on @rpath dependencies (acceptable for frameworks but worth noting)
+          RPATH=$(echo "$DEPS" | tail -n +2 | awk '{print $1}' | grep "^@rpath/" || true)
+          if [ -n "$RPATH" ]; then
+            echo "::warning::Binary has @rpath dependencies (verify these are bundled):"
+            echo "$RPATH"
+          fi
+          echo "✅ macOS binary dependencies look clean"
 
       - name: Import signing certificates
         uses: Apple-Actions/import-codesign-certs@v3

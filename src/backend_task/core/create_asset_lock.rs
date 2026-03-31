@@ -35,6 +35,7 @@ impl AppContext {
                             amount_duffs,
                             allow_take_fee_from_amount,
                             identity_index,
+                            None,
                         )
                         .map_err(|e| TaskError::AssetLockTransactionBuildFailed { detail: e })?
                 };
@@ -75,6 +76,7 @@ impl AppContext {
                             allow_take_fee_from_amount,
                             identity_index,
                             top_up_index,
+                            None,
                         )
                         .map_err(|e| TaskError::AssetLockTransactionBuildFailed { detail: e })?
                 };

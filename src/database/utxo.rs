@@ -253,7 +253,7 @@ mod tests {
 
         // Query mainnet UTXOs
         let mainnet_utxos = db
-            .get_utxos_by_address(&mainnet_address.to_string(), "dash")
+            .get_utxos_by_address(&mainnet_address.to_string(), "mainnet")
             .expect("Failed to get mainnet UTXOs");
         assert_eq!(mainnet_utxos.len(), 1);
         assert_eq!(mainnet_utxos[0].1.value, 200_000_000);

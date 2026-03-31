@@ -71,8 +71,8 @@ fn test_banner_renders_error_message() {
     // The message text and dismiss button should be present
     assert!(harness.query_by_label(message_text).is_some());
     assert!(harness.query_by_label("\u{274C}").is_some());
-    // Error banners have no auto-dismiss countdown
-    assert!(harness.query_by_label_contains("s)").is_none());
+    // Error banners auto-dismiss after 9s, so countdown should be present
+    assert!(harness.query_by_label_contains("s)").is_some());
 }
 
 /// Test that all four MessageType variants render with correct text and icon.

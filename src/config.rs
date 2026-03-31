@@ -1,7 +1,8 @@
 use std::io::{self, Write};
+use std::path::Path;
 use std::str::FromStr;
 
-use crate::app_dir::app_user_data_file_path;
+use crate::app_dir::{app_user_data_file_path, data_file_path};
 use dash_sdk::dapi_client::AddressList;
 use dash_sdk::dpp::dashcore::Network;
 use serde::Deserialize;
@@ -73,9 +74,9 @@ impl Config {
     ///
     /// Uses atomic write (write to temp file, then rename) to prevent
     /// config corruption if a write fails partway through.
-    pub fn save(&self) -> Result<(), ConfigError> {
+    pub fn save(&self, data_dir: &Path) -> Result<(), ConfigError> {
         let env_file_path =
-            app_user_data_file_path(".env").map_err(|e| ConfigError::SaveError { source: e })?;
+            data_file_path(data_dir, ".env").map_err(|e| ConfigError::SaveError { source: e })?;
 
         // Write to a temporary file in the same directory first, then
         // atomically replace. This prevents corruption if the write fails
@@ -190,14 +191,36 @@ impl Config {
             .persist(&env_file_path)
             .map_err(|e| ConfigError::SaveError { source: e.error })?;
 
+        // Restrict file permissions on Unix (config contains RPC credentials).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o600);
+            if let Err(e) = std::fs::set_permissions(&env_file_path, perms) {
+                tracing::warn!("Could not set config file permissions to 0600: {e}");
+            }
+        }
+
         tracing::info!("Successfully saved configuration to {:?}", env_file_path);
         Ok(())
     }
 
-    /// Loads the configuration for all networks from environment variables and `.env` file.
+    /// Loads the configuration for all networks from environment variables and `.env` file
+    /// located in the default app data directory.
     pub fn load() -> Result<Self, ConfigError> {
-        // Load the .env file if available
         let env_file_path = app_user_data_file_path(".env").expect("should create .env file path");
+        Self::load_from_env_path(env_file_path)
+    }
+
+    /// Loads the configuration for all networks from environment variables and `.env` file
+    /// located in the given data directory.
+    pub fn load_from(data_dir: &Path) -> Result<Self, ConfigError> {
+        let env_file_path =
+            data_file_path(data_dir, ".env").map_err(|e| ConfigError::LoadError(e.to_string()))?;
+        Self::load_from_env_path(env_file_path)
+    }
+
+    fn load_from_env_path(env_file_path: std::path::PathBuf) -> Result<Self, ConfigError> {
         if let Err(err) = dotenvy::from_path_override(env_file_path) {
             tracing::warn!(
                 ?err,
@@ -207,50 +230,24 @@ impl Config {
             tracing::info!("Successfully loaded .env file");
         }
 
-        // Load individual network configs and log if they fail
-        let mainnet_config = match envy::prefixed("MAINNET_").from_env::<NetworkConfig>() {
-            Ok(config) => {
-                tracing::info!("Mainnet configuration loaded successfully");
-                Some(config)
-            }
-            Err(err) => {
-                tracing::error!(?err, "Failed to load mainnet configuration");
-                None
-            }
-        };
-
-        let testnet_config = match envy::prefixed("TESTNET_").from_env::<NetworkConfig>() {
-            Ok(config) => {
-                tracing::info!("Testnet configuration loaded successfully");
-                Some(config)
-            }
-            Err(err) => {
-                tracing::error!(?err, "Failed to load testnet configuration");
-                None
-            }
-        };
-
-        let devnet_config = match envy::prefixed("DEVNET_").from_env::<NetworkConfig>() {
-            Ok(config) => {
-                tracing::info!("Devnet configuration loaded successfully");
-                Some(config)
-            }
-            Err(err) => {
-                tracing::error!(?err, "Failed to load devnet configuration");
-                None
-            }
-        };
-
-        let local_config = match envy::prefixed("LOCAL_").from_env::<NetworkConfig>() {
-            Ok(config) => {
-                tracing::info!("Local configuration loaded successfully");
-                Some(config)
-            }
-            Err(err) => {
-                tracing::error!(?err, "Failed to load local configuration");
-                None
-            }
-        };
+        // Load each network config. Missing configs are normal — not every
+        // user configures all networks. Only fail if nothing is configured at all.
+        let mainnet_config = envy::prefixed("MAINNET_")
+            .from_env::<NetworkConfig>()
+            .inspect_err(|e| tracing::debug!("Failed to parse mainnet config: {e}"))
+            .ok();
+        let testnet_config = envy::prefixed("TESTNET_")
+            .from_env::<NetworkConfig>()
+            .inspect_err(|e| tracing::debug!("Failed to parse testnet config: {e}"))
+            .ok();
+        let devnet_config = envy::prefixed("DEVNET_")
+            .from_env::<NetworkConfig>()
+            .inspect_err(|e| tracing::debug!("Failed to parse devnet config: {e}"))
+            .ok();
+        let local_config = envy::prefixed("LOCAL_")
+            .from_env::<NetworkConfig>()
+            .inspect_err(|e| tracing::debug!("Failed to parse local config: {e}"))
+            .ok();
 
         if mainnet_config.is_none()
             && testnet_config.is_none()
@@ -258,22 +255,6 @@ impl Config {
             && local_config.is_none()
         {
             return Err(ConfigError::NoValidConfigs);
-        } else if mainnet_config.is_none() {
-            return Err(ConfigError::LoadError(
-                "Failed to load mainnet configuration".into(),
-            ));
-        } else if testnet_config.is_none() {
-            tracing::warn!(
-                "Failed to load testnet configuration, but successfully loaded mainnet config"
-            );
-        } else if devnet_config.is_none() {
-            tracing::warn!(
-                "Failed to load devnet configuration, but successfully loaded mainnet config"
-            );
-        } else if local_config.is_none() {
-            tracing::warn!(
-                "Failed to load local configuration, but successfully loaded mainnet config"
-            );
         }
 
         // Load global developer mode
@@ -458,7 +439,10 @@ mod tests {
             local_config: Some(make_network_config("http://127.0.0.1:2443", 20302)),
             developer_mode: Some(true),
         };
-        let main = config.config_for_network(Network::Mainnet).as_ref().unwrap();
+        let main = config
+            .config_for_network(Network::Mainnet)
+            .as_ref()
+            .unwrap();
         assert_eq!(main.core_rpc_port, 9998);
         let test = config
             .config_for_network(Network::Testnet)

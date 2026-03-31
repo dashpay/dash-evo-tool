@@ -39,6 +39,7 @@ pub struct PasswordInput {
     secret: Secret,
     hint_text: String,
     desired_width: Option<f32>,
+    char_limit: Option<usize>,
     error_message: Option<String>,
     monospace: bool,
     /// Carry-over from the previous frame (see module-level note on timing).
@@ -52,6 +53,7 @@ impl PasswordInput {
             secret: Secret::default(),
             hint_text: "Enter password".to_string(),
             desired_width: None,
+            char_limit: None,
             error_message: None,
             monospace: false,
             revealing: false,
@@ -66,15 +68,26 @@ impl PasswordInput {
         self
     }
 
-    /// Set the desired width of the text field.
+    /// Set the desired width of the text field (builder pattern).
     pub fn with_desired_width(mut self, width: f32) -> Self {
         self.desired_width = Some(width);
         self
     }
 
+    /// Update the desired width of the text field on an existing instance.
+    pub fn set_desired_width(&mut self, width: f32) {
+        self.desired_width = Some(width);
+    }
+
     /// Render the text in a monospace font (useful for WIF keys).
     pub fn with_monospace(mut self) -> Self {
         self.monospace = true;
+        self
+    }
+
+    /// Limit the maximum number of characters the user can enter.
+    pub fn with_char_limit(mut self, limit: usize) -> Self {
+        self.char_limit = Some(limit);
         self
     }
 
@@ -134,6 +147,10 @@ impl PasswordInput {
 
         if self.monospace {
             text_edit = text_edit.font(egui::TextStyle::Monospace);
+        }
+
+        if let Some(limit) = self.char_limit {
+            text_edit = text_edit.char_limit(limit);
         }
 
         if let Some(width) = self.desired_width {

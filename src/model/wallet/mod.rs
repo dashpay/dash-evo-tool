@@ -1,15 +1,18 @@
 mod asset_lock_transaction;
 pub mod encryption;
+pub mod shielded;
 pub mod single_key;
 mod utxos;
 
+use crate::backend_task::error::TaskError;
 use crate::database::{Database, WalletError};
+use crate::model::secret::Secret;
 use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::address_funds::{AddressWitness, PlatformAddress};
 use dash_sdk::dpp::identity::signer::Signer;
 use dash_sdk::dpp::key_wallet::account::AccountType;
 use dash_sdk::dpp::key_wallet::bip32::{
-    ChildNumber, DerivationPath, ExtendedPubKey, KeyDerivationType,
+    ChildNumber, DerivationPath, ExtendedPrivKey, ExtendedPubKey, KeyDerivationType,
 };
 use dash_sdk::dpp::key_wallet::psbt::serialize::Serialize;
 use dash_sdk::dpp::prelude::AddressNonce;
@@ -28,9 +31,43 @@ use std::fmt::Debug;
 use std::ops::Range;
 use std::sync::{Arc, RwLock};
 
+// BIP44 derivation path constants for Dash HD wallets.
+// Mainnet: m/44'/5'/0'   Testnet/Devnet/Regtest: m/44'/1'/0'
+
+/// BIP44 purpose index (standard for HD wallets).
+pub const BIP44_PURPOSE: u32 = 44;
+
+/// Dash mainnet coin type (registered in SLIP-0044).
+pub const DASH_COIN_TYPE: u32 = 5;
+
+/// Testnet coin type (shared across all testnet-like networks).
+pub const DASH_TESTNET_COIN_TYPE: u32 = 1;
+
+/// BIP44 account 0 path for Dash mainnet: `m/44'/5'/0'`.
+pub const DASH_BIP44_ACCOUNT_0_PATH_MAINNET: [ChildNumber; 3] = [
+    ChildNumber::Hardened {
+        index: BIP44_PURPOSE,
+    },
+    ChildNumber::Hardened {
+        index: DASH_COIN_TYPE,
+    },
+    ChildNumber::Hardened { index: 0 },
+];
+
+/// BIP44 account 0 path for Dash testnet/devnet/regtest: `m/44'/1'/0'`.
+pub const DASH_BIP44_ACCOUNT_0_PATH_TESTNET: [ChildNumber; 3] = [
+    ChildNumber::Hardened {
+        index: BIP44_PURPOSE,
+    },
+    ChildNumber::Hardened {
+        index: DASH_TESTNET_COIN_TYPE,
+    },
+    ChildNumber::Hardened { index: 0 },
+];
+
 /// Check if two networks use the same address format.
 /// Testnet, Devnet, and Regtest all use testnet-style addresses.
-fn networks_address_compatible(a: &Network, b: &Network) -> bool {
+pub(crate) fn networks_address_compatible(a: &Network, b: &Network) -> bool {
     matches!(
         (a, b),
         (Network::Mainnet, Network::Mainnet)
@@ -326,10 +363,217 @@ pub struct Wallet {
     pub confirmed_balance: u64,
     pub unconfirmed_balance: u64,
     pub total_balance: u64,
+    /// True once SPV has reported balances at least once; distinguishes synced
+    /// zero-balance from not-yet-synced.
+    pub spv_balance_known: bool,
     /// DIP-17: Platform address balances and nonces (keyed by Core Address for lookup)
     pub platform_address_info: BTreeMap<Address, PlatformAddressInfo>,
     /// Dash Core wallet name for multi-wallet RPC calls
     pub core_wallet_name: Option<String>,
+}
+
+impl Wallet {
+    /// Create a new HD wallet from a BIP39 seed.
+    ///
+    /// This is a pure construction method with no side effects — it does not
+    /// touch the database or register the wallet anywhere. It derives the
+    /// master BIP44 public key, computes the seed hash, optionally encrypts
+    /// the seed, and populates the first receive address.
+    ///
+    /// Use [`AppContext::register_wallet()`] to persist and activate the wallet.
+    pub fn new_from_seed(
+        seed: [u8; 64],
+        network: Network,
+        alias: Option<String>,
+        password: Option<&Secret>,
+    ) -> Result<Self, TaskError> {
+        // Encrypt seed or store plaintext
+        let (encrypted_seed, salt, nonce, uses_password) = match password {
+            Some(pw) if !pw.is_empty() => {
+                let (enc, s, n) = ClosedKeyItem::encrypt_seed(&seed, pw.expose_secret())
+                    .map_err(|e| TaskError::EncryptionError { detail: e })?;
+                (enc, s, n, true)
+            }
+            _ => (seed.to_vec(), vec![], vec![], false),
+        };
+
+        let seed_hash = ClosedKeyItem::compute_seed_hash(&seed);
+
+        // Derive master BIP44 extended public key
+        let master_priv = ExtendedPrivKey::new_master(network, &seed).map_err(|e| {
+            TaskError::WalletKeyDerivationFailed {
+                source: Box::new(e),
+            }
+        })?;
+        let bip44_path = Self::bip44_account0_path(network);
+        let secp = Secp256k1::new();
+        let account_priv = master_priv.derive_priv(&secp, &bip44_path).map_err(|e| {
+            TaskError::WalletKeyDerivationFailed {
+                source: Box::new(e),
+            }
+        })?;
+        let master_bip44_ecdsa_extended_public_key =
+            ExtendedPubKey::from_priv(&secp, &account_priv);
+
+        // Derive the first receive address (m/44'/coin'/0'/0/0)
+        let (known_addresses, watched_addresses) =
+            Self::derive_first_address(&master_bip44_ecdsa_extended_public_key, network, &secp)
+                .map_err(|e| TaskError::WalletKeyDerivationFailed { source: e.into() })?;
+
+        Ok(Wallet {
+            wallet_seed: WalletSeed::Open(OpenWalletSeed {
+                seed,
+                wallet_info: ClosedKeyItem {
+                    seed_hash,
+                    encrypted_seed,
+                    salt,
+                    nonce,
+                    password_hint: None,
+                },
+            }),
+            uses_password,
+            master_bip44_ecdsa_extended_public_key,
+            address_balances: Default::default(),
+            address_total_received: Default::default(),
+            known_addresses,
+            watched_addresses,
+            unused_asset_locks: Default::default(),
+            alias,
+            identities: Default::default(),
+            utxos: Default::default(),
+            transactions: Vec::new(),
+            is_main: true,
+            confirmed_balance: 0,
+            unconfirmed_balance: 0,
+            total_balance: 0,
+            spv_balance_known: false,
+            platform_address_info: Default::default(),
+            core_wallet_name: None,
+        })
+    }
+
+    /// Returns the BIP44 account 0 derivation path for the given network.
+    fn bip44_account0_path(network: Network) -> DerivationPath {
+        match network {
+            Network::Mainnet => DerivationPath::from(DASH_BIP44_ACCOUNT_0_PATH_MAINNET.as_slice()),
+            _ => DerivationPath::from(DASH_BIP44_ACCOUNT_0_PATH_TESTNET.as_slice()),
+        }
+    }
+
+    /// Derive the first receive address (index 0) and return populated
+    /// `known_addresses` and `watched_addresses` maps.
+    #[allow(clippy::type_complexity)]
+    fn derive_first_address(
+        master_pub: &ExtendedPubKey,
+        network: Network,
+        secp: &Secp256k1<dash_sdk::dpp::dashcore::secp256k1::All>,
+    ) -> Result<
+        (
+            BTreeMap<Address, DerivationPath>,
+            BTreeMap<DerivationPath, AddressInfo>,
+        ),
+        String,
+    > {
+        let mut known_addresses = BTreeMap::new();
+        let mut watched_addresses = BTreeMap::new();
+
+        let address_path = DerivationPath::from(
+            [
+                ChildNumber::Normal { index: 0 }, // receive (not change)
+                ChildNumber::Normal { index: 0 }, // first address
+            ]
+            .as_slice(),
+        );
+
+        let pk = master_pub
+            .derive_pub(secp, &address_path)
+            .map_err(|e| format!("Failed to derive first receive address: {e}"))?;
+        let address = Address::p2pkh(&pk.to_pub(), network);
+        let bip44 = match network {
+            Network::Mainnet => &DASH_BIP44_ACCOUNT_0_PATH_MAINNET,
+            _ => &DASH_BIP44_ACCOUNT_0_PATH_TESTNET,
+        };
+        let full_path = DerivationPath::from(
+            [
+                bip44[0],
+                bip44[1],
+                bip44[2],
+                ChildNumber::Normal { index: 0 },
+                ChildNumber::Normal { index: 0 },
+            ]
+            .as_slice(),
+        );
+        known_addresses.insert(address.clone(), full_path.clone());
+        watched_addresses.insert(
+            full_path,
+            AddressInfo {
+                address,
+                path_type: DerivationPathType::CLEAR_FUNDS,
+                path_reference: DerivationPathReference::BIP44,
+            },
+        );
+
+        Ok((known_addresses, watched_addresses))
+    }
+}
+
+/// Transaction lifecycle status.
+///
+/// Tracks the progression: Unconfirmed → InstantSendLocked → Confirmed → ChainLocked.
+/// Currently only Unconfirmed and Confirmed can be inferred from upstream data;
+/// InstantSendLocked and ChainLocked require upstream changes (rust-dashcore#569).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(u8)]
+pub enum TransactionStatus {
+    /// In mempool, no InstantSend lock
+    Unconfirmed = 0,
+    /// InstantSend-locked but not yet mined (requires rust-dashcore#569)
+    InstantSendLocked = 1,
+    /// Mined in a block
+    Confirmed = 2,
+    /// In a chain-locked block (highest finality, requires rust-dashcore#569)
+    ChainLocked = 3,
+}
+
+impl TransactionStatus {
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            0 => Self::Unconfirmed,
+            1 => Self::InstantSendLocked,
+            2 => Self::Confirmed,
+            3 => Self::ChainLocked,
+            _ => {
+                tracing::warn!("Unknown TransactionStatus value {v}, defaulting to Unconfirmed");
+                Self::Unconfirmed
+            }
+        }
+    }
+
+    /// Infer status from block height presence.
+    /// This is a best-effort heuristic until upstream provides richer context.
+    pub fn from_height(height: Option<u32>) -> Self {
+        if height.is_some() {
+            Self::Confirmed
+        } else {
+            Self::Unconfirmed
+        }
+    }
+
+    /// User-facing label for UI display.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Unconfirmed => "Unconfirmed",
+            Self::InstantSendLocked => "InstantSend",
+            Self::Confirmed => "Confirmed",
+            Self::ChainLocked => "ChainLocked",
+        }
+    }
+}
+
+impl std::fmt::Display for TransactionStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -343,6 +587,7 @@ pub struct WalletTransaction {
     pub fee: Option<u64>,
     pub label: Option<String>,
     pub is_ours: bool,
+    pub status: TransactionStatus,
 }
 
 impl WalletTransaction {
@@ -355,7 +600,10 @@ impl WalletTransaction {
     }
 
     pub fn is_confirmed(&self) -> bool {
-        self.height.is_some()
+        matches!(
+            self.status,
+            TransactionStatus::Confirmed | TransactionStatus::ChainLocked
+        )
     }
 
     pub fn amount_abs(&self) -> u64 {
@@ -509,6 +757,18 @@ impl Wallet {
         }
     }
 
+    /// Returns the SPV-reported confirmed balance, or `None` if SPV hasn't
+    /// synced balance data yet. Unlike `confirmed_balance_duffs()`, this
+    /// never falls back to `max_balance()` — callers that need certainty
+    /// (e.g., test waiters) should use this and retry on `None`.
+    pub fn spv_confirmed_balance(&self) -> Option<u64> {
+        if self.spv_balance_known {
+            Some(self.confirmed_balance)
+        } else {
+            None
+        }
+    }
+
     pub fn unconfirmed_balance_duffs(&self) -> u64 {
         self.unconfirmed_balance
     }
@@ -525,6 +785,7 @@ impl Wallet {
         self.confirmed_balance = confirmed;
         self.unconfirmed_balance = unconfirmed;
         self.total_balance = total;
+        self.spv_balance_known = true;
     }
 
     pub fn bootstrap_known_addresses(&mut self, app_context: &AppContext) {
@@ -1544,7 +1805,7 @@ impl Wallet {
         // the transaction is fully built and signed, so that a failure at any later
         // step cannot permanently drop UTXOs from the wallet.
         let (utxos, change_option) = self
-            .select_unspent_utxos_for(amount, fee, subtract_fee_from_amount)
+            .select_unspent_utxos_for(amount, fee, subtract_fee_from_amount, None)
             .ok_or_else(|| "Insufficient funds".to_string())?;
 
         let send_value = if change_option.is_none() && subtract_fee_from_amount {
@@ -1678,7 +1939,7 @@ impl Wallet {
         // the transaction is fully built and signed, so that a failure at any later
         // step cannot permanently drop UTXOs from the wallet.
         let (utxos, change_option) = self
-            .select_unspent_utxos_for(total_amount, fee, subtract_fee_from_amount)
+            .select_unspent_utxos_for(total_amount, fee, subtract_fee_from_amount, None)
             .ok_or_else(|| "Insufficient funds".to_string())?;
 
         // Build outputs for each recipient
@@ -2517,6 +2778,7 @@ mod tests {
             confirmed_balance: 0,
             unconfirmed_balance: 0,
             total_balance: 0,
+            spv_balance_known: false,
             platform_address_info: BTreeMap::new(),
             core_wallet_name: None,
         }
@@ -2661,6 +2923,29 @@ mod tests {
         assert_eq!(wallet.total_balance, 150);
     }
 
+    #[test]
+    fn test_spv_confirmed_balance_none_before_sync() {
+        let wallet = test_wallet();
+        // Before any SPV sync, spv_confirmed_balance must return None regardless
+        // of the UTXO state — callers cannot distinguish synced-zero from unsynced.
+        assert_eq!(wallet.spv_confirmed_balance(), None);
+    }
+
+    #[test]
+    fn test_spv_confirmed_balance_zero_after_sync() {
+        let mut wallet = test_wallet();
+        // After SPV reports zero balance, Some(0) must be returned — not None.
+        wallet.update_spv_balances(0, 0, 0);
+        assert_eq!(wallet.spv_confirmed_balance(), Some(0));
+    }
+
+    #[test]
+    fn test_spv_confirmed_balance_nonzero_after_sync() {
+        let mut wallet = test_wallet();
+        wallet.update_spv_balances(75_000, 5_000, 80_000);
+        assert_eq!(wallet.spv_confirmed_balance(), Some(75_000));
+    }
+
     // ========================================================================
     // select_unspent_utxos_for / remove_selected_utxos tests
     // ========================================================================
@@ -2669,7 +2954,7 @@ mod tests {
     fn test_select_utxos_exact_amount() {
         let wallet = test_wallet_with_utxo(100_000);
 
-        let result = wallet.select_unspent_utxos_for(90_000, 10_000, false);
+        let result = wallet.select_unspent_utxos_for(90_000, 10_000, false, None);
         assert!(result.is_some());
         let (utxos, change) = result.unwrap();
         assert_eq!(utxos.len(), 1);
@@ -2682,7 +2967,7 @@ mod tests {
     fn test_select_utxos_with_change() {
         let wallet = test_wallet_with_utxo(200_000);
 
-        let result = wallet.select_unspent_utxos_for(90_000, 10_000, false);
+        let result = wallet.select_unspent_utxos_for(90_000, 10_000, false, None);
         assert!(result.is_some());
         let (utxos, change) = result.unwrap();
         assert_eq!(utxos.len(), 1);
@@ -2693,7 +2978,7 @@ mod tests {
     fn test_select_utxos_insufficient_funds() {
         let wallet = test_wallet_with_utxo(50_000);
 
-        let result = wallet.select_unspent_utxos_for(90_000, 10_000, false);
+        let result = wallet.select_unspent_utxos_for(90_000, 10_000, false, None);
         assert!(result.is_none());
     }
 
@@ -2706,7 +2991,7 @@ mod tests {
         add_utxo(&mut wallet, &addr2, 2, 0, 40_000);
         add_utxo(&mut wallet, &addr1, 3, 0, 50_000);
 
-        let result = wallet.select_unspent_utxos_for(100_000, 10_000, false);
+        let result = wallet.select_unspent_utxos_for(100_000, 10_000, false, None);
         assert!(result.is_some());
         let (utxos, change) = result.unwrap();
         let total_collected: u64 = utxos.values().map(|(tx_out, _)| tx_out.value).sum();
@@ -2722,7 +3007,7 @@ mod tests {
 
         // Request 100k amount + 10k fee = 110k total, but only 100k available
         // With allow_take_fee_from_amount=true, should still succeed since total >= amount
-        let result = wallet.select_unspent_utxos_for(100_000, 10_000, true);
+        let result = wallet.select_unspent_utxos_for(100_000, 10_000, true, None);
         assert!(result.is_some());
         let (_utxos, change) = result.unwrap();
         assert!(change.is_none());
@@ -2734,7 +3019,7 @@ mod tests {
 
         // Request 100k amount + 10k fee = 110k, only 50k available
         // Even with take_fee_from_amount, 50k < 100k amount, so should fail
-        let result = wallet.select_unspent_utxos_for(100_000, 10_000, true);
+        let result = wallet.select_unspent_utxos_for(100_000, 10_000, true, None);
         assert!(result.is_none());
     }
 
@@ -2742,7 +3027,7 @@ mod tests {
     fn test_select_utxos_zero_amount() {
         let wallet = test_wallet_with_utxo(50_000);
 
-        let result = wallet.select_unspent_utxos_for(0, 0, false);
+        let result = wallet.select_unspent_utxos_for(0, 0, false, None);
         assert!(result.is_some());
         let (utxos, change) = result.unwrap();
         assert!(utxos.is_empty());
@@ -2751,6 +3036,7 @@ mod tests {
 
     /// Helper: register a wallet address in the test database so that
     /// `update_address_balance` can find the row.
+    /// Caller must store the wallet first via `db.store_wallet()`.
     fn register_test_address(db: &Database, wallet: &Wallet, address: &Address) {
         let seed_hash = wallet.seed_hash();
         let path = DerivationPath::from(vec![
@@ -2783,9 +3069,11 @@ mod tests {
         assert_eq!(wallet.max_balance(), 300_000);
 
         let db = create_test_database().expect("test db");
+        db.store_wallet(&wallet, &Network::Testnet)
+            .expect("store test wallet");
         register_test_address(&db, &wallet, &addr);
         let (selected, _) = wallet
-            .select_unspent_utxos_for(90_000, 10_000, false)
+            .select_unspent_utxos_for(90_000, 10_000, false, None)
             .unwrap();
         wallet
             .remove_selected_utxos(&selected, &db, Network::Testnet)
@@ -2803,9 +3091,11 @@ mod tests {
         add_utxo(&mut wallet, &addr, 1, 0, 100_000);
 
         let db = create_test_database().expect("test db");
+        db.store_wallet(&wallet, &Network::Testnet)
+            .expect("store test wallet");
         register_test_address(&db, &wallet, &addr);
         let (selected, _) = wallet
-            .select_unspent_utxos_for(90_000, 10_000, false)
+            .select_unspent_utxos_for(90_000, 10_000, false, None)
             .unwrap();
         wallet
             .remove_selected_utxos(&selected, &db, Network::Testnet)
@@ -2909,6 +3199,7 @@ mod tests {
             fee: Some(226),
             label: None,
             is_ours: true,
+            status: TransactionStatus::Confirmed,
         };
 
         assert!(tx.is_incoming());
@@ -2935,6 +3226,7 @@ mod tests {
             fee: Some(226),
             label: None,
             is_ours: true,
+            status: TransactionStatus::Unconfirmed,
         };
 
         assert!(!tx.is_incoming());
@@ -2961,6 +3253,7 @@ mod tests {
             fee: None,
             label: None,
             is_ours: false,
+            status: TransactionStatus::Unconfirmed,
         };
 
         assert!(!tx.is_incoming());
@@ -3175,7 +3468,10 @@ mod tests {
 
     #[test]
     fn test_networks_address_compatible() {
-        assert!(networks_address_compatible(&Network::Mainnet, &Network::Mainnet));
+        assert!(networks_address_compatible(
+            &Network::Mainnet,
+            &Network::Mainnet
+        ));
         assert!(networks_address_compatible(
             &Network::Testnet,
             &Network::Testnet

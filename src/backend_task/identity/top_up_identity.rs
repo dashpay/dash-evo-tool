@@ -108,6 +108,7 @@ impl AppContext {
                             true,
                             identity_index,
                             top_up_index,
+                            None,
                         ) {
                             Ok(transaction) => transaction,
                             Err(e) => {
@@ -129,6 +130,7 @@ impl AppContext {
                                         true,
                                         identity_index,
                                         top_up_index,
+                                        None,
                                     )
                                     .map_err(|e| TaskError::AssetLockTransactionBuildFailed {
                                         detail: e,

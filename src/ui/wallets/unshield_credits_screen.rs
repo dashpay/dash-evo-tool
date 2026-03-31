@@ -1,0 +1,309 @@
+use crate::app::AppAction;
+use crate::backend_task::shielded::ShieldedTask;
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
+use crate::context::AppContext;
+use crate::model::address::{AddressKind, ValidatedAddress};
+use crate::model::amount::Amount;
+use crate::model::wallet::WalletSeedHash;
+use crate::ui::components::ComponentResponse;
+use crate::ui::components::address_input::AddressInput;
+use crate::ui::components::amount_input::AmountInput;
+use crate::ui::components::component_trait::Component;
+use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::theme::DashColors;
+use crate::ui::{MessageType, RootScreenType, ScreenLike};
+use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
+use eframe::egui::{self, Context};
+use egui::{Color32, RichText};
+use std::sync::Arc;
+
+#[derive(PartialEq)]
+enum Status {
+    NotStarted,
+    WaitingForResult,
+    Complete,
+}
+
+pub struct UnshieldCreditsScreen {
+    pub app_context: Arc<AppContext>,
+    pub seed_hash: WalletSeedHash,
+    amount_input: Option<AmountInput>,
+    amount: Option<Amount>,
+    address_input: Option<AddressInput>,
+    validated_destination: Option<ValidatedAddress>,
+    max_balance: u64,
+    status: Status,
+    error_message: Option<String>,
+    success_message: Option<String>,
+    /// Queued task to dispatch on next frame (e.g., sync notes after successful unshield).
+    pending_refresh_task: Option<BackendTask>,
+    /// Whether to show the balance-update-pending info on the success screen.
+    balance_update_pending: bool,
+}
+
+impl UnshieldCreditsScreen {
+    /// Clear the AddressInput widget so it picks up the new network on next frame.
+    pub(crate) fn invalidate_address_input(&mut self) {
+        self.address_input = None;
+        self.validated_destination = None;
+    }
+
+    pub fn new(seed_hash: WalletSeedHash, app_context: &Arc<AppContext>) -> Self {
+        let max_balance = app_context
+            .shielded_states
+            .lock()
+            .ok()
+            .and_then(|states| states.get(&seed_hash).map(|s| s.shielded_balance))
+            .unwrap_or(0);
+
+        Self {
+            app_context: app_context.clone(),
+            seed_hash,
+            amount_input: None,
+            amount: None,
+            address_input: None,
+            validated_destination: None,
+            max_balance,
+            status: Status::NotStarted,
+            error_message: None,
+            success_message: None,
+            pending_refresh_task: None,
+            balance_update_pending: false,
+        }
+    }
+}
+
+impl ScreenLike for UnshieldCreditsScreen {
+    fn refresh_on_arrival(&mut self) {
+        if let Ok(states) = self.app_context.shielded_states.lock()
+            && let Some(state) = states.get(&self.seed_hash)
+        {
+            self.max_balance = state.shielded_balance;
+        }
+    }
+
+    fn ui(&mut self, ctx: &Context) -> AppAction {
+        let mut action = self
+            .pending_refresh_task
+            .take()
+            .map(AppAction::BackendTask)
+            .unwrap_or(AppAction::None);
+
+        action |= add_top_panel(
+            ctx,
+            &self.app_context,
+            vec![
+                ("Wallets", AppAction::PopScreen),
+                ("Unshield Credits", AppAction::None),
+            ],
+            vec![],
+        );
+
+        action |= add_left_panel(
+            ctx,
+            &self.app_context,
+            RootScreenType::RootScreenWalletsBalances,
+        );
+
+        island_central_panel(ctx, |ui| {
+            ui.heading("Unshield Credits");
+            ui.add_space(10.0);
+            ui.label(
+                "Move credits from the shielded pool to a platform address or a core DASH address.",
+            );
+            ui.add_space(5.0);
+
+            let dash_balance = self.max_balance as f64 / CREDITS_PER_DUFF as f64 / 1e8;
+            ui.label(format!(
+                "Available shielded balance: {:.8} DASH",
+                dash_balance
+            ));
+            ui.add_space(15.0);
+
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
+
+            // Error/success messages
+            if let Some(err) = &self.error_message {
+                ui.colored_label(DashColors::error_color(dark_mode), err);
+                ui.add_space(5.0);
+            }
+            if let Some(msg) = &self.success_message {
+                ui.colored_label(DashColors::success_color(dark_mode), msg);
+                if self.balance_update_pending {
+                    ui.add_space(8.0);
+                    ui.label(
+                        "Your remaining balance will update after the next block is confirmed.",
+                    );
+                }
+                ui.add_space(10.0);
+                if ui.button("Done").clicked() {
+                    action = AppAction::PopScreen;
+                }
+                return;
+            }
+
+            // Destination address input via AddressInput component
+            let addr_input = self.address_input.get_or_insert_with(|| {
+                let mut builder = AddressInput::new(self.app_context.network)
+                    .with_address_kinds(&[AddressKind::Core, AddressKind::Platform])
+                    .with_label("To address")
+                    .with_hint_text(
+                        "Enter a platform address (tdash1.../dash1...) or core DASH address",
+                    );
+
+                if let Ok(wallets) = self.app_context.wallets.read() {
+                    let all_wallets: Vec<_> = wallets.values().cloned().collect();
+                    builder = builder.with_wallets(&all_wallets);
+                }
+
+                builder
+            });
+            let resp = addr_input.show(ui);
+            resp.inner.update(&mut self.validated_destination);
+
+            // Show what was parsed
+            match self.validated_destination.as_ref().map(|v| v.kind()) {
+                Some(AddressKind::Platform) => {
+                    ui.colored_label(
+                        DashColors::success_color(dark_mode),
+                        "Platform address — credits will be moved to this platform address",
+                    );
+                }
+                Some(AddressKind::Core) => {
+                    ui.colored_label(
+                        DashColors::success_color(dark_mode),
+                        "Core address — credits will be withdrawn as DASH to this address",
+                    );
+                }
+                _ => {}
+            }
+            ui.add_space(10.0);
+
+            // Amount input
+            let amount_input = self.amount_input.get_or_insert_with(|| {
+                AmountInput::new(Amount::new_dash(0.0))
+                    .with_label("Amount (DASH):")
+                    .with_hint_text("Enter amount")
+                    .with_max_button(true)
+                    .with_desired_width(150.0)
+            });
+            amount_input.set_max_amount(Some(self.max_balance));
+            let response = amount_input.show(ui);
+            response.inner.update(&mut self.amount);
+            ui.add_space(15.0);
+
+            let amount_ok = self.amount.is_some();
+            let has_destination = self.validated_destination.is_some();
+            let can_confirm = self.status == Status::NotStarted && amount_ok && has_destination;
+
+            if self.status == Status::WaitingForResult {
+                ui.horizontal(|ui| {
+                    ui.add(egui::Spinner::new());
+                    ui.label("Processing...");
+                });
+            } else {
+                ui.horizontal(|ui| {
+                    let btn_label = match self.validated_destination.as_ref().map(|v| v.kind()) {
+                        Some(AddressKind::Core) => "Withdraw to Core",
+                        _ => "Unshield",
+                    };
+
+                    if ui
+                        .add_enabled(
+                            can_confirm,
+                            egui::Button::new(
+                                RichText::new(btn_label).color(Color32::WHITE).size(16.0),
+                            )
+                            .fill(crate::ui::theme::DashColors::DASH_BLUE),
+                        )
+                        .clicked()
+                        && let Some(amount) = self.amount.as_ref().map(|a| a.value())
+                    {
+                        match &self.validated_destination {
+                            Some(ValidatedAddress::Platform { address: addr, .. }) => {
+                                self.status = Status::WaitingForResult;
+                                self.error_message = None;
+                                action = AppAction::BackendTask(BackendTask::ShieldedTask(
+                                    ShieldedTask::UnshieldCredits {
+                                        seed_hash: self.seed_hash,
+                                        amount,
+                                        to_platform_address: *addr,
+                                    },
+                                ));
+                            }
+                            Some(ValidatedAddress::Core(addr)) => {
+                                self.status = Status::WaitingForResult;
+                                self.error_message = None;
+                                action = AppAction::BackendTask(BackendTask::ShieldedTask(
+                                    ShieldedTask::ShieldedWithdrawal {
+                                        seed_hash: self.seed_hash,
+                                        amount,
+                                        to_core_address: addr.clone(),
+                                    },
+                                ));
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    ui.add_space(10.0);
+                    if ui.button("Cancel").clicked() {
+                        action = AppAction::PopScreen;
+                    }
+                });
+            }
+        });
+
+        action
+    }
+
+    fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
+        match result {
+            BackendTaskSuccessResult::ShieldedCreditsUnshielded { seed_hash, amount }
+                if seed_hash == self.seed_hash =>
+            {
+                self.status = Status::Complete;
+                let dash = amount as f64 / CREDITS_PER_DUFF as f64 / 1e8;
+                self.success_message = Some(format!(
+                    "Successfully unshielded {:.8} DASH to platform address",
+                    dash
+                ));
+                self.pending_refresh_task =
+                    Some(BackendTask::ShieldedTask(ShieldedTask::SyncNotes {
+                        seed_hash: self.seed_hash,
+                    }));
+                self.balance_update_pending = true;
+            }
+            BackendTaskSuccessResult::ShieldedWithdrawalComplete { seed_hash, amount }
+                if seed_hash == self.seed_hash =>
+            {
+                self.status = Status::Complete;
+                let dash = amount as f64 / CREDITS_PER_DUFF as f64 / 1e8;
+                self.success_message = Some(format!(
+                    "Successfully withdrew {:.8} DASH to core address",
+                    dash
+                ));
+                self.pending_refresh_task =
+                    Some(BackendTask::ShieldedTask(ShieldedTask::SyncNotes {
+                        seed_hash: self.seed_hash,
+                    }));
+                self.balance_update_pending = true;
+            }
+            _ => {}
+        }
+    }
+
+    fn display_message(&mut self, message: &str, message_type: MessageType) {
+        match message_type {
+            MessageType::Error => {
+                self.status = Status::NotStarted;
+                self.error_message = Some(message.to_string());
+            }
+            _ => {
+                self.success_message = Some(message.to_string());
+            }
+        }
+    }
+}

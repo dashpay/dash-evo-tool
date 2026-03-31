@@ -27,12 +27,22 @@ fn test_network_config() -> NetworkConfig {
 }
 
 /// Create an SpvManager for testing. Uses testnet config and a fresh TaskManager.
-fn create_test_manager() -> (Arc<SpvManager>, Arc<TaskManager>) {
+/// Returns the `TempDir` so it stays alive for the test duration.
+fn create_test_manager() -> (Arc<SpvManager>, Arc<TaskManager>, tempfile::TempDir) {
     let config = Arc::new(RwLock::new(test_network_config()));
     let task_manager = Arc::new(TaskManager::new());
-    let manager = SpvManager::new(Network::Testnet, config, task_manager.clone())
-        .expect("SpvManager::new should succeed");
-    (manager, task_manager)
+    let tmp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
+    let manager = SpvManager::new(
+        tmp_dir.path(),
+        Network::Testnet,
+        config,
+        task_manager.clone(),
+    )
+    .expect("SpvManager::new should succeed");
+    // Use explicit local peer to avoid DNS seed discovery which hangs in tests
+    // (upstream bug: dashpay/rust-dashcore#577).
+    manager.set_use_local_node(true);
+    (manager, task_manager, tmp_dir)
 }
 
 // ── Construction and initial state ───────────────────────────────
@@ -42,7 +52,7 @@ fn create_test_manager() -> (Arc<SpvManager>, Arc<TaskManager>) {
 /// Then status is Idle, no error, no start time, no progress, and 0 peers.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_new_manager_has_idle_status() {
-    let (manager, _tm) = create_test_manager();
+    let (manager, _tm, _tmp_dir) = create_test_manager();
     let snapshot = manager.status();
     assert_eq!(
         snapshot.status,
@@ -72,7 +82,7 @@ async fn test_new_manager_has_idle_status() {
 /// Then all snapshots are consistent (Idle, no error, 0 peers).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_status_snapshot_consistency() {
-    let (manager, _tm) = create_test_manager();
+    let (manager, _tm, _tmp_dir) = create_test_manager();
 
     for _ in 0..10 {
         let sync_snapshot = manager.status();
@@ -94,7 +104,7 @@ async fn test_status_snapshot_consistency() {
 /// Then it completes without panic or deadlock and sets status to Stopped.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_stop_when_idle_does_not_panic() {
-    let (manager, _tm) = create_test_manager();
+    let (manager, _tm, _tmp_dir) = create_test_manager();
 
     let result = timeout(DEADLOCK_TIMEOUT, async {
         manager.stop();
@@ -118,7 +128,7 @@ async fn test_stop_when_idle_does_not_panic() {
 /// Then both calls complete without panic or deadlock.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_double_stop_does_not_panic() {
-    let (manager, _tm) = create_test_manager();
+    let (manager, _tm, _tmp_dir) = create_test_manager();
 
     let result = timeout(DEADLOCK_TIMEOUT, async {
         manager.stop();
@@ -141,13 +151,16 @@ async fn test_double_stop_does_not_panic() {
 /// Then the getter reflects each change correctly.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_use_local_node_toggle() {
-    let (manager, _tm) = create_test_manager();
+    let (manager, _tm, _tmp_dir) = create_test_manager();
 
-    assert!(!manager.use_local_node(), "Default should be false");
+    assert!(
+        manager.use_local_node(),
+        "Test helper sets use_local_node to true"
+    );
+    manager.set_use_local_node(false);
+    assert!(!manager.use_local_node(), "Should be false after clear");
     manager.set_use_local_node(true);
     assert!(manager.use_local_node(), "Should be true after set");
-    manager.set_use_local_node(false);
-    assert!(!manager.use_local_node(), "Should be false after reset");
 }
 
 // ── clear_data_dir when idle ─────────────────────────────────────
@@ -157,7 +170,7 @@ async fn test_use_local_node_toggle() {
 /// Then it succeeds and the status remains Idle.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_clear_data_dir_when_idle() {
-    let (manager, _tm) = create_test_manager();
+    let (manager, _tm, _tmp_dir) = create_test_manager();
 
     let result = timeout(DEADLOCK_TIMEOUT, async { manager.clear_data_dir() }).await;
     assert!(
@@ -182,7 +195,7 @@ async fn test_clear_data_dir_when_idle() {
 /// Then all reads complete within the deadlock timeout without panic.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_concurrent_status_reads_no_deadlock() {
-    let (manager, _tm) = create_test_manager();
+    let (manager, _tm, _tmp_dir) = create_test_manager();
 
     let result = timeout(DEADLOCK_TIMEOUT, async {
         let mut handles = Vec::new();
@@ -216,7 +229,7 @@ async fn test_concurrent_status_reads_no_deadlock() {
 /// if the background task progresses before the assertion).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_start_sets_starting_status() {
-    let (manager, tm) = create_test_manager();
+    let (manager, tm, _tmp_dir) = create_test_manager();
 
     let start_result = manager.start(0);
     assert!(
@@ -244,7 +257,7 @@ async fn test_start_sets_starting_status() {
 /// Then it returns Ok without spawning a duplicate loop (idempotent).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_double_start_is_idempotent() {
-    let (manager, tm) = create_test_manager();
+    let (manager, tm, _tmp_dir) = create_test_manager();
 
     let first = manager.start(0);
     assert!(first.is_ok(), "First start() should succeed");
@@ -266,7 +279,7 @@ async fn test_double_start_is_idempotent() {
 /// Then the status reaches Stopped (or Error) within the deadlock timeout.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_start_stop_clean_shutdown() {
-    let (manager, tm) = create_test_manager();
+    let (manager, tm, _tmp_dir) = create_test_manager();
 
     manager.start(0).expect("start() should succeed");
 
@@ -306,7 +319,7 @@ async fn test_start_stop_clean_shutdown() {
 /// Then all cycles complete without panic or deadlock.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_rapid_start_stop_no_panic() {
-    let (manager, tm) = create_test_manager();
+    let (manager, tm, _tmp_dir) = create_test_manager();
 
     let result = timeout(DEADLOCK_TIMEOUT, async {
         for _ in 0..5 {
@@ -333,7 +346,7 @@ async fn test_rapid_start_stop_no_panic() {
 /// Then all readers complete without panic or deadlock.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_concurrent_reads_during_lifecycle() {
-    let (manager, tm) = create_test_manager();
+    let (manager, tm, _tmp_dir) = create_test_manager();
 
     let result = timeout(DEADLOCK_TIMEOUT, async {
         let mut readers = Vec::new();
@@ -410,7 +423,7 @@ async fn test_spv_status_from_u8_roundtrip() {
 /// Then the returned map is empty.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_det_wallets_snapshot_empty() {
-    let (manager, _tm) = create_test_manager();
+    let (manager, _tm, _tmp_dir) = create_test_manager();
     let wallets = manager.det_wallets_snapshot();
     assert!(wallets.is_empty(), "New manager should have no wallets");
 }
@@ -420,7 +433,7 @@ async fn test_det_wallets_snapshot_empty() {
 /// Then None is returned.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_wallet_id_for_seed_returns_none() {
-    let (manager, _tm) = create_test_manager();
+    let (manager, _tm, _tmp_dir) = create_test_manager();
     let seed_hash = [0u8; 32];
     assert!(
         manager.wallet_id_for_seed(seed_hash).is_none(),
@@ -435,7 +448,7 @@ async fn test_wallet_id_for_seed_returns_none() {
 /// Then the channel is open but empty (no signals yet).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_register_reconcile_channel() {
-    let (manager, _tm) = create_test_manager();
+    let (manager, _tm, _tmp_dir) = create_test_manager();
     let mut rx = manager.register_reconcile_channel();
 
     let result = rx.try_recv();
@@ -447,7 +460,7 @@ async fn test_register_reconcile_channel() {
 /// Then the channel is open but empty (no events yet).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_register_finality_channel() {
-    let (manager, _tm) = create_test_manager();
+    let (manager, _tm, _tmp_dir) = create_test_manager();
     let mut rx = manager.register_finality_channel();
 
     let result = rx.try_recv();
@@ -461,7 +474,7 @@ async fn test_register_finality_channel() {
 /// Then the call fails with an error indicating SPV is not running.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_broadcast_transaction_fails_when_not_running() {
-    let (manager, _tm) = create_test_manager();
+    let (manager, _tm, _tmp_dir) = create_test_manager();
 
     let tx = dash_sdk::dpp::dashcore::Transaction {
         version: 2,
@@ -541,8 +554,14 @@ async fn test_live_testnet_sync_and_shutdown() {
     let testnet_config = load_testnet_config_from_env_example();
     let config = Arc::new(RwLock::new(testnet_config));
     let task_manager = Arc::new(TaskManager::new());
-    let manager = SpvManager::new(Network::Testnet, config, task_manager.clone())
-        .expect("SpvManager::new should succeed");
+    let tmp_dir = tempfile::TempDir::new().expect("Failed to create temp dir");
+    let manager = SpvManager::new(
+        tmp_dir.path(),
+        Network::Testnet,
+        config,
+        task_manager.clone(),
+    )
+    .expect("SpvManager::new should succeed");
 
     // Start SPV with no wallets (header-only sync to chain tip)
     manager.start(0).expect("start() should succeed");

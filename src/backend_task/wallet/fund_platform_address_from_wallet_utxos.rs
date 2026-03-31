@@ -59,6 +59,7 @@ impl AppContext {
                 self.network,
                 asset_lock_amount,
                 allow_take_fee_from_amount,
+                None,
             ) {
                 Ok((tx, private_key, address, _change, utxos)) => (tx, private_key, address, utxos),
                 Err(e) => {
@@ -76,6 +77,7 @@ impl AppContext {
                             self.network,
                             asset_lock_amount,
                             allow_take_fee_from_amount,
+                            None,
                         )
                         .map_err(|e| TaskError::AssetLockTransactionBuildFailed { detail: e })?;
                     (tx, private_key, address, utxos)

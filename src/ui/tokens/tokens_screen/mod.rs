@@ -4,6 +4,39 @@ mod distributions;
 mod groups;
 mod keyword_search;
 mod my_tokens;
+
+fn my_tokens(
+    app_context: &Arc<AppContext>,
+    identities: &IndexMap<Identifier, QualifiedIdentity>,
+    all_known_tokens: &IndexMap<Identifier, TokenInfoWithDataContract>,
+    token_pricing_data: &IndexMap<
+        Identifier,
+        Option<dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule>,
+    >,
+) -> IndexMap<IdentityTokenIdentifier, IdentityTokenBalanceWithActions> {
+    let in_dev_mode = app_context.is_developer_mode();
+
+    app_context
+        .identity_token_balances()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(id_token_identifier, token_balance)| {
+            // Lookup identity
+            let identity = identities.get(&token_balance.identity_id)?;
+            // Lookup contract
+            let contract = all_known_tokens
+                .get(&token_balance.token_id)
+                .map(|info| &info.data_contract)?;
+
+            let token_pricing = token_pricing_data
+                .get(&token_balance.token_id)
+                .and_then(|opt| opt.as_ref());
+            let token_with_actions =
+                token_balance.into_with_actions(identity, contract, in_dev_mode, token_pricing);
+            Some((id_token_identifier, token_with_actions))
+        })
+        .collect()
+}
 mod structs;
 mod token_creator;
 
@@ -1471,39 +1504,6 @@ impl IntervalTimeUnit {
             (IntervalTimeUnit::Year, false) => "Years",
         }
     }
-}
-
-fn my_tokens(
-    app_context: &Arc<AppContext>,
-    identities: &IndexMap<Identifier, QualifiedIdentity>,
-    all_known_tokens: &IndexMap<Identifier, TokenInfoWithDataContract>,
-    token_pricing_data: &IndexMap<
-        Identifier,
-        Option<dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule>,
-    >,
-) -> IndexMap<IdentityTokenIdentifier, IdentityTokenBalanceWithActions> {
-    let in_dev_mode = app_context.is_developer_mode();
-
-    app_context
-        .identity_token_balances()
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|(id_token_identifier, token_balance)| {
-            // Lookup identity
-            let identity = identities.get(&token_balance.identity_id)?;
-            // Lookup contract
-            let contract = all_known_tokens
-                .get(&token_balance.token_id)
-                .map(|info| &info.data_contract)?;
-
-            let token_pricing = token_pricing_data
-                .get(&token_balance.token_id)
-                .and_then(|opt| opt.as_ref());
-            let token_with_actions =
-                token_balance.into_with_actions(identity, contract, in_dev_mode, token_pricing);
-            Some((id_token_identifier, token_with_actions))
-        })
-        .collect()
 }
 
 impl TokensScreen {
@@ -3228,6 +3228,7 @@ mod tests {
 
         ensure_test_env();
         let app_context = AppContext::new(
+            crate::app_dir::app_user_data_dir_path().unwrap(),
             Network::Regtest,
             db,
             None,
@@ -3541,6 +3542,7 @@ mod tests {
 
         ensure_test_env();
         let app_context = AppContext::new(
+            crate::app_dir::app_user_data_dir_path().unwrap(),
             Network::Regtest,
             db,
             None,
@@ -3668,6 +3670,7 @@ mod tests {
 
         ensure_test_env();
         let app_context = AppContext::new(
+            crate::app_dir::app_user_data_dir_path().unwrap(),
             Network::Regtest,
             db,
             None,

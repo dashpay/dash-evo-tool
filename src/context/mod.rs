@@ -2,13 +2,14 @@ pub mod connection_status;
 mod contract_token_db;
 mod identity_db;
 mod settings_db;
+pub mod shielded;
 mod transaction_processing;
 mod wallet_lifecycle;
 
 pub(crate) use transaction_processing::get_transaction_info;
 
 use crate::app_dir::core_cookie_path;
-use crate::backend_task::error::TaskError;
+use crate::backend_task::error::{TaskError, is_rpc_connection_error};
 use crate::components::core_zmq_listener::ZMQConnectionEvent;
 use crate::config::{Config, NetworkConfig};
 use crate::context_provider::Provider as RpcProvider;
@@ -29,6 +30,8 @@ use crossbeam_channel::{Receiver, Sender};
 use dash_sdk::Sdk;
 use dash_sdk::dashcore_rpc::{Auth, Client, RpcApi};
 use dash_sdk::dpp::dashcore::{Address, Network, Txid};
+#[cfg(any(test, feature = "testing"))]
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::prelude::AssetLockProof;
 use dash_sdk::dpp::state_transition::StateTransitionSigningOptions;
 use dash_sdk::dpp::state_transition::batch_transition::methods::StateTransitionCreationOptions;
@@ -36,9 +39,12 @@ use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::dpp::version::v11::PLATFORM_V11;
 use dash_sdk::platform::DataContract;
+#[cfg(any(test, feature = "testing"))]
+use dash_sdk::platform::Identifier;
 use egui::Context;
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
 
 use crate::model::settings::Settings;
@@ -70,6 +76,7 @@ pub(crate) type SettingsCacheGuard<'a> = RwLockWriteGuard<'a, Option<Settings>>;
 
 #[derive(Debug)]
 pub struct AppContext {
+    pub(crate) data_dir: PathBuf,
     pub(crate) network: Network,
     developer_mode: AtomicBool,
     pub(crate) db: Arc<Database>,
@@ -129,6 +136,17 @@ pub struct AppContext {
     /// Cached fee multiplier permille from current epoch (1000 = 1x, 2000 = 2x)
     /// Updated when epoch info is fetched from Platform
     fee_multiplier_permille: AtomicU64,
+    /// Cached protocol version from the current epoch on the connected network.
+    /// Updated alongside fee_multiplier when epoch info is fetched.
+    /// 0 means not yet fetched from the network.
+    platform_protocol_version: AtomicU32,
+    /// Per-wallet shielded state (initialized lazily, keyed by wallet seed hash)
+    pub(crate) shielded_states: Mutex<
+        std::collections::HashMap<
+            WalletSeedHash,
+            crate::model::wallet::shielded::ShieldedWalletState,
+        >,
+    >,
     /// The egui context, stored for use in non-UI code paths (e.g. display_task_result).
     /// Clone is O(1) — egui::Context is Arc-backed and the same instance for the app lifetime.
     egui_ctx: egui::Context,
@@ -136,6 +154,7 @@ pub struct AppContext {
 
 impl AppContext {
     pub fn new(
+        data_dir: PathBuf,
         network: Network,
         db: Arc<Database>,
         password_info: Option<PasswordInfo>,
@@ -143,7 +162,7 @@ impl AppContext {
         connection_status: Arc<ConnectionStatus>,
         egui_ctx: egui::Context,
     ) -> Option<Arc<Self>> {
-        let config = match Config::load() {
+        let config = match Config::load_from(&data_dir) {
             Ok(config) => config,
             Err(e) => {
                 tracing::error!("Failed to load config: {e}");
@@ -293,8 +312,12 @@ impl AppContext {
             false => AtomicBool::new(true), // Animations are enabled by default
         };
 
-        let spv_manager = match SpvManager::new(network, Arc::clone(&config_lock), subtasks.clone())
-        {
+        let spv_manager = match SpvManager::new(
+            &data_dir,
+            network,
+            Arc::clone(&config_lock),
+            subtasks.clone(),
+        ) {
             Ok(manager) => manager,
             Err(err) => {
                 tracing::error!(?err, ?network, "Failed to initialize SPV manager");
@@ -305,6 +328,9 @@ impl AppContext {
         // Load the use_local_spv_node setting and apply to SPV manager
         let use_local_spv_node = db.get_use_local_spv_node().unwrap_or(false);
         spv_manager.set_use_local_node(use_local_spv_node);
+
+        // Wire up push-based SPV status updates to ConnectionStatus
+        spv_manager.set_connection_status(Arc::clone(&connection_status));
 
         // Load the core backend mode from settings, defaulting to RPC if not set
         let saved_core_backend_mode = db
@@ -331,6 +357,7 @@ impl AppContext {
             saved_single_key_hash.filter(|h| single_key_wallets.contains_key(h));
 
         let app_context = AppContext {
+            data_dir,
             network,
             developer_mode: AtomicBool::new(developer_mode_enabled),
             db,
@@ -366,6 +393,8 @@ impl AppContext {
             fee_multiplier_permille: AtomicU64::new(
                 PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE,
             ),
+            platform_protocol_version: AtomicU32::new(0),
+            shielded_states: Mutex::new(std::collections::HashMap::new()),
             egui_ctx,
         };
 
@@ -410,6 +439,14 @@ impl AppContext {
         self.developer_mode.store(enable, Ordering::Relaxed);
         // Animations are reverse of developer mode
         self.enable_animations(!enable);
+    }
+
+    pub fn data_dir(&self) -> &std::path::Path {
+        &self.data_dir
+    }
+
+    pub fn network(&self) -> Network {
+        self.network
     }
 
     pub fn core_backend_mode(&self) -> CoreBackendMode {
@@ -473,6 +510,28 @@ impl AppContext {
     pub fn set_fee_multiplier_permille(&self, multiplier: u64) {
         self.fee_multiplier_permille
             .store(multiplier, Ordering::Relaxed);
+    }
+
+    /// Get the cached platform protocol version from the connected network.
+    /// Returns 0 if not yet fetched from the network.
+    pub fn platform_protocol_version(&self) -> u32 {
+        self.platform_protocol_version.load(Ordering::Relaxed)
+    }
+
+    /// Update the cached platform protocol version from epoch info.
+    pub fn set_platform_protocol_version(&self, version: u32) {
+        self.platform_protocol_version
+            .store(version, Ordering::Relaxed);
+    }
+
+    /// Minimum protocol version required for shielded (ZK) transactions.
+    pub const SHIELDED_MIN_PROTOCOL_VERSION: u32 = 12;
+
+    /// Whether the connected network supports shielded (ZK) transactions.
+    /// Returns `true` when the network's protocol version >= 12.
+    /// Returns `false` when the version hasn't been fetched yet (0).
+    pub fn supports_shielded(&self) -> bool {
+        self.platform_protocol_version() >= Self::SHIELDED_MIN_PROTOCOL_VERSION
     }
 
     /// Get a fee estimator configured with the cached fee multiplier.
@@ -595,8 +654,8 @@ impl AppContext {
             if let Ok(client) = Client::new(url, Auth::CookieFile(cookie_path.clone())) {
                 return Ok(client);
             }
-            tracing::debug!(
-                "Failed to authenticate using .cookie file at {:?}, falling back to user/pass",
+            tracing::trace!(
+                "Cookie auth unavailable at {:?}, using user/pass",
                 cookie_path,
             );
         }
@@ -639,9 +698,13 @@ impl AppContext {
         label: Option<&str>,
     ) -> Result<(), TaskError> {
         let client = self.core_client_for_wallet(core_wallet_name)?;
-        let info = client.get_address_info(address)?;
+        let info = client
+            .get_address_info(address)
+            .map_err(|e| self.rpc_error_with_url(e))?;
         if !(info.is_watchonly || info.is_mine) {
-            client.import_address(address, label, Some(false))?;
+            client
+                .import_address(address, label, Some(false))
+                .map_err(|e| self.rpc_error_with_url(e))?;
         }
         Ok(())
     }
@@ -658,12 +721,31 @@ impl AppContext {
         }
     }
 
+    /// Convert an RPC error to `TaskError`, enriching connection failures with
+    /// the configured host:port so the user knows which address was unreachable.
+    pub(crate) fn rpc_error_with_url(&self, e: dash_sdk::dashcore_rpc::Error) -> TaskError {
+        if is_rpc_connection_error(&e) {
+            let url = self
+                .config
+                .read()
+                .ok()
+                .map(|c| format!("{}:{}", c.core_host, c.core_rpc_port))
+                .unwrap_or_else(|| "unknown".to_string());
+            TaskError::CoreRpcConnectionFailed {
+                url,
+                source: Some(Box::new(e)),
+            }
+        } else {
+            TaskError::from(e)
+        }
+    }
+
     /// List wallets currently loaded in Dash Core.
     pub fn list_core_wallets(&self) -> Result<Vec<String>, TaskError> {
         let client = self.core_client_for_wallet(None)?;
         client
             .list_wallets()
-            .map_err(|e| TaskError::CoreRpc { source: e })
+            .map_err(|e| self.rpc_error_with_url(e))
     }
 
     /// Try to detect which loaded Core wallet owns the given address.
@@ -740,6 +822,25 @@ impl AppContext {
             }
             e => TaskError::from(e),
         }
+    }
+}
+
+/// Test-only accessors for fields that are normally `pub(crate)`.
+#[cfg(any(test, feature = "testing"))]
+impl AppContext {
+    /// Returns a reference to the database.
+    pub fn db(&self) -> &Arc<Database> {
+        &self.db
+    }
+
+    /// Returns a reference to the wallets map.
+    pub fn wallets(&self) -> &RwLock<BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>> {
+        &self.wallets
+    }
+
+    /// Returns the DashPay contract identifier.
+    pub fn dashpay_contract_id(&self) -> Identifier {
+        self.dashpay_contract.id()
     }
 }
 

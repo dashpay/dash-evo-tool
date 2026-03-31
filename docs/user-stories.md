@@ -16,6 +16,7 @@ See [docs/personas/](personas/) for full persona descriptions.
 - [Contracts and Documents (DOC)](#contracts-and-documents-doc)
 - [Developer and Power Tools (DEV)](#developer-and-power-tools-dev)
 - [Network and Settings (NET)](#network-and-settings-net)
+- [Programmatic Access (MCP)](#programmatic-access-mcp)
 
 ---
 
@@ -185,6 +186,43 @@ As a user, I want to withdraw credits from a Platform address back to a Core add
 - Destination Core address input.
 - Fee strategy configuration.
 
+### WAL-021: Navigate wallet accounts via tabs [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want to see clear tabs for Dash Core, Platform, and Shielded so that I can switch between account views without searching through a dropdown.
+
+- Tab bar replaces account category dropdown.
+- Each tab shows its balance in the label.
+- Empty accounts display "(empty)" indicator.
+- Switching tabs is instant with no data reload.
+
+### WAL-022: View system accounts in developer mode [Implemented]
+**Persona:** Jordan
+
+As a developer, I want a System tab that reveals all internal account categories (Identity Registration, CoinJoin, Provider keys, etc.) so that I can inspect low-level wallet structure without cluttering the default view.
+
+- System tab appears only when developer mode is enabled.
+- Each system account category is shown as a collapsible section.
+- Section headers display address count and balance.
+
+### WAL-023: Collapsible transaction history [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want the transaction history to be collapsible so that I can focus on addresses or balances without scrolling past a long list of transactions.
+
+- Transaction history section has a collapsible header.
+- Collapsed by default to reduce visual clutter.
+- Expand/collapse state persists within the session.
+
+### WAL-024: Collapsible balance breakdown [Implemented]
+**Persona:** Priya
+
+As a power user, I want the balance breakdown and address table to be collapsible so that I can focus on the information I need at the moment.
+
+- Address table section has a collapsible header.
+- Asset locks section has a collapsible header.
+- Sections are expanded by default for quick access.
+
 ---
 
 ## Send and Receive (SND)
@@ -239,6 +277,67 @@ As a user with a single-key wallet, I want to send Dash to multiple recipients i
 - Add/remove recipients in a list.
 - Per-recipient address and amount.
 - Single transaction broadcast.
+
+### SND-007: Shield DASH from Core wallet [Implemented]
+**Persona:** Jordan
+
+As a developer, I want to shield DASH directly from my Core wallet so that I can fund my shielded pool without intermediate steps.
+
+- Select Core Wallet source and enter a shielded address as destination.
+- System creates an asset lock, waits for proof, and shields the credits.
+- Progress banner shows multi-step operation status.
+- Developer mode required.
+
+### SND-008: Top up identity from Send screen [Implemented]
+**Persona:** Priya, Jordan
+
+As a user, I want to top up an identity directly from the Send screen so that I do not have to navigate to the Identity screen to add credits.
+
+- Select Core Wallet or Platform Addresses as source.
+- Enter an identity ID (Base58) as destination.
+- System uses appropriate backend task (asset lock for Core, direct for Platform).
+
+### SND-009: Shield credits from Platform address [Implemented]
+**Persona:** Jordan
+
+As a developer, I want to shield credits from a Platform address into the shielded pool so that I can make private transactions.
+
+- Select Platform Addresses as source and enter a shielded address as destination.
+- System auto-selects the highest-balance Platform address.
+- Developer mode required.
+
+### SND-010: Withdraw from shielded pool to Core address [Implemented]
+**Persona:** Jordan
+
+As a developer, I want to withdraw from the shielded pool directly to a Core address so that I can convert shielded credits back to spendable DASH.
+
+- Select Shielded Pool as source and enter a Core address as destination.
+- Developer mode required.
+
+### SND-011: Transfer identity credits to another identity [Implemented]
+**Persona:** Priya, Jordan
+
+As a user, I want to transfer credits from one of my identities to another identity using the Send screen.
+
+- Select Identity as source from dropdown of loaded identities.
+- Enter another identity ID as destination.
+- Both identity balances update after the transfer.
+
+### SND-012: Withdraw identity credits to Core address [Implemented]
+**Persona:** Priya, Jordan
+
+As a user, I want to withdraw identity credits to a Core address from the Send screen.
+
+- Select Identity as source and enter a Core address as destination.
+- Withdrawal is queued on Platform and settles after confirmation.
+
+### SND-013: Transfer identity credits to Platform address [Implemented]
+**Persona:** Priya, Jordan
+
+As a user, I want to transfer identity credits to a Platform address from the Send screen.
+
+- Select Identity as source and enter a Platform address (bech32m) as destination.
+- Credits arrive at the Platform address.
 
 ---
 
@@ -917,3 +1016,26 @@ As a developer, I want to fund multiple addresses in one operation so that I can
 
 - Specify N addresses and amount per address.
 - Single action distributes funds.
+
+---
+
+## Programmatic Access (MCP)
+
+### MCP-001: Manage wallets via CLI [Implemented]
+**Persona:** Jordan
+
+As a developer, I want to manage wallets via CLI so that I can automate deployment and testing operations.
+
+- List wallets, check balances, generate addresses, and send funds from the command line.
+- CLI discovers tools dynamically via MCP protocol.
+- Shell completion for tool names and parameters.
+
+### MCP-002: MCP server access for AI agents [Implemented]
+**Persona:** Jordan
+
+As an AI agent, I want MCP server access so that I can assist users with wallet queries and operations.
+
+- HTTP and stdio transports available.
+- Bearer token authentication for HTTP mode.
+- Network verification guard prevents cross-network mistakes.
+- Tools expose wallet, identity, and platform operations.

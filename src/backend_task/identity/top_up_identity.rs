@@ -228,9 +228,7 @@ impl AppContext {
 
         // Delegate the SDK call to platform-wallet when available,
         // falling back to direct SDK call otherwise.
-        let maybe_platform_wallet = self
-            .platform_wallet_for_identity(&qualified_identity)
-            .ok();
+        let maybe_platform_wallet = self.platform_wallet_for_identity(&qualified_identity).ok();
 
         let top_up_result = if let Some(ref pw) = maybe_platform_wallet {
             pw.identity()
@@ -272,33 +270,29 @@ impl AppContext {
                                 });
 
                             // Retry with chain asset lock proof via platform-wallet or fallback
-                            let cl_result =
-                                if let Some(ref pw) = maybe_platform_wallet {
-                                    pw.identity()
-                                        .top_up_identity_with_signer(
-                                            &qualified_identity.identity,
-                                            chain_asset_lock_proof,
-                                            &asset_lock_proof_private_key,
-                                        )
-                                        .await
-                                } else {
-                                    qualified_identity
-                                        .identity
-                                        .top_up_identity(
-                                            &sdk,
-                                            chain_asset_lock_proof,
-                                            &asset_lock_proof_private_key,
-                                            None,
-                                            None,
-                                        )
-                                        .await
-                                };
+                            let cl_result = if let Some(ref pw) = maybe_platform_wallet {
+                                pw.identity()
+                                    .top_up_identity_with_signer(
+                                        &qualified_identity.identity,
+                                        chain_asset_lock_proof,
+                                        &asset_lock_proof_private_key,
+                                    )
+                                    .await
+                            } else {
+                                qualified_identity
+                                    .identity
+                                    .top_up_identity(
+                                        &sdk,
+                                        chain_asset_lock_proof,
+                                        &asset_lock_proof_private_key,
+                                        None,
+                                        None,
+                                    )
+                                    .await
+                            };
 
                             cl_result.map_err(|e| {
-                                self.log_drive_proof_error(
-                                    e,
-                                    RequestType::BroadcastStateTransition,
-                                )
+                                self.log_drive_proof_error(e, RequestType::BroadcastStateTransition)
                             })?
                         } else {
                             return Err(TaskError::AssetLockExpired {

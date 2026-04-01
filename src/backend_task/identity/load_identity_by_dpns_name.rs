@@ -8,95 +8,65 @@ use crate::model::wallet::WalletSeedHash;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::platform_value::Value;
-use dash_sdk::dpp::util::strings::convert_to_homograph_safe_chars;
 use dash_sdk::drive::query::{WhereClause, WhereOperator};
-use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identifier, Identity};
+use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identity};
 
 impl AppContext {
-    /// Load an identity by its DPNS name
+    /// Load an identity by its DPNS name.
+    ///
+    /// Uses the SDK's `resolve_dpns_name()` for name resolution (replacing the
+    /// manual DPNS document query), then fetches the identity and all its DPNS
+    /// names, and builds a `QualifiedIdentity` with optional wallet key
+    /// matching.
     pub(super) async fn load_identity_by_dpns_name(
         &self,
         sdk: &Sdk,
         dpns_name: String,
         selected_wallet_seed_hash: Option<WalletSeedHash>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        // Normalize the name (convert to lowercase and handle homoglyphs)
-        let normalized_name = convert_to_homograph_safe_chars(&dpns_name);
-
-        // Query the DPNS contract for the domain document
-        let domain_query = DocumentQuery {
-            data_contract: self.dpns_contract.clone(),
-            document_type_name: "domain".to_string(),
-            where_clauses: vec![
-                WhereClause {
-                    field: "normalizedParentDomainName".to_string(),
-                    operator: WhereOperator::Equal,
-                    value: Value::Text("dash".to_string()),
-                },
-                WhereClause {
-                    field: "normalizedLabel".to_string(),
-                    operator: WhereOperator::Equal,
-                    value: Value::Text(normalized_name.clone()),
-                },
-            ],
-            order_by_clauses: vec![],
-            limit: 1,
-            start: None,
-        };
-
-        let documents = Document::fetch_many(sdk, domain_query)
+        // Step 1: Resolve the DPNS name to an identity ID using the SDK.
+        //
+        // The SDK's resolve_dpns_name() handles homograph-safe normalization,
+        // parent domain matching, and normalizedLabel lookup internally.
+        let identity_id = sdk
+            .resolve_dpns_name(&dpns_name)
             .await
-            .map_err(TaskError::from)?;
-
-        // Get the first (and should be only) document
-        let domain_doc = documents
-            .values()
-            .filter_map(|maybe_doc| maybe_doc.as_ref())
-            .next()
+            .map_err(|e| TaskError::DpnsFetchError {
+                source: Box::new(e),
+            })?
             .ok_or(TaskError::IdentityNotFound)?;
 
-        // Extract the identity ID from the records.identity field
-        let identity_id = domain_doc
-            .get("records")
-            .and_then(|records| {
-                if let Value::Map(map) = records {
-                    map.iter()
-                        .find(|(k, _)| {
-                            if let Value::Text(key) = k {
-                                key == "identity"
-                            } else {
-                                false
-                            }
-                        })
-                        .map(|(_, v)| v.clone())
-                } else {
-                    None
-                }
-            })
-            .and_then(|id_value| {
-                if let Value::Identifier(id_bytes) = id_value {
-                    Some(Identifier::from(id_bytes))
-                } else {
-                    None
-                }
-            })
-            .ok_or(TaskError::IdentityNotFound)?;
+        // Step 2: Also notify the platform-wallet (if available) so it can add
+        // the identity to its watched_identities collection.
+        //
+        // We pick any available platform wallet since they all share the same
+        // SDK and the watched_identities store is per-wallet.
+        if let Some(platform_wallet) = self.first_available_platform_wallet()
+            && let Err(e) = platform_wallet
+                .identity()
+                .load_identity_by_dpns_name(&dpns_name)
+                .await
+        {
+            tracing::debug!(
+                "Platform-wallet load_identity_by_dpns_name failed (non-fatal): {}",
+                e
+            );
+        }
 
-        // Fetch the identity
+        // Step 3: Fetch the identity from Platform.
         let identity = match Identity::fetch_by_identifier(sdk, identity_id).await {
             Ok(Some(identity)) => identity,
             Ok(None) => return Err(TaskError::IdentityNotFound),
             Err(e) => return Err(TaskError::from(e)),
         };
 
-        // Get the label from the document for display
-        let label = domain_doc
-            .get("label")
-            .and_then(|l| l.to_str().ok())
+        // Extract a display label from the input name.
+        let label = dpns_name
+            .strip_suffix(".dash")
             .unwrap_or(&dpns_name)
             .to_string();
 
-        // Fetch all DPNS names owned by this identity
+        // Step 4: Fetch all DPNS names owned by this identity.
         let dpns_names_document_query = DocumentQuery {
             data_contract: self.dpns_contract.clone(),
             document_type_name: "domain".to_string(),
@@ -139,7 +109,7 @@ impl AppContext {
 
         let wallets = self.wallets.read().map_err(TaskError::from)?.clone();
 
-        // Try to derive keys from wallets if requested
+        // Step 5: Try to derive keys from wallets if requested.
         let mut encrypted_private_keys = std::collections::BTreeMap::new();
 
         if let Some((_, _, wallet_private_keys)) = self.match_user_identity_keys_with_wallet(
@@ -175,7 +145,7 @@ impl AppContext {
             .determine_wallet_info()
             .map_err(|e| TaskError::WalletInfoDeterminationFailed { detail: e })?;
 
-        // Insert qualified identity into the database
+        // Insert qualified identity into the database.
         self.insert_local_qualified_identity(&qualified_identity, &wallet_info)?;
 
         Ok(BackendTaskSuccessResult::LoadedIdentity(qualified_identity))

@@ -62,8 +62,8 @@ impl<F: Future> Future for AssertSend<F> {
         unsafe { self.map_unchecked_mut(|s| &mut s.0) }.poll(cx)
     }
 }
-use tokens::TokenTask;
 use grovestark::GroveSTARKTask;
+use tokens::TokenTask;
 
 pub mod broadcast_state_transition;
 pub mod contested_names;
@@ -365,7 +365,8 @@ impl AppContext {
         self: &Arc<Self>,
         tasks: Vec<BackendTask>,
         sender: SenderAsync<TaskResult>,
-    ) -> Pin<Box<dyn Future<Output = Vec<Result<BackendTaskSuccessResult, TaskError>>> + Send>> {
+    ) -> Pin<Box<dyn Future<Output = Vec<Result<BackendTaskSuccessResult, TaskError>>> + Send>>
+    {
         let this = Arc::clone(self);
         Box::pin(async move {
             let mut results = Vec::new();
@@ -384,7 +385,8 @@ impl AppContext {
         self: &Arc<Self>,
         tasks: Vec<BackendTask>,
         sender: SenderAsync<TaskResult>,
-    ) -> Pin<Box<dyn Future<Output = Vec<Result<BackendTaskSuccessResult, TaskError>>> + Send>> {
+    ) -> Pin<Box<dyn Future<Output = Vec<Result<BackendTaskSuccessResult, TaskError>>> + Send>>
+    {
         let this = Arc::clone(self);
         Box::pin(async move {
             let futures = tasks

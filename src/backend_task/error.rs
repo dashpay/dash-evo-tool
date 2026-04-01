@@ -757,6 +757,16 @@ pub enum TaskError {
     #[error("No identities found up to wallet index {max_index}. Try a higher search range.")]
     NoWalletIdentitiesFound { max_index: u32 },
 
+    /// The platform-wallet library failed to load an identity at the given wallet index.
+    #[error(
+        "Could not load identity at wallet index {identity_index}. Please check your network connection and retry."
+    )]
+    IdentityLoadByIndex {
+        identity_index: u32,
+        #[source]
+        source: Box<SdkError>,
+    },
+
     // ──────────────────────────────────────────────────────────────────────────
     // Key input validation errors
     // ──────────────────────────────────────────────────────────────────────────

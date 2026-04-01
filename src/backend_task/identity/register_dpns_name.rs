@@ -5,10 +5,8 @@ use crate::{context::AppContext, model::qualified_identity::DPNSNameInfo};
 use dash_sdk::{
     Sdk,
     dpp::{
-        data_contract::accessors::v0::DataContractV0Getters,
-        document::DocumentV0Getters,
-        identity::accessors::IdentityGettersV0,
-        platform_value::Value,
+        data_contract::accessors::v0::DataContractV0Getters, document::DocumentV0Getters,
+        identity::accessors::IdentityGettersV0, platform_value::Value,
     },
     drive::query::{WhereClause, WhereOperator},
     platform::Fetch,

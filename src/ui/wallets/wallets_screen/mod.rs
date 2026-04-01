@@ -7,13 +7,13 @@ use crate::app::{AppAction, BackendTasksExecutionMode, DesiredAppAction};
 use crate::backend_task::BackendTask;
 use crate::backend_task::core::CoreTask;
 use crate::backend_task::error::TaskError;
-use crate::backend_task::wallet::WalletTask;
 use crate::backend_task::shielded::ShieldedTask;
+use crate::backend_task::wallet::WalletTask;
 use crate::context::AppContext;
-use crate::platform_wallet_bridge::CoreAddressInfo;
 use crate::context::connection_status::spv_phase_summary;
 use crate::model::amount::Amount;
 use crate::model::wallet::{TransactionStatus, Wallet, WalletSeedHash, WalletTransaction};
+use crate::platform_wallet_bridge::CoreAddressInfo;
 use crate::spv::{CoreBackendMode, SpvStatus};
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
@@ -384,16 +384,16 @@ impl WalletsBalancesScreen {
             seed_hash.map(|hash| ShieldedTabView::new(&self.app_context, hash));
 
         if let Some(hash) = seed_hash {
-        self.persist_selected_wallet_hash(Some(hash));
-        self.refresh_platform_sync_info_cache(&hash);
-        // Trigger a refresh on the next frame for the newly selected wallet
-        if self.app_context.core_backend_mode() == CoreBackendMode::Rpc {
-            self.pending_wallet_refresh_on_switch = true;
+            self.persist_selected_wallet_hash(Some(hash));
+            self.refresh_platform_sync_info_cache(&hash);
+            // Trigger a refresh on the next frame for the newly selected wallet
+            if self.app_context.core_backend_mode() == CoreBackendMode::Rpc {
+                self.pending_wallet_refresh_on_switch = true;
+            }
+        } else {
+            self.persist_selected_wallet_hash(None);
+            self.platform_sync_info = None;
         }
-    } else {
-        self.persist_selected_wallet_hash(None);
-        self.platform_sync_info = None;
-    }
     }
 
     fn select_hd_wallet(&mut self, wallet: Arc<RwLock<Wallet>>) {
@@ -2190,15 +2190,14 @@ impl WalletsBalancesScreen {
 impl ScreenLike for WalletsBalancesScreen {
     fn ui(&mut self, ctx: &Context) -> AppAction {
         // Check for pending platform balance refresh (triggered after transfers)
-        let pending_refresh_action = if let Some(seed_hash) =
-            self.pending_platform_balance_refresh.take()
-        {
-            AppAction::BackendTask(BackendTask::WalletTask(
-                WalletTask::FetchPlatformAddressBalances { seed_hash },
-            ))
-        } else {
-            AppAction::None
-        };
+        let pending_refresh_action =
+            if let Some(seed_hash) = self.pending_platform_balance_refresh.take() {
+                AppAction::BackendTask(BackendTask::WalletTask(
+                    WalletTask::FetchPlatformAddressBalances { seed_hash },
+                ))
+            } else {
+                AppAction::None
+            };
 
         // Dispatch LoadAddressInfo when the cache is empty and a wallet is selected
         let load_address_info_action = if self.cached_address_info.is_none() {

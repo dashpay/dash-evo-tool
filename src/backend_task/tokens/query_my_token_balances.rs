@@ -3,9 +3,9 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use dash_sdk::Sdk;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
-use dash_sdk::Sdk;
 
 use crate::app::TaskResult;
 
@@ -55,11 +55,12 @@ impl AppContext {
             }
 
             // Sync balances from Platform
-            token_wallet.sync().await.map_err(|e| {
-                TaskError::TokenQueryError {
+            token_wallet
+                .sync()
+                .await
+                .map_err(|e| TaskError::TokenQueryError {
                     detail: format!("Failed to sync token balances: {}", e),
-                }
-            })?;
+                })?;
 
             // Read synced balances from cache and persist to local DB
             for (token_id, _, _) in &token_infos {
@@ -68,12 +69,8 @@ impl AppContext {
                     .await
                     .unwrap_or(0);
 
-                self.db.insert_identity_token_balance(
-                    token_id,
-                    &identity_id,
-                    balance,
-                    self,
-                )?;
+                self.db
+                    .insert_identity_token_balance(token_id, &identity_id, balance, self)?;
                 sender
                     .send(TaskResult::Refresh)
                     .await
@@ -130,12 +127,8 @@ impl AppContext {
                         Some(b) => *b,
                         None => 0,
                     };
-                    self.db.insert_identity_token_balance(
-                        token_id,
-                        &identity_id,
-                        balance,
-                        self,
-                    )?;
+                    self.db
+                        .insert_identity_token_balance(token_id, &identity_id, balance, self)?;
                     sender
                         .send(TaskResult::Refresh)
                         .await

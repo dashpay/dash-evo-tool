@@ -287,7 +287,7 @@ impl<C> Decode<C> for QualifiedIdentity {
             wallet_index: None,
             top_ups: Default::default(),
             status: IdentityStatus::Unknown, // Loaded from the database, not encoded
-            network: Network::Mainnet,          // Loaded from the database, not encoded
+            network: Network::Mainnet,       // Loaded from the database, not encoded
         })
     }
 }

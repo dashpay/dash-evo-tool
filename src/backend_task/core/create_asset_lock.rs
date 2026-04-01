@@ -17,30 +17,28 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let amount_duffs = amount / CREDITS_PER_DUFF;
 
-        let asset_lock_transaction =
-            if let Some(tx) = self.try_build_registration_via_platform_wallet(
-                &wallet,
-                amount_duffs,
-                identity_index,
-            ).await {
-                tx
-            } else {
-                let (tx, _private_key, _change_address, _used_utxos) = {
-                    let mut wallet_guard = wallet.write()?;
+        let asset_lock_transaction = if let Some(tx) = self
+            .try_build_registration_via_platform_wallet(&wallet, amount_duffs, identity_index)
+            .await
+        {
+            tx
+        } else {
+            let (tx, _private_key, _change_address, _used_utxos) = {
+                let mut wallet_guard = wallet.write()?;
 
-                    wallet_guard
-                        .registration_asset_lock_transaction(
-                            self,
-                            self.network,
-                            amount_duffs,
-                            allow_take_fee_from_amount,
-                            identity_index,
-                            None,
-                        )
-                        .map_err(|e| TaskError::AssetLockTransactionBuildFailed { detail: e })?
-                };
-                tx
+                wallet_guard
+                    .registration_asset_lock_transaction(
+                        self,
+                        self.network,
+                        amount_duffs,
+                        allow_take_fee_from_amount,
+                        identity_index,
+                        None,
+                    )
+                    .map_err(|e| TaskError::AssetLockTransactionBuildFailed { detail: e })?
             };
+            tx
+        };
 
         self.broadcast_and_track_asset_lock(asset_lock_transaction)
             .await
@@ -56,32 +54,34 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let amount_duffs = amount / CREDITS_PER_DUFF;
 
-        let asset_lock_transaction =
-            if let Some(tx) = self.try_build_topup_via_platform_wallet(
+        let asset_lock_transaction = if let Some(tx) = self
+            .try_build_topup_via_platform_wallet(
                 &wallet,
                 amount_duffs,
                 identity_index,
                 top_up_index,
-            ).await {
-                tx
-            } else {
-                let (tx, _private_key, _change_address, _used_utxos) = {
-                    let mut wallet_guard = wallet.write()?;
+            )
+            .await
+        {
+            tx
+        } else {
+            let (tx, _private_key, _change_address, _used_utxos) = {
+                let mut wallet_guard = wallet.write()?;
 
-                    wallet_guard
-                        .top_up_asset_lock_transaction(
-                            self,
-                            self.network,
-                            amount_duffs,
-                            allow_take_fee_from_amount,
-                            identity_index,
-                            top_up_index,
-                            None,
-                        )
-                        .map_err(|e| TaskError::AssetLockTransactionBuildFailed { detail: e })?
-                };
-                tx
+                wallet_guard
+                    .top_up_asset_lock_transaction(
+                        self,
+                        self.network,
+                        amount_duffs,
+                        allow_take_fee_from_amount,
+                        identity_index,
+                        top_up_index,
+                        None,
+                    )
+                    .map_err(|e| TaskError::AssetLockTransactionBuildFailed { detail: e })?
             };
+            tx
+        };
 
         self.broadcast_and_track_asset_lock(asset_lock_transaction)
             .await

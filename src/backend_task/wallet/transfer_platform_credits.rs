@@ -39,7 +39,13 @@ impl AppContext {
 
         // Use the SDK to transfer - returns proof-verified updated address infos
         let address_infos = sdk
-            .transfer_address_funds(inputs, outputs, fee_strategy, platform_wallet.platform(), None)
+            .transfer_address_funds(
+                inputs,
+                outputs,
+                fee_strategy,
+                platform_wallet.platform(),
+                None,
+            )
             .await
             .map_err(crate::backend_task::error::TaskError::from)?;
 

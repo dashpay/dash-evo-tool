@@ -19,12 +19,14 @@ impl AppContext {
 
         // Delegate the Platform fetch to platform-wallet when available,
         // falling back to direct SDK call otherwise.
-        let maybe_platform_wallet = self
-            .platform_wallet_for_identity(&qualified_identity)
-            .ok();
+        let maybe_platform_wallet = self.platform_wallet_for_identity(&qualified_identity).ok();
 
         let maybe_refreshed_identity = if let Some(ref pw) = maybe_platform_wallet {
-            match pw.identity().refresh_identity_with_signer(&refreshed_identity_id).await {
+            match pw
+                .identity()
+                .refresh_identity_with_signer(&refreshed_identity_id)
+                .await
+            {
                 Ok(identity) => Some(identity),
                 Err(_) => None,
             }

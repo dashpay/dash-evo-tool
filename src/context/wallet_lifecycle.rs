@@ -66,6 +66,18 @@ impl AppContext {
             .and_then(|pw| pw.get(seed_hash).cloned())
     }
 
+    /// Get any available `PlatformWallet`.
+    ///
+    /// Useful when the caller needs SDK access but doesn't care which wallet
+    /// instance is used (e.g. DPNS resolution, identity fetches where the
+    /// wallet derivation index is irrelevant).
+    pub(crate) fn first_available_platform_wallet(&self) -> Option<PlatformWallet> {
+        self.platform_wallets
+            .lock()
+            .ok()
+            .and_then(|pw| pw.values().next().cloned())
+    }
+
     /// Get a `PlatformWallet` by seed hash, or return `TaskError::WalletNotFound`.
     ///
     /// Convenience wrapper for backend tasks that need the platform wallet.

@@ -59,9 +59,10 @@ impl AppContext {
         let identity_wallet = platform_wallet.identity();
 
         // Run the platform-wallet gap-limit scan + DPNS lookup.
-        let discovered = identity_wallet.sync().await.map_err(|e| {
-            format!("Platform wallet identity sync failed: {}", e)
-        })?;
+        let discovered = identity_wallet
+            .sync()
+            .await
+            .map_err(|e| format!("Platform wallet identity sync failed: {}", e))?;
 
         if discovered.is_empty() {
             tracing::info!(

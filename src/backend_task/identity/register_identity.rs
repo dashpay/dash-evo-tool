@@ -5,6 +5,7 @@ use crate::context::{AppContext, get_transaction_info};
 use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::proof_log_item::RequestType;
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
+use dash_sdk::Error;
 use dash_sdk::dash_spv::Network;
 use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::address_funds::PlatformAddress;
@@ -20,7 +21,6 @@ use dash_sdk::dpp::state_transition::identity_create_transition::methods::Identi
 use dash_sdk::platform::transition::put_identity::PutIdentity;
 use dash_sdk::platform::{Fetch, FetchMany, Identity};
 use dash_sdk::query_types::AddressInfo;
-use dash_sdk::Error;
 use std::collections::BTreeMap;
 
 impl AppContext {

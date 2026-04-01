@@ -103,10 +103,7 @@ impl WalletsBalancesScreen {
     }
 
     /// Build `AddressData` from the cached `CoreAddressInfo` snapshot.
-    fn address_data_from_cache(
-        cached: &[CoreAddressInfo],
-        network: Network,
-    ) -> Vec<AddressData> {
+    fn address_data_from_cache(cached: &[CoreAddressInfo], network: Network) -> Vec<AddressData> {
         cached
             .iter()
             .map(|info| {

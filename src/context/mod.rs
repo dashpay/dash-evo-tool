@@ -475,16 +475,6 @@ impl AppContext {
             .store(version, Ordering::Relaxed);
     }
 
-    /// Minimum protocol version required for shielded (ZK) transactions.
-    pub const SHIELDED_MIN_PROTOCOL_VERSION: u32 = 12;
-
-    /// Whether the connected network supports shielded (ZK) transactions.
-    /// Returns `true` when the network's protocol version >= 12.
-    /// Returns `false` when the version hasn't been fetched yet (0).
-    pub fn supports_shielded(&self) -> bool {
-        self.platform_protocol_version() >= Self::SHIELDED_MIN_PROTOCOL_VERSION
-    }
-
     /// Get a fee estimator configured with the cached fee multiplier.
     /// Use this instead of `PlatformFeeEstimator::new()` to get accurate fee estimates
     /// that reflect the current network fee multiplier.

@@ -829,7 +829,7 @@ impl ScreenLike for ShieldScreen {
                         if source_kind == Some(AddressKind::Platform)
                             && self.status == Status::NotStarted
                         {
-                            ui.feature_gated(FeatureGate::DeveloperMode, &self.app_context, |ui| {
+                            ui.feature_gated(&self.app_context, FeatureGate::DeveloperMode, |ui| {
                                 ui.add_space(10.0);
                                 ui.horizontal(|ui| {
                                     ui.label("Repeat");

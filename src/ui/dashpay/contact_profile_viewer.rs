@@ -441,7 +441,7 @@ impl ContactProfileViewerScreen {
                         action = self.fetch_profile();
                     }
 
-                    ui.feature_gated(FeatureGate::SpvBackend, &self.app_context, |ui| {
+                    ui.feature_gated(&self.app_context, FeatureGate::SpvBackend, |ui| {
                         let pay_button =
                             egui::Button::new(RichText::new("Pay").color(egui::Color32::WHITE))
                                 .fill(egui::Color32::from_rgb(0, 141, 228));
@@ -472,7 +472,7 @@ impl ContactProfileViewerScreen {
                             action = self.fetch_profile();
                         }
 
-                        ui.feature_gated(FeatureGate::SpvBackend, &self.app_context, |ui| {
+                        ui.feature_gated(&self.app_context, FeatureGate::SpvBackend, |ui| {
                             let pay_button =
                                 egui::Button::new(RichText::new("Pay").color(egui::Color32::WHITE))
                                     .fill(egui::Color32::from_rgb(0, 141, 228));

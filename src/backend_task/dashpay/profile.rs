@@ -456,7 +456,7 @@ pub async fn search_profiles(
     // match normalizedLabel on-chain which uses this conversion.
     let query_without_suffix = query_trimmed.strip_suffix(".dash").unwrap_or(query_trimmed);
     let normalized_query =
-        dash_sdk::platform::dpns_usernames::convert_to_homograph_safe_chars(query_without_suffix);
+        dash_sdk::dpp::util::strings::convert_to_homograph_safe_chars(query_without_suffix);
 
     // Search DPNS for usernames starting with the query
     let mut dpns_query =

@@ -27,6 +27,7 @@ use arc_swap::ArcSwap;
 use connection_status::ConnectionStatus;
 use crossbeam_channel::{Receiver, Sender};
 use dash_sdk::Sdk;
+use dash_sdk::dapi_client::AddressList;
 use dash_sdk::dashcore_rpc::{Auth, Client, RpcApi};
 use dash_sdk::dpp::dashcore::{Address, Network, Txid};
 #[cfg(any(test, feature = "testing"))]
@@ -43,6 +44,7 @@ use dash_sdk::platform::Identifier;
 use egui::Context;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::str::FromStr as _;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
 
@@ -159,8 +161,30 @@ impl AppContext {
             }
         };
 
+        // Parse configured DAPI addresses directly (no auto-discovery at startup)
+        let address_list = match &network_config.dapi_addresses {
+            Some(addrs) if !addrs.trim().is_empty() => match AddressList::from_str(addrs.trim()) {
+                Ok(list) => list,
+                Err(e) => {
+                    tracing::error!(
+                        ?network,
+                        error = %e,
+                        "Failed to parse configured DAPI addresses"
+                    );
+                    return None;
+                }
+            },
+            _ => {
+                tracing::error!(
+                    ?network,
+                    "No DAPI addresses configured. Use Refresh DAPI endpoints in Network Settings or add addresses to .env."
+                );
+                return None;
+            }
+        };
+
         // Default to SPV provider initially; UI can switch backend after
-        let sdk = match initialize_sdk(&network_config, network, spv_provider.clone()) {
+        let sdk = match initialize_sdk(address_list, network, spv_provider.clone()) {
             Ok(sdk) => sdk,
             Err(e) => {
                 tracing::error!("Failed to initialize SDK: {e}");
@@ -216,7 +240,8 @@ impl AppContext {
 
         let addr = format!(
             "http://{}:{}",
-            network_config.core_host, network_config.core_rpc_port
+            network_config.rpc_host(),
+            network_config.rpc_port(network)
         );
         let core_client = match Self::create_core_rpc_client(
             &addr,
@@ -527,39 +552,47 @@ impl AppContext {
 
         // Note: developer_mode is now global and managed separately
 
-        // 2. Rebuild the RPC client with the new password
-        let addr = format!("http://{}:{}", cfg.core_host, cfg.core_rpc_port);
-        let new_client = Client::new(
-            &addr,
-            Auth::UserPass(cfg.core_rpc_user.clone(), cfg.core_rpc_password.clone()),
-        )
-        .map_err(|e| TaskError::RpcProviderCreationFailed {
-            detail: e.to_string(),
-        })?;
+        // 2. Rebuild the RPC client (cookie auth → user/pass fallback)
+        let addr = format!("http://{}:{}", cfg.rpc_host(), cfg.rpc_port(self.network));
+        let new_client = Self::create_core_rpc_client(&addr, self.network, &cfg.devnet_name, &cfg)?;
 
-        // 3. Rebuild the Sdk with the updated config and current backend mode
+        // 3. Parse DAPI addresses from config and rebuild the SDK
+        let address_list = match &cfg.dapi_addresses {
+            Some(addrs) if !addrs.trim().is_empty() => AddressList::from_str(addrs.trim())
+                .map_err(|source| {
+                    crate::backend_task::dapi_discovery::DapiDiscoveryError::InvalidAddresses {
+                        source,
+                    }
+                })?,
+            _ => {
+                return Err(
+                    crate::backend_task::dapi_discovery::DapiDiscoveryError::AddressesRequired {
+                        network: self.network,
+                    }
+                    .into(),
+                );
+            }
+        };
+
         let new_sdk = match self.core_backend_mode() {
             CoreBackendMode::Spv => {
-                // Reuse existing SPV provider (rebinding below to ensure context is set)
                 let provider = self.spv_context_provider.read()?.clone();
-                initialize_sdk(&cfg, self.network, provider)
+                initialize_sdk(address_list, self.network, provider)
                     .map_err(|e| TaskError::SdkInitializationFailed { detail: e })?
             }
             CoreBackendMode::Rpc => {
-                // Create a fresh RPC provider with the new config
                 let rpc_provider = RpcProvider::new(self.db.clone(), self.network, &cfg)
                     .map_err(|e| TaskError::RpcProviderCreationFailed { detail: e })?;
-                // Swap in the updated RPC provider for future switches
                 {
                     let mut guard = self.rpc_context_provider.write()?;
                     *guard = rpc_provider.clone();
                 }
-                initialize_sdk(&cfg, self.network, rpc_provider)
+                initialize_sdk(address_list, self.network, rpc_provider)
                     .map_err(|e| TaskError::SdkInitializationFailed { detail: e })?
             }
         };
 
-        // 4. Swap them in
+        // 4. Swap in the new SDK and client
         {
             let mut client_lock = self.core_client.write()?;
             *client_lock = new_client;
@@ -602,7 +635,10 @@ impl AppContext {
         }
         Client::new(
             url,
-            Auth::UserPass(cfg.core_rpc_user.clone(), cfg.core_rpc_password.clone()),
+            Auth::UserPass(
+                cfg.core_rpc_user.clone().unwrap_or_default(),
+                cfg.core_rpc_password.clone().unwrap_or_default(),
+            ),
         )
         .map_err(|e| TaskError::CoreRpc { source: e })
     }
@@ -613,7 +649,7 @@ impl AppContext {
         let cfg = self.config.read().map_err(|_| TaskError::LockPoisoned {
             resource: "NetworkConfig",
         })?;
-        let base = format!("http://{}:{}", cfg.core_host, cfg.core_rpc_port);
+        let base = format!("http://{}:{}", cfg.rpc_host(), cfg.rpc_port(self.network));
         let url = match wallet_name {
             Some(name) if !name.is_empty() => {
                 if name.contains("..") {
@@ -670,7 +706,7 @@ impl AppContext {
                 .config
                 .read()
                 .ok()
-                .map(|c| format!("{}:{}", c.core_host, c.core_rpc_port))
+                .map(|c| format!("{}:{}", c.rpc_host(), c.rpc_port(self.network)))
                 .unwrap_or_else(|| "unknown".to_string());
             TaskError::CoreRpcConnectionFailed {
                 url,

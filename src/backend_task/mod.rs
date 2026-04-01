@@ -12,6 +12,7 @@ use crate::backend_task::wallet::WalletTask;
 use crate::context::AppContext;
 use dash_sdk::dpp::dashcore::Address;
 use dash_sdk::dpp::dashcore::address::NetworkChecked;
+use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::dashcore::bls_sig_utils::BLSSignature;
 use dash_sdk::dpp::dashcore::network::message_qrinfo::QRInfo;
 use dash_sdk::dpp::dashcore::BlockHash;
@@ -46,6 +47,7 @@ pub mod broadcast_state_transition;
 pub mod contested_names;
 pub mod contract;
 pub mod core;
+pub mod dapi_discovery;
 pub mod dashpay;
 pub mod document;
 pub mod error;
@@ -97,6 +99,7 @@ pub enum BackendTask {
     GroveSTARKTask(GroveSTARKTask),
     WalletTask(WalletTask),
     ShieldedTask(ShieldedTask),
+    DiscoverDapiNodes { network: Network },
     None,
 }
 
@@ -330,6 +333,11 @@ pub enum BackendTaskSuccessResult {
         amount: u64,
     },
     ProvingKeyReady,
+    DapiNodesDiscovered {
+        network: Network,
+        count: usize,
+        addresses_csv: String,
+    },
 }
 
 impl BackendTaskSuccessResult {}
@@ -414,6 +422,23 @@ impl AppContext {
             BackendTask::WalletTask(wallet_task) => Ok(self.run_wallet_task(wallet_task).await?),
             BackendTask::ShieldedTask(shielded_task) => {
                 Ok(self.run_shielded_task(shielded_task).await?)
+            }
+            BackendTask::DiscoverDapiNodes { network } => {
+                let devnet_name = self
+                    .config
+                    .read()
+                    .map_err(|_| TaskError::LockPoisoned {
+                        resource: "NetworkConfig",
+                    })?
+                    .devnet_name
+                    .clone();
+                let (count, addresses_csv) =
+                    dapi_discovery::discover_and_format(network, devnet_name.as_deref()).await?;
+                Ok(BackendTaskSuccessResult::DapiNodesDiscovered {
+                    network,
+                    count,
+                    addresses_csv,
+                })
             }
             BackendTask::None => Ok(BackendTaskSuccessResult::None),
         }

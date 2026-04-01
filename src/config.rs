@@ -38,24 +38,57 @@ pub enum ConfigError {
     NoValidConfigs,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Default, Deserialize, Clone)]
+#[serde(default)]
 pub struct NetworkConfig {
-    /// Hostname of Dash Platform node to connect to
-    pub dapi_addresses: String,
-    /// Host of the Dash Core RPC interface
-    pub core_host: String,
-    /// Port of the Dash Core RPC interface
-    pub core_rpc_port: u16,
-    /// Username for Dash Core RPC interface
-    pub core_rpc_user: String,
-    /// Password for Dash Core RPC interface
-    pub core_rpc_password: String,
+    /// Comma-separated DAPI node URLs (e.g., `https://host:443,https://host2:443`).
+    /// Required for the app to connect. Use "Refresh DAPI endpoints" in Network
+    /// Settings to fetch addresses for Mainnet/Testnet.
+    pub dapi_addresses: Option<String>,
+    /// Host of the Dash Core RPC interface (only needed in RPC mode)
+    pub core_host: Option<String>,
+    /// Port of the Dash Core RPC interface (only needed in RPC mode)
+    pub core_rpc_port: Option<u16>,
+    /// Username for Dash Core RPC interface (only needed in RPC mode)
+    pub core_rpc_user: Option<String>,
+    /// Password for Dash Core RPC interface (only needed in RPC mode)
+    pub core_rpc_password: Option<String>,
     /// ZMQ endpoint for Core blockchain events (e.g., tcp://127.0.0.1:23708)
     pub core_zmq_endpoint: Option<String>,
     /// Devnet network name if one exists
     pub devnet_name: Option<String>,
     /// Optional wallet private key to instantiate the wallet
     pub wallet_private_key: Option<String>,
+}
+
+impl NetworkConfig {
+    /// Default Core RPC port for the given network.
+    ///
+    /// Returns the well-known port when `core_rpc_port` is not explicitly set:
+    /// - Mainnet: 9998
+    /// - Testnet: 19998
+    /// - Devnet: 29998
+    /// - Regtest: 20302 (dashmate default, matches `.env.example`)
+    pub fn default_rpc_port(network: Network) -> u16 {
+        match network {
+            Network::Mainnet => 9998,
+            Network::Testnet => 19998,
+            Network::Devnet => 29998,
+            Network::Regtest => 20302,
+            _ => 9998,
+        }
+    }
+
+    /// Resolved Core RPC port — explicit config or network-aware default.
+    pub fn rpc_port(&self, network: Network) -> u16 {
+        self.core_rpc_port
+            .unwrap_or_else(|| Self::default_rpc_port(network))
+    }
+
+    /// Resolved Core RPC host — explicit config or localhost.
+    pub fn rpc_host(&self) -> &str {
+        self.core_host.as_deref().unwrap_or("127.0.0.1")
+    }
 }
 
 impl Config {
@@ -103,24 +136,28 @@ impl Config {
             // matches what `load()` expects (i.e. `envy::prefixed("MAINNET_")`,
             // etc.).
 
-            writeln!(
-                env_file,
-                "{}dapi_addresses={}",
-                prefix, config.dapi_addresses
-            )
-            .map_err(|e| ConfigError::SaveError { source: e })?;
-            writeln!(env_file, "{}core_host={}", prefix, config.core_host)
-                .map_err(|e| ConfigError::SaveError { source: e })?;
-            writeln!(env_file, "{}core_rpc_port={}", prefix, config.core_rpc_port)
-                .map_err(|e| ConfigError::SaveError { source: e })?;
-            writeln!(env_file, "{}core_rpc_user={}", prefix, config.core_rpc_user)
-                .map_err(|e| ConfigError::SaveError { source: e })?;
-            writeln!(
-                env_file,
-                "{}core_rpc_password={}",
-                prefix, config.core_rpc_password
-            )
-            .map_err(|e| ConfigError::SaveError { source: e })?;
+            if let Some(ref addrs) = config.dapi_addresses
+                && !addrs.is_empty()
+            {
+                writeln!(env_file, "{}dapi_addresses={}", prefix, addrs)
+                    .map_err(|e| ConfigError::SaveError { source: e })?;
+            }
+            if let Some(ref host) = config.core_host {
+                writeln!(env_file, "{}core_host={}", prefix, host)
+                    .map_err(|e| ConfigError::SaveError { source: e })?;
+            }
+            if let Some(port) = config.core_rpc_port {
+                writeln!(env_file, "{}core_rpc_port={}", prefix, port)
+                    .map_err(|e| ConfigError::SaveError { source: e })?;
+            }
+            if let Some(ref user) = config.core_rpc_user {
+                writeln!(env_file, "{}core_rpc_user={}", prefix, user)
+                    .map_err(|e| ConfigError::SaveError { source: e })?;
+            }
+            if let Some(ref password) = config.core_rpc_password {
+                writeln!(env_file, "{}core_rpc_password={}", prefix, password)
+                    .map_err(|e| ConfigError::SaveError { source: e })?;
+            }
             if let Some(core_zmq_endpoint) = &config.core_zmq_endpoint {
                 writeln!(
                     env_file,
@@ -290,29 +327,25 @@ impl Config {
 }
 
 impl NetworkConfig {
-    /// Check if configuration is set
-    #[allow(dead_code)] // May be used for validation
-    pub fn is_valid(&self) -> bool {
-        !self.core_rpc_user.is_empty()
-            && !self.core_rpc_password.is_empty()
-            && self.core_rpc_port != 0
-            && !self.dapi_addresses.is_empty()
-    }
-
-    /// List of DAPI addresses
-    pub fn dapi_address_list(&self) -> Result<AddressList, String> {
-        AddressList::from_str(&self.dapi_addresses).map_err(|e| {
-            format!(
-                "Could not parse DAPI addresses '{}': {}",
-                self.dapi_addresses, e
-            )
-        })
+    /// List of DAPI addresses, if explicitly configured.
+    /// Returns `Ok(None)` when absent or empty (not configured; the user may trigger discovery from Network Settings).
+    pub fn dapi_address_list(&self) -> Result<Option<AddressList>, String> {
+        let addrs = match self.dapi_addresses.as_deref() {
+            Some(a) => a.trim(),
+            None => return Ok(None),
+        };
+        if addrs.is_empty() {
+            return Ok(None);
+        }
+        AddressList::from_str(addrs)
+            .map(Some)
+            .map_err(|e| format!("Could not parse DAPI addresses '{addrs}': {e}"))
     }
 
     /// Update just the `core_rpc_password` in a builder-like manner.
     /// Returns a new `NetworkConfig` with the updated password.
     pub fn update_core_rpc_password(mut self, new_password: String) -> Self {
-        self.core_rpc_password = new_password;
+        self.core_rpc_password = Some(new_password);
         self
     }
 }
@@ -323,50 +356,21 @@ mod tests {
 
     /// Helper to create a minimal valid NetworkConfig for testing
     fn make_network_config(dapi_addresses: &str, port: u16) -> NetworkConfig {
+        let dapi = if dapi_addresses.is_empty() {
+            None
+        } else {
+            Some(dapi_addresses.to_string())
+        };
         NetworkConfig {
-            dapi_addresses: dapi_addresses.to_string(),
-            core_host: "127.0.0.1".to_string(),
-            core_rpc_port: port,
-            core_rpc_user: "dashrpc".to_string(),
-            core_rpc_password: "password".to_string(),
+            dapi_addresses: dapi,
+            core_host: Some("127.0.0.1".to_string()),
+            core_rpc_port: Some(port),
+            core_rpc_user: Some("dashrpc".to_string()),
+            core_rpc_password: Some("password".to_string()),
             core_zmq_endpoint: Some("tcp://127.0.0.1:23708".to_string()),
             devnet_name: None,
             wallet_private_key: None,
         }
-    }
-
-    // ── NetworkConfig::is_valid ──────────────────────────────────────
-
-    #[test]
-    fn test_is_valid_with_all_fields() {
-        let config = make_network_config("https://127.0.0.1:443", 9998);
-        assert!(config.is_valid());
-    }
-
-    #[test]
-    fn test_is_valid_empty_user() {
-        let mut config = make_network_config("https://127.0.0.1:443", 9998);
-        config.core_rpc_user = String::new();
-        assert!(!config.is_valid());
-    }
-
-    #[test]
-    fn test_is_valid_empty_password() {
-        let mut config = make_network_config("https://127.0.0.1:443", 9998);
-        config.core_rpc_password = String::new();
-        assert!(!config.is_valid());
-    }
-
-    #[test]
-    fn test_is_valid_zero_port() {
-        let config = make_network_config("https://127.0.0.1:443", 0);
-        assert!(!config.is_valid());
-    }
-
-    #[test]
-    fn test_is_valid_empty_dapi_addresses() {
-        let config = make_network_config("", 9998);
-        assert!(!config.is_valid());
     }
 
     // ── NetworkConfig::dapi_address_list ─────────────────────────────
@@ -374,7 +378,7 @@ mod tests {
     #[test]
     fn test_dapi_address_list_single_address() {
         let config = make_network_config("https://127.0.0.1:443", 9998);
-        let list = config.dapi_address_list().unwrap();
+        let list = config.dapi_address_list().unwrap().unwrap();
         assert_eq!(list.len(), 1);
     }
 
@@ -384,32 +388,26 @@ mod tests {
             "https://127.0.0.1:443,https://192.168.1.1:443,https://10.0.0.1:443",
             9998,
         );
-        let list = config.dapi_address_list().unwrap();
+        let list = config.dapi_address_list().unwrap().unwrap();
         assert_eq!(list.len(), 3);
     }
 
     #[test]
-    fn test_dapi_address_list_empty_returns_error() {
+    fn test_dapi_address_list_empty_returns_none() {
         let config = make_network_config("", 9998);
-        let result = config.dapi_address_list();
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .contains("Could not parse DAPI addresses")
-        );
+        assert!(config.dapi_address_list().unwrap().is_none());
     }
     // ── NetworkConfig::update_core_rpc_password ─────────────────────
 
     #[test]
     fn test_update_core_rpc_password() {
         let config = make_network_config("https://127.0.0.1:443", 9998);
-        assert_eq!(config.core_rpc_password, "password");
+        assert_eq!(config.core_rpc_password.as_deref(), Some("password"));
         let updated = config.update_core_rpc_password("new_secret".to_string());
-        assert_eq!(updated.core_rpc_password, "new_secret");
+        assert_eq!(updated.core_rpc_password.as_deref(), Some("new_secret"));
         // Other fields should be unchanged
-        assert_eq!(updated.core_rpc_user, "dashrpc");
-        assert_eq!(updated.core_rpc_port, 9998);
+        assert_eq!(updated.core_rpc_user.as_deref(), Some("dashrpc"));
+        assert_eq!(updated.core_rpc_port, Some(9998));
     }
 
     // ── Config::config_for_network ──────────────────────────────────
@@ -443,19 +441,19 @@ mod tests {
             .config_for_network(Network::Mainnet)
             .as_ref()
             .unwrap();
-        assert_eq!(main.core_rpc_port, 9998);
+        assert_eq!(main.core_rpc_port, Some(9998));
         let test = config
             .config_for_network(Network::Testnet)
             .as_ref()
             .unwrap();
-        assert_eq!(test.core_rpc_port, 19998);
+        assert_eq!(test.core_rpc_port, Some(19998));
         let dev = config.config_for_network(Network::Devnet).as_ref().unwrap();
-        assert_eq!(dev.core_rpc_port, 29998);
+        assert_eq!(dev.core_rpc_port, Some(29998));
         let local = config
             .config_for_network(Network::Regtest)
             .as_ref()
             .unwrap();
-        assert_eq!(local.core_rpc_port, 20302);
+        assert_eq!(local.core_rpc_port, Some(20302));
     }
 
     // ── Config::update_config_for_network ───────────────────────────
@@ -473,7 +471,10 @@ mod tests {
         let new_cfg = make_network_config("https://1.1.1.1:443", 9998);
         config.update_config_for_network(Network::Mainnet, new_cfg);
         assert!(config.mainnet_config.is_some());
-        assert_eq!(config.mainnet_config.as_ref().unwrap().core_rpc_port, 9998);
+        assert_eq!(
+            config.mainnet_config.as_ref().unwrap().core_rpc_port,
+            Some(9998)
+        );
     }
 
     #[test]
@@ -488,8 +489,11 @@ mod tests {
         let new_cfg = make_network_config("https://new.example.com:443", 2222);
         config.update_config_for_network(Network::Mainnet, new_cfg);
         let main = config.mainnet_config.as_ref().unwrap();
-        assert_eq!(main.core_rpc_port, 2222);
-        assert_eq!(main.dapi_addresses, "https://new.example.com:443");
+        assert_eq!(main.core_rpc_port, Some(2222));
+        assert_eq!(
+            main.dapi_addresses.as_deref(),
+            Some("https://new.example.com:443")
+        );
     }
 
     #[test]
@@ -555,14 +559,21 @@ mod tests {
         // Simulate what save() writes by formatting env lines
         let mut output = String::new();
         if let Some(ref cfg) = config.mainnet_config {
-            output.push_str(&format!("MAINNET_dapi_addresses={}\n", cfg.dapi_addresses));
-            output.push_str(&format!("MAINNET_core_host={}\n", cfg.core_host));
-            output.push_str(&format!("MAINNET_core_rpc_port={}\n", cfg.core_rpc_port));
-            output.push_str(&format!("MAINNET_core_rpc_user={}\n", cfg.core_rpc_user));
-            output.push_str(&format!(
-                "MAINNET_core_rpc_password={}\n",
-                cfg.core_rpc_password
-            ));
+            if let Some(ref addrs) = cfg.dapi_addresses {
+                output.push_str(&format!("MAINNET_dapi_addresses={}\n", addrs));
+            }
+            if let Some(ref host) = cfg.core_host {
+                output.push_str(&format!("MAINNET_core_host={}\n", host));
+            }
+            if let Some(port) = cfg.core_rpc_port {
+                output.push_str(&format!("MAINNET_core_rpc_port={}\n", port));
+            }
+            if let Some(ref user) = cfg.core_rpc_user {
+                output.push_str(&format!("MAINNET_core_rpc_user={}\n", user));
+            }
+            if let Some(ref password) = cfg.core_rpc_password {
+                output.push_str(&format!("MAINNET_core_rpc_password={}\n", password));
+            }
             if let Some(ref zmq) = cfg.core_zmq_endpoint {
                 output.push_str(&format!("MAINNET_core_zmq_endpoint={}\n", zmq));
             }
@@ -602,11 +613,14 @@ mod tests {
             .from_iter(env_map.iter().map(|(k, v)| (k.clone(), v.clone())));
         assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
         let config = result.unwrap();
-        assert_eq!(config.dapi_addresses, "https://1.2.3.4:443");
-        assert_eq!(config.core_host, "192.168.1.100");
-        assert_eq!(config.core_rpc_port, 9998);
-        assert_eq!(config.core_rpc_user, "testuser");
-        assert_eq!(config.core_rpc_password, "testpass");
+        assert_eq!(
+            config.dapi_addresses.as_deref(),
+            Some("https://1.2.3.4:443")
+        );
+        assert_eq!(config.core_host.as_deref(), Some("192.168.1.100"));
+        assert_eq!(config.core_rpc_port, Some(9998));
+        assert_eq!(config.core_rpc_user.as_deref(), Some("testuser"));
+        assert_eq!(config.core_rpc_password.as_deref(), Some("testpass"));
         assert_eq!(
             config.core_zmq_endpoint,
             Some("tcp://127.0.0.1:29999".to_string())
@@ -638,20 +652,25 @@ mod tests {
     }
 
     #[test]
-    fn test_envy_parsing_missing_required_field_fails() {
+    fn test_envy_parsing_missing_rpc_fields_succeeds() {
         use std::collections::HashMap;
 
-        // Missing core_rpc_port (required)
+        // Only DAPI addresses -- RPC fields are optional (SPV mode)
         let mut env_map: HashMap<String, String> = HashMap::new();
         env_map.insert("MISS_dapi_addresses".into(), "https://1.2.3.4:443".into());
-        env_map.insert("MISS_core_host".into(), "127.0.0.1".into());
-        // core_rpc_port intentionally missing
-        env_map.insert("MISS_core_rpc_user".into(), "user".into());
-        env_map.insert("MISS_core_rpc_password".into(), "pass".into());
 
         let result: Result<NetworkConfig, _> =
             envy::prefixed("MISS_").from_iter(env_map.iter().map(|(k, v)| (k.clone(), v.clone())));
-        assert!(result.is_err());
+        assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
+        let config = result.unwrap();
+        assert_eq!(
+            config.dapi_addresses.as_deref(),
+            Some("https://1.2.3.4:443")
+        );
+        assert!(config.core_host.is_none());
+        assert!(config.core_rpc_port.is_none());
+        assert!(config.core_rpc_user.is_none());
+        assert!(config.core_rpc_password.is_none());
     }
 
     #[test]

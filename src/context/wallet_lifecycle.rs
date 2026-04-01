@@ -162,10 +162,10 @@ impl AppContext {
             // Core UTXO refresh is handled at startup in bootstrap_loaded_wallets.
 
             // Initialize shielded wallet state only when the network supports it
-            // (protocol version >= 12, i.e., Platform v3.1+). On mainnet (which
-            // doesn't support shielded transactions yet), skip entirely to avoid
-            // unnecessary sync attempts and log noise.
-            if self.supports_shielded() {
+            // (all shielded state transitions present in the platform version).
+            // On mainnet (which doesn't support shielded transactions yet), skip
+            // entirely to avoid unnecessary sync attempts and log noise.
+            if crate::model::feature_gate::FeatureGate::Shielded.is_available(self) {
                 match self.initialize_shielded_wallet(seed_hash) {
                     Ok(_) => {
                         tracing::trace!(

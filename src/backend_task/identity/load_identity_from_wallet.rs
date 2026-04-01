@@ -222,13 +222,20 @@ impl AppContext {
 
         let wallet_seed_hash = wallet_arc_ref.wallet.read()?.seed_hash();
 
+        // Derive alias from DPNS names if available (same logic as load_identity.rs)
+        let alias = if !maybe_owned_dpns_names.is_empty() {
+            Some(format!("{}.dash", maybe_owned_dpns_names[0].name))
+        } else {
+            None
+        };
+
         let mut qualified_identity = QualifiedIdentity {
             identity: identity.clone(),
             associated_voter_identity: None,
             associated_operator_identity: None,
             associated_owner_key_id: None,
             identity_type: IdentityType::User,
-            alias: None,
+            alias,
             private_keys: Default::default(),
             dpns_names: Vec::new(),
             associated_wallets: BTreeMap::new(),

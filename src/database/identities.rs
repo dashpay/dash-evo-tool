@@ -56,12 +56,23 @@ impl Database {
 
         let status = qualified_identity.status.as_u8();
 
+        // Use INSERT ... ON CONFLICT to merge with existing data rather than
+        // blindly overwriting. COALESCE preserves existing non-null values (e.g.
+        // alias, wallet) when the incoming value is NULL.
         if let Some((wallet, wallet_index)) = wallet_and_identity_id_info {
-            // If wallet information is provided, insert with wallet and wallet_index
             self.execute(
-                "INSERT OR REPLACE INTO identity
-             (id, data, is_local, alias, identity_type, network, wallet, wallet_index, status)
-             VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO identity
+                 (id, data, is_local, alias, identity_type, network, wallet, wallet_index, status)
+                 VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT(id) DO UPDATE SET
+                     data = excluded.data,
+                     is_local = 1,
+                     alias = COALESCE(excluded.alias, identity.alias),
+                     identity_type = excluded.identity_type,
+                     network = excluded.network,
+                     wallet = COALESCE(excluded.wallet, identity.wallet),
+                     wallet_index = COALESCE(excluded.wallet_index, identity.wallet_index),
+                     status = excluded.status",
                 params![
                     id,
                     data,
@@ -70,16 +81,22 @@ impl Database {
                     network,
                     wallet,
                     wallet_index,
-                    status,
+                    status
                 ],
             )?;
         } else {
             tracing::warn!(identity_id=?id, alias, network, "saving identity without wallet; this needs investigating");
-            // If wallet information is not provided, insert without wallet and wallet_index
             self.execute(
-                "INSERT OR REPLACE INTO identity
-             (id, data, is_local, alias, identity_type, network, status)
-             VALUES (?, ?, 1, ?, ?, ?, ?)",
+                "INSERT INTO identity
+                 (id, data, is_local, alias, identity_type, network, status)
+                 VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(id) DO UPDATE SET
+                     data = excluded.data,
+                     is_local = 1,
+                     alias = COALESCE(excluded.alias, identity.alias),
+                     identity_type = excluded.identity_type,
+                     network = excluded.network,
+                     status = excluded.status",
                 params![id, data, alias, identity_type, network, status],
             )?;
         }

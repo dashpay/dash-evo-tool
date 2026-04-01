@@ -2245,65 +2245,78 @@ impl ScreenLike for NetworkChooserScreen {
             self.discovery_in_progress = false;
 
             // Update config with new addresses
-            if let Ok(mut config) = Config::load_from(&self.mainnet_app_context.data_dir)
-                && let Some(mut network_cfg) = config.config_for_network(network).clone()
-            {
-                network_cfg.dapi_addresses = Some(addresses_csv);
-                config.update_config_for_network(network, network_cfg.clone());
-
-                if let Err(e) = config.save(&self.mainnet_app_context.data_dir) {
+            let mut config = match Config::load_from(&self.mainnet_app_context.data_dir) {
+                Ok(c) => c,
+                Err(e) => {
                     MessageBanner::set_global(
                         self.mainnet_app_context.egui_ctx(),
-                        format!("Discovered {count} node addresses but failed to save settings. Addresses will be lost on restart."),
+                        format!("Discovered {count} node addresses but could not load settings to save them."),
                         MessageType::Error,
                     )
                     .with_details(e);
                     return;
                 }
+            };
 
-                // Update in-memory config and reinit SDK
-                let network_context_exists = match network {
-                    Network::Mainnet => true,
-                    Network::Testnet => self.testnet_app_context.is_some(),
-                    Network::Devnet => self.devnet_app_context.is_some(),
-                    Network::Regtest => self.local_app_context.is_some(),
-                    _ => false,
-                };
+            // Use existing network config or create a fresh one if this network
+            // has no config block yet (e.g. Testnet with no TESTNET_* vars in .env).
+            let mut network_cfg = config
+                .config_for_network(network)
+                .clone()
+                .unwrap_or_default();
+            network_cfg.dapi_addresses = Some(addresses_csv);
+            config.update_config_for_network(network, network_cfg.clone());
 
-                if !network_context_exists {
-                    MessageBanner::set_global(
-                        self.mainnet_app_context.egui_ctx(),
-                        format!(
-                            "Discovered {count} node addresses. Restart the app to apply them."
-                        ),
-                        MessageType::Info,
-                    );
-                    return;
-                }
-
-                let app_context = self.context_for_network(network);
-                {
-                    if let Ok(mut cfg_lock) = app_context.config.write() {
-                        *cfg_lock = network_cfg;
-                    }
-                }
-
-                if let Err(e) = Arc::clone(app_context).reinit_core_client_and_sdk() {
-                    MessageBanner::set_global(
-                        self.mainnet_app_context.egui_ctx(),
-                        format!("Updated to {count} node addresses but reconnection failed. You may need to restart the app."),
-                        MessageType::Warning,
-                    )
-                    .with_details(e);
-                    return;
-                }
-
+            if let Err(e) = config.save(&self.mainnet_app_context.data_dir) {
                 MessageBanner::set_global(
                     self.mainnet_app_context.egui_ctx(),
-                    format!("Updated to {count} node addresses."),
-                    MessageType::Success,
-                );
+                    format!("Discovered {count} node addresses but failed to save settings. Addresses will be lost on restart."),
+                    MessageType::Error,
+                )
+                .with_details(e);
+                return;
             }
+
+            // Update in-memory config and reinit SDK
+            let network_context_exists = match network {
+                Network::Mainnet => true,
+                Network::Testnet => self.testnet_app_context.is_some(),
+                Network::Devnet => self.devnet_app_context.is_some(),
+                Network::Regtest => self.local_app_context.is_some(),
+                _ => false,
+            };
+
+            if !network_context_exists {
+                MessageBanner::set_global(
+                    self.mainnet_app_context.egui_ctx(),
+                    format!("Discovered {count} node addresses. Restart the app to apply them."),
+                    MessageType::Info,
+                );
+                return;
+            }
+
+            let app_context = self.context_for_network(network);
+            {
+                if let Ok(mut cfg_lock) = app_context.config.write() {
+                    *cfg_lock = network_cfg;
+                }
+            }
+
+            if let Err(e) = Arc::clone(app_context).reinit_core_client_and_sdk() {
+                MessageBanner::set_global(
+                    self.mainnet_app_context.egui_ctx(),
+                    format!("Updated to {count} node addresses but reconnection failed. You may need to restart the app."),
+                    MessageType::Warning,
+                )
+                .with_details(e);
+                return;
+            }
+
+            MessageBanner::set_global(
+                self.mainnet_app_context.egui_ctx(),
+                format!("Updated to {count} node addresses."),
+                MessageType::Success,
+            );
         }
     }
 }

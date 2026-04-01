@@ -939,7 +939,11 @@ impl AppContext {
 
         for (input, (sighash, address)) in tx_signed.input.iter_mut().zip(signing_data.into_iter())
         {
-            let digest: [u8; 32] = sighash[..].try_into().expect("sighash is 32 bytes");
+            let digest: [u8; 32] = sighash[..].try_into().map_err(|_| {
+                TaskError::WalletPaymentFailed {
+                    detail: "Sighash digest has unexpected length".to_string(),
+                }
+            })?;
             let message = Message::from_digest(digest);
 
             let addr_info = account.get_address_info(&address).ok_or_else(|| {

@@ -546,11 +546,17 @@ async fn resolve_username_to_identity(sdk: &Sdk, username: &str) -> Result<Ident
         }
     })?;
 
-    query = query.with_where(WhereClause {
-        field: "normalizedLabel".to_string(),
-        operator: WhereOperator::Equal,
-        value: Value::Text(dash_sdk::dpp::util::strings::convert_to_homograph_safe_chars(name)),
-    });
+    query = query
+        .with_where(WhereClause {
+            field: "normalizedParentDomainName".to_string(),
+            operator: WhereOperator::Equal,
+            value: Value::Text("dash".to_string()),
+        })
+        .with_where(WhereClause {
+            field: "normalizedLabel".to_string(),
+            operator: WhereOperator::Equal,
+            value: Value::Text(dash_sdk::dpp::util::strings::convert_to_homograph_safe_chars(name)),
+        });
     query.limit = 1;
 
     let results = Document::fetch_many(sdk, query).await?;

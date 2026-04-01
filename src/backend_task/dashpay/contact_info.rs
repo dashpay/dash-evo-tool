@@ -81,13 +81,17 @@ impl ContactInfoPrivateData {
 
         // Pad to minimum plaintext size so the encrypted output (IV + ciphertext)
         // meets the DashPay contract's privateData minItems (48 bytes).
-        // Use random padding to avoid leaking plaintext length to observers.
+        // First padding byte is 0x00 as a sentinel so deserializers can
+        // distinguish real data from padding. Remaining bytes are random.
         if bytes.len() < Self::MIN_PLAINTEXT_SIZE {
             use bip39::rand::RngCore;
-            let pad_len = Self::MIN_PLAINTEXT_SIZE - bytes.len();
-            let mut pad = vec![0u8; pad_len];
-            StdRng::from_entropy().fill_bytes(&mut pad);
-            bytes.extend_from_slice(&pad);
+            bytes.push(0x00); // sentinel: marks start of padding
+            let remaining = Self::MIN_PLAINTEXT_SIZE - bytes.len();
+            if remaining > 0 {
+                let mut pad = vec![0u8; remaining];
+                StdRng::from_entropy().fill_bytes(&mut pad);
+                bytes.extend_from_slice(&pad);
+            }
         }
 
         bytes

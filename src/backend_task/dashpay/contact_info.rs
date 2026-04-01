@@ -41,9 +41,9 @@ impl ContactInfoPrivateData {
 
     /// Minimum plaintext size so that IV (16) + AES-CBC ciphertext ≥ 48 bytes
     /// (the `privateData` field's `minItems` in the DashPay contract).
-    /// 48 - 16 (IV) = 32 encrypted bytes → PKCS7 on 17-32 bytes of plaintext
-    /// rounds up to 32, so we need at least 17 bytes of plaintext.
-    const MIN_PLAINTEXT_SIZE: usize = 17;
+    /// PKCS7 pads 16 bytes to 32 (adds a full padding block when input is
+    /// block-aligned), so 16 plaintext → 32 ciphertext → 48 with IV.
+    const MIN_PLAINTEXT_SIZE: usize = 16;
 
     // Serialize to bytes for encryption
     pub fn serialize(&self) -> Vec<u8> {

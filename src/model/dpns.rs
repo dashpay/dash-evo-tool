@@ -5,6 +5,9 @@
 
 use dash_sdk::dpp::util::strings::convert_to_homograph_safe_chars;
 
+/// The `.dash` parent domain suffix (case-insensitive match target).
+const DASH_SUFFIX: &str = ".dash";
+
 /// Extract the bare label from a DPNS input and apply homograph-safe normalization.
 ///
 /// Handles all common user inputs:
@@ -24,8 +27,10 @@ pub fn normalize_dpns_label(input: &str) -> String {
 ///
 /// Returns the bare label portion, or the full input if no suffix is present.
 pub fn strip_dash_suffix(input: &str) -> &str {
-    if input.len() > 5 && input[input.len() - 5..].eq_ignore_ascii_case(".dash") {
-        &input[..input.len() - 5]
+    if input.len() > DASH_SUFFIX.len()
+        && input[input.len() - DASH_SUFFIX.len()..].eq_ignore_ascii_case(DASH_SUFFIX)
+    {
+        &input[..input.len() - DASH_SUFFIX.len()]
     } else {
         input
     }
@@ -35,7 +40,8 @@ pub fn strip_dash_suffix(input: &str) -> &str {
 /// case-insensitive) rather than a bare label or identity ID.
 pub fn has_dash_suffix(input: &str) -> bool {
     let trimmed = input.trim();
-    trimmed.len() > 5 && trimmed[trimmed.len() - 5..].eq_ignore_ascii_case(".dash")
+    trimmed.len() > DASH_SUFFIX.len()
+        && trimmed[trimmed.len() - DASH_SUFFIX.len()..].eq_ignore_ascii_case(DASH_SUFFIX)
 }
 
 #[cfg(test)]
@@ -79,7 +85,7 @@ mod tests {
         assert!(has_dash_suffix("Alice.DASH"));
         assert!(has_dash_suffix("alice.Dash"));
         assert!(!has_dash_suffix("alice"));
-        assert!(!has_dash_suffix("dash")); // too short, "dash" alone isn't ".dash"
+        assert!(!has_dash_suffix("dash")); // too short
         assert!(!has_dash_suffix(".dash")); // just the suffix, no label
     }
 
@@ -88,6 +94,7 @@ mod tests {
         assert_eq!(strip_dash_suffix("alice.dash"), "alice");
         assert_eq!(strip_dash_suffix("alice.DASH"), "alice");
         assert_eq!(strip_dash_suffix("alice"), "alice");
-        assert_eq!(strip_dash_suffix("a.dash"), "a"); // valid: label "a" with .dash suffix
+        assert_eq!(strip_dash_suffix("a.dash"), "a"); // valid: label "a"
+        assert_eq!(strip_dash_suffix(".dash"), ".dash"); // no label, len == 5
     }
 }

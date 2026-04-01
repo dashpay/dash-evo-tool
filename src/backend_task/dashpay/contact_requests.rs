@@ -549,7 +549,7 @@ async fn resolve_username_to_identity(sdk: &Sdk, username: &str) -> Result<Ident
         .with_where(WhereClause {
             field: "normalizedLabel".to_string(),
             operator: WhereOperator::Equal,
-            value: Value::Text(normalized.clone()),
+            value: Value::Text(normalized),
         });
     query.limit = 1;
 

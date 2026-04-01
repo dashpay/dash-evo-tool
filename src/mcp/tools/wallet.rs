@@ -17,7 +17,8 @@ use crate::mcp::resolve;
 use crate::mcp::server::DashMcpService;
 use crate::mcp::tools::{NetworkParams, WalletIdParams};
 use crate::model::address::AddressKind;
-use crate::model::send_routing::{SendRequest, SendResult, SendSource};
+use crate::model::fee_estimation::shielded_fee_for_actions;
+use crate::model::send_routing::{FeeContext, SendRequest, SendResult, SendSource};
 
 // ---------------------------------------------------------------------------
 // GenerateReceiveAddress
@@ -657,13 +658,16 @@ impl AsyncTool<DashMcpService> for WalletFundsSend {
             dest_kind.short_label().to_lowercase()
         );
 
+        // Build fee context for Platform source routes
+        let fee_context = build_fee_context(&source, &destination, &ctx);
+
         // Build and dispatch the send request
         let request = SendRequest {
             source,
             destination,
             amount,
             resolved_identity,
-            fee_context: None,
+            fee_context,
         };
 
         let send_result = crate::model::send_routing::resolve_send(request).map_err(|e| {
@@ -763,6 +767,47 @@ fn shielded_balance(
         .get(&seed_hash)
         .map(|s| s.shielded_balance)
         .unwrap_or(0)
+}
+
+/// Build the appropriate `FeeContext` for Platform-source routes.
+///
+/// Mirrors `SendScreen::build_fee_context()` -- only Platform source routes need
+/// fee context; Core, Shielded, and Identity sources handle fees internally.
+fn build_fee_context(
+    source: &SendSource,
+    destination: &crate::model::address::ValidatedAddress,
+    ctx: &crate::context::AppContext,
+) -> Option<FeeContext> {
+    let SendSource::PlatformAddresses { .. } = source else {
+        return None;
+    };
+
+    match destination.kind() {
+        AddressKind::Platform | AddressKind::Identity => {
+            Some(FeeContext::PlatformTransfer(ctx.fee_estimator()))
+        }
+        AddressKind::Core => {
+            let output_script = destination
+                .as_core()
+                .map(|addr| {
+                    dash_sdk::dpp::identity::core_script::CoreScript::new(addr.script_pubkey())
+                })
+                .unwrap_or_else(|| {
+                    dash_sdk::dpp::identity::core_script::CoreScript::new(vec![].into())
+                });
+            Some(FeeContext::Withdrawal {
+                output_script,
+                platform_version: ctx.platform_version(),
+            })
+        }
+        AddressKind::Shielded => {
+            let base_fee =
+                shielded_fee_for_actions(2, dash_sdk::dpp::version::PlatformVersion::latest());
+            let multiplier = ctx.fee_multiplier_permille().max(1000);
+            let per_op_fee_credits = base_fee.saturating_mul(multiplier) / 1000;
+            Some(FeeContext::Shield { per_op_fee_credits })
+        }
+    }
 }
 
 /// Build a `ValidatedAddress` from a raw address string and its detected kind.

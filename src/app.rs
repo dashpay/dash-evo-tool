@@ -967,8 +967,12 @@ impl AppState {
                 "Cannot switch to {:?}: network context not available. Staying on current network.",
                 network
             );
+            // Use the current (still active) network's context — egui_ctx is shared
+            // but this avoids a misleading mainnet_app_context reference when the
+            // user is on a different network.
+            let ctx = self.current_app_context();
             MessageBanner::set_global(
-                self.mainnet_app_context.egui_ctx(),
+                ctx.egui_ctx(),
                 format!(
                     "Could not connect to {network_name}. Check your network settings and retry."
                 ),

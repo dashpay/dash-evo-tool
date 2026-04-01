@@ -2241,12 +2241,16 @@ impl ScreenLike for NetworkChooserScreen {
         {
             self.discovery_in_progress = false;
 
+            // Use current context for data_dir and egui_ctx — they are shared
+            // across all network contexts.
+            let current_ctx = self.current_app_context().clone();
+
             // Update config with new addresses
-            let mut config = match Config::load_from(&self.mainnet_app_context.data_dir) {
+            let mut config = match Config::load_from(&current_ctx.data_dir) {
                 Ok(c) => c,
                 Err(e) => {
                     MessageBanner::set_global(
-                        self.mainnet_app_context.egui_ctx(),
+                        current_ctx.egui_ctx(),
                         format!("Discovered {count} node addresses but could not load settings to save them."),
                         MessageType::Error,
                     )
@@ -2264,9 +2268,9 @@ impl ScreenLike for NetworkChooserScreen {
             network_cfg.dapi_addresses = Some(addresses_csv);
             config.update_config_for_network(network, network_cfg.clone());
 
-            if let Err(e) = config.save(&self.mainnet_app_context.data_dir) {
+            if let Err(e) = config.save(&current_ctx.data_dir) {
                 MessageBanner::set_global(
-                    self.mainnet_app_context.egui_ctx(),
+                    current_ctx.egui_ctx(),
                     format!("Discovered {count} node addresses but failed to save settings. Addresses will be lost on restart."),
                     MessageType::Error,
                 )
@@ -2285,7 +2289,7 @@ impl ScreenLike for NetworkChooserScreen {
 
             if !network_context_exists {
                 MessageBanner::set_global(
-                    self.mainnet_app_context.egui_ctx(),
+                    current_ctx.egui_ctx(),
                     format!("Discovered {count} node addresses. Restart the app to apply them."),
                     MessageType::Info,
                 );
@@ -2301,7 +2305,7 @@ impl ScreenLike for NetworkChooserScreen {
 
             if let Err(e) = Arc::clone(app_context).reinit_core_client_and_sdk() {
                 MessageBanner::set_global(
-                    self.mainnet_app_context.egui_ctx(),
+                    current_ctx.egui_ctx(),
                     format!("Updated to {count} node addresses but reconnection failed. You may need to restart the app."),
                     MessageType::Warning,
                 )
@@ -2310,7 +2314,7 @@ impl ScreenLike for NetworkChooserScreen {
             }
 
             MessageBanner::set_global(
-                self.mainnet_app_context.egui_ctx(),
+                current_ctx.egui_ctx(),
                 format!("Updated to {count} node addresses."),
                 MessageType::Success,
             );

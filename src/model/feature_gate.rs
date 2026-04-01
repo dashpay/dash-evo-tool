@@ -1,5 +1,6 @@
 use crate::context::AppContext;
 use crate::spv::CoreBackendMode;
+use dash_sdk::dpp::version::PlatformVersion;
 use egui::Ui;
 
 /// Named feature gate. Each variant maps to a predicate over `AppContext`.
@@ -50,7 +51,14 @@ impl FeatureGate {
     pub fn is_available(self, ctx: &AppContext) -> bool {
         match self {
             FeatureGate::Shielded => {
-                let pv = ctx.platform_version();
+                // Use the protocol version fetched from the network (not the
+                // hardcoded default) to look up the correct PlatformVersion.
+                // Returns false when the version hasn't been fetched yet (0)
+                // or doesn't support shielded state transitions.
+                let proto = ctx.platform_protocol_version();
+                let Some(pv) = PlatformVersion::get_optional(proto) else {
+                    return false;
+                };
                 let st = &pv.dpp.state_transition_serialization_versions;
                 // All shielded state transition types must be present (max_version > 0
                 // means the feature has been defined in this protocol version).

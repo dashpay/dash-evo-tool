@@ -280,8 +280,11 @@ impl EventHandler for SpvEventHandler {
             }
         }
 
-        if should_signal && let Some(tx) = self.reconcile_tx.lock().ok().and_then(|g| g.clone()) {
-            let _ = tx.try_send(());
+        if should_signal
+            && let Some(tx) = self.reconcile_tx.lock().ok().and_then(|g| g.clone())
+            && let Err(e) = tx.try_send(())
+        {
+            tracing::warn!("Failed to send reconcile signal from on_sync_event: {e}");
         }
     }
 
@@ -294,7 +297,7 @@ impl EventHandler for SpvEventHandler {
                 *guard = *connected_count;
             }
             if let Some(cs) = &self.connection_status {
-                cs.set_spv_connected_peers(*connected_count as u16);
+                cs.set_spv_connected_peers((*connected_count).min(u16::MAX as usize) as u16);
                 cs.refresh_state();
             }
         }
@@ -302,7 +305,6 @@ impl EventHandler for SpvEventHandler {
 }
 
 /// Events forwarded from SPV to AppContext for asset lock proof construction.
-#[allow(dead_code)] // Variants will be used when EventHandler is fully implemented
 pub(crate) enum AssetLockFinalityEvent {
     InstantLock {
         txid: Txid,
@@ -1246,7 +1248,6 @@ impl SpvManager {
     }
 
     /// Identify which sync manager phase is in Error state, if any.
-    #[allow(dead_code)] // Will be used when EventHandler is fully implemented
     /// Checks masternodes first as the most common failure point,
     /// rather than pipeline execution order used by `spv_phase_summary()`.
     fn failed_manager_name(progress: &SpvSyncProgress) -> &'static str {
@@ -1284,113 +1285,7 @@ impl SpvManager {
     }
     // spawn_progress_watcher removed — replaced by SpvEventHandler::on_progress
 
-    #[allow(dead_code)]
-    fn spawn_sync_event_handler(&self, mut sync_rx: tokio::sync::broadcast::Receiver<SyncEvent>) {
-        let reconcile_tx = self.reconcile_tx.lock().ok().and_then(|g| g.clone());
-        let finality_tx = self.finality_tx.lock().ok().and_then(|g| g.clone());
-        let status = Arc::clone(&self.status);
-        let last_error = Arc::clone(&self.last_error);
-        let cancel = self.subtasks.cancellation_token.clone();
-        let connection_status = self.connection_status_snapshot();
-
-        self.subtasks.spawn_sync("spv_sync_event_handler", async move {
-            loop {
-                tokio::select! {
-                    _ = cancel.cancelled() => break,
-                    result = sync_rx.recv() => {
-                        match result {
-                            Ok(event) => {
-                                let should_signal = matches!(
-                                    event,
-                                    SyncEvent::BlockProcessed { .. }
-                                    | SyncEvent::ChainLockReceived { .. }
-                                    | SyncEvent::InstantLockReceived { .. }
-                                    | SyncEvent::SyncComplete { .. }
-                                );
-
-                                // Forward finality-relevant events for asset lock proof construction
-                                if let Some(ref ftx) = finality_tx {
-                                    match &event {
-                                        SyncEvent::InstantLockReceived { instant_lock, .. } => {
-                                            if let Err(e) = ftx.try_send(AssetLockFinalityEvent::InstantLock {
-                                                txid: instant_lock.txid,
-                                                instant_lock: Box::new(instant_lock.clone()),
-                                            }) {
-                                                tracing::warn!("Failed to forward InstantLock finality event for txid {}: {}", instant_lock.txid, e);
-                                            }
-                                        }
-                                        SyncEvent::ChainLockReceived { chain_lock, .. } => {
-                                            if let Err(e) = ftx.try_send(AssetLockFinalityEvent::ChainLock {
-                                                height: chain_lock.block_height,
-                                            }) {
-                                                tracing::warn!("Failed to forward ChainLock finality event for height {}: {}", chain_lock.block_height, e);
-                                            }
-                                        }
-                                        _ => {}
-                                    }
-                                }
-
-                                if matches!(event, SyncEvent::SyncComplete { .. })
-                                    && let Ok(mut guard) = status.write()
-                                {
-                                    *guard = SpvStatus::Running;
-                                    drop(guard);
-                                    if let Some(cs) = &connection_status {
-                                        cs.set_spv_status(SpvStatus::Running);
-                                        cs.refresh_state();
-                                    }
-                                }
-
-                                // Transition to Error when a sync manager reports a
-                                // fatal failure. The dash-spv library emits this event
-                                // but does NOT update the progress channel on the error
-                                // path, so we must react to the event directly.
-                                if let SyncEvent::ManagerError { ref manager, ref error } = event {
-                                    tracing::error!("SPV manager {} reported error: {}", manager, error);
-                                    if let Ok(mut guard) = status.write() {
-                                        *guard = SpvStatus::Error;
-                                        drop(guard); // Maintain lock ordering: status → release → last_error
-                                    }
-
-                                    // Truncate error before formatting to avoid
-                                    // large transient allocations from adversarial peers.
-                                    let limit = error.floor_char_boundary(100);
-                                    let msg = format!("Sync manager {} failed: {}", manager, &error[..limit]);
-                                    if let Ok(mut err_guard) = last_error.write() {
-                                        if err_guard.is_none() {
-                                            *err_guard = Some(msg.clone());
-                                        } else {
-                                            tracing::warn!(%manager, error, "SPV last_error already set, ignoring subsequent: {}", msg);
-                                        }
-                                    }
-                                    if let Some(cs) = &connection_status {
-                                        cs.set_spv_status(SpvStatus::Error);
-                                        cs.set_spv_last_error(Some(msg));
-                                        cs.refresh_state();
-                                    }
-                                }
-
-                                if should_signal
-                                    && let Some(ref tx) = reconcile_tx
-                                {
-                                    let _ = tx.try_send(());
-                                }
-                            }
-                            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                                tracing::warn!("Sync event handler lagged by {} events", n);
-                                // Trigger reconcile to catch up on any missed state changes
-                                if let Some(ref tx) = reconcile_tx {
-                                    let _ = tx.try_send(());
-                                }
-                            }
-                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                        }
-                    }
-                }
-            }
-            tracing::info!("SPV sync event handler exiting");
-        });
-    }
+    // spawn_sync_event_handler removed — replaced by SpvEventHandler::on_sync_event
 
     fn spawn_wallet_event_handler(
         &self,
@@ -1428,46 +1323,7 @@ impl SpvManager {
             });
     }
 
-    #[allow(dead_code)]
-    fn spawn_network_event_handler(
-        &self,
-        mut net_rx: tokio::sync::broadcast::Receiver<NetworkEvent>,
-    ) {
-        let connected_peers = Arc::clone(&self.connected_peers);
-        let cancel = self.subtasks.cancellation_token.clone();
-        let connection_status = self.connection_status_snapshot();
-
-        self.subtasks
-            .spawn_sync("spv_network_event_handler", async move {
-                loop {
-                    tokio::select! {
-                        _ = cancel.cancelled() => break,
-                        result = net_rx.recv() => {
-                            match result {
-                                Ok(NetworkEvent::PeersUpdated { connected_count, .. }) => {
-                                    if let Ok(mut guard) = connected_peers.write() {
-                                        *guard = connected_count;
-                                    }
-                                    if let Some(cs) = &connection_status {
-                                        let peers = connected_count.min(u16::MAX as usize) as u16;
-                                        cs.set_spv_connected_peers(peers);
-                                        cs.refresh_state();
-                                    }
-                                }
-                                Ok(_) => {
-                                    // PeerConnected / PeerDisconnected — PeersUpdated follows
-                                }
-                                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                                    tracing::warn!("Network event handler lagged by {} events", n);
-                                }
-                                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                            }
-                        }
-                    }
-                }
-                tracing::info!("SPV network event handler exiting");
-            });
-    }
+    // spawn_network_event_handler removed — replaced by SpvEventHandler::on_network_event
 
     async fn build_client(&self, has_wallets: bool) -> Result<SpvClient, String> {
         // When wallets exist, scan from genesis so historical transactions are found via

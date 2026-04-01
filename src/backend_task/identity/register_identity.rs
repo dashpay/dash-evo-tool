@@ -20,7 +20,7 @@ use dash_sdk::dpp::state_transition::identity_create_transition::methods::Identi
 use dash_sdk::platform::transition::put_identity::PutIdentity;
 use dash_sdk::platform::{Fetch, FetchMany, Identity};
 use dash_sdk::query_types::AddressInfo;
-use dash_sdk::{Error, Sdk};
+use dash_sdk::Error;
 use std::collections::BTreeMap;
 
 impl AppContext {
@@ -333,11 +333,11 @@ impl AppContext {
 
         match self
             .put_new_identity_to_platform(
-                &sdk,
                 &identity,
                 asset_lock_proof.clone(),
                 &asset_lock_proof_private_key,
                 qualified_identity.clone(),
+                &wallet_id,
             )
             .await
         {
@@ -364,11 +364,11 @@ impl AppContext {
                             // Retry with chain asset lock proof
                             match self
                                 .put_new_identity_to_platform(
-                                    &sdk,
                                     &identity,
                                     chain_asset_lock_proof,
                                     &asset_lock_proof_private_key,
                                     qualified_identity.clone(),
+                                    &wallet_id,
                                 )
                                 .await
                             {
@@ -456,42 +456,76 @@ impl AppContext {
 
     async fn put_new_identity_to_platform(
         &self,
-        sdk: &Sdk,
         identity: &Identity,
         asset_lock_proof: AssetLockProof,
         asset_lock_proof_private_key: &PrivateKey,
         qualified_identity: QualifiedIdentity,
+        wallet_seed_hash: &[u8; 32],
     ) -> Result<Identity, TaskError> {
-        match identity
-            .put_to_platform_and_wait_for_response(
-                sdk,
-                asset_lock_proof.clone(),
-                asset_lock_proof_private_key,
-                &qualified_identity,
-                None,
-            )
-            .await
-        {
+        // Delegate the SDK call to platform-wallet when available,
+        // falling back to direct SDK call otherwise.
+        let result = if let Some(platform_wallet) = self.get_platform_wallet(wallet_seed_hash) {
+            platform_wallet
+                .identity()
+                .register_identity_with_signer(
+                    identity,
+                    asset_lock_proof.clone(),
+                    asset_lock_proof_private_key,
+                    &qualified_identity,
+                )
+                .await
+        } else {
+            identity
+                .put_to_platform_and_wait_for_response(
+                    &self.sdk.load().as_ref().clone(),
+                    asset_lock_proof.clone(),
+                    asset_lock_proof_private_key,
+                    &qualified_identity,
+                    None,
+                )
+                .await
+        };
+
+        match result {
             Ok(updated_identity) => Ok(updated_identity),
             Err(e) => {
                 if matches!(e, Error::Protocol(ProtocolError::UnknownVersionError(_))) {
-                    identity
-                        .put_to_platform_and_wait_for_response(
-                            sdk,
-                            asset_lock_proof.clone(),
-                            asset_lock_proof_private_key,
-                            &qualified_identity,
-                            None,
-                        )
-                        .await
-                        .map_err(|retry_err| {
-                            let logged = self.log_drive_proof_error(retry_err, RequestType::BroadcastStateTransition);
-                            // If the logged variant is ProofError, return it directly;
-                            // otherwise log the reconstructed transition for debugging.
-                            if matches!(logged, TaskError::ProofError { .. }) {
-                                return logged;
-                            }
-                            if let Ok(transition) = IdentityCreateTransition::try_from_identity_with_signer(
+                    // Retry once on version mismatch.
+                    let retry_result =
+                        if let Some(platform_wallet) = self.get_platform_wallet(wallet_seed_hash) {
+                            platform_wallet
+                                .identity()
+                                .register_identity_with_signer(
+                                    identity,
+                                    asset_lock_proof.clone(),
+                                    asset_lock_proof_private_key,
+                                    &qualified_identity,
+                                )
+                                .await
+                        } else {
+                            identity
+                                .put_to_platform_and_wait_for_response(
+                                    &self.sdk.load().as_ref().clone(),
+                                    asset_lock_proof.clone(),
+                                    asset_lock_proof_private_key,
+                                    &qualified_identity,
+                                    None,
+                                )
+                                .await
+                        };
+
+                    retry_result.map_err(|retry_err| {
+                        let logged = self.log_drive_proof_error(
+                            retry_err,
+                            RequestType::BroadcastStateTransition,
+                        );
+                        // If the logged variant is ProofError, return it directly;
+                        // otherwise log the reconstructed transition for debugging.
+                        if matches!(logged, TaskError::ProofError { .. }) {
+                            return logged;
+                        }
+                        if let Ok(transition) =
+                            IdentityCreateTransition::try_from_identity_with_signer(
                                 identity,
                                 asset_lock_proof,
                                 asset_lock_proof_private_key.inner.as_ref(),
@@ -499,14 +533,15 @@ impl AppContext {
                                 &NativeBlsModule,
                                 0,
                                 self.platform_version(),
-                            ) {
-                                tracing::debug!(
-                                    "Register identity retry failed; reconstructed transition: {:?}",
-                                    transition
-                                );
-                            }
-                            logged
-                        })
+                            )
+                        {
+                            tracing::debug!(
+                                "Register identity retry failed; reconstructed transition: {:?}",
+                                transition
+                            );
+                        }
+                        logged
+                    })
                 } else {
                     Err(self.log_drive_proof_error(e, RequestType::BroadcastStateTransition))
                 }

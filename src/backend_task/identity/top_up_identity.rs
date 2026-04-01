@@ -226,17 +226,34 @@ impl AppContext {
         let balance_before = qualified_identity.identity.balance();
         let estimated_fee = PlatformFeeEstimator::new().estimate_identity_topup();
 
-        let updated_identity_balance = match qualified_identity
-            .identity
-            .top_up_identity(
-                &sdk,
-                asset_lock_proof.clone(),
-                &asset_lock_proof_private_key,
-                None,
-                None,
-            )
-            .await
-        {
+        // Delegate the SDK call to platform-wallet when available,
+        // falling back to direct SDK call otherwise.
+        let maybe_platform_wallet = self
+            .platform_wallet_for_identity(&qualified_identity)
+            .ok();
+
+        let top_up_result = if let Some(ref pw) = maybe_platform_wallet {
+            pw.identity()
+                .top_up_identity_with_signer(
+                    &qualified_identity.identity,
+                    asset_lock_proof.clone(),
+                    &asset_lock_proof_private_key,
+                )
+                .await
+        } else {
+            qualified_identity
+                .identity
+                .top_up_identity(
+                    &sdk,
+                    asset_lock_proof.clone(),
+                    &asset_lock_proof_private_key,
+                    None,
+                    None,
+                )
+                .await
+        };
+
+        let updated_identity_balance = match top_up_result {
             Ok(updated_identity) => updated_identity,
             Err(e) => {
                 if crate::backend_task::error::is_instant_lock_proof_invalid(&e) {
@@ -254,23 +271,35 @@ impl AppContext {
                                     out_point: OutPoint::new(tx_id, 0),
                                 });
 
-                            // Retry with chain asset lock proof
-                            qualified_identity
-                                .identity
-                                .top_up_identity(
-                                    &sdk,
-                                    chain_asset_lock_proof,
-                                    &asset_lock_proof_private_key,
-                                    None,
-                                    None,
+                            // Retry with chain asset lock proof via platform-wallet or fallback
+                            let cl_result =
+                                if let Some(ref pw) = maybe_platform_wallet {
+                                    pw.identity()
+                                        .top_up_identity_with_signer(
+                                            &qualified_identity.identity,
+                                            chain_asset_lock_proof,
+                                            &asset_lock_proof_private_key,
+                                        )
+                                        .await
+                                } else {
+                                    qualified_identity
+                                        .identity
+                                        .top_up_identity(
+                                            &sdk,
+                                            chain_asset_lock_proof,
+                                            &asset_lock_proof_private_key,
+                                            None,
+                                            None,
+                                        )
+                                        .await
+                                };
+
+                            cl_result.map_err(|e| {
+                                self.log_drive_proof_error(
+                                    e,
+                                    RequestType::BroadcastStateTransition,
                                 )
-                                .await
-                                .map_err(|e| {
-                                    self.log_drive_proof_error(
-                                        e,
-                                        RequestType::BroadcastStateTransition,
-                                    )
-                                })?
+                            })?
                         } else {
                             return Err(TaskError::AssetLockExpired {
                                 tx_block_height,
@@ -281,40 +310,51 @@ impl AppContext {
                         return Err(TaskError::AssetLockInstantLockExpiredNotChainlocked);
                     }
                 } else if matches!(e, Error::Protocol(ProtocolError::UnknownVersionError(_))) {
-                    qualified_identity
-                        .identity
-                        .top_up_identity(
-                            &sdk,
-                            asset_lock_proof.clone(),
-                            &asset_lock_proof_private_key,
-                            None,
-                            None,
-                        )
-                        .await
-                        .map_err(|retry_err| {
-                            let logged = self.log_drive_proof_error(
-                                retry_err,
-                                RequestType::BroadcastStateTransition,
-                            );
-                            if matches!(logged, TaskError::ProofError { .. }) {
-                                return logged;
-                            }
-                            // Log the reconstructed transition for debugging before returning the error.
-                            if let Ok(transition) = IdentityTopUpTransition::try_from_identity(
+                    let retry_result = if let Some(ref pw) = maybe_platform_wallet {
+                        pw.identity()
+                            .top_up_identity_with_signer(
                                 &qualified_identity.identity,
-                                asset_lock_proof,
-                                asset_lock_proof_private_key.inner.as_ref(),
-                                0,
-                                self.platform_version(),
+                                asset_lock_proof.clone(),
+                                &asset_lock_proof_private_key,
+                            )
+                            .await
+                    } else {
+                        qualified_identity
+                            .identity
+                            .top_up_identity(
+                                &sdk,
+                                asset_lock_proof.clone(),
+                                &asset_lock_proof_private_key,
                                 None,
-                            ) {
-                                tracing::debug!(
-                                    "Top-up retry failed; reconstructed transition: {:?}",
-                                    transition
-                                );
-                            }
-                            logged
-                        })?
+                                None,
+                            )
+                            .await
+                    };
+
+                    retry_result.map_err(|retry_err| {
+                        let logged = self.log_drive_proof_error(
+                            retry_err,
+                            RequestType::BroadcastStateTransition,
+                        );
+                        if matches!(logged, TaskError::ProofError { .. }) {
+                            return logged;
+                        }
+                        // Log the reconstructed transition for debugging before returning the error.
+                        if let Ok(transition) = IdentityTopUpTransition::try_from_identity(
+                            &qualified_identity.identity,
+                            asset_lock_proof,
+                            asset_lock_proof_private_key.inner.as_ref(),
+                            0,
+                            self.platform_version(),
+                            None,
+                        ) {
+                            tracing::debug!(
+                                "Top-up retry failed; reconstructed transition: {:?}",
+                                transition
+                            );
+                        }
+                        logged
+                    })?
                 } else {
                     return Err(
                         self.log_drive_proof_error(e, RequestType::BroadcastStateTransition)

@@ -8,10 +8,221 @@ impl AppContext {
     /// Discover and load identities derived from a wallet by checking the network.
     /// This is called automatically on wallet unlock to find any identities that
     /// were registered using keys from the wallet.
+    ///
+    /// When a platform-wallet is available for this wallet, delegates the
+    /// gap-limit scan + DPNS lookup to `IdentityWallet::sync()` and converts
+    /// the results into `QualifiedIdentity`. Falls back to the legacy scan
+    /// when the platform-wallet is not registered.
     pub(crate) async fn discover_identities_from_wallet(
         self: &Arc<Self>,
         wallet: &Arc<RwLock<Wallet>>,
         max_identity_index: u32,
+    ) -> Result<(), String> {
+        let seed_hash = wallet.read().map_err(|e| e.to_string())?.seed_hash();
+
+        // Try to delegate to platform-wallet's sync() when available.
+        if let Some(platform_wallet) = self.get_platform_wallet(&seed_hash) {
+            return self
+                .discover_identities_via_platform_wallet(wallet, &platform_wallet, &seed_hash)
+                .await;
+        }
+
+        // Fallback: legacy scan when platform-wallet is not available.
+        self.discover_identities_legacy(wallet, max_identity_index, &seed_hash)
+            .await
+    }
+
+    /// Delegate identity discovery to the platform-wallet's `IdentityWallet::sync()`.
+    ///
+    /// This calls the platform-wallet's gap-limit scanner (12 key indices per
+    /// identity index, DPNS lookup, key storage) and then converts the
+    /// discovered `ManagedIdentity` entries into evo-tool's `QualifiedIdentity`.
+    async fn discover_identities_via_platform_wallet(
+        self: &Arc<Self>,
+        wallet: &Arc<RwLock<Wallet>>,
+        platform_wallet: &crate::platform_wallet_bridge::PlatformWallet,
+        seed_hash: &[u8; 32],
+    ) -> Result<(), String> {
+        use crate::model::qualified_identity::encrypted_key_storage::{
+            PrivateKeyData, WalletDerivationPath,
+        };
+        use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+        use crate::model::qualified_identity::{
+            IdentityStatus, IdentityType, PrivateKeyTarget, QualifiedIdentity,
+        };
+
+        tracing::info!(
+            seed = %hex::encode(seed_hash),
+            "Starting identity discovery via platform-wallet sync"
+        );
+
+        let identity_wallet = platform_wallet.identity();
+
+        // Run the platform-wallet gap-limit scan + DPNS lookup.
+        let discovered = identity_wallet.sync().await.map_err(|e| {
+            format!("Platform wallet identity sync failed: {}", e)
+        })?;
+
+        if discovered.is_empty() {
+            tracing::info!(
+                seed = %hex::encode(seed_hash),
+                "Platform-wallet sync found no new identities"
+            );
+            return Ok(());
+        }
+
+        tracing::info!(
+            seed = %hex::encode(seed_hash),
+            count = discovered.len(),
+            "Platform-wallet sync discovered identities, converting to QualifiedIdentity"
+        );
+
+        // Read back the managed identity data from the identity manager.
+        let manager = identity_wallet.identity_manager().await;
+
+        let mut found_count = 0;
+        for identity in &discovered {
+            let identity_id = identity.id();
+
+            // Check if we already have this identity stored in the evo-tool DB.
+            let already_exists = {
+                let wallets = self.wallets.read().map_err(|e| e.to_string())?;
+                let existing = self.db.get_identity_by_id(&identity_id, self, &wallets);
+                existing.is_ok() && existing.unwrap().is_some()
+            };
+
+            if already_exists {
+                tracing::info!(
+                    identity_id = %identity_id,
+                    "Identity already loaded, skipping"
+                );
+                continue;
+            }
+
+            let managed = match manager.managed_identity(&identity_id) {
+                Some(m) => m,
+                None => {
+                    tracing::warn!(
+                        identity_id = %identity_id,
+                        "Identity discovered but not found in identity manager"
+                    );
+                    continue;
+                }
+            };
+
+            let identity_index = managed.identity_index;
+
+            // Convert key storage from platform-wallet types to evo-tool types.
+            let private_keys_map: std::collections::BTreeMap<_, _> = managed
+                .key_storage
+                .iter()
+                .map(|(key_id, (pub_key, pk_data))| {
+                    let (evo_pk_data, wallet_path) = match pk_data {
+                        platform_wallet::PrivateKeyData::AtWalletDerivationPath {
+                            wallet_seed_hash,
+                            derivation_path,
+                        } => {
+                            let wallet_derivation_path = WalletDerivationPath {
+                                wallet_seed_hash: *wallet_seed_hash,
+                                derivation_path: derivation_path.clone(),
+                            };
+                            (
+                                PrivateKeyData::AtWalletDerivationPath(
+                                    wallet_derivation_path.clone(),
+                                ),
+                                Some(wallet_derivation_path),
+                            )
+                        }
+                        platform_wallet::PrivateKeyData::Clear(key_bytes) => {
+                            (PrivateKeyData::Clear(**key_bytes), None)
+                        }
+                    };
+
+                    let qualified_pub_key =
+                        QualifiedIdentityPublicKey::from_identity_public_key_in_wallet(
+                            pub_key.clone(),
+                            wallet_path,
+                        );
+
+                    (
+                        (PrivateKeyTarget::PrivateKeyOnMainIdentity, *key_id),
+                        (qualified_pub_key, evo_pk_data),
+                    )
+                })
+                .collect();
+
+            // Convert DPNS names.
+            let dpns_names: Vec<DPNSNameInfo> = managed
+                .dpns_names
+                .iter()
+                .map(|n| DPNSNameInfo {
+                    name: n.label.clone(),
+                    acquired_at: n.acquired_at.unwrap_or(0),
+                })
+                .collect();
+
+            // Build QualifiedIdentity.
+            let mut associated_wallets = std::collections::BTreeMap::new();
+            associated_wallets.insert(*seed_hash, Arc::clone(wallet));
+
+            let qualified_identity = QualifiedIdentity {
+                identity: identity.clone(),
+                associated_voter_identity: None,
+                associated_operator_identity: None,
+                associated_owner_key_id: None,
+                identity_type: IdentityType::User,
+                alias: None,
+                private_keys: private_keys_map.into(),
+                dpns_names,
+                associated_wallets,
+                wallet_index: Some(identity_index),
+                top_ups: Default::default(),
+                status: IdentityStatus::Unknown,
+                network: self.network,
+            };
+
+            // Store the identity in the evo-tool DB.
+            if let Err(e) = self.insert_local_qualified_identity(
+                &qualified_identity,
+                &Some((*seed_hash, identity_index)),
+            ) {
+                tracing::warn!(
+                    identity_id = %identity_id,
+                    error = %e,
+                    "Failed to store discovered identity"
+                );
+            } else {
+                // Add to wallet's identities map.
+                if let Ok(mut wallet_guard) = wallet.write() {
+                    wallet_guard
+                        .identities
+                        .insert(identity_index, qualified_identity.identity.clone());
+                }
+                found_count += 1;
+                tracing::info!(
+                    identity_id = %identity_id,
+                    "Successfully loaded discovered identity via platform-wallet"
+                );
+            }
+        }
+
+        tracing::info!(
+            seed = %hex::encode(seed_hash),
+            found_count,
+            "Identity discovery via platform-wallet complete"
+        );
+
+        Ok(())
+    }
+
+    /// Legacy identity discovery that queries Platform directly without the
+    /// platform-wallet library. Used as a fallback when the platform-wallet
+    /// is not available for a given wallet.
+    async fn discover_identities_legacy(
+        self: &Arc<Self>,
+        wallet: &Arc<RwLock<Wallet>>,
+        max_identity_index: u32,
+        seed_hash: &[u8; 32],
     ) -> Result<(), String> {
         use dash_sdk::platform::Fetch;
         use dash_sdk::platform::types::identity::NonUniquePublicKeyHashQuery;
@@ -19,11 +230,10 @@ impl AppContext {
         const AUTH_KEY_LOOKUP_WINDOW: u32 = 12;
 
         let sdk = self.sdk.load().as_ref().clone();
-        let seed_hash = wallet.read().map_err(|e| e.to_string())?.seed_hash();
 
         tracing::info!(
             seed = %hex::encode(seed_hash),
-            "Starting identity discovery for wallet (checking indices 0..{})",
+            "Starting legacy identity discovery for wallet (checking indices 0..{})",
             max_identity_index
         );
 
@@ -114,7 +324,7 @@ impl AppContext {
                         // Store the identity
                         if let Err(e) = self.insert_local_qualified_identity(
                             &qualified_identity,
-                            &Some((seed_hash, identity_index)),
+                            &Some((*seed_hash, identity_index)),
                         ) {
                             tracing::warn!(
                                 identity_id = %identity_id,
@@ -149,7 +359,7 @@ impl AppContext {
         tracing::info!(
             seed = %hex::encode(seed_hash),
             found_count,
-            "Identity discovery complete"
+            "Legacy identity discovery complete"
         );
 
         Ok(())

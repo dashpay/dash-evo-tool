@@ -68,6 +68,8 @@ Set these in the app's `.env` file (see `.env.example`) or as environment variab
 | Tool | Parameters | det-cli command | Description |
 |---|---|---|---|
 | `network_info` | — | `det-cli network-info` | Show active network and available configured networks |
+| `network_reinit_sdk` | `network` | `det-cli network-reinit-sdk` | Rebuild Core RPC client and Platform SDK with current config (use after changing credentials) |
+| `network_switch` | `network` | `det-cli network-switch` | Switch the active network (creates context if needed, may take a few seconds) |
 | `core_wallets_list` | `network`? | `det-cli core-wallets-list` | List wallets loaded in the app (alias + seed hash) |
 | `core_address_create` | `wallet_id`, `network`? | `det-cli core-address-create` | Generate a new receive address for a wallet |
 | `core_balances_get` | `wallet_id`, `network`? | `det-cli core-balances-get` | Show wallet balances (total, confirmed, unconfirmed) in duffs |
@@ -87,6 +89,12 @@ Set these in the app's `.env` file (see `.env.example`) or as environment variab
 | `tool_describe` | `name` | `det-cli tool-describe` | Return the full MCP tool definition for a given tool name |
 
 Parameters marked `?` are optional. The `det-cli` column shows the equivalent CLI command (underscores become hyphens).
+
+### SPV requirements
+
+All wallet-facing tools wait for SPV to fully sync before executing. This includes both core-chain tools (`core_address_create`, `core_balances_get`, `core_funds_send`) and platform tools (`platform_addresses_list`, `identity_credits_topup`, `shielded_shield_from_core`). Even DAPI-only operations need SPV because the SDK verifies DAPI proofs against quorum and masternode list data from the synced chain. When another DET instance is already running, SPV falls back to a temporary directory and must sync from scratch.
+
+Only metadata tools that make no network calls (`core_wallets_list`, `network_info`, `tool_describe`) skip the SPV gate.
 
 ## CLI interface (det-cli)
 

@@ -10,8 +10,8 @@ use crate::backend_task::platform_info::{PlatformInfoTaskRequestType, PlatformIn
 use crate::backend_task::system_task::SystemTask;
 use crate::backend_task::wallet::WalletTask;
 use crate::context::AppContext;
-use dash_sdk::dpp::dashcore::Address;
-use dash_sdk::dpp::dashcore::address::NetworkChecked;
+use crate::spv::CoreBackendMode;
+use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::dashcore::bls_sig_utils::BLSSignature;
 use dash_sdk::dpp::dashcore::network::message_qrinfo::QRInfo;
@@ -99,11 +99,25 @@ pub enum BackendTask {
     GroveSTARKTask(GroveSTARKTask),
     WalletTask(WalletTask),
     ShieldedTask(ShieldedTask),
-    DiscoverDapiNodes { network: Network },
+    /// Rebuild the Core RPC client and SDK on the current network context.
+    /// Dispatched when the user saves a new RPC password so the reinit
+    /// (which includes DAPI discovery) runs off the UI thread.
+    ReinitCoreClientAndSdk,
+    /// Create a new network context and switch to it.
+    /// Intercepted by `AppState` — never dispatched to `AppContext::run_backend_task`.
+    /// When `start_spv` is true, SPV sync is started on the new context automatically.
+    SwitchNetwork {
+        network: Network,
+        start_spv: bool,
+    },
+    /// Discover DAPI nodes from the DCG-operated HTTPS service.
+    DiscoverDapiNodes {
+        network: Network,
+    },
     None,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
 pub enum BackendTaskSuccessResult {
     // General results
@@ -196,8 +210,8 @@ pub enum BackendTaskSuccessResult {
     /// Platform address balances fetched from Platform
     PlatformAddressBalances {
         seed_hash: WalletSeedHash,
-        /// Map of address to (balance, nonce)
-        balances: BTreeMap<Address<NetworkChecked>, (u64, u32)>,
+        /// Map of platform address to (balance, nonce)
+        balances: BTreeMap<PlatformAddress, (u64, u32)>,
     },
     /// Platform credits transferred between addresses
     PlatformCreditsTransferred {
@@ -333,6 +347,18 @@ pub enum BackendTaskSuccessResult {
         amount: u64,
     },
     ProvingKeyReady,
+
+    /// Core RPC client and SDK were successfully rebuilt (e.g. after password change).
+    CoreClientReinitialized,
+
+    /// A new network context was created asynchronously during a network switch.
+    NetworkContextCreated {
+        network: Network,
+        context: Arc<AppContext>,
+        spv_started: bool,
+    },
+
+    /// Fresh DAPI node addresses discovered from the DCG service.
     DapiNodesDiscovered {
         network: Network,
         count: usize,
@@ -422,6 +448,52 @@ impl AppContext {
             BackendTask::WalletTask(wallet_task) => Ok(self.run_wallet_task(wallet_task).await?),
             BackendTask::ShieldedTask(shielded_task) => {
                 Ok(self.run_shielded_task(shielded_task).await?)
+            }
+            BackendTask::ReinitCoreClientAndSdk => {
+                Arc::clone(self).reinit_core_client_and_sdk()?;
+                Ok(BackendTaskSuccessResult::CoreClientReinitialized)
+            }
+            BackendTask::SwitchNetwork { network, start_spv } => {
+                // Create a new AppContext for the target network, reusing shared
+                // resources (db, subtasks, connection_status) from the current context.
+                let new_ctx = AppContext::new(
+                    self.data_dir.clone(),
+                    network,
+                    self.db.clone(),
+                    self.password_info.clone(),
+                    self.subtasks.clone(),
+                    self.connection_status.clone(),
+                    self.egui_ctx().clone(),
+                )
+                .ok_or(TaskError::NetworkContextCreationFailed { network })?;
+                // Persist the network choice so subsequent startups (GUI, CLI,
+                // MCP) all begin on the same network.
+                new_ctx
+                    .update_settings(crate::ui::RootScreenType::RootScreenNetworkChooser)
+                    .ok();
+
+                let spv_started = if start_spv {
+                    if new_ctx.core_backend_mode() != CoreBackendMode::Spv {
+                        new_ctx.set_core_backend_mode_volatile(CoreBackendMode::Spv);
+                    }
+                    match new_ctx.start_spv() {
+                        Ok(()) => {
+                            tracing::info!(?network, "SPV started after network switch");
+                            true
+                        }
+                        Err(e) => {
+                            tracing::warn!(?network, "SPV start failed after network switch: {e}");
+                            false
+                        }
+                    }
+                } else {
+                    false
+                };
+                Ok(BackendTaskSuccessResult::NetworkContextCreated {
+                    network,
+                    context: new_ctx,
+                    spv_started,
+                })
             }
             BackendTask::DiscoverDapiNodes { network } => {
                 let devnet_name = self

@@ -342,6 +342,9 @@ impl AsyncTool<DashMcpService> for FetchPlatformBalances {
         resolve::verify_network(&ctx, param.network.as_deref())?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
 
+        // SPV is required: DAPI proof verification needs quorum/masternode list
+        // data from the synced chain.  When a second client is running, SPV falls
+        // back to a tempdir and must sync before platform queries can succeed.
         resolve::ensure_spv_synced(&ctx).await?;
 
         let task = BackendTask::WalletTask(WalletTask::FetchPlatformAddressBalances { seed_hash });
@@ -351,10 +354,11 @@ impl AsyncTool<DashMcpService> for FetchPlatformBalances {
 
         match result {
             BackendTaskSuccessResult::PlatformAddressBalances { balances, .. } => {
+                let network = ctx.network();
                 let entries = balances
                     .into_iter()
                     .map(|(addr, (balance, nonce))| PlatformAddressBalance {
-                        address: addr.to_string(),
+                        address: addr.to_bech32m_string(network),
                         balance,
                         nonce,
                     })

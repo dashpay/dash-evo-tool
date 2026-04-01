@@ -11,7 +11,6 @@ use crate::backend_task::shielded::ShieldedTask;
 use crate::context::AppContext;
 use crate::context::connection_status::spv_phase_summary;
 use crate::model::amount::Amount;
-use crate::model::feature_gate::FeatureGate;
 use crate::model::wallet::{TransactionStatus, Wallet, WalletSeedHash, WalletTransaction};
 use crate::spv::{CoreBackendMode, SpvStatus};
 use crate::ui::components::component_trait::Component;
@@ -1089,7 +1088,7 @@ impl WalletsBalancesScreen {
             }
 
             // Dev-mode buttons: right-aligned, filling all remaining space
-            if FeatureGate::DeveloperMode.is_available(&self.app_context) {
+            if self.app_context.is_developer_mode() {
                 let remaining = ui.available_width();
                 ui.allocate_ui_with_layout(
                     egui::vec2(remaining, ui.min_size().y),
@@ -1173,8 +1172,8 @@ impl WalletsBalancesScreen {
         }
 
         // Add the Shielded tab only when the connected network supports it
-        // (all shielded state transitions present in the platform version).
-        if FeatureGate::Shielded.is_available(&self.app_context) {
+        // (protocol version >= 12, i.e., Platform v3.1+).
+        if self.app_context.supports_shielded() {
             tabs.push(AccountTab::Shielded);
         }
 
@@ -2010,7 +2009,7 @@ impl WalletsBalancesScreen {
                                             .color(DashColors::text_primary(dark_mode))
                                             .size(25.0),
                                     );
-                                    if FeatureGate::DeveloperMode.is_available(&self.app_context) {
+                                    if self.app_context.is_developer_mode() {
                                         ui.label(
                                             RichText::new("[DEV]")
                                                 .color(DashColors::text_secondary(dark_mode))
@@ -2882,9 +2881,11 @@ impl ScreenLike for WalletsBalancesScreen {
                     && let Ok(mut wallet) = selected.write()
                     && wallet.seed_hash() == seed_hash
                 {
-                    // Update balances in the wallet
-                    for (addr, (balance, nonce)) in balances {
-                        wallet.set_platform_address_info(addr, balance, nonce);
+                    // Convert PlatformAddress back to Core Address for wallet storage
+                    let network = self.app_context.network();
+                    for (platform_addr, (balance, nonce)) in balances {
+                        let core_addr = platform_addr.to_address_with_network(network);
+                        wallet.set_platform_address_info(core_addr, balance, nonce);
                     }
                 }
                 self.refresh_platform_sync_info_cache(&seed_hash);

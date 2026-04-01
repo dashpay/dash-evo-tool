@@ -771,117 +771,146 @@ pub enum Screen {
 
 impl Screen {
     pub fn change_context(&mut self, app_context: Arc<AppContext>) {
+        /// Assigns `app_context` for the majority of screen variants that simply
+        /// store it as a field.  Only screens with additional side-effects are
+        /// handled in the explicit match arms below.
+        macro_rules! set_ctx {
+            ($($variant:ident),+ $(,)?) => {
+                match self {
+                    $(Screen::$variant(screen) => screen.app_context = app_context,)+
+                    _ => {}
+                }
+            }
+        }
+
+        // Screens with side-effects on context change are handled first.
+        // Everything else falls through to the macro default assignment.
         match self {
-            Screen::IdentitiesScreen(screen) => screen.app_context = app_context,
-            Screen::DPNSScreen(screen) => screen.app_context = app_context,
-            Screen::AddExistingIdentityScreen(screen) => screen.app_context = app_context,
-            Screen::KeyInfoScreen(screen) => screen.app_context = app_context,
-            Screen::KeysScreen(screen) => screen.app_context = app_context,
-            Screen::WithdrawalScreen(screen) => screen.app_context = app_context,
-            Screen::TransitionVisualizerScreen(screen) => screen.app_context = app_context,
-            Screen::ContractVisualizerScreen(screen) => screen.app_context = app_context,
-            Screen::NetworkChooserScreen(screen) => screen.current_network = app_context.network,
-            Screen::AddKeyScreen(screen) => screen.app_context = app_context,
-            Screen::DocumentQueryScreen(screen) => screen.app_context = app_context,
-            Screen::AddNewIdentityScreen(screen) => screen.app_context = app_context,
-            Screen::RegisterDpnsNameScreen(screen) => screen.app_context = app_context,
-            Screen::RegisterDataContractScreen(screen) => screen.app_context = app_context,
-            Screen::UpdateDataContractScreen(screen) => screen.app_context = app_context,
-            Screen::DocumentActionScreen(screen) => screen.app_context = app_context,
-            Screen::GroupActionsScreen(screen) => screen.app_context = app_context,
+            Screen::NetworkChooserScreen(screen) => {
+                let network = app_context.network;
+                screen.network_contexts.insert(network, app_context);
+                screen.current_network = network;
+                return;
+            }
             Screen::AddNewWalletScreen(screen) => {
                 screen.app_context = app_context;
                 screen.reset_core_wallets_cache();
+                return;
             }
             Screen::TransferScreen(screen) => {
                 screen.app_context = app_context;
                 screen.invalidate_address_input();
+                return;
             }
-            Screen::TopUpIdentityScreen(screen) => screen.app_context = app_context,
             Screen::WalletsBalancesScreen(screen) => {
                 screen.app_context = app_context;
                 screen.reset_pending_list_state();
                 screen.update_selected_wallet_for_network();
                 screen.invalidate_address_inputs();
+                return;
             }
             Screen::ImportMnemonicScreen(screen) => {
                 screen.app_context = app_context;
                 screen.reset_core_wallets_cache();
+                return;
             }
             Screen::WalletSendScreen(screen) => {
                 screen.app_context = app_context;
                 screen.invalidate_address_input();
+                return;
             }
-            Screen::SingleKeyWalletSendScreen(screen) => screen.app_context = app_context,
-            Screen::ProofLogScreen(screen) => screen.app_context = app_context,
-            Screen::AddContractsScreen(screen) => screen.app_context = app_context,
-            Screen::ProofVisualizerScreen(screen) => screen.app_context = app_context,
             Screen::MasternodeListDiffScreen(screen) => {
                 let old_net = screen.app_context.network;
                 if old_net != app_context.network {
-                    // Switch context and clear state to avoid cross-network bleed
                     screen.app_context = app_context.clone();
                     screen.clear();
                 } else {
                     screen.app_context = app_context;
                 }
+                return;
             }
-            Screen::DocumentVisualizerScreen(screen) => screen.app_context = app_context,
-            Screen::PlatformInfoScreen(screen) => screen.app_context = app_context,
-            Screen::GroveSTARKScreen(screen) => screen.app_context = app_context,
             Screen::AddressBalanceScreen(screen) => {
                 screen.app_context = app_context;
                 screen.invalidate_address_input();
+                return;
             }
-
-            // Token Screens
-            Screen::TokensScreen(screen) => screen.app_context = app_context,
-            Screen::TransferTokensScreen(screen) => screen.app_context = app_context,
-            Screen::MintTokensScreen(screen) => screen.app_context = app_context,
-            Screen::BurnTokensScreen(screen) => screen.app_context = app_context,
-            Screen::DestroyFrozenFundsScreen(screen) => screen.app_context = app_context,
-            Screen::FreezeTokensScreen(screen) => screen.app_context = app_context,
-            Screen::UnfreezeTokensScreen(screen) => screen.app_context = app_context,
-            Screen::PauseTokensScreen(screen) => screen.app_context = app_context,
-            Screen::ResumeTokensScreen(screen) => screen.app_context = app_context,
-            Screen::ClaimTokensScreen(screen) => screen.app_context = app_context,
-            Screen::ViewTokenClaimsScreen(screen) => screen.app_context = app_context,
-            Screen::UpdateTokenConfigScreen(screen) => screen.app_context = app_context,
-            Screen::AddTokenById(screen) => screen.app_context = app_context,
-            Screen::PurchaseTokenScreen(screen) => screen.app_context = app_context,
-            Screen::SetTokenPriceScreen(screen) => screen.app_context = app_context,
-            Screen::AssetLockDetailScreen(screen) => screen.app_context = app_context,
-            Screen::CreateAssetLockScreen(screen) => screen.app_context = app_context,
-
-            // DashPay Screens
             Screen::DashPayScreen(screen) => {
                 screen.app_context = app_context.clone();
                 screen.contacts_list.app_context = app_context.clone();
                 screen.contacts_list.contact_requests.app_context = app_context.clone();
                 screen.profile_screen.app_context = app_context.clone();
                 screen.payment_history.app_context = app_context;
+                return;
             }
-            Screen::DashPayAddContactScreen(screen) => screen.app_context = app_context,
-            Screen::DashPayContactDetailsScreen(screen) => screen.app_context = app_context,
-            Screen::DashPayContactProfileViewerScreen(screen) => screen.app_context = app_context,
-            Screen::DashPaySendPaymentScreen(screen) => screen.app_context = app_context,
-            Screen::DashPayContactInfoEditorScreen(screen) => screen.app_context = app_context,
-            Screen::DashPayQRGeneratorScreen(screen) => screen.app_context = app_context,
-            Screen::DashPayProfileSearchScreen(screen) => screen.app_context = app_context,
-            // Shielded screens
             Screen::ShieldScreen(screen) => {
-                screen.app_context = app_context.clone();
+                screen.app_context = app_context;
                 screen.invalidate_address_input();
+                return;
             }
             Screen::ShieldedSendScreen(screen) => {
-                screen.app_context = app_context.clone();
+                screen.app_context = app_context;
                 screen.invalidate_address_input();
+                return;
             }
             Screen::UnshieldCreditsScreen(screen) => {
-                screen.app_context = app_context.clone();
+                screen.app_context = app_context;
                 screen.invalidate_address_input();
+                return;
             }
+            _ => {}
         }
+
+        // Simple context assignment for all remaining screens.
+        set_ctx!(
+            IdentitiesScreen,
+            DPNSScreen,
+            AddExistingIdentityScreen,
+            KeyInfoScreen,
+            KeysScreen,
+            WithdrawalScreen,
+            TransitionVisualizerScreen,
+            ContractVisualizerScreen,
+            AddKeyScreen,
+            DocumentQueryScreen,
+            AddNewIdentityScreen,
+            RegisterDpnsNameScreen,
+            RegisterDataContractScreen,
+            UpdateDataContractScreen,
+            DocumentActionScreen,
+            GroupActionsScreen,
+            TopUpIdentityScreen,
+            SingleKeyWalletSendScreen,
+            ProofLogScreen,
+            AddContractsScreen,
+            ProofVisualizerScreen,
+            DocumentVisualizerScreen,
+            PlatformInfoScreen,
+            GroveSTARKScreen,
+            TokensScreen,
+            TransferTokensScreen,
+            MintTokensScreen,
+            BurnTokensScreen,
+            DestroyFrozenFundsScreen,
+            FreezeTokensScreen,
+            UnfreezeTokensScreen,
+            PauseTokensScreen,
+            ResumeTokensScreen,
+            ClaimTokensScreen,
+            ViewTokenClaimsScreen,
+            UpdateTokenConfigScreen,
+            AddTokenById,
+            PurchaseTokenScreen,
+            SetTokenPriceScreen,
+            AssetLockDetailScreen,
+            CreateAssetLockScreen,
+            DashPayAddContactScreen,
+            DashPayContactDetailsScreen,
+            DashPayContactProfileViewerScreen,
+            DashPaySendPaymentScreen,
+            DashPayContactInfoEditorScreen,
+            DashPayQRGeneratorScreen,
+            DashPayProfileSearchScreen,
+        );
     }
 }
 

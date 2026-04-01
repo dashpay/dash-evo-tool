@@ -438,13 +438,26 @@ impl AppContext {
     }
 
     pub fn set_core_backend_mode(self: &Arc<Self>, mode: CoreBackendMode) {
+        self.set_core_backend_mode_inner(mode, true);
+    }
+
+    /// Switch the backend mode in-memory only, without persisting to the DB.
+    /// Used by headless (MCP/CLI) mode to force SPV without overwriting the
+    /// GUI's saved preference.
+    pub fn set_core_backend_mode_volatile(self: &Arc<Self>, mode: CoreBackendMode) {
+        self.set_core_backend_mode_inner(mode, false);
+    }
+
+    fn set_core_backend_mode_inner(self: &Arc<Self>, mode: CoreBackendMode, persist: bool) {
         self.core_backend_mode
             .store(mode.as_u8(), Ordering::Relaxed);
 
-        // Persist the mode to the database (hold the guard to ensure cache invalidation)
-        let _guard = self.invalidate_settings_cache();
-        if let Err(e) = self.db.update_core_backend_mode(mode.as_u8()) {
-            tracing::error!("Failed to persist core backend mode: {}", e);
+        if persist {
+            // Persist the mode to the database (hold the guard to ensure cache invalidation)
+            let _guard = self.invalidate_settings_cache();
+            if let Err(e) = self.db.update_core_backend_mode(mode.as_u8()) {
+                tracing::error!("Failed to persist core backend mode: {}", e);
+            }
         }
 
         // Switch SDK context provider to match the selected backend.
@@ -495,9 +508,30 @@ impl AppContext {
     }
 
     /// Update the cached platform protocol version from epoch info.
-    pub fn set_platform_protocol_version(&self, version: u32) {
-        self.platform_protocol_version
-            .store(version, Ordering::Relaxed);
+    ///
+    /// When the version crosses the shielded threshold for the first time,
+    /// retroactively initializes shielded wallets that were unlocked before
+    /// the protocol version was known.
+    pub fn set_platform_protocol_version(self: &Arc<Self>, version: u32) {
+        let old = self
+            .platform_protocol_version
+            .swap(version, Ordering::Relaxed);
+
+        if old < Self::SHIELDED_MIN_PROTOCOL_VERSION
+            && version >= Self::SHIELDED_MIN_PROTOCOL_VERSION
+        {
+            self.init_missing_shielded_wallets();
+        }
+    }
+
+    /// Minimum protocol version required for shielded (ZK) transactions.
+    pub const SHIELDED_MIN_PROTOCOL_VERSION: u32 = 12;
+
+    /// Whether the connected network supports shielded (ZK) transactions.
+    /// Returns `true` when the network's protocol version >= 12.
+    /// Returns `false` when the version hasn't been fetched yet (0).
+    pub fn supports_shielded(&self) -> bool {
+        self.platform_protocol_version() >= Self::SHIELDED_MIN_PROTOCOL_VERSION
     }
 
     /// Get a fee estimator configured with the cached fee multiplier.
@@ -552,9 +586,18 @@ impl AppContext {
 
         // Note: developer_mode is now global and managed separately
 
-        // 2. Rebuild the RPC client (cookie auth → user/pass fallback)
+        // 2. Rebuild the RPC client with the new password
         let addr = format!("http://{}:{}", cfg.rpc_host(), cfg.rpc_port(self.network));
-        let new_client = Self::create_core_rpc_client(&addr, self.network, &cfg.devnet_name, &cfg)?;
+        let new_client = Client::new(
+            &addr,
+            Auth::UserPass(
+                cfg.core_rpc_user.clone().unwrap_or_default(),
+                cfg.core_rpc_password.clone().unwrap_or_default(),
+            ),
+        )
+        .map_err(|e| TaskError::RpcProviderCreationFailed {
+            detail: e.to_string(),
+        })?;
 
         // 3. Parse DAPI addresses from config and rebuild the SDK
         let address_list = match &cfg.dapi_addresses {

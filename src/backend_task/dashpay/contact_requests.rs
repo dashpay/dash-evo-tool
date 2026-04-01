@@ -518,6 +518,7 @@ pub async fn send_contact_request_with_proof(
 }
 
 async fn resolve_username_to_identity(sdk: &Sdk, username: &str) -> Result<Identity, TaskError> {
+    let username = username.trim();
     // Parse username (e.g., "alice.dash" -> "alice")
     let name = username.split('.').next().ok_or_else(|| {
         TaskError::DashPay(DashPayError::InvalidUsername {

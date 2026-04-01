@@ -451,8 +451,12 @@ pub async fn search_profiles(
         ));
     }
 
-    // Normalize the search query (DPNS uses lowercase normalized labels)
-    let normalized_query = query_trimmed.to_lowercase();
+    // Normalize the search query using DPNS homograph-safe conversion
+    // (replaces o→0, i/l→1, then lowercases). Plain to_lowercase() won't
+    // match normalizedLabel on-chain which uses this conversion.
+    let query_without_suffix = query_trimmed.strip_suffix(".dash").unwrap_or(query_trimmed);
+    let normalized_query =
+        dash_sdk::platform::dpns_usernames::convert_to_homograph_safe_chars(query_without_suffix);
 
     // Search DPNS for usernames starting with the query
     let mut dpns_query =

@@ -18,8 +18,7 @@ const DASH_SUFFIX: &str = ".dash";
 ///
 /// The returned string is ready for use as a `normalizedLabel` query value.
 pub fn normalize_dpns_label(input: &str) -> String {
-    let trimmed = input.trim();
-    let label = strip_dash_suffix(trimmed);
+    let label = strip_dash_suffix(input);
     convert_to_homograph_safe_chars(label)
 }
 
@@ -27,12 +26,16 @@ pub fn normalize_dpns_label(input: &str) -> String {
 ///
 /// Returns the bare label portion, or the full input if no suffix is present.
 pub fn strip_dash_suffix(input: &str) -> &str {
-    if input.len() > DASH_SUFFIX.len()
-        && input[input.len() - DASH_SUFFIX.len()..].eq_ignore_ascii_case(DASH_SUFFIX)
+    let trimmed = input.trim();
+    let suffix_start = trimmed.len().saturating_sub(DASH_SUFFIX.len());
+    if trimmed.len() > DASH_SUFFIX.len()
+        && trimmed
+            .get(suffix_start..)
+            .is_some_and(|tail| tail.eq_ignore_ascii_case(DASH_SUFFIX))
     {
-        &input[..input.len() - DASH_SUFFIX.len()]
+        &trimmed[..suffix_start]
     } else {
-        input
+        trimmed
     }
 }
 
@@ -40,8 +43,11 @@ pub fn strip_dash_suffix(input: &str) -> &str {
 /// case-insensitive) rather than a bare label or identity ID.
 pub fn has_dash_suffix(input: &str) -> bool {
     let trimmed = input.trim();
+    let suffix_start = trimmed.len().saturating_sub(DASH_SUFFIX.len());
     trimmed.len() > DASH_SUFFIX.len()
-        && trimmed[trimmed.len() - DASH_SUFFIX.len()..].eq_ignore_ascii_case(DASH_SUFFIX)
+        && trimmed
+            .get(suffix_start..)
+            .is_some_and(|tail| tail.eq_ignore_ascii_case(DASH_SUFFIX))
 }
 
 #[cfg(test)]
@@ -96,5 +102,8 @@ mod tests {
         assert_eq!(strip_dash_suffix("alice"), "alice");
         assert_eq!(strip_dash_suffix("a.dash"), "a"); // valid: label "a"
         assert_eq!(strip_dash_suffix(".dash"), ".dash"); // no label, len == 5
+        // Non-ASCII: must not panic even though byte offset isn't a char boundary
+        assert_eq!(strip_dash_suffix("ünïcödë"), "ünïcödë");
+        assert_eq!(strip_dash_suffix("  alice  "), "alice"); // trims whitespace
     }
 }

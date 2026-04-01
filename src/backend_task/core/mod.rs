@@ -33,7 +33,7 @@ use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_builder:
     BuilderError, TransactionBuilder,
 };
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
-use dash_sdk::dpp::key_wallet_manager::manager::{WalletError, WalletId, WalletManager};
+use dash_sdk::dpp::key_wallet_manager::{WalletError, WalletId, WalletManager};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
@@ -939,7 +939,12 @@ impl AppContext {
 
         for (input, (sighash, address)) in tx_signed.input.iter_mut().zip(signing_data.into_iter())
         {
-            let digest: [u8; 32] = sighash.into();
+            let digest: [u8; 32] =
+                sighash[..]
+                    .try_into()
+                    .map_err(|_| TaskError::WalletPaymentFailed {
+                        detail: "Sighash digest has unexpected length".to_string(),
+                    })?;
             let message = Message::from_digest(digest);
 
             let addr_info = account.get_address_info(&address).ok_or_else(|| {

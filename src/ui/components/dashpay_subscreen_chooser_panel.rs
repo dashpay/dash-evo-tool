@@ -15,11 +15,10 @@ pub fn add_dashpay_subscreen_chooser_panel(
     let mut action = AppAction::None;
     let dark_mode = ctx.style().visuals.dark_mode;
 
-    // Build subscreens list - Payment History requires SPV which is dev mode only
+    // Build subscreens list - Payment History is experimental (developer mode only)
     let mut subscreens = vec![DashPaySubscreen::Profile, DashPaySubscreen::Contacts];
 
-    // Only show Payment History when SPV backend is available (currently requires developer mode)
-    if FeatureGate::SpvBackend.is_available(app_context) {
+    if FeatureGate::DeveloperMode.is_available(app_context) {
         subscreens.push(DashPaySubscreen::Payments);
     }
 

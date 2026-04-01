@@ -1173,7 +1173,7 @@ impl WalletsBalancesScreen {
         }
 
         // Add the Shielded tab only when the connected network supports it
-        // (protocol version >= 12, i.e., Platform v3.1+).
+        // (all shielded state transitions present in the platform version).
         if FeatureGate::Shielded.is_available(&self.app_context) {
             tabs.push(AccountTab::Shielded);
         }
@@ -2010,14 +2010,13 @@ impl WalletsBalancesScreen {
                                             .color(DashColors::text_primary(dark_mode))
                                             .size(25.0),
                                     );
-                                    ui.add_visible(
-                                        FeatureGate::DeveloperMode.is_available(&self.app_context),
-                                        egui::Label::new(
+                                    if FeatureGate::DeveloperMode.is_available(&self.app_context) {
+                                        ui.label(
                                             RichText::new("[DEV]")
                                                 .color(DashColors::text_secondary(dark_mode))
                                                 .size(12.0),
-                                        ),
-                                    );
+                                        );
+                                    }
                                 });
 
                                 // Total balance line

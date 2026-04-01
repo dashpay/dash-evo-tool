@@ -202,6 +202,7 @@ impl AppState {
         let data_dir = app_user_data_dir_path()?;
         ensure_data_dir_exists(&data_dir)?;
         ensure_env_file(&data_dir);
+
         initialize_logger();
         let db_file_path = data_file_path(&data_dir, "data.db")?;
         let db = Arc::new(Database::new(&db_file_path)?);
@@ -218,6 +219,7 @@ impl AppState {
         let data_dir = app_user_data_dir_path()?;
         ensure_data_dir_exists(&data_dir)?;
         ensure_env_file(&data_dir);
+
         let db = Arc::new(
             crate::database::test_helpers::create_test_database()
                 .map_err(|e| format!("Failed to create test database: {}", e))?,
@@ -238,43 +240,25 @@ impl AppState {
 
         let subtasks = Arc::new(TaskManager::new());
         let connection_status = Arc::new(ConnectionStatus::new());
-        let mainnet_app_context = AppContext::new(
-            data_dir.clone(),
-            Network::Mainnet,
-            db.clone(),
-            password_info.clone(),
-            subtasks.clone(),
-            connection_status.clone(),
-            ctx.clone(),
-        )
-        .ok_or("Failed to create AppContext for mainnet. Check your Dash configuration.")?;
-        let testnet_app_context = AppContext::new(
-            data_dir.clone(),
-            Network::Testnet,
-            db.clone(),
-            password_info.clone(),
-            subtasks.clone(),
-            connection_status.clone(),
-            ctx.clone(),
-        );
-        let devnet_app_context = AppContext::new(
-            data_dir.clone(),
-            Network::Devnet,
-            db.clone(),
-            password_info.clone(),
-            subtasks.clone(),
-            connection_status.clone(),
-            ctx.clone(),
-        );
-        let local_app_context = AppContext::new(
-            data_dir,
-            Network::Regtest,
-            db.clone(),
-            password_info,
-            subtasks.clone(),
-            connection_status.clone(),
-            ctx.clone(),
-        );
+
+        // Build a helper to create AppContext for a given network.
+        let make_context = |network: Network| -> Option<Arc<AppContext>> {
+            AppContext::new(
+                data_dir.clone(),
+                network,
+                db.clone(),
+                password_info.clone(),
+                subtasks.clone(),
+                connection_status.clone(),
+                ctx.clone(),
+            )
+        };
+
+        let mainnet_app_context = make_context(Network::Mainnet)
+            .ok_or("Failed to create AppContext for mainnet. Check your Dash configuration.")?;
+        let testnet_app_context = make_context(Network::Testnet);
+        let devnet_app_context = make_context(Network::Devnet);
+        let local_app_context = make_context(Network::Regtest);
 
         // load fonts
         ctx.set_fonts(crate::bundled::fonts().expect("failed to load fonts"));
@@ -972,14 +956,33 @@ impl AppState {
 
     pub fn change_network(&mut self, network: Network) {
         if !self.context_available_for_network(network) {
+            let network_name = match network {
+                Network::Mainnet => "Mainnet",
+                Network::Testnet => "Testnet",
+                Network::Devnet => "Devnet",
+                Network::Regtest => "Local",
+                _ => "Unknown",
+            };
             tracing::error!(
                 "Cannot switch to {:?}: network context not available. Staying on current network.",
                 network
+            );
+            // Use the current (still active) network's context — egui_ctx is shared
+            // but this avoids a misleading mainnet_app_context reference when the
+            // user is on a different network.
+            let ctx = self.current_app_context();
+            MessageBanner::set_global(
+                ctx.egui_ctx(),
+                format!(
+                    "Could not connect to {network_name}. Check your network settings and retry."
+                ),
+                MessageType::Error,
             );
             return;
         }
 
         self.chosen_network = network;
+
         let app_context = self.current_app_context().clone();
 
         // Update MCP server's context to follow network switch

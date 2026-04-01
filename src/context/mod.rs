@@ -562,18 +562,9 @@ impl AppContext {
 
         // Note: developer_mode is now global and managed separately
 
-        // 2. Rebuild the RPC client with the new password
+        // 2. Rebuild the RPC client (cookie auth → user/pass fallback)
         let addr = format!("http://{}:{}", cfg.rpc_host(), cfg.rpc_port(self.network));
-        let new_client = Client::new(
-            &addr,
-            Auth::UserPass(
-                cfg.core_rpc_user.clone().unwrap_or_default(),
-                cfg.core_rpc_password.clone().unwrap_or_default(),
-            ),
-        )
-        .map_err(|e| TaskError::RpcProviderCreationFailed {
-            detail: e.to_string(),
-        })?;
+        let new_client = Self::create_core_rpc_client(&addr, self.network, &cfg.devnet_name, &cfg)?;
 
         // 3. Parse DAPI addresses from config and rebuild the SDK
         let address_list = match &cfg.dapi_addresses {

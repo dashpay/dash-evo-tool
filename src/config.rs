@@ -68,13 +68,13 @@ impl NetworkConfig {
     /// - Mainnet: 9998
     /// - Testnet: 19998
     /// - Devnet: 29998
-    /// - Regtest: 19898
+    /// - Regtest: 20302 (dashmate default, matches `.env.example`)
     pub fn default_rpc_port(network: Network) -> u16 {
         match network {
             Network::Mainnet => 9998,
             Network::Testnet => 19998,
             Network::Devnet => 29998,
-            Network::Regtest => 19898,
+            Network::Regtest => 20302,
             _ => 9998,
         }
     }

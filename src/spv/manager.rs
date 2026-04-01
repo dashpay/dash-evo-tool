@@ -1478,9 +1478,9 @@ impl SpvManager {
     fn primary_peer_socket(&self) -> Option<std::net::SocketAddr> {
         let config = self.config.read().ok()?;
 
-        let host = config
+        let host: String = config
             .core_host
-            .as_deref()
+            .clone()
             .or_else(|| Self::first_dapi_host(config.dapi_addresses.as_deref()?))?;
         let port = match self.network {
             Network::Mainnet => 9999,
@@ -1496,15 +1496,14 @@ impl SpvManager {
 
     /// Extract the host from the first DAPI address URL (e.g. `https://1.2.3.4:443` → `1.2.3.4`).
     ///
+    /// Uses `http::Uri` for correct URL parsing instead of manual string splitting.
     /// Returns `None` if the string is empty or the first URL cannot be parsed.
-    fn first_dapi_host(dapi_addresses: &str) -> Option<&str> {
+    fn first_dapi_host(dapi_addresses: &str) -> Option<String> {
+        use dash_sdk::dapi_client::Uri;
+
         let first_url = dapi_addresses.split(',').next()?.trim();
-        // DAPI addresses are URLs like "https://host:port" — strip the scheme and port.
-        let after_scheme = first_url
-            .strip_prefix("https://")
-            .or_else(|| first_url.strip_prefix("http://"))?;
-        // Take everything before the port separator
-        Some(after_scheme.split(':').next()?.trim()).filter(|h| !h.is_empty())
+        let uri: Uri = first_url.parse().ok()?;
+        uri.host().map(|h| h.to_string())
     }
 }
 

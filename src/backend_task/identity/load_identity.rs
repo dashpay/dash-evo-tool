@@ -18,17 +18,14 @@ use dash_sdk::Sdk;
 use dash_sdk::dashcore_rpc::dashcore::PrivateKey;
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dpp::dashcore::hashes::Hash;
-use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::identifier::MasternodeIdentifiers;
 use dash_sdk::dpp::identity::KeyType;
 use dash_sdk::dpp::identity::SecurityLevel;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, KeyDerivationType};
-use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::drive::query::{WhereClause, WhereOperator};
-use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identifier, Identity};
+use dash_sdk::platform::{Fetch, Identifier, Identity};
 use egui::ahash::HashMap;
 use std::collections::BTreeMap;
 use std::convert::TryInto;
@@ -315,43 +312,15 @@ impl AppContext {
         }
 
         // Fetch DPNS names using SDK
-        let dpns_names_document_query = DocumentQuery {
-            data_contract: self.dpns_contract.clone(),
-            document_type_name: "domain".to_string(),
-            where_clauses: vec![WhereClause {
-                field: "records.identity".to_string(),
-                operator: WhereOperator::Equal,
-                value: Value::Identifier(identity_id.into()),
-            }],
-            order_by_clauses: vec![],
-            limit: 100,
-            start: None,
-        };
-
-        let maybe_owned_dpns_names = Document::fetch_many(sdk, dpns_names_document_query)
+        let maybe_owned_dpns_names = sdk
+            .get_dpns_usernames_by_identity(identity_id, None)
             .await
-            .map(|document_map| {
-                document_map
-                    .values()
-                    .filter_map(|maybe_doc| {
-                        maybe_doc.as_ref().and_then(|doc| {
-                            let name = doc
-                                .get("label")
-                                .map(|label| label.to_str().unwrap_or_default());
-                            let acquired_at = doc
-                                .created_at()
-                                .into_iter()
-                                .chain(doc.transferred_at())
-                                .max();
-
-                            match (name, acquired_at) {
-                                (Some(name), Some(acquired_at)) => Some(DPNSNameInfo {
-                                    name: name.to_string(),
-                                    acquired_at,
-                                }),
-                                _ => None,
-                            }
-                        })
+            .map(|dpns_usernames| {
+                dpns_usernames
+                    .into_iter()
+                    .map(|u| DPNSNameInfo {
+                        name: u.label,
+                        acquired_at: 0,
                     })
                     .collect::<Vec<DPNSNameInfo>>()
             })

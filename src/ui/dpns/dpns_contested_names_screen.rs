@@ -868,7 +868,18 @@ impl DPNSScreen {
                 }
             }
             SortColumn::EndingTime => {
-                let order = a.1.acquired_at.cmp(&b.1.acquired_at);
+                // Treat 0 (unknown) as maximum so unknowns sort to the end
+                let key_a = if a.1.acquired_at == 0 {
+                    u64::MAX
+                } else {
+                    a.1.acquired_at
+                };
+                let key_b = if b.1.acquired_at == 0 {
+                    u64::MAX
+                } else {
+                    b.1.acquired_at
+                };
+                let order = key_a.cmp(&key_b);
                 if self.sort_order == SortOrder::Descending {
                     order.reverse()
                 } else {
@@ -936,12 +947,16 @@ impl DPNSScreen {
                                         .color(DashColors::text_primary(dark_mode)),
                                 );
                             });
-                            let dt = DateTime::from_timestamp(
-                                dpns_info.acquired_at as i64 / 1000,
-                                ((dpns_info.acquired_at % 1000) * 1_000_000) as u32,
-                            )
-                            .map(|dt| dt.to_string())
-                            .unwrap_or_else(|| "Invalid timestamp".to_string());
+                            let dt = if dpns_info.acquired_at == 0 {
+                                "Unknown".to_string()
+                            } else {
+                                DateTime::from_timestamp(
+                                    dpns_info.acquired_at as i64 / 1000,
+                                    ((dpns_info.acquired_at % 1000) * 1_000_000) as u32,
+                                )
+                                .map(|dt| dt.to_string())
+                                .unwrap_or_else(|| "Invalid timestamp".to_string())
+                            };
                             row.col(|ui| {
                                 let dark_mode = ui.ctx().style().visuals.dark_mode;
                                 ui.label(

@@ -188,7 +188,8 @@ pub async fn send_contact_request_with_proof(
     qr_auto_accept: Option<AutoAcceptProofData>,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     // Step 1: Resolve the recipient identity
-    let to_identity = if to_username_or_id.ends_with(".dash") {
+    let to_username_or_id = to_username_or_id.trim().to_string();
+    let to_identity = if to_username_or_id.to_lowercase().ends_with(".dash") {
         // It's a complete username, resolve via DPNS
         resolve_username_to_identity(sdk, &to_username_or_id).await?
     } else {

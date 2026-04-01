@@ -16,9 +16,21 @@ impl AppContext {
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let refreshed_identity_id = qualified_identity.identity.id();
-        // Fetch the latest state of the identity from Platform
-        let maybe_refreshed_identity =
-            Identity::fetch_by_identifier(sdk, refreshed_identity_id).await?;
+
+        // Delegate the Platform fetch to platform-wallet when available,
+        // falling back to direct SDK call otherwise.
+        let maybe_platform_wallet = self
+            .platform_wallet_for_identity(&qualified_identity)
+            .ok();
+
+        let maybe_refreshed_identity = if let Some(ref pw) = maybe_platform_wallet {
+            match pw.identity().refresh_identity_with_signer(&refreshed_identity_id).await {
+                Ok(identity) => Some(identity),
+                Err(_) => None,
+            }
+        } else {
+            Identity::fetch_by_identifier(sdk, refreshed_identity_id).await?
+        };
 
         // Get local identities
         let mut local_qualified_identities = self.load_local_qualified_identities()?;

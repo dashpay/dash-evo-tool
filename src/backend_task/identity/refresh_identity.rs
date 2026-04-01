@@ -28,7 +28,12 @@ impl AppContext {
                 .await
             {
                 Ok(identity) => Some(identity),
-                Err(_) => None,
+                Err(e) => {
+                    // Platform wallet refresh failed — fall back to direct SDK fetch
+                    // rather than silently marking identity as NotFound.
+                    tracing::warn!("Platform wallet refresh failed, falling back to SDK: {}", e);
+                    Identity::fetch_by_identifier(sdk, refreshed_identity_id).await?
+                }
             }
         } else {
             Identity::fetch_by_identifier(sdk, refreshed_identity_id).await?

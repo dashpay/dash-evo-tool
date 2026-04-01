@@ -247,14 +247,18 @@ pub async fn send_contact_request_with_proof(
             }
             .into());
         }
-        // We need the account_reference for the proof, but platform-wallet
-        // uses account_index=0 internally. Use 0 to match.
+        // NOTE: Behavior change from old code. Previously account_reference was
+        // calculated via DIP-15 calculate_account_reference(). Now platform-wallet's
+        // send_contact_request() uses account_index (0) as account_reference in
+        // the document. The auto-accept proof must use the same value to match.
+        // QR auto-accept codes are session-scoped, so old QR codes from previous
+        // app versions won't be valid anyway (they expire).
         let proof = create_auto_accept_proof_bytes_with_key(
             qr.expires_at,
             &qr.proof_key,
             &identity.identity.id(),
             &to_identity_id,
-            0, // account_reference matches platform-wallet's account_index
+            0, // Must match platform-wallet's account_reference (= account_index = 0)
         )
         .map_err(|e| TaskError::EncryptionError { detail: e })?;
         tracing::debug!(

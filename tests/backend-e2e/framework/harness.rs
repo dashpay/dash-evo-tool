@@ -106,10 +106,10 @@ impl BackendTestContext {
         app_context.set_core_backend_mode(CoreBackendMode::Spv);
         app_context.start_spv().expect("Failed to start SPV");
 
-        // Wait for SPV peers (120s — initial sync can take 60-90s on slow connections)
-        wait::wait_for_spv_peers(&app_context, Duration::from_secs(120))
+        // Wait for SPV peers
+        wait::wait_for_spv_peers(&app_context, Duration::from_secs(60))
             .await
-            .expect("SPV failed to connect to any peers within 120s");
+            .expect("SPV failed to connect to any peers within 60s");
         tracing::info!("SPV connected to peers");
 
         // E2E_WALLET_MNEMONIC is required

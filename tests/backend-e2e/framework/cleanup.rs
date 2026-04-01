@@ -60,8 +60,10 @@ pub async fn cleanup_test_wallets(
         };
 
         // Wait briefly for SPV to sync this wallet's balance.
+        // Keep this short — with many orphaned wallets the cumulative wait
+        // delays test startup significantly (14 wallets × 10s = 2+ min).
         let _ =
-            wait::wait_for_spendable_balance(app_context, hash, 1, Duration::from_secs(10)).await;
+            wait::wait_for_spendable_balance(app_context, hash, 1, Duration::from_secs(1)).await;
 
         let balance = {
             let wallet = wallet_arc.read().expect("wallet lock");

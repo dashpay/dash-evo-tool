@@ -2,14 +2,22 @@ use super::AppContext;
 use super::get_transaction_info;
 use crate::backend_task::error::TaskError;
 use crate::database::is_unique_constraint_violation;
+use crate::model::qualified_identity::encrypted_key_storage::{
+    PrivateKeyData as QIPrivateKeyData, WalletDerivationPath,
+};
+use crate::model::qualified_identity::{PrivateKeyTarget, QualifiedIdentity};
 use crate::model::wallet::{
     AddressInfo as WalletAddressInfo, DerivationPathHelpers, DerivationPathReference,
     DerivationPathType, TransactionStatus, Wallet, WalletSeedHash, WalletTransaction,
 };
-use crate::platform_wallet_bridge::PlatformWallet;
+use crate::platform_wallet_bridge::{
+    ManagedDpnsNameInfo, ManagedIdentityStatus, ManagedKeyStorage, ManagedPrivateKeyData,
+    PlatformWallet,
+};
 use crate::spv::{AssetLockFinalityEvent, CoreBackendMode, SpvManager};
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{Address, Network};
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::key_wallet::Network as WalletNetwork;
 use dash_sdk::dpp::key_wallet::account::AccountType;
 use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
@@ -19,6 +27,7 @@ use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::{
 };
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
+use zeroize::Zeroizing;
 
 impl AppContext {
     pub fn spv_manager(&self) -> &Arc<SpvManager> {
@@ -431,6 +440,10 @@ impl AppContext {
             self.bootstrap_wallet_addresses(wallet);
             self.handle_wallet_unlocked(wallet);
         }
+
+        // Sync all DB identities to platform-wallet IdentityManagers so they
+        // are available for DashPay and other platform-wallet operations.
+        self.sync_all_identities_to_platform_wallets();
 
         // Auto-refresh UTXOs from Core on startup so balances are current
         // without requiring the user to manually click Refresh (fixes GH#522).
@@ -1088,6 +1101,234 @@ impl AppContext {
         }
 
         Ok(())
+    }
+
+    // -----------------------------------------------------------------
+    // Platform-wallet IdentityManager synchronization
+    // -----------------------------------------------------------------
+
+    /// Sync a `QualifiedIdentity` to the platform-wallet's `IdentityManager`.
+    ///
+    /// Called after every insert/update so that the in-memory IdentityManager
+    /// stays in sync with the SQLite database. This is best-effort: if the
+    /// platform wallet is not available (e.g. external import, wallet locked)
+    /// or the lock cannot be acquired, the error is logged and the caller
+    /// is not affected.
+    pub(crate) fn sync_identity_to_platform_wallet(
+        &self,
+        qualified_identity: &QualifiedIdentity,
+    ) {
+        // 1. Resolve the platform wallet for this identity
+        let (seed_hash, _wallet_index) = match qualified_identity.determine_wallet_info() {
+            Ok(Some(info)) => info,
+            Ok(None) => {
+                // No wallet association — external import or no derivation path
+                tracing::trace!(
+                    identity = %qualified_identity.identity.id(),
+                    "Skipping platform-wallet sync: no wallet association"
+                );
+                return;
+            }
+            Err(e) => {
+                tracing::debug!(
+                    identity = %qualified_identity.identity.id(),
+                    error = %e,
+                    "Skipping platform-wallet sync: cannot determine wallet info"
+                );
+                return;
+            }
+        };
+
+        let platform_wallet = match self.get_platform_wallet(&seed_hash) {
+            Some(pw) => pw,
+            None => {
+                tracing::trace!(
+                    identity = %qualified_identity.identity.id(),
+                    seed = %hex::encode(seed_hash),
+                    "Skipping platform-wallet sync: platform wallet not registered"
+                );
+                return;
+            }
+        };
+
+        // 2. Access the identity_manager (tokio RwLock, use try_write)
+        let identity_wallet = platform_wallet.identity();
+        let mut manager = match identity_wallet.try_identity_manager_mut() {
+            Some(guard) => guard,
+            None => {
+                tracing::debug!(
+                    identity = %qualified_identity.identity.id(),
+                    "Skipping platform-wallet sync: identity_manager lock contended"
+                );
+                return;
+            }
+        };
+
+        let identity_id = qualified_identity.identity.id();
+        let identity_index = qualified_identity.wallet_index.unwrap_or(0);
+
+        // 3. Convert QualifiedIdentity data for the ManagedIdentity
+        let mi_key_storage = Self::convert_key_storage(
+            &qualified_identity.private_keys,
+            &seed_hash,
+        );
+        let mi_dpns_names = Self::convert_dpns_names(&qualified_identity.dpns_names);
+        let mi_status = Self::convert_identity_status(qualified_identity.status);
+
+        // 4. Add or update the identity in the manager
+        if let Some(managed) = manager.managed_identity_mut(&identity_id) {
+            // Update existing managed identity
+            managed.identity = qualified_identity.identity.clone();
+            managed.key_storage = mi_key_storage;
+            managed.dpns_names = mi_dpns_names;
+            managed.status = mi_status;
+            managed.wallet_seed_hash = Some(seed_hash);
+            managed.top_ups = qualified_identity.top_ups.clone();
+            if let Some(alias) = &qualified_identity.alias {
+                managed.label = Some(alias.clone());
+            }
+            tracing::debug!(
+                identity = %identity_id,
+                "Updated identity in platform-wallet IdentityManager"
+            );
+        } else {
+            // Add new identity
+            match manager.add_identity(
+                qualified_identity.identity.clone(),
+                identity_index,
+            ) {
+                Ok(()) => {
+                    // Now set extra fields on the newly added managed identity
+                    if let Some(managed) = manager.managed_identity_mut(&identity_id) {
+                        managed.key_storage = mi_key_storage;
+                        managed.dpns_names = mi_dpns_names;
+                        managed.status = mi_status;
+                        managed.wallet_seed_hash = Some(seed_hash);
+                        managed.top_ups = qualified_identity.top_ups.clone();
+                        if let Some(alias) = &qualified_identity.alias {
+                            managed.label = Some(alias.clone());
+                        }
+                    }
+                    tracing::debug!(
+                        identity = %identity_id,
+                        index = identity_index,
+                        "Added identity to platform-wallet IdentityManager"
+                    );
+                }
+                Err(e) => {
+                    tracing::debug!(
+                        identity = %identity_id,
+                        error = %e,
+                        "Failed to add identity to platform-wallet IdentityManager"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Sync all locally stored identities to platform-wallet IdentityManagers.
+    ///
+    /// Called during wallet bootstrap so identities loaded from the database
+    /// are available to DashPay and other platform-wallet operations.
+    pub fn sync_all_identities_to_platform_wallets(&self) {
+        match self.load_local_qualified_identities() {
+            Ok(identities) => {
+                let count = identities.len();
+                for identity in &identities {
+                    self.sync_identity_to_platform_wallet(identity);
+                }
+                tracing::info!(
+                    count,
+                    "Synced local identities to platform-wallet IdentityManagers"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "Failed to load local identities for platform-wallet sync"
+                );
+            }
+        }
+    }
+
+    /// Convert QualifiedIdentity's `KeyStorage` to ManagedIdentity's `KeyStorage`.
+    ///
+    /// Only keys with `PrivateKeyTarget::PrivateKeyOnMainIdentity` are converted.
+    /// Voter/operator keys and encrypted keys are skipped.
+    fn convert_key_storage(
+        qi_keys: &crate::model::qualified_identity::encrypted_key_storage::KeyStorage,
+        _seed_hash: &WalletSeedHash,
+    ) -> ManagedKeyStorage {
+        let mut result = ManagedKeyStorage::new();
+
+        for ((target, key_id), (qualified_pub_key, private_key_data)) in
+            qi_keys.private_keys.iter()
+        {
+            // Only convert main identity keys
+            if *target != PrivateKeyTarget::PrivateKeyOnMainIdentity {
+                continue;
+            }
+
+            let mi_private_key = match private_key_data {
+                QIPrivateKeyData::Clear(bytes) | QIPrivateKeyData::AlwaysClear(bytes) => {
+                    ManagedPrivateKeyData::Clear(Zeroizing::new(*bytes))
+                }
+                QIPrivateKeyData::AtWalletDerivationPath(WalletDerivationPath {
+                    wallet_seed_hash,
+                    derivation_path,
+                }) => ManagedPrivateKeyData::AtWalletDerivationPath {
+                    wallet_seed_hash: *wallet_seed_hash,
+                    derivation_path: derivation_path.clone(),
+                },
+                QIPrivateKeyData::Encrypted(_) => {
+                    // Cannot use encrypted keys without a password; skip
+                    continue;
+                }
+            };
+
+            result.insert(
+                *key_id,
+                (qualified_pub_key.identity_public_key.clone(), mi_private_key),
+            );
+        }
+
+        result
+    }
+
+    /// Convert QualifiedIdentity's `DPNSNameInfo` vec to ManagedIdentity's `DpnsNameInfo` vec.
+    fn convert_dpns_names(
+        qi_names: &[crate::model::qualified_identity::DPNSNameInfo],
+    ) -> Vec<ManagedDpnsNameInfo> {
+        qi_names
+            .iter()
+            .map(|n| ManagedDpnsNameInfo {
+                label: n.name.clone(),
+                acquired_at: Some(n.acquired_at),
+            })
+            .collect()
+    }
+
+    /// Convert QualifiedIdentity's `IdentityStatus` to ManagedIdentity's `IdentityStatus`.
+    fn convert_identity_status(
+        qi_status: crate::model::qualified_identity::IdentityStatus,
+    ) -> ManagedIdentityStatus {
+        match qi_status {
+            crate::model::qualified_identity::IdentityStatus::Unknown => {
+                ManagedIdentityStatus::Unknown
+            }
+            crate::model::qualified_identity::IdentityStatus::PendingCreation => {
+                ManagedIdentityStatus::PendingCreation
+            }
+            crate::model::qualified_identity::IdentityStatus::Active => {
+                ManagedIdentityStatus::Active
+            }
+            crate::model::qualified_identity::IdentityStatus::NotFound => {
+                ManagedIdentityStatus::NotFound
+            }
+            crate::model::qualified_identity::IdentityStatus::FailedCreation => {
+                ManagedIdentityStatus::FailedCreation
+            }
+        }
     }
 
     pub fn stop_spv(&self) {

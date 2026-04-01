@@ -18,7 +18,10 @@ impl AppContext {
             qualified_identity,
             wallet_and_identity_id_info,
             self,
-        )
+        )?;
+        // Sync to platform-wallet IdentityManager (best-effort)
+        self.sync_identity_to_platform_wallet(qualified_identity);
+        Ok(())
     }
 
     /// Updates a local qualified identity in the database
@@ -27,7 +30,10 @@ impl AppContext {
         qualified_identity: &QualifiedIdentity,
     ) -> Result<()> {
         self.db
-            .update_local_qualified_identity(qualified_identity, self)
+            .update_local_qualified_identity(qualified_identity, self)?;
+        // Sync to platform-wallet IdentityManager (best-effort)
+        self.sync_identity_to_platform_wallet(qualified_identity);
+        Ok(())
     }
 
     /// Sets the alias for an identity

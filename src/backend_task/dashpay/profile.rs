@@ -454,7 +454,11 @@ pub async fn search_profiles(
     // Normalize the search query using DPNS homograph-safe conversion
     // (replaces o→0, i/l→1, then lowercases). Plain to_lowercase() won't
     // match normalizedLabel on-chain which uses this conversion.
-    let query_without_suffix = query_trimmed.strip_suffix(".dash").unwrap_or(query_trimmed);
+    let query_without_suffix = if query_trimmed.to_lowercase().ends_with(".dash") {
+        &query_trimmed[..query_trimmed.len() - 5]
+    } else {
+        query_trimmed
+    };
     let normalized_query =
         dash_sdk::dpp::util::strings::convert_to_homograph_safe_chars(query_without_suffix);
 

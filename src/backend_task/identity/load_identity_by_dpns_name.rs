@@ -20,11 +20,14 @@ impl AppContext {
         dpns_name: String,
         selected_wallet_seed_hash: Option<WalletSeedHash>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        // Normalize the name (convert to lowercase and handle homoglyphs)
-        let label = dpns_name
-            .trim()
-            .strip_suffix(".dash")
-            .unwrap_or(dpns_name.trim());
+        // Normalize the name (convert to lowercase and handle homoglyphs).
+        // Strip ".dash" suffix case-insensitively before normalization.
+        let trimmed = dpns_name.trim();
+        let label = if trimmed.to_lowercase().ends_with(".dash") {
+            &trimmed[..trimmed.len() - 5]
+        } else {
+            trimmed
+        };
         let normalized_name = convert_to_homograph_safe_chars(label);
 
         // Query the DPNS contract for the domain document

@@ -553,6 +553,13 @@ pub enum TaskError {
         source: Box<SdkError>,
     },
 
+    /// A platform-wallet operation failed (e.g. DashPay contact request).
+    #[error("The operation could not be completed. Please check your wallet and retry.")]
+    PlatformWallet {
+        #[source]
+        source: Box<crate::platform_wallet_bridge::PlatformWalletError>,
+    },
+
     // ──────────────────────────────────────────────────────────────────────────
     // Contract schema errors
     // ──────────────────────────────────────────────────────────────────────────

@@ -1,11 +1,4 @@
-use super::encryption::{
-    encrypt_account_label, encrypt_extended_public_key, generate_ecdh_shared_key,
-};
 use super::errors::DashPayError;
-use super::hd_derivation::{
-    calculate_account_reference, derive_dashpay_incoming_xpub, generate_contact_xpub_data,
-};
-use super::validation::validate_contact_request_before_send;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::dashpay::auto_accept_proof::{
     AutoAcceptProofData, create_auto_accept_proof_bytes_with_key,
@@ -13,22 +6,17 @@ use crate::backend_task::dashpay::auto_accept_proof::{
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
-use bip39::rand::{SeedableRng, rngs::StdRng};
 use dash_sdk::Sdk;
-use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
-use dash_sdk::dpp::document::{Document as DppDocument, DocumentV0, DocumentV0Getters};
+use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use dash_sdk::dpp::identity::{Identity, KeyType, Purpose, SecurityLevel};
+use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::dpp::platform_value::{Bytes32, Value};
+use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::drive::query::{OrderClause, WhereClause, WhereOperator};
-use dash_sdk::platform::documents::transitions::DocumentCreateTransitionBuilder;
 use dash_sdk::platform::{
-    Document, DocumentQuery, Fetch, FetchMany, FetchUnproved, Identifier, IdentityPublicKey,
+    Document, DocumentQuery, Fetch, FetchMany, Identifier, IdentityPublicKey,
 };
-use dash_sdk::query_types::{CurrentQuorumsInfo, NoParamQuery};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 pub async fn load_contact_requests(
@@ -158,11 +146,18 @@ pub async fn load_contact_requests(
     Ok(BackendTaskSuccessResult::DashPayContactRequests { incoming, outgoing })
 }
 
+/// Send a contact request, delegating ECDH, xpub encryption, document
+/// construction and broadcast to the platform-wallet's `DashPayWallet`.
+///
+/// The caller is still responsible for:
+/// - Resolving usernames / identity IDs
+/// - Checking for duplicate requests on Platform
+/// - Returning the appropriate `BackendTaskSuccessResult`
 pub async fn send_contact_request(
     app_context: &Arc<AppContext>,
     sdk: &Sdk,
     identity: QualifiedIdentity,
-    signing_key: IdentityPublicKey,
+    _signing_key: IdentityPublicKey,
     to_username_or_id: String,
     account_label: Option<String>,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
@@ -170,7 +165,7 @@ pub async fn send_contact_request(
         app_context,
         sdk,
         identity,
-        signing_key,
+        _signing_key,
         to_username_or_id,
         account_label,
         None,
@@ -182,7 +177,7 @@ pub async fn send_contact_request_with_proof(
     app_context: &Arc<AppContext>,
     sdk: &Sdk,
     identity: QualifiedIdentity,
-    signing_key: IdentityPublicKey,
+    _signing_key: IdentityPublicKey,
     to_username_or_id: String,
     account_label: Option<String>,
     qr_auto_accept: Option<AutoAcceptProofData>,
@@ -243,187 +238,8 @@ pub async fn send_contact_request_with_proof(
         .into());
     }
 
-    // Step 3: Get key indices for ECDH
-    // Per DIP-11/DIP-15: Use ENCRYPTION key for sender (to encrypt outgoing),
-    // DECRYPTION key for recipient (they will decrypt incoming)
-    // Note: signing_key is an AUTHENTICATION key used to sign the state transition
-    // We need a separate ENCRYPTION key for ECDH
-    let sender_encryption_key = identity
-        .identity
-        .get_first_public_key_matching(
-            Purpose::ENCRYPTION,
-            HashSet::from([SecurityLevel::MEDIUM]),
-            HashSet::from([KeyType::ECDSA_SECP256K1]),
-            false,
-        )
-        .ok_or_else(|| TaskError::DashPay(DashPayError::MissingEncryptionKey))?;
-
-    // Find a recipient DECRYPTION key that supports ECDH (must be ECDSA_SECP256K1)
-    // Platform enforces MEDIUM security level for ENCRYPTION/DECRYPTION keys
-    let recipient_key = to_identity
-        .get_first_public_key_matching(
-            Purpose::DECRYPTION,
-            HashSet::from([SecurityLevel::MEDIUM]),
-            HashSet::from([KeyType::ECDSA_SECP256K1]),
-            false,
-        )
-        .ok_or_else(|| TaskError::DashPay(DashPayError::MissingDecryptionKey))?;
-
-    // Step 4: Generate ECDH shared key and encrypt data
-    let wallets: Vec<_> = identity.associated_wallets.values().cloned().collect();
-    let sender_private_key = identity
-        .private_keys
-        .get_resolve(
-            &(
-                crate::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity,
-                sender_encryption_key.id(),
-            ),
-            &wallets,
-            identity.network,
-        )
-        .map_err(|e| TaskError::EncryptionError {
-            detail: format!("Error resolving ENCRYPTION private key: {}", e),
-        })?
-        .map(|(_, private_key)| private_key)
-        .ok_or_else(|| {
-            TaskError::DashPay(DashPayError::PrivateKeyResolution {
-                key_purpose: "ENCRYPTION".to_string(),
-                reason: "Private key not loaded into Dash Evo Tool".to_string(),
-            })
-        })?;
-
-    let shared_key = generate_ecdh_shared_key(&sender_private_key, recipient_key)
-        .map_err(|e| TaskError::EncryptionError { detail: e })?;
-
-    // Generate extended public key for this contact using proper HD derivation
-    // For now, use the sender's private key as seed material
-    // In production, this would derive from the wallet's HD seed/mnemonic
-    let wallet_seed = sender_private_key;
-
-    // Get the network from app context
-    let network = app_context.network;
-
-    // Use account 0 for now (could be made configurable)
-    let account_index = 0u32;
-
-    // Generate the extended public key data for this contact relationship
-    let (parent_fingerprint, chain_code, contact_public_key) = generate_contact_xpub_data(
-        &wallet_seed,
-        network,
-        account_index,
-        &identity.identity.id(),
-        &to_identity_id,
-    )
-    .map_err(|e| TaskError::EncryptionError { detail: e })?;
-
-    // Also derive the full xpub for account reference calculation per DIP-0015
-    let contact_xpub = derive_dashpay_incoming_xpub(
-        &wallet_seed,
-        network,
-        account_index,
-        &identity.identity.id(),
-        &to_identity_id,
-    )
-    .map_err(|e| TaskError::EncryptionError { detail: e })?;
-
-    // Calculate account reference per DIP-0015 (ASK-based shortening)
-    // Version 0 is the current version
-    let account_reference = calculate_account_reference(
-        &sender_private_key,
-        &contact_xpub,
-        account_index,
-        0, // version
-    );
-
-    let encrypted_public_key = encrypt_extended_public_key(
-        parent_fingerprint,
-        chain_code,
-        contact_public_key,
-        &shared_key,
-    )
-    .map_err(|e| TaskError::EncryptionError { detail: e })?;
-
-    // Step 5: Get the current core chain height for synchronization
-    let (core_height, current_height_for_validation) =
-        match CurrentQuorumsInfo::fetch_unproved(sdk, NoParamQuery {}).await {
-            Ok(Some(quorum_info)) => (
-                quorum_info.last_core_block_height,
-                Some(quorum_info.last_core_block_height),
-            ),
-            Ok(None) => {
-                (0u32, None) // Fallback if no quorum info available
-            }
-            Err(_e) => {
-                (0u32, None) // Fallback on error
-            }
-        };
-
-    // Step 5.5: Validate the contact request before proceeding
-    // Note: We validate the ENCRYPTION key (used for ECDH), not the signing key
-    let validation = validate_contact_request_before_send(
-        sdk,
-        &identity,
-        sender_encryption_key.id(),
-        to_identity.id(),
-        recipient_key.id(),
-        account_reference,
-        core_height,
-        current_height_for_validation,
-    )
-    .await
-    .map_err(|e| DashPayError::ValidationFailed {
-        errors: vec![e.to_string()],
-    })?;
-
-    // Check if validation passed
-    if !validation.is_valid {
-        return Err(DashPayError::ValidationFailed {
-            errors: validation.errors.clone(),
-        }
-        .into());
-    }
-
-    // Log any warnings
-    for _warning in &validation.warnings {}
-
-    // Step 6: Create contact request document
-    let mut properties = BTreeMap::new();
-    properties.insert(
-        "toUserId".to_string(),
-        Value::Identifier(to_identity_id.to_buffer()),
-    );
-    properties.insert(
-        "senderKeyIndex".to_string(),
-        Value::U32(sender_encryption_key.id()),
-    );
-    properties.insert(
-        "recipientKeyIndex".to_string(),
-        Value::U32(recipient_key.id()),
-    );
-    // Account reference calculated per DIP-0015 (ASK-based shortening)
-    properties.insert(
-        "accountReference".to_string(),
-        Value::U32(account_reference),
-    );
-    properties.insert(
-        "encryptedPublicKey".to_string(),
-        Value::Bytes(encrypted_public_key),
-    );
-
-    // Note: $coreHeightCreatedAt is handled automatically by the platform
-
-    // Add encrypted account label if provided
-    if let Some(label) = account_label {
-        let encrypted_label = encrypt_account_label(&label, &shared_key)
-            .map_err(|e| TaskError::EncryptionError { detail: e })?;
-        properties.insert(
-            "encryptedAccountLabel".to_string(),
-            Value::Bytes(encrypted_label),
-        );
-    }
-
-    // If QR auto-accept data is provided, create the proof bytes now to match the final accountReference
-    if let Some(qr) = qr_auto_accept {
+    // Step 3: Build auto-accept proof bytes if QR data was provided
+    let auto_accept_proof = if let Some(qr) = qr_auto_accept {
         // Ensure the QR target matches the resolved recipient
         if qr.identity_id != to_identity_id {
             return Err(DashPayError::InvalidQrCode {
@@ -431,86 +247,40 @@ pub async fn send_contact_request_with_proof(
             }
             .into());
         }
+        // We need the account_reference for the proof, but platform-wallet
+        // uses account_index=0 internally. Use 0 to match.
         let proof = create_auto_accept_proof_bytes_with_key(
             qr.expires_at,
             &qr.proof_key,
             &identity.identity.id(),
             &to_identity_id,
-            account_reference,
+            0, // account_reference matches platform-wallet's account_index
         )
         .map_err(|e| TaskError::EncryptionError { detail: e })?;
         tracing::debug!(
             "Including autoAcceptProof in contact request ({} bytes)",
             proof.len()
         );
-        properties.insert("autoAcceptProof".to_string(), Value::Bytes(proof));
-    }
-    // If no proof, don't include the field at all (schema requires 38-102 bytes if present)
+        Some(proof)
+    } else {
+        None
+    };
 
-    // Generate random entropy for the document transition
-    let mut rng = StdRng::from_entropy();
-    let entropy = Bytes32::random_with_rng(&mut rng);
+    // Step 4: Delegate to platform-wallet's DashPayWallet
+    let platform_wallet = app_context.platform_wallet_for_identity(&identity)?;
 
-    // Generate deterministic document ID based on entropy
-    let document_id = Document::generate_document_id_v0(
-        &dashpay_contract.id(),
-        &identity.identity.id(),
-        "contactRequest",
-        entropy.as_slice(),
-    );
-
-    // Create the document
-    let document = DppDocument::V0(DocumentV0 {
-        id: document_id,
-        owner_id: identity.identity.id(),
-        creator_id: None,
-        properties,
-        revision: Some(1),
-        created_at: None,
-        updated_at: None,
-        transferred_at: None,
-        created_at_block_height: None,
-        updated_at_block_height: None,
-        transferred_at_block_height: None,
-        created_at_core_block_height: None,
-        updated_at_core_block_height: None,
-        transferred_at_core_block_height: None,
-    });
-
-    // Step 7: Submit the contact request
-    // Use the selected signing key
-    let identity_key = &signing_key;
-
-    let mut builder = DocumentCreateTransitionBuilder::new(
-        dashpay_contract,
-        "contactRequest".to_string(),
-        document,
-        entropy
-            .as_slice()
-            .try_into()
-            .expect("entropy should be 32 bytes"),
-    );
-
-    // Add state transition options if available
-    let maybe_options = app_context.state_transition_options();
-    if let Some(options) = maybe_options {
-        builder = builder.with_state_transition_creation_options(options);
-    }
-
-    let result = sdk
-        .document_create(builder, identity_key, &identity)
-        .await?;
-
-    // Log the proof-verified document for audit trail
-    match result {
-        dash_sdk::platform::documents::transitions::DocumentCreateResult::Document(doc) => {
-            tracing::info!(
-                "Contact request created: doc_id={}, revision={:?}",
-                doc.id(),
-                doc.revision()
-            );
-        }
-    }
+    platform_wallet
+        .dashpay()
+        .send_contact_request(
+            &identity.identity.id(),
+            &to_identity_id,
+            account_label,
+            auto_accept_proof,
+        )
+        .await
+        .map_err(|e| TaskError::PlatformWallet {
+            source: Box::new(e),
+        })?;
 
     Ok(BackendTaskSuccessResult::DashPayContactRequestSent(
         to_username_or_id.to_string(),
@@ -575,18 +345,17 @@ async fn resolve_username_to_identity(sdk: &Sdk, username: &str) -> Result<Ident
         .ok_or(TaskError::IdentityNotFound)
 }
 
+/// Accept an incoming contact request by sending a reciprocal request via
+/// platform-wallet's `DashPayWallet`.
 pub async fn accept_contact_request(
     app_context: &Arc<AppContext>,
     sdk: &Sdk,
     identity: QualifiedIdentity,
     request_id: Identifier,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
-    // According to DashPay DIP, accepting means sending a contact request back
-    // First, we need to fetch the incoming contact request to get the sender's identity
-
+    // Fetch the incoming contact request document to identify the sender
     let dashpay_contract = app_context.dashpay_contract.clone();
 
-    // Fetch the specific contact request document by creating a query with its ID
     let query = DocumentQuery::new(dashpay_contract.clone(), "contactRequest").map_err(|e| {
         DashPayError::QueryCreation {
             query_target: "DashPay contactRequest",
@@ -630,35 +399,25 @@ pub async fn accept_contact_request(
         ));
     }
 
-    // Get an AUTHENTICATION key for signing the state transition
-    // Platform requires CRITICAL or HIGH security level for document creation
-    let signing_key = identity
-        .identity
-        .get_first_public_key_matching(
-            Purpose::AUTHENTICATION,
-            HashSet::from([SecurityLevel::CRITICAL, SecurityLevel::HIGH]),
-            KeyType::all_key_types().into(),
-            false,
+    // Delegate to platform-wallet: send a reciprocal contact request
+    let platform_wallet = app_context.platform_wallet_for_identity(&identity)?;
+
+    platform_wallet
+        .dashpay()
+        .send_contact_request(
+            &identity.identity.id(),
+            &from_identity_id,
+            Some("Accepted contact".to_string()),
+            None,
         )
-        .ok_or_else(|| TaskError::DashPay(DashPayError::MissingAuthenticationKey))?
-        .clone();
+        .await
+        .map_err(|e| TaskError::PlatformWallet {
+            source: Box::new(e),
+        })?;
 
-    let result = send_contact_request(
-        app_context,
-        sdk,
-        identity,
-        signing_key,
-        from_identity_id.to_string(Encoding::Base58),
-        Some("Accepted contact".to_string()),
-    )
-    .await;
-
-    match result {
-        Ok(_) => Ok(BackendTaskSuccessResult::DashPayContactRequestAccepted(
-            request_id,
-        )),
-        Err(e) => Err(e),
-    }
+    Ok(BackendTaskSuccessResult::DashPayContactRequestAccepted(
+        request_id,
+    ))
 }
 
 pub async fn reject_contact_request(

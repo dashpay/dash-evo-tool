@@ -8,7 +8,6 @@ use crate::model::wallet::WalletSeedHash;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::platform_value::Value;
-use dash_sdk::dpp::util::strings::convert_to_homograph_safe_chars;
 use dash_sdk::drive::query::{WhereClause, WhereOperator};
 use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identifier, Identity};
 
@@ -20,15 +19,7 @@ impl AppContext {
         dpns_name: String,
         selected_wallet_seed_hash: Option<WalletSeedHash>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        // Normalize the name (convert to lowercase and handle homoglyphs).
-        // Strip ".dash" suffix case-insensitively before normalization.
-        let trimmed = dpns_name.trim();
-        let label = if trimmed.to_lowercase().ends_with(".dash") {
-            &trimmed[..trimmed.len() - 5]
-        } else {
-            trimmed
-        };
-        let normalized_name = convert_to_homograph_safe_chars(label);
+        let normalized_name = crate::model::dpns::normalize_dpns_label(&dpns_name);
 
         // Query the DPNS contract for the domain document
         let domain_query = DocumentQuery {

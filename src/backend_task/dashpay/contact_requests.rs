@@ -189,7 +189,7 @@ pub async fn send_contact_request_with_proof(
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     // Step 1: Resolve the recipient identity
     let to_username_or_id = to_username_or_id.trim().to_string();
-    let to_identity = if to_username_or_id.to_lowercase().ends_with(".dash") {
+    let to_identity = if crate::model::dpns::has_dash_suffix(&to_username_or_id) {
         // It's a complete username, resolve via DPNS
         resolve_username_to_identity(sdk, &to_username_or_id).await?
     } else {
@@ -206,8 +206,7 @@ pub async fn send_contact_request_with_proof(
             }
             Err(_) => {
                 // Not a valid ID format, assume it's a username without .dash suffix
-                let username_with_suffix = format!("{}.dash", to_username_or_id);
-                resolve_username_to_identity(sdk, &username_with_suffix).await?
+                resolve_username_to_identity(sdk, &to_username_or_id).await?
             }
         }
     };
@@ -519,13 +518,7 @@ pub async fn send_contact_request_with_proof(
 }
 
 async fn resolve_username_to_identity(sdk: &Sdk, username: &str) -> Result<Identity, TaskError> {
-    let username = username.trim();
-    // Parse username (e.g., "alice.dash" -> "alice")
-    let name = username.split('.').next().ok_or_else(|| {
-        TaskError::DashPay(DashPayError::InvalidUsername {
-            username: username.to_string(),
-        })
-    })?;
+    let normalized = crate::model::dpns::normalize_dpns_label(username);
 
     // Query DPNS for the username
     let dpns_contract_id = Identifier::from_string(
@@ -556,7 +549,7 @@ async fn resolve_username_to_identity(sdk: &Sdk, username: &str) -> Result<Ident
         .with_where(WhereClause {
             field: "normalizedLabel".to_string(),
             operator: WhereOperator::Equal,
-            value: Value::Text(dash_sdk::dpp::util::strings::convert_to_homograph_safe_chars(name)),
+            value: Value::Text(normalized.clone()),
         });
     query.limit = 1;
 

@@ -199,7 +199,12 @@ impl EventHandler for SpvEventHandler {
             }
             if let Some(msg) = error_msg {
                 cs.set_spv_last_error(Some(msg));
-            } else if !is_error {
+            } else if !is_error
+                && !matches!(self.status.read().ok().as_deref(), Some(&SpvStatus::Error))
+            {
+                // Only clear errors when status is not Error — otherwise
+                // on_sync_event(ManagerError) sets the error but the next
+                // on_progress call would immediately clear it.
                 cs.set_spv_last_error(None);
             }
             cs.refresh_state();
@@ -280,11 +285,9 @@ impl EventHandler for SpvEventHandler {
             }
         }
 
-        if should_signal
-            && let Some(tx) = self.reconcile_tx.lock().ok().and_then(|g| g.clone())
-            && let Err(e) = tx.try_send(())
-        {
-            tracing::warn!("Failed to send reconcile signal from on_sync_event: {e}");
+        if should_signal && let Some(tx) = self.reconcile_tx.lock().ok().and_then(|g| g.clone()) {
+            // Silently discard full-channel errors — reconcile is debounced downstream.
+            let _ = tx.try_send(());
         }
     }
 
@@ -1283,9 +1286,6 @@ impl SpvManager {
         }
         "unknown phase"
     }
-    // spawn_progress_watcher removed — replaced by SpvEventHandler::on_progress
-
-    // spawn_sync_event_handler removed — replaced by SpvEventHandler::on_sync_event
 
     fn spawn_wallet_event_handler(
         &self,
@@ -1322,8 +1322,6 @@ impl SpvManager {
                 tracing::info!("SPV wallet event handler exiting");
             });
     }
-
-    // spawn_network_event_handler removed — replaced by SpvEventHandler::on_network_event
 
     async fn build_client(&self, has_wallets: bool) -> Result<SpvClient, String> {
         // When wallets exist, scan from genesis so historical transactions are found via

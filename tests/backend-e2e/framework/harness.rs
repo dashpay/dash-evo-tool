@@ -63,7 +63,14 @@ pub struct BackendTestContext {
 impl BackendTestContext {
     async fn init() -> Self {
         // Cancel orphaned SPV tasks from a previous panicked init (if any).
-        if let Some(token) = SPV_CANCEL.lock().ok().and_then(|mut g| g.take()) {
+        if let Some(token) = SPV_CANCEL
+            .lock()
+            .inspect_err(|e| {
+                eprintln!("SPV_CANCEL mutex poisoned during init retry: {e}");
+            })
+            .ok()
+            .and_then(|mut g| g.take())
+        {
             tracing::warn!("Cancelling orphaned SPV tasks from a previous init attempt");
             token.cancel();
             tokio::time::sleep(Duration::from_millis(500)).await;
@@ -131,12 +138,21 @@ impl BackendTestContext {
             *guard = Some(cancel_token);
         }
 
-        // Install a panic hook (once) that cancels SPV tasks on any panic.
+        // Install a panic hook (once) that cancels SPV tasks on any panic
+        // during init. The token is cleared after init succeeds (below) so
+        // test panics don't kill SPV for other parallel tests.
         static HOOK_INSTALLED: std::sync::Once = std::sync::Once::new();
         HOOK_INSTALLED.call_once(|| {
             let prev_hook = std::panic::take_hook();
             std::panic::set_hook(Box::new(move |info| {
-                if let Some(token) = SPV_CANCEL.lock().ok().and_then(|g| g.clone()) {
+                if let Some(token) = SPV_CANCEL
+                    .lock()
+                    .inspect_err(|e| {
+                        eprintln!("Panic hook: SPV_CANCEL mutex poisoned, cannot cancel SPV: {e}");
+                    })
+                    .ok()
+                    .and_then(|g| g.clone())
+                {
                     tracing::warn!(
                         "Panic hook: cancelling SPV tasks to release data directory lock"
                     );
@@ -248,6 +264,13 @@ impl BackendTestContext {
         // before cleanup). Wallets persist in the DB, so AppContext loaded them
         // automatically and SPV synced their balances.
         crate::framework::cleanup::cleanup_test_wallets(&app_context, framework_wallet_hash).await;
+
+        // Init succeeded — clear the cancellation token so the panic hook
+        // won't kill SPV when individual tests panic. The hook is only
+        // needed during init to prevent orphaned SPV holding the lock file.
+        if let Ok(mut guard) = SPV_CANCEL.lock() {
+            *guard = None;
+        }
 
         BackendTestContext {
             app_context,

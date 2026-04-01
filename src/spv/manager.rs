@@ -263,14 +263,21 @@ impl EventHandler for SpvEventHandler {
                 | SyncEvent::SyncComplete { .. }
         );
 
+        // TODO(workaround): Remove once dashpay/rust-dashcore#487 is fixed.
+        //
         // Apply InstantSend locks directly on the WalletManager.
         //
         // Self-broadcast transactions bypass the MempoolManager (they are fed
-        // directly to WalletManager via notify_wallet_after_broadcast). When
-        // the IS lock arrives from the network, the MempoolManager doesn't
-        // know about the tx and stores it as a "pending IS lock" that is
-        // never matched. Applying the lock here ensures self-broadcast txs
-        // transition from unconfirmed to spendable.
+        // directly to WalletManager via notify_wallet_after_broadcast — see
+        // the other workaround in spawn_request_handler). When the IS lock
+        // arrives from the network, the MempoolManager doesn't know about
+        // the tx and stores it as a "pending IS lock" that is never matched.
+        // Applying the lock here ensures self-broadcast txs transition from
+        // unconfirmed to spendable.
+        //
+        // Once upstream broadcast calls handle_tx() on the MempoolManager,
+        // both workarounds (notify_wallet_after_broadcast and this) can be
+        // removed — the normal MempoolManager pipeline will handle everything.
         //
         // For MempoolManager-tracked txs this is a harmless no-op — the
         // WalletManager deduplicates via its instant_send_locks HashSet.

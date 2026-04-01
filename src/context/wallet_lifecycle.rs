@@ -723,7 +723,8 @@ impl AppContext {
     /// Reconcile SPV wallet state into DET.
     pub async fn reconcile_spv_wallets(&self) -> Result<(), TaskError> {
         let wm_arc = self.spv_manager.wallet();
-        let wm = wm_arc.read().await;
+        let wm: tokio::sync::RwLockReadGuard<'_, dash_sdk::dpp::key_wallet_manager::WalletManager> =
+            wm_arc.read().await;
         let mapping = self.spv_manager.det_wallets_snapshot();
 
         // Take a snapshot of known addresses per wallet so we can scope DB updates

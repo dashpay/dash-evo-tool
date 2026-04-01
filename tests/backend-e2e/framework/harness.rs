@@ -37,6 +37,17 @@ use std::time::Duration;
 /// runtime context (via `block_on`) rather than spawning a nested one.
 static CTX: tokio::sync::OnceCell<BackendTestContext> = tokio::sync::OnceCell::const_new();
 
+/// Cancellation token for the task manager that owns SPV tasks.
+///
+/// `tokio::sync::OnceCell` does not cache panicked inits — if `init()`
+/// panics (e.g. framework wallet unfunded), the next test retries from
+/// scratch. But the orphaned SPV tasks from the panicked init still run
+/// on the shared tokio runtime, holding the data directory lock. A global
+/// panic hook cancels this token, which stops SPV (its stop_token is a
+/// child) and releases the lock file.
+static SPV_CANCEL: std::sync::Mutex<Option<tokio_util::sync::CancellationToken>> =
+    std::sync::Mutex::new(None);
+
 /// Get (or initialize) the shared test context.
 pub async fn ctx() -> &'static BackendTestContext {
     CTX.get_or_init(BackendTestContext::init).await
@@ -51,6 +62,13 @@ pub struct BackendTestContext {
 
 impl BackendTestContext {
     async fn init() -> Self {
+        // Cancel orphaned SPV tasks from a previous panicked init (if any).
+        if let Some(token) = SPV_CANCEL.lock().ok().and_then(|mut g| g.take()) {
+            tracing::warn!("Cancelling orphaned SPV tasks from a previous init attempt");
+            token.cancel();
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+
         // Initialize tracing for test output
         let _ = tracing_subscriber::fmt()
             .with_env_filter(
@@ -88,6 +106,7 @@ impl BackendTestContext {
 
         // Create AppContext
         let subtasks = Arc::new(TaskManager::new());
+        let cancel_token = subtasks.cancellation_token.clone();
         let connection_status = Arc::new(ConnectionStatus::new());
         let egui_ctx = egui::Context::default();
 
@@ -105,6 +124,27 @@ impl BackendTestContext {
         // Switch to SPV mode and start
         app_context.set_core_backend_mode(CoreBackendMode::Spv);
         app_context.start_spv().expect("Failed to start SPV");
+
+        // Stash the cancellation token so the panic hook can stop SPV if
+        // init panics later (e.g. framework wallet unfunded).
+        if let Ok(mut guard) = SPV_CANCEL.lock() {
+            *guard = Some(cancel_token);
+        }
+
+        // Install a panic hook (once) that cancels SPV tasks on any panic.
+        static HOOK_INSTALLED: std::sync::Once = std::sync::Once::new();
+        HOOK_INSTALLED.call_once(|| {
+            let prev_hook = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |info| {
+                if let Some(token) = SPV_CANCEL.lock().ok().and_then(|g| g.clone()) {
+                    tracing::warn!(
+                        "Panic hook: cancelling SPV tasks to release data directory lock"
+                    );
+                    token.cancel();
+                }
+                prev_hook(info);
+            }));
+        });
 
         // Wait for SPV peers
         wait::wait_for_spv_peers(&app_context, Duration::from_secs(60))

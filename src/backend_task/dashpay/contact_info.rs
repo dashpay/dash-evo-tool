@@ -387,7 +387,8 @@ pub async fn create_or_update_contact_info(
     let encrypted_private_data = encrypt_private_data(&private_data.serialize(), &private_data_key)
         .map_err(|e| TaskError::EncryptionError { detail: e })?;
 
-    // Get signing key
+    // Get signing key — accept any key type (BLS, ECDSA, EDDSA) since
+    // Platform accepts all for document state transitions.
     let signing_key = identity
         .identity
         .get_first_public_key_matching(
@@ -397,7 +398,7 @@ pub async fn create_or_update_contact_info(
                 SecurityLevel::HIGH,
                 SecurityLevel::MEDIUM,
             ]),
-            HashSet::from([KeyType::ECDSA_SECP256K1]),
+            KeyType::all_key_types().into(),
             false,
         )
         .ok_or_else(|| TaskError::DashPay(DashPayError::MissingAuthenticationKey))?;

@@ -5,6 +5,7 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::address::{AddressKind, ValidatedAddress};
 use crate::model::amount::Amount;
+use crate::model::feature_gate::{FeatureGate, FeatureGateUiExt};
 use crate::model::fee_estimation::shielded_fee_for_actions;
 use crate::model::wallet::WalletSeedHash;
 use crate::ui::components::ComponentResponse;
@@ -825,19 +826,20 @@ impl ScreenLike for ShieldScreen {
                         ui.add_space(5.0);
 
                         // Dev-mode batch controls (Platform flow only)
-                        if self.app_context.is_developer_mode()
-                            && source_kind == Some(AddressKind::Platform)
+                        if source_kind == Some(AddressKind::Platform)
                             && self.status == Status::NotStarted
                         {
-                            ui.add_space(10.0);
-                            ui.horizontal(|ui| {
-                                ui.label("Repeat");
-                                let te = egui::TextEdit::singleline(&mut self.repeat_count_str)
-                                    .desired_width(50.0);
-                                ui.add(te);
-                                ui.label("times");
+                            ui.feature_gated(&self.app_context, FeatureGate::DeveloperMode, |ui| {
+                                ui.add_space(10.0);
+                                ui.horizontal(|ui| {
+                                    ui.label("Repeat");
+                                    let te = egui::TextEdit::singleline(&mut self.repeat_count_str)
+                                        .desired_width(50.0);
+                                    ui.add(te);
+                                    ui.label("times");
+                                });
+                                ui.checkbox(&mut self.parallel, "Parallel");
                             });
-                            ui.checkbox(&mut self.parallel, "Parallel");
                         }
                     }
 

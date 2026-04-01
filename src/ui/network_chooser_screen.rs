@@ -111,7 +111,7 @@ pub struct NetworkChooserScreen {
     auto_start_spv: bool,
     close_dash_qt_on_exit: bool,
     discovery_in_progress: bool,
-    show_fetch_confirmation: bool,
+    fetch_confirm_dialog: Option<ConfirmationDialog>,
 }
 
 impl NetworkChooserScreen {
@@ -212,7 +212,7 @@ impl NetworkChooserScreen {
             auto_start_spv,
             close_dash_qt_on_exit,
             discovery_in_progress: false,
-            show_fetch_confirmation: false,
+            fetch_confirm_dialog: None,
         }
     }
 
@@ -832,7 +832,18 @@ impl NetworkChooserScreen {
                     );
                     if clicked {
                         if dapi_total > 0 {
-                            self.show_fetch_confirmation = true;
+                            self.fetch_confirm_dialog = Some(
+                                ConfirmationDialog::new(
+                                    "Update Node Addresses?",
+                                    format!(
+                                        "This will fetch a fresh list of DAPI nodes, replacing \
+                                        your current {dapi_total} configured addresses in the \
+                                        config file."
+                                    ),
+                                )
+                                .confirm_text(Some("Fetch"))
+                                .cancel_text(Some("Cancel")),
+                            );
                         } else {
                             self.discovery_in_progress = true;
                             app_action = AppAction::BackendTask(
@@ -846,33 +857,19 @@ impl NetworkChooserScreen {
             });
 
             // Fetch confirmation dialog
-            if self.show_fetch_confirmation {
-                egui::Window::new("Update Node Addresses?")
-                    .collapsible(false)
-                    .resizable(false)
-                    .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-                    .show(ui.ctx(), |ui| {
-                        ui.label(format!(
-                            "This will fetch a fresh list of DAPI nodes, replacing your current {} \
-                            configured addresses in the config file.",
-                            dapi_total
-                        ));
-                        ui.add_space(12.0);
-                        ui.horizontal(|ui| {
-                            if ui.button("Cancel").clicked() {
-                                self.show_fetch_confirmation = false;
-                            }
-                            if ui.button("Fetch").clicked() {
-                                self.show_fetch_confirmation = false;
-                                self.discovery_in_progress = true;
-                                app_action = AppAction::BackendTask(
-                                    BackendTask::DiscoverDapiNodes {
-                                        network: self.current_network,
-                                    },
-                                );
-                            }
-                        });
-                    });
+            if let Some(dialog) = self.fetch_confirm_dialog.as_mut() {
+                let response = dialog.show(ui);
+                if let Some(result) = response.inner.dialog_response {
+                    self.fetch_confirm_dialog = None;
+                    if result == ConfirmationStatus::Confirmed {
+                        self.discovery_in_progress = true;
+                        app_action = AppAction::BackendTask(
+                            BackendTask::DiscoverDapiNodes {
+                                network: self.current_network,
+                            },
+                        );
+                    }
+                }
             }
         });
 

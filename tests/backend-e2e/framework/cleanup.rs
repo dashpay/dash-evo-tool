@@ -50,6 +50,9 @@ pub async fn cleanup_test_wallets(
         wallet_hashes.len()
     );
 
+    let mut swept = 0u32;
+    let mut deleted = 0u32;
+
     for hash in wallet_hashes {
         let wallet_arc = {
             let wallets = app_context.wallets().read().expect("wallets lock");
@@ -60,28 +63,44 @@ pub async fn cleanup_test_wallets(
         };
 
         // Wait briefly for SPV to sync this wallet's balance.
-        // Keep this short — with many orphaned wallets the cumulative wait
-        // delays test startup significantly (14 wallets × 10s = 2+ min).
         let _ =
             wait::wait_for_spendable_balance(app_context, hash, 1, Duration::from_secs(1)).await;
 
-        let balance = {
+        let (spendable, total) = {
             let wallet = wallet_arc.read().expect("wallet lock");
-            wallet.confirmed_balance_duffs()
+            (
+                wallet.confirmed_balance_duffs(),
+                wallet.total_balance_duffs(),
+            )
         };
 
-        if balance == 0 {
+        // Delete wallets with no funds at all — they're fully spent orphans
+        // from previous runs. Without this, wallets accumulate across runs
+        // and degrade performance (~10 MB + 185 monitored addresses each).
+        if total == 0 {
+            if let Err(e) = app_context.remove_wallet(&hash) {
+                tracing::warn!(
+                    "Cleanup: failed to delete empty wallet {:?}: {}",
+                    &hash[..4],
+                    e
+                );
+            } else {
+                deleted += 1;
+            }
             continue;
         }
 
-        // TODO(CMT-032): Also withdraw Platform credits from test identities back to
-        // the framework wallet. Requires: enumerate identities owned by test wallets,
-        // call IdentityTask::WithdrawFromIdentity for each, wait for Core balance.
+        if spendable == 0 {
+            // Has unconfirmed funds but nothing spendable — skip sweep,
+            // will be cleaned up on a future run once funds confirm.
+            continue;
+        }
 
+        // Attempt to sweep spendable funds back to framework wallet
         let request = WalletPaymentRequest {
             recipients: vec![PaymentRecipient {
                 address: framework_address.clone(),
-                amount_duffs: balance,
+                amount_duffs: spendable,
             }],
             subtract_fee_from_amount: true,
             memo: Some("E2E cleanup: sweep orphaned wallet".to_string()),
@@ -94,12 +113,19 @@ pub async fn cleanup_test_wallets(
         });
 
         match run_task(app_context, task).await {
-            Ok(_) => tracing::info!(
-                "Cleanup: returned {} duffs from orphaned wallet {:?}",
-                balance,
-                &hash[..4]
-            ),
+            Ok(_) => {
+                swept += 1;
+                tracing::info!(
+                    "Cleanup: returned {} duffs from orphaned wallet {:?}",
+                    spendable,
+                    &hash[..4]
+                );
+            }
             Err(e) => tracing::warn!("Cleanup: failed to sweep wallet {:?}: {}", &hash[..4], e),
         }
+    }
+
+    if swept > 0 || deleted > 0 {
+        tracing::info!("Cleanup complete: {swept} swept, {deleted} deleted (empty)");
     }
 }

@@ -1,10 +1,8 @@
 //! Per-domain MCP tool implementations.
 
-pub mod identity;
 pub mod meta;
 pub mod network;
 pub mod platform;
-pub mod shielded;
 pub mod wallet;
 
 use rmcp::schemars;

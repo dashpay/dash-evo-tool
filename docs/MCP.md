@@ -72,19 +72,8 @@ Set these in the app's `.env` file (see `.env.example`) or as environment variab
 | `core_address_create` | `wallet_id`, `network`? | `det-cli core-address-create` | Generate a new receive address for a wallet |
 | `core_balances_get` | `wallet_id`, `network`? | `det-cli core-balances-get` | Show wallet balances (total, confirmed, unconfirmed) in duffs |
 | `platform_addresses_list` | `wallet_id`, `network`? | `det-cli platform-addresses-list` | Fetch platform address balances (credits and nonces) |
-| `core_funds_send` | `wallet_id`, `address`, `amount_duffs`, `network` | `det-cli core-funds-send` | Send DASH from a wallet to an address (amount in duffs) |
 | `wallet_funds_send` | `wallet_id`, `address`, `amount_duffs`, `network`, `source`?, `identity_id`? | `det-cli wallet-funds-send` | Unified send: any source (core/platform/shielded/identity) to any destination address type |
 | `platform_withdrawals_get` | `status`?, `network`? | `det-cli platform-withdrawals-get` | Query Platform withdrawal documents (`"queued"` or `"completed"`) |
-| `identity_credits_topup` | `wallet_id`, `identity_id`, `amount_duffs`, `network` | `det-cli identity-credits-topup` | Top up an identity with DASH from wallet (via asset lock) |
-| `identity_credits_topup_from_platform` | `wallet_id`, `identity_id`, `amount_credits`, `network` | `det-cli identity-credits-topup-from-platform` | Top up an identity from Platform address balances |
-| `identity_credits_transfer` | `wallet_id`, `from_identity_id`, `to_identity_id`, `amount_credits`, `network` | `det-cli identity-credits-transfer` | Transfer credits between identities |
-| `identity_credits_withdraw` | `wallet_id`, `identity_id`, `to_address`, `amount_credits`, `network` | `det-cli identity-credits-withdraw` | Withdraw identity credits to a Core address |
-| `identity_credits_to_address` | `wallet_id`, `identity_id`, `to_address`, `amount_credits`, `network` | `det-cli identity-credits-to-address` | Transfer identity credits to a Platform address |
-| `shielded_shield_from_core` | `wallet_id`, `amount_duffs`, `network` | `det-cli shielded-shield-from-core` | Shield DASH from Core wallet into shielded pool (via asset lock, ~30s) |
-| `shielded_shield_from_platform` | `wallet_id`, `amount_credits`, `network` | `det-cli shielded-shield-from-platform` | Shield credits from Platform address into shielded pool |
-| `shielded_transfer` | `wallet_id`, `to_address`, `amount_credits`, `network` | `det-cli shielded-transfer` | Private shielded-to-shielded transfer |
-| `shielded_unshield` | `wallet_id`, `to_address`, `amount_credits`, `network` | `det-cli shielded-unshield` | Unshield credits to a Platform address |
-| `shielded_withdraw` | `wallet_id`, `to_address`, `amount_credits`, `network` | `det-cli shielded-withdraw` | Withdraw from shielded pool to a Core address |
 | `tool_describe` | `name` | `det-cli tool-describe` | Return the full MCP tool definition for a given tool name |
 
 Parameters marked `?` are optional. The `det-cli` column shows the equivalent CLI command (underscores become hyphens).

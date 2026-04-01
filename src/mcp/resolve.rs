@@ -142,6 +142,7 @@ pub(crate) fn validate_amount(amount_duffs: u64) -> Result<(), McpToolError> {
 /// Validates that the address is non-empty and starts with a character
 /// typical for Dash addresses. This is a quick sanity check, not full
 /// Base58Check validation (which happens at the backend layer).
+#[cfg(test)]
 pub(crate) fn validate_address(address: &str) -> Result<(), McpToolError> {
     if address.is_empty() {
         return Err(McpToolError::InvalidParam {
@@ -181,14 +182,4 @@ pub(crate) fn qualified_identity(
                  Load the identity first using the identity screen or CLI."
             ),
         })
-}
-
-/// Validate amount in credits for sending operations.
-pub(crate) fn validate_credits(amount_credits: u64) -> Result<(), McpToolError> {
-    if amount_credits == 0 {
-        return Err(McpToolError::InvalidParam {
-            message: "amount_credits must be greater than zero".to_owned(),
-        });
-    }
-    Ok(())
 }

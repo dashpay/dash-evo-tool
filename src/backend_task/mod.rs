@@ -461,7 +461,7 @@ impl AppContext {
                     Ok(this.run_shielded_task(shielded_task).await?)
                 }
                 BackendTask::DiscoverDapiNodes { network } => {
-                    let devnet_name = self
+                    let devnet_name = this
                         .config
                         .read()
                         .map_err(|_| TaskError::LockPoisoned {

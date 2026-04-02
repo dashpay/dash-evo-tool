@@ -10,6 +10,7 @@ use crate::backend_task::platform_info::{PlatformInfoTaskRequestType, PlatformIn
 use crate::backend_task::system_task::SystemTask;
 use crate::backend_task::wallet::WalletTask;
 use crate::context::AppContext;
+use crate::platform_wallet_bridge::CoreAddressInfo;
 use dash_sdk::dpp::dashcore::Address;
 use dash_sdk::dpp::dashcore::address::NetworkChecked;
 use dash_sdk::dpp::dashcore::bls_sig_utils::BLSSignature;
@@ -522,7 +523,8 @@ impl AppContext {
             }
             WalletTask::LoadAddressInfo { seed_hash } => {
                 let platform_wallet = self.require_platform_wallet(&seed_hash)?;
-                let info = platform_wallet.core().all_address_info().await;
+                let wallet_info = platform_wallet.core().wallet_info().await;
+                let info = CoreAddressInfo::all_from_wallet_info(&wallet_info);
                 Ok(BackendTaskSuccessResult::AddressInfo(info))
             }
         }

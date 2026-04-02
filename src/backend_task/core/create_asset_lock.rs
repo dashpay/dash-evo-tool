@@ -104,7 +104,7 @@ impl AppContext {
 
         match platform_wallet
             .core()
-            .build_registration_asset_lock_transaction(amount_duffs, identity_index)
+            .build_asset_lock_transaction(amount_duffs, platform_wallet::AssetLockFundingType::IdentityRegistration, identity_index)
             .await
         {
             Ok((tx, _private_key)) => {
@@ -141,7 +141,7 @@ impl AppContext {
 
         match platform_wallet
             .core()
-            .build_topup_asset_lock_transaction(amount_duffs, identity_index, topup_index)
+            .build_asset_lock_transaction(amount_duffs, platform_wallet::AssetLockFundingType::IdentityTopUp, identity_index)
             .await
         {
             Ok((tx, _private_key)) => {

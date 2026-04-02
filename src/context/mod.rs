@@ -262,19 +262,9 @@ impl AppContext {
             }
         };
 
-        // Convert dashcore Network to key_wallet Network for PlatformWalletManager
-        let kw_network = match network {
-            Network::Mainnet => dash_sdk::dpp::key_wallet::Network::Mainnet,
-            Network::Testnet => dash_sdk::dpp::key_wallet::Network::Testnet,
-            Network::Devnet => dash_sdk::dpp::key_wallet::Network::Devnet,
-            Network::Regtest => dash_sdk::dpp::key_wallet::Network::Regtest,
-            _ => dash_sdk::dpp::key_wallet::Network::Mainnet,
-        };
-
-        // Create the PlatformWalletManager with the SDK and network
+        // Create the PlatformWalletManager with the SDK
         let wallet_manager = Arc::new(DebugWrapper(PlatformWalletManager::new(
             sdk.clone(),
-            kw_network,
         )));
 
         let wallets: BTreeMap<_, _> = match db.get_wallets(&network) {

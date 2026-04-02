@@ -1251,7 +1251,6 @@ impl SpvManager {
     }
 
     /// Identify which sync manager phase is in Error state, if any.
-    #[allow(dead_code)] // Will be used when EventHandler is fully implemented
     /// Checks masternodes first as the most common failure point,
     /// rather than pipeline execution order used by `spv_phase_summary()`.
     fn failed_manager_name(progress: &SpvSyncProgress) -> &'static str {
@@ -1395,7 +1394,7 @@ impl SpvManager {
     fn primary_peer_socket(&self) -> Option<std::net::SocketAddr> {
         let config = self.config.read().ok()?;
 
-        let host = config.core_host.as_str();
+        let host = config.core_host.as_deref()?;
         let port = match self.network {
             Network::Mainnet => 9999,
             Network::Testnet => 19999,

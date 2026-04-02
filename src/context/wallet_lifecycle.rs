@@ -234,25 +234,25 @@ impl AppContext {
             // Note: Platform address sync is not done here.
             // Core UTXO refresh is handled at startup in bootstrap_loaded_wallets.
 
-            // Eagerly initialize shielded wallet state so that the cached
-            // balance (from persisted notes) is available to all UI screens
-            // immediately, without requiring the user to visit the Shielded tab.
-            // Then queue async SyncNotes -> CheckNullifiers to refresh from
-            // the network. This is the single init path — the UI never
-            // dispatches InitializeShieldedWallet.
-            match self.initialize_shielded_wallet(seed_hash) {
-                Ok(_) => {
-                    tracing::trace!(
+            // Initialize shielded wallet state only when the network supports it
+            // (all shielded state transitions present in the platform version).
+            // On mainnet (which doesn't support shielded transactions yet), skip
+            // entirely to avoid unnecessary sync attempts and log noise.
+            if crate::model::feature_gate::FeatureGate::Shielded.is_available(self) {
+                match self.initialize_shielded_wallet(seed_hash) {
+                    Ok(_) => {
+                        tracing::trace!(
+                            seed = %hex::encode(seed_hash),
+                            "Shielded wallet state initialized on unlock"
+                        );
+                        self.queue_shielded_sync(seed_hash);
+                    }
+                    Err(e) => tracing::debug!(
                         seed = %hex::encode(seed_hash),
-                        "Shielded wallet state initialized on unlock"
-                    );
-                    self.queue_shielded_sync(seed_hash);
+                        error = %e,
+                        "Shielded wallet init skipped on unlock"
+                    ),
                 }
-                Err(e) => tracing::debug!(
-                    seed = %hex::encode(seed_hash),
-                    error = %e,
-                    "Shielded wallet init skipped on unlock"
-                ),
             }
         }
     }
@@ -862,8 +862,7 @@ impl AppContext {
     /// Reconcile SPV wallet state into DET.
     pub async fn reconcile_spv_wallets(&self) -> Result<(), TaskError> {
         let wm_arc = self.spv_manager.wallet();
-        let wm: tokio::sync::RwLockReadGuard<'_, dash_sdk::dpp::key_wallet_manager::WalletManager> =
-            wm_arc.read().await;
+        let wm = wm_arc.read().await;
         let mapping = self.spv_manager.det_wallets_snapshot();
 
         // Take a snapshot of known addresses per wallet so we can scope DB updates

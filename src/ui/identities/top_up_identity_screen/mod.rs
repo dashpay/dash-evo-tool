@@ -495,7 +495,7 @@ impl ScreenLike for TopUpIdentityScreen {
                         };
                         if let Some(wallet) = &self.wallet {
                             let wallet = wallet.read().unwrap();
-                            wallet.known_addresses.contains_key(&address)
+                            wallet.has_address(&address)
                         } else {
                             false
                         }

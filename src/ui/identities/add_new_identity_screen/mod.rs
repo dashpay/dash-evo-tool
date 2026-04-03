@@ -1083,7 +1083,7 @@ impl ScreenLike for AddNewIdentityScreen {
                         };
                         if let Some(wallet) = &self.selected_wallet {
                             let wallet = wallet.read().unwrap();
-                            wallet.known_addresses.contains_key(&address)
+                            wallet.has_address(&address)
                         } else {
                             false
                         }

@@ -734,6 +734,22 @@ impl Wallet {
         !self.unused_asset_locks.is_empty()
     }
 
+    /// Look up the derivation path for an address via PlatformWallet.
+    pub fn derivation_path_for_address(&self, address: &Address) -> Option<DerivationPath> {
+        self.platform_wallet.as_ref().and_then(|pw| {
+            let info = pw.core().blocking_wallet_info();
+            platform_wallet::CoreAddressInfo::all_from_wallet_info(&info)
+                .into_iter()
+                .find(|a| &a.address == address)
+                .map(|a| a.derivation_path)
+        })
+    }
+
+    /// Check if an address belongs to this wallet via PlatformWallet.
+    pub fn has_address(&self, address: &Address) -> bool {
+        self.derivation_path_for_address(address).is_some()
+    }
+
     /// Per-address balance from PlatformWallet's CoreAddressInfo.
     pub fn address_balance(&self, address: &Address) -> u64 {
         self.platform_wallet

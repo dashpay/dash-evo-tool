@@ -753,7 +753,7 @@ impl Database {
             let (address, outpoint, tx_out) = row?;
 
             for wallet in wallets_map.values_mut() {
-                if wallet.known_addresses.contains_key(&address) {
+                if wallet.has_address(&address) {
                     wallet
                         .utxos
                         .entry(address.clone())

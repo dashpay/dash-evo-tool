@@ -68,26 +68,24 @@ impl QualifiedIdentityPublicKey {
                     // Iterate over each wallet to check for matching derivation paths
                     for locked_wallet in wallets {
                         let wallet = locked_wallet.read().unwrap();
-                        if let Some(derivation_path) = wallet.known_addresses.get(&address) {
+                        if let Some(derivation_path) =
+                            wallet.derivation_path_for_address(&address)
+                        {
                             in_wallet_at_derivation_path = Some(WalletDerivationPath {
                                 wallet_seed_hash: wallet.seed_hash(),
-                                derivation_path: derivation_path.clone(),
+                                derivation_path,
                             });
-                        }
-                        if in_wallet_at_derivation_path.is_some() {
                             break;
                         }
 
                         if let Some(testnet_address) = testnet_address.as_ref() {
                             if let Some(derivation_path) =
-                                wallet.known_addresses.get(testnet_address)
+                                wallet.derivation_path_for_address(testnet_address)
                             {
                                 in_wallet_at_derivation_path = Some(WalletDerivationPath {
                                     wallet_seed_hash: wallet.seed_hash(),
-                                    derivation_path: derivation_path.clone(),
+                                    derivation_path,
                                 });
-                            }
-                            if in_wallet_at_derivation_path.is_some() {
                                 break;
                             }
                         }
@@ -109,26 +107,24 @@ impl QualifiedIdentityPublicKey {
                     // Iterate over each wallet to check for matching derivation paths
                     for locked_wallet in wallets {
                         let wallet = locked_wallet.read().unwrap();
-                        if let Some(derivation_path) = wallet.known_addresses.get(&address) {
+                        if let Some(derivation_path) =
+                            wallet.derivation_path_for_address(&address)
+                        {
                             in_wallet_at_derivation_path = Some(WalletDerivationPath {
                                 wallet_seed_hash: wallet.seed_hash(),
-                                derivation_path: derivation_path.clone(),
+                                derivation_path,
                             });
-                        }
-                        if in_wallet_at_derivation_path.is_some() {
                             break;
                         }
 
                         if let Some(testnet_address) = testnet_address.as_ref() {
                             if let Some(derivation_path) =
-                                wallet.known_addresses.get(testnet_address)
+                                wallet.derivation_path_for_address(testnet_address)
                             {
                                 in_wallet_at_derivation_path = Some(WalletDerivationPath {
                                     wallet_seed_hash: wallet.seed_hash(),
-                                    derivation_path: derivation_path.clone(),
+                                    derivation_path,
                                 });
-                            }
-                            if in_wallet_at_derivation_path.is_some() {
                                 break;
                             }
                         }
@@ -159,24 +155,24 @@ impl QualifiedIdentityPublicKey {
                 // Iterate over each wallet to check for matching derivation paths
                 for locked_wallet in wallets {
                     let wallet = locked_wallet.read().unwrap();
-                    if let Some(derivation_path) = wallet.known_addresses.get(&address) {
+                    if let Some(derivation_path) =
+                        wallet.derivation_path_for_address(&address)
+                    {
                         in_wallet_at_derivation_path = Some(WalletDerivationPath {
                             wallet_seed_hash: wallet.seed_hash(),
-                            derivation_path: derivation_path.clone(),
+                            derivation_path,
                         });
-                    }
-                    if in_wallet_at_derivation_path.is_some() {
                         break;
                     }
 
                     if let Some(testnet_address) = testnet_address.as_ref() {
-                        if let Some(derivation_path) = wallet.known_addresses.get(testnet_address) {
+                        if let Some(derivation_path) =
+                            wallet.derivation_path_for_address(testnet_address)
+                        {
                             in_wallet_at_derivation_path = Some(WalletDerivationPath {
                                 wallet_seed_hash: wallet.seed_hash(),
-                                derivation_path: derivation_path.clone(),
+                                derivation_path,
                             });
-                        }
-                        if in_wallet_at_derivation_path.is_some() {
                             break;
                         }
                     }

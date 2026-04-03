@@ -561,7 +561,7 @@ impl AppContext {
         path_reference: DerivationPathReference,
     ) -> Result<bool, TaskError> {
         let mut guard = wallet.write()?;
-        if guard.known_addresses.contains_key(&address) {
+        if guard.has_address(&address) {
             return Ok(false);
         }
 

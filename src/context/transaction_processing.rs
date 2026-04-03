@@ -175,7 +175,7 @@ impl AppContext {
                 let address = if let Ok(output_addr) =
                     Address::from_script(&tx_out.script_pubkey, self.network)
                 {
-                    if wallet.known_addresses.contains_key(&output_addr) {
+                    if wallet.has_address(&output_addr) {
                         output_addr
                     } else {
                         continue;
@@ -295,7 +295,7 @@ impl AppContext {
             // Check if any of the addresses in the transaction outputs match the wallet's known addresses
             let matches_wallet = payload.credit_outputs.iter().any(|tx_out| {
                 if let Ok(output_addr) = Address::from_script(&tx_out.script_pubkey, self.network) {
-                    wallet.known_addresses.contains_key(&output_addr)
+                    wallet.has_address(&output_addr)
                 } else {
                     false
                 }

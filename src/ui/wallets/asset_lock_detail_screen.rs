@@ -216,7 +216,7 @@ impl AssetLockDetailScreen {
                             let wallet = wallet_arc.read().unwrap();
 
                             // Find the private key for this address
-                            if let Some(derivation_path) = wallet.known_addresses.get(&address).cloned() {
+                            if let Some(derivation_path) = wallet.derivation_path_for_address(&address) {
                                 drop(wallet); // Release the read lock before getting write lock
 
                                 ui.horizontal(|ui| {

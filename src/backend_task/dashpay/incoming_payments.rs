@@ -244,7 +244,7 @@ fn register_dashpay_address(
     // Register with the wallet's known addresses
     let mut guard = wallet.write().map_err(|e| e.to_string())?;
 
-    if guard.known_addresses.contains_key(address) {
+    if guard.has_address(address) {
         return Ok(()); // Already registered
     }
 

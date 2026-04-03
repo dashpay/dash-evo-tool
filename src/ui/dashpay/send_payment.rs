@@ -256,14 +256,15 @@ impl SendPaymentScreen {
                             .strong()
                             .color(DashColors::text_primary(dark_mode)),
                     );
-                    let balance_dash = if let Some(wallet) = &self.selected_wallet {
-                        if let Ok(wallet_guard) = wallet.read() {
-                            wallet_guard.confirmed_balance_duffs() as f64 / 100_000_000.0
-                        } else {
-                            0.0
-                        }
-                    } else {
-                        0.0
+                    let balance_dash = {
+                        let seed_hash = self
+                            .selected_wallet
+                            .as_ref()
+                            .and_then(|w| w.read().ok().map(|g| g.seed_hash()));
+                        seed_hash
+                            .and_then(|h| self.app_context.get_platform_wallet(&h))
+                            .map(|pw| pw.core().balance().spendable() as f64 / 100_000_000.0)
+                            .unwrap_or(0.0)
                     };
                     ui.label(
                         RichText::new(format!("{:.8} DASH", balance_dash))
@@ -296,14 +297,15 @@ impl SendPaymentScreen {
                 ui.separator();
 
                 // Amount input - use wallet balance for max
-                let max_balance = if let Some(wallet) = &self.selected_wallet {
-                    if let Ok(wallet_guard) = wallet.read() {
-                        wallet_guard.confirmed_balance_duffs()
-                    } else {
-                        0
-                    }
-                } else {
-                    0
+                let max_balance = {
+                    let seed_hash = self
+                        .selected_wallet
+                        .as_ref()
+                        .and_then(|w| w.read().ok().map(|g| g.seed_hash()));
+                    seed_hash
+                        .and_then(|h| self.app_context.get_platform_wallet(&h))
+                        .map(|pw| pw.core().balance().spendable())
+                        .unwrap_or(0)
                 };
 
                 let amount_input = self.amount_input.get_or_insert_with(|| {

@@ -1111,8 +1111,13 @@ impl WalletsBalancesScreen {
         }
 
         {
-            let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
-            if amount_duffs > wallet_guard.confirmed_balance_duffs() {
+            let seed_hash = wallet.read().map_err(|e| e.to_string())?.seed_hash();
+            let spendable = self
+                .app_context
+                .get_platform_wallet(&seed_hash)
+                .map(|pw| pw.core().balance().spendable())
+                .unwrap_or(0);
+            if amount_duffs > spendable {
                 return Err("Insufficient confirmed balance".to_string());
             }
         }

@@ -8,11 +8,13 @@ use egui::{Color32, Frame, Margin, RichText, Ui};
 impl TopUpIdentityScreen {
     fn show_wallet_balance(&self, ui: &mut egui::Ui) {
         if let Some(selected_wallet) = &self.wallet {
-            let wallet = selected_wallet.read().unwrap(); // Read lock on the wallet
+            let seed_hash = selected_wallet.read().ok().map(|g| g.seed_hash());
+            let total_balance = seed_hash
+                .and_then(|h| self.app_context.get_platform_wallet(&h))
+                .map(|pw| pw.core().balance().total())
+                .unwrap_or(0);
 
-            let total_balance: u64 = wallet.total_balance_duffs(); // Use stored balance with UTXO fallback
-
-            let dash_balance = total_balance as f64 * 1e-8; // Convert to DASH units
+            let dash_balance = total_balance as f64 * 1e-8;
 
             ui.horizontal(|ui| {
                 ui.label(format!("Wallet Balance: {:.8} DASH", dash_balance));

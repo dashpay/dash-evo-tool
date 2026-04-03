@@ -193,7 +193,12 @@ impl ShieldScreen {
                 self.cached_core_balance =
                     Some(wallet.address_balances.get(addr).copied().unwrap_or(0));
             } else {
-                self.cached_core_balance = Some(wallet.total_balance_duffs());
+                // Use lock-free balance from PlatformWallet when available
+                let pw_balance = self
+                    .app_context
+                    .get_platform_wallet(&self.seed_hash)
+                    .map(|pw| pw.core().balance().total());
+                self.cached_core_balance = Some(pw_balance.unwrap_or_else(|| wallet.total_balance_duffs()));
             }
         } else {
             self.cached_base_nonce = None;

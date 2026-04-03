@@ -655,12 +655,13 @@ impl WalletSendScreen {
         }
     }
 
-    /// Get Core wallet balance
+    /// Get Core wallet balance (lock-free via `WalletBalance`).
     fn get_core_balance(&self) -> u64 {
         self.selected_wallet
             .as_ref()
-            .and_then(|w| w.read().ok())
-            .map(|w| w.confirmed_balance_duffs())
+            .and_then(|w| w.read().ok().map(|g| g.seed_hash()))
+            .and_then(|h| self.app_context.get_platform_wallet(&h))
+            .map(|pw| pw.core().balance().spendable())
             .unwrap_or(0)
     }
 
@@ -2224,11 +2225,12 @@ impl WalletSendScreen {
         // Get max amount and hint based on source selection
         let (max_amount_credits, max_hint) = match &self.selected_source {
             Some(SourceSelection::CoreWallet) => {
-                let mut max = self.selected_wallet.as_ref().and_then(|w| {
-                    w.read()
-                        .ok()
-                        .map(|wallet| wallet.total_balance_duffs() * CREDITS_PER_DUFF) // duffs to credits
-                });
+                let mut max = self
+                    .selected_wallet
+                    .as_ref()
+                    .and_then(|w| w.read().ok().map(|g| g.seed_hash()))
+                    .and_then(|h| self.app_context.get_platform_wallet(&h))
+                    .map(|pw| pw.core().balance().total() * CREDITS_PER_DUFF);
                 let dest_kind = self.destination_kind();
                 let hint = match dest_kind {
                     Some(AddressKind::Platform) => {

@@ -224,16 +224,15 @@ impl WalletsBalancesScreen {
         selected_wallet: Option<Arc<RwLock<Wallet>>>,
         selected_single_key_wallet: Option<Arc<RwLock<SingleKeyWallet>>>,
     ) -> Self {
-        let platform_sync_info = selected_wallet
+        let seed_hash = selected_wallet
             .as_ref()
-            .and_then(|w| w.read().ok().map(|g| g.seed_hash()))
+            .and_then(|w| w.read().ok().map(|g| g.seed_hash()));
+
+        let platform_sync_info = seed_hash
             .and_then(|hash| app_context.db.get_platform_sync_info(&hash).ok())
             .filter(|(ts, _)| *ts > 0);
 
-        let shielded_tab_view = selected_wallet
-            .as_ref()
-            .and_then(|w| w.read().ok().map(|g| g.seed_hash()))
-            .map(|hash| ShieldedTabView::new(app_context, hash));
+        let shielded_tab_view = seed_hash.map(|hash| ShieldedTabView::new(app_context, hash));
 
         Self {
             selected_wallet,
@@ -530,9 +529,14 @@ impl WalletsBalancesScreen {
         if let Ok(wallets_guard) = self.app_context.wallets.read() {
             for wallet in wallets_guard.values() {
                 let guard = wallet.read().unwrap();
-                let core_balance = guard.total_balance_duffs();
+                let seed_hash = guard.seed_hash();
+                let core_balance = self
+                    .app_context
+                    .get_platform_wallet(&seed_hash)
+                    .map(|pw| pw.core().balance().total())
+                    .unwrap_or(0);
                 let platform_balance = Self::platform_balance_duffs(&guard);
-                let shielded_balance = self.shielded_balance_duffs(&guard.seed_hash());
+                let shielded_balance = self.shielded_balance_duffs(&seed_hash);
                 let balance_dash =
                     (core_balance + platform_balance + shielded_balance) as f64 * 1e-8;
                 let label = format!(
@@ -596,7 +600,7 @@ impl WalletsBalancesScreen {
                 .read()
                 .ok()
                 .map(|g| {
-                    let core = g.total_balance_duffs();
+                    let core = self.core_balance_duffs();
                     let platform = Self::platform_balance_duffs(&g);
                     let shielded = self.shielded_balance_duffs(&g.seed_hash());
                     core + platform + shielded
@@ -1030,6 +1034,17 @@ impl WalletsBalancesScreen {
         DateTime::<Utc>::from_timestamp(ts as i64, 0)
             .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
             .unwrap_or_else(|| "Unknown".to_string())
+    }
+
+    /// Core balance from the `PlatformWallet`'s lock-free `WalletBalance`.
+    /// Returns 0 if no platform wallet is available.
+    fn core_balance_duffs(&self) -> u64 {
+        self.selected_wallet
+            .as_ref()
+            .and_then(|w| w.read().ok().map(|g| g.seed_hash()))
+            .and_then(|h| self.app_context.get_platform_wallet(&h))
+            .map(|pw| pw.core().balance().total())
+            .unwrap_or(0)
     }
 
     fn platform_balance_duffs(wallet: &Wallet) -> u64 {
@@ -1933,7 +1948,7 @@ impl WalletsBalancesScreen {
     /// Render the total balance label only (used in the left column of the header).
     fn render_balance_total(&self, ui: &mut Ui, wallet: &Wallet) {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
-        let core_balance = wallet.total_balance_duffs();
+        let core_balance = self.core_balance_duffs();
         let platform_balance = Self::platform_balance_duffs(wallet);
         let shielded_balance = self.shielded_balance_duffs(&wallet.seed_hash());
         let total = core_balance + platform_balance + shielded_balance;
@@ -1949,7 +1964,7 @@ impl WalletsBalancesScreen {
     /// Render the collapsible breakdown detail (used in the right column of the header).
     fn render_balance_breakdown_detail(&mut self, ui: &mut Ui, wallet: &Wallet) {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
-        let core_balance = wallet.total_balance_duffs();
+        let core_balance = self.core_balance_duffs();
         let platform_balance = Self::platform_balance_duffs(wallet);
         let shielded_balance = self.shielded_balance_duffs(&wallet.seed_hash());
 

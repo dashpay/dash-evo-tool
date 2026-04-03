@@ -52,10 +52,6 @@ impl AppContext {
             single_key_wallets.clear();
         }
 
-        // Clear platform wallet bridge state
-        if let Ok(mut pw) = self.platform_wallets.lock() {
-            pw.clear();
-        }
         if let Ok(mut mapping) = self.wallet_id_mapping.lock() {
             *mapping = crate::platform_wallet_bridge::WalletIdMapping::new();
         }
@@ -65,15 +61,15 @@ impl AppContext {
         Ok(())
     }
 
-    /// Get a `PlatformWallet` by the old `WalletSeedHash` key.
+    /// Get a `PlatformWallet` by `WalletSeedHash`.
     ///
-    /// Returns `None` if the wallet is not registered with the bridge
-    /// (e.g. the wallet is locked/closed, or hasn't been unlocked yet).
+    /// Returns `None` if the wallet doesn't exist or is locked (no platform_wallet).
     pub(crate) fn get_platform_wallet(&self, seed_hash: &WalletSeedHash) -> Option<PlatformWallet> {
-        self.platform_wallets
-            .lock()
+        self.wallets
+            .read()
             .ok()
-            .and_then(|pw| pw.get(seed_hash).cloned())
+            .and_then(|wallets| wallets.get(seed_hash).cloned())
+            .and_then(|w| w.read().ok().and_then(|g| g.platform_wallet.clone()))
     }
 
     /// Get any available `PlatformWallet`.
@@ -82,10 +78,14 @@ impl AppContext {
     /// instance is used (e.g. DPNS resolution, identity fetches where the
     /// wallet derivation index is irrelevant).
     pub(crate) fn first_available_platform_wallet(&self) -> Option<PlatformWallet> {
-        self.platform_wallets
-            .lock()
+        self.wallets
+            .read()
             .ok()
-            .and_then(|pw| pw.values().next().cloned())
+            .and_then(|wallets| {
+                wallets.values().find_map(|w| {
+                    w.read().ok().and_then(|g| g.platform_wallet.clone())
+                })
+            })
     }
 
     /// Get a `PlatformWallet` by seed hash, or return `TaskError::WalletNotFound`.
@@ -259,7 +259,7 @@ impl AppContext {
     }
 
     /// Register an open wallet with the `PlatformWalletManager` and populate
-    /// the `platform_wallets` bridge map and `wallet_id_mapping`.
+    /// the `wallet_id_mapping`.
     ///
     /// This bridges the old `Wallet` type to the new `PlatformWallet` type
     /// during migration. If the wallet is already registered (e.g. from a
@@ -300,11 +300,6 @@ impl AppContext {
                     }
                 }
 
-                // Also keep in the bridge map during migration
-                if let Ok(mut pw) = self.platform_wallets.lock() {
-                    pw.insert(seed_hash, platform_wallet);
-                }
-
                 tracing::info!(
                     seed = %hex::encode(seed_hash),
                     wallet_id = %hex::encode(wallet_id),
@@ -336,10 +331,6 @@ impl AppContext {
             guard.platform_wallet = None;
         }
 
-        // Remove from platform wallet bridge (seed bytes are no longer available)
-        if let Ok(mut pw) = self.platform_wallets.lock() {
-            pw.remove(&seed_hash);
-        }
         if let Ok(mut mapping) = self.wallet_id_mapping.lock() {
             mapping.remove_by_seed_hash(&seed_hash);
         }

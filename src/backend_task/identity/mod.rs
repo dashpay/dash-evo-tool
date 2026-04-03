@@ -852,24 +852,12 @@ impl AppContext {
 
         // Update destination address balances in any wallets that contain them
         // (using proof-verified data from the SDK response).
-        // Iterate using the platform_wallets bridge map to collect seed hashes,
-        // then update via the old wallets map (which still owns the address info).
         {
             let seed_hashes: Vec<WalletSeedHash> = self
-                .platform_wallets
-                .lock()
-                .map(|pw| pw.keys().copied().collect())
+                .wallets
+                .read()
+                .map(|w| w.keys().copied().collect())
                 .unwrap_or_default();
-
-            // Fall back to old wallets map if platform_wallets is empty (e.g. locked wallets)
-            let seed_hashes = if seed_hashes.is_empty() {
-                self.wallets
-                    .read()
-                    .map(|w| w.keys().copied().collect())
-                    .unwrap_or_default()
-            } else {
-                seed_hashes
-            };
 
             for seed_hash in seed_hashes {
                 if let Err(e) =

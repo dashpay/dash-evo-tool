@@ -103,11 +103,6 @@ pub struct AppContext {
     /// switched from the old `wallets` map to this manager.
     #[allow(dead_code)] // Used during incremental migration to PlatformWallet
     pub(crate) wallet_manager: Arc<DebugWrapper<PlatformWalletManager>>,
-    /// `PlatformWallet` instances keyed by `WalletSeedHash` for bridge access.
-    /// During migration, callers can look up a `PlatformWallet` by the same
-    /// seed hash they use for the old `wallets` map.
-    pub(crate) platform_wallets:
-        Mutex<BTreeMap<WalletSeedHash, crate::platform_wallet_bridge::PlatformWallet>>,
     /// Bidirectional mapping between `WalletSeedHash` (old key) and `WalletId` (new key).
     /// Protected by a std `Mutex` since updates happen infrequently (wallet add/remove).
     pub(crate) wallet_id_mapping: Mutex<WalletIdMapping>,
@@ -392,7 +387,6 @@ impl AppContext {
             wallets: RwLock::new(wallets),
             single_key_wallets: RwLock::new(single_key_wallets),
             wallet_manager,
-            platform_wallets: Mutex::new(BTreeMap::new()),
             wallet_id_mapping: Mutex::new(WalletIdMapping::new()),
             password_info,
             transactions_waiting_for_finality: Mutex::new(BTreeMap::new()),

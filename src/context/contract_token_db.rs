@@ -158,10 +158,6 @@ impl AppContext {
         let has_wallet = !wallets.is_empty();
         drop(wallets);
 
-        // Clean up platform wallet bridge state
-        if let Ok(mut pw) = self.platform_wallets.lock() {
-            pw.remove(seed_hash);
-        }
         if let Ok(mut mapping) = self.wallet_id_mapping.lock() {
             mapping.remove_by_seed_hash(seed_hash);
         }

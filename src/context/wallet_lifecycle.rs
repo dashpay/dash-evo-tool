@@ -291,7 +291,16 @@ impl AppContext {
                     mapping.insert(seed_hash, wallet_id);
                 }
 
-                // Store the PlatformWallet keyed by seed_hash for bridge access
+                // Store on the Wallet struct itself
+                if let Ok(wallets) = self.wallets.read() {
+                    if let Some(wallet_arc) = wallets.get(&seed_hash) {
+                        if let Ok(mut wallet) = wallet_arc.write() {
+                            wallet.platform_wallet = Some(platform_wallet.clone());
+                        }
+                    }
+                }
+
+                // Also keep in the bridge map during migration
                 if let Ok(mut pw) = self.platform_wallets.lock() {
                     pw.insert(seed_hash, platform_wallet);
                 }
@@ -321,6 +330,11 @@ impl AppContext {
             }
         };
         self.queue_spv_wallet_unload(seed_hash);
+
+        // Clear platform wallet from the Wallet struct
+        if let Ok(mut guard) = wallet.write() {
+            guard.platform_wallet = None;
+        }
 
         // Remove from platform wallet bridge (seed bytes are no longer available)
         if let Ok(mut pw) = self.platform_wallets.lock() {

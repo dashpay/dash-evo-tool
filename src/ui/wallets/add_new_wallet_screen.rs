@@ -212,7 +212,10 @@ impl AddNewWalletScreen {
         // Check for incoming funds by looking at wallet balance (lock-free via WalletBalance)
         if !self.funds_received {
             if let Some(seed_hash) = &self.created_wallet_seed_hash
-                && let Some(pw) = self.app_context.get_platform_wallet(seed_hash)
+                && let Ok(wallets) = self.app_context.wallets.read()
+                && let Some(wallet) = wallets.get(seed_hash)
+                && let Ok(guard) = wallet.read()
+                && let Some(pw) = guard.platform_wallet.as_ref()
                 && pw.core().balance().total() > 0
             {
                 self.funds_received = true;

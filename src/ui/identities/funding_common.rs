@@ -5,7 +5,6 @@ use image::Luma;
 use qrcode::QrCode;
 use std::sync::{Arc, RwLock};
 
-use crate::context::AppContext;
 use crate::model::wallet::Wallet;
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dpp::dashcore::{OutPoint, TxOut};
@@ -57,7 +56,6 @@ pub fn copy_to_clipboard(text: &str) -> Result<(), String> {
 
 pub fn capture_qr_funding_utxo_if_available(
     step: &Arc<RwLock<WalletFundedScreenStep>>,
-    app_context: &AppContext,
     wallet: Option<&Arc<RwLock<Wallet>>>,
     funding_address: Option<&Address>,
 ) -> Option<(OutPoint, TxOut, Address)> {
@@ -71,8 +69,8 @@ pub fn capture_qr_funding_utxo_if_available(
     let address = funding_address.cloned()?;
     let wallet_arc = wallet?;
 
-    let seed_hash = wallet_arc.read().ok().map(|g| g.seed_hash())?;
-    let pw = app_context.get_platform_wallet(&seed_hash)?;
+    let guard = wallet_arc.read().ok()?;
+    let pw = guard.platform_wallet.as_ref()?;
     let info = pw.core().blocking_wallet_info();
 
     let candidate_utxo = info

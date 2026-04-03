@@ -9,10 +9,10 @@ use egui::{Color32, RichText, Ui};
 impl AddNewIdentityScreen {
     fn show_wallet_balance(&self, ui: &mut egui::Ui) {
         if let Some(selected_wallet) = &self.selected_wallet {
-            let seed_hash = selected_wallet.read().ok().map(|g| g.seed_hash());
-            let total_balance = seed_hash
-                .and_then(|h| self.app_context.get_platform_wallet(&h))
-                .map(|pw| pw.core().balance().total())
+            let total_balance = selected_wallet
+                .read()
+                .ok()
+                .and_then(|g| g.platform_wallet.as_ref().map(|pw| pw.core().balance().total()))
                 .unwrap_or(0);
 
             let dash_balance = total_balance as f64 * 1e-8;

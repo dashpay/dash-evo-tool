@@ -337,8 +337,11 @@ pub struct PlatformAddressInfo {
     pub nonce: AddressNonce,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Wallet {
+    /// The platform wallet — `None` when the wallet is locked (encrypted seed).
+    /// Set on creation (open wallet) or on unlock.
+    pub platform_wallet: Option<crate::platform_wallet_bridge::PlatformWallet>,
     pub wallet_seed: WalletSeed,
     pub uses_password: bool,
     pub master_bip44_ecdsa_extended_public_key: ExtendedPubKey,
@@ -421,6 +424,7 @@ impl Wallet {
                 .map_err(|e| TaskError::WalletKeyDerivationFailed { source: e.into() })?;
 
         Ok(Wallet {
+            platform_wallet: None,
             wallet_seed: WalletSeed::Open(OpenWalletSeed {
                 seed,
                 wallet_info: ClosedKeyItem {
@@ -2753,6 +2757,7 @@ mod tests {
         let seed_hash = ClosedKeyItem::compute_seed_hash(&seed);
 
         Wallet {
+            platform_wallet: None,
             wallet_seed: WalletSeed::Open(OpenWalletSeed {
                 seed,
                 wallet_info: ClosedKeyItem {

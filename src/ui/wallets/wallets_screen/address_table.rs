@@ -148,11 +148,12 @@ impl WalletsBalancesScreen {
     /// Build `AddressData` directly from PlatformWallet's `ManagedWalletInfo`
     /// (fallback when the async cache hasn't been populated yet).
     fn address_data_from_platform_wallet(screen: &Self) -> Vec<AddressData> {
-        let seed_hash = screen
+        let pw = screen
             .selected_wallet
             .as_ref()
-            .and_then(|w| w.read().ok().map(|g| g.seed_hash()));
-        let Some(pw) = seed_hash.and_then(|h| screen.app_context.get_platform_wallet(&h)) else {
+            .and_then(|w| w.read().ok())
+            .and_then(|g| g.platform_wallet.clone());
+        let Some(pw) = pw else {
             return Vec::new();
         };
         let info = pw.core().blocking_wallet_info();

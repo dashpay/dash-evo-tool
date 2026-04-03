@@ -564,6 +564,7 @@ impl Database {
             wallets_map.insert(
                 seed_hash_array,
                 Wallet {
+                    platform_wallet: None,
                     wallet_seed,
                     uses_password,
                     master_bip44_ecdsa_extended_public_key: master_ecdsa_extended_public_key,

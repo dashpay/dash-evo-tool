@@ -380,9 +380,8 @@ impl TopUpIdentityScreen {
                 let max_amount_duffs = self
                     .wallet
                     .as_ref()
-                    .and_then(|w| w.read().ok().map(|g| g.seed_hash()))
-                    .and_then(|h| self.app_context.get_platform_wallet(&h))
-                    .map(|pw| pw.core().balance().total())
+                    .and_then(|w| w.read().ok())
+                    .and_then(|g| g.platform_wallet.as_ref().map(|pw| pw.core().balance().total()))
                     .unwrap_or(0);
                 // Convert Duffs to Credits (1 Duff = 1000 Credits)
                 let total_credits = max_amount_duffs * 1000;

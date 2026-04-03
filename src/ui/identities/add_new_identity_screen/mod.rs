@@ -923,9 +923,8 @@ impl AddNewIdentityScreen {
         let max_amount_credits = if funding_method == FundingMethod::UseWalletBalance {
             self.selected_wallet
                 .as_ref()
-                .and_then(|w| w.read().ok().map(|g| g.seed_hash()))
-                .and_then(|h| self.app_context.get_platform_wallet(&h))
-                .map(|pw| pw.core().balance().total() * 1000)
+                .and_then(|w| w.read().ok())
+                .and_then(|g| g.platform_wallet.as_ref().map(|pw| pw.core().balance().total() * 1000))
         } else {
             None
         };

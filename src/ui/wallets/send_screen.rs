@@ -659,9 +659,8 @@ impl WalletSendScreen {
     fn get_core_balance(&self) -> u64 {
         self.selected_wallet
             .as_ref()
-            .and_then(|w| w.read().ok().map(|g| g.seed_hash()))
-            .and_then(|h| self.app_context.get_platform_wallet(&h))
-            .map(|pw| pw.core().balance().spendable())
+            .and_then(|w| w.read().ok())
+            .and_then(|g| g.platform_wallet.as_ref().map(|pw| pw.core().balance().spendable()))
             .unwrap_or(0)
     }
 
@@ -687,11 +686,12 @@ impl WalletSendScreen {
 
     /// Get Core addresses with their UTXO balances (from PlatformWallet).
     fn get_core_addresses(&self) -> Vec<(Address, u64)> {
-        let seed_hash = self
+        let Some(pw) = self
             .selected_wallet
             .as_ref()
-            .and_then(|w| w.read().ok().map(|g| g.seed_hash()));
-        let Some(pw) = seed_hash.and_then(|h| self.app_context.get_platform_wallet(&h)) else {
+            .and_then(|w| w.read().ok())
+            .and_then(|g| g.platform_wallet.clone())
+        else {
             return vec![];
         };
         let info = pw.core().blocking_wallet_info();
@@ -2233,9 +2233,8 @@ impl WalletSendScreen {
                 let mut max = self
                     .selected_wallet
                     .as_ref()
-                    .and_then(|w| w.read().ok().map(|g| g.seed_hash()))
-                    .and_then(|h| self.app_context.get_platform_wallet(&h))
-                    .map(|pw| pw.core().balance().total() * CREDITS_PER_DUFF);
+                    .and_then(|w| w.read().ok())
+                    .and_then(|g| g.platform_wallet.as_ref().map(|pw| pw.core().balance().total() * CREDITS_PER_DUFF));
                 let dest_kind = self.destination_kind();
                 let hint = match dest_kind {
                     Some(AddressKind::Platform) => {

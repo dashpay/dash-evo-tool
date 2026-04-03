@@ -530,9 +530,9 @@ impl WalletsBalancesScreen {
             for wallet in wallets_guard.values() {
                 let guard = wallet.read().unwrap();
                 let seed_hash = guard.seed_hash();
-                let core_balance = self
-                    .app_context
-                    .get_platform_wallet(&seed_hash)
+                let core_balance = guard
+                    .platform_wallet
+                    .as_ref()
                     .map(|pw| pw.core().balance().total())
                     .unwrap_or(0);
                 let platform_balance = Self::platform_balance_duffs(&guard);
@@ -1041,9 +1041,8 @@ impl WalletsBalancesScreen {
     fn core_balance_duffs(&self) -> u64 {
         self.selected_wallet
             .as_ref()
-            .and_then(|w| w.read().ok().map(|g| g.seed_hash()))
-            .and_then(|h| self.app_context.get_platform_wallet(&h))
-            .map(|pw| pw.core().balance().total())
+            .and_then(|w| w.read().ok())
+            .and_then(|g| g.platform_wallet.as_ref().map(|pw| pw.core().balance().total()))
             .unwrap_or(0)
     }
 
@@ -2219,10 +2218,10 @@ impl ScreenLike for WalletsBalancesScreen {
         let load_address_info_action = if self.cached_address_info.is_none() {
             self.selected_wallet
                 .as_ref()
-                .and_then(|w| w.read().ok().map(|g| g.seed_hash()))
-                .and_then(|seed_hash| {
-                    // Only dispatch if the platform wallet bridge is available
-                    if self.app_context.get_platform_wallet(&seed_hash).is_some() {
+                .and_then(|w| w.read().ok().map(|g| (g.seed_hash(), g.platform_wallet.is_some())))
+                .and_then(|(seed_hash, has_pw)| {
+                    // Only dispatch if the platform wallet is available
+                    if has_pw {
                         Some(AppAction::BackendTask(BackendTask::WalletTask(
                             WalletTask::LoadAddressInfo { seed_hash },
                         )))
@@ -2878,7 +2877,7 @@ impl ScreenLike for WalletsBalancesScreen {
                         .ok()
                         .map(|addr| addr.assume_checked())
                         .and_then(|addr| {
-                            let pw = self.app_context.get_platform_wallet(&seed_hash)?;
+                            let pw = wallet.platform_wallet.as_ref()?;
                             let info = pw.core().blocking_wallet_info();
                             platform_wallet::CoreAddressInfo::all_from_wallet_info(&info)
                                 .into_iter()

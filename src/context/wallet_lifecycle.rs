@@ -1321,37 +1321,41 @@ impl AppContext {
                     friend_identity_id: contact_id.to_buffer(),
                 };
 
-                let account_xpub = {
-                    let wallet = pw.core().blocking_wallet();
-                    let kw_net = self.wallet_network_key();
-                    match account_type.derivation_path(kw_net) {
-                        Ok(path) => match wallet.derive_extended_public_key(&path) {
-                            Ok(xpub) => xpub,
-                            Err(e) => {
-                                tracing::debug!(contact = %contact_id, error = %e, "Failed to derive contact xpub");
-                                continue;
-                            }
-                        },
-                        Err(e) => {
-                            tracing::debug!(contact = %contact_id, error = %e, "Failed to derive contact path");
-                            continue;
-                        }
-                    }
-                };
-
                 use dash_sdk::dpp::key_wallet::Account;
                 use dash_sdk::dpp::key_wallet::managed_account::ManagedCoreAccount;
 
                 let kw_network = self.wallet_network_key();
-                let account = Account {
-                    parent_wallet_id: None,
-                    account_type,
-                    network: kw_network,
-                    account_xpub,
-                    is_watch_only: false,
-                };
-                let managed = ManagedCoreAccount::from_account(&account);
 
+                // Derive xpub and add account to key-wallet's Wallet (key store)
+                let account = {
+                    let mut wallet = pw.core().blocking_wallet_mut();
+                    let path = match account_type.derivation_path(kw_network) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            tracing::debug!(contact = %contact_id, error = %e, "Failed to derive contact path");
+                            continue;
+                        }
+                    };
+                    let account_xpub = match wallet.derive_extended_public_key(&path) {
+                        Ok(xpub) => xpub,
+                        Err(e) => {
+                            tracing::debug!(contact = %contact_id, error = %e, "Failed to derive contact xpub");
+                            continue;
+                        }
+                    };
+                    let account = Account {
+                        parent_wallet_id: Some(wallet.wallet_id),
+                        account_type,
+                        network: kw_network,
+                        account_xpub,
+                        is_watch_only: false,
+                    };
+                    let _ = wallet.accounts.insert(account.clone());
+                    account
+                };
+
+                // Add managed wrapper to ManagedWalletInfo (address pools)
+                let managed = ManagedCoreAccount::from_account(&account);
                 if let Some(mut info) = pw.core().try_wallet_info_mut() {
                     if let Err(e) = info.accounts.insert(managed) {
                         tracing::debug!(contact = %contact_id, error = %e, "Failed to insert contact account");

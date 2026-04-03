@@ -183,6 +183,20 @@ pub(crate) fn qualified_identity(
         })
 }
 
+/// Get the `PlatformWallet` for a given seed hash.
+///
+/// Returns `McpToolError::WalletNotFound` if no platform wallet is registered
+/// for this seed hash (e.g. wallet not unlocked yet).
+pub(crate) fn platform_wallet(
+    ctx: &AppContext,
+    seed_hash: WalletSeedHash,
+) -> Result<crate::platform_wallet_bridge::PlatformWallet, McpToolError> {
+    ctx.get_platform_wallet(&seed_hash)
+        .ok_or_else(|| McpToolError::WalletNotFound {
+            id: hex::encode(seed_hash),
+        })
+}
+
 /// Validate amount in credits for sending operations.
 pub(crate) fn validate_credits(amount_credits: u64) -> Result<(), McpToolError> {
     if amount_credits == 0 {

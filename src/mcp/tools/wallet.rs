@@ -143,14 +143,21 @@ impl AsyncTool<DashMcpService> for WalletBalancesQuery {
 
         resolve::ensure_spv_synced(&ctx).await?;
 
-        let wallet_arc = resolve::wallet_arc(&ctx, seed_hash)?;
-        let wallet = wallet_arc.read().unwrap_or_else(|e| e.into_inner());
+        // Read alias from evo-tool Wallet (still the owner of metadata).
+        let alias = resolve::wallet_arc(&ctx, seed_hash)
+            .ok()
+            .and_then(|arc| arc.read().ok().and_then(|w| w.alias.clone()));
+
+        // Read balances from PlatformWallet's lock-free atomics — no RwLock
+        // needed, instant read.
+        let pw = resolve::platform_wallet(&ctx, seed_hash)?;
+        let bal = pw.core().balance();
 
         Ok(WalletBalancesOutput {
-            alias: wallet.alias.clone(),
-            total_duffs: wallet.total_balance_duffs(),
-            confirmed_duffs: wallet.confirmed_balance_duffs(),
-            unconfirmed_duffs: wallet.unconfirmed_balance_duffs(),
+            alias,
+            total_duffs: bal.total(),
+            confirmed_duffs: bal.spendable(),
+            unconfirmed_duffs: bal.unconfirmed(),
         })
     }
 }

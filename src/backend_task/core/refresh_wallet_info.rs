@@ -24,8 +24,8 @@ impl AppContext {
         let (addresses, asset_lock_txs, seed_hash, core_wallet_name) = {
             let wallet_guard = wallet.read()?;
 
-            // Read addresses from PlatformWallet (canonical source) when available,
-            // falling back to known_addresses for wallets not yet bootstrapped.
+            // Read addresses from PlatformWallet (canonical source).
+            // Locked wallets (no PlatformWallet) have no addresses — return empty.
             // Exclude platform payment addresses since those are not tracked by Core.
             let addrs = if let Some(pw) = wallet_guard.platform_wallet.as_ref() {
                 let info = pw.core().blocking_wallet_info();
@@ -35,12 +35,7 @@ impl AppContext {
                     .map(|a| a.address)
                     .collect::<Vec<_>>()
             } else {
-                wallet_guard
-                    .known_addresses
-                    .iter()
-                    .filter(|(_, path)| !path.is_platform_payment(self.network))
-                    .map(|(addr, _)| addr.clone())
-                    .collect::<Vec<_>>()
+                Vec::new()
             };
 
             let asset_locks: Vec<Transaction> = wallet_guard

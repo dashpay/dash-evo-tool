@@ -22,8 +22,8 @@ impl AppContext {
         let (known_addresses, seed_hash, already_tracked_txids, core_wallet_name) = {
             let wallet_guard = wallet.read()?;
 
-            // Read addresses from PlatformWallet (canonical source) when available,
-            // falling back to known_addresses for wallets not yet bootstrapped.
+            // Read addresses from PlatformWallet (canonical source).
+            // Locked wallets (no PlatformWallet) have no addresses — return empty.
             let addresses: Vec<Address> =
                 if let Some(pw) = wallet_guard.platform_wallet.as_ref() {
                     let info = pw.core().blocking_wallet_info();
@@ -32,7 +32,7 @@ impl AppContext {
                         .map(|a| a.address)
                         .collect()
                 } else {
-                    wallet_guard.known_addresses.keys().cloned().collect()
+                    Vec::new()
                 };
 
             let tracked: HashSet<_> = wallet_guard

@@ -213,10 +213,10 @@ impl AddressInput {
 
     /// Provide wallet data for **Core and Platform** autocomplete only.
     ///
-    /// This extracts BIP44 (Core) addresses from `known_addresses` and
-    /// PlatformPayment addresses from `watched_addresses`. It does NOT
-    /// extract identities or shielded addresses — those live outside the
-    /// `Wallet` struct and must be added separately:
+    /// This extracts BIP44 (Core) addresses and PlatformPayment addresses
+    /// from PlatformWallet's CoreAddressInfo. It does NOT extract identities
+    /// or shielded addresses — those live outside the `Wallet` struct and
+    /// must be added separately:
     ///
     /// - **Identities**: call [`with_identities()`] with `QualifiedIdentity`
     ///   data from `AppContext::load_local_qualified_identities()`.
@@ -452,43 +452,8 @@ impl AddressInput {
                     });
                 }
             }
-        } else {
-            use crate::model::wallet::DerivationPathReference;
-            for addr_info in guard.watched_addresses.values() {
-                if addr_info.path_reference != DerivationPathReference::PlatformPayment {
-                    continue;
-                }
-                let core_addr = &addr_info.address;
-                if let Ok(platform_addr) = PlatformAddress::try_from(core_addr.clone()) {
-                    let addr_str = platform_addr.to_bech32m_string(self.network);
-                    if !seen_platform.insert(addr_str.clone()) {
-                        continue;
-                    }
-                    let balance = guard
-                        .platform_address_info
-                        .get(core_addr)
-                        .map(|info| info.balance)
-                        .unwrap_or(0);
-                    let display = if self.full_addresses {
-                        format!("{}{}", prefix, addr_str)
-                    } else {
-                        format!("{}{}", prefix, truncate_address(&addr_str))
-                    };
-                    let bech32m = addr_str.clone();
-                    self.all_entries.push(AddressEntry {
-                        address_string: addr_str,
-                        address_kind: AddressKind::Platform,
-                        display_label: display,
-                        balance,
-                        validated: ValidatedAddress::Platform {
-                            address: platform_addr,
-                            bech32m,
-                        },
-                        is_change: false,
-                    });
-                }
-            }
         }
+        // Locked wallets (no PlatformWallet) show no Platform address entries.
     }
 
     fn extract_identity_entries(&mut self, identities: &[QualifiedIdentity]) {

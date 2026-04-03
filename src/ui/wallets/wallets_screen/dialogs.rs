@@ -1166,8 +1166,8 @@ impl WalletsBalancesScreen {
     }
 
     /// Load BIP44 external addresses with balances from a wallet.
-    /// Prefers PlatformWallet's CoreAddressInfo when available, falling back
-    /// to `watched_addresses` for wallets without a platform wallet.
+    /// Uses PlatformWallet's CoreAddressInfo as the canonical source.
+    /// Locked wallets (no PlatformWallet) return empty.
     fn load_bip44_external_addresses(
         &self,
         wallet: &Arc<RwLock<Wallet>>,
@@ -1185,15 +1185,7 @@ impl WalletsBalancesScreen {
                 .map(|a| (a.address.to_string(), a.balance))
                 .collect()
         } else {
-            wallet_guard
-                .watched_addresses
-                .iter()
-                .filter(|(path, _)| path.is_bip44_external(network))
-                .map(|(_, info)| {
-                    let balance = wallet_guard.address_balance(&info.address);
-                    (info.address.to_string(), balance)
-                })
-                .collect()
+            Vec::new()
         };
         Ok(addresses)
     }
@@ -1234,8 +1226,7 @@ impl WalletsBalancesScreen {
         };
 
         // Collect Platform addresses with their balances (using DIP-18 Bech32m format)
-        // Use platform_addresses() which checks watched_addresses, not just platform_address_info
-        // This includes addresses that have been derived but may not have been synced yet
+        // Uses platform_addresses() which reads from watched_addresses
         let network = self.app_context.network;
         let platform_addresses: Vec<(String, u64)> = wallet_guard
             .platform_addresses(network)

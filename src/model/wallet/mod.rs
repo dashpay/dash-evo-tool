@@ -1642,7 +1642,9 @@ impl Wallet {
                 .blocking_next_receive_address()
                 .map_err(|e| e.to_string());
         }
-        // Fallback to old derivation for locked wallets / no PlatformWallet
+        // Fallback to BIP44 derivation — needed during new wallet creation
+        // (save_wallet flow) before PlatformWallet is registered. Once the wallet
+        // is fully bootstrapped, the PlatformWallet path above handles all calls.
         Ok(Address::p2pkh(
             &self
                 .unused_bip_44_public_key(
@@ -1684,7 +1686,9 @@ impl Wallet {
                 .blocking_next_change_address()
                 .map_err(|e| e.to_string());
         }
-        // Fallback to old derivation
+        // Fallback to BIP44 derivation — needed during new wallet creation
+        // (save_wallet flow) before PlatformWallet is registered. Once the wallet
+        // is fully bootstrapped, the PlatformWallet path above handles all calls.
         Ok(Address::p2pkh(
             &self
                 .unused_bip_44_public_key(network, false, true, register)?

@@ -248,8 +248,8 @@ impl AccountSummaryBuilder {
 pub fn collect_account_summaries(wallet: &Wallet, network: Network) -> Vec<AccountSummary> {
     let mut builders: BTreeMap<AccountKey, AccountSummaryBuilder> = BTreeMap::new();
 
-    // Prefer PlatformWallet's CoreAddressInfo when available; fall back to
-    // watched_addresses for wallets that have not been migrated yet.
+    // Use PlatformWallet's CoreAddressInfo as the canonical source.
+    // Locked wallets (no PlatformWallet) show no account summaries.
     if let Some(pw) = wallet.platform_wallet.as_ref() {
         let info = pw.core().blocking_wallet_info();
         for addr_info in platform_wallet::CoreAddressInfo::all_from_wallet_info(&info) {
@@ -272,26 +272,6 @@ pub fn collect_account_summaries(wallet: &Wallet, network: Network) -> Vec<Accou
                 })
                 .or_insert_with(|| AccountSummaryBuilder::new(category, index))
                 .add_address(addr_info.balance, platform_credits);
-        }
-    } else {
-        for (path, info) in &wallet.watched_addresses {
-            let (category, index) = categorize_account_path(path, network, info.path_reference);
-
-            let balance = wallet.address_balance(&info.address);
-
-            // Get Platform credits balance for Platform Payment addresses
-            let platform_credits = wallet
-                .get_platform_address_info(&info.address)
-                .map(|pi| pi.balance)
-                .unwrap_or_default();
-
-            builders
-                .entry(AccountKey {
-                    category: category.clone(),
-                    index,
-                })
-                .or_insert_with(|| AccountSummaryBuilder::new(category, index))
-                .add_address(balance, platform_credits);
         }
     }
 

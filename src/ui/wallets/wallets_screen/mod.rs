@@ -1260,8 +1260,8 @@ impl WalletsBalancesScreen {
     }
 
     /// Build a per-category address count map in a single pass.
-    /// Prefers PlatformWallet's CoreAddressInfo when available, falling back
-    /// to `watched_addresses` for wallets without a platform wallet.
+    /// Uses PlatformWallet's CoreAddressInfo as the canonical source.
+    /// Locked wallets (no PlatformWallet) return empty counts.
     fn precompute_address_counts(&self) -> std::collections::HashMap<AccountCategory, usize> {
         let mut counts = std::collections::HashMap::new();
         let Some(wallet_arc) = self.selected_wallet.as_ref() else {
@@ -1279,15 +1279,6 @@ impl WalletsBalancesScreen {
                     &addr_info.derivation_path,
                     network,
                     crate::model::wallet::DerivationPathReference::Unknown,
-                );
-                *counts.entry(cat).or_insert(0) += 1;
-            }
-        } else {
-            for (path, info) in &wallet.watched_addresses {
-                let (cat, _) = crate::ui::wallets::account_summary::categorize_account_path(
-                    path,
-                    network,
-                    info.path_reference,
                 );
                 *counts.entry(cat).or_insert(0) += 1;
             }

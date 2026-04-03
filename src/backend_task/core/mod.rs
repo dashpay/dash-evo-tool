@@ -146,9 +146,8 @@ pub enum CoreItem {
 impl AppContext {
     /// Extract the seed hash and first known address from an HD wallet.
     ///
-    /// Reads from PlatformWallet's CoreAddressInfo when available,
-    /// falling back to `known_addresses` for wallets that have not
-    /// been bootstrapped with a PlatformWallet yet.
+    /// Reads from PlatformWallet's CoreAddressInfo. Returns `None` for the
+    /// address when PlatformWallet is not available (locked wallet).
     async fn core_wallet_first_address(
         wallet: &Arc<RwLock<Wallet>>,
     ) -> Result<([u8; 32], Option<Address>), TaskError> {
@@ -165,9 +164,8 @@ impl AppContext {
                 .map(|a| a.address);
             Ok((seed_hash, first_addr))
         } else {
-            // Fallback: PlatformWallet not yet available (e.g. during initial creation)
-            let g = wallet.read()?;
-            Ok((seed_hash, g.known_addresses.keys().next().cloned()))
+            // Locked wallet — no addresses available
+            Ok((seed_hash, None))
         }
     }
 

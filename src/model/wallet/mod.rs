@@ -734,13 +734,6 @@ impl Wallet {
         !self.unused_asset_locks.is_empty()
     }
 
-    pub fn max_balance(&self) -> u64 {
-        self.utxos
-            .values()
-            .flat_map(|outpoints_to_tx_out| outpoints_to_tx_out.values().map(|tx_out| tx_out.value))
-            .sum::<Duffs>()
-    }
-
     /// Per-address balance from PlatformWallet's CoreAddressInfo.
     pub fn address_balance(&self, address: &Address) -> u64 {
         self.platform_wallet
@@ -2506,25 +2499,6 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn test_max_balance_empty_wallet() {
-        let wallet = test_wallet();
-        assert_eq!(wallet.max_balance(), 0);
-    }
-
-    #[test]
-    fn test_max_balance_with_utxos() {
-        let mut wallet = test_wallet();
-        let addr1 = test_address(1);
-        let addr2 = test_address(2);
-
-        add_utxo(&mut wallet, &addr1, 1, 0, 50_000);
-        add_utxo(&mut wallet, &addr1, 2, 0, 30_000);
-        add_utxo(&mut wallet, &addr2, 3, 0, 20_000);
-
-        assert_eq!(wallet.max_balance(), 100_000);
-    }
-
-    #[test]
     fn test_balance_returns_zero_without_platform_wallet() {
         let wallet = test_wallet();
         // Without platform_wallet, all balance methods return 0
@@ -2533,164 +2507,6 @@ mod tests {
         assert_eq!(wallet.total_balance_duffs(), 0);
         assert!(!wallet.has_balance());
         assert_eq!(wallet.spv_confirmed_balance(), None);
-    }
-
-    // ========================================================================
-    // select_unspent_utxos_for / remove_selected_utxos tests
-    // ========================================================================
-
-    #[test]
-    fn test_select_utxos_exact_amount() {
-        let wallet = test_wallet_with_utxo(100_000);
-
-        let result = wallet.select_unspent_utxos_for(90_000, 10_000, false, None);
-        assert!(result.is_some());
-        let (utxos, change) = result.unwrap();
-        assert_eq!(utxos.len(), 1);
-        assert!(change.is_none()); // exact amount, no change
-        // Selection is non-mutating — wallet UTXOs unchanged
-        assert!(!wallet.utxos.is_empty());
-    }
-
-    #[test]
-    fn test_select_utxos_with_change() {
-        let wallet = test_wallet_with_utxo(200_000);
-
-        let result = wallet.select_unspent_utxos_for(90_000, 10_000, false, None);
-        assert!(result.is_some());
-        let (utxos, change) = result.unwrap();
-        assert_eq!(utxos.len(), 1);
-        assert_eq!(change, Some(100_000)); // 200k - 90k - 10k = 100k change
-    }
-
-    #[test]
-    fn test_select_utxos_insufficient_funds() {
-        let wallet = test_wallet_with_utxo(50_000);
-
-        let result = wallet.select_unspent_utxos_for(90_000, 10_000, false, None);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_select_utxos_multiple_utxos_needed() {
-        let mut wallet = test_wallet();
-        let addr1 = test_address(1);
-        let addr2 = test_address(2);
-        add_utxo(&mut wallet, &addr1, 1, 0, 30_000);
-        add_utxo(&mut wallet, &addr2, 2, 0, 40_000);
-        add_utxo(&mut wallet, &addr1, 3, 0, 50_000);
-
-        let result = wallet.select_unspent_utxos_for(100_000, 10_000, false, None);
-        assert!(result.is_some());
-        let (utxos, change) = result.unwrap();
-        let total_collected: u64 = utxos.values().map(|(tx_out, _)| tx_out.value).sum();
-        assert!(total_collected >= 110_000);
-        if let Some(change_amount) = change {
-            assert_eq!(total_collected, 100_000 + 10_000 + change_amount);
-        }
-    }
-
-    #[test]
-    fn test_select_utxos_allow_take_fee_from_amount() {
-        let wallet = test_wallet_with_utxo(100_000);
-
-        // Request 100k amount + 10k fee = 110k total, but only 100k available
-        // With allow_take_fee_from_amount=true, should still succeed since total >= amount
-        let result = wallet.select_unspent_utxos_for(100_000, 10_000, true, None);
-        assert!(result.is_some());
-        let (_utxos, change) = result.unwrap();
-        assert!(change.is_none());
-    }
-
-    #[test]
-    fn test_select_utxos_allow_take_fee_but_not_enough_for_amount() {
-        let wallet = test_wallet_with_utxo(50_000);
-
-        // Request 100k amount + 10k fee = 110k, only 50k available
-        // Even with take_fee_from_amount, 50k < 100k amount, so should fail
-        let result = wallet.select_unspent_utxos_for(100_000, 10_000, true, None);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_select_utxos_zero_amount() {
-        let wallet = test_wallet_with_utxo(50_000);
-
-        let result = wallet.select_unspent_utxos_for(0, 0, false, None);
-        assert!(result.is_some());
-        let (utxos, change) = result.unwrap();
-        assert!(utxos.is_empty());
-        assert!(change.is_none());
-    }
-
-    /// Helper: register a wallet address in the test database so that
-    /// `update_address_balance` can find the row.
-    /// Caller must store the wallet first via `db.store_wallet()`.
-    fn register_test_address(db: &Database, wallet: &Wallet, address: &Address) {
-        let seed_hash = wallet.seed_hash();
-        let path = DerivationPath::from(vec![
-            ChildNumber::Hardened { index: 44 },
-            ChildNumber::Hardened { index: 1 },
-            ChildNumber::Hardened { index: 0 },
-            ChildNumber::Normal { index: 0 },
-            ChildNumber::Normal { index: 0 },
-        ]);
-        db.add_address_if_not_exists(
-            &seed_hash,
-            address,
-            &Network::Testnet,
-            &path,
-            DerivationPathReference::BIP44,
-            DerivationPathType::CLEAR_FUNDS,
-            Some(0),
-        )
-        .expect("register test address");
-    }
-
-    #[test]
-    fn test_remove_utxos_removes_from_wallet() {
-        use crate::database::test_helpers::create_test_database;
-
-        let mut wallet = test_wallet();
-        let addr = test_address(1);
-        add_utxo(&mut wallet, &addr, 1, 0, 100_000);
-        add_utxo(&mut wallet, &addr, 2, 0, 200_000);
-        assert_eq!(wallet.max_balance(), 300_000);
-
-        let db = create_test_database().expect("test db");
-        db.store_wallet(&wallet, &Network::Testnet)
-            .expect("store test wallet");
-        register_test_address(&db, &wallet, &addr);
-        let (selected, _) = wallet
-            .select_unspent_utxos_for(90_000, 10_000, false, None)
-            .unwrap();
-        wallet
-            .remove_selected_utxos(&selected, &db, Network::Testnet)
-            .unwrap();
-
-        assert!(wallet.max_balance() < 300_000);
-    }
-
-    #[test]
-    fn test_remove_utxos_cleans_empty_address_entries() {
-        use crate::database::test_helpers::create_test_database;
-
-        let mut wallet = test_wallet();
-        let addr = test_address(1);
-        add_utxo(&mut wallet, &addr, 1, 0, 100_000);
-
-        let db = create_test_database().expect("test db");
-        db.store_wallet(&wallet, &Network::Testnet)
-            .expect("store test wallet");
-        register_test_address(&db, &wallet, &addr);
-        let (selected, _) = wallet
-            .select_unspent_utxos_for(90_000, 10_000, false, None)
-            .unwrap();
-        wallet
-            .remove_selected_utxos(&selected, &db, Network::Testnet)
-            .unwrap();
-
-        assert!(!wallet.utxos.contains_key(&addr));
     }
 
     // ========================================================================
@@ -3241,44 +3057,6 @@ mod tests {
         wallet.wallet_seed.open_no_password().unwrap();
         assert!(wallet.is_open());
         assert_eq!(wallet.seed_hash(), original_hash);
-    }
-
-    // ========================================================================
-    // utxos_by_address tests
-    // ========================================================================
-
-    #[test]
-    fn test_utxos_by_address_empty() {
-        let wallet = test_wallet();
-        assert!(wallet.utxos_by_address().is_empty());
-    }
-
-    #[test]
-    fn test_utxos_by_address_with_entries() {
-        let mut wallet = test_wallet();
-        let addr1 = test_address(1);
-        let addr2 = test_address(2);
-
-        add_utxo(&mut wallet, &addr1, 1, 0, 50_000);
-        add_utxo(&mut wallet, &addr1, 2, 0, 30_000);
-        add_utxo(&mut wallet, &addr2, 3, 0, 20_000);
-
-        let utxos = wallet.utxos_by_address();
-        assert_eq!(utxos.len(), 2);
-
-        let addr1_balance: u64 = utxos
-            .iter()
-            .filter(|(a, _)| a == &addr1)
-            .map(|(_, b)| b)
-            .sum();
-        assert_eq!(addr1_balance, 80_000);
-
-        let addr2_balance: u64 = utxos
-            .iter()
-            .filter(|(a, _)| a == &addr2)
-            .map(|(_, b)| b)
-            .sum();
-        assert_eq!(addr2_balance, 20_000);
     }
 
     // ========================================================================

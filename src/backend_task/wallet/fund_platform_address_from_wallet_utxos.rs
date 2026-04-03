@@ -71,7 +71,7 @@ impl AppContext {
                 asset_lock_amount,
                 &seed_hash,
                 &wallet_arc,
-                &std::collections::BTreeMap::new(),
+                None,
             )
             .await?;
 

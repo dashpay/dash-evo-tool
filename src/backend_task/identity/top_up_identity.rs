@@ -118,7 +118,7 @@ impl AppContext {
                             amount,
                             &wallet_seed_hash,
                             &wallet,
-                            &BTreeMap::new(),
+                            None,
                         )
                         .await?;
 
@@ -167,7 +167,7 @@ impl AppContext {
                             tx_out.value,
                             &wallet_seed_hash,
                             &wallet,
-                            &used_utxos,
+                            Some(&used_utxos),
                         )
                         .await?;
 

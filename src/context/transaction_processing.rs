@@ -116,7 +116,7 @@ impl AppContext {
         amount: u64,
         wallet_seed_hash: &WalletSeedHash,
         wallet: &Arc<RwLock<Wallet>>,
-        used_utxos: &BTreeMap<OutPoint, (TxOut, Address)>,
+        used_utxos: Option<&BTreeMap<OutPoint, (TxOut, Address)>>,
     ) -> Result<Txid, TaskError> {
         let tx_id = asset_lock_transaction.txid();
 
@@ -144,12 +144,15 @@ impl AppContext {
             return Err(e);
         }
 
-        // Step 4: Broadcast succeeded — commit UTXO removal now.
-        {
-            let mut wallet_guard = wallet.write()?;
-            wallet_guard
-                .remove_selected_utxos(used_utxos, &self.db, self.network)
-                .map_err(|e| TaskError::UtxoUpdateFailed { detail: e })?;
+        // Step 4: Remove consumed UTXOs from the old Wallet model (only needed
+        // for the QR-funded-UTXO flow; PlatformWallet paths handle UTXOs internally).
+        if let Some(utxos) = used_utxos {
+            if !utxos.is_empty() {
+                let mut wallet_guard = wallet.write()?;
+                wallet_guard
+                    .remove_selected_utxos(utxos, &self.db, self.network)
+                    .map_err(|e| TaskError::UtxoUpdateFailed { detail: e })?;
+            }
         }
 
         Ok(tx_id)

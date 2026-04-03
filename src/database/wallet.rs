@@ -65,9 +65,9 @@ impl Database {
                 wallet.uses_password,
                 wallet.password_hint().clone(),
                 network_str,
-                wallet.confirmed_balance as i64,
-                wallet.unconfirmed_balance as i64,
-                wallet.total_balance as i64,
+                wallet.confirmed_balance_duffs() as i64,
+                wallet.unconfirmed_balance_duffs() as i64,
+                wallet.total_balance_duffs() as i64,
                 wallet.core_wallet_name.as_deref(),
             ],
         )?;
@@ -502,9 +502,8 @@ impl Database {
             let is_main: bool = row.get(6)?;
             let uses_password: bool = row.get(7)?;
             let password_hint: Option<String> = row.get(8)?;
-            let confirmed_balance: i64 = row.get::<_, Option<i64>>(9)?.unwrap_or(0);
-            let unconfirmed_balance: i64 = row.get::<_, Option<i64>>(10)?.unwrap_or(0);
-            let total_balance: i64 = row.get::<_, Option<i64>>(11)?.unwrap_or(0);
+            // Balances at indices 9-11 are persisted but no longer loaded into
+            // the Wallet struct — they are served by PlatformWallet's WalletBalance.
             let core_wallet_name: Option<String> = row.get(12)?;
 
             // Reconstruct the extended public keys
@@ -578,10 +577,6 @@ impl Database {
                     utxos: HashMap::new(),
                     transactions: Vec::new(),
                     is_main,
-                    confirmed_balance: confirmed_balance as u64,
-                    unconfirmed_balance: unconfirmed_balance as u64,
-                    total_balance: total_balance as u64,
-                    spv_balance_known: false,
                     platform_address_info: BTreeMap::new(),
                     core_wallet_name,
                 },

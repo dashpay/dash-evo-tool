@@ -891,27 +891,11 @@ impl AppContext {
 
             self.sync_spv_account_addresses(wallet_info, &wallet_arc);
 
-            if let Ok(mut wallet) = wallet_arc.write() {
-                wallet.update_spv_balances(
-                    balance.spendable(),
-                    balance.unconfirmed(),
-                    balance.total(),
-                );
-                // Persist balances to database
-                if let Err(e) = self.db.update_wallet_balances(
-                    seed_hash,
-                    balance.spendable(),
-                    balance.unconfirmed(),
-                    balance.total(),
-                ) {
-                    tracing::warn!(wallet = %hex::encode(seed_hash), error = %e, "Failed to persist wallet balances");
-                }
-            }
-
             // Sync balance to PlatformWallet's ManagedWalletInfo so it stays
             // in sync with SPV and can serve as the canonical read source.
             // Uses try_wallet_info_mut() to avoid holding the std::sync
-            // wallets_guard across an await point.
+            // wallets_guard across an await point. The WalletInfoWriteGuard
+            // auto-refreshes WalletBalance on drop.
             if let Some(pw) = self.get_platform_wallet(seed_hash) {
                 if let Some(mut pw_info) = pw.core().try_wallet_info_mut() {
                     pw_info.balance = WalletCoreBalance::new(
@@ -921,6 +905,16 @@ impl AppContext {
                         0, // locked
                     );
                 }
+            }
+
+            // Persist balances to database
+            if let Err(e) = self.db.update_wallet_balances(
+                seed_hash,
+                balance.spendable(),
+                balance.unconfirmed(),
+                balance.total(),
+            ) {
+                tracing::warn!(wallet = %hex::encode(seed_hash), error = %e, "Failed to persist wallet balances");
             }
 
             // Get the wallet's known addresses (only update those to avoid cross-wallet churn)

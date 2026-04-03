@@ -363,12 +363,6 @@ pub struct Wallet {
     pub utxos: HashMap<Address, HashMap<OutPoint, TxOut>>,
     pub transactions: Vec<WalletTransaction>,
     pub is_main: bool,
-    pub confirmed_balance: u64,
-    pub unconfirmed_balance: u64,
-    pub total_balance: u64,
-    /// True once SPV has reported balances at least once; distinguishes synced
-    /// zero-balance from not-yet-synced.
-    pub spv_balance_known: bool,
     /// DIP-17: Platform address balances and nonces (keyed by Core Address for lookup)
     pub platform_address_info: BTreeMap<Address, PlatformAddressInfo>,
     /// Dash Core wallet name for multi-wallet RPC calls
@@ -447,10 +441,6 @@ impl Wallet {
             utxos: Default::default(),
             transactions: Vec::new(),
             is_main: true,
-            confirmed_balance: 0,
-            unconfirmed_balance: 0,
-            total_balance: 0,
-            spv_balance_known: false,
             platform_address_info: Default::default(),
             core_wallet_name: None,
         })
@@ -739,7 +729,10 @@ impl Wallet {
         matches!(self.wallet_seed, WalletSeed::Open(_))
     }
     pub fn has_balance(&self) -> bool {
-        self.confirmed_balance_duffs() > 0 || self.unconfirmed_balance > 0
+        self.platform_wallet
+            .as_ref()
+            .map(|pw| pw.core().balance().total() > 0)
+            .unwrap_or(false)
     }
 
     pub fn has_unused_asset_lock(&self) -> bool {
@@ -754,42 +747,33 @@ impl Wallet {
     }
 
     pub fn confirmed_balance_duffs(&self) -> u64 {
-        if self.total_balance > 0 || self.confirmed_balance > 0 || self.unconfirmed_balance > 0 {
-            self.confirmed_balance
-        } else {
-            self.max_balance()
-        }
+        self.platform_wallet
+            .as_ref()
+            .map(|pw| pw.core().balance().spendable())
+            .unwrap_or(0)
     }
 
-    /// Returns the SPV-reported confirmed balance, or `None` if SPV hasn't
-    /// synced balance data yet. Unlike `confirmed_balance_duffs()`, this
-    /// never falls back to `max_balance()` — callers that need certainty
+    /// Returns the SPV-reported confirmed balance, or `None` if the platform
+    /// wallet is not available (locked). Callers that need certainty
     /// (e.g., test waiters) should use this and retry on `None`.
     pub fn spv_confirmed_balance(&self) -> Option<u64> {
-        if self.spv_balance_known {
-            Some(self.confirmed_balance)
-        } else {
-            None
-        }
+        self.platform_wallet
+            .as_ref()
+            .map(|pw| pw.core().balance().spendable())
     }
 
     pub fn unconfirmed_balance_duffs(&self) -> u64 {
-        self.unconfirmed_balance
+        self.platform_wallet
+            .as_ref()
+            .map(|pw| pw.core().balance().unconfirmed())
+            .unwrap_or(0)
     }
 
     pub fn total_balance_duffs(&self) -> u64 {
-        if self.total_balance > 0 {
-            self.total_balance
-        } else {
-            self.max_balance()
-        }
-    }
-
-    pub fn update_spv_balances(&mut self, confirmed: u64, unconfirmed: u64, total: u64) {
-        self.confirmed_balance = confirmed;
-        self.unconfirmed_balance = unconfirmed;
-        self.total_balance = total;
-        self.spv_balance_known = true;
+        self.platform_wallet
+            .as_ref()
+            .map(|pw| pw.core().balance().total())
+            .unwrap_or(0)
     }
 
     pub fn bootstrap_known_addresses(&mut self, app_context: &AppContext) {
@@ -2780,10 +2764,6 @@ mod tests {
             utxos: HashMap::new(),
             transactions: Vec::new(),
             is_main: true,
-            confirmed_balance: 0,
-            unconfirmed_balance: 0,
-            total_balance: 0,
-            spv_balance_known: false,
             platform_address_info: BTreeMap::new(),
             core_wallet_name: None,
         }
@@ -2854,101 +2834,14 @@ mod tests {
     }
 
     #[test]
-    fn test_confirmed_balance_uses_spv_when_set() {
-        let mut wallet = test_wallet();
-        let addr = test_address(1);
-        add_utxo(&mut wallet, &addr, 1, 0, 50_000);
-
-        // With SPV balances set, confirmed_balance should return the SPV value
-        wallet.update_spv_balances(75_000, 5_000, 80_000);
-        assert_eq!(wallet.confirmed_balance_duffs(), 75_000);
-    }
-
-    #[test]
-    fn test_confirmed_balance_falls_back_to_max_balance() {
-        let mut wallet = test_wallet();
-        let addr = test_address(1);
-        add_utxo(&mut wallet, &addr, 1, 0, 50_000);
-
-        // Without SPV balances, falls back to max_balance()
-        assert_eq!(wallet.confirmed_balance_duffs(), 50_000);
-    }
-
-    #[test]
-    fn test_unconfirmed_balance() {
-        let mut wallet = test_wallet();
-        wallet.update_spv_balances(100_000, 25_000, 125_000);
-        assert_eq!(wallet.unconfirmed_balance_duffs(), 25_000);
-    }
-
-    #[test]
-    fn test_total_balance_uses_spv_when_set() {
-        let mut wallet = test_wallet();
-        let addr = test_address(1);
-        add_utxo(&mut wallet, &addr, 1, 0, 50_000);
-
-        wallet.update_spv_balances(75_000, 5_000, 80_000);
-        assert_eq!(wallet.total_balance_duffs(), 80_000);
-    }
-
-    #[test]
-    fn test_total_balance_falls_back_to_max_balance() {
-        let mut wallet = test_wallet();
-        let addr = test_address(1);
-        add_utxo(&mut wallet, &addr, 1, 0, 50_000);
-
-        assert_eq!(wallet.total_balance_duffs(), 50_000);
-    }
-
-    #[test]
-    fn test_has_balance() {
-        let mut wallet = test_wallet();
-        assert!(!wallet.has_balance());
-
-        let addr = test_address(1);
-        add_utxo(&mut wallet, &addr, 1, 0, 50_000);
-        // has_balance checks confirmed_balance_duffs() > 0 || unconfirmed > 0
-        // Without SPV, confirmed falls back to max_balance = 50_000
-        assert!(wallet.has_balance());
-    }
-
-    #[test]
-    fn test_has_balance_with_only_unconfirmed() {
-        let mut wallet = test_wallet();
-        wallet.update_spv_balances(0, 1000, 1000);
-        assert!(wallet.has_balance());
-    }
-
-    #[test]
-    fn test_update_spv_balances() {
-        let mut wallet = test_wallet();
-        wallet.update_spv_balances(100, 50, 150);
-        assert_eq!(wallet.confirmed_balance, 100);
-        assert_eq!(wallet.unconfirmed_balance, 50);
-        assert_eq!(wallet.total_balance, 150);
-    }
-
-    #[test]
-    fn test_spv_confirmed_balance_none_before_sync() {
+    fn test_balance_returns_zero_without_platform_wallet() {
         let wallet = test_wallet();
-        // Before any SPV sync, spv_confirmed_balance must return None regardless
-        // of the UTXO state — callers cannot distinguish synced-zero from unsynced.
+        // Without platform_wallet, all balance methods return 0
+        assert_eq!(wallet.confirmed_balance_duffs(), 0);
+        assert_eq!(wallet.unconfirmed_balance_duffs(), 0);
+        assert_eq!(wallet.total_balance_duffs(), 0);
+        assert!(!wallet.has_balance());
         assert_eq!(wallet.spv_confirmed_balance(), None);
-    }
-
-    #[test]
-    fn test_spv_confirmed_balance_zero_after_sync() {
-        let mut wallet = test_wallet();
-        // After SPV reports zero balance, Some(0) must be returned — not None.
-        wallet.update_spv_balances(0, 0, 0);
-        assert_eq!(wallet.spv_confirmed_balance(), Some(0));
-    }
-
-    #[test]
-    fn test_spv_confirmed_balance_nonzero_after_sync() {
-        let mut wallet = test_wallet();
-        wallet.update_spv_balances(75_000, 5_000, 80_000);
-        assert_eq!(wallet.spv_confirmed_balance(), Some(75_000));
     }
 
     // ========================================================================

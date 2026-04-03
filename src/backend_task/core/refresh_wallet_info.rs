@@ -357,7 +357,17 @@ impl AppContext {
                 wallet_guard.set_transactions(txs);
             }
 
-            wallet_guard.update_spv_balances(total_balance, 0, total_balance);
+            // Update PlatformWallet balance via WalletInfoWriteGuard (auto-refreshes WalletBalance)
+            if let Some(pw) = wallet_guard.platform_wallet.as_ref() {
+                if let Some(mut pw_info) = pw.core().try_wallet_info_mut() {
+                    pw_info.balance = WalletCoreBalance::new(
+                        total_balance,
+                        0, // unconfirmed
+                        0, // immature
+                        0, // locked
+                    );
+                }
+            }
 
             (balance_changes, received_changes)
         };

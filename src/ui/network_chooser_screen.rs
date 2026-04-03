@@ -1255,15 +1255,8 @@ impl NetworkChooserScreen {
                                                 // Clear platform address info
                                                 wallet.platform_address_info.clear();
 
-                                                // Remove platform addresses from known_addresses
-                                                wallet.known_addresses.retain(|_, path| {
-                                                    !path.is_platform_payment(current_context.network)
-                                                });
-
-                                                // Remove platform addresses from watched_addresses
-                                                wallet.watched_addresses.retain(|path, _| {
-                                                    !path.is_platform_payment(current_context.network)
-                                                });
+                                                // Platform addresses managed by PlatformWallet —
+                                                // no manual cleanup needed on network switch.
 
                                             }
                                         }

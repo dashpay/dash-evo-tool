@@ -345,8 +345,10 @@ pub struct Wallet {
     pub wallet_seed: WalletSeed,
     pub uses_password: bool,
     pub master_bip44_ecdsa_extended_public_key: ExtendedPubKey,
-    pub known_addresses: BTreeMap<Address, DerivationPath>,
-    pub watched_addresses: BTreeMap<DerivationPath, AddressInfo>,
+    /// Legacy address maps — populated from DB for locked wallets.
+    /// Reads should use `all_addresses_info()` / `derivation_path_for_address()` instead.
+    pub(crate) known_addresses: BTreeMap<Address, DerivationPath>,
+    pub(crate) watched_addresses: BTreeMap<DerivationPath, AddressInfo>,
     #[allow(clippy::type_complexity)]
     pub unused_asset_locks: Vec<(
         Transaction,

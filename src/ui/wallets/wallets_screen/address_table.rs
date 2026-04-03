@@ -6,7 +6,7 @@ use crate::ui::components::message_banner::MessageBanner;
 use crate::ui::wallets::account_summary::{AccountCategory, categorize_account_path};
 use dash_sdk::dashcore_rpc::dashcore::{Address, Network};
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
-use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
+use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use eframe::egui::{self, Ui};
 use egui_extras::{Column, TableBuilder};
 
@@ -145,85 +145,19 @@ impl WalletsBalancesScreen {
             .collect()
     }
 
-    /// Build `AddressData` from the old wallet model (fallback when cache is empty).
-    fn address_data_from_wallet(screen: &Self) -> Vec<AddressData> {
-        let wallet = screen.selected_wallet.as_ref().unwrap().read().unwrap();
-        let network = screen.app_context.network;
-
-        wallet
-            .known_addresses
-            .iter()
-            .map(|(address, derivation_path)| {
-                let utxo_info = wallet.utxos.get(address);
-
-                let utxo_count = utxo_info.map(|outpoints| outpoints.len()).unwrap_or(0);
-
-                let total_received = wallet
-                    .address_total_received
-                    .get(address)
-                    .cloned()
-                    .unwrap_or(0u64);
-
-                let index = derivation_path
-                    .into_iter()
-                    .last()
-                    .cloned()
-                    .unwrap_or(ChildNumber::Normal { index: 0 });
-                let index = match index {
-                    ChildNumber::Normal { index } => index,
-                    ChildNumber::Hardened { index } => index,
-                    _ => 0,
-                };
-                let address_type = if derivation_path.is_bip44_external(network) {
-                    "Funds".to_string()
-                } else if derivation_path.is_bip44_change(network) {
-                    "Change".to_string()
-                } else if derivation_path.is_asset_lock_funding(network) {
-                    "Identity Creation".to_string()
-                } else if derivation_path.is_platform_payment(network) {
-                    "Platform".to_string()
-                } else {
-                    "System".to_string()
-                };
-
-                let path_reference = wallet
-                    .watched_addresses
-                    .get(derivation_path)
-                    .map(|info| info.path_reference)
-                    .unwrap_or(DerivationPathReference::Unknown);
-                let (account_category, account_index) =
-                    Self::categorize_path(derivation_path, path_reference, network);
-
-                let (platform_credits, nonce) =
-                    if account_category == AccountCategory::PlatformPayment {
-                        let platform_info = wallet.get_platform_address_info(address);
-                        (
-                            platform_info.map(|info| info.balance).unwrap_or_default(),
-                            platform_info.map(|info| info.nonce).unwrap_or_default(),
-                        )
-                    } else {
-                        (Default::default(), Default::default())
-                    };
-
-                AddressData {
-                    address: address.clone(),
-                    balance: wallet
-                        .address_balances
-                        .get(address)
-                        .cloned()
-                        .unwrap_or_default(),
-                    platform_credits,
-                    utxo_count,
-                    total_received,
-                    nonce,
-                    address_type,
-                    index,
-                    derivation_path: derivation_path.clone(),
-                    account_category,
-                    account_index,
-                }
-            })
-            .collect::<Vec<AddressData>>()
+    /// Build `AddressData` directly from PlatformWallet's `ManagedWalletInfo`
+    /// (fallback when the async cache hasn't been populated yet).
+    fn address_data_from_platform_wallet(screen: &Self) -> Vec<AddressData> {
+        let seed_hash = screen
+            .selected_wallet
+            .as_ref()
+            .and_then(|w| w.read().ok().map(|g| g.seed_hash()));
+        let Some(pw) = seed_hash.and_then(|h| screen.app_context.get_platform_wallet(&h)) else {
+            return Vec::new();
+        };
+        let info = pw.core().blocking_wallet_info();
+        let cached = CoreAddressInfo::all_from_wallet_info(&info);
+        Self::address_data_from_cache(&cached, screen.app_context.network)
     }
 
     pub(super) fn render_address_table(
@@ -238,7 +172,7 @@ impl WalletsBalancesScreen {
         let mut address_data = if let Some(cached) = &self.cached_address_info {
             Self::address_data_from_cache(cached, self.app_context.network)
         } else {
-            Self::address_data_from_wallet(self)
+            Self::address_data_from_platform_wallet(self)
         };
 
         // Now you can use `self` mutably without conflict

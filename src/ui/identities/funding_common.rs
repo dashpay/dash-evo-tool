@@ -5,9 +5,11 @@ use image::Luma;
 use qrcode::QrCode;
 use std::sync::{Arc, RwLock};
 
+use crate::context::AppContext;
 use crate::model::wallet::Wallet;
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dpp::dashcore::{OutPoint, TxOut};
+use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
 
 #[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Copy, Clone)]
 pub enum WalletFundedScreenStep {
@@ -55,6 +57,7 @@ pub fn copy_to_clipboard(text: &str) -> Result<(), String> {
 
 pub fn capture_qr_funding_utxo_if_available(
     step: &Arc<RwLock<WalletFundedScreenStep>>,
+    app_context: &AppContext,
     wallet: Option<&Arc<RwLock<Wallet>>>,
     funding_address: Option<&Address>,
 ) -> Option<(OutPoint, TxOut, Address)> {
@@ -66,21 +69,18 @@ pub fn capture_qr_funding_utxo_if_available(
     }
 
     let address = funding_address.cloned()?;
-
     let wallet_arc = wallet?;
 
-    let candidate_utxo = {
-        let wallet = wallet_arc
-            .read()
-            .expect("wallet lock poisoned while checking funding UTXO");
-        wallet.utxos.get(&address).and_then(|utxos| {
-            utxos
-                .iter()
-                .filter(|(_, tx_out)| tx_out.value > 0)
-                .max_by_key(|(_, tx_out)| tx_out.value)
-                .map(|(outpoint, tx_out)| (*outpoint, tx_out.clone()))
-        })
-    };
+    let seed_hash = wallet_arc.read().ok().map(|g| g.seed_hash())?;
+    let pw = app_context.get_platform_wallet(&seed_hash)?;
+    let info = pw.core().blocking_wallet_info();
+
+    let candidate_utxo = info
+        .get_spendable_utxos()
+        .iter()
+        .filter(|utxo| utxo.address == address && utxo.value() > 0)
+        .max_by_key(|utxo| utxo.value())
+        .map(|utxo| (utxo.outpoint, utxo.txout.clone()));
 
     if let Some((outpoint, tx_out)) = candidate_utxo {
         let mut step = step

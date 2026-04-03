@@ -104,6 +104,7 @@ impl AddNewIdentityScreen {
         // Update state when funds land on the QR funding address
         if let Some(utxo) = funding_common::capture_qr_funding_utxo_if_available(
             &self.step,
+            &self.app_context,
             self.selected_wallet.as_ref(),
             self.funding_address.as_ref(),
         ) {

@@ -2872,12 +2872,18 @@ impl ScreenLike for WalletsBalancesScreen {
                     && let Ok(wallet) = selected.read()
                     && wallet.seed_hash() == seed_hash
                 {
-                    // Parse address and get balance
+                    // Parse address and get balance from PlatformWallet
                     let balance = address
                         .parse::<Address<_>>()
                         .ok()
+                        .map(|addr| addr.assume_checked())
                         .and_then(|addr| {
-                            wallet.address_balances.get(&addr.assume_checked()).copied()
+                            let pw = self.app_context.get_platform_wallet(&seed_hash)?;
+                            let info = pw.core().blocking_wallet_info();
+                            platform_wallet::CoreAddressInfo::all_from_wallet_info(&info)
+                                .into_iter()
+                                .find(|a| a.address == addr)
+                                .map(|a| a.balance)
                         })
                         .unwrap_or(0);
                     self.receive_dialog

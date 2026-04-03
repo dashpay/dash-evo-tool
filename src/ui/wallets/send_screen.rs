@@ -685,17 +685,22 @@ impl WalletSendScreen {
             .collect()
     }
 
-    /// Get Core addresses with their UTXO balances
+    /// Get Core addresses with their UTXO balances (from PlatformWallet).
     fn get_core_addresses(&self) -> Vec<(Address, u64)> {
-        let Some(wallet_arc) = &self.selected_wallet else {
+        let seed_hash = self
+            .selected_wallet
+            .as_ref()
+            .and_then(|w| w.read().ok().map(|g| g.seed_hash()));
+        let Some(pw) = seed_hash.and_then(|h| self.app_context.get_platform_wallet(&h)) else {
             return vec![];
         };
-        let Ok(wallet) = wallet_arc.read() else {
-            return vec![];
-        };
-
-        let mut addresses = wallet.utxos_by_address();
-        // Sort by balance descending for better UX
+        let info = pw.core().blocking_wallet_info();
+        let mut addresses: Vec<(Address, u64)> =
+            platform_wallet::CoreAddressInfo::all_from_wallet_info(&info)
+                .into_iter()
+                .filter(|a| a.balance > 0)
+                .map(|a| (a.address, a.balance))
+                .collect();
         addresses.sort_by(|a, b| b.1.cmp(&a.1));
         addresses
     }

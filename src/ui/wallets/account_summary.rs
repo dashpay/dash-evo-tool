@@ -184,6 +184,10 @@ pub(crate) fn categorize_account_path(
         AccountCategory::Bip32
     } else if path.is_bip44(network) {
         AccountCategory::Bip44
+    } else if path.is_platform_payment(network) {
+        AccountCategory::PlatformPayment
+    } else if path.is_asset_lock_funding(network) {
+        AccountCategory::IdentityRegistration
     } else {
         AccountCategory::from_reference(reference)
     };
@@ -244,25 +248,51 @@ impl AccountSummaryBuilder {
 pub fn collect_account_summaries(wallet: &Wallet, network: Network) -> Vec<AccountSummary> {
     let mut builders: BTreeMap<AccountKey, AccountSummaryBuilder> = BTreeMap::new();
 
-    for (path, info) in &wallet.watched_addresses {
-        let (category, index) = categorize_account_path(path, network, info.path_reference);
+    // Prefer PlatformWallet's CoreAddressInfo when available; fall back to
+    // watched_addresses for wallets that have not been migrated yet.
+    if let Some(pw) = wallet.platform_wallet.as_ref() {
+        let info = pw.core().blocking_wallet_info();
+        for addr_info in platform_wallet::CoreAddressInfo::all_from_wallet_info(&info) {
+            let (category, index) = categorize_account_path(
+                &addr_info.derivation_path,
+                network,
+                DerivationPathReference::Unknown,
+            );
 
-        let balance = wallet.address_balance(&info.address);
+            // Get Platform credits balance for Platform Payment addresses
+            let platform_credits = wallet
+                .get_platform_address_info(&addr_info.address)
+                .map(|pi| pi.balance)
+                .unwrap_or_default();
 
-        // Get Platform credits balance for Platform Payment addresses
-        // Use canonical lookup to handle potential Address key mismatches
-        let platform_credits = wallet
-            .get_platform_address_info(&info.address)
-            .map(|info| info.balance)
-            .unwrap_or_default();
+            builders
+                .entry(AccountKey {
+                    category: category.clone(),
+                    index,
+                })
+                .or_insert_with(|| AccountSummaryBuilder::new(category, index))
+                .add_address(addr_info.balance, platform_credits);
+        }
+    } else {
+        for (path, info) in &wallet.watched_addresses {
+            let (category, index) = categorize_account_path(path, network, info.path_reference);
 
-        builders
-            .entry(AccountKey {
-                category: category.clone(),
-                index,
-            })
-            .or_insert_with(|| AccountSummaryBuilder::new(category, index))
-            .add_address(balance, platform_credits);
+            let balance = wallet.address_balance(&info.address);
+
+            // Get Platform credits balance for Platform Payment addresses
+            let platform_credits = wallet
+                .get_platform_address_info(&info.address)
+                .map(|pi| pi.balance)
+                .unwrap_or_default();
+
+            builders
+                .entry(AccountKey {
+                    category: category.clone(),
+                    index,
+                })
+                .or_insert_with(|| AccountSummaryBuilder::new(category, index))
+                .add_address(balance, platform_credits);
+        }
     }
 
     let mut summaries: Vec<_> = builders

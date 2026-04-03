@@ -1259,9 +1259,9 @@ impl WalletsBalancesScreen {
         sections
     }
 
-    /// Build a per-category address count map in a single pass over
-    /// `watched_addresses`. Used by `system_tab_sections` to avoid
-    /// O(num_categories * num_addresses) per frame.
+    /// Build a per-category address count map in a single pass.
+    /// Prefers PlatformWallet's CoreAddressInfo when available, falling back
+    /// to `watched_addresses` for wallets without a platform wallet.
     fn precompute_address_counts(&self) -> std::collections::HashMap<AccountCategory, usize> {
         let mut counts = std::collections::HashMap::new();
         let Some(wallet_arc) = self.selected_wallet.as_ref() else {
@@ -1271,13 +1271,26 @@ impl WalletsBalancesScreen {
             return counts;
         };
         let network = self.app_context.network;
-        for (path, info) in &wallet.watched_addresses {
-            let (cat, _) = crate::ui::wallets::account_summary::categorize_account_path(
-                path,
-                network,
-                info.path_reference,
-            );
-            *counts.entry(cat).or_insert(0) += 1;
+
+        if let Some(pw) = wallet.platform_wallet.as_ref() {
+            let info = pw.core().blocking_wallet_info();
+            for addr_info in platform_wallet::CoreAddressInfo::all_from_wallet_info(&info) {
+                let (cat, _) = crate::ui::wallets::account_summary::categorize_account_path(
+                    &addr_info.derivation_path,
+                    network,
+                    crate::model::wallet::DerivationPathReference::Unknown,
+                );
+                *counts.entry(cat).or_insert(0) += 1;
+            }
+        } else {
+            for (path, info) in &wallet.watched_addresses {
+                let (cat, _) = crate::ui::wallets::account_summary::categorize_account_path(
+                    path,
+                    network,
+                    info.path_reference,
+                );
+                *counts.entry(cat).or_insert(0) += 1;
+            }
         }
         counts
     }

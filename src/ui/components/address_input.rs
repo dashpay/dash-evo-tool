@@ -411,44 +411,82 @@ impl AddressInput {
             }
         }
 
-        // Platform addresses: whitelist only PlatformPayment paths from
-        // watched_addresses, with balance from platform_address_info.
+        // Platform addresses: whitelist only PlatformPayment derivation paths,
+        // with balance from platform_address_info.
         // This ensures fresh wallets with no on-chain activity still show
         // their derived platform addresses.
-        use crate::model::wallet::DerivationPathReference;
         let mut seen_platform = std::collections::HashSet::new();
-        for addr_info in guard.watched_addresses.values() {
-            if addr_info.path_reference != DerivationPathReference::PlatformPayment {
-                continue;
-            }
-            let core_addr = &addr_info.address;
-            if let Ok(platform_addr) = PlatformAddress::try_from(core_addr.clone()) {
-                let addr_str = platform_addr.to_bech32m_string(self.network);
-                if !seen_platform.insert(addr_str.clone()) {
+        if let Some(pw) = guard.platform_wallet.as_ref() {
+            let info = pw.core().blocking_wallet_info();
+            for addr_info in platform_wallet::CoreAddressInfo::all_from_wallet_info(&info) {
+                if !addr_info.derivation_path.is_platform_payment(self.network) {
                     continue;
                 }
-                let balance = guard
-                    .platform_address_info
-                    .get(core_addr)
-                    .map(|info| info.balance)
-                    .unwrap_or(0);
-                let display = if self.full_addresses {
-                    format!("{}{}", prefix, addr_str)
-                } else {
-                    format!("{}{}", prefix, truncate_address(&addr_str))
-                };
-                let bech32m = addr_str.clone();
-                self.all_entries.push(AddressEntry {
-                    address_string: addr_str,
-                    address_kind: AddressKind::Platform,
-                    display_label: display,
-                    balance,
-                    validated: ValidatedAddress::Platform {
-                        address: platform_addr,
-                        bech32m,
-                    },
-                    is_change: false,
-                });
+                let core_addr = &addr_info.address;
+                if let Ok(platform_addr) = PlatformAddress::try_from(core_addr.clone()) {
+                    let addr_str = platform_addr.to_bech32m_string(self.network);
+                    if !seen_platform.insert(addr_str.clone()) {
+                        continue;
+                    }
+                    let balance = guard
+                        .platform_address_info
+                        .get(core_addr)
+                        .map(|info| info.balance)
+                        .unwrap_or(0);
+                    let display = if self.full_addresses {
+                        format!("{}{}", prefix, addr_str)
+                    } else {
+                        format!("{}{}", prefix, truncate_address(&addr_str))
+                    };
+                    let bech32m = addr_str.clone();
+                    self.all_entries.push(AddressEntry {
+                        address_string: addr_str,
+                        address_kind: AddressKind::Platform,
+                        display_label: display,
+                        balance,
+                        validated: ValidatedAddress::Platform {
+                            address: platform_addr,
+                            bech32m,
+                        },
+                        is_change: false,
+                    });
+                }
+            }
+        } else {
+            use crate::model::wallet::DerivationPathReference;
+            for addr_info in guard.watched_addresses.values() {
+                if addr_info.path_reference != DerivationPathReference::PlatformPayment {
+                    continue;
+                }
+                let core_addr = &addr_info.address;
+                if let Ok(platform_addr) = PlatformAddress::try_from(core_addr.clone()) {
+                    let addr_str = platform_addr.to_bech32m_string(self.network);
+                    if !seen_platform.insert(addr_str.clone()) {
+                        continue;
+                    }
+                    let balance = guard
+                        .platform_address_info
+                        .get(core_addr)
+                        .map(|info| info.balance)
+                        .unwrap_or(0);
+                    let display = if self.full_addresses {
+                        format!("{}{}", prefix, addr_str)
+                    } else {
+                        format!("{}{}", prefix, truncate_address(&addr_str))
+                    };
+                    let bech32m = addr_str.clone();
+                    self.all_entries.push(AddressEntry {
+                        address_string: addr_str,
+                        address_kind: AddressKind::Platform,
+                        display_label: display,
+                        balance,
+                        validated: ValidatedAddress::Platform {
+                            address: platform_addr,
+                            bech32m,
+                        },
+                        is_change: false,
+                    });
+                }
             }
         }
     }

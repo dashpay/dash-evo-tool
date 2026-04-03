@@ -1228,7 +1228,7 @@ impl WalletsBalancesScreen {
         ];
 
         // Precompute per-category address counts in a single pass over
-        // watched_addresses to avoid O(num_categories * num_addresses)
+        // PlatformWallet addresses to avoid O(num_categories * num_addresses)
         // per frame.
         let address_counts = self.precompute_address_counts();
 

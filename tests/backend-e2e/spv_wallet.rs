@@ -28,10 +28,8 @@ async fn test_spv_sync_and_create_wallet() {
     )
     .expect("Wallet::new_from_seed should succeed");
 
-    assert!(
-        !wallet.known_addresses.is_empty(),
-        "New wallet should have at least one known address"
-    );
+    // Addresses are managed by PlatformWallet (created during register_wallet),
+    // so a freshly constructed Wallet has no address fields to check.
 
     // Register the wallet
     let (seed_hash, _wallet_arc) = app_context

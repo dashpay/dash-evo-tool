@@ -1226,7 +1226,7 @@ impl WalletsBalancesScreen {
         };
 
         // Collect Platform addresses with their balances (using DIP-18 Bech32m format)
-        // Uses platform_addresses() which reads from watched_addresses
+        // Uses platform_addresses() which reads from platform_address_info
         let network = self.app_context.network;
         let platform_addresses: Vec<(String, u64)> = wallet_guard
             .platform_addresses(network)

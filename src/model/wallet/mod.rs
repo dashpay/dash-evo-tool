@@ -13,15 +13,13 @@ use dash_sdk::dpp::identity::signer::Signer;
 use dash_sdk::dpp::key_wallet::bip32::{
     ChildNumber, DerivationPath, ExtendedPrivKey, ExtendedPubKey, KeyDerivationType,
 };
-use dash_sdk::dpp::key_wallet::psbt::serialize::Serialize;
 use dash_sdk::dpp::prelude::AddressNonce;
 use dash_sdk::platform::address_sync::{AddressFunds, AddressIndex, AddressKey, AddressProvider};
 
-use dash_sdk::dpp::dashcore::secp256k1::{Message, Secp256k1};
-use dash_sdk::dpp::dashcore::sighash::SighashCache;
+use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
 use dash_sdk::dpp::dashcore::{
-    Address, BlockHash, InstantLock, Network, OutPoint, PrivateKey, PublicKey, ScriptBuf,
-    Transaction, TxIn, TxOut, Txid,
+    Address, BlockHash, InstantLock, Network, OutPoint, PrivateKey, PublicKey, Transaction, TxOut,
+    Txid,
 };
 use dash_sdk::dpp::platform_value::BinaryData;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -281,13 +279,6 @@ bitflags! {
             | Self::DASHPAY.bits();
     }
 }
-#[derive(Debug, Clone, PartialEq)]
-pub struct AddressInfo {
-    pub address: Address,
-    pub path_type: DerivationPathType,
-    pub path_reference: DerivationPathReference,
-}
-
 #[derive(Debug, Clone)]
 pub struct WalletArcRef {
     pub wallet: Arc<RwLock<Wallet>>,
@@ -329,10 +320,6 @@ pub struct Wallet {
     pub wallet_seed: WalletSeed,
     pub uses_password: bool,
     pub master_bip44_ecdsa_extended_public_key: ExtendedPubKey,
-    /// Legacy address maps — populated from DB for locked wallets.
-    /// Reads should use `all_addresses_info()` / `derivation_path_for_address()` instead.
-    pub(crate) known_addresses: BTreeMap<Address, DerivationPath>,
-    pub(crate) watched_addresses: BTreeMap<DerivationPath, AddressInfo>,
     #[allow(clippy::type_complexity)]
     pub unused_asset_locks: Vec<(
         Transaction,
@@ -397,7 +384,6 @@ impl Wallet {
             ExtendedPubKey::from_priv(&secp, &account_priv);
 
         // Addresses are managed by PlatformWallet (created in register_wallet).
-        // known_addresses/watched_addresses are legacy fields, initialized empty.
 
         Ok(Wallet {
             platform_wallet: None,
@@ -413,8 +399,6 @@ impl Wallet {
             }),
             uses_password,
             master_bip44_ecdsa_extended_public_key,
-            known_addresses: BTreeMap::new(),
-            watched_addresses: BTreeMap::new(),
             unused_asset_locks: Default::default(),
             alias,
             identities: Default::default(),
@@ -841,8 +825,7 @@ impl Wallet {
         address: &Address,
         network: Network,
     ) -> Result<Option<PrivateKey>, String> {
-        self.known_addresses
-            .get(address)
+        self.derivation_path_for_address(address)
             .map(|derivation_path| {
                 derivation_path
                     .derive_priv_ecdsa_for_master_seed(self.seed_bytes()?, network)
@@ -850,97 +833,6 @@ impl Wallet {
                     .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())
             })
             .transpose()
-    }
-
-    pub fn unused_bip_44_public_key(
-        &mut self,
-        network: Network,
-        skip_known_addresses_with_no_funds: bool,
-        change: bool,
-        register: Option<&AppContext>,
-    ) -> Result<(PublicKey, DerivationPath), String> {
-        let mut address_index = 0;
-        let mut found_unused_derivation_path = None;
-        let mut known_public_key = None;
-        while found_unused_derivation_path.is_none() {
-            let derivation_path_extension = DerivationPath::from(
-                [
-                    ChildNumber::Normal {
-                        index: change.into(),
-                    },
-                    ChildNumber::Normal {
-                        index: address_index,
-                    },
-                ]
-                .as_slice(),
-            );
-            let derivation_path =
-                DerivationPath::bip_44_payment_path(network, 0, change, address_index);
-
-            if let Some(address_info) = self.watched_addresses.get(&derivation_path) {
-                // Address is known
-                let address = &address_info.address;
-                let balance = self.address_balance(address);
-
-                if balance > 0 {
-                    // Address has funds, skip it
-                    address_index += 1;
-                    continue;
-                }
-
-                // Address is known and has zero balance
-                if !skip_known_addresses_with_no_funds {
-                    // We can use this address
-                    found_unused_derivation_path = Some(derivation_path.clone());
-                    let secp = Secp256k1::new();
-                    let public_key = self
-                        .master_bip44_ecdsa_extended_public_key
-                        .derive_pub(&secp, &derivation_path_extension)
-                        .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?
-                        .to_pub();
-                    known_public_key = Some(public_key);
-                    break;
-                } else {
-                    // Skip known addresses with no funds
-                    address_index += 1;
-                    continue;
-                }
-            } else {
-                let secp = Secp256k1::new();
-                let public_key = self
-                    .master_bip44_ecdsa_extended_public_key
-                    .derive_pub(&secp, &derivation_path_extension)
-                    .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?
-                    .to_pub();
-                known_public_key = Some(public_key);
-                if let Some(app_context) = register {
-                    let address = Address::p2pkh(&public_key, network);
-                    app_context.try_import_address(
-                        &address,
-                        self.core_wallet_name.as_deref(),
-                        Some(&format!(
-                            "Managed by Dash Evo Tool {} {}",
-                            self.alias.clone().unwrap_or_default(),
-                            derivation_path
-                        )),
-                    );
-
-                    self.register_address(
-                        address,
-                        &derivation_path,
-                        DerivationPathType::CLEAR_FUNDS,
-                        DerivationPathReference::BIP44,
-                        app_context,
-                    )?;
-                }
-                found_unused_derivation_path = Some(derivation_path.clone());
-                break;
-            }
-        }
-
-        let derivation_path = found_unused_derivation_path.unwrap();
-        let known_public_key = known_public_key.unwrap();
-        Ok((known_public_key, derivation_path))
     }
 
     pub fn identity_authentication_ecdsa_public_key(
@@ -1103,16 +995,6 @@ impl Wallet {
                 None,
             )
             .map_err(|e| e.to_string())?;
-        self.known_addresses
-            .insert(address.clone(), derivation_path.clone());
-        self.watched_addresses.insert(
-            derivation_path.clone(),
-            AddressInfo {
-                address: address.clone(),
-                path_type,
-                path_reference,
-            },
-        );
 
         if app_context.core_backend_mode() == crate::spv::CoreBackendMode::Rpc {
             app_context.try_import_address(&address, self.core_wallet_name.as_deref(), None);
@@ -1138,8 +1020,7 @@ impl Wallet {
     ) -> Result<(), String> {
         let canonical_address = Wallet::canonical_address(&address, app_context.network);
 
-        // Store the address in known_addresses and watched_addresses
-        // Note: We don't import to Core wallet since Platform addresses are not valid there
+        // Persist to DB. We don't import to Core wallet since Platform addresses are not valid there.
         app_context
             .db
             .add_address_if_not_exists(
@@ -1152,17 +1033,6 @@ impl Wallet {
                 None,
             )
             .map_err(|e| e.to_string())?;
-
-        self.known_addresses
-            .insert(canonical_address.clone(), derivation_path.clone());
-        self.watched_addresses.insert(
-            derivation_path.clone(),
-            AddressInfo {
-                address: canonical_address.clone(),
-                path_type,
-                path_reference,
-            },
-        );
 
         tracing::trace!(
             address = ?&address,
@@ -1221,86 +1091,31 @@ impl Wallet {
 
     pub fn receive_address(
         &mut self,
-        network: Network,
-        _skip_known_addresses_with_no_funds: bool,
-        register: Option<&AppContext>,
+        _network: Network,
+        _force_new: bool,
+        _register: Option<&AppContext>,
     ) -> Result<Address, String> {
-        // Delegate to PlatformWallet when available
         if let Some(pw) = &self.platform_wallet {
             return pw
                 .core()
                 .blocking_next_receive_address()
                 .map_err(|e| e.to_string());
         }
-        // Fallback to BIP44 derivation — needed during new wallet creation
-        // (save_wallet flow) before PlatformWallet is registered. Once the wallet
-        // is fully bootstrapped, the PlatformWallet path above handles all calls.
-        Ok(Address::p2pkh(
-            &self
-                .unused_bip_44_public_key(
-                    network,
-                    _skip_known_addresses_with_no_funds,
-                    false,
-                    register,
-                )?
-                .0,
-            network,
-        ))
-    }
-
-    // Allow dead_code: This method provides receive addresses with derivation paths,
-    // useful for advanced address management and BIP44 path tracking
-    #[allow(dead_code)]
-    pub fn receive_address_with_derivation_path(
-        &mut self,
-        network: Network,
-        register: Option<&AppContext>,
-    ) -> Result<(Address, DerivationPath), String> {
-        let (receive_public_key, derivation_path) =
-            self.unused_bip_44_public_key(network, false, false, register)?;
-        Ok((
-            Address::p2pkh(&receive_public_key, network),
-            derivation_path,
-        ))
+        Err("Wallet is locked".to_string())
     }
 
     pub fn change_address(
         &mut self,
-        network: Network,
-        register: Option<&AppContext>,
+        _network: Network,
+        _register: Option<&AppContext>,
     ) -> Result<Address, String> {
-        // Delegate to PlatformWallet when available
         if let Some(pw) = &self.platform_wallet {
             return pw
                 .core()
                 .blocking_next_change_address()
                 .map_err(|e| e.to_string());
         }
-        // Fallback to BIP44 derivation — needed during new wallet creation
-        // (save_wallet flow) before PlatformWallet is registered. Once the wallet
-        // is fully bootstrapped, the PlatformWallet path above handles all calls.
-        Ok(Address::p2pkh(
-            &self
-                .unused_bip_44_public_key(network, false, true, register)?
-                .0,
-            network,
-        ))
-    }
-
-    // Allow dead_code: This method provides change addresses with derivation paths,
-    // useful for advanced address management and BIP44 path tracking
-    #[allow(dead_code)]
-    pub fn change_address_with_derivation_path(
-        &mut self,
-        network: Network,
-        register: Option<&AppContext>,
-    ) -> Result<(Address, DerivationPath), String> {
-        let (receive_public_key, derivation_path) =
-            self.unused_bip_44_public_key(network, false, true, register)?;
-        Ok((
-            Address::p2pkh(&receive_public_key, network),
-            derivation_path,
-        ))
+        Err("Wallet is locked".to_string())
     }
 
     /// Generate a Platform receive address.
@@ -1308,15 +1123,18 @@ impl Wallet {
     pub fn platform_receive_address(
         &mut self,
         network: Network,
-        skip_known_addresses: bool,
+        force_new: bool,
         register: Option<&AppContext>,
     ) -> Result<Address, String> {
-        // If not skipping known addresses, return first existing one
-        // This doesn't require the wallet to be unlocked
-        if !skip_known_addresses {
-            for (path, info) in &self.watched_addresses {
-                if path.is_platform_payment(network) {
-                    return Ok(info.address.clone());
+        // If not forcing a new address, return first existing one from PlatformWallet
+        if !force_new {
+            if let Some(pw) = &self.platform_wallet {
+                let info = pw.core().blocking_wallet_info();
+                let all = platform_wallet::CoreAddressInfo::all_from_wallet_info(&info);
+                for addr_info in &all {
+                    if addr_info.derivation_path.is_platform_payment(network) {
+                        return Ok(addr_info.address.clone());
+                    }
                 }
             }
         }
@@ -1328,18 +1146,25 @@ impl Wallet {
         let key_class = 0u32;
 
         // Find the highest index in existing Platform payment addresses
-        let existing_indices: Vec<u32> = self
-            .watched_addresses
-            .iter()
-            .filter(|(path, _)| path.is_platform_payment(network))
-            .filter_map(|(path, _)| {
-                // Extract the index from the path (last component)
-                path.into_iter().last().and_then(|child| match child {
-                    ChildNumber::Normal { index } | ChildNumber::Hardened { index } => Some(*index),
-                    _ => None,
+        let existing_indices: Vec<u32> = if let Some(pw) = &self.platform_wallet {
+            let info = pw.core().blocking_wallet_info();
+            platform_wallet::CoreAddressInfo::all_from_wallet_info(&info)
+                .iter()
+                .filter(|a| a.derivation_path.is_platform_payment(network))
+                .filter_map(|a| {
+                    a.derivation_path
+                        .as_ref()
+                        .last()
+                        .and_then(|child| match child {
+                            ChildNumber::Normal { index }
+                            | ChildNumber::Hardened { index } => Some(*index),
+                            _ => None,
+                        })
                 })
-            })
-            .collect();
+                .collect()
+        } else {
+            vec![]
+        };
 
         // Generate a new Platform address at the next index
         let next_index = existing_indices.iter().max().map(|m| m + 1).unwrap_or(0);
@@ -1364,18 +1189,6 @@ impl Wallet {
                 DerivationPathReference::PlatformPayment,
                 app_context,
             )?;
-        } else {
-            // Just update local state without persisting
-            self.known_addresses
-                .insert(platform_address.clone(), derivation_path.clone());
-            self.watched_addresses.insert(
-                derivation_path,
-                AddressInfo {
-                    address: platform_address.clone(),
-                    path_type: DerivationPathType::CLEAR_FUNDS,
-                    path_reference: DerivationPathReference::PlatformPayment,
-                },
-            );
         }
 
         Ok(platform_address)
@@ -1464,14 +1277,13 @@ impl Wallet {
     }
 
     /// Get all Platform payment addresses from this wallet
-    pub fn platform_addresses(&self, network: Network) -> Vec<(Address, PlatformAddress)> {
-        self.watched_addresses
-            .iter()
-            .filter(|(path, _)| path.is_platform_payment(network))
-            .filter_map(|(_, info)| {
-                PlatformAddress::try_from(info.address.clone())
+    pub fn platform_addresses(&self, _network: Network) -> Vec<(Address, PlatformAddress)> {
+        self.platform_address_info
+            .keys()
+            .filter_map(|addr| {
+                PlatformAddress::try_from(addr.clone())
                     .ok()
-                    .map(|platform_addr| (info.address.clone(), platform_addr))
+                    .map(|platform_addr| (addr.clone(), platform_addr))
             })
             .collect()
     }
@@ -1555,19 +1367,12 @@ impl Wallet {
         platform_address: &PlatformAddress,
         network: Network,
     ) -> Result<PrivateKey, ProtocolError> {
-        // Find the derivation path by looking through watched_addresses
-        // and matching the PlatformAddress
+        // Convert to Core address for lookup
+        let core_address = platform_address.to_address_with_network(network);
+
+        // Find the derivation path via PlatformWallet
         let derivation_path = self
-            .watched_addresses
-            .iter()
-            .filter(|(path, _)| path.is_platform_payment(network))
-            .find_map(|(path, info)| {
-                // Try to convert the stored address to a PlatformAddress and compare
-                PlatformAddress::try_from(info.address.clone())
-                    .ok()
-                    .filter(|addr| addr == platform_address)
-                    .map(|_| path.clone())
-            })
+            .derivation_path_for_address(&core_address)
             .ok_or_else(|| {
                 ProtocolError::Generic(format!(
                     "Platform address {:?} not found in wallet",
@@ -1807,47 +1612,13 @@ impl WalletAddressProvider {
     /// Apply the sync results to a wallet, updating Platform address info.
     ///
     /// This updates the wallet's `platform_address_info` with the balances found during sync.
-    /// Also ensures addresses are registered in `known_addresses` and `watched_addresses`
-    /// so they appear in the UI.
     /// Nonces are taken directly from the SDK sync results.
     pub fn apply_results_to_wallet(&self, wallet: &mut Wallet) {
-        // Build a reverse lookup from address to index
-        let address_to_index: BTreeMap<Address, AddressIndex> = self
-            .pending
-            .iter()
-            .map(|(idx, (_, addr))| (Wallet::canonical_address(addr, self.network), *idx))
-            .collect();
-
         for (address, funds) in &self.found_balances {
             let canonical_address = Wallet::canonical_address(address, self.network);
 
             // Update wallet with synced balances
-            wallet.set_platform_address_info(canonical_address.clone(), funds.balance, funds.nonce);
-
-            // Also register in known_addresses and watched_addresses if not already present
-            if !wallet.known_addresses.contains_key(&canonical_address)
-                && let Some(&index) = address_to_index.get(&canonical_address)
-            {
-                let derivation_path = DerivationPath::platform_payment_path(
-                    self.network,
-                    self.account,
-                    self.key_class,
-                    index,
-                );
-
-                wallet
-                    .known_addresses
-                    .insert(canonical_address.clone(), derivation_path.clone());
-
-                wallet.watched_addresses.insert(
-                    derivation_path,
-                    AddressInfo {
-                        address: canonical_address.clone(),
-                        path_type: DerivationPathType::CLEAR_FUNDS,
-                        path_reference: DerivationPathReference::PlatformPayment,
-                    },
-                );
-            }
+            wallet.set_platform_address_info(canonical_address, funds.balance, funds.nonce);
         }
     }
 
@@ -2061,8 +1832,6 @@ mod tests {
             }),
             uses_password: false,
             master_bip44_ecdsa_extended_public_key,
-            known_addresses: BTreeMap::new(),
-            watched_addresses: BTreeMap::new(),
             unused_asset_locks: Vec::new(),
             alias: Some("Test Wallet".to_string()),
             identities: HashMap::new(),
@@ -2544,89 +2313,21 @@ mod tests {
     }
 
     #[test]
-    fn test_receive_address_returns_first_unused() {
+    fn test_receive_address_returns_error_when_locked() {
         let mut wallet = test_wallet();
-        // With no watched addresses, should derive address at index 0
-        let addr = wallet
-            .receive_address(Network::Testnet, false, None)
-            .unwrap();
-        assert!(!addr.to_string().is_empty());
-    }
-
-    /// Helper: manually register an address in watched_addresses so the wallet
-    /// considers it "known" (normally done by register_address with AppContext).
-    fn register_address_locally(
-        wallet: &mut Wallet,
-        address: &Address,
-        derivation_path: &DerivationPath,
-    ) {
-        wallet
-            .known_addresses
-            .insert(address.clone(), derivation_path.clone());
-        wallet.watched_addresses.insert(
-            derivation_path.clone(),
-            AddressInfo {
-                address: address.clone(),
-                path_type: DerivationPathType::CLEAR_FUNDS,
-                path_reference: DerivationPathReference::BIP44,
-            },
-        );
+        // Without PlatformWallet, receive_address should return Err
+        let result = wallet.receive_address(Network::Testnet, false, None);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Wallet is locked");
     }
 
     #[test]
-    fn test_receive_address_skip_known_with_no_funds() {
+    fn test_change_address_returns_error_when_locked() {
         let mut wallet = test_wallet();
-
-        // Derive address at index 0 and register it locally
-        let addr0 = wallet
-            .derive_bip44_address(Network::Testnet, false, 0)
-            .unwrap();
-        let path0 = DerivationPath::from(vec![
-            ChildNumber::Hardened { index: 44 },
-            ChildNumber::Hardened { index: 1 },
-            ChildNumber::Hardened { index: 0 },
-            ChildNumber::Normal { index: 0 },
-            ChildNumber::Normal { index: 0 },
-        ]);
-        register_address_locally(&mut wallet, &addr0, &path0);
-
-        // With skip=false, should return the same known zero-balance address
-        let addr_same = wallet
-            .receive_address(Network::Testnet, false, None)
-            .unwrap();
-        assert_eq!(addr0, addr_same);
-
-        // With skip=true, should skip the known zero-balance address and get a new one
-        let addr_next = wallet
-            .receive_address(Network::Testnet, true, None)
-            .unwrap();
-        assert_ne!(addr0, addr_next);
-    }
-
-    #[test]
-    fn test_receive_address_skips_funded_addresses() {
-        let mut wallet = test_wallet();
-
-        // Derive and register address at index 0
-        let addr0 = wallet
-            .derive_bip44_address(Network::Testnet, false, 0)
-            .unwrap();
-        let path0 = DerivationPath::from(vec![
-            ChildNumber::Hardened { index: 44 },
-            ChildNumber::Hardened { index: 1 },
-            ChildNumber::Hardened { index: 0 },
-            ChildNumber::Normal { index: 0 },
-            ChildNumber::Normal { index: 0 },
-        ]);
-        register_address_locally(&mut wallet, &addr0, &path0);
-
-        // Without a PlatformWallet, address_balance() returns 0 for all
-        // addresses, so receive_address won't skip any — it returns the
-        // first known address with zero balance.
-        let addr_result = wallet
-            .receive_address(Network::Testnet, false, None)
-            .unwrap();
-        assert_eq!(addr0, addr_result, "Should return first address when no platform wallet");
+        // Without PlatformWallet, change_address should return Err
+        let result = wallet.change_address(Network::Testnet, None);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Wallet is locked");
     }
 
     // ========================================================================

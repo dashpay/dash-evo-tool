@@ -1,8 +1,8 @@
 use crate::database::{CorruptedBlobError, Database};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::{
-    AddressInfo, ClosedKeyItem, DerivationPathReference, DerivationPathType, OpenWalletSeed,
-    TransactionStatus, Wallet, WalletSeed, WalletTransaction,
+    ClosedKeyItem, DerivationPathReference, DerivationPathType, OpenWalletSeed, TransactionStatus,
+    Wallet, WalletSeed, WalletTransaction,
 };
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
@@ -11,7 +11,7 @@ use dash_sdk::dpp::dashcore::address::{NetworkChecked, NetworkUnchecked};
 use dash_sdk::dpp::dashcore::consensus::{deserialize, serialize};
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{
-    self, BlockHash, InstantLock, Network, OutPoint, ScriptBuf, Transaction, TxOut, Txid,
+    self, BlockHash, InstantLock, Network, OutPoint, Transaction, Txid,
 };
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::InstantAssetLockProof;
@@ -567,8 +567,6 @@ impl Database {
                     wallet_seed,
                     uses_password,
                     master_bip44_ecdsa_extended_public_key: master_ecdsa_extended_public_key,
-                    known_addresses: BTreeMap::new(),
-                    watched_addresses: BTreeMap::new(),
                     unused_asset_locks: vec![],
                     alias,
                     identities: HashMap::new(),
@@ -587,172 +585,14 @@ impl Database {
             wallet?;
         }
 
-        tracing::trace!(
-            "step 2: retrieve all addresses, balances, and derivation paths associated with the wallets"
-        );
-        let mut address_stmt = conn.prepare(
-            "SELECT seed_hash, address, derivation_path, balance, path_reference, path_type, total_received FROM wallet_addresses WHERE seed_hash IN (SELECT seed_hash FROM wallet WHERE network = ?)",
-        )?;
+        // Address rows from wallet_addresses are no longer loaded into the
+        // Wallet struct — PlatformWallet's ManagedWalletInfo is the canonical
+        // source for address metadata and balances.
 
-        let address_rows = address_stmt.query_map([network_str.clone()], |row| {
-            let seed_hash: Vec<u8> = row.get(0)?;
-            let address_str: String = row.get(1)?;
-            let derivation_path: String = row.get(2)?;
-            let balance: Option<u64> = row.get(3)?;
-            let path_reference: u32 = row.get(4)?;
-            let path_type: u32 = row.get(5)?;
-            let total_received: Option<u64> = row.get(6)?;
+        // UTXOs are tracked by ManagedWalletInfo — no longer loaded into the
+        // Wallet struct.
 
-            let seed_hash_array: [u8; 32] = seed_hash.try_into().map_err(|_| {
-                rusqlite::Error::InvalidParameterName(
-                    "Seed hash should be 32 bytes".to_string(),
-                )
-            })?;
-
-            // Convert u32 to DerivationPathReference safely
-            let path_reference =
-                DerivationPathReference::try_from(path_reference).map_err(|_| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        0,
-                        rusqlite::types::Type::Integer,
-                        Box::new(std::fmt::Error),
-                    )
-                })?;
-
-            // Parse address - Platform addresses (DIP-17/18) use Bech32m encoding with dash/tdash HRP per DIP-18
-            // and need special handling when stored (we store as Core address format internally)
-            let address = if path_reference == DerivationPathReference::PlatformPayment {
-                // Platform addresses are stored as Core P2PKH format for efficient internal lookup.
-                // We use assume_checked() here because:
-                // 1. Network validation was already performed at insertion time
-                // 2. Platform addresses (bech32m) map to Core P2PKH addresses internally
-                // 3. The stored address format doesn't have the same network version byte rules
-                Address::from_str(&address_str)
-                    .map(|a| a.assume_checked())
-                    .map_err(|e| {
-                        tracing::error!(address = %address_str, error = ?e, "Failed to parse Platform address");
-                        rusqlite::Error::FromSqlConversionFailure(
-                            1,
-                            rusqlite::types::Type::Text,
-                            Box::new(std::fmt::Error),
-                        )
-                    })?
-            } else {
-                // Standard Core addresses - validate network
-                let address_unchecked =
-                    Address::from_str(&address_str).map_err(|e| {
-                        rusqlite::Error::InvalidParameterName(format!(
-                            "Invalid address format '{}': {}",
-                            address_str, e
-                        ))
-                    })?;
-                check_address_for_network(address_unchecked, network)?
-            };
-
-            let derivation_path = DerivationPath::from_str(&derivation_path).map_err(|e| {
-                rusqlite::Error::InvalidParameterName(format!(
-                    "Invalid derivation path '{}': {}",
-                    derivation_path, e
-                ))
-            })?;
-
-            let path_type = DerivationPathType::from_bits_truncate(path_type);
-
-            Ok((
-                seed_hash_array,
-                address,
-                derivation_path,
-                balance,
-                path_reference,
-                path_type,
-                total_received,
-            ))
-        })?;
-
-        tracing::trace!("step 3: add addresses, balances, and known addresses to wallets");
-        for row in address_rows {
-            if row.is_err() {
-                continue;
-            }
-            let (
-                seed_array,
-                address,
-                derivation_path,
-                balance,
-                path_reference,
-                path_type,
-                total_received,
-            ) = row?;
-            if let Some(wallet) = wallets_map.get_mut(&seed_array) {
-                // Canonicalize Platform addresses to avoid duplicate representations
-                let canonical_address = Wallet::canonical_address(&address, *network);
-
-                // Balances at DB level are persisted but no longer loaded into
-                // the Wallet struct — served by PlatformWallet's WalletBalance.
-                let _ = (balance, total_received);
-
-                // Add the address to the `known_addresses` map.
-                wallet
-                    .known_addresses
-                    .insert(canonical_address.clone(), derivation_path.clone());
-                tracing::trace!(
-                    address = ?canonical_address,
-                    network = address.network().to_string(),
-                    expected_network = network.to_string(),
-                    "loaded address from database");
-
-                // Add the address to the `watched_addresses` map with AddressInfo.
-                let address_info = AddressInfo {
-                    address: canonical_address.clone(),
-                    path_reference,
-                    path_type,
-                };
-                wallet
-                    .watched_addresses
-                    .insert(derivation_path, address_info);
-            }
-        }
-
-        tracing::trace!("step 4: retrieve UTXOs for each wallet and add them to the wallets");
-        let mut utxo_stmt = conn.prepare(
-            "SELECT txid, vout, address, value, script_pubkey FROM utxos WHERE network = ?",
-        )?;
-
-        let utxo_rows = utxo_stmt.query_map([network_str.clone()], |row| {
-            let txid: Vec<u8> = row.get(0)?;
-            let vout: i64 = row.get(1)?;
-            let address: String = row.get(2)?;
-            let value: i64 = row.get(3)?;
-            let script_pubkey: Vec<u8> = row.get(4)?;
-
-            let address = Address::from_str(&address)
-                .map_err(|e| {
-                    rusqlite::Error::InvalidParameterName(format!(
-                        "Invalid UTXO address format '{}': {}",
-                        address, e
-                    ))
-                })?
-                .assume_checked();
-
-            let outpoint = OutPoint {
-                txid: Txid::from_slice(&txid).map_err(|e| {
-                    rusqlite::Error::InvalidParameterName(format!("Invalid UTXO txid: {}", e))
-                })?,
-                vout: vout as u32,
-            };
-            let tx_out = TxOut {
-                value: value as u64,
-                script_pubkey: ScriptBuf::from_bytes(script_pubkey),
-            };
-            Ok((address, outpoint, tx_out))
-        })?;
-
-        // UTXOs are tracked by ManagedWalletInfo — skip loading into Wallet.utxos.
-        // Consume the iterator to avoid unused variable warnings.
-        for row in utxo_rows {
-            let _ = row?;
-        }
-        tracing::trace!("step 6: load asset lock transactions for each wallet");
+        tracing::trace!("step 2: load asset lock transactions for each wallet");
         let mut asset_lock_stmt = conn.prepare(
             "SELECT wallet, amount, transaction_data, instant_lock_data, chain_locked_height FROM asset_lock_transaction where identity_id IS NULL AND network = ?",
         )?;
@@ -830,7 +670,7 @@ impl Database {
             Ok((wallet_seed_hash_array, tx, address, amount, islock, proof))
         })?;
 
-        tracing::trace!("step 7: add the asset lock transactions to the wallet");
+        tracing::trace!("step 3: add the asset lock transactions to the wallet");
         for row in asset_lock_rows {
             let (wallet_seed, tx, address, amount, islock, proof) = row?;
 
@@ -841,7 +681,7 @@ impl Database {
             }
         }
 
-        tracing::trace!("step 7: load wallet transactions for each wallet");
+        tracing::trace!("step 4: load wallet transactions for each wallet");
         let mut tx_stmt = conn.prepare(
             "SELECT seed_hash, txid, timestamp, height, block_hash, net_amount, fee, label, is_ours, raw_transaction, status
              FROM wallet_transactions WHERE network = ? ORDER BY timestamp DESC",
@@ -909,7 +749,7 @@ impl Database {
 
         tracing::trace!(
             network = network_str,
-            "step 8: retrieve identities for wallets"
+            "step 5: retrieve identities for wallets"
         );
         let mut identity_stmt = conn.prepare(
             "SELECT data, wallet, wallet_index FROM identity WHERE network = ? AND wallet IS NOT NULL AND wallet_index IS NOT NULL",
@@ -967,7 +807,7 @@ impl Database {
 
         tracing::trace!(
             network = network_str,
-            "step 9: retrieve platform address info for wallets"
+            "step 6: retrieve platform address info for wallets"
         );
         // Load platform address info for each wallet (using existing connection to avoid deadlock)
         let mut platform_stmt = conn.prepare(

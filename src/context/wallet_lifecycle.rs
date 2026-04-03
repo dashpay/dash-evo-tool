@@ -7,8 +7,8 @@ use crate::model::qualified_identity::encrypted_key_storage::{
 };
 use crate::model::qualified_identity::{PrivateKeyTarget, QualifiedIdentity};
 use crate::model::wallet::{
-    AddressInfo as WalletAddressInfo, DerivationPathHelpers, DerivationPathReference,
-    DerivationPathType, TransactionStatus, Wallet, WalletSeedHash, WalletTransaction,
+    DerivationPathHelpers, DerivationPathReference, DerivationPathType, TransactionStatus, Wallet,
+    WalletSeedHash, WalletTransaction,
 };
 use crate::platform_wallet_bridge::{
     ManagedDpnsNameInfo, ManagedIdentityStatus, ManagedKeyStorage, ManagedPrivateKeyData,
@@ -166,22 +166,9 @@ impl AppContext {
         self: &Arc<Self>,
         wallet: Wallet,
     ) -> Result<(WalletSeedHash, Arc<RwLock<Wallet>>), TaskError> {
-        // 1. Persist wallet and known addresses atomically
-        let addresses: Vec<_> = wallet
-            .known_addresses
-            .iter()
-            .map(|(address, path)| {
-                (
-                    address,
-                    path,
-                    DerivationPathReference::BIP44,
-                    DerivationPathType::CLEAR_FUNDS,
-                )
-            })
-            .collect();
-
+        // 1. Persist wallet (no legacy address maps)
         self.db
-            .store_wallet_with_addresses(&wallet, &self.network, &addresses)
+            .store_wallet_with_addresses(&wallet, &self.network, &[])
             .map_err(|e| {
                 if is_unique_constraint_violation(&e) {
                     TaskError::WalletAlreadyImported
@@ -551,7 +538,7 @@ impl AppContext {
         path_type: DerivationPathType,
         path_reference: DerivationPathReference,
     ) -> Result<bool, TaskError> {
-        let mut guard = wallet.write()?;
+        let guard = wallet.read()?;
         if guard.has_address(&address) {
             return Ok(false);
         }
@@ -570,18 +557,6 @@ impl AppContext {
             path_type,
             None,
         )?;
-
-        guard
-            .known_addresses
-            .insert(address.clone(), derivation_path.clone());
-        guard.watched_addresses.insert(
-            derivation_path,
-            WalletAddressInfo {
-                address,
-                path_type,
-                path_reference,
-            },
-        );
 
         Ok(true)
     }
@@ -908,14 +883,17 @@ impl AppContext {
                 tracing::warn!(wallet = %hex::encode(seed_hash), error = %e, "Failed to persist wallet balances");
             }
 
-            // Get the wallet's known addresses (only update those to avoid cross-wallet churn)
-            let mut known_addresses: std::collections::BTreeSet<Address> = {
+            // Get the wallet's addresses from PlatformWallet (only update those to avoid cross-wallet churn)
+            let mut wallet_addresses: std::collections::BTreeSet<Address> = {
                 let w = wallet_arc.read()?;
-                w.known_addresses.keys().cloned().collect()
+                w.all_addresses_info()
+                    .into_iter()
+                    .map(|a| a.address)
+                    .collect()
             };
 
             // Clear existing UTXOs for these addresses in this network
-            for addr in &known_addresses {
+            for addr in &wallet_addresses {
                 let _ = self.db.execute(
                     "DELETE FROM utxos WHERE address = ? AND network = ?",
                     rusqlite::params![addr.to_string(), self.network.to_string()],
@@ -957,7 +935,7 @@ impl AppContext {
                 *per_address_sum.entry(address.clone()).or_default() += tx_out.value;
 
                 // If address unknown to DET, try to register using SPV metadata
-                if !known_addresses.contains(&address) {
+                if !wallet_addresses.contains(&address) {
                     let collection = wallet_info.accounts();
                     let mut registered = false;
                     for acc in collection.all_accounts() {
@@ -987,7 +965,7 @@ impl AppContext {
                                 path_reference,
                             ) {
                                 if inserted {
-                                    known_addresses.insert(address.clone());
+                                    wallet_addresses.insert(address.clone());
                                 }
                                 registered = true;
                             }
@@ -1025,7 +1003,7 @@ impl AppContext {
             if let Some(wref) = wallets_guard.get(seed_hash)
                 && let Ok(w) = wref.read()
             {
-                for addr in &known_addresses {
+                for addr in &wallet_addresses {
                     if !per_address_sum.contains_key(addr) {
                         if let Err(e) = w.update_address_balance(addr, 0, self) {
                             tracing::debug!(address = %addr, error = %e, "Failed to zero spent address balance");

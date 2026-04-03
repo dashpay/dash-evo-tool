@@ -19,7 +19,7 @@ impl AppContext {
         &self,
         wallet: Arc<RwLock<Wallet>>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        let (known_addresses, seed_hash, already_tracked_txids, core_wallet_name) = {
+        let (wallet_addresses, seed_hash, already_tracked_txids, core_wallet_name) = {
             let wallet_guard = wallet.read()?;
 
             // Read addresses from PlatformWallet (canonical source).
@@ -49,13 +49,13 @@ impl AppContext {
         };
 
         tracing::info!(
-            "Searching for unused asset locks. Known addresses: {}, Already tracked: {}",
-            known_addresses.len(),
+            "Searching for unused asset locks. Wallet addresses: {}, Already tracked: {}",
+            wallet_addresses.len(),
             already_tracked_txids.len()
         );
 
-        if known_addresses.is_empty() {
-            tracing::warn!("No known addresses in wallet - cannot search for asset locks");
+        if wallet_addresses.is_empty() {
+            tracing::warn!("No addresses in wallet - cannot search for asset locks");
             return Ok(BackendTaskSuccessResult::RecoveredAssetLocks {
                 recovered_count: 0,
                 total_amount: 0,
@@ -67,19 +67,19 @@ impl AppContext {
         let mut recovered_count = 0;
         let mut total_amount = 0u64;
 
-        // First, import all known addresses to Core to ensure it's watching them
-        for address in &known_addresses {
+        // First, import all wallet addresses to Core to ensure it's watching them
+        for address in &wallet_addresses {
             if let Err(e) = client.import_address(address, None, Some(false)) {
                 tracing::debug!("import_address for {} returned: {:?}", address, e);
             }
         }
 
-        // Method 1: Get unspent outputs for all known addresses
-        let address_refs: Vec<&Address> = known_addresses.iter().collect();
+        // Method 1: Get unspent outputs for all wallet addresses
+        let address_refs: Vec<&Address> = wallet_addresses.iter().collect();
         let unspent = client.list_unspent(None, None, Some(&address_refs), Some(true), None)?;
 
         tracing::info!(
-            "Found {} unspent outputs for known addresses",
+            "Found {} unspent outputs for wallet addresses",
             unspent.len()
         );
 
@@ -124,7 +124,7 @@ impl AppContext {
             for credit_output in &payload.credit_outputs {
                 if let Ok(addr) = Address::from_script(&credit_output.script_pubkey, self.network) {
                     tracing::debug!("Asset lock credit output address: {}", addr);
-                    if known_addresses.contains(&addr) {
+                    if wallet_addresses.contains(&addr) {
                         credit_address = Some(addr);
                         credit_amount = credit_output.value;
                         break;
@@ -133,7 +133,7 @@ impl AppContext {
             }
 
             let Some(addr) = credit_address else {
-                tracing::debug!("Asset lock {} credit address not in known addresses", txid);
+                tracing::debug!("Asset lock {} credit address not in wallet addresses", txid);
                 continue;
             };
 
@@ -272,7 +272,7 @@ impl AppContext {
                 };
 
                 // Verify the credit address belongs to our wallet
-                if !known_addresses.contains(&credit_addr) {
+                if !wallet_addresses.contains(&credit_addr) {
                     tracing::debug!(
                         "Asset lock {} credit address {} not in wallet, skipping",
                         txid,
@@ -369,7 +369,7 @@ impl AppContext {
         }
 
         // Clean up: Remove asset locks from wallet that don't belong to it
-        // (credit address not in known_addresses)
+        // (credit address not in wallet_addresses)
         let mut txids_to_remove = Vec::new();
         let removed_count = {
             let mut wallet_guard = wallet.write()?;
@@ -382,7 +382,7 @@ impl AppContext {
                     && let Some(credit_output) = payload.credit_outputs.first()
                     && let Ok(addr) =
                         Address::from_script(&credit_output.script_pubkey, self.network)
-                    && known_addresses.contains(&addr)
+                    && wallet_addresses.contains(&addr)
                 {
                     return true; // Keep this asset lock
                 }

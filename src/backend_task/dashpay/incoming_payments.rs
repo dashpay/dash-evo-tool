@@ -214,7 +214,7 @@ pub async fn register_dashpay_addresses_for_identity(
 /// Stores the address → (owner_id, contact_id, index) mapping so incoming
 /// payments can be matched to the correct contact relationship.
 /// Address monitoring is handled by ManagedWalletInfo's DashpayReceivingFunds
-/// account pools — no known_addresses/watched_addresses insertion needed.
+/// account pools — no additional address registration needed.
 fn register_dashpay_address(
     app_context: &AppContext,
     _wallet: &Arc<std::sync::RwLock<crate::model::wallet::Wallet>>,

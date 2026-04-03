@@ -523,23 +523,22 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let parsed_recipients = self.parse_recipients(&request)?;
 
-        const DEFAULT_TX_FEE: u64 = 1_000;
-
-        let tx = {
-            let mut wallet_guard = wallet.write()?;
-            if !wallet_guard.is_open() {
+        let platform_wallet = {
+            let guard = wallet.read()?;
+            if !guard.is_open() {
                 return Err(TaskError::WalletLocked);
             }
-            wallet_guard
-                .build_multi_recipient_payment_transaction(
-                    self,
-                    self.network,
-                    &parsed_recipients,
-                    DEFAULT_TX_FEE,
-                    request.subtract_fee_from_amount,
-                )
-                .map_err(|e| TaskError::WalletPaymentFailed { detail: e })?
+            guard.platform_wallet.clone().ok_or(TaskError::WalletNotFound)?
         };
+
+        // Build and sign via PlatformWallet's CoreWallet
+        let tx = platform_wallet
+            .core()
+            .send_transaction(parsed_recipients)
+            .await
+            .map_err(|e| TaskError::WalletPaymentFailed {
+                detail: e.to_string(),
+            })?;
 
         let txid = self
             .core_client

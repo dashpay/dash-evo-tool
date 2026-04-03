@@ -145,11 +145,30 @@ pub enum CoreItem {
 
 impl AppContext {
     /// Extract the seed hash and first known address from an HD wallet.
-    fn core_wallet_first_address(
+    ///
+    /// Reads from PlatformWallet's CoreAddressInfo when available,
+    /// falling back to `known_addresses` for wallets that have not
+    /// been bootstrapped with a PlatformWallet yet.
+    async fn core_wallet_first_address(
         wallet: &Arc<RwLock<Wallet>>,
     ) -> Result<([u8; 32], Option<Address>), TaskError> {
-        let g = wallet.read()?;
-        Ok((g.seed_hash(), g.known_addresses.keys().next().cloned()))
+        let (seed_hash, platform_wallet) = {
+            let g = wallet.read()?;
+            (g.seed_hash(), g.platform_wallet.clone())
+        };
+
+        if let Some(pw) = platform_wallet {
+            let info = pw.core().wallet_info().await;
+            let first_addr = platform_wallet::CoreAddressInfo::all_from_wallet_info(&info)
+                .into_iter()
+                .next()
+                .map(|a| a.address);
+            Ok((seed_hash, first_addr))
+        } else {
+            // Fallback: PlatformWallet not yet available (e.g. during initial creation)
+            let g = wallet.read()?;
+            Ok((seed_hash, g.known_addresses.keys().next().cloned()))
+        }
     }
 
     pub async fn run_core_task(
@@ -226,7 +245,7 @@ impl AppContext {
                 )))
             }
             CoreTask::RefreshWalletInfo(wallet, sync_platform) => {
-                let (seed_hash, first_addr) = Self::core_wallet_first_address(&wallet)?;
+                let (seed_hash, first_addr) = Self::core_wallet_first_address(&wallet).await?;
 
                 if self.core_backend_mode() == crate::spv::CoreBackendMode::Spv {
                     self.reconcile_spv_wallets().await?;
@@ -295,21 +314,21 @@ impl AppContext {
                 .map_err(|e| TaskError::DashCoreStartError { source: e })
                 .map(|_| BackendTaskSuccessResult::None),
             CoreTask::CreateRegistrationAssetLock(wallet, amount, identity_index) => {
-                let (seed_hash, first_addr) = Self::core_wallet_first_address(&wallet)?;
+                let (seed_hash, first_addr) = Self::core_wallet_first_address(&wallet).await?;
                 let result = self
                     .create_registration_asset_lock(wallet, amount, true, identity_index)
                     .await;
                 self.with_wallet_recovery(&seed_hash, first_addr.as_ref(), false, result)
             }
             CoreTask::CreateTopUpAssetLock(wallet, amount, identity_index, top_up_index) => {
-                let (seed_hash, first_addr) = Self::core_wallet_first_address(&wallet)?;
+                let (seed_hash, first_addr) = Self::core_wallet_first_address(&wallet).await?;
                 let result = self
                     .create_top_up_asset_lock(wallet, amount, true, identity_index, top_up_index)
                     .await;
                 self.with_wallet_recovery(&seed_hash, first_addr.as_ref(), false, result)
             }
             CoreTask::SendWalletPayment { wallet, request } => {
-                let (seed_hash, first_addr) = Self::core_wallet_first_address(&wallet)?;
+                let (seed_hash, first_addr) = Self::core_wallet_first_address(&wallet).await?;
                 let result = self.send_wallet_payment(wallet, request).await;
                 self.with_wallet_recovery(&seed_hash, first_addr.as_ref(), false, result)
             }
@@ -322,7 +341,7 @@ impl AppContext {
                 self.with_wallet_recovery(&key_hash, Some(&address), true, result)
             }
             CoreTask::RecoverAssetLocks(wallet) => {
-                let (seed_hash, first_addr) = Self::core_wallet_first_address(&wallet)?;
+                let (seed_hash, first_addr) = Self::core_wallet_first_address(&wallet).await?;
                 let ctx = self.clone();
                 let result =
                     tokio::task::spawn_blocking(move || ctx.recover_asset_locks(wallet)).await?;

@@ -7,6 +7,7 @@ use dash_sdk::dashcore_rpc::json::GetTransactionResultDetailCategory;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{Address, BlockHash, OutPoint, Transaction, TxOut, Txid};
 use dash_sdk::dpp::key_wallet::WalletCoreBalance;
+use platform_wallet::CoreAddressInfo;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
@@ -22,12 +23,26 @@ impl AppContext {
         // Step 1: Collect data from wallet with brief read lock
         let (addresses, asset_lock_txs, seed_hash, core_wallet_name) = {
             let wallet_guard = wallet.read()?;
-            let addrs = wallet_guard
-                .known_addresses
-                .iter()
-                .filter(|(_, path)| !path.is_platform_payment(self.network))
-                .map(|(addr, _)| addr.clone())
-                .collect::<Vec<_>>();
+
+            // Read addresses from PlatformWallet (canonical source) when available,
+            // falling back to known_addresses for wallets not yet bootstrapped.
+            // Exclude platform payment addresses since those are not tracked by Core.
+            let addrs = if let Some(pw) = wallet_guard.platform_wallet.as_ref() {
+                let info = pw.core().blocking_wallet_info();
+                CoreAddressInfo::all_from_wallet_info(&info)
+                    .into_iter()
+                    .filter(|a| !a.derivation_path.is_platform_payment(self.network))
+                    .map(|a| a.address)
+                    .collect::<Vec<_>>()
+            } else {
+                wallet_guard
+                    .known_addresses
+                    .iter()
+                    .filter(|(_, path)| !path.is_platform_payment(self.network))
+                    .map(|(addr, _)| addr.clone())
+                    .collect::<Vec<_>>()
+            };
+
             let asset_locks: Vec<Transaction> = wallet_guard
                 .unused_asset_locks
                 .iter()

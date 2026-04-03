@@ -8,6 +8,7 @@ use dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayloa
 use dash_sdk::dpp::dashcore::{Address, OutPoint};
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
 use dash_sdk::dpp::prelude::AssetLockProof;
+use platform_wallet::CoreAddressInfo;
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
@@ -20,7 +21,20 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let (known_addresses, seed_hash, already_tracked_txids, core_wallet_name) = {
             let wallet_guard = wallet.read()?;
-            let addresses: Vec<Address> = wallet_guard.known_addresses.keys().cloned().collect();
+
+            // Read addresses from PlatformWallet (canonical source) when available,
+            // falling back to known_addresses for wallets not yet bootstrapped.
+            let addresses: Vec<Address> =
+                if let Some(pw) = wallet_guard.platform_wallet.as_ref() {
+                    let info = pw.core().blocking_wallet_info();
+                    CoreAddressInfo::all_from_wallet_info(&info)
+                        .into_iter()
+                        .map(|a| a.address)
+                        .collect()
+                } else {
+                    wallet_guard.known_addresses.keys().cloned().collect()
+                };
+
             let tracked: HashSet<_> = wallet_guard
                 .unused_asset_locks
                 .iter()

@@ -6,6 +6,7 @@ use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dashcore_rpc::json::GetTransactionResultDetailCategory;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{Address, BlockHash, OutPoint, Transaction, TxOut, Txid};
+use dash_sdk::dpp::key_wallet::WalletCoreBalance;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
@@ -374,6 +375,21 @@ impl AppContext {
 
         self.db
             .update_wallet_balances(&seed_hash, total_balance, 0, total_balance)?;
+
+        // Sync balance to PlatformWallet's ManagedWalletInfo so it stays
+        // current and can serve as the canonical read source.
+        // Uses try_wallet_info_mut() because we are in a blocking context
+        // (spawn_blocking) where awaiting is not possible.
+        if let Some(pw) = self.get_platform_wallet(&seed_hash) {
+            if let Some(mut pw_info) = pw.core().try_wallet_info_mut() {
+                pw_info.balance = WalletCoreBalance::new(
+                    total_balance, // spendable
+                    0,             // unconfirmed
+                    0,             // immature
+                    0,             // locked
+                );
+            }
+        }
 
         let warning = if tx_truncated {
             Some(

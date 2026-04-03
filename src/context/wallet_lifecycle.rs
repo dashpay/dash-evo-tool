@@ -22,6 +22,7 @@ use dash_sdk::dpp::key_wallet::Network as WalletNetwork;
 use dash_sdk::dpp::key_wallet::account::AccountType;
 use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
 use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
+use dash_sdk::dpp::key_wallet::WalletCoreBalance;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::{
     ManagedWalletInfo, wallet_info_interface::WalletInfoInterface,
 };
@@ -899,6 +900,21 @@ impl AppContext {
                     balance.total(),
                 ) {
                     tracing::warn!(wallet = %hex::encode(seed_hash), error = %e, "Failed to persist wallet balances");
+                }
+            }
+
+            // Sync balance to PlatformWallet's ManagedWalletInfo so it stays
+            // in sync with SPV and can serve as the canonical read source.
+            // Uses try_wallet_info_mut() to avoid holding the std::sync
+            // wallets_guard across an await point.
+            if let Some(pw) = self.get_platform_wallet(seed_hash) {
+                if let Some(mut pw_info) = pw.core().try_wallet_info_mut() {
+                    pw_info.balance = WalletCoreBalance::new(
+                        balance.spendable(),
+                        balance.unconfirmed(),
+                        0, // immature
+                        0, // locked
+                    );
                 }
             }
 

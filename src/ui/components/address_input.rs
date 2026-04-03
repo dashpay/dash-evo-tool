@@ -382,30 +382,33 @@ impl AddressInput {
         // — safer to hide an address than to show it with the wrong type.
 
         // Core addresses: only BIP44 paths (m/44'/coin'/account'/change/index).
-        for (address, derivation_path) in &guard.known_addresses {
-            if !derivation_path.is_bip44(self.network) {
-                continue;
+        // Read from PlatformWallet's CoreAddressInfo if available.
+        if let Some(pw) = guard.platform_wallet.as_ref() {
+            let info = pw.core().blocking_wallet_info();
+            for addr_info in platform_wallet::CoreAddressInfo::all_from_wallet_info(&info) {
+                if !addr_info.derivation_path.is_bip44(self.network) {
+                    continue;
+                }
+                let is_change = addr_info.derivation_path.is_bip44_change(self.network);
+                if self.exclude_change && is_change {
+                    continue;
+                }
+                let addr_str = addr_info.address.to_string();
+                let change_suffix = if is_change { " (change)" } else { "" };
+                let display = if self.full_addresses {
+                    format!("{}{}{}", prefix, addr_str, change_suffix)
+                } else {
+                    format!("{}{}{}", prefix, truncate_address(&addr_str), change_suffix)
+                };
+                self.all_entries.push(AddressEntry {
+                    address_string: addr_str,
+                    address_kind: AddressKind::Core,
+                    display_label: display,
+                    balance: addr_info.balance,
+                    validated: ValidatedAddress::Core(addr_info.address),
+                    is_change,
+                });
             }
-            let is_change = derivation_path.is_bip44_change(self.network);
-            if self.exclude_change && is_change {
-                continue;
-            }
-            let balance = guard.address_balance(address);
-            let addr_str = address.to_string();
-            let change_suffix = if is_change { " (change)" } else { "" };
-            let display = if self.full_addresses {
-                format!("{}{}{}", prefix, addr_str, change_suffix)
-            } else {
-                format!("{}{}{}", prefix, truncate_address(&addr_str), change_suffix)
-            };
-            self.all_entries.push(AddressEntry {
-                address_string: addr_str,
-                address_kind: AddressKind::Core,
-                display_label: display,
-                balance,
-                validated: ValidatedAddress::Core(address.clone()),
-                is_change,
-            });
         }
 
         // Platform addresses: whitelist only PlatformPayment paths from

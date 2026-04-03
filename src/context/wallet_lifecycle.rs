@@ -208,24 +208,10 @@ impl AppContext {
         Ok((seed_hash, wallet_arc))
     }
 
-    pub fn bootstrap_wallet_addresses(&self, wallet: &Arc<RwLock<Wallet>>) {
-        // PlatformWallet's ManagedWalletInfo already has all account types
-        // with address pools from the seed. No manual bootstrap needed.
-        // Locked wallets have no PlatformWallet and show no addresses
-        // (correct: address visibility requires authentication).
-        if let Ok(guard) = wallet.read() {
-            if guard.platform_wallet.is_some() {
-                return;
-            }
-        }
-
-        // Legacy fallback for wallets without PlatformWallet.
-        if let Ok(mut guard) = wallet.write() {
-            if guard.known_addresses.is_empty() {
-                tracing::info!(wallet = %hex::encode(guard.seed_hash()), "Bootstrapping wallet addresses (legacy)");
-                guard.bootstrap_known_addresses(self);
-            }
-        }
+    pub fn bootstrap_wallet_addresses(&self, _wallet: &Arc<RwLock<Wallet>>) {
+        // No-op: PlatformWallet's ManagedWalletInfo has all account types
+        // with address pools from the seed. Locked wallets show no addresses
+        // (address visibility requires authentication).
     }
 
     pub fn handle_wallet_unlocked(self: &Arc<Self>, wallet: &Arc<RwLock<Wallet>>) {

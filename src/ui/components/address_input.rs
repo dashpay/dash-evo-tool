@@ -390,7 +390,7 @@ impl AddressInput {
             if self.exclude_change && is_change {
                 continue;
             }
-            let balance = guard.address_balances.get(address).copied().unwrap_or(0);
+            let balance = guard.address_balance(address);
             let addr_str = address.to_string();
             let change_suffix = if is_change { " (change)" } else { "" };
             let display = if self.full_addresses {

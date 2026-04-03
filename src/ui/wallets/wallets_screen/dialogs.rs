@@ -271,11 +271,7 @@ impl WalletsBalancesScreen {
                 if let Ok(addr) = addr_str.parse::<Address<NetworkUnchecked>>()
                     && let Ok(addr) = addr.require_network(self.app_context.network)
                 {
-                    *balance = wallet_guard
-                        .address_balances
-                        .get(&addr)
-                        .copied()
-                        .unwrap_or(0);
+                    *balance = wallet_guard.address_balance(&addr);
                 }
             }
         }
@@ -683,11 +679,7 @@ impl WalletsBalancesScreen {
         let address = wallet_guard
             .receive_address(self.app_context.network, true, Some(&self.app_context))
             .map_err(|e| e.to_string())?;
-        let balance = wallet_guard
-            .address_balances
-            .get(&address)
-            .copied()
-            .unwrap_or(0);
+        let balance = wallet_guard.address_balance(&address);
         Ok((address.to_string(), balance))
     }
 
@@ -1185,11 +1177,7 @@ impl WalletsBalancesScreen {
             .iter()
             .filter(|(path, _)| path.is_bip44_external(network))
             .map(|(_, info)| {
-                let balance = wallet_guard
-                    .address_balances
-                    .get(&info.address)
-                    .copied()
-                    .unwrap_or(0);
+                let balance = wallet_guard.address_balance(&info.address);
                 (info.address.to_string(), balance)
             })
             .collect();

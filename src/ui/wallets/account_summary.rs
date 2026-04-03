@@ -247,11 +247,7 @@ pub fn collect_account_summaries(wallet: &Wallet, network: Network) -> Vec<Accou
     for (path, info) in &wallet.watched_addresses {
         let (category, index) = categorize_account_path(path, network, info.path_reference);
 
-        let balance = wallet
-            .address_balances
-            .get(&info.address)
-            .cloned()
-            .unwrap_or_default();
+        let balance = wallet.address_balance(&info.address);
 
         // Get Platform credits balance for Platform Payment addresses
         // Use canonical lookup to handle potential Address key mismatches

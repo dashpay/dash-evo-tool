@@ -202,12 +202,6 @@ impl AppContext {
                 // Collect the outpoint
                 wallet_outpoints.push((out_point, tx_out.clone(), address.clone()));
 
-                wallet
-                    .address_balances
-                    .entry(address.clone())
-                    .and_modify(|balance| *balance += tx_out.value)
-                    .or_insert(tx_out.value);
-
                 // Check if this is a DashPay contact payment
                 if let Ok(Some((owner_id, contact_id, address_index))) =
                     self.db.get_dashpay_address_mapping(&address)

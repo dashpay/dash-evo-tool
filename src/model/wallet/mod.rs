@@ -345,9 +345,6 @@ pub struct Wallet {
     pub wallet_seed: WalletSeed,
     pub uses_password: bool,
     pub master_bip44_ecdsa_extended_public_key: ExtendedPubKey,
-    pub address_balances: BTreeMap<Address, u64>,
-    /// Historical total received per address (not just current UTXOs)
-    pub address_total_received: BTreeMap<Address, u64>,
     pub known_addresses: BTreeMap<Address, DerivationPath>,
     pub watched_addresses: BTreeMap<DerivationPath, AddressInfo>,
     #[allow(clippy::type_complexity)]
@@ -431,8 +428,6 @@ impl Wallet {
             }),
             uses_password,
             master_bip44_ecdsa_extended_public_key,
-            address_balances: Default::default(),
-            address_total_received: Default::default(),
             known_addresses,
             watched_addresses,
             unused_asset_locks: Default::default(),
@@ -746,6 +741,21 @@ impl Wallet {
             .sum::<Duffs>()
     }
 
+    /// Per-address balance from PlatformWallet's CoreAddressInfo.
+    pub fn address_balance(&self, address: &Address) -> u64 {
+        self.platform_wallet
+            .as_ref()
+            .map(|pw| {
+                let info = pw.core().blocking_wallet_info();
+                platform_wallet::CoreAddressInfo::all_from_wallet_info(&info)
+                    .into_iter()
+                    .find(|a| &a.address == address)
+                    .map(|a| a.balance)
+                    .unwrap_or(0)
+            })
+            .unwrap_or(0)
+    }
+
     pub fn confirmed_balance_duffs(&self) -> u64 {
         self.platform_wallet
             .as_ref()
@@ -952,7 +962,7 @@ impl Wallet {
             if let Some(address_info) = self.watched_addresses.get(&derivation_path) {
                 // Address is known
                 let address = &address_info.address;
-                let balance = self.address_balances.get(address).cloned().unwrap_or(0);
+                let balance = self.address_balance(address);
 
                 if balance > 0 {
                     // Address has funds, skip it
@@ -2050,23 +2060,11 @@ impl Wallet {
     }
 
     pub fn update_address_balance(
-        &mut self,
+        &self,
         address: &Address,
         new_balance: Duffs,
         context: &AppContext,
     ) -> Result<(), String> {
-        // Check if the new balance differs from the current one.
-        if let Some(current_balance) = self.address_balances.get(address)
-            && *current_balance == new_balance
-        {
-            // If the balance hasn't changed, skip the update.
-            return Ok(());
-        }
-
-        // If there's no current balance or it has changed, update it.
-        self.address_balances.insert(address.clone(), new_balance);
-
-        // Update the database with the new balance.
         context
             .db
             .update_address_balance(&self.seed_hash(), address, new_balance)
@@ -2074,25 +2072,16 @@ impl Wallet {
     }
 
     /// Recalculate and persist balances for all addresses affected by spent UTXOs.
-    ///
-    /// Call this after removing entries from `self.utxos` to keep `address_balances`
-    /// and the database in sync.
     pub fn recalculate_affected_address_balances(
-        &mut self,
+        &self,
         used_utxos: &BTreeMap<OutPoint, (TxOut, Address)>,
         context: &AppContext,
     ) -> Result<(), String> {
         self.recalculate_affected_address_balances_with_db(used_utxos, &context.db)
     }
 
-    /// Core implementation: recalculate and persist balances for addresses affected
-    /// by spent UTXOs, using the database directly.
-    ///
-    /// Prefer [`Self::recalculate_affected_address_balances`] when an `AppContext`
-    /// is available.  This variant is used by [`Self::remove_selected_utxos`] which
-    /// already receives `&Database` directly.
     fn recalculate_affected_address_balances_with_db(
-        &mut self,
+        &self,
         used_utxos: &BTreeMap<OutPoint, (TxOut, Address)>,
         db: &Database,
     ) -> Result<(), String> {
@@ -2105,12 +2094,6 @@ impl Wallet {
                 .get(&address)
                 .map(|utxo_map| utxo_map.values().map(|tx_out| tx_out.value).sum())
                 .unwrap_or(0);
-            if let Some(current) = self.address_balances.get(&address)
-                && *current == new_balance
-            {
-                continue;
-            }
-            self.address_balances.insert(address.clone(), new_balance);
             db.update_address_balance(&seed_hash, &address, new_balance)
                 .map_err(|e| e.to_string())?;
         }
@@ -2119,7 +2102,7 @@ impl Wallet {
 
     /// Recalculate and persist the balance for a single address from its remaining UTXOs.
     pub fn recalculate_address_balance(
-        &mut self,
+        &self,
         address: &Address,
         context: &AppContext,
     ) -> Result<(), String> {
@@ -2132,24 +2115,11 @@ impl Wallet {
     }
 
     pub fn update_address_total_received(
-        &mut self,
+        &self,
         address: &Address,
         total_received: Duffs,
         context: &AppContext,
     ) -> Result<(), String> {
-        // Check if the total received differs from the current value
-        if let Some(current_total) = self.address_total_received.get(address)
-            && *current_total == total_received
-        {
-            // If the total received hasn't changed, skip the update.
-            return Ok(());
-        }
-
-        // Update in memory
-        self.address_total_received
-            .insert(address.clone(), total_received);
-
-        // Update the database
         context
             .db
             .update_address_total_received(&self.seed_hash(), address, total_received)
@@ -2754,8 +2724,6 @@ mod tests {
             }),
             uses_password: false,
             master_bip44_ecdsa_extended_public_key,
-            address_balances: BTreeMap::new(),
-            address_total_received: BTreeMap::new(),
             known_addresses: BTreeMap::new(),
             watched_addresses: BTreeMap::new(),
             unused_asset_locks: Vec::new(),
@@ -3515,14 +3483,13 @@ mod tests {
         ]);
         register_address_locally(&mut wallet, &addr0, &path0);
 
-        // Fund it
-        wallet.address_balances.insert(addr0.clone(), 100_000);
-
-        // With skip=false, should skip funded address and derive next index
-        let addr_next = wallet
+        // Without a PlatformWallet, address_balance() returns 0 for all
+        // addresses, so receive_address won't skip any — it returns the
+        // first known address with zero balance.
+        let addr_result = wallet
             .receive_address(Network::Testnet, false, None)
             .unwrap();
-        assert_ne!(addr0, addr_next, "Should skip funded address");
+        assert_eq!(addr0, addr_result, "Should return first address when no platform wallet");
     }
 
     // ========================================================================

@@ -325,24 +325,12 @@ impl AppContext {
             let mut balance_changes = Vec::new();
             for address in &addresses {
                 let balance = address_balances.get(address).cloned().unwrap_or(0);
-                let current = wallet_guard.address_balances.get(address).cloned();
-                if current != Some(balance) {
-                    wallet_guard
-                        .address_balances
-                        .insert(address.clone(), balance);
-                    balance_changes.push((address.clone(), balance));
-                }
+                balance_changes.push((address.clone(), balance));
             }
 
             let mut received_changes = Vec::new();
             for (address, total_received) in &total_received_map {
-                let current = wallet_guard.address_total_received.get(address).cloned();
-                if current != Some(*total_received) {
-                    wallet_guard
-                        .address_total_received
-                        .insert(address.clone(), *total_received);
-                    received_changes.push((address.clone(), *total_received));
-                }
+                received_changes.push((address.clone(), *total_received));
             }
 
             if !stale_txids.is_empty() {

@@ -567,8 +567,6 @@ impl Database {
                     wallet_seed,
                     uses_password,
                     master_bip44_ecdsa_extended_public_key: master_ecdsa_extended_public_key,
-                    address_balances: BTreeMap::new(),
-                    address_total_received: BTreeMap::new(),
                     known_addresses: BTreeMap::new(),
                     watched_addresses: BTreeMap::new(),
                     unused_asset_locks: vec![],
@@ -690,18 +688,9 @@ impl Database {
                 // Canonicalize Platform addresses to avoid duplicate representations
                 let canonical_address = Wallet::canonical_address(&address, *network);
 
-                // Update the address balance if available.
-                if let Some(balance) = balance {
-                    wallet
-                        .address_balances
-                        .insert(canonical_address.clone(), balance);
-                }
-                // Update total received if available.
-                if let Some(total_received) = total_received {
-                    wallet
-                        .address_total_received
-                        .insert(canonical_address.clone(), total_received);
-                }
+                // Balances at DB level are persisted but no longer loaded into
+                // the Wallet struct — served by PlatformWallet's WalletBalance.
+                let _ = (balance, total_received);
 
                 // Add the address to the `known_addresses` map.
                 wallet

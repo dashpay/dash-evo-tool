@@ -209,64 +209,24 @@ pub async fn register_dashpay_addresses_for_identity(
     Ok(result)
 }
 
-/// Register a single DashPay address with the wallet
+/// Register a DashPay address mapping in the database.
+///
+/// Stores the address → (owner_id, contact_id, index) mapping so incoming
+/// payments can be matched to the correct contact relationship.
+/// Address monitoring is handled by ManagedWalletInfo's DashpayReceivingFunds
+/// account pools — no known_addresses/watched_addresses insertion needed.
 fn register_dashpay_address(
     app_context: &AppContext,
-    wallet: &Arc<std::sync::RwLock<crate::model::wallet::Wallet>>,
+    _wallet: &Arc<std::sync::RwLock<crate::model::wallet::Wallet>>,
     address: &Address,
     owner_id: &Identifier,
     contact_id: &Identifier,
     address_index: u32,
 ) -> Result<(), String> {
-    use crate::model::wallet::{DerivationPathReference, DerivationPathType};
-    use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
-
-    // Create a derivation path representation for DashPay addresses
-    // m/9'/5'/15'/0'/<owner_hash>/<contact_hash>/<index>
-    // Note: We use a simplified representation since full 256-bit paths don't fit in standard BIP32
-    let path = DerivationPath::from(vec![
-        ChildNumber::from_hardened_idx(9).unwrap(), // Feature purpose
-        ChildNumber::from_hardened_idx(5).unwrap(), // Coin type (Dash)
-        ChildNumber::from_hardened_idx(15).unwrap(), // DashPay feature
-        ChildNumber::from_hardened_idx(0).unwrap(), // Account
-        // For the identity indices, we use a hash to fit in u32
-        ChildNumber::from_normal_idx(hash_identifier_to_u32(owner_id)).unwrap(),
-        ChildNumber::from_normal_idx(hash_identifier_to_u32(contact_id)).unwrap(),
-        ChildNumber::from_normal_idx(address_index).unwrap(),
-    ]);
-
-    // Store the DashPay address mapping in the database
     app_context
         .db
         .save_dashpay_address_mapping(owner_id, contact_id, address, address_index)
-        .map_err(|e| format!("Failed to save address mapping: {}", e))?;
-
-    // Register with the wallet's known addresses
-    let mut guard = wallet.write().map_err(|e| e.to_string())?;
-
-    if guard.has_address(address) {
-        return Ok(()); // Already registered
-    }
-
-    guard.known_addresses.insert(address.clone(), path.clone());
-    guard.watched_addresses.insert(
-        path,
-        crate::model::wallet::AddressInfo {
-            address: address.clone(),
-            path_type: DerivationPathType::DASHPAY,
-            path_reference: DerivationPathReference::ContactBasedFunds,
-        },
-    );
-
-    Ok(())
-}
-
-/// Hash an identifier to a u32 for use in derivation path representation
-fn hash_identifier_to_u32(id: &Identifier) -> u32 {
-    use dash_sdk::dpp::dashcore::hashes::{Hash, sha256};
-    let hash = sha256::Hash::hash(&id.to_buffer());
-    let bytes = hash.to_byte_array();
-    u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) & 0x7FFFFFFF
+        .map_err(|e| format!("Failed to save address mapping: {}", e))
 }
 
 /// Match a received transaction to a DashPay contact
@@ -345,15 +305,3 @@ pub struct IncomingPaymentInfo {
     pub address_index: u32,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_hash_identifier_to_u32() {
-        let id = Identifier::random();
-        let hash = hash_identifier_to_u32(&id);
-        // Should be less than 2^31 (non-hardened range)
-        assert!(hash < 0x80000000);
-    }
-}

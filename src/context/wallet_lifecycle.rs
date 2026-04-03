@@ -451,6 +451,10 @@ impl AppContext {
         // are available for DashPay and other platform-wallet operations.
         self.sync_all_identities_to_platform_wallets();
 
+        // Register DashPay contact accounts in ManagedWalletInfo so SPV
+        // monitors incoming payment addresses for established contacts.
+        self.bootstrap_dashpay_contact_accounts();
+
         // Auto-refresh UTXOs from Core on startup so balances are current
         // without requiring the user to manually click Refresh (fixes GH#522).
         // Only in RPC mode — SPV mode handles UTXO loading via reconciliation.
@@ -1252,6 +1256,114 @@ impl AppContext {
                     "Failed to load local identities for platform-wallet sync"
                 );
             }
+        }
+    }
+
+    /// Register DashPay contact accounts in ManagedWalletInfo for all
+    /// established contacts loaded from the database.
+    ///
+    /// Called during wallet bootstrap (after identities are synced) so that
+    /// SPV monitors incoming payment addresses for existing contacts.
+    fn bootstrap_dashpay_contact_accounts(&self) {
+        let network_str = self.network.to_string();
+
+        // Load all identities to find their contacts
+        let identities = match self.load_local_qualified_identities() {
+            Ok(ids) => ids,
+            Err(e) => {
+                tracing::debug!(error = %e, "Skipping contact account bootstrap");
+                return;
+            }
+        };
+
+        let mut registered = 0u32;
+
+        for identity in &identities {
+            let identity_id = identity.identity.id();
+
+            // Load contacts for this identity from DB
+            let contacts = match self.db.load_dashpay_contacts(&identity_id, &network_str) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::debug!(identity = %identity_id, error = %e, "Failed to load contacts");
+                    continue;
+                }
+            };
+
+            // Find the PlatformWallet for this identity's wallet
+            let (seed_hash, _) = match identity.determine_wallet_info() {
+                Ok(Some(info)) => info,
+                _ => continue,
+            };
+            let pw = match self.get_platform_wallet(&seed_hash) {
+                Some(pw) => pw,
+                None => continue,
+            };
+
+            for contact in &contacts {
+                if contact.contact_status != "accepted" {
+                    continue;
+                }
+
+                let contact_id = match dash_sdk::dpp::prelude::Identifier::from_bytes(
+                    &contact.contact_identity_id,
+                ) {
+                    Ok(id) => id,
+                    Err(_) => continue,
+                };
+
+                // Register the contact account synchronously using blocking locks.
+                // This creates a DashpayReceivingFunds account in ManagedWalletInfo
+                // so SPV monitors incoming payment addresses for this contact.
+                let account_type = AccountType::DashpayReceivingFunds {
+                    index: 0,
+                    user_identity_id: identity_id.to_buffer(),
+                    friend_identity_id: contact_id.to_buffer(),
+                };
+
+                let account_xpub = {
+                    let wallet = pw.core().blocking_wallet();
+                    let kw_net = self.wallet_network_key();
+                    match account_type.derivation_path(kw_net) {
+                        Ok(path) => match wallet.derive_extended_public_key(&path) {
+                            Ok(xpub) => xpub,
+                            Err(e) => {
+                                tracing::debug!(contact = %contact_id, error = %e, "Failed to derive contact xpub");
+                                continue;
+                            }
+                        },
+                        Err(e) => {
+                            tracing::debug!(contact = %contact_id, error = %e, "Failed to derive contact path");
+                            continue;
+                        }
+                    }
+                };
+
+                use dash_sdk::dpp::key_wallet::Account;
+                use dash_sdk::dpp::key_wallet::managed_account::ManagedCoreAccount;
+
+                let kw_network = self.wallet_network_key();
+                let account = Account {
+                    parent_wallet_id: None,
+                    account_type,
+                    network: kw_network,
+                    account_xpub,
+                    is_watch_only: false,
+                };
+                let managed = ManagedCoreAccount::from_account(&account);
+
+                if let Some(mut info) = pw.core().try_wallet_info_mut() {
+                    if let Err(e) = info.accounts.insert(managed) {
+                        tracing::debug!(contact = %contact_id, error = %e, "Failed to insert contact account");
+                    } else {
+                        registered += 1;
+                    }
+                }
+            }
+        }
+
+        if registered > 0 {
+            tracing::info!(count = registered, "Registered DashPay contact accounts");
         }
     }
 

@@ -49,20 +49,19 @@ impl WalletsBalancesScreen {
                             ui.add_space(20.0);
                         });
                     } else {
-                        // Collect Platform addresses for the fund dialog (using DIP-18 Bech32m format)
-                        // Get from known_addresses where path is platform payment
+                        // Collect Platform addresses from PlatformWallet
                         let network = self.app_context.network;
                         let platform_addresses: Vec<(String, u64)> = wallet
-                            .known_addresses
-                            .iter()
-                            .filter(|(_, path)| path.is_platform_payment(network))
-                            .filter_map(|(addr, _)| {
+                            .all_addresses_info()
+                            .into_iter()
+                            .filter(|a| a.derivation_path.is_platform_payment(network))
+                            .filter_map(|a| {
                                 use dash_sdk::dpp::address_funds::PlatformAddress;
                                 let balance = wallet
-                                    .get_platform_address_info(addr)
+                                    .get_platform_address_info(&a.address)
                                     .map(|info| info.balance)
                                     .unwrap_or(0);
-                                PlatformAddress::try_from(addr.clone())
+                                PlatformAddress::try_from(a.address)
                                     .ok()
                                     .map(|pa| (pa.to_bech32m_string(network), balance))
                             })

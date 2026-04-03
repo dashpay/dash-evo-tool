@@ -720,6 +720,18 @@ impl Wallet {
         !self.unused_asset_locks.is_empty()
     }
 
+    /// All addresses from PlatformWallet's CoreAddressInfo.
+    /// Returns empty if the wallet is locked (no PlatformWallet).
+    pub fn all_addresses_info(&self) -> Vec<platform_wallet::CoreAddressInfo> {
+        self.platform_wallet
+            .as_ref()
+            .map(|pw| {
+                let info = pw.core().blocking_wallet_info();
+                platform_wallet::CoreAddressInfo::all_from_wallet_info(&info)
+            })
+            .unwrap_or_default()
+    }
+
     /// Look up the derivation path for an address via PlatformWallet.
     /// Returns `None` if the wallet is locked (no PlatformWallet).
     pub fn derivation_path_for_address(&self, address: &Address) -> Option<DerivationPath> {

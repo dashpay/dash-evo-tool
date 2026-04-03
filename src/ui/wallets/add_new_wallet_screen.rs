@@ -172,16 +172,18 @@ impl AddNewWalletScreen {
                 .as_ref()
                 .and_then(|ws| ws.get(self.selected_core_wallet_index).cloned());
 
-            // Extract first receive address for display before registering
-            if let Some((address, _)) = wallet.known_addresses.first_key_value() {
-                self.receive_address_string = Some(address.to_string());
-                self.receive_address = Some(address.clone());
-            }
-
             let (new_wallet_seed_hash, wallet_arc) = self
                 .app_context
                 .register_wallet(wallet)
                 .map_err(|e| e.to_string())?;
+
+            // Extract first receive address from PlatformWallet (created during register)
+            if let Ok(guard) = wallet_arc.read() {
+                if let Some(addr_info) = guard.all_addresses_info().into_iter().next() {
+                    self.receive_address_string = Some(addr_info.address.to_string());
+                    self.receive_address = Some(addr_info.address);
+                }
+            }
 
             // Set pending wallet selection so the wallet screen auto-selects this wallet
             if let Ok(mut pending) = self.app_context.pending_wallet_selection.lock() {

@@ -199,11 +199,8 @@ impl AppContext {
         self.has_wallet.store(true, Ordering::Relaxed);
         drop(wallets);
 
-        // 3. Bootstrap any additional addresses and load into SPV
-        self.bootstrap_wallet_addresses(&wallet_arc);
-        if self.core_backend_mode() == CoreBackendMode::Spv {
-            self.handle_wallet_unlocked(&wallet_arc);
-        }
+        // 3. Create PlatformWallet and load into SPV
+        self.handle_wallet_unlocked(&wallet_arc);
 
         Ok((seed_hash, wallet_arc))
     }

@@ -1640,14 +1640,22 @@ impl Wallet {
     pub fn receive_address(
         &mut self,
         network: Network,
-        skip_known_addresses_with_no_funds: bool,
+        _skip_known_addresses_with_no_funds: bool,
         register: Option<&AppContext>,
     ) -> Result<Address, String> {
+        // Delegate to PlatformWallet when available
+        if let Some(pw) = &self.platform_wallet {
+            return pw
+                .core()
+                .blocking_next_receive_address()
+                .map_err(|e| e.to_string());
+        }
+        // Fallback to old derivation for locked wallets / no PlatformWallet
         Ok(Address::p2pkh(
             &self
                 .unused_bip_44_public_key(
                     network,
-                    skip_known_addresses_with_no_funds,
+                    _skip_known_addresses_with_no_funds,
                     false,
                     register,
                 )?
@@ -1677,6 +1685,14 @@ impl Wallet {
         network: Network,
         register: Option<&AppContext>,
     ) -> Result<Address, String> {
+        // Delegate to PlatformWallet when available
+        if let Some(pw) = &self.platform_wallet {
+            return pw
+                .core()
+                .blocking_next_change_address()
+                .map_err(|e| e.to_string());
+        }
+        // Fallback to old derivation
         Ok(Address::p2pkh(
             &self
                 .unused_bip_44_public_key(network, false, true, register)?

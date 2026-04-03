@@ -734,29 +734,19 @@ impl Wallet {
         !self.unused_asset_locks.is_empty()
     }
 
-    /// Look up the derivation path for an address.
-    ///
-    /// Checks PlatformWallet's address pools first, then falls back to
-    /// `known_addresses` for dynamically added addresses (e.g. DashPay
-    /// contact payment addresses) that ManagedWalletInfo doesn't track.
+    /// Look up the derivation path for an address via PlatformWallet.
+    /// Returns `None` if the wallet is locked (no PlatformWallet).
     pub fn derivation_path_for_address(&self, address: &Address) -> Option<DerivationPath> {
-        // Try PlatformWallet first (canonical source for standard addresses)
-        if let Some(pw) = self.platform_wallet.as_ref() {
-            let info = pw.core().blocking_wallet_info();
-            if let Some(addr_info) = platform_wallet::CoreAddressInfo::all_from_wallet_info(&info)
-                .into_iter()
-                .find(|a| &a.address == address)
-            {
-                return Some(addr_info.derivation_path);
-            }
-        }
-        // Fall back to known_addresses (DashPay contacts, etc.)
-        self.known_addresses.get(address).cloned()
+        let pw = self.platform_wallet.as_ref()?;
+        let info = pw.core().blocking_wallet_info();
+        platform_wallet::CoreAddressInfo::all_from_wallet_info(&info)
+            .into_iter()
+            .find(|a| &a.address == address)
+            .map(|a| a.derivation_path)
     }
 
-    /// Check if an address belongs to this wallet.
-    ///
-    /// Checks both PlatformWallet address pools and `known_addresses`.
+    /// Check if an address belongs to this wallet via PlatformWallet.
+    /// Returns `false` if the wallet is locked (no PlatformWallet).
     pub fn has_address(&self, address: &Address) -> bool {
         self.derivation_path_for_address(address).is_some()
     }

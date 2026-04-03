@@ -359,7 +359,9 @@ pub struct Wallet {
     )>,
     pub alias: Option<String>,
     pub identities: HashMap<u32, Identity>,
-    pub transactions: Vec<WalletTransaction>,
+    /// Transaction history — display cache populated by SPV reconciliation.
+    /// Not a duplicate of ManagedWalletInfo (which stores per-account).
+    pub(crate) transactions: Vec<WalletTransaction>,
     pub is_main: bool,
     /// DIP-17: Platform address balances and nonces (keyed by Core Address for lookup)
     pub platform_address_info: BTreeMap<Address, PlatformAddressInfo>,

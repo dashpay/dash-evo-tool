@@ -88,54 +88,34 @@ impl AppContext {
                 (asset_lock_proof, private_key, tx_id)
             }
             RegisterIdentityFundingMethod::FundWithWallet(amount, identity_index) => {
-                // Scope the write lock to avoid holding it across an await.
-                // UTXOs are selected but NOT removed yet — removal happens after broadcast.
-                let (asset_lock_transaction, asset_lock_proof_private_key, _, used_utxos) = {
-                    let mut wallet = wallet.write().map_err(TaskError::from)?;
-                    wallet_id = wallet.seed_hash();
-                    match wallet.registration_asset_lock_transaction(
-                        self,
-                        sdk.network,
-                        amount,
-                        true,
-                        identity_index,
-                        None,
-                    ) {
-                        Ok(transaction) => transaction,
-                        Err(e) => {
-                            // Reload UTXOs (RPC: fetches from Core; SPV: no-op).
-                            // Only retry if something actually changed.
-                            if !wallet
-                                .reload_utxos(self)
-                                .map_err(|e| TaskError::UtxoUpdateFailed { detail: e })?
-                            {
-                                return Err(TaskError::AssetLockTransactionBuildFailed {
-                                    detail: e,
-                                });
-                            }
-                            wallet
-                                .registration_asset_lock_transaction(
-                                    self,
-                                    sdk.network,
-                                    amount,
-                                    true,
-                                    identity_index,
-                                    None,
-                                )
-                                .map_err(|e| TaskError::AssetLockTransactionBuildFailed {
-                                    detail: e,
-                                })?
-                        }
-                    }
+                let (platform_wallet, seed_hash) = {
+                    let guard = wallet.read().map_err(TaskError::from)?;
+                    wallet_id = guard.seed_hash();
+                    (
+                        guard.platform_wallet.clone().ok_or(TaskError::WalletNotFound)?,
+                        guard.seed_hash(),
+                    )
                 };
+
+                let (asset_lock_transaction, asset_lock_proof_private_key) = platform_wallet
+                    .core()
+                    .build_asset_lock_transaction(
+                        amount,
+                        platform_wallet::AssetLockFundingType::IdentityRegistration,
+                        identity_index,
+                    )
+                    .await
+                    .map_err(|e| TaskError::AssetLockTransactionBuildFailed {
+                        detail: e.to_string(),
+                    })?;
 
                 let tx_id = self
                     .broadcast_and_commit_asset_lock(
                         &asset_lock_transaction,
                         amount,
-                        &wallet_id,
+                        &seed_hash,
                         &wallet,
-                        &used_utxos,
+                        &BTreeMap::new(),
                     )
                     .await?;
 

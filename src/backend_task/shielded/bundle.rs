@@ -443,7 +443,7 @@ pub async fn shield_from_asset_lock(
     let asset_lock_duffs = amount_duffs.saturating_add(platform_fee_duffs);
 
     // Step 1: Create the asset lock transaction
-    let (asset_lock_transaction, asset_lock_private_key, _asset_lock_address, used_utxos) = {
+    let (asset_lock_transaction, asset_lock_private_key, _asset_lock_address) = {
         let wallet_arc = {
             let wallets = app_context.wallets.read()?;
             wallets
@@ -452,37 +452,34 @@ pub async fn shield_from_asset_lock(
                 .ok_or(TaskError::WalletNotFound)?
         };
 
-        let mut wallet = wallet_arc
-            .write()
+        let wallet = wallet_arc
+            .read()
             .map_err(|_| TaskError::LockPoisoned { resource: "wallet" })?;
 
-        let first_result = wallet.generic_asset_lock_transaction(
-            app_context.as_ref(),
+        let platform_wallet = wallet
+            .platform_wallet
+            .clone()
+            .ok_or(TaskError::WalletNotFound)?;
+
+        drop(wallet);
+
+        let (tx, private_key) = platform_wallet
+            .core()
+            .build_asset_lock_transaction(
+                asset_lock_duffs,
+                platform_wallet::AssetLockFundingType::IdentityRegistration,
+                0,
+            )
+            .await
+            .map_err(|e| shielded_build_error(e.to_string()))?;
+
+        let secp = dash_sdk::dpp::dashcore::secp256k1::Secp256k1::new();
+        let address = dash_sdk::dpp::dashcore::Address::p2pkh(
+            &private_key.public_key(&secp),
             app_context.network,
-            asset_lock_duffs,
-            false,
-            source_address,
         );
 
-        let (tx, private_key, address, _change, utxos) = match first_result {
-            Ok(ok) => ok,
-            Err(_) => {
-                wallet
-                    .reload_utxos(app_context.as_ref())
-                    .map_err(|detail| TaskError::WalletUtxoReloadFailed { detail })?;
-                wallet
-                    .generic_asset_lock_transaction(
-                        app_context.as_ref(),
-                        app_context.network,
-                        asset_lock_duffs,
-                        false,
-                        source_address,
-                    )
-                    .map_err(shielded_build_error)?
-            }
-        };
-
-        (tx, private_key, address, utxos)
+        (tx, private_key, address)
     };
 
     let tx_id = asset_lock_transaction.txid();
@@ -502,34 +499,7 @@ pub async fn shield_from_asset_lock(
         })?
         .send_raw_transaction(&asset_lock_transaction)?;
 
-    // Step 4: Remove used UTXOs from wallet
-    {
-        let wallet_arc = {
-            let wallets = app_context.wallets.read()?;
-            wallets
-                .get(seed_hash)
-                .cloned()
-                .ok_or(TaskError::WalletNotFound)?
-        };
-
-        let mut wallet = wallet_arc
-            .write()
-            .map_err(|_| TaskError::LockPoisoned { resource: "wallet" })?;
-        wallet.utxos.retain(|_, utxo_map| {
-            utxo_map.retain(|outpoint, _| !used_utxos.contains_key(outpoint));
-            !utxo_map.is_empty()
-        });
-
-        for utxo in used_utxos.keys() {
-            app_context
-                .db
-                .drop_utxo(utxo, &app_context.network.to_string())?;
-        }
-
-        wallet
-            .recalculate_affected_address_balances(&used_utxos, app_context.as_ref())
-            .map_err(|detail| TaskError::WalletBalanceRecalculationFailed { detail })?;
-    }
+    // Step 4: UTXOs already consumed by PlatformWallet's build_asset_lock_transaction
 
     // Step 5: Wait for asset lock proof (InstantLock or ChainLock) with timeout
     let asset_lock_proof: AssetLockProof;

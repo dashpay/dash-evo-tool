@@ -41,51 +41,22 @@ impl AppContext {
             (asset_lock_amount, false)
         };
 
-        // Step 1: Create the asset lock transaction (UTXOs are selected but NOT yet removed)
-        let (asset_lock_transaction, asset_lock_private_key, _asset_lock_address, used_utxos) = {
-            let wallet_arc = {
-                let wallets = self.wallets.read()?;
-                wallets
-                    .get(&seed_hash)
-                    .cloned()
-                    .ok_or(TaskError::WalletNotFound)?
-            };
+        // Step 1: Build asset lock via PlatformWallet
+        let platform_wallet = self.require_platform_wallet(&seed_hash)?;
 
-            let mut wallet = wallet_arc.write()?;
-
-            // Try to create the asset lock transaction, reload UTXOs if needed
-            match wallet.generic_asset_lock_transaction(
-                self,
-                self.network,
+        let (asset_lock_transaction, asset_lock_private_key) = platform_wallet
+            .core()
+            .build_asset_lock_transaction(
                 asset_lock_amount,
-                allow_take_fee_from_amount,
-                None,
-            ) {
-                Ok((tx, private_key, address, _change, utxos)) => (tx, private_key, address, utxos),
-                Err(e) => {
-                    // Reload UTXOs (RPC: fetches from Core; SPV: no-op).
-                    // Only retry if something actually changed.
-                    if !wallet
-                        .reload_utxos(self)
-                        .map_err(|e| TaskError::UtxoUpdateFailed { detail: e })?
-                    {
-                        return Err(TaskError::AssetLockTransactionBuildFailed { detail: e });
-                    }
-                    let (tx, private_key, address, _change, utxos) = wallet
-                        .generic_asset_lock_transaction(
-                            self,
-                            self.network,
-                            asset_lock_amount,
-                            allow_take_fee_from_amount,
-                            None,
-                        )
-                        .map_err(|e| TaskError::AssetLockTransactionBuildFailed { detail: e })?;
-                    (tx, private_key, address, utxos)
-                }
-            }
-        };
+                platform_wallet::AssetLockFundingType::IdentityRegistration,
+                0,
+            )
+            .await
+            .map_err(|e| TaskError::AssetLockTransactionBuildFailed {
+                detail: e.to_string(),
+            })?;
 
-        // Step 2–4: Store → broadcast → remove UTXOs (atomic pattern).
+        // Step 2–4: Store → broadcast (UTXOs already consumed by PlatformWallet).
         let wallet_arc = {
             let wallets = self.wallets.read()?;
             wallets
@@ -100,7 +71,7 @@ impl AppContext {
                 asset_lock_amount,
                 &seed_hash,
                 &wallet_arc,
-                &used_utxos,
+                &std::collections::BTreeMap::new(),
             )
             .await?;
 

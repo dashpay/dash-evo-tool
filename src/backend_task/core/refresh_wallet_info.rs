@@ -305,22 +305,7 @@ impl AppContext {
         let (changed_balances, changed_total_received): (Vec<_>, Vec<_>) = {
             let mut wallet_guard = wallet.write()?;
 
-            let new_outpoints: std::collections::HashSet<_> = utxo_map.keys().cloned().collect();
-
-            for utxos in wallet_guard.utxos.values_mut() {
-                utxos.retain(|outpoint, _| new_outpoints.contains(outpoint));
-            }
-            wallet_guard.utxos.retain(|_, utxos| !utxos.is_empty());
-
-            for (outpoint, tx_out) in &utxo_map {
-                if let Ok(address) = Address::from_script(&tx_out.script_pubkey, self.network) {
-                    wallet_guard
-                        .utxos
-                        .entry(address)
-                        .or_default()
-                        .insert(*outpoint, tx_out.clone());
-                }
-            }
+            // UTXOs tracked by ManagedWalletInfo — no Wallet.utxos update needed.
 
             let mut balance_changes = Vec::new();
             for address in &addresses {

@@ -357,7 +357,6 @@ pub struct Wallet {
     )>,
     pub alias: Option<String>,
     pub identities: HashMap<u32, Identity>,
-    pub utxos: HashMap<Address, HashMap<OutPoint, TxOut>>,
     pub transactions: Vec<WalletTransaction>,
     pub is_main: bool,
     /// DIP-17: Platform address balances and nonces (keyed by Core Address for lookup)
@@ -433,7 +432,6 @@ impl Wallet {
             unused_asset_locks: Default::default(),
             alias,
             identities: Default::default(),
-            utxos: Default::default(),
             transactions: Vec::new(),
             is_main: true,
             platform_address_info: Default::default(),
@@ -1848,11 +1846,7 @@ impl Wallet {
         let affected_addresses: BTreeSet<_> =
             used_utxos.values().map(|(_, addr)| addr.clone()).collect();
         for address in affected_addresses {
-            let new_balance: u64 = self
-                .utxos
-                .get(&address)
-                .map(|utxo_map| utxo_map.values().map(|tx_out| tx_out.value).sum())
-                .unwrap_or(0);
+            let new_balance = self.address_balance(&address);
             db.update_address_balance(&seed_hash, &address, new_balance)
                 .map_err(|e| e.to_string())?;
         }
@@ -1865,11 +1859,7 @@ impl Wallet {
         address: &Address,
         context: &AppContext,
     ) -> Result<(), String> {
-        let new_balance = self
-            .utxos
-            .get(address)
-            .map(|utxo_map| utxo_map.values().map(|tx_out| tx_out.value).sum())
-            .unwrap_or(0);
+        let new_balance = self.address_balance(address);
         self.update_address_balance(address, new_balance, context)
     }
 
@@ -2488,7 +2478,6 @@ mod tests {
             unused_asset_locks: Vec::new(),
             alias: Some("Test Wallet".to_string()),
             identities: HashMap::new(),
-            utxos: HashMap::new(),
             transactions: Vec::new(),
             is_main: true,
             platform_address_info: BTreeMap::new(),
@@ -2513,28 +2502,6 @@ mod tests {
         let mut txid_bytes = [0u8; 32];
         txid_bytes[0] = tx_index;
         OutPoint::new(Txid::from_slice(&txid_bytes).unwrap(), vout)
-    }
-
-    /// Helper: create a test wallet pre-loaded with a single UTXO of the given value.
-    fn test_wallet_with_utxo(value: u64) -> Wallet {
-        let mut wallet = test_wallet();
-        let addr = test_address(1);
-        add_utxo(&mut wallet, &addr, 1, 0, value);
-        wallet
-    }
-
-    /// Helper: add a UTXO to a wallet
-    fn add_utxo(wallet: &mut Wallet, address: &Address, tx_index: u8, vout: u32, value: u64) {
-        let outpoint = test_outpoint(tx_index, vout);
-        let tx_out = TxOut {
-            value,
-            script_pubkey: address.script_pubkey(),
-        };
-        wallet
-            .utxos
-            .entry(address.clone())
-            .or_default()
-            .insert(outpoint, tx_out);
     }
 
     // ========================================================================

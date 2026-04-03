@@ -572,7 +572,6 @@ impl Database {
                     unused_asset_locks: vec![],
                     alias,
                     identities: HashMap::new(),
-                    utxos: HashMap::new(),
                     transactions: Vec::new(),
                     is_main,
                     platform_address_info: BTreeMap::new(),
@@ -748,19 +747,10 @@ impl Database {
             Ok((address, outpoint, tx_out))
         })?;
 
-        tracing::trace!("step 5: add the UTXOs to the corresponding wallets.");
+        // UTXOs are tracked by ManagedWalletInfo — skip loading into Wallet.utxos.
+        // Consume the iterator to avoid unused variable warnings.
         for row in utxo_rows {
-            let (address, outpoint, tx_out) = row?;
-
-            for wallet in wallets_map.values_mut() {
-                if wallet.has_address(&address) {
-                    wallet
-                        .utxos
-                        .entry(address.clone())
-                        .or_insert_with(HashMap::new)
-                        .insert(outpoint, tx_out.clone());
-                }
-            }
+            let _ = row?;
         }
         tracing::trace!("step 6: load asset lock transactions for each wallet");
         let mut asset_lock_stmt = conn.prepare(

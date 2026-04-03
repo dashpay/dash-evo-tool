@@ -194,15 +194,8 @@ impl AppContext {
                 self.db
                     .add_to_address_balance(&wallet.seed_hash(), &address, tx_out.value)?;
 
-                // Create the OutPoint and insert it into the wallet.utxos entry
+                // Collect the outpoint (UTXOs tracked by ManagedWalletInfo)
                 let out_point = OutPoint::new(tx.txid(), vout as u32);
-                wallet
-                    .utxos
-                    .entry(address.clone())
-                    .or_insert_with(HashMap::new) // Initialize inner HashMap if needed
-                    .insert(out_point, tx_out.clone()); // Insert the TxOut at the OutPoint
-
-                // Collect the outpoint
                 wallet_outpoints.push((out_point, tx_out.clone(), address.clone()));
 
                 // Check if this is a DashPay contact payment

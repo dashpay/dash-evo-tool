@@ -1033,24 +1033,18 @@ impl AppContext {
                 )?;
             }
 
-            // Write per-address balances and UTXOs into wallet model
+            // Persist per-address balances to DB (UTXOs are tracked by
+            // ManagedWalletInfo — no need to copy to Wallet.utxos).
             if let Some(wref) = wallets_guard.get(seed_hash)
-                && let Ok(mut w) = wref.write()
+                && let Ok(w) = wref.read()
             {
-                // Update in-memory UTXOs map
-                w.utxos = new_utxos;
-
-                // Zero out balances for known addresses that no longer have any UTXOs.
-                // Without this, spent addresses retain stale non-zero balances because
-                // per_address_sum only contains addresses with current UTXOs.
                 for addr in &known_addresses {
-                    if !w.utxos.contains_key(addr)
-                        && let Err(e) = w.update_address_balance(addr, 0, self)
-                    {
-                        tracing::debug!(address = %addr, error = %e, "Failed to zero spent address balance");
+                    if !per_address_sum.contains_key(addr) {
+                        if let Err(e) = w.update_address_balance(addr, 0, self) {
+                            tracing::debug!(address = %addr, error = %e, "Failed to zero spent address balance");
+                        }
                     }
                 }
-
                 for (addr, sum) in per_address_sum.into_iter() {
                     if let Err(e) = w.update_address_balance(&addr, sum, self) {
                         tracing::debug!(address = %addr, error = %e, "Failed to update address balance");

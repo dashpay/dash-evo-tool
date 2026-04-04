@@ -64,7 +64,7 @@ impl AppContext {
     /// Get a `PlatformWallet` by `WalletSeedHash`.
     ///
     /// Returns `None` if the wallet doesn't exist or is locked (no platform_wallet).
-    pub(crate) fn get_platform_wallet(&self, seed_hash: &WalletSeedHash) -> Option<PlatformWallet> {
+    pub(crate) fn get_platform_wallet(&self, seed_hash: &WalletSeedHash) -> Option<Arc<PlatformWallet>> {
         self.wallets
             .read()
             .ok()
@@ -77,7 +77,7 @@ impl AppContext {
     /// Useful when the caller needs SDK access but doesn't care which wallet
     /// instance is used (e.g. DPNS resolution, identity fetches where the
     /// wallet derivation index is irrelevant).
-    pub(crate) fn first_available_platform_wallet(&self) -> Option<PlatformWallet> {
+    pub(crate) fn first_available_platform_wallet(&self) -> Option<Arc<PlatformWallet>> {
         self.wallets
             .read()
             .ok()
@@ -94,7 +94,7 @@ impl AppContext {
     pub(crate) fn require_platform_wallet(
         &self,
         seed_hash: &WalletSeedHash,
-    ) -> Result<PlatformWallet, TaskError> {
+    ) -> Result<Arc<PlatformWallet>, TaskError> {
         self.get_platform_wallet(seed_hash)
             .ok_or(TaskError::WalletNotFound)
     }
@@ -106,7 +106,7 @@ impl AppContext {
     pub(crate) fn platform_wallet_for_identity(
         &self,
         identity: &crate::model::qualified_identity::QualifiedIdentity,
-    ) -> Result<PlatformWallet, TaskError> {
+    ) -> Result<Arc<PlatformWallet>, TaskError> {
         let (seed_hash, _) = identity
             .determine_wallet_info()
             .map_err(|e| {
@@ -248,7 +248,7 @@ impl AppContext {
         }
 
         let kw_network = self.wallet_network_key();
-        let sdk = self.sdk.load().as_ref().clone();
+        let sdk = self.sdk.load_full();
         let options = WalletAccountCreationOptions::default();
 
         // Create a PlatformWallet to discover its WalletId (SHA256 of root pubkey).
@@ -262,11 +262,13 @@ impl AppContext {
                     mapping.insert(seed_hash, wallet_id);
                 }
 
+                let platform_wallet = Arc::new(platform_wallet);
+
                 // Store on the Wallet struct itself
                 if let Ok(wallets) = self.wallets.read() {
                     if let Some(wallet_arc) = wallets.get(&seed_hash) {
                         if let Ok(mut wallet) = wallet_arc.write() {
-                            wallet.platform_wallet = Some(platform_wallet.clone());
+                            wallet.platform_wallet = Some(Arc::clone(&platform_wallet));
                         }
                     }
                 }

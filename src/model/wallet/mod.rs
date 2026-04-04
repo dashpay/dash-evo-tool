@@ -316,7 +316,7 @@ pub struct PlatformAddressInfo {
 pub struct Wallet {
     /// The platform wallet — `None` when the wallet is locked (encrypted seed).
     /// Set on creation (open wallet) or on unlock.
-    pub platform_wallet: Option<crate::platform_wallet_bridge::PlatformWallet>,
+    pub platform_wallet: Option<Arc<crate::platform_wallet_bridge::PlatformWallet>>,
     pub wallet_seed: WalletSeed,
     pub uses_password: bool,
     pub master_bip44_ecdsa_extended_public_key: ExtendedPubKey,

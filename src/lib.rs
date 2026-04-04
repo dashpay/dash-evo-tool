@@ -13,6 +13,7 @@ pub mod logging;
 #[cfg(any(feature = "mcp", feature = "cli"))]
 pub mod mcp;
 pub mod model;
+pub mod persistence;
 pub mod platform;
 pub mod platform_wallet_bridge;
 pub mod sdk_wrapper;

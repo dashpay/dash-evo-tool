@@ -1567,7 +1567,9 @@ impl WalletsBalancesScreen {
             return;
         }
 
-        if wallet_guard.transactions.is_empty() {
+        let transactions = wallet_guard.get_transactions();
+
+        if transactions.is_empty() {
             ui.label(
                 "No transactions found. Try refreshing your wallet to load transaction history.",
             );
@@ -1578,7 +1580,7 @@ impl WalletsBalancesScreen {
         // The `is_ours` flag is set by both RPC and SPV paths for all
         // transactions that belong to this wallet (sends and receives).
         // Invalidate cache when source tx count changes or indices go stale.
-        let tx_len = wallet_guard.transactions.len();
+        let tx_len = transactions.len();
         if self.cached_tx_source_len != Some(tx_len)
             || self
                 .cached_tx_indices
@@ -1590,7 +1592,7 @@ impl WalletsBalancesScreen {
         }
         let relevant_indices = self.cached_tx_indices.get_or_insert_with(|| {
             (0..tx_len)
-                .filter(|&i| wallet_guard.transactions[i].is_ours)
+                .filter(|&i| transactions[i].is_ours)
                 .collect()
         });
 
@@ -1605,13 +1607,13 @@ impl WalletsBalancesScreen {
         let show_fee = self.app_context.is_developer_mode();
         let mut order: Vec<usize> = relevant_indices.clone();
         order.sort_by(|&a, &b| {
-            wallet_guard.transactions[b]
+            transactions[b]
                 .timestamp
-                .cmp(&wallet_guard.transactions[a].timestamp)
+                .cmp(&transactions[a].timestamp)
                 .then_with(|| {
-                    wallet_guard.transactions[b]
+                    transactions[b]
                         .txid
-                        .cmp(&wallet_guard.transactions[a].txid)
+                        .cmp(&transactions[a].txid)
                 })
         });
 
@@ -1678,7 +1680,7 @@ impl WalletsBalancesScreen {
             })
             .body(|mut body| {
                 for idx in order {
-                    let tx = &wallet_guard.transactions[idx];
+                    let tx = &transactions[idx];
                     body.row(row_height, |mut row| {
                         row.col(|ui| {
                             ui.label(Self::format_transaction_timestamp(tx.timestamp));

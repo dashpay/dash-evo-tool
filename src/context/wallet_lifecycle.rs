@@ -1060,13 +1060,6 @@ impl AppContext {
                     &wallet_transactions,
                 )?;
             }
-
-            if let Some(wref) = wallets_guard.get(seed_hash)
-                && let Ok(mut wallet) = wref.write()
-                && !wallet_transactions.is_empty()
-            {
-                wallet.set_transactions(wallet_transactions);
-            }
         }
 
         Ok(())

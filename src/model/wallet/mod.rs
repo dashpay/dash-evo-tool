@@ -21,6 +21,7 @@ use dash_sdk::dpp::dashcore::{
     Address, BlockHash, InstantLock, Network, OutPoint, PrivateKey, PublicKey, Transaction, TxOut,
     Txid,
 };
+use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
 use dash_sdk::dpp::platform_value::BinaryData;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Debug;
@@ -330,9 +331,6 @@ pub struct Wallet {
     )>,
     pub alias: Option<String>,
     pub identities: HashMap<u32, Identity>,
-    /// Transaction history — display cache populated by SPV reconciliation.
-    /// Not a duplicate of ManagedWalletInfo (which stores per-account).
-    pub(crate) transactions: Vec<WalletTransaction>,
     pub is_main: bool,
     /// DIP-17: Platform address balances and nonces (keyed by Core Address for lookup)
     pub platform_address_info: BTreeMap<Address, PlatformAddressInfo>,
@@ -402,7 +400,6 @@ impl Wallet {
             unused_asset_locks: Default::default(),
             alias,
             identities: Default::default(),
-            transactions: Vec::new(),
             is_main: true,
             platform_address_info: Default::default(),
             core_wallet_name: None,
@@ -721,8 +718,34 @@ impl Wallet {
             .unwrap_or(0)
     }
 
-    pub fn set_transactions(&mut self, transactions: Vec<WalletTransaction>) {
-        self.transactions = transactions;
+    /// Read transaction history from the PlatformWallet's ManagedWalletInfo.
+    ///
+    /// Returns an empty vec when the wallet is locked (no PlatformWallet).
+    pub fn get_transactions(&self) -> Vec<WalletTransaction> {
+        let Some(pw) = self.platform_wallet.as_ref() else {
+            return Vec::new();
+        };
+        let info = pw.core().blocking_wallet_info();
+        info.transaction_history()
+            .into_iter()
+            .map(|record| {
+                let height = record.height();
+                let status = TransactionStatus::from_height(height);
+                let block_info = record.context.block_info();
+                WalletTransaction {
+                    txid: record.txid,
+                    transaction: record.transaction.clone(),
+                    timestamp: block_info.map(|bi| bi.timestamp() as u64).unwrap_or(0),
+                    height,
+                    block_hash: block_info.map(|bi| bi.block_hash()),
+                    net_amount: record.net_amount,
+                    fee: record.fee,
+                    label: record.label.clone(),
+                    is_ours: true,
+                    status,
+                }
+            })
+            .collect()
     }
 
     pub(crate) fn seed_bytes(&self) -> Result<&[u8; 64], String> {
@@ -1835,7 +1858,6 @@ mod tests {
             unused_asset_locks: Vec::new(),
             alias: Some("Test Wallet".to_string()),
             identities: HashMap::new(),
-            transactions: Vec::new(),
             is_main: true,
             platform_address_info: BTreeMap::new(),
             core_wallet_name: None,

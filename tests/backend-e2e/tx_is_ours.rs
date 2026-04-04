@@ -93,8 +93,8 @@ async fn test_spv_transactions_is_ours_flag() {
             .expect("wallet A")
             .read()
             .expect("lock");
-        let tx = wallet
-            .transactions
+        let transactions = wallet.get_transactions();
+        let tx = transactions
             .iter()
             .find(|t| t.txid.to_string() == payment_txid)
             .unwrap_or_else(|| panic!("Wallet A should have tx {payment_txid}"));
@@ -116,8 +116,8 @@ async fn test_spv_transactions_is_ours_flag() {
             .expect("wallet B")
             .read()
             .expect("lock");
-        let tx = wallet
-            .transactions
+        let transactions = wallet.get_transactions();
+        let tx = transactions
             .iter()
             .find(|t| t.txid.to_string() == payment_txid)
             .unwrap_or_else(|| panic!("Wallet B should have tx {payment_txid}"));

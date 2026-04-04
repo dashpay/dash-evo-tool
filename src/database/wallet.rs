@@ -1,8 +1,8 @@
 use crate::database::{CorruptedBlobError, Database};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::{
-    ClosedKeyItem, DerivationPathReference, DerivationPathType, OpenWalletSeed, TransactionStatus,
-    Wallet, WalletSeed, WalletTransaction,
+    ClosedKeyItem, DerivationPathReference, DerivationPathType, OpenWalletSeed, Wallet, WalletSeed,
+    WalletTransaction,
 };
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
@@ -11,7 +11,7 @@ use dash_sdk::dpp::dashcore::address::{NetworkChecked, NetworkUnchecked};
 use dash_sdk::dpp::dashcore::consensus::{deserialize, serialize};
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{
-    self, BlockHash, InstantLock, Network, OutPoint, Transaction, Txid,
+    self, InstantLock, Network, OutPoint, Transaction,
 };
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::InstantAssetLockProof;
@@ -570,7 +570,6 @@ impl Database {
                     unused_asset_locks: vec![],
                     alias,
                     identities: HashMap::new(),
-                    transactions: Vec::new(),
                     is_main,
                     platform_address_info: BTreeMap::new(),
                     core_wallet_name,
@@ -678,72 +677,6 @@ impl Database {
                 wallet
                     .unused_asset_locks
                     .push((tx, address, amount, islock, proof));
-            }
-        }
-
-        tracing::trace!("step 4: load wallet transactions for each wallet");
-        let mut tx_stmt = conn.prepare(
-            "SELECT seed_hash, txid, timestamp, height, block_hash, net_amount, fee, label, is_ours, raw_transaction, status
-             FROM wallet_transactions WHERE network = ? ORDER BY timestamp DESC",
-        )?;
-
-        let tx_rows = tx_stmt.query_map([network_str.clone()], |row| {
-            let seed_hash: Vec<u8> = row.get(0)?;
-            let txid_bytes: Vec<u8> = row.get(1)?;
-            let timestamp: i64 = row.get(2)?;
-            let height: Option<i64> = row.get(3)?;
-            let block_hash_bytes: Option<Vec<u8>> = row.get(4)?;
-            let net_amount: i64 = row.get(5)?;
-            let fee: Option<i64> = row.get(6)?;
-            let label: Option<String> = row.get(7)?;
-            let is_ours: bool = row.get(8)?;
-            let raw_transaction: Vec<u8> = row.get(9)?;
-            let status_u8: u8 = row.get(10)?;
-
-            let seed_hash_array: [u8; 32] = seed_hash.try_into().map_err(|_| {
-                rusqlite::Error::InvalidParameterName("Seed hash should be 32 bytes".to_string())
-            })?;
-            let txid = Txid::from_slice(&txid_bytes).map_err(|e| {
-                rusqlite::Error::InvalidParameterName(format!("Invalid transaction txid: {}", e))
-            })?;
-            let transaction: Transaction = deserialize(&raw_transaction).map_err(|e| {
-                rusqlite::Error::InvalidParameterName(format!(
-                    "Failed to deserialize transaction: {}",
-                    e
-                ))
-            })?;
-            let block_hash = block_hash_bytes
-                .as_ref()
-                .map(|bytes| {
-                    BlockHash::from_slice(bytes).map_err(|e| {
-                        rusqlite::Error::InvalidParameterName(format!("Invalid block hash: {}", e))
-                    })
-                })
-                .transpose()?;
-            let fee = fee.map(|f| f as u64);
-            let height = height.map(|h| h as u32);
-
-            Ok((
-                seed_hash_array,
-                WalletTransaction {
-                    txid,
-                    transaction,
-                    timestamp: timestamp as u64,
-                    height,
-                    block_hash,
-                    net_amount,
-                    fee,
-                    label,
-                    is_ours,
-                    status: TransactionStatus::from_u8(status_u8),
-                },
-            ))
-        })?;
-
-        for row in tx_rows {
-            let (seed_hash, transaction) = row?;
-            if let Some(wallet) = wallets_map.get_mut(&seed_hash) {
-                wallet.transactions.push(transaction);
             }
         }
 

@@ -304,8 +304,7 @@ impl AppContext {
         // Step 10: Calculate total balance (no lock needed)
         let total_balance: u64 = utxo_map.values().map(|tx_out| tx_out.value).sum();
 
-        // Step 11: Persist transactions to database BEFORE the write lock so we
-        // can move (not clone) rpc_transactions into the wallet afterwards.
+        // Step 11: Persist transactions to database for cross-restart persistence.
         if let Some(ref txs) = rpc_transactions {
             self.db
                 .replace_wallet_transactions(&seed_hash, &self.network, txs)?;
@@ -334,10 +333,6 @@ impl AppContext {
                     .unused_asset_locks
                     .retain(|(tx, _, _, _, _)| !stale_txids.contains(&tx.txid()));
                 tracing::info!("Removed {} stale asset locks", stale_count);
-            }
-
-            if let Some(txs) = rpc_transactions {
-                wallet_guard.set_transactions(txs);
             }
 
             // Update PlatformWallet balance via WalletInfoWriteGuard (auto-refreshes WalletBalance)

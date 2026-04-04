@@ -540,12 +540,16 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let parsed_recipients = self.parse_recipients(&request)?;
 
-        let platform_wallet = {
+        let (platform_wallet, seed_hash) = {
             let guard = wallet.read()?;
             if !guard.is_open() {
                 return Err(TaskError::WalletLocked);
             }
-            guard.platform_wallet.clone().ok_or(TaskError::WalletNotFound)?
+            let pw = guard
+                .platform_wallet
+                .clone()
+                .ok_or(TaskError::WalletNotFound)?;
+            (pw, guard.seed_hash())
         };
 
         // Build and sign via PlatformWallet's CoreWallet
@@ -562,6 +566,9 @@ impl AppContext {
             .read()?
             .send_raw_transaction(&tx)
             .map_err(TaskError::from)?;
+
+        // Persist wallet changes (UTXO updates from sending the transaction)
+        self.persist_platform_wallet(&platform_wallet, &seed_hash);
 
         let total_amount: u64 = request.recipients.iter().map(|r| r.amount_duffs).sum();
         let recipients_result: Vec<(String, u64)> = request

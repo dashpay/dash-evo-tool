@@ -19,10 +19,10 @@ use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{Address, Network};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::key_wallet::Network as WalletNetwork;
+use dash_sdk::dpp::key_wallet::WalletCoreBalance;
 use dash_sdk::dpp::key_wallet::account::AccountType;
 use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
 use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
-use dash_sdk::dpp::key_wallet::WalletCoreBalance;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::{
     ManagedWalletInfo, wallet_info_interface::WalletInfoInterface,
 };
@@ -64,7 +64,10 @@ impl AppContext {
     /// Get a `PlatformWallet` by `WalletSeedHash`.
     ///
     /// Returns `None` if the wallet doesn't exist or is locked (no platform_wallet).
-    pub(crate) fn get_platform_wallet(&self, seed_hash: &WalletSeedHash) -> Option<Arc<PlatformWallet>> {
+    pub(crate) fn get_platform_wallet(
+        &self,
+        seed_hash: &WalletSeedHash,
+    ) -> Option<Arc<PlatformWallet>> {
         self.wallets
             .read()
             .ok()
@@ -78,14 +81,11 @@ impl AppContext {
     /// instance is used (e.g. DPNS resolution, identity fetches where the
     /// wallet derivation index is irrelevant).
     pub(crate) fn first_available_platform_wallet(&self) -> Option<Arc<PlatformWallet>> {
-        self.wallets
-            .read()
-            .ok()
-            .and_then(|wallets| {
-                wallets.values().find_map(|w| {
-                    w.read().ok().and_then(|g| g.platform_wallet.clone())
-                })
-            })
+        self.wallets.read().ok().and_then(|wallets| {
+            wallets
+                .values()
+                .find_map(|w| w.read().ok().and_then(|g| g.platform_wallet.clone()))
+        })
     }
 
     /// Get a `PlatformWallet` by seed hash, or return `TaskError::WalletNotFound`.
@@ -97,6 +97,32 @@ impl AppContext {
     ) -> Result<Arc<PlatformWallet>, TaskError> {
         self.get_platform_wallet(seed_hash)
             .ok_or(TaskError::WalletNotFound)
+    }
+
+    /// Persist staged changesets from a `PlatformWallet` to SQLite.
+    ///
+    /// Creates a [`SqliteWalletPersister`] and drains whatever has been staged
+    /// via `PlatformWallet::stage_changeset()`. If nothing is staged the call
+    /// is a no-op. Persistence failures are logged but never propagated — the
+    /// in-memory state remains authoritative.
+    pub(crate) fn persist_platform_wallet(
+        &self,
+        platform_wallet: &PlatformWallet,
+        seed_hash: &WalletSeedHash,
+    ) {
+        use crate::persistence::SqliteWalletPersister;
+        let mut persister = SqliteWalletPersister::new(
+            self.db.clone(),
+            *seed_hash,
+            self.network.to_string(),
+        );
+        if let Err(e) = platform_wallet.persist(&mut persister) {
+            tracing::warn!(
+                wallet = %hex::encode(seed_hash),
+                error = %e,
+                "Failed to persist wallet changes"
+            );
+        }
     }
 
     /// Get a `PlatformWallet` for the given `QualifiedIdentity`.
@@ -1060,6 +1086,12 @@ impl AppContext {
                     &wallet_transactions,
                 )?;
             }
+
+            // Persist any staged changesets (from SPV adapter block processing)
+            // to SQLite so wallet state survives restarts.
+            if let Some(pw) = self.get_platform_wallet(seed_hash) {
+                self.persist_platform_wallet(&pw, seed_hash);
+            }
         }
 
         Ok(())
@@ -1076,10 +1108,7 @@ impl AppContext {
     /// platform wallet is not available (e.g. external import, wallet locked)
     /// or the lock cannot be acquired, the error is logged and the caller
     /// is not affected.
-    pub(crate) fn sync_identity_to_platform_wallet(
-        &self,
-        qualified_identity: &QualifiedIdentity,
-    ) {
+    pub(crate) fn sync_identity_to_platform_wallet(&self, qualified_identity: &QualifiedIdentity) {
         // 1. Resolve the platform wallet for this identity
         let (seed_hash, _wallet_index) = match qualified_identity.determine_wallet_info() {
             Ok(Some(info)) => info,
@@ -1130,10 +1159,8 @@ impl AppContext {
         let identity_index = qualified_identity.wallet_index.unwrap_or(0);
 
         // 3. Convert QualifiedIdentity data for the ManagedIdentity
-        let mi_key_storage = Self::convert_key_storage(
-            &qualified_identity.private_keys,
-            &seed_hash,
-        );
+        let mi_key_storage =
+            Self::convert_key_storage(&qualified_identity.private_keys, &seed_hash);
         let mi_dpns_names = Self::convert_dpns_names(&qualified_identity.dpns_names);
         let mi_status = Self::convert_identity_status(qualified_identity.status);
 
@@ -1155,10 +1182,7 @@ impl AppContext {
             );
         } else {
             // Add new identity
-            match manager.add_identity(
-                qualified_identity.identity.clone(),
-                identity_index,
-            ) {
+            match manager.add_identity(qualified_identity.identity.clone(), identity_index) {
                 Ok(()) => {
                     // Now set extra fields on the newly added managed identity
                     if let Some(managed) = manager.managed_identity_mut(&identity_id) {
@@ -1335,8 +1359,7 @@ impl AppContext {
     ) -> ManagedKeyStorage {
         let mut result = ManagedKeyStorage::new();
 
-        for ((target, key_id), (qualified_pub_key, private_key_data)) in
-            qi_keys.private_keys.iter()
+        for ((target, key_id), (qualified_pub_key, private_key_data)) in qi_keys.private_keys.iter()
         {
             // Only convert main identity keys
             if *target != PrivateKeyTarget::PrivateKeyOnMainIdentity {
@@ -1362,7 +1385,10 @@ impl AppContext {
 
             result.insert(
                 *key_id,
-                (qualified_pub_key.identity_public_key.clone(), mi_private_key),
+                (
+                    qualified_pub_key.identity_public_key.clone(),
+                    mi_private_key,
+                ),
             );
         }
 

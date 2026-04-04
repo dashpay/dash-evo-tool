@@ -377,6 +377,10 @@ impl AppContext {
                     0,             // locked
                 );
             }
+
+            // Persist any staged changesets to SQLite so wallet state
+            // survives restarts.
+            self.persist_platform_wallet(&pw, &seed_hash);
         }
 
         let warning = if tx_truncated {

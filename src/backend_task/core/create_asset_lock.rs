@@ -16,11 +16,14 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let amount_duffs = amount / CREDITS_PER_DUFF;
 
-        let platform_wallet = wallet
-            .read()?
-            .platform_wallet
-            .clone()
-            .ok_or(TaskError::WalletNotFound)?;
+        let (platform_wallet, seed_hash) = {
+            let guard = wallet.read()?;
+            let pw = guard
+                .platform_wallet
+                .clone()
+                .ok_or(TaskError::WalletNotFound)?;
+            (pw, guard.seed_hash())
+        };
 
         let (tx, _private_key) = platform_wallet
             .core()
@@ -34,7 +37,12 @@ impl AppContext {
                 detail: e.to_string(),
             })?;
 
-        self.broadcast_and_track_asset_lock(tx).await
+        let result = self.broadcast_and_track_asset_lock(tx).await?;
+
+        // Persist wallet changes (UTXO updates from building the transaction)
+        self.persist_platform_wallet(&platform_wallet, &seed_hash);
+
+        Ok(result)
     }
 
     pub async fn create_top_up_asset_lock(
@@ -47,11 +55,14 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let amount_duffs = amount / CREDITS_PER_DUFF;
 
-        let platform_wallet = wallet
-            .read()?
-            .platform_wallet
-            .clone()
-            .ok_or(TaskError::WalletNotFound)?;
+        let (platform_wallet, seed_hash) = {
+            let guard = wallet.read()?;
+            let pw = guard
+                .platform_wallet
+                .clone()
+                .ok_or(TaskError::WalletNotFound)?;
+            (pw, guard.seed_hash())
+        };
 
         let (tx, _private_key) = platform_wallet
             .core()
@@ -65,7 +76,12 @@ impl AppContext {
                 detail: e.to_string(),
             })?;
 
-        self.broadcast_and_track_asset_lock(tx).await
+        let result = self.broadcast_and_track_asset_lock(tx).await?;
+
+        // Persist wallet changes (UTXO updates from building the transaction)
+        self.persist_platform_wallet(&platform_wallet, &seed_hash);
+
+        Ok(result)
     }
 
     /// Broadcast an asset lock transaction and register it for finality tracking.

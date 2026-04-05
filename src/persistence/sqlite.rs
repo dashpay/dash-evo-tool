@@ -8,10 +8,10 @@ use crate::database::Database;
 use dash_sdk::dpp::dashcore::consensus::serialize;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use platform_wallet::persistence::WalletPersistence;
-use platform_wallet::persistence::changeset::{ChainChangeSet, WalletChangeSet};
+use platform_wallet::persistence::changeset::{ChainChangeSet, PlatformWalletChangeSet};
 use std::sync::Arc;
 
-/// Persists [`WalletChangeSet`] deltas into the evo-tool SQLite database.
+/// Persists [`PlatformWalletChangeSet`] deltas into the evo-tool SQLite database.
 ///
 /// Each call to [`persist`](WalletPersistence::persist) acquires the database
 /// connection lock, opens a transaction, writes all sub-changesets, and commits
@@ -43,14 +43,14 @@ impl SqliteWalletPersister {
 impl WalletPersistence for SqliteWalletPersister {
     type Error = SqlitePersistError;
 
-    fn initialize(&mut self) -> Result<WalletChangeSet, Self::Error> {
+    fn initialize(&mut self) -> Result<PlatformWalletChangeSet, Self::Error> {
         // TODO: Load persisted state from the database and reconstruct
-        // a full WalletChangeSet. For now we return an empty changeset;
+        // a full PlatformWalletChangeSet. For now we return an empty changeset;
         // the wallet starts fresh each launch.
-        Ok(WalletChangeSet::default())
+        Ok(PlatformWalletChangeSet::default())
     }
 
-    fn persist(&mut self, changeset: &WalletChangeSet) -> Result<(), Self::Error> {
+    fn persist(&mut self, changeset: &PlatformWalletChangeSet) -> Result<(), Self::Error> {
         let conn = self.db.shared_connection();
         let mut guard = conn.lock().unwrap();
         let tx = guard.transaction()?;
@@ -197,7 +197,7 @@ mod tests {
         let db = Arc::new(create_test_database().expect("create test db"));
         let mut persister = make_persister(db);
 
-        let cs = WalletChangeSet::default();
+        let cs = PlatformWalletChangeSet::default();
         persister.persist(&cs).expect("persist empty changeset");
     }
 
@@ -225,7 +225,7 @@ mod tests {
 
         let mut persister = make_persister(db.clone());
 
-        let cs = WalletChangeSet {
+        let cs = PlatformWalletChangeSet {
             chain: Some(ChainChangeSet {
                 height: Some(12345),
                 block_hash: None,
@@ -263,7 +263,7 @@ mod tests {
         // Add a UTXO.
         let mut added = BTreeMap::new();
         added.insert(outpoint, 50_000u64);
-        let cs = WalletChangeSet {
+        let cs = PlatformWalletChangeSet {
             utxos: Some(UtxoChangeSet {
                 added,
                 spent: BTreeSet::new(),
@@ -289,7 +289,7 @@ mod tests {
         // Now spend it.
         let mut spent = BTreeSet::new();
         spent.insert(outpoint);
-        let cs2 = WalletChangeSet {
+        let cs2 = PlatformWalletChangeSet {
             utxos: Some(UtxoChangeSet {
                 added: BTreeMap::new(),
                 spent,

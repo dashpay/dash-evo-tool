@@ -8,15 +8,18 @@ use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::document::DocumentV0Getters;
-use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::Identity;
-use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::Value;
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::drive::query::{OrderClause, WhereClause, WhereOperator};
 use dash_sdk::platform::{
     Document, DocumentQuery, Fetch, FetchMany, Identifier, IdentityPublicKey,
 };
-use std::collections::HashSet;
+use platform_wallet::persistence::changeset::{
+    ContactChangeSet, ContactRequestEntry, PlatformWalletChangeSet,
+};
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 pub async fn load_contact_requests(
@@ -272,11 +275,12 @@ pub async fn send_contact_request_with_proof(
 
     // Step 4: Delegate to platform-wallet's DashPayWallet
     let platform_wallet = app_context.platform_wallet_for_identity(&identity)?;
+    let sender_id = identity.identity.id();
 
-    platform_wallet
+    let contact_request = platform_wallet
         .dashpay()
         .send_contact_request(
-            &identity.identity.id(),
+            &sender_id,
             &to_identity_id,
             account_label,
             auto_accept_proof,
@@ -285,6 +289,31 @@ pub async fn send_contact_request_with_proof(
         .map_err(|e| TaskError::PlatformWallet {
             source: Box::new(e),
         })?;
+
+    // Step 5: Stage a PlatformWalletChangeSet capturing the sent contact request
+    //         and persist so the delta is durably stored.
+    let changeset = PlatformWalletChangeSet {
+        contacts: Some(ContactChangeSet {
+            sent_requests: BTreeMap::from([(
+                (sender_id, to_identity_id),
+                ContactRequestEntry {
+                    request: contact_request,
+                },
+            )]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    platform_wallet.stage_changeset(changeset);
+
+    let (seed_hash, _) = identity
+        .determine_wallet_info()
+        .map_err(|e| {
+            tracing::error!("Failed to determine wallet info for persistence: {}", e);
+            TaskError::WalletNotFound
+        })?
+        .ok_or(TaskError::WalletNotFound)?;
+    app_context.persist_platform_wallet(&platform_wallet, &seed_hash);
 
     Ok(BackendTaskSuccessResult::DashPayContactRequestSent(
         to_username_or_id.to_string(),
@@ -405,11 +434,12 @@ pub async fn accept_contact_request(
 
     // Delegate to platform-wallet: send a reciprocal contact request
     let platform_wallet = app_context.platform_wallet_for_identity(&identity)?;
+    let our_identity_id = identity.identity.id();
 
-    platform_wallet
+    let contact_request = platform_wallet
         .dashpay()
         .send_contact_request(
-            &identity.identity.id(),
+            &our_identity_id,
             &from_identity_id,
             Some("Accepted contact".to_string()),
             None,
@@ -418,6 +448,35 @@ pub async fn accept_contact_request(
         .map_err(|e| TaskError::PlatformWallet {
             source: Box::new(e),
         })?;
+
+    // Stage a PlatformWalletChangeSet capturing the reciprocal sent request
+    // and the newly established contact, then persist.
+    let mut established = std::collections::BTreeSet::new();
+    established.insert((our_identity_id, from_identity_id));
+
+    let changeset = PlatformWalletChangeSet {
+        contacts: Some(ContactChangeSet {
+            sent_requests: BTreeMap::from([(
+                (our_identity_id, from_identity_id),
+                ContactRequestEntry {
+                    request: contact_request,
+                },
+            )]),
+            established,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    platform_wallet.stage_changeset(changeset);
+
+    let (seed_hash, _) = identity
+        .determine_wallet_info()
+        .map_err(|e| {
+            tracing::error!("Failed to determine wallet info for persistence: {}", e);
+            TaskError::WalletNotFound
+        })?
+        .ok_or(TaskError::WalletNotFound)?;
+    app_context.persist_platform_wallet(&platform_wallet, &seed_hash);
 
     Ok(BackendTaskSuccessResult::DashPayContactRequestAccepted(
         request_id,

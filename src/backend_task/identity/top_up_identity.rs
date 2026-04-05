@@ -95,7 +95,10 @@ impl AppContext {
                     let (platform_wallet, wallet_seed_hash) = {
                         let guard = wallet.read().map_err(TaskError::from)?;
                         (
-                            guard.platform_wallet.clone().ok_or(TaskError::WalletNotFound)?,
+                            guard
+                                .platform_wallet
+                                .clone()
+                                .ok_or(TaskError::WalletNotFound)?,
                             guard.seed_hash(),
                         )
                     };
@@ -111,6 +114,9 @@ impl AppContext {
                         .map_err(|e| TaskError::AssetLockTransactionBuildFailed {
                             detail: e.to_string(),
                         })?;
+
+                    // Persist wallet changes (UTXO updates from building the transaction)
+                    self.persist_platform_wallet(&platform_wallet, &wallet_seed_hash);
 
                     let tx_id = self
                         .broadcast_and_commit_asset_lock(

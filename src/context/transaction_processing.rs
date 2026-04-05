@@ -10,7 +10,7 @@ use dash_sdk::dpp::dashcore::{Address, InstantLock, OutPoint, Transaction, TxOut
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::InstantAssetLockProof;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
 use dash_sdk::dpp::prelude::{AssetLockProof, CoreBlockHeight};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
 impl AppContext {
@@ -170,7 +170,7 @@ impl AppContext {
         // Identify the wallets associated with the transaction
         let wallets = self.wallets.read()?;
         for wallet_arc in wallets.values() {
-            let mut wallet = wallet_arc.write()?;
+            let wallet = wallet_arc.write()?;
             for (vout, tx_out) in tx.output.iter().enumerate() {
                 let address = if let Ok(output_addr) =
                     Address::from_script(&tx_out.script_pubkey, self.network)
@@ -183,16 +183,10 @@ impl AppContext {
                 } else {
                     continue;
                 };
-                self.db.insert_utxo(
-                    tx.txid().as_byte_array(),
-                    vout as u32,
-                    &address,
-                    tx_out.value,
-                    &tx_out.script_pubkey.to_bytes(),
-                    self.network,
-                )?;
-                self.db
-                    .add_to_address_balance(&wallet.seed_hash(), &address, tx_out.value)?;
+                // UTXOs and address balances are persisted via the changeset
+                // path (SPV adapter stages them, persist_platform_wallet writes
+                // them). Only in-memory wallet state and app-level metadata
+                // (DashPay contacts) are updated here.
 
                 // Collect the outpoint (UTXOs tracked by ManagedWalletInfo)
                 let out_point = OutPoint::new(tx.txid(), vout as u32);

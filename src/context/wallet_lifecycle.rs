@@ -7,8 +7,7 @@ use crate::model::qualified_identity::encrypted_key_storage::{
 };
 use crate::model::qualified_identity::{PrivateKeyTarget, QualifiedIdentity};
 use crate::model::wallet::{
-    DerivationPathHelpers, DerivationPathReference, DerivationPathType, TransactionStatus, Wallet,
-    WalletSeedHash, WalletTransaction,
+    DerivationPathHelpers, DerivationPathReference, DerivationPathType, Wallet, WalletSeedHash,
 };
 use crate::platform_wallet_bridge::{
     ManagedDpnsNameInfo, ManagedIdentityStatus, ManagedKeyStorage, ManagedPrivateKeyData,
@@ -111,11 +110,8 @@ impl AppContext {
         seed_hash: &WalletSeedHash,
     ) {
         use crate::persistence::SqliteWalletPersister;
-        let mut persister = SqliteWalletPersister::new(
-            self.db.clone(),
-            *seed_hash,
-            self.network.to_string(),
-        );
+        let mut persister =
+            SqliteWalletPersister::new(self.db.clone(), *seed_hash, self.network.to_string());
         if let Err(e) = platform_wallet.persist(&mut persister) {
             tracing::warn!(
                 wallet = %hex::encode(seed_hash),
@@ -901,17 +897,12 @@ impl AppContext {
                 }
             }
 
-            // Persist balances to database
-            if let Err(e) = self.db.update_wallet_balances(
-                seed_hash,
-                balance.spendable(),
-                balance.unconfirmed(),
-                balance.total(),
-            ) {
-                tracing::warn!(wallet = %hex::encode(seed_hash), error = %e, "Failed to persist wallet balances");
-            }
+            // Wallet balances, UTXOs, and transactions are now persisted via
+            // the changeset path (persist_platform_wallet below). No direct DB
+            // writes for these are needed here.
 
-            // Get the wallet's addresses from PlatformWallet (only update those to avoid cross-wallet churn)
+            // Get the wallet's addresses from PlatformWallet to register unknown
+            // SPV addresses in the DET address table (app-level metadata).
             let mut wallet_addresses: std::collections::BTreeSet<Address> = {
                 let w = wallet_arc.read()?;
                 w.all_addresses_info()
@@ -920,31 +911,12 @@ impl AppContext {
                     .collect()
             };
 
-            // Clear existing UTXOs for these addresses in this network
-            for addr in &wallet_addresses {
-                let _ = self.db.execute(
-                    "DELETE FROM utxos WHERE address = ? AND network = ?",
-                    rusqlite::params![addr.to_string(), self.network.to_string()],
-                );
-            }
-
-            // Read current UTXOs from SPV and re-insert, registering unknown addresses if derivation metadata is available
+            // Read current UTXOs from SPV to register unknown addresses
             let utxos = wm
                 .wallet_utxos(wallet_id)
                 .map_err(|e| crate::spv::SpvError::WalletError(e.to_string()))?;
 
-            let mut per_address_sum: std::collections::BTreeMap<Address, u64> = Default::default();
-            // Build in-memory UTXO map to update wallet model
-            let mut new_utxos: std::collections::HashMap<
-                Address,
-                std::collections::HashMap<
-                    dash_sdk::dpp::dashcore::OutPoint,
-                    dash_sdk::dpp::dashcore::TxOut,
-                >,
-            > = Default::default();
-
             for u in utxos {
-                let outpoint = u.outpoint;
                 let tx_out = u.txout.clone();
 
                 // Derive address from script
@@ -952,15 +924,6 @@ impl AppContext {
                     Ok(a) => a,
                     Err(_) => continue,
                 };
-
-                // Always track the UTXO in the in-memory map for correct balance calculation
-                new_utxos
-                    .entry(address.clone())
-                    .or_default()
-                    .insert(outpoint, tx_out.clone());
-
-                // Always count the UTXO value in per-address sum
-                *per_address_sum.entry(address.clone()).or_default() += tx_out.value;
 
                 // If address unknown to DET, try to register using SPV metadata
                 if !wallet_addresses.contains(&address) {
@@ -1007,85 +970,16 @@ impl AppContext {
                             value = tx_out.value,
                             "SPV UTXO address not registered in DET (counted in balance but not in address table)"
                         );
-                        // Still persist the UTXO to DB and delete stale entry first
-                        let _ = self.db.execute(
-                            "DELETE FROM utxos WHERE address = ? AND network = ?",
-                            rusqlite::params![address.to_string(), self.network.to_string()],
-                        );
-                    }
-                }
-
-                // Insert UTXO row into DB
-                self.db.insert_utxo(
-                    outpoint.txid.as_ref(),
-                    outpoint.vout,
-                    &address,
-                    tx_out.value,
-                    &tx_out.script_pubkey.to_bytes(),
-                    self.network,
-                )?;
-            }
-
-            // Persist per-address balances to DB (UTXOs are tracked by
-            // ManagedWalletInfo — no need to copy to Wallet.utxos).
-            if let Some(wref) = wallets_guard.get(seed_hash)
-                && let Ok(w) = wref.read()
-            {
-                for addr in &wallet_addresses {
-                    if !per_address_sum.contains_key(addr) {
-                        if let Err(e) = w.update_address_balance(addr, 0, self) {
-                            tracing::debug!(address = %addr, error = %e, "Failed to zero spent address balance");
-                        }
-                    }
-                }
-                for (addr, sum) in per_address_sum.into_iter() {
-                    if let Err(e) = w.update_address_balance(&addr, sum, self) {
-                        tracing::debug!(address = %addr, error = %e, "Failed to update address balance");
                     }
                 }
             }
-
-            let history = wm
-                .wallet_transaction_history(wallet_id)
-                .map_err(|e| crate::spv::SpvError::WalletError(e.to_string()))?;
-            let wallet_transactions: Vec<WalletTransaction> = history
-                .into_iter()
-                .map(|record| {
-                    let height = record.height();
-                    let status = TransactionStatus::from_height(height);
-                    let block_info = record.context.block_info();
-                    WalletTransaction {
-                        txid: record.txid,
-                        transaction: record.transaction.clone(),
-                        timestamp: block_info.map(|bi| bi.timestamp() as u64).unwrap_or(0),
-                        height,
-                        block_hash: block_info.map(|bi| bi.block_hash()),
-                        net_amount: record.net_amount,
-                        fee: record.fee,
-                        label: record.label.clone(),
-                        is_ours: true,
-                        status,
-                    }
-                })
-                .collect();
 
             tracing::info!(
                 wallet = %hex::encode(seed_hash),
-                spv_transactions = wallet_transactions.len(),
                 spv_spendable = balance.spendable(),
                 spv_total = balance.total(),
                 "SPV reconcile summary"
             );
-
-            // Only replace transactions if SPV returned some, to avoid wiping
-            // previously persisted history when SPV hasn't populated history yet.
-            if !wallet_transactions.is_empty() {
-                self.db.replace_wallet_transactions(
-                    seed_hash,
-                    &self.network,
-                    &wallet_transactions,
-                )?;
-            }
 
             // Persist any staged changesets (from SPV adapter block processing)
             // to SQLite so wallet state survives restarts.

@@ -86,37 +86,13 @@ impl AppContext {
             map
         };
 
-        // Step 4: Calculate balances from UTXOs (no lock needed)
-        let mut address_balances: HashMap<Address, u64> = HashMap::new();
-        for tx_out in utxo_map.values() {
-            if let Ok(address) = Address::from_script(&tx_out.script_pubkey, self.network) {
-                *address_balances.entry(address).or_insert(0) += tx_out.value;
-            }
-        }
+        // Per-address balances and total-received are now persisted via the
+        // changeset path. Only total_balance is computed here for in-memory state.
 
-        // Step 5: Fetch total received for each address from Core RPC (no wallet lock)
-        let mut total_received_map: HashMap<Address, u64> = HashMap::new();
-        {
-            for address in &addresses {
-                match client.get_received_by_address(address, None) {
-                    Ok(amount) => {
-                        total_received_map.insert(address.clone(), amount.to_sat());
-                    }
-                    Err(e) => {
-                        tracing::debug!(
-                            ?e,
-                            address = %address,
-                            "get_received_by_address failed"
-                        );
-                    }
-                }
-            }
-        }
-
-        // Step 6: Load transaction history from Core RPC (skip in SPV mode)
+        // Step 4: Load transaction history from Core RPC (skip in SPV mode)
         // None = skip update (SPV mode or RPC failure), Some = replace DB/in-memory state
         let mut tx_truncated = false;
-        let rpc_transactions: Option<Vec<WalletTransaction>> = if is_spv_mode {
+        let _rpc_transactions: Option<Vec<WalletTransaction>> = if is_spv_mode {
             None
         } else {
             let wallet_address_set: HashSet<Address> = addresses.iter().cloned().collect();
@@ -280,52 +256,23 @@ impl AppContext {
                 .collect()
         };
 
-        // Step 8: Insert UTXOs into database (no wallet lock needed)
-        for (outpoint, tx_out) in &utxo_map {
-            if let Ok(address) = Address::from_script(&tx_out.script_pubkey, self.network) {
-                self.db.insert_utxo(
-                    outpoint.txid.as_ref(),
-                    outpoint.vout,
-                    &address,
-                    tx_out.value,
-                    &tx_out.script_pubkey.to_bytes(),
-                    self.network,
-                )?;
-            }
-        }
+        // UTXOs, transactions, and balances are now persisted via the
+        // changeset path (persist_platform_wallet below). Only asset lock
+        // cleanup and in-memory state updates remain as direct operations.
 
-        // Step 9: Delete stale asset locks from database (no wallet lock needed)
+        // Step 8: Delete stale asset locks from database (no wallet lock needed)
         for txid in &stale_txids {
             if let Err(e) = self.db.delete_asset_lock_transaction(txid.as_byte_array()) {
                 tracing::warn!("Failed to delete stale asset lock from database: {}", e);
             }
         }
 
-        // Step 10: Calculate total balance (no lock needed)
+        // Step 9: Calculate total balance (no lock needed)
         let total_balance: u64 = utxo_map.values().map(|tx_out| tx_out.value).sum();
 
-        // Step 11: Persist transactions to database for cross-restart persistence.
-        if let Some(ref txs) = rpc_transactions {
-            self.db
-                .replace_wallet_transactions(&seed_hash, &self.network, txs)?;
-        }
-
-        // Step 12: Update wallet IN-MEMORY state only (brief write lock, no I/O)
-        let (changed_balances, changed_total_received): (Vec<_>, Vec<_>) = {
+        // Step 10: Update wallet IN-MEMORY state only (brief write lock, no I/O)
+        {
             let mut wallet_guard = wallet.write()?;
-
-            // UTXOs tracked by ManagedWalletInfo — no Wallet.utxos update needed.
-
-            let mut balance_changes = Vec::new();
-            for address in &addresses {
-                let balance = address_balances.get(address).cloned().unwrap_or(0);
-                balance_changes.push((address.clone(), balance));
-            }
-
-            let mut received_changes = Vec::new();
-            for (address, total_received) in &total_received_map {
-                received_changes.push((address.clone(), *total_received));
-            }
 
             if !stale_txids.is_empty() {
                 let stale_count = stale_txids.len();
@@ -346,23 +293,7 @@ impl AppContext {
                     );
                 }
             }
-
-            (balance_changes, received_changes)
-        };
-
-        // Step 13: Persist remaining changes to database (no wallet lock needed)
-        for (address, balance) in &changed_balances {
-            self.db
-                .update_address_balance(&seed_hash, address, *balance)?;
         }
-
-        for (address, total_received) in &changed_total_received {
-            self.db
-                .update_address_total_received(&seed_hash, address, *total_received)?;
-        }
-
-        self.db
-            .update_wallet_balances(&seed_hash, total_balance, 0, total_balance)?;
 
         // Sync balance to PlatformWallet's ManagedWalletInfo so it stays
         // current and can serve as the canonical read source.

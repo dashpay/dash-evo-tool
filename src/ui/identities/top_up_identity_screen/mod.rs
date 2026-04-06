@@ -320,14 +320,13 @@ impl TopUpIdentityScreen {
         };
         match funding_method {
             FundingMethod::UseUnusedAssetLock => {
-                if let Some((tx, funding_asset_lock, address)) = self.funding_asset_lock.clone() {
+                if let Some((tx, _funding_asset_lock, _address)) = self.funding_asset_lock.clone() {
+                    let out_point = OutPoint::new(tx.txid(), 0);
                     let identity_input = IdentityTopUpInfo {
                         qualified_identity: self.identity.clone(),
                         wallet: Arc::clone(selected_wallet),
                         identity_funding_method: TopUpIdentityFundingMethod::UseAssetLock(
-                            address,
-                            Box::new(funding_asset_lock),
-                            Box::new(tx),
+                            out_point,
                         ),
                     };
 

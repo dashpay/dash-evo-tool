@@ -813,16 +813,15 @@ impl AddNewIdentityScreen {
         };
         match funding_method {
             FundingMethod::UseUnusedAssetLock => {
-                if let Some((tx, funding_asset_lock, address)) = self.funding_asset_lock.clone() {
+                if let Some((tx, _funding_asset_lock, _address)) = self.funding_asset_lock.clone() {
+                    let out_point = OutPoint::new(tx.txid(), 0);
                     let identity_input = IdentityRegistrationInfo {
                         alias_input: self.alias_input.clone(),
                         keys: self.identity_keys.clone(),
                         wallet: Arc::clone(selected_wallet), // Clone the Arc reference
                         wallet_identity_index: self.identity_id_number,
                         identity_funding_method: RegisterIdentityFundingMethod::UseAssetLock(
-                            address,
-                            Box::new(funding_asset_lock),
-                            Box::new(tx),
+                            out_point,
                         ),
                     };
 

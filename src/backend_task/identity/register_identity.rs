@@ -44,47 +44,27 @@ impl AppContext {
 
         let (asset_lock_proof, asset_lock_proof_private_key, tx_id) = match identity_funding_method
         {
-            RegisterIdentityFundingMethod::UseAssetLock(address, asset_lock_proof, transaction) => {
-                let tx_id = transaction.txid();
+            RegisterIdentityFundingMethod::UseAssetLock(out_point) => {
+                let tx_id = out_point.txid;
 
-                // Scope the read guard so it's dropped before the async DAPI call below
-                let private_key = {
-                    let wallet = wallet.read().map_err(TaskError::from)?;
-                    wallet_id = wallet.seed_hash();
-                    wallet
-                        .private_key_for_address(&address, self.network)
-                        .map_err(|e| TaskError::WalletKeyLookupFailed { detail: e })?
-                        .ok_or(TaskError::AssetLockNotValidForWallet)?
+                let platform_wallet = {
+                    let guard = wallet.read().map_err(TaskError::from)?;
+                    wallet_id = guard.seed_hash();
+                    guard
+                        .platform_wallet
+                        .clone()
+                        .ok_or(TaskError::WalletNotFound)?
                 };
-                let asset_lock_proof = if let AssetLockProof::Instant(instant_asset_lock_proof) =
-                    asset_lock_proof.as_ref()
-                {
-                    // we need to make sure the instant send asset lock is recent
-                    let tx_info = get_transaction_info(&sdk, &tx_id).await?;
 
-                    if tx_info.is_chain_locked && tx_info.height > 0 && tx_info.confirmations > 8 {
-                        // Transaction is old enough that instant lock may have expired
-                        let tx_block_height = tx_info.height;
+                // platform-wallet handles IS→CL fallback and key re-derivation internally
+                let (asset_lock_proof, private_key) = platform_wallet
+                    .asset_locks()
+                    .resume_asset_lock(&out_point, std::time::Duration::from_secs(300))
+                    .await
+                    .map_err(|e| TaskError::AssetLockTransactionBuildFailed {
+                        detail: e.to_string(),
+                    })?;
 
-                        if tx_block_height <= metadata.core_chain_locked_height {
-                            // Platform has verified this Core block, use chain lock proof
-                            AssetLockProof::Chain(ChainAssetLockProof {
-                                core_chain_locked_height: tx_block_height,
-                                out_point: OutPoint::new(tx_id, 0),
-                            })
-                        } else {
-                            // Platform hasn't verified this Core block yet
-                            return Err(TaskError::AssetLockExpired {
-                                tx_block_height,
-                                platform_height: metadata.core_chain_locked_height,
-                            });
-                        }
-                    } else {
-                        AssetLockProof::Instant(instant_asset_lock_proof.clone())
-                    }
-                } else {
-                    asset_lock_proof.as_ref().clone()
-                };
                 (asset_lock_proof, private_key, tx_id)
             }
             RegisterIdentityFundingMethod::FundWithWallet(amount, identity_index) => {

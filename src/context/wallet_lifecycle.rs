@@ -297,9 +297,12 @@ impl AppContext {
         // SPV event channel so IS-lock/ChainLock events reach AssetLockManager.
         // The manager also initializes persisted state and registers the wallet
         // for SPV processing in one call.
-        match self
-            .wallet_manager
-            .create_wallet_from_seed_bytes(kw_network, seed_bytes, options)
+        match tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(
+                self.wallet_manager
+                    .create_wallet_from_seed_bytes(kw_network, seed_bytes, options),
+            )
+        })
         {
             Ok(platform_wallet) => {
                 let wallet_id = platform_wallet.wallet_id();

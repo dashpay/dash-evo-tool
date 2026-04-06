@@ -88,44 +88,29 @@ impl AppContext {
                 (asset_lock_proof, private_key, tx_id)
             }
             RegisterIdentityFundingMethod::FundWithWallet(amount, identity_index) => {
-                let (platform_wallet, seed_hash) = {
+                let platform_wallet = {
                     let guard = wallet.read().map_err(TaskError::from)?;
                     wallet_id = guard.seed_hash();
-                    (
-                        guard
-                            .platform_wallet
-                            .clone()
-                            .ok_or(TaskError::WalletNotFound)?,
-                        guard.seed_hash(),
-                    )
+                    guard
+                        .platform_wallet
+                        .clone()
+                        .ok_or(TaskError::WalletNotFound)?
                 };
 
-                let (asset_lock_transaction, asset_lock_proof_private_key) = platform_wallet
+                // Single call: builds asset lock TX, broadcasts, waits for
+                // finality proof (IS or CL), and returns the proof + key.
+                let (asset_lock_proof, asset_lock_proof_private_key, tx_id) = platform_wallet
                     .core()
-                    .build_asset_lock_transaction(
+                    .create_funded_asset_lock_proof(
                         amount,
                         platform_wallet::AssetLockFundingType::IdentityRegistration,
                         identity_index,
+                        None,
                     )
                     .await
                     .map_err(|e| TaskError::AssetLockTransactionBuildFailed {
                         detail: e.to_string(),
                     })?;
-
-                // Wallet changes (UTXO updates) are auto-flushed via
-                // FlushStrategy::Immediate when queued by the platform wallet.
-
-                let tx_id = self
-                    .broadcast_and_commit_asset_lock(
-                        &asset_lock_transaction,
-                        amount,
-                        &seed_hash,
-                        &wallet,
-                        None,
-                    )
-                    .await?;
-
-                let asset_lock_proof = self.wait_for_asset_lock_proof(tx_id).await?;
 
                 (asset_lock_proof, asset_lock_proof_private_key, tx_id)
             }

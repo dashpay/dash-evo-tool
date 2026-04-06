@@ -8,10 +8,16 @@ use crate::database::Database;
 use dash_sdk::dpp::dashcore::consensus::{deserialize, serialize};
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{BlockHash, OutPoint, Transaction, Txid};
+use dash_sdk::dpp::key_wallet::dip9::DerivationPathReference;
+use dash_sdk::dpp::key_wallet::PlatformP2PKHAddress;
+use dash_sdk::dpp::prelude::Identifier;
+use dash_sdk::dpp::serialization::{PlatformDeserializable, PlatformSerializable};
 use platform_wallet::persistence::Merge;
 use platform_wallet::persistence::WalletPersistence;
 use platform_wallet::persistence::changeset::{
-    ChainChangeSet, PlatformWalletChangeSet, TransactionChangeSet, TransactionEntry, UtxoChangeSet,
+    AccountChangeSet, AssetLockChangeSet, AssetLockEntry, ChainChangeSet, IdentityChangeSet,
+    IdentityEntry, PlatformAddressChangeSet, PlatformAddressEntry, PlatformWalletChangeSet,
+    TransactionChangeSet, TransactionEntry, UtxoChangeSet,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -42,6 +48,36 @@ impl SqliteWalletPersister {
             seed_hash,
             network,
         }
+    }
+}
+
+/// Convert a `u32` discriminant back to [`DerivationPathReference`].
+///
+/// The key-wallet crate does not expose a `TryFrom<u32>` impl for its enum,
+/// so we maintain a local mapping that mirrors the discriminant values.
+fn derivation_path_reference_from_u32(v: u32) -> Option<DerivationPathReference> {
+    match v {
+        0 => Some(DerivationPathReference::Unknown),
+        1 => Some(DerivationPathReference::BIP32),
+        2 => Some(DerivationPathReference::BIP44),
+        3 => Some(DerivationPathReference::BlockchainIdentities),
+        4 => Some(DerivationPathReference::ProviderFunds),
+        5 => Some(DerivationPathReference::ProviderVotingKeys),
+        6 => Some(DerivationPathReference::ProviderOperatorKeys),
+        7 => Some(DerivationPathReference::ProviderOwnerKeys),
+        8 => Some(DerivationPathReference::ContactBasedFunds),
+        9 => Some(DerivationPathReference::ContactBasedFundsRoot),
+        10 => Some(DerivationPathReference::ContactBasedFundsExternal),
+        11 => Some(DerivationPathReference::BlockchainIdentityCreditRegistrationFunding),
+        12 => Some(DerivationPathReference::BlockchainIdentityCreditTopupFunding),
+        13 => Some(DerivationPathReference::BlockchainIdentityCreditInvitationFunding),
+        14 => Some(DerivationPathReference::ProviderPlatformNodeKeys),
+        15 => Some(DerivationPathReference::CoinJoin),
+        16 => Some(DerivationPathReference::PlatformPayment),
+        17 => Some(DerivationPathReference::BlockchainAssetLockAddressTopupFunding),
+        18 => Some(DerivationPathReference::BlockchainAssetLockShieldedAddressTopupFunding),
+        255 => Some(DerivationPathReference::Root),
+        _ => None,
     }
 }
 
@@ -125,6 +161,207 @@ impl SqliteWalletPersister {
                 outpoint.txid.as_byte_array(),
                 outpoint.vout as i64,
                 network,
+            ])?;
+        }
+        Ok(())
+    }
+
+    /// Ensure the `wallet_account_state` table exists.
+    fn ensure_account_state_table(tx: &rusqlite::Transaction) -> Result<(), rusqlite::Error> {
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS wallet_account_state (
+                seed_hash BLOB NOT NULL,
+                account_index INTEGER NOT NULL,
+                path_reference INTEGER NOT NULL,
+                last_revealed INTEGER NOT NULL,
+                network TEXT NOT NULL,
+                PRIMARY KEY (seed_hash, account_index, path_reference, network)
+            )",
+        )?;
+        Ok(())
+    }
+
+    /// Persist platform-wallet account changeset (last revealed indices) into `wallet_account_state`.
+    fn persist_accounts(
+        tx: &rusqlite::Transaction,
+        seed_hash: &[u8; 32],
+        network: &str,
+        accounts: &AccountChangeSet,
+    ) -> Result<(), rusqlite::Error> {
+        Self::ensure_account_state_table(tx)?;
+
+        let mut stmt = tx.prepare_cached(
+            "INSERT OR REPLACE INTO wallet_account_state
+                (seed_hash, account_index, path_reference, last_revealed, network)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+        )?;
+
+        for (&(account_index, path_ref), &last_revealed) in &accounts.last_revealed {
+            stmt.execute(rusqlite::params![
+                &seed_hash[..],
+                account_index as i64,
+                path_ref as u32 as i64,
+                last_revealed as i64,
+                network,
+            ])?;
+        }
+        Ok(())
+    }
+
+    /// Persist key-wallet account changeset (last revealed indices without path reference).
+    ///
+    /// The key-wallet [`key_wallet::changeset::AccountChangeSet`] maps
+    /// `account_index -> last_revealed` without a `DerivationPathReference` dimension.
+    /// We store these with `path_reference = 0` (Unknown) as a sentinel.
+    fn persist_key_wallet_accounts(
+        tx: &rusqlite::Transaction,
+        seed_hash: &[u8; 32],
+        network: &str,
+        accounts: &dash_sdk::dpp::key_wallet::changeset::AccountChangeSet,
+    ) -> Result<(), rusqlite::Error> {
+        Self::ensure_account_state_table(tx)?;
+
+        let mut stmt = tx.prepare_cached(
+            "INSERT OR REPLACE INTO wallet_account_state
+                (seed_hash, account_index, path_reference, last_revealed, network)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+        )?;
+
+        for (&account_index, &last_revealed) in &accounts.last_revealed {
+            stmt.execute(rusqlite::params![
+                &seed_hash[..],
+                account_index as i64,
+                0i64, // Unknown path reference — key-wallet does not carry one
+                last_revealed as i64,
+                network,
+            ])?;
+        }
+        Ok(())
+    }
+
+    /// Persist identity changeset into the existing `identity` and `top_up` tables,
+    /// and a `wallet_identity_dpns_names` table for DPNS names.
+    fn persist_identities(
+        tx: &rusqlite::Transaction,
+        seed_hash: &[u8; 32],
+        network: &str,
+        identities: &IdentityChangeSet,
+    ) -> Result<(), rusqlite::Error> {
+        // Ensure the DPNS names table exists.
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS wallet_identity_dpns_names (
+                identity_id BLOB NOT NULL,
+                name TEXT NOT NULL,
+                network TEXT NOT NULL,
+                PRIMARY KEY (identity_id, name, network)
+            )",
+        )?;
+
+        let mut identity_stmt = tx.prepare_cached(
+            "INSERT OR REPLACE INTO identity
+                (id, data, is_local, alias, wallet, wallet_index, network, status)
+             VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6, 0)",
+        )?;
+
+        let mut topup_stmt = tx.prepare_cached(
+            "INSERT OR REPLACE INTO top_up (identity_id, top_up_index, amount)
+             VALUES (?1, ?2, ?3)",
+        )?;
+
+        let mut dpns_stmt = tx.prepare_cached(
+            "INSERT OR IGNORE INTO wallet_identity_dpns_names
+                (identity_id, name, network)
+             VALUES (?1, ?2, ?3)",
+        )?;
+
+        for (id, entry) in &identities.identities {
+            let identity_bytes = entry
+                .identity
+                .serialize_to_bytes()
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+
+            identity_stmt.execute(rusqlite::params![
+                id.as_bytes(),
+                &identity_bytes,
+                &entry.label,
+                &seed_hash[..],
+                entry.identity_index as i64,
+                network,
+            ])?;
+
+            // Persist top-ups.
+            for (&top_up_index, &amount) in &entry.top_ups {
+                topup_stmt.execute(rusqlite::params![
+                    id.as_bytes(),
+                    top_up_index as i64,
+                    amount as i64,
+                ])?;
+            }
+
+            // Persist DPNS names.
+            for name in &entry.dpns_names {
+                dpns_stmt.execute(rusqlite::params![id.as_bytes(), name, network,])?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Persist platform address balances into the existing `platform_address_balances` table.
+    fn persist_platform_addresses(
+        tx: &rusqlite::Transaction,
+        seed_hash: &[u8; 32],
+        network: &str,
+        addrs: &PlatformAddressChangeSet,
+    ) -> Result<(), rusqlite::Error> {
+        let mut stmt = tx.prepare_cached(
+            "INSERT OR REPLACE INTO platform_address_balances
+                (seed_hash, address, balance, nonce, network, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, strftime('%s','now'))",
+        )?;
+
+        for (addr, entry) in &addrs.addresses {
+            stmt.execute(rusqlite::params![
+                &seed_hash[..],
+                addr.as_bytes(),
+                entry.credit_balance as i64,
+                entry.nonce.unwrap_or(0) as i64,
+                network,
+            ])?;
+        }
+        Ok(())
+    }
+
+    /// Persist asset lock changeset into the existing `asset_lock_transaction` table.
+    fn persist_asset_locks(
+        tx: &rusqlite::Transaction,
+        seed_hash: &[u8; 32],
+        network: &str,
+        asset_locks: &AssetLockChangeSet,
+    ) -> Result<(), rusqlite::Error> {
+        let mut stmt = tx.prepare_cached(
+            "INSERT OR REPLACE INTO asset_lock_transaction
+                (tx_id, transaction_data, amount, identity_id, wallet, network,
+                 chain_locked_height)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        )?;
+
+        for (txid, entry) in &asset_locks.asset_locks {
+            let raw = serialize(&entry.transaction);
+            // Encode chain-lock status as a height sentinel: -1 = not chain-locked.
+            let chain_locked_height: Option<i64> = if entry.is_chain_locked {
+                Some(0) // chain-locked but exact height unknown from changeset
+            } else {
+                None
+            };
+
+            stmt.execute(rusqlite::params![
+                txid.as_byte_array(),
+                &raw,
+                entry.amount_duffs as i64,
+                entry.identity_id.as_ref().map(|id| id.as_bytes().to_vec()),
+                &seed_hash[..],
+                network,
+                chain_locked_height,
             ])?;
         }
         Ok(())
@@ -242,10 +479,250 @@ impl WalletPersistence for SqliteWalletPersister {
             }
         };
 
+        // -- Load balance -------------------------------------------------------
+        let balance = {
+            let row: Option<(i64, i64)> = guard
+                .query_row(
+                    "SELECT confirmed_balance, unconfirmed_balance FROM wallet
+                     WHERE seed_hash = ?1 AND network = ?2",
+                    rusqlite::params![&self.seed_hash[..], &self.network],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .ok();
+
+            row.and_then(|(confirmed, unconfirmed)| {
+                if confirmed == 0 && unconfirmed == 0 {
+                    None
+                } else {
+                    Some(dash_sdk::dpp::key_wallet::changeset::BalanceChangeSet {
+                        spendable_delta: confirmed,
+                        unconfirmed_delta: unconfirmed,
+                        immature_delta: 0,
+                        locked_delta: 0,
+                    })
+                }
+            })
+        };
+
+        // -- Load accounts (last_revealed indices) ----------------------------
+        let accounts = {
+            // Table may not exist yet if persist() has never been called.
+            let table_exists: bool = guard
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master
+                     WHERE type='table' AND name='wallet_account_state'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map(|c| c > 0)
+                .unwrap_or(false);
+
+            if table_exists {
+                let mut stmt = guard.prepare(
+                    "SELECT account_index, path_reference, last_revealed
+                     FROM wallet_account_state
+                     WHERE seed_hash = ?1 AND network = ?2",
+                )?;
+                let mut last_revealed = BTreeMap::new();
+                let mut rows =
+                    stmt.query(rusqlite::params![&self.seed_hash[..], &self.network])?;
+                while let Some(row) = rows.next()? {
+                    let account_index: i64 = row.get(0)?;
+                    let path_ref_val: i64 = row.get(1)?;
+                    let revealed: i64 = row.get(2)?;
+                    if let Some(path_ref) = derivation_path_reference_from_u32(path_ref_val as u32)
+                    {
+                        last_revealed
+                            .insert((account_index as u32, path_ref), revealed as u32);
+                    }
+                }
+                if last_revealed.is_empty() {
+                    None
+                } else {
+                    Some(AccountChangeSet { last_revealed })
+                }
+            } else {
+                None
+            }
+        };
+
+        // -- Load identities ---------------------------------------------------
+        let identities = {
+            let mut stmt = guard.prepare(
+                "SELECT i.id, i.data, i.wallet_index, i.alias, t.top_up_index, t.amount
+                 FROM identity i
+                 LEFT JOIN top_up t ON i.id = t.identity_id
+                 WHERE i.wallet = ?1 AND i.is_local = 1 AND i.network = ?2
+                   AND i.data IS NOT NULL
+                 ORDER BY i.id",
+            )?;
+
+            let mut map: BTreeMap<Identifier, IdentityEntry> = BTreeMap::new();
+            let mut rows = stmt.query(rusqlite::params![&self.seed_hash[..], &self.network])?;
+            while let Some(row) = rows.next()? {
+                let id_bytes: Vec<u8> = row.get(0)?;
+                let data: Vec<u8> = row.get(1)?;
+                let wallet_index: Option<i64> = row.get(2)?;
+                let alias: Option<String> = row.get(3)?;
+                let top_up_index: Option<i64> = row.get(4)?;
+                let top_up_amount: Option<i64> = row.get(5)?;
+
+                let Ok(id) = Identifier::from_bytes(&id_bytes) else {
+                    continue;
+                };
+                let Ok(identity) =
+                    dash_sdk::dpp::identity::Identity::deserialize_from_bytes_no_limit(&data)
+                else {
+                    continue;
+                };
+
+                let entry = map.entry(id).or_insert_with(|| IdentityEntry {
+                    identity,
+                    identity_index: wallet_index.unwrap_or(0) as u32,
+                    label: alias,
+                    last_updated_balance_block_time: None,
+                    last_synced_keys_block_time: None,
+                    dpns_names: Vec::new(),
+                    top_ups: BTreeMap::new(),
+                });
+
+                // Accumulate top-ups from the JOIN rows.
+                if let (Some(ti), Some(ta)) = (top_up_index, top_up_amount) {
+                    entry.top_ups.insert(ti as u32, ta as u64);
+                }
+            }
+
+            // Load DPNS names (table may not exist).
+            let dpns_table_exists: bool = guard
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master
+                     WHERE type='table' AND name='wallet_identity_dpns_names'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map(|c| c > 0)
+                .unwrap_or(false);
+
+            if dpns_table_exists {
+                let mut dpns_stmt = guard.prepare(
+                    "SELECT identity_id, name FROM wallet_identity_dpns_names
+                     WHERE network = ?1",
+                )?;
+                let mut rows = dpns_stmt.query(rusqlite::params![&self.network])?;
+                while let Some(row) = rows.next()? {
+                    let id_bytes: Vec<u8> = row.get(0)?;
+                    let name: String = row.get(1)?;
+                    if let Ok(id) = Identifier::from_bytes(&id_bytes)
+                        && let Some(entry) = map.get_mut(&id)
+                        && !entry.dpns_names.contains(&name)
+                    {
+                        entry.dpns_names.push(name);
+                    }
+                }
+            }
+
+            if map.is_empty() {
+                None
+            } else {
+                Some(IdentityChangeSet { identities: map })
+            }
+        };
+
+        // -- Load platform address balances ------------------------------------
+        let platform_addresses = {
+            let mut stmt = guard.prepare(
+                "SELECT address, balance, nonce FROM platform_address_balances
+                 WHERE seed_hash = ?1 AND network = ?2",
+            )?;
+            let mut addresses = BTreeMap::new();
+            let mut rows = stmt.query(rusqlite::params![&self.seed_hash[..], &self.network])?;
+            while let Some(row) = rows.next()? {
+                let addr_bytes: Vec<u8> = row.get(0)?;
+                let credit_balance: i64 = row.get(1)?;
+                let nonce: i64 = row.get(2)?;
+
+                let Ok(addr) = PlatformP2PKHAddress::from_slice(&addr_bytes) else {
+                    continue;
+                };
+                addresses.insert(
+                    addr,
+                    PlatformAddressEntry {
+                        credit_balance: credit_balance as u64,
+                        nonce: if nonce > 0 { Some(nonce as u64) } else { None },
+                    },
+                );
+            }
+            if addresses.is_empty() {
+                None
+            } else {
+                Some(PlatformAddressChangeSet { addresses })
+            }
+        };
+
+        // -- Load asset locks ---------------------------------------------------
+        let asset_locks = {
+            let mut stmt = guard.prepare(
+                "SELECT tx_id, transaction_data, amount, identity_id,
+                        chain_locked_height, instant_lock_data
+                 FROM asset_lock_transaction
+                 WHERE wallet = ?1 AND network = ?2",
+            )?;
+            let mut locks = BTreeMap::new();
+            let mut rows = stmt.query(rusqlite::params![&self.seed_hash[..], &self.network])?;
+            while let Some(row) = rows.next()? {
+                let txid_bytes: Vec<u8> = row.get(0)?;
+                let raw: Vec<u8> = row.get(1)?;
+                let amount: i64 = row.get(2)?;
+                let identity_id_bytes: Option<Vec<u8>> = row.get(3)?;
+                let chain_locked_height: Option<i64> = row.get(4)?;
+                let islock_bytes: Option<Vec<u8>> = row.get(5)?;
+
+                let Ok(txid) = Txid::from_slice(&txid_bytes) else {
+                    continue;
+                };
+                let Ok(transaction) = deserialize::<Transaction>(&raw) else {
+                    continue;
+                };
+                let identity_id = identity_id_bytes
+                    .as_deref()
+                    .and_then(|b| Identifier::from_bytes(b).ok());
+
+                locks.insert(
+                    txid,
+                    AssetLockEntry {
+                        transaction,
+                        amount_duffs: amount as u64,
+                        identity_id,
+                        is_instant_locked: islock_bytes.is_some(),
+                        is_chain_locked: chain_locked_height.is_some(),
+                        is_used: identity_id.is_some(),
+                    },
+                );
+            }
+            if locks.is_empty() {
+                None
+            } else {
+                Some(AssetLockChangeSet {
+                    asset_locks: locks,
+                })
+            }
+        };
+
+        // Build a key-wallet changeset if we have balance data.
+        let wallet = balance.map(|bal| dash_sdk::dpp::key_wallet::changeset::WalletChangeSet {
+            balance: Some(bal),
+            ..Default::default()
+        });
+
         let cs = PlatformWalletChangeSet {
             chain,
             transactions,
             utxos,
+            accounts,
+            identities,
+            platform_addresses,
+            asset_locks,
+            wallet,
             ..Default::default()
         };
 
@@ -367,7 +844,15 @@ impl WalletPersistence for SqliteWalletPersister {
                 }
             }
 
-            // wallet.accounts → TODO: address pool state not yet persisted
+            // wallet.accounts → persist last_revealed indices (key-wallet type)
+            if let Some(ref kw_accounts) = wallet_cs.accounts {
+                Self::persist_key_wallet_accounts(
+                    &tx,
+                    &self.seed_hash,
+                    &self.network,
+                    kw_accounts,
+                )?;
+            }
 
             // wallet.balance → UPDATE wallet balance fields
             if let Some(ref bal) = wallet_cs.balance {
@@ -389,8 +874,9 @@ impl WalletPersistence for SqliteWalletPersister {
         }
 
         // -- Accounts ----------------------------------------------------------
-        // TODO: persist AccountChangeSet (last_revealed indices) once we add
-        // a wallet_accounts table.
+        if let Some(ref accounts) = changeset.accounts {
+            Self::persist_accounts(&tx, &self.seed_hash, &self.network, accounts)?;
+        }
 
         // -- Contacts ----------------------------------------------------------
         if let Some(ref contacts) = changeset.contacts {
@@ -426,16 +912,29 @@ impl WalletPersistence for SqliteWalletPersister {
         }
 
         // -- Identities --------------------------------------------------------
-        // TODO: persist IdentityChangeSet once we wire identity persistence
-        // through the changeset path.
+        if let Some(ref identities) = changeset.identities {
+            Self::persist_identities(&tx, &self.seed_hash, &self.network, identities)?;
+        }
 
         // -- Platform addresses ------------------------------------------------
-        // TODO: persist PlatformAddressChangeSet once platform_address_balances
-        // table is wired through changesets.
+        if let Some(ref platform_addrs) = changeset.platform_addresses {
+            Self::persist_platform_addresses(
+                &tx,
+                &self.seed_hash,
+                &self.network,
+                platform_addrs,
+            )?;
+        }
 
         // -- Asset locks -------------------------------------------------------
-        // TODO: persist AssetLockChangeSet once asset_lock_transaction table
-        // is wired through changesets.
+        if let Some(ref asset_locks) = changeset.asset_locks {
+            Self::persist_asset_locks(
+                &tx,
+                &self.seed_hash,
+                &self.network,
+                asset_locks,
+            )?;
+        }
 
         tx.commit()?;
         Ok(())

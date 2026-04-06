@@ -470,7 +470,8 @@ impl AppContext {
                         .devnet_name
                         .clone();
                     let (count, addresses_csv) =
-                        dapi_discovery::discover_and_format(network, devnet_name.as_deref()).await?;
+                        dapi_discovery::discover_and_format(network, devnet_name.as_deref())
+                            .await?;
                     Ok(BackendTaskSuccessResult::DapiNodesDiscovered {
                         network,
                         count,

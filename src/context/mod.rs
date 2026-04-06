@@ -283,9 +283,9 @@ impl AppContext {
         };
 
         // Create the PlatformWalletManager with the SDK
-        let wallet_manager = Arc::new(DebugWrapper(PlatformWalletManager::new(
-            Arc::new(sdk.clone()),
-        )));
+        let wallet_manager = Arc::new(DebugWrapper(PlatformWalletManager::new(Arc::new(
+            sdk.clone(),
+        ))));
 
         let wallets: BTreeMap<_, _> = match db.get_wallets(&network) {
             Ok(w) => w,

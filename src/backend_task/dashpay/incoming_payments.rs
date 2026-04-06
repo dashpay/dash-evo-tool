@@ -304,4 +304,3 @@ pub struct IncomingPaymentInfo {
     pub amount_duffs: u64,
     pub address_index: u32,
 }
-

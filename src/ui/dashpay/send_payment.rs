@@ -260,7 +260,11 @@ impl SendPaymentScreen {
                         .selected_wallet
                         .as_ref()
                         .and_then(|w| w.read().ok())
-                        .and_then(|g| g.platform_wallet.as_ref().map(|pw| pw.core().balance().spendable() as f64 / 100_000_000.0))
+                        .and_then(|g| {
+                            g.platform_wallet
+                                .as_ref()
+                                .map(|pw| pw.core().balance().spendable() as f64 / 100_000_000.0)
+                        })
                         .unwrap_or(0.0);
                     ui.label(
                         RichText::new(format!("{:.8} DASH", balance_dash))
@@ -297,7 +301,11 @@ impl SendPaymentScreen {
                     .selected_wallet
                     .as_ref()
                     .and_then(|w| w.read().ok())
-                    .and_then(|g| g.platform_wallet.as_ref().map(|pw| pw.core().balance().spendable()))
+                    .and_then(|g| {
+                        g.platform_wallet
+                            .as_ref()
+                            .map(|pw| pw.core().balance().spendable())
+                    })
                     .unwrap_or(0);
 
                 let amount_input = self.amount_input.get_or_insert_with(|| {

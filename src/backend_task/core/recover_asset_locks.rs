@@ -24,16 +24,15 @@ impl AppContext {
 
             // Read addresses from PlatformWallet (canonical source).
             // Locked wallets (no PlatformWallet) have no addresses — return empty.
-            let addresses: Vec<Address> =
-                if let Some(pw) = wallet_guard.platform_wallet.as_ref() {
-                    let info = pw.core().blocking_wallet_info();
-                    CoreAddressInfo::all_from_wallet_info(&info)
-                        .into_iter()
-                        .map(|a| a.address)
-                        .collect()
-                } else {
-                    Vec::new()
-                };
+            let addresses: Vec<Address> = if let Some(pw) = wallet_guard.platform_wallet.as_ref() {
+                let info = pw.core().blocking_wallet_info();
+                CoreAddressInfo::all_from_wallet_info(&info)
+                    .into_iter()
+                    .map(|a| a.address)
+                    .collect()
+            } else {
+                Vec::new()
+            };
 
             let tracked: HashSet<_> = wallet_guard
                 .unused_asset_locks

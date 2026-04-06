@@ -16,7 +16,7 @@ use dash_sdk::drive::query::{OrderClause, WhereClause, WhereOperator};
 use dash_sdk::platform::{
     Document, DocumentQuery, Fetch, FetchMany, Identifier, IdentityPublicKey,
 };
-use platform_wallet::persistence::changeset::{
+use platform_wallet::changeset::changeset::{
     ContactChangeSet, ContactRequestEntry, PlatformWalletChangeSet,
 };
 use std::collections::{BTreeMap, BTreeSet, HashSet};

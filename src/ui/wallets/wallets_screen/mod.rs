@@ -1042,7 +1042,11 @@ impl WalletsBalancesScreen {
         self.selected_wallet
             .as_ref()
             .and_then(|w| w.read().ok())
-            .and_then(|g| g.platform_wallet.as_ref().map(|pw| pw.core().balance().total()))
+            .and_then(|g| {
+                g.platform_wallet
+                    .as_ref()
+                    .map(|pw| pw.core().balance().total())
+            })
             .unwrap_or(0)
     }
 
@@ -1590,11 +1594,9 @@ impl WalletsBalancesScreen {
             self.cached_tx_indices = None;
             self.cached_tx_source_len = Some(tx_len);
         }
-        let relevant_indices = self.cached_tx_indices.get_or_insert_with(|| {
-            (0..tx_len)
-                .filter(|&i| transactions[i].is_ours)
-                .collect()
-        });
+        let relevant_indices = self
+            .cached_tx_indices
+            .get_or_insert_with(|| (0..tx_len).filter(|&i| transactions[i].is_ours).collect());
 
         if relevant_indices.is_empty() {
             ui.label(
@@ -1610,11 +1612,7 @@ impl WalletsBalancesScreen {
             transactions[b]
                 .timestamp
                 .cmp(&transactions[a].timestamp)
-                .then_with(|| {
-                    transactions[b]
-                        .txid
-                        .cmp(&transactions[a].txid)
-                })
+                .then_with(|| transactions[b].txid.cmp(&transactions[a].txid))
         });
 
         let row_height = 26.0;
@@ -2224,7 +2222,11 @@ impl ScreenLike for WalletsBalancesScreen {
         let load_address_info_action = if self.cached_address_info.is_none() {
             self.selected_wallet
                 .as_ref()
-                .and_then(|w| w.read().ok().map(|g| (g.seed_hash(), g.platform_wallet.is_some())))
+                .and_then(|w| {
+                    w.read()
+                        .ok()
+                        .map(|g| (g.seed_hash(), g.platform_wallet.is_some()))
+                })
                 .and_then(|(seed_hash, has_pw)| {
                     // Only dispatch if the platform wallet is available
                     if has_pw {

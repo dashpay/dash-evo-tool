@@ -68,8 +68,7 @@ impl QualifiedIdentityPublicKey {
                     // Iterate over each wallet to check for matching derivation paths
                     for locked_wallet in wallets {
                         let wallet = locked_wallet.read().unwrap();
-                        if let Some(derivation_path) =
-                            wallet.derivation_path_for_address(&address)
+                        if let Some(derivation_path) = wallet.derivation_path_for_address(&address)
                         {
                             in_wallet_at_derivation_path = Some(WalletDerivationPath {
                                 wallet_seed_hash: wallet.seed_hash(),
@@ -107,8 +106,7 @@ impl QualifiedIdentityPublicKey {
                     // Iterate over each wallet to check for matching derivation paths
                     for locked_wallet in wallets {
                         let wallet = locked_wallet.read().unwrap();
-                        if let Some(derivation_path) =
-                            wallet.derivation_path_for_address(&address)
+                        if let Some(derivation_path) = wallet.derivation_path_for_address(&address)
                         {
                             in_wallet_at_derivation_path = Some(WalletDerivationPath {
                                 wallet_seed_hash: wallet.seed_hash(),
@@ -155,9 +153,7 @@ impl QualifiedIdentityPublicKey {
                 // Iterate over each wallet to check for matching derivation paths
                 for locked_wallet in wallets {
                     let wallet = locked_wallet.read().unwrap();
-                    if let Some(derivation_path) =
-                        wallet.derivation_path_for_address(&address)
-                    {
+                    if let Some(derivation_path) = wallet.derivation_path_for_address(&address) {
                         in_wallet_at_derivation_path = Some(WalletDerivationPath {
                             wallet_seed_hash: wallet.seed_hash(),
                             derivation_path,

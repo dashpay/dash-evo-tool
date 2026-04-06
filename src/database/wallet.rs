@@ -10,9 +10,7 @@ use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::dashcore::address::{NetworkChecked, NetworkUnchecked};
 use dash_sdk::dpp::dashcore::consensus::{deserialize, serialize};
 use dash_sdk::dpp::dashcore::hashes::Hash;
-use dash_sdk::dpp::dashcore::{
-    self, InstantLock, Network, OutPoint, Transaction,
-};
+use dash_sdk::dpp::dashcore::{self, InstantLock, Network, OutPoint, Transaction};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::InstantAssetLockProof;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;

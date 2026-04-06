@@ -105,10 +105,10 @@ impl AppContext {
     /// is queued the call is a no-op. Persistence failures are logged but
     /// never propagated — the in-memory state remains authoritative.
     ///
-    /// With [`FlushStrategy::Immediate`](crate::persistence::FlushStrategy::Immediate)
+    /// With [`FlushStrategy::Immediate`](crate::changeset::FlushStrategy::Immediate)
     /// (the default), each `queue()` call auto-flushes, making explicit calls
     /// here unnecessary for most code paths. This method remains available for
-    /// batch operations that use [`FlushStrategy::Manual`](crate::persistence::FlushStrategy::Manual).
+    /// batch operations that use [`FlushStrategy::Manual`](crate::changeset::FlushStrategy::Manual).
     #[allow(dead_code)]
     pub(crate) fn flush_wallet_persistence(
         &self,
@@ -281,7 +281,7 @@ impl AppContext {
                 let wallet_id = platform_wallet.wallet_id();
 
                 // Attach SQLite persistence backend.
-                let persister = crate::persistence::SqliteWalletPersister::new(
+                let persister = crate::changeset::SqliteWalletPersister::new(
                     self.db.clone(),
                     seed_hash,
                     self.network.to_string(),

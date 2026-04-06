@@ -413,7 +413,6 @@ impl Wallet {
             _ => DerivationPath::from(DASH_BIP44_ACCOUNT_0_PATH_TESTNET.as_slice()),
         }
     }
-
 }
 
 /// Transaction lifecycle status.
@@ -1179,8 +1178,9 @@ impl Wallet {
                         .as_ref()
                         .last()
                         .and_then(|child| match child {
-                            ChildNumber::Normal { index }
-                            | ChildNumber::Hardened { index } => Some(*index),
+                            ChildNumber::Normal { index } | ChildNumber::Hardened { index } => {
+                                Some(*index)
+                            }
                             _ => None,
                         })
                 })

@@ -12,9 +12,9 @@ use dash_sdk::dpp::key_wallet::dip9::DerivationPathReference;
 use dash_sdk::dpp::key_wallet::PlatformP2PKHAddress;
 use dash_sdk::dpp::prelude::Identifier;
 use dash_sdk::dpp::serialization::{PlatformDeserializable, PlatformSerializable};
-use platform_wallet::persistence::Merge;
-use platform_wallet::persistence::PlatformWalletPersistence;
-use platform_wallet::persistence::changeset::{
+use platform_wallet::changeset::Merge;
+use platform_wallet::changeset::PlatformWalletPersistence;
+use platform_wallet::changeset::changeset::{
     AccountChangeSet, AssetLockChangeSet, AssetLockEntry, ChainChangeSet, IdentityChangeSet,
     IdentityEntry, PlatformAddressChangeSet, PlatformAddressEntry, PlatformWalletChangeSet,
     TransactionChangeSet, TransactionEntry, UtxoChangeSet,

@@ -1175,8 +1175,7 @@ impl WalletsBalancesScreen {
         let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
         let network = self.app_context.network;
 
-        let addresses: Vec<(String, u64)> = if let Some(pw) =
-            wallet_guard.platform_wallet.as_ref()
+        let addresses: Vec<(String, u64)> = if let Some(pw) = wallet_guard.platform_wallet.as_ref()
         {
             let info = pw.core().blocking_wallet_info();
             platform_wallet::CoreAddressInfo::all_from_wallet_info(&info)

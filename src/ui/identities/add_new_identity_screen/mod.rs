@@ -924,7 +924,11 @@ impl AddNewIdentityScreen {
             self.selected_wallet
                 .as_ref()
                 .and_then(|w| w.read().ok())
-                .and_then(|g| g.platform_wallet.as_ref().map(|pw| pw.core().balance().total() * 1000))
+                .and_then(|g| {
+                    g.platform_wallet
+                        .as_ref()
+                        .map(|pw| pw.core().balance().total() * 1000)
+                })
         } else {
             None
         };

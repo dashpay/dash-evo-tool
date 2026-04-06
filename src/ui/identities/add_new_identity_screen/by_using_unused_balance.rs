@@ -12,7 +12,11 @@ impl AddNewIdentityScreen {
             let total_balance = selected_wallet
                 .read()
                 .ok()
-                .and_then(|g| g.platform_wallet.as_ref().map(|pw| pw.core().balance().total()))
+                .and_then(|g| {
+                    g.platform_wallet
+                        .as_ref()
+                        .map(|pw| pw.core().balance().total())
+                })
                 .unwrap_or(0);
 
             let dash_balance = total_balance as f64 * 1e-8;

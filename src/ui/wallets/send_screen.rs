@@ -660,7 +660,11 @@ impl WalletSendScreen {
         self.selected_wallet
             .as_ref()
             .and_then(|w| w.read().ok())
-            .and_then(|g| g.platform_wallet.as_ref().map(|pw| pw.core().balance().spendable()))
+            .and_then(|g| {
+                g.platform_wallet
+                    .as_ref()
+                    .map(|pw| pw.core().balance().spendable())
+            })
             .unwrap_or(0)
     }
 
@@ -2234,7 +2238,11 @@ impl WalletSendScreen {
                     .selected_wallet
                     .as_ref()
                     .and_then(|w| w.read().ok())
-                    .and_then(|g| g.platform_wallet.as_ref().map(|pw| pw.core().balance().total() * CREDITS_PER_DUFF));
+                    .and_then(|g| {
+                        g.platform_wallet
+                            .as_ref()
+                            .map(|pw| pw.core().balance().total() * CREDITS_PER_DUFF)
+                    });
                 let dest_kind = self.destination_kind();
                 let hint = match dest_kind {
                     Some(AddressKind::Platform) => {

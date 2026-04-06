@@ -5,8 +5,7 @@ use crate::{context::AppContext, model::qualified_identity::DPNSNameInfo};
 use dash_sdk::{
     Sdk,
     dpp::{
-        data_contract::accessors::v0::DataContractV0Getters,
-        identity::accessors::IdentityGettersV0,
+        data_contract::accessors::v0::DataContractV0Getters, identity::accessors::IdentityGettersV0,
     },
     platform::Fetch,
 };

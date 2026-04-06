@@ -375,7 +375,7 @@ impl AppContext {
         // Stage an IdentityChangeSet capturing the updated identity balance
         // so the changeset reflects the Platform confirmation.
         if let Some(ref pw) = maybe_platform_wallet {
-            use platform_wallet::persistence::changeset::{
+            use platform_wallet::changeset::changeset::{
                 IdentityChangeSet, IdentityEntry, PlatformWalletChangeSet,
             };
             let changeset = PlatformWalletChangeSet {

@@ -267,10 +267,7 @@ impl AddNewIdentityScreen {
                 let used_indices: std::collections::HashSet<u32> = self
                     .app_context
                     .db
-                    .get_wallet_identity_indices(
-                        &wallet.seed_hash(),
-                        self.app_context.network,
-                    );
+                    .get_wallet_identity_indices(&wallet.seed_hash(), self.app_context.network);
 
                 // Modify the selected text to include "(used)" if the current index is used
                 let selected_text = {
@@ -417,7 +414,11 @@ impl AddNewIdentityScreen {
             .app_context
             .db
             .get_wallet_identity_indices(&wallet.seed_hash(), self.app_context.network);
-        used.iter().copied().max().map(|max| max + 1).unwrap_or_default()
+        used.iter()
+            .copied()
+            .max()
+            .map(|max| max + 1)
+            .unwrap_or_default()
     }
 
     fn render_funding_method(&mut self, ui: &mut egui::Ui) {
@@ -448,7 +449,8 @@ impl AddNewIdentityScreen {
                 let (has_unused_asset_lock, has_balance) = {
                     let wallet = selected_wallet.read().unwrap();
                     (
-                        wallet.has_unused_asset_lock(&self.app_context.db, self.app_context.network),
+                        wallet
+                            .has_unused_asset_lock(&self.app_context.db, self.app_context.network),
                         wallet.has_balance(),
                     )
                 };
@@ -502,7 +504,10 @@ impl AddNewIdentityScreen {
                     let wallet = selected_wallet.read().unwrap();
                     self.app_context
                         .db
-                        .get_all_platform_address_info(&wallet.seed_hash(), &self.app_context.network)
+                        .get_all_platform_address_info(
+                            &wallet.seed_hash(),
+                            &self.app_context.network,
+                        )
                         .unwrap_or_default()
                         .iter()
                         .any(|(_addr, balance, _nonce)| *balance > 0)

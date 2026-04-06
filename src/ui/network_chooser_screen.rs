@@ -354,7 +354,7 @@ impl NetworkChooserScreen {
                     // Check if currently connected via SPV (only SPV restricts network switching)
                     let is_spv_connected = if current_backend_mode == CoreBackendMode::Spv {
                         let ctx = self.current_app_context();
-                        let snapshot = ctx.spv_manager().status();
+                        let snapshot = ctx.spv_event_bridge().status();
                         snapshot.status.is_active()
                     } else {
                         false // Core mode doesn't restrict network switching
@@ -603,7 +603,7 @@ impl NetworkChooserScreen {
             let rpc_last_error = status.rpc_last_error();
             let spv_error_detail = status.spv_last_error();
             let snapshot = if current_backend_mode == CoreBackendMode::Spv {
-                Some(ctx.spv_manager().status().clone())
+                Some(ctx.spv_event_bridge().status().clone())
             } else {
                 None
             };
@@ -1343,19 +1343,10 @@ impl NetworkChooserScreen {
                                 .db
                                 .update_use_local_spv_node(self.use_local_spv_node);
 
-                            // Update all network contexts
-                            self.mainnet_app_context
-                                .spv_manager()
-                                .set_use_local_node(self.use_local_spv_node);
-                            if let Some(ref ctx) = self.testnet_app_context {
-                                ctx.spv_manager().set_use_local_node(self.use_local_spv_node);
-                            }
-                            if let Some(ref ctx) = self.devnet_app_context {
-                                ctx.spv_manager().set_use_local_node(self.use_local_spv_node);
-                            }
-                            if let Some(ref ctx) = self.local_app_context {
-                                ctx.spv_manager().set_use_local_node(self.use_local_spv_node);
-                            }
+                            // Preference is persisted in the DB above.
+                            // It is read by build_spv_config() at SPV start time.
+                            // No runtime state update needed — a restart of SPV
+                            // will pick up the new value.
                         }
                         ui.label(
                             egui::RichText::new(if self.use_local_spv_node {
@@ -1494,7 +1485,7 @@ impl NetworkChooserScreen {
                 if self.developer_mode {
                     let current_backend_mode = self.current_app_context().core_backend_mode();
                     if current_backend_mode == CoreBackendMode::Spv {
-                        let snapshot = self.current_app_context().spv_manager().status();
+                        let snapshot = self.current_app_context().spv_event_bridge().status();
                         ui.add_space(12.0);
                         ui.separator();
                         ui.add_space(12.0);

@@ -2,6 +2,7 @@ pub mod app;
 pub mod app_dir;
 pub mod backend_task;
 pub mod bundled;
+pub mod changeset;
 pub mod components;
 pub mod config;
 pub mod context;
@@ -13,7 +14,6 @@ pub mod logging;
 #[cfg(any(feature = "mcp", feature = "cli"))]
 pub mod mcp;
 pub mod model;
-pub mod changeset;
 pub mod platform;
 pub mod platform_wallet_bridge;
 pub mod sdk_wrapper;

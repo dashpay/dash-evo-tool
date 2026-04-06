@@ -70,7 +70,8 @@ impl AsyncTool<DashMcpService> for GenerateReceiveAddress {
 
         resolve::ensure_spv_synced(&ctx).await?;
 
-        if ctx.spv_manager.wallet_id_for_seed(seed_hash).is_none() {
+        // Verify the wallet has a PlatformWallet (required for SPV operations)
+        if ctx.get_platform_wallet(&seed_hash).is_none() {
             return Err(McpToolError::Internal(
                 "Wallet is not loaded into SPV. Please retry in a moment.".to_string(),
             ));

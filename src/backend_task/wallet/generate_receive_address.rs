@@ -18,36 +18,34 @@ impl AppContext {
                 .ok_or(TaskError::WalletNotFound)?
         };
 
-        // If the platform wallet bridge is available, log the CoreWallet's view of
-        // the next receive address for comparison. This helps validate that the new
-        // bridge produces consistent results before we switch to it fully.
-        if let Some(platform_wallet) = self.get_platform_wallet(&seed_hash) {
-            let core_wallet = platform_wallet.core();
-            if let Ok(bridge_addr) = core_wallet.next_receive_address().await {
-                tracing::debug!(
-                    seed = %hex::encode(seed_hash),
-                    bridge_address = %bridge_addr,
-                    "PlatformWallet bridge next_receive_address"
-                );
-            }
-        }
-
         let address_string = if self.core_backend_mode() == CoreBackendMode::Spv {
-            let derived = self
-                .spv_manager
-                .next_bip44_receive_address(seed_hash, 0)
-                .await
-                .map_err(|e| TaskError::WalletAddressDerivationFailed { detail: e })?;
+            // Use PlatformWallet's CoreWallet for address derivation in SPV mode.
+            let platform_wallet = self.require_platform_wallet(&seed_hash)?;
+            let core_wallet = platform_wallet.core();
+            let address = core_wallet.next_receive_address().await.map_err(|e| {
+                TaskError::WalletAddressDerivationFailed {
+                    detail: e.to_string(),
+                }
+            })?;
 
-            let _ = self.register_spv_address(
-                &wallet_arc,
-                derived.address.clone(),
-                derived.derivation_path.clone(),
-                DerivationPathType::CLEAR_FUNDS,
-                DerivationPathReference::BIP44,
-            )?;
+            // Register the address in DET's address table so it shows in the UI.
+            // Read derivation path from the ManagedWalletInfo accounts.
+            if let Some(wallet_info) = core_wallet.try_wallet_info() {
+                for acc in wallet_info.accounts.all_accounts() {
+                    if let Some(ai) = acc.get_address_info(&address) {
+                        let _ = self.register_spv_address(
+                            &wallet_arc,
+                            address.clone(),
+                            ai.path.clone(),
+                            DerivationPathType::CLEAR_FUNDS,
+                            DerivationPathReference::BIP44,
+                        );
+                        break;
+                    }
+                }
+            }
 
-            derived.address.to_string()
+            address.to_string()
         } else {
             let mut wallet = wallet_arc.write()?;
             wallet

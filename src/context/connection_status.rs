@@ -178,7 +178,7 @@ impl ConnectionStatus {
         }
     }
 
-    /// Set the last SPV error message (push-based from SpvManager event handlers).
+    /// Set the last SPV error message (push-based from SpvEventBridge).
     pub fn set_spv_last_error(&self, error: Option<String>) {
         let mut err = self
             .spv_last_error
@@ -194,7 +194,7 @@ impl ConnectionStatus {
 
     /// Update SPV connected peer count and maintain `spv_no_peers_since` tracking.
     ///
-    /// Called from SpvManager's network event handler when peer count changes.
+    /// Called from SpvEventBridge when peer count changes.
     pub fn set_spv_connected_peers(&self, count: u16) {
         self.spv_connected_peers.store(count, Ordering::Relaxed);
         let mut since = self
@@ -331,11 +331,11 @@ impl ConnectionStatus {
 
     /// Build the tooltip string for the connection indicator.
     ///
-    /// In SPV mode, fetches sync progress from the [`SpvManager`] to display
+    /// In SPV mode, fetches sync progress from the [`SpvEventBridge`] to display
     /// a detailed phase summary (e.g. `"SPV: Headers: 12345 / 27000 (45%)"`)
     /// instead of the bare `"SPV: Syncing"`.
     // TODO: decouple from AppContext — accept a struct with the needed fields
-    // (spv_manager status, settings) instead of the full context reference.
+    // (spv_event_bridge status, settings) instead of the full context reference.
     pub fn tooltip_text(&self, app_context: &crate::context::AppContext) -> String {
         let backend_mode = self.backend_mode();
         let disable_zmq = self.disable_zmq();
@@ -392,7 +392,7 @@ impl ConnectionStatus {
                     "SPV: Error".to_string()
                 } else {
                     app_context
-                        .spv_manager()
+                        .spv_event_bridge()
                         .status()
                         .sync_progress
                         .as_ref()
@@ -497,7 +497,7 @@ impl ConnectionStatus {
 
         match backend_mode {
             CoreBackendMode::Spv => {
-                // SPV status is push-based: SpvManager event handlers call
+                // SPV status is push-based: SpvEventBridge handlers call
                 // set_spv_status / set_spv_connected_peers / set_spv_last_error
                 // directly, so no polling is needed here.
             }

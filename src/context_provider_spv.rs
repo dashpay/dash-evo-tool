@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 /// SPV-based ContextProvider for the Dash SDK.
 ///
 /// - DataContract and TokenConfiguration are served from the local DB (same as RPC provider)
-/// - Quorum public keys are resolved via dash-spv (through SpvManager) when in SPV mode
+/// - Quorum public keys are resolved via dash-spv (through PlatformWalletManager's SpvRuntime) when in SPV mode
 #[derive(Debug)]
 pub(crate) struct SpvProvider {
     db: Arc<Database>,
@@ -100,11 +100,16 @@ impl ContextProvider for SpvProvider {
             .as_ref()
             .ok_or(ContextProviderError::Config("no app context".to_string()))?;
 
-        let spv_manager = app_ctx.spv_manager();
-
-        spv_manager
-            .get_quorum_public_key(quorum_type, quorum_hash, core_chain_locked_height)
-            .map_err(ContextProviderError::Generic)
+        // Use PlatformWalletManager's SpvRuntime for quorum key lookups.
+        let wm = &app_ctx.wallet_manager;
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                wm.spv()
+                    .get_quorum_public_key(quorum_type, quorum_hash, core_chain_locked_height)
+                    .await
+                    .map_err(|e| ContextProviderError::Generic(e.to_string()))
+            })
+        })
     }
 
     fn get_platform_activation_height(

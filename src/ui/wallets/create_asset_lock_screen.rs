@@ -199,13 +199,10 @@ impl CreateAssetLockScreen {
                 // Recalculate next unused identity index from the database
                 self.identity_index = {
                     let wallet_guard = self.wallet.read().unwrap();
-                    let used = self
-                        .app_context
-                        .db
-                        .get_wallet_identity_indices(
-                            &wallet_guard.seed_hash(),
-                            self.app_context.network,
-                        );
+                    let used = self.app_context.db.get_wallet_identity_indices(
+                        &wallet_guard.seed_hash(),
+                        self.app_context.network,
+                    );
                     used.iter().copied().max().map(|max| max + 1).unwrap_or(0)
                 };
                 self.top_up_index = 0;

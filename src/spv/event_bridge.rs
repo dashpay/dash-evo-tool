@@ -6,12 +6,12 @@
 //! dash-spv `EventHandler` trait.
 
 use crate::context::connection_status::ConnectionStatus;
-use crate::spv::manager::{SpvStatus, SpvStatusSnapshot};
 use crate::spv::types::failed_manager_name;
+use crate::spv::types::{SpvStatus, SpvStatusSnapshot};
 use dash_sdk::dash_spv::network::NetworkEvent;
 use dash_sdk::dash_spv::sync::{SyncEvent, SyncProgress as SpvSyncProgress, SyncState};
 use platform_wallet::events::{PlatformWalletEvent, SpvEvent};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::SystemTime;
 use tokio::sync::{broadcast, mpsc};
 
@@ -24,7 +24,7 @@ use tokio::sync::{broadcast, mpsc};
 pub struct SpvEventBridge {
     connection_status: Arc<ConnectionStatus>,
     status: Arc<RwLock<SpvStatusSnapshot>>,
-    reconcile_tx: mpsc::Sender<()>,
+    reconcile_tx: Mutex<mpsc::Sender<()>>,
 }
 
 impl SpvEventBridge {
@@ -34,23 +34,29 @@ impl SpvEventBridge {
     ///   relevant event.
     /// * `reconcile_tx` — channel used to signal wallet reconciliation
     ///   (debounced downstream).
-    pub fn new(
-        connection_status: Arc<ConnectionStatus>,
-        reconcile_tx: mpsc::Sender<()>,
-    ) -> Self {
+    pub fn new(connection_status: Arc<ConnectionStatus>, reconcile_tx: mpsc::Sender<()>) -> Self {
         Self {
             connection_status,
             status: Arc::new(RwLock::new(SpvStatusSnapshot::default())),
-            reconcile_tx,
+            reconcile_tx: Mutex::new(reconcile_tx),
         }
+    }
+
+    /// Replace the reconcile channel with a fresh one.
+    ///
+    /// Returns the new receiver. Called by `start_spv()` so each SPV
+    /// session gets a clean reconcile pipeline.
+    pub fn new_reconcile_channel(&self) -> mpsc::Receiver<()> {
+        let (tx, rx) = mpsc::channel(64);
+        if let Ok(mut guard) = self.reconcile_tx.lock() {
+            *guard = tx;
+        }
+        rx
     }
 
     /// Read the current status snapshot (used by the tooltip and UI).
     pub fn status(&self) -> SpvStatusSnapshot {
-        self.status
-            .read()
-            .map(|g| g.clone())
-            .unwrap_or_default()
+        self.status.read().map(|g| g.clone()).unwrap_or_default()
     }
 
     /// Dispatch a single [`PlatformWalletEvent`] to the appropriate handler.
@@ -199,7 +205,9 @@ impl SpvEventBridge {
         if should_signal {
             // Silently discard full-channel errors — reconcile is debounced
             // downstream.
-            let _ = self.reconcile_tx.try_send(());
+            if let Ok(tx) = self.reconcile_tx.lock() {
+                let _ = tx.try_send(());
+            }
         }
     }
 
@@ -218,5 +226,13 @@ impl SpvEventBridge {
                 .set_spv_connected_peers((*connected_count).min(u16::MAX as usize) as u16);
             self.connection_status.refresh_state();
         }
+    }
+}
+
+impl std::fmt::Debug for SpvEventBridge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SpvEventBridge")
+            .field("status", &self.status())
+            .finish()
     }
 }

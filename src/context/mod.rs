@@ -22,7 +22,8 @@ use crate::model::wallet::single_key::{SingleKeyHash, SingleKeyWallet};
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::platform_wallet_bridge::{PlatformWalletManager, WalletIdMapping};
 use crate::sdk_wrapper::initialize_sdk;
-use crate::spv::{CoreBackendMode, SpvManager};
+use crate::spv::CoreBackendMode;
+use crate::spv::event_bridge::SpvEventBridge;
 use crate::utils::tasks::TaskManager;
 use arc_swap::ArcSwap;
 use connection_status::ConnectionStatus;
@@ -117,7 +118,10 @@ pub struct AppContext {
     cached_settings: RwLock<Option<Settings>>,
     // subtasks started by the app context, used for graceful shutdown
     pub(crate) subtasks: Arc<TaskManager>,
-    pub(crate) spv_manager: Arc<SpvManager>,
+    pub(crate) spv_event_bridge: Arc<SpvEventBridge>,
+    /// Cancellation token for the current SPV session. Cancelled in `stop_spv()`
+    /// to signal `SpvRuntime::run()` to exit gracefully.
+    spv_cancel_token: Mutex<Option<tokio_util::sync::CancellationToken>>,
     core_backend_mode: AtomicU8,
     /// Tracks the connection status to currently active network
     pub(crate) connection_status: Arc<ConnectionStatus>,
@@ -320,25 +324,14 @@ impl AppContext {
             false => AtomicBool::new(true), // Animations are enabled by default
         };
 
-        let spv_manager = match SpvManager::new(
-            &data_dir,
-            network,
-            Arc::clone(&config_lock),
-            subtasks.clone(),
-        ) {
-            Ok(manager) => manager,
-            Err(err) => {
-                tracing::error!(?err, ?network, "Failed to initialize SPV manager");
-                return None;
-            }
-        };
-
-        // Load the use_local_spv_node setting and apply to SPV manager
-        let use_local_spv_node = db.get_use_local_spv_node().unwrap_or(false);
-        spv_manager.set_use_local_node(use_local_spv_node);
-
-        // Wire up push-based SPV status updates to ConnectionStatus
-        spv_manager.set_connection_status(Arc::clone(&connection_status));
+        // Create the SpvEventBridge. The reconcile channel is created with a
+        // dummy sender; start_spv() calls new_reconcile_channel() to wire up
+        // the real pipeline for each SPV session.
+        let (reconcile_tx, _) = tokio::sync::mpsc::channel(1);
+        let spv_event_bridge = Arc::new(SpvEventBridge::new(
+            Arc::clone(&connection_status),
+            reconcile_tx,
+        ));
 
         // Load the core backend mode from settings, defaulting to RPC if not set
         let saved_core_backend_mode = db
@@ -390,7 +383,8 @@ impl AppContext {
             animate,
             cached_settings: RwLock::new(None),
             subtasks,
-            spv_manager,
+            spv_event_bridge,
+            spv_cancel_token: Mutex::new(None),
             core_backend_mode: AtomicU8::new(saved_core_backend_mode),
             connection_status,
             pending_wallet_selection: Mutex::new(None),

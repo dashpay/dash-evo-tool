@@ -72,18 +72,19 @@ impl AppContext {
 
                     // Single call: builds asset lock TX, broadcasts, waits for
                     // finality proof (IS or CL), and returns the proof + key.
-                    let (asset_lock_proof, asset_lock_proof_private_key, out_point) = platform_wallet
-                        .asset_locks()
-                        .create_funded_asset_lock_proof(
-                            amount,
-                            0,
-                            platform_wallet::AssetLockFundingType::IdentityTopUp,
-                            identity_index,
-                        )
-                        .await
-                        .map_err(|e| TaskError::AssetLockTransactionBuildFailed {
-                            detail: e.to_string(),
-                        })?;
+                    let (asset_lock_proof, asset_lock_proof_private_key, out_point) =
+                        platform_wallet
+                            .asset_locks()
+                            .create_funded_asset_lock_proof(
+                                amount,
+                                0,
+                                platform_wallet::AssetLockFundingType::IdentityTopUp,
+                                identity_index,
+                            )
+                            .await
+                            .map_err(|e| TaskError::AssetLockTransactionBuildFailed {
+                                detail: e.to_string(),
+                            })?;
 
                     (
                         asset_lock_proof,
@@ -314,7 +315,6 @@ impl AppContext {
             };
             pw.queue_persist(changeset);
         }
-
 
         self.db.set_asset_lock_identity_id(
             tx_id.as_byte_array(),

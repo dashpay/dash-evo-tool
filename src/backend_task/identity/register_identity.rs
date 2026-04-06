@@ -92,7 +92,11 @@ impl AppContext {
                         detail: e.to_string(),
                     })?;
 
-                (asset_lock_proof, asset_lock_proof_private_key, out_point.txid)
+                (
+                    asset_lock_proof,
+                    asset_lock_proof_private_key,
+                    out_point.txid,
+                )
             }
             RegisterIdentityFundingMethod::FundWithPlatformAddresses {
                 inputs,
@@ -548,7 +552,14 @@ impl AppContext {
 
         // Send to Platform using address funding and wait for response
         match identity
-            .put_with_address_funding(&sdk, inputs, None, &qualified_identity, platform_wallet.platform(), None)
+            .put_with_address_funding(
+                &sdk,
+                inputs,
+                None,
+                &qualified_identity,
+                platform_wallet.platform(),
+                None,
+            )
             .await
         {
             Ok((updated_identity, address_infos)) => {

@@ -96,8 +96,7 @@ impl From<u8> for CoreBackendMode {
 
 /// Identify which sync phase failed (for error messages).
 ///
-/// Extracted from `SpvManager::failed_manager_name` so it can be used
-/// by the event bridge without depending on the manager.
+/// Identify which sync phase reported the error (for user-facing messages).
 pub fn failed_manager_name(progress: &SpvSyncProgress) -> &'static str {
     if progress
         .masternodes()

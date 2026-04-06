@@ -8,9 +8,9 @@ use crate::database::Database;
 use dash_sdk::dpp::dashcore::consensus::{deserialize, serialize};
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{BlockHash, OutPoint, Transaction, Txid};
+use dash_sdk::dpp::key_wallet::PlatformP2PKHAddress;
 use dash_sdk::dpp::key_wallet::dip9::DerivationPathReference;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::asset_lock_builder::AssetLockFundingType;
-use dash_sdk::dpp::key_wallet::PlatformP2PKHAddress;
 use dash_sdk::dpp::prelude::{AssetLockProof, Identifier};
 use dash_sdk::dpp::serialization::{PlatformDeserializable, PlatformSerializable};
 use platform_wallet::AssetLockStatus;
@@ -403,12 +403,11 @@ impl SqliteWalletPersister {
         for (out_point, entry) in &asset_locks.asset_locks {
             let raw = serialize(&entry.transaction);
             // Encode chain-lock status as a height sentinel.
-            let chain_locked_height: Option<i64> =
-                if entry.status == AssetLockStatus::ChainLocked {
-                    Some(0) // chain-locked but exact height unknown from changeset
-                } else {
-                    None
-                };
+            let chain_locked_height: Option<i64> = if entry.status == AssetLockStatus::ChainLocked {
+                Some(0) // chain-locked but exact height unknown from changeset
+            } else {
+                None
+            };
 
             // Serialize AssetLockProof using bincode.
             let proof_bytes: Option<Vec<u8>> = entry.proof.as_ref().map(|p| {
@@ -439,7 +438,9 @@ impl SqliteWalletPersister {
 }
 
 impl PlatformWalletPersistence for SqliteWalletPersister {
-    fn initialize(&mut self) -> Result<PlatformWalletChangeSet, Box<dyn std::error::Error + Send + Sync>> {
+    fn initialize(
+        &mut self,
+    ) -> Result<PlatformWalletChangeSet, Box<dyn std::error::Error + Send + Sync>> {
         let conn = self.db.shared_connection();
         let guard = conn.lock().unwrap();
 
@@ -592,16 +593,14 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                      WHERE seed_hash = ?1 AND network = ?2",
                 )?;
                 let mut last_revealed = BTreeMap::new();
-                let mut rows =
-                    stmt.query(rusqlite::params![&self.seed_hash[..], &self.network])?;
+                let mut rows = stmt.query(rusqlite::params![&self.seed_hash[..], &self.network])?;
                 while let Some(row) = rows.next()? {
                     let account_index: i64 = row.get(0)?;
                     let path_ref_val: i64 = row.get(1)?;
                     let revealed: i64 = row.get(2)?;
                     if let Some(path_ref) = derivation_path_reference_from_u32(path_ref_val as u32)
                     {
-                        last_revealed
-                            .insert((account_index as u32, path_ref), revealed as u32);
+                        last_revealed.insert((account_index as u32, path_ref), revealed as u32);
                     }
                 }
                 if last_revealed.is_empty() {
@@ -801,17 +800,17 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
             if locks.is_empty() {
                 None
             } else {
-                Some(AssetLockChangeSet {
-                    asset_locks: locks,
-                })
+                Some(AssetLockChangeSet { asset_locks: locks })
             }
         };
 
         // Build a key-wallet changeset if we have balance data.
-        let wallet = balance.map(|bal| dash_sdk::dpp::key_wallet::changeset::WalletChangeSet {
-            balance: Some(bal),
-            ..Default::default()
-        });
+        let wallet = balance.map(
+            |bal| dash_sdk::dpp::key_wallet::changeset::WalletChangeSet {
+                balance: Some(bal),
+                ..Default::default()
+            },
+        );
 
         let cs = PlatformWalletChangeSet {
             chain,
@@ -846,13 +845,17 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
         if changeset.is_empty() {
             return Ok(());
         }
-        self.persist_inner(&changeset).map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+        self.persist_inner(&changeset)
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
     }
 }
 
 impl SqliteWalletPersister {
     /// Internal persist implementation used by [`flush`].
-    fn persist_inner(&mut self, changeset: &PlatformWalletChangeSet) -> Result<(), SqlitePersistError> {
+    fn persist_inner(
+        &mut self,
+        changeset: &PlatformWalletChangeSet,
+    ) -> Result<(), SqlitePersistError> {
         let conn = self.db.shared_connection();
         let mut guard = conn.lock().unwrap();
         let tx = guard.transaction()?;
@@ -1037,22 +1040,12 @@ impl SqliteWalletPersister {
 
         // -- Platform addresses ------------------------------------------------
         if let Some(ref platform_addrs) = changeset.platform_addresses {
-            Self::persist_platform_addresses(
-                &tx,
-                &self.seed_hash,
-                &self.network,
-                platform_addrs,
-            )?;
+            Self::persist_platform_addresses(&tx, &self.seed_hash, &self.network, platform_addrs)?;
         }
 
         // -- Asset locks -------------------------------------------------------
         if let Some(ref asset_locks) = changeset.asset_locks {
-            Self::persist_asset_locks(
-                &tx,
-                &self.seed_hash,
-                &self.network,
-                asset_locks,
-            )?;
+            Self::persist_asset_locks(&tx, &self.seed_hash, &self.network, asset_locks)?;
         }
 
         tx.commit()?;

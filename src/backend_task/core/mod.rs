@@ -600,29 +600,33 @@ impl AppContext {
             guard.seed_hash()
         };
 
-        let wallet_id = self
-            .spv_manager
-            .wallet_id_for_seed(seed_hash)
-            .ok_or_else(|| TaskError::WalletPaymentFailed {
-                detail: "Wallet not loaded into SPV".to_string(),
-            })?;
+        let pw = self.require_platform_wallet(&seed_hash)?;
+        let core_wallet = pw.core();
 
         let tx = {
-            let wm_arc = self.spv_manager.wallet();
-            let mut wm = wm_arc.write().await;
-            let unsigned = self.build_spv_unsigned_transaction_multi(
-                &mut wm,
-                &wallet_id,
+            let wallet_info =
+                core_wallet
+                    .try_wallet_info()
+                    .ok_or_else(|| TaskError::WalletPaymentFailed {
+                        detail: "Wallet info unavailable".to_string(),
+                    })?;
+            let wallet = core_wallet.wallet_blocking();
+            let unsigned = self.build_spv_unsigned_transaction_multi_pw(
+                &wallet_info,
+                &wallet,
                 &parsed_recipients,
                 &request,
             )?;
-            self.sign_spv_transaction(&mut wm, &wallet_id, unsigned)?
+            self.sign_spv_transaction_pw(&wallet_info, &wallet, unsigned)?
         };
 
-        self.spv_manager
+        self.wallet_manager
+            .spv()
             .broadcast_transaction(&tx)
             .await
-            .map_err(|e| TaskError::SpvBroadcastFailed { detail: e })?;
+            .map_err(|e| TaskError::SpvBroadcastFailed {
+                detail: e.to_string(),
+            })?;
 
         self.reconcile_spv_wallets().await?;
 
@@ -692,10 +696,10 @@ impl AppContext {
         Ok(parsed)
     }
 
-    fn build_spv_unsigned_transaction_multi(
+    fn build_spv_unsigned_transaction_multi_pw(
         &self,
-        wm: &mut WalletManager<ManagedWalletInfo>,
-        wallet_id: &WalletId,
+        managed_info: &ManagedWalletInfo,
+        wallet: &dash_sdk::dpp::key_wallet::wallet::Wallet,
         recipients: &[(Address, u64)],
         request: &WalletPaymentRequest,
     ) -> Result<Transaction, TaskError> {
@@ -703,7 +707,7 @@ impl AppContext {
 
         let _network = self.wallet_network_key();
         let current_height = self
-            .spv_manager()
+            .spv_event_bridge()
             .status()
             .sync_progress
             .and_then(|p| {
@@ -724,11 +728,6 @@ impl AppContext {
 
         // Get UTXOs and change address from the wallet account
         let (utxos, change_index) = {
-            let managed_info =
-                wm.get_wallet_info(wallet_id)
-                    .ok_or_else(|| TaskError::WalletPaymentFailed {
-                        detail: "Wallet info unavailable".to_string(),
-                    })?;
             let account = managed_info
                 .accounts()
                 .standard_bip44_accounts
@@ -742,11 +741,6 @@ impl AppContext {
             (utxos, change_index)
         };
 
-        let wallet = wm
-            .get_wallet(wallet_id)
-            .ok_or_else(|| TaskError::WalletPaymentFailed {
-                detail: "Wallet object not found".to_string(),
-            })?;
         let wallet_account = wallet
             .accounts
             .standard_bip44_accounts
@@ -790,9 +784,8 @@ impl AppContext {
                 Err(BuilderError::InsufficientFunds { .. }) if request.subtract_fee_from_amount => {
                     let next_scale = if !attempted_fallback {
                         attempted_fallback = true;
-                        let fallback_amount = self.estimate_fallback_amount(
-                            wm,
-                            wallet_id,
+                        let fallback_amount = self.estimate_fallback_amount_pw(
+                            managed_info,
                             _network,
                             DEFAULT_BIP44_ACCOUNT_INDEX,
                             current_height,
@@ -820,19 +813,13 @@ impl AppContext {
         }
     }
 
-    fn estimate_fallback_amount(
+    fn estimate_fallback_amount_pw(
         &self,
-        wm: &mut WalletManager<ManagedWalletInfo>,
-        wallet_id: &WalletId,
+        managed_info: &ManagedWalletInfo,
         _network: WalletNetwork,
         account_index: u32,
         current_height: u32,
     ) -> Result<u64, TaskError> {
-        let managed_info =
-            wm.get_wallet_info(wallet_id)
-                .ok_or_else(|| TaskError::WalletPaymentFailed {
-                    detail: "Wallet info unavailable".to_string(),
-                })?;
         let collection = managed_info.accounts();
         let account = collection
             .standard_bip44_accounts
@@ -915,22 +902,12 @@ impl AppContext {
             .map_err(|e: BuilderError| WalletError::TransactionBuild(e.to_string()))
     }
 
-    fn sign_spv_transaction(
+    fn sign_spv_transaction_pw(
         &self,
-        wm: &mut WalletManager<ManagedWalletInfo>,
-        wallet_id: &WalletId,
+        managed_info: &ManagedWalletInfo,
+        wallet: &dash_sdk::dpp::key_wallet::wallet::Wallet,
         tx: Transaction,
     ) -> Result<Transaction, TaskError> {
-        let wallet = wm
-            .get_wallet(wallet_id)
-            .ok_or_else(|| TaskError::WalletPaymentFailed {
-                detail: "Wallet object not found".to_string(),
-            })?;
-        let managed_info =
-            wm.get_wallet_info(wallet_id)
-                .ok_or_else(|| TaskError::WalletPaymentFailed {
-                    detail: "Wallet info unavailable".to_string(),
-                })?;
         let accounts = managed_info.accounts();
         let account = accounts
             .standard_bip44_accounts

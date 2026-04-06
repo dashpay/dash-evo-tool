@@ -41,10 +41,7 @@ impl AddNewIdentityScreen {
         ui.add_space(8.0);
 
         // Track the txid of the currently selected asset lock (if any)
-        let selected_txid = self
-            .funding_asset_lock
-            .as_ref()
-            .map(|(tx, _, _)| tx.txid());
+        let selected_txid = self.funding_asset_lock.as_ref().map(|(tx, _, _)| tx.txid());
 
         // Display the asset locks in a scrollable area
         egui::ScrollArea::vertical()

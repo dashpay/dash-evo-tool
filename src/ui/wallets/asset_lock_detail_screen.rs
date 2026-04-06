@@ -56,14 +56,7 @@ impl AssetLockDetailScreen {
     }
 
     /// Get the asset lock data from the database by txid.
-    fn get_asset_lock_data(
-        &self,
-    ) -> Option<(
-        Transaction,
-        Address,
-        u64,
-        Option<AssetLockProof>,
-    )> {
+    fn get_asset_lock_data(&self) -> Option<(Transaction, Address, u64, Option<AssetLockProof>)> {
         let (tx, amount, islock, chain_locked_height, _identity_id, _wallet_seed, _network) = self
             .app_context
             .db

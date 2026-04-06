@@ -12,11 +12,11 @@ use crate::platform_wallet_bridge::{
     ManagedDpnsNameInfo, ManagedIdentityStatus, ManagedKeyStorage, ManagedPrivateKeyData,
     PlatformWallet,
 };
-use crate::spv::{CoreBackendMode, SpvManager};
+use crate::spv::CoreBackendMode;
+use crate::spv::event_bridge::SpvEventBridge;
 use dash_sdk::dpp::dashcore::{Address, Network};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::key_wallet::Network as WalletNetwork;
-use dash_sdk::dpp::key_wallet::WalletCoreBalance;
 use dash_sdk::dpp::key_wallet::account::AccountType;
 use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
 use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
@@ -28,14 +28,22 @@ use std::sync::{Arc, RwLock};
 use zeroize::Zeroizing;
 
 impl AppContext {
-    pub fn spv_manager(&self) -> &Arc<SpvManager> {
-        &self.spv_manager
+    pub fn spv_event_bridge(&self) -> &Arc<SpvEventBridge> {
+        &self.spv_event_bridge
     }
 
     pub fn clear_spv_data(&self) -> Result<(), TaskError> {
-        self.spv_manager
-            .clear_data_dir()
-            .map_err(|e| TaskError::SpvClearDataFailed { detail: e })
+        // Delete the SPV data directory directly (it's just files on disk).
+        let spv_dir = self.data_dir.join("spv");
+        if spv_dir.exists() {
+            std::fs::remove_dir_all(&spv_dir).map_err(|e| TaskError::SpvClearDataFailed {
+                detail: format!("Failed to remove SPV data directory: {e}"),
+            })?;
+        }
+        std::fs::create_dir_all(&spv_dir).map_err(|e| TaskError::SpvClearDataFailed {
+            detail: format!("Failed to re-create SPV data directory: {e}"),
+        })?;
+        Ok(())
     }
 
     pub fn clear_network_database(&self) -> Result<(), TaskError> {
@@ -108,10 +116,7 @@ impl AppContext {
     /// here unnecessary for most code paths. This method remains available for
     /// batch operations that use [`FlushStrategy::Manual`](crate::changeset::FlushStrategy::Manual).
     #[allow(dead_code)]
-    pub(crate) fn flush_wallet_persistence(
-        &self,
-        platform_wallet: &PlatformWallet,
-    ) {
+    pub(crate) fn flush_wallet_persistence(&self, platform_wallet: &PlatformWallet) {
         if let Err(e) = platform_wallet.flush_persist() {
             tracing::warn!(
                 error = %e,
@@ -139,40 +144,54 @@ impl AppContext {
     }
 
     pub fn start_spv(self: &Arc<Self>) -> Result<(), TaskError> {
-        // Skip if SPV is already active — avoids orphaned listener tasks from
-        // re-registering channels while existing handlers still hold old senders.
-        if self.spv_manager.status().status.is_active() {
+        // Skip if SPV is already running.
+        if self.wallet_manager.spv().is_started() {
             return Ok(());
         }
 
-        // Count wallets that will be loaded into SPV (open wallets with accessible seeds).
-        // This is read synchronously so the SPV thread can wait for exactly this many.
-        let expected_wallets = self
-            .wallets
-            .read()
-            .map(|guard| {
-                guard
-                    .values()
-                    .filter(|w| {
-                        w.read()
-                            .ok()
-                            .is_some_and(|g| g.is_open() && g.seed_bytes().is_ok())
-                    })
-                    .count()
-            })
-            .unwrap_or(0);
-        // Register reconcile channel BEFORE starting SPV so the event handlers
-        // (spawned inside run_spv_loop) always capture a valid sender.
-        self.spv_setup_reconcile_listener();
-        self.spv_manager
-            .start(expected_wallets)
+        let config = self
+            .build_spv_config()
             .map_err(|e| TaskError::SpvStartFailed { detail: e })?;
-        // Immediately reflect the new SPV status in ConnectionStatus so the
-        // UI sees the change on the next frame instead of waiting for the
-        // next throttled trigger_refresh() cycle (2-10 seconds).
+
+        // Spawn the SpvEventBridge run-loop using the existing bridge
+        // (created in AppContext::new). Each start subscribes to the wallet
+        // manager's event channel; when SPV stops the broadcast channel
+        // closes and the run-loop exits naturally.
+        let event_rx = self.wallet_manager.subscribe_events();
+        let bridge = Arc::clone(&self.spv_event_bridge);
+        self.subtasks.spawn_sync("spv_event_bridge", async move {
+            bridge.run(event_rx).await;
+        });
+
+        // Wire up the reconcile listener (debounces reconcile signals from
+        // the event bridge and writes wallet state back to DET).
+        // The reconcile channel is created fresh on each start so stale
+        // signals from a previous session don't leak.
+        let reconcile_rx = self.spv_event_bridge.new_reconcile_channel();
+        self.spv_setup_reconcile_listener(reconcile_rx);
+
+        // Spawn SPV sync via PlatformWalletManager's SpvRuntime.
+        let cancel = self.subtasks.cancellation_token.child_token();
+        // Store the cancel token so stop_spv() can cancel it.
+        if let Ok(mut guard) = self.spv_cancel_token.lock() {
+            *guard = Some(cancel.clone());
+        }
+        let wm = Arc::clone(&self.wallet_manager);
+        let conn_status = Arc::clone(&self.connection_status);
+        self.subtasks.spawn_sync("spv_main_loop", async move {
+            if let Err(e) = wm.spv().run(config, cancel).await {
+                tracing::error!(error = %e, "SPV runtime failed");
+                conn_status.set_spv_last_error(Some(e.to_string()));
+                conn_status.set_spv_status(crate::spv::SpvStatus::Error);
+                conn_status.refresh_state();
+            }
+        });
+
+        // Immediately reflect SPV Starting in ConnectionStatus.
         self.connection_status
-            .set_spv_status(self.spv_manager.status().status);
+            .set_spv_status(crate::spv::SpvStatus::Starting);
         self.connection_status.refresh_state();
+
         Ok(())
     }
 
@@ -220,9 +239,13 @@ impl AppContext {
 
     pub fn handle_wallet_unlocked(self: &Arc<Self>, wallet: &Arc<RwLock<Wallet>>) {
         if let Some((seed_hash, seed_bytes)) = Self::wallet_seed_snapshot(wallet) {
-            self.queue_spv_wallet_load(seed_hash, seed_bytes);
-            // Also register with the new PlatformWalletManager (Phase 2 bridge)
+            // Register with the PlatformWalletManager (creates PlatformWallet
+            // and wires SPV event channel so IS-lock/ChainLock events reach
+            // AssetLockManager). Wallet loading into SPV is handled by the
+            // SpvRuntime's wallet adapter automatically.
             self.register_with_platform_wallet_manager(seed_hash, seed_bytes);
+            // Notify SPV that wallets changed so it rebuilds bloom filters.
+            self.wallet_manager.spv().notify_wallets_changed();
             // Note: Platform address sync is not done here.
             // Core UTXO refresh is handled at startup in bootstrap_loaded_wallets.
 
@@ -272,7 +295,10 @@ impl AppContext {
 
         // Create a PlatformWallet via the manager — this wires the shared
         // SPV event channel so IS-lock/ChainLock events reach AssetLockManager.
-        match self.wallet_manager.create_wallet_from_seed_bytes(kw_network, seed_bytes, options) {
+        match self
+            .wallet_manager
+            .create_wallet_from_seed_bytes(kw_network, seed_bytes, options)
+        {
             Ok(mut platform_wallet) => {
                 let wallet_id = platform_wallet.wallet_id();
 
@@ -332,7 +358,6 @@ impl AppContext {
                 return;
             }
         };
-        self.queue_spv_wallet_unload(seed_hash);
 
         // Clear platform wallet from the Wallet struct
         if let Ok(mut guard) = wallet.write() {
@@ -403,23 +428,9 @@ impl AppContext {
         Some((guard.seed_hash(), seed_bytes))
     }
 
-    fn queue_spv_wallet_load(self: &Arc<Self>, seed_hash: WalletSeedHash, seed_bytes: [u8; 64]) {
-        let spv = Arc::clone(&self.spv_manager);
-        self.subtasks.spawn_sync("spv_wallet_load", async move {
-            if let Err(error) = spv.load_wallet_from_seed(seed_hash, seed_bytes).await {
-                tracing::error!(seed = %hex::encode(seed_hash), %error, "Failed to load SPV wallet from seed");
-            }
-        });
-    }
-
-    fn queue_spv_wallet_unload(self: &Arc<Self>, seed_hash: WalletSeedHash) {
-        let spv = Arc::clone(&self.spv_manager);
-        self.subtasks.spawn_sync("spv_wallet_unload", async move {
-            if let Err(error) = spv.unload_wallet(seed_hash).await {
-                tracing::error!(seed = %hex::encode(seed_hash), %error, "Failed to unload SPV wallet");
-            }
-        });
-    }
+    // queue_spv_wallet_load and queue_spv_wallet_unload removed —
+    // wallet registration is handled by PlatformWalletManager, and
+    // SpvRuntime's WalletAdapter reads from the shared wallets map.
 
     /// Queue automatic discovery of identities derived from a wallet.
     /// Checks identity indices 0 through max_identity_index for existing identities on the network.
@@ -724,9 +735,8 @@ impl AppContext {
     }
 
     /// Subscribe to SPV reconcile signals and debounce updates.
-    pub fn spv_setup_reconcile_listener(self: &Arc<Self>) {
+    fn spv_setup_reconcile_listener(self: &Arc<Self>, rx: tokio::sync::mpsc::Receiver<()>) {
         use tokio::time::{Duration, Instant, sleep};
-        let rx = self.spv_manager.register_reconcile_channel();
         let ctx = Arc::clone(self);
         let cancel = self.subtasks.cancellation_token.clone();
         self.subtasks.spawn_sync("spv_reconcile_listener", async move {
@@ -768,46 +778,28 @@ impl AppContext {
     }
 
     /// Reconcile SPV wallet state into DET.
+    ///
+    /// Reads from `PlatformWallet` instances (which share the same wallet
+    /// data as the SPV adapter through `Arc`) instead of the old
+    /// `PlatformWallet::core()`.
     pub async fn reconcile_spv_wallets(&self) -> Result<(), TaskError> {
-        let wm_arc = self.spv_manager.wallet();
-        let wm = wm_arc.read().await;
-        let mapping = self.spv_manager.det_wallets_snapshot();
-
         // Take a snapshot of known addresses per wallet so we can scope DB updates
         let wallets_guard = self.wallets.read()?;
 
-        for (seed_hash, wallet_id) in mapping.iter() {
-            // Log total balance for visibility
-            let balance = wm
-                .get_wallet_balance(wallet_id)
-                .map_err(|e| crate::spv::SpvError::WalletError(e.to_string()))?;
+        for (seed_hash, wallet_arc) in wallets_guard.iter() {
+            let Some(pw) = self.get_platform_wallet(seed_hash) else {
+                continue;
+            };
+
+            // Lock-free balance read — no lock required.
+            let balance = pw.core().balance();
             tracing::debug!(wallet = %hex::encode(seed_hash), spendable = balance.spendable(), unconfirmed = balance.unconfirmed(), total = balance.total(), "SPV balance snapshot");
 
-            let Some(wallet_info) = wm.get_wallet_info(wallet_id) else {
+            let Some(wallet_info) = pw.core().try_wallet_info() else {
                 continue;
             };
 
-            let Some(wallet_arc) = wallets_guard.get(seed_hash).cloned() else {
-                continue;
-            };
-
-            self.sync_spv_account_addresses(wallet_info, &wallet_arc);
-
-            // Sync balance to PlatformWallet's ManagedWalletInfo so it stays
-            // in sync with SPV and can serve as the canonical read source.
-            // Uses try_wallet_info_mut() to avoid holding the std::sync
-            // wallets_guard across an await point. The WalletInfoWriteGuard
-            // auto-refreshes WalletBalance on drop.
-            if let Some(pw) = self.get_platform_wallet(seed_hash) {
-                if let Some(mut pw_info) = pw.core().try_wallet_info_mut() {
-                    pw_info.balance = WalletCoreBalance::new(
-                        balance.spendable(),
-                        balance.unconfirmed(),
-                        0, // immature
-                        0, // locked
-                    );
-                }
-            }
+            self.sync_spv_account_addresses(&wallet_info, wallet_arc);
 
             // Wallet balances, UTXOs, and transactions are now persisted via
             // the changeset path (auto-flushed via FlushStrategy::Immediate).
@@ -823,65 +815,40 @@ impl AppContext {
                     .collect()
             };
 
-            // Read current UTXOs from SPV to register unknown addresses
-            let utxos = wm
-                .wallet_utxos(wallet_id)
-                .map_err(|e| crate::spv::SpvError::WalletError(e.to_string()))?;
-
-            for u in utxos {
-                let tx_out = u.txout.clone();
-
-                // Derive address from script
-                let address = match Address::from_script(&tx_out.script_pubkey, self.network) {
-                    Ok(a) => a,
-                    Err(_) => continue,
-                };
-
-                // If address unknown to DET, try to register using SPV metadata
-                if !wallet_addresses.contains(&address) {
-                    let collection = wallet_info.accounts();
-                    let mut registered = false;
-                    for acc in collection.all_accounts() {
-                        if let Some(ai) = acc.get_address_info(&address) {
-                            let account_type = acc.account_type.to_account_type();
-                            let (path_reference, path_type) =
-                                Self::spv_account_metadata(&account_type).unwrap_or_else(|| {
-                                    let default_ref = if ai.path.is_bip44(self.network) {
-                                        DerivationPathReference::BIP44
-                                    } else if ai.path.is_bip32() {
-                                        DerivationPathReference::BIP32
-                                    } else {
-                                        tracing::warn!(
-                                            path = %ai.path,
-                                            "SPV address has unrecognized derivation path structure"
-                                        );
-                                        DerivationPathReference::Unknown
-                                    };
-                                    (default_ref, DerivationPathType::CLEAR_FUNDS)
-                                });
-
-                            if let Ok(inserted) = self.register_spv_address(
-                                &wallet_arc,
-                                address.clone(),
-                                ai.path.clone(),
-                                path_type,
-                                path_reference,
-                            ) {
-                                if inserted {
-                                    wallet_addresses.insert(address.clone());
-                                }
-                                registered = true;
-                            }
-                            break;
-                        }
+            // Register unknown addresses found in SPV account metadata
+            let collection = wallet_info.accounts();
+            for acc in collection.all_accounts() {
+                let account_type = acc.account_type.to_account_type();
+                for address in acc.account_type.all_addresses() {
+                    if wallet_addresses.contains(&address) {
+                        continue;
                     }
-                    if !registered {
-                        tracing::debug!(
-                            wallet = %hex::encode(seed_hash),
-                            address = %address,
-                            value = tx_out.value,
-                            "SPV UTXO address not registered in DET (counted in balance but not in address table)"
-                        );
+                    if let Some(ai) = acc.get_address_info(&address) {
+                        let (path_reference, path_type) = Self::spv_account_metadata(&account_type)
+                            .unwrap_or_else(|| {
+                                let default_ref = if ai.path.is_bip44(self.network) {
+                                    DerivationPathReference::BIP44
+                                } else if ai.path.is_bip32() {
+                                    DerivationPathReference::BIP32
+                                } else {
+                                    tracing::warn!(
+                                        path = %ai.path,
+                                        "SPV address has unrecognized derivation path structure"
+                                    );
+                                    DerivationPathReference::Unknown
+                                };
+                                (default_ref, DerivationPathType::CLEAR_FUNDS)
+                            });
+
+                        if let Ok(true) = self.register_spv_address(
+                            wallet_arc,
+                            address.clone(),
+                            ai.path.clone(),
+                            path_type,
+                            path_reference,
+                        ) {
+                            wallet_addresses.insert(address.clone());
+                        }
                     }
                 }
             }
@@ -1236,15 +1203,131 @@ impl AppContext {
     }
 
     pub fn stop_spv(&self) {
-        self.spv_manager.stop();
+        // Cancel the SPV cancel token. This triggers the SpvRuntime::run()
+        // future to exit (which stops the SPV client) and cascades to the
+        // event bridge and reconcile listener (they exit when their channels
+        // close or the global cancellation token fires).
+        if let Ok(mut guard) = self.spv_cancel_token.lock() {
+            if let Some(token) = guard.take() {
+                token.cancel();
+            }
+        }
+
         // Immediately reflect the new SPV status in ConnectionStatus so the
         // UI sees the change on the next frame instead of waiting for the
         // next throttled trigger_refresh() cycle (2-10 seconds).
         self.connection_status
-            .set_spv_status(self.spv_manager.status().status);
+            .set_spv_status(crate::spv::SpvStatus::Stopped);
         self.connection_status.refresh_state();
         // Reset the throttle timer so trigger_refresh() starts polling
         // at 200ms intervals and picks up the Stopped transition quickly.
         self.connection_status.reset_timer();
     }
+
+    /// Build a [`ClientConfig`] for the SPV runtime.
+    ///
+    /// Mirrors the logic from the former `SpvManager::build_client()`.
+    fn build_spv_config(&self) -> Result<dash_sdk::dash_spv::ClientConfig, String> {
+        use dash_sdk::dash_spv::ClientConfig;
+        use dash_sdk::dash_spv::client::config::MempoolStrategy;
+        use dash_sdk::dash_spv::types::ValidationMode;
+
+        // Determine SPV data directory
+        let cfg = self.config.read().map_err(|e| e.to_string())?;
+        let data_dir = build_spv_data_dir(&self.data_dir, self.network, &cfg)?;
+        std::fs::create_dir_all(&data_dir)
+            .map_err(|e| format!("Failed to create SPV data dir: {e}"))?;
+
+        // Check if there are open wallets
+        let has_wallets = self
+            .wallets
+            .read()
+            .map(|g| {
+                g.values()
+                    .any(|w| w.read().ok().is_some_and(|g| g.is_open()))
+            })
+            .unwrap_or(false);
+
+        let start_height = if has_wallets { 0 } else { u32::MAX };
+
+        let mut config = ClientConfig::new(self.network)
+            .with_storage_path(data_dir)
+            .with_validation_mode(ValidationMode::Full)
+            .with_start_height(start_height)
+            .with_mempool_tracking(MempoolStrategy::BloomFilter);
+
+        // Load user preference for local node
+        let use_local_node = self.db.get_use_local_spv_node().unwrap_or(false);
+
+        // Configure peer discovery based on network type and user preference
+        if self.network == Network::Devnet || self.network == Network::Regtest {
+            if let Some(peer) = self.primary_peer_socket() {
+                config.add_peer(peer);
+            }
+        } else if use_local_node {
+            if let Some(peer) = self.primary_peer_socket() {
+                config.add_peer(peer);
+            }
+        }
+        // Otherwise, no peers added — SPV will use DNS seed discovery
+
+        Ok(config)
+    }
+
+    /// Resolve the primary peer socket address from config.
+    fn primary_peer_socket(&self) -> Option<std::net::SocketAddr> {
+        use std::net::ToSocketAddrs;
+        let config = self.config.read().ok()?;
+        let host = config.core_host.as_deref()?;
+        let port = match self.network {
+            Network::Mainnet => 9999,
+            Network::Testnet => 19999,
+            Network::Devnet => 20001,
+            Network::Regtest => 19899,
+            _ => 9999,
+        };
+        let addr = format!("{}:{}", host, port);
+        addr.to_socket_addrs().ok()?.next()
+    }
+}
+
+/// Build the SPV data directory path for the given network.
+fn build_spv_data_dir(
+    app_data_dir: &std::path::Path,
+    network: Network,
+    config: &crate::config::NetworkConfig,
+) -> Result<std::path::PathBuf, String> {
+    let mut base = app_data_dir.to_path_buf();
+    base.push("spv");
+    std::fs::create_dir_all(&base).map_err(|e| format!("Failed to create SPV base dir: {e}"))?;
+
+    let network_dir = match network {
+        Network::Mainnet => "mainnet".to_string(),
+        Network::Testnet => "testnet".to_string(),
+        Network::Devnet => {
+            let name = config
+                .devnet_name
+                .clone()
+                .unwrap_or_else(|| "devnet".to_string());
+            let sanitized: String = name
+                .chars()
+                .map(|c| {
+                    if c.is_alphanumeric() || c == '-' || c == '_' {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
+                .collect();
+            if sanitized.is_empty() {
+                "devnet".to_string()
+            } else {
+                sanitized
+            }
+        }
+        Network::Regtest => "regtest".to_string(),
+        other => format!("{other:?}"),
+    };
+
+    Ok(base.join(network_dir))
 }

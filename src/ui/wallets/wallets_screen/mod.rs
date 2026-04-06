@@ -535,7 +535,11 @@ impl WalletsBalancesScreen {
                     .as_ref()
                     .map(|pw| pw.core().balance().total())
                     .unwrap_or(0);
-                let platform_balance = Self::platform_balance_duffs(&guard, &self.app_context.db, &self.app_context.network);
+                let platform_balance = Self::platform_balance_duffs(
+                    &guard,
+                    &self.app_context.db,
+                    &self.app_context.network,
+                );
                 let shielded_balance = self.shielded_balance_duffs(&seed_hash);
                 let balance_dash =
                     (core_balance + platform_balance + shielded_balance) as f64 * 1e-8;
@@ -601,7 +605,11 @@ impl WalletsBalancesScreen {
                 .ok()
                 .map(|g| {
                     let core = self.core_balance_duffs();
-                    let platform = Self::platform_balance_duffs(&g, &self.app_context.db, &self.app_context.network);
+                    let platform = Self::platform_balance_duffs(
+                        &g,
+                        &self.app_context.db,
+                        &self.app_context.network,
+                    );
                     let shielded = self.shielded_balance_duffs(&g.seed_hash());
                     core + platform + shielded
                 })
@@ -1781,7 +1789,7 @@ impl WalletsBalancesScreen {
                             }
                         }
                         CoreBackendMode::Spv => {
-                            let snapshot = self.app_context.spv_manager().status();
+                            let snapshot = self.app_context.spv_event_bridge().status();
                             match snapshot.status {
                                 SpvStatus::Idle | SpvStatus::Stopped => {
                                     ui.label(
@@ -1846,7 +1854,10 @@ impl WalletsBalancesScreen {
                     .map(|w| {
                         self.app_context
                             .db
-                            .get_all_platform_address_info(&w.seed_hash(), &self.app_context.network)
+                            .get_all_platform_address_info(
+                                &w.seed_hash(),
+                                &self.app_context.network,
+                            )
                             .unwrap_or_default()
                             .len()
                     })
@@ -1962,7 +1973,8 @@ impl WalletsBalancesScreen {
     fn render_balance_total(&self, ui: &mut Ui, wallet: &Wallet) {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
         let core_balance = self.core_balance_duffs();
-        let platform_balance = Self::platform_balance_duffs(wallet, &self.app_context.db, &self.app_context.network);
+        let platform_balance =
+            Self::platform_balance_duffs(wallet, &self.app_context.db, &self.app_context.network);
         let shielded_balance = self.shielded_balance_duffs(&wallet.seed_hash());
         let total = core_balance + platform_balance + shielded_balance;
 
@@ -1978,7 +1990,8 @@ impl WalletsBalancesScreen {
     fn render_balance_breakdown_detail(&mut self, ui: &mut Ui, wallet: &Wallet) {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
         let core_balance = self.core_balance_duffs();
-        let platform_balance = Self::platform_balance_duffs(wallet, &self.app_context.db, &self.app_context.network);
+        let platform_balance =
+            Self::platform_balance_duffs(wallet, &self.app_context.db, &self.app_context.network);
         let shielded_balance = self.shielded_balance_duffs(&wallet.seed_hash());
 
         let header = egui::CollapsingHeader::new(
@@ -2085,7 +2098,11 @@ impl WalletsBalancesScreen {
 
                         let summaries = {
                             let wallet = wallet_arc.read().unwrap();
-                            collect_account_summaries(&wallet, self.app_context.network, &self.app_context.db)
+                            collect_account_summaries(
+                                &wallet,
+                                self.app_context.network,
+                                &self.app_context.db,
+                            )
                         };
                         self.ensure_account_selection(&summaries);
                         action |= self.render_account_tabs(ui, &summaries);

@@ -1,9 +1,9 @@
 use crate::app::AppAction;
 use crate::ui::ScreenType;
 use crate::ui::theme::{DashColors, ResponseExt};
+use dash_sdk::dpp::dashcore::Address;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayload;
-use dash_sdk::dpp::dashcore::Address;
 use eframe::egui::{self, Ui};
 use egui::{Color32, Frame, Margin, RichText};
 use egui_extras::{Column, TableBuilder};

@@ -15,8 +15,7 @@ use dash_sdk::platform::address_sync::{AddressFunds, AddressIndex, AddressKey, A
 
 use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
 use dash_sdk::dpp::dashcore::{
-    Address, BlockHash, Network, OutPoint, PrivateKey, PublicKey, Transaction, TxOut,
-    Txid,
+    Address, BlockHash, Network, OutPoint, PrivateKey, PublicKey, Transaction, TxOut, Txid,
 };
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
 use std::collections::{BTreeMap, BTreeSet};

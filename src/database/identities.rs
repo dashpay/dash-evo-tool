@@ -321,9 +321,10 @@ impl Database {
                 // but the query is simple enough that prepare shouldn't fail.
                 panic!("Failed to prepare wallet identity indices query: {e}");
             });
-        stmt.query_map(rusqlite::params![wallet_seed_hash.as_slice(), network_str], |row| {
-            row.get::<_, u32>(0)
-        })
+        stmt.query_map(
+            rusqlite::params![wallet_seed_hash.as_slice(), network_str],
+            |row| row.get::<_, u32>(0),
+        )
         .map(|rows| rows.filter_map(|r| r.ok()).collect())
         .unwrap_or_default()
     }

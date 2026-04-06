@@ -658,10 +658,12 @@ impl WalletsBalancesScreen {
         &self,
         wallet: &Arc<RwLock<Wallet>>,
     ) -> Result<String, String> {
+        use crate::model::wallet::{
+            DerivationPathHelpers, DerivationPathReference, DerivationPathType,
+        };
         use dash_sdk::dpp::address_funds::PlatformAddress;
         use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
         use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
-        use crate::model::wallet::{DerivationPathHelpers, DerivationPathReference, DerivationPathType};
 
         let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
         let pw = wallet_guard
@@ -672,20 +674,23 @@ impl WalletsBalancesScreen {
 
         // Find the highest existing platform payment address index
         let info = pw.core().wallet_info_blocking();
-        let existing_indices: Vec<u32> = platform_wallet::CoreAddressInfo::all_from_wallet_info(&info)
-            .iter()
-            .filter(|a| a.derivation_path.is_platform_payment(network))
-            .filter_map(|a| {
-                use dash_sdk::dpp::key_wallet::bip32::ChildNumber;
-                a.derivation_path
-                    .as_ref()
-                    .last()
-                    .and_then(|child| match child {
-                        ChildNumber::Normal { index } | ChildNumber::Hardened { index } => Some(*index),
-                        _ => None,
-                    })
-            })
-            .collect();
+        let existing_indices: Vec<u32> =
+            platform_wallet::CoreAddressInfo::all_from_wallet_info(&info)
+                .iter()
+                .filter(|a| a.derivation_path.is_platform_payment(network))
+                .filter_map(|a| {
+                    use dash_sdk::dpp::key_wallet::bip32::ChildNumber;
+                    a.derivation_path
+                        .as_ref()
+                        .last()
+                        .and_then(|child| match child {
+                            ChildNumber::Normal { index } | ChildNumber::Hardened { index } => {
+                                Some(*index)
+                            }
+                            _ => None,
+                        })
+                })
+                .collect();
 
         let next_index = existing_indices.iter().max().map(|m| m + 1).unwrap_or(0);
 
@@ -1065,8 +1070,15 @@ impl WalletsBalancesScreen {
                 .app_context
                 .db
                 .get_asset_lock_transaction(&asset_lock_txid);
-            let Some((tx, _amount, islock, chain_locked_height, _identity_id, _wallet_seed, _network)) =
-                db_record.ok().flatten()
+            let Some((
+                tx,
+                _amount,
+                islock,
+                chain_locked_height,
+                _identity_id,
+                _wallet_seed,
+                _network,
+            )) = db_record.ok().flatten()
             else {
                 self.fund_platform_dialog.status =
                     Some("Asset lock not found or not ready".to_string());
@@ -1077,14 +1089,10 @@ impl WalletsBalancesScreen {
             // Build proof from IS-lock or chain-locked height
             let proof = if let Some(ref islock) = islock {
                 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::InstantAssetLockProof;
-                AssetLockProof::Instant(InstantAssetLockProof::new(
-                    islock.clone(),
-                    tx.clone(),
-                    0,
-                ))
+                AssetLockProof::Instant(InstantAssetLockProof::new(islock.clone(), tx.clone(), 0))
             } else if let Some(height) = chain_locked_height {
-                use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
                 use dash_sdk::dpp::dashcore::OutPoint;
+                use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
                 AssetLockProof::Chain(ChainAssetLockProof {
                     core_chain_locked_height: height,
                     out_point: OutPoint::new(tx.txid(), 0),

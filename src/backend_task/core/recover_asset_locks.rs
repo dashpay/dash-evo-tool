@@ -228,12 +228,7 @@ impl AppContext {
             // Register with PlatformWallet's AssetLockManager
             {
                 let wallet_guard = wallet.read()?;
-                register_with_asset_lock_manager(
-                    &wallet_guard,
-                    &raw_tx,
-                    credit_amount,
-                    proof,
-                );
+                register_with_asset_lock_manager(&wallet_guard, &raw_tx, credit_amount, proof);
             }
 
             recovered_count += 1;
@@ -362,12 +357,7 @@ impl AppContext {
                 // Register with PlatformWallet's AssetLockManager
                 {
                     let wallet_guard = wallet.read()?;
-                    register_with_asset_lock_manager(
-                        &wallet_guard,
-                        &raw_tx,
-                        credit_amount,
-                        proof,
-                    );
+                    register_with_asset_lock_manager(&wallet_guard, &raw_tx, credit_amount, proof);
                 }
 
                 recovered_count += 1;

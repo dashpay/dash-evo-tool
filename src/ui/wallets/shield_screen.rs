@@ -178,7 +178,11 @@ impl ShieldScreen {
                 let db_info = self
                     .app_context
                     .db
-                    .get_platform_address_info(&wallet.seed_hash(), &core_addr, &self.app_context.network)
+                    .get_platform_address_info(
+                        &wallet.seed_hash(),
+                        &core_addr,
+                        &self.app_context.network,
+                    )
                     .ok()
                     .flatten();
                 self.cached_base_nonce = db_info.as_ref().map(|(_balance, nonce)| *nonce);
@@ -727,7 +731,10 @@ impl ScreenLike for ShieldScreen {
                         if let Ok(wallets) = self.app_context.wallets.read()
                             && let Some(wallet) = wallets.get(&self.seed_hash)
                         {
-                            builder = builder.with_wallets(std::slice::from_ref(wallet), Some(&self.app_context.db));
+                            builder = builder.with_wallets(
+                                std::slice::from_ref(wallet),
+                                Some(&self.app_context.db),
+                            );
                         }
 
                         builder

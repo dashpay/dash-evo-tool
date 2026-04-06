@@ -587,12 +587,10 @@ impl WalletSendScreen {
             .into_iter()
             .filter_map(|(core_addr, balance, _nonce)| {
                 if balance > 0 {
-                    PlatformAddress::try_from(core_addr.clone())
-                        .ok()
-                        .map(|pa| {
-                            let canonical_str = pa.to_bech32m_string(network);
-                            (canonical_str, core_addr, pa, balance)
-                        })
+                    PlatformAddress::try_from(core_addr.clone()).ok().map(|pa| {
+                        let canonical_str = pa.to_bech32m_string(network);
+                        (canonical_str, core_addr, pa, balance)
+                    })
                 } else {
                     None
                 }

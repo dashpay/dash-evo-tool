@@ -30,6 +30,7 @@ fn register_with_asset_lock_manager(
             0, // account_index unknown for recovered locks, default to 0
             platform_wallet::AssetLockFundingType::IdentityRegistration,
             0, // identity_index unknown for recovered locks
+            0, // output_index: default to first credit output
             proof,
         );
     }

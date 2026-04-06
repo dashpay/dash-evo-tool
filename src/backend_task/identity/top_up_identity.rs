@@ -100,7 +100,7 @@ impl AppContext {
 
                     // Single call: builds asset lock TX, broadcasts, waits for
                     // finality proof (IS or CL), and returns the proof + key.
-                    let (asset_lock_proof, asset_lock_proof_private_key, tx_id) = platform_wallet
+                    let (asset_lock_proof, asset_lock_proof_private_key, out_point) = platform_wallet
                         .asset_locks()
                         .create_funded_asset_lock_proof(
                             amount,
@@ -116,7 +116,7 @@ impl AppContext {
                     (
                         asset_lock_proof,
                         asset_lock_proof_private_key,
-                        tx_id,
+                        out_point.txid,
                         Some((amount, top_up_index)),
                     )
                 }

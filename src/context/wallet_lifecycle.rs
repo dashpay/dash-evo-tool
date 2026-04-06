@@ -319,6 +319,7 @@ impl AppContext {
                                     0,
                                     platform_wallet::AssetLockFundingType::IdentityRegistration,
                                     0,
+                                    0, // output_index: default to first credit output
                                     proof.clone(),
                                 );
                             }

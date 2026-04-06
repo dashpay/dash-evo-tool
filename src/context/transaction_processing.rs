@@ -321,7 +321,7 @@ impl AppContext {
                         0,
                         platform_wallet::AssetLockFundingType::IdentityRegistration,
                         0,
-                        0, // output_index: default to first credit output
+                        dash_sdk::dpp::dashcore::OutPoint::new(tx.txid(), 0),
                         proof.clone(),
                     );
                 }

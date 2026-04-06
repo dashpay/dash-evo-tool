@@ -1,5 +1,4 @@
 use super::encryption::decrypt_extended_public_key;
-use super::hd_derivation::derive_payment_address;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
@@ -194,8 +193,8 @@ pub async fn derive_contact_payment_address(
     let address_index =
         get_next_address_index(app_context, &our_identity.identity.id(), &contact_id).await?;
 
-    // Derive the payment address
-    let address = derive_payment_address(&xpub, address_index)
+    // Derive the payment address using platform-wallet's DIP-14 derivation
+    let address = platform_wallet::derive_contact_payment_address(&xpub, address_index, network)
         .map_err(|e| format!("Failed to derive payment address: {}", e))?;
 
     Ok((address, address_index))

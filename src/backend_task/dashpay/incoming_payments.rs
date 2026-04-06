@@ -1,4 +1,3 @@
-use super::hd_derivation::{derive_dashpay_incoming_xpub, derive_payment_address};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::dashcore::{Address, Network};
@@ -30,9 +29,12 @@ pub struct DashPayAddressRegistrationResult {
 
 /// Derive the receiving addresses for a contact relationship
 /// These are the addresses the CONTACT will use to pay US
-/// Path: m/9'/5'/15'/account'/(our_id)/(contact_id)/index
+/// Path: m/9'/coin'/15'/account'/(our_id)/(contact_id)/index
+///
+/// Uses platform-wallet's DIP-14 derivation via `derive_contact_xpub` and
+/// `derive_contact_payment_address`.
 pub fn derive_receiving_addresses_for_contact(
-    master_seed: &[u8],
+    key_wallet: &dash_sdk::dpp::key_wallet::wallet::Wallet,
     network: Network,
     our_identity_id: &Identifier,
     contact_id: &Identifier,
@@ -40,28 +42,34 @@ pub fn derive_receiving_addresses_for_contact(
     count: u32,
 ) -> Result<Vec<DashPayReceivingAddress>, String> {
     // For receiving payments, we derive from OUR xpub
-    // Path: m/9'/5'/15'/0'/(our_id)/(contact_id)
-    // This is the key we sent to the contact in our contact request
-    let xpub = derive_dashpay_incoming_xpub(
-        master_seed,
+    // Path: m/9'/coin'/15'/0'/(our_id)/(contact_id)
+    let xpub_data = platform_wallet::derive_contact_xpub(
+        key_wallet,
         network,
         0, // account 0
         our_identity_id,
         contact_id,
-    )?;
+    )
+    .map_err(|e| format!("Failed to derive contact xpub: {}", e))?;
 
-    let mut addresses = Vec::with_capacity(count as usize);
-    for i in start_index..(start_index + count) {
-        let address = derive_payment_address(&xpub, i)?;
-        addresses.push(DashPayReceivingAddress {
+    let addresses = platform_wallet::derive_contact_payment_addresses(
+        &xpub_data.xpub,
+        start_index,
+        count,
+        network,
+    )
+    .map_err(|e| format!("Failed to derive payment addresses: {}", e))?;
+
+    Ok(addresses
+        .into_iter()
+        .enumerate()
+        .map(|(i, address)| DashPayReceivingAddress {
             address,
             contact_id: *contact_id,
             owner_id: *our_identity_id,
-            address_index: i,
-        });
-    }
-
-    Ok(addresses)
+            address_index: start_index + i as u32,
+        })
+        .collect())
 }
 
 /// Register DashPay receiving addresses for all contacts of an identity
@@ -74,22 +82,23 @@ pub async fn register_dashpay_addresses_for_identity(
     let mut result = DashPayAddressRegistrationResult::default();
     let our_identity_id = identity.identity.id();
 
-    // Get the wallet seed
+    // Get the evo-tool wallet wrapper
     let wallet = identity
         .associated_wallets
         .values()
         .next()
         .ok_or("No wallet associated with identity")?;
 
-    let seed = {
+    // Get the platform wallet's key-wallet Wallet for DIP-14 derivation
+    let platform_wallet_arc = {
         let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
         if !wallet_guard.is_open() {
             return Err("Wallet must be unlocked to register DashPay addresses".to_string());
         }
         wallet_guard
-            .seed_bytes()
-            .map_err(|e| format!("Wallet seed not available: {}", e))?
-            .to_vec()
+            .platform_wallet
+            .clone()
+            .ok_or("Platform wallet not available")?
     };
 
     // Load all contacts for this identity from the database
@@ -116,6 +125,9 @@ pub async fn register_dashpay_addresses_for_identity(
         .collect();
 
     let network = app_context.network;
+
+    // Acquire the key-wallet read guard for derivation
+    let key_wallet_guard = platform_wallet_arc.core().wallet().await;
 
     for contact in contacts {
         let contact_id = match Identifier::from_bytes(&contact.contact_identity_id) {
@@ -153,7 +165,7 @@ pub async fn register_dashpay_addresses_for_identity(
 
         // Derive the receiving addresses
         match derive_receiving_addresses_for_contact(
-            &seed,
+            &key_wallet_guard,
             network,
             &our_identity_id,
             &contact_id,

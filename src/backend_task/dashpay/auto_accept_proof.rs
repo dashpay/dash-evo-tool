@@ -1,13 +1,14 @@
-use super::hd_derivation::derive_auto_accept_key;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::dashcore::secp256k1::{Message, Secp256k1, SecretKey};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
+use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, ExtendedPrivKey};
 use dash_sdk::platform::Identifier;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
+use std::str::FromStr;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AutoAcceptProofData {
@@ -117,6 +118,33 @@ impl AutoAcceptProofData {
             expires_at,
         })
     }
+}
+
+/// DashPay auto-accept feature index per DIP-15.
+const DASHPAY_AUTO_ACCEPT_FEATURE: u32 = 16;
+
+/// Derive auto-accept proof key according to DIP-0015.
+/// Path: m/9'/5'/16'/timestamp'
+///
+/// This uses the provided key bytes as a master seed for derivation, which is
+/// appropriate when the caller passes wallet-derived private key material.
+fn derive_auto_accept_key(
+    master_seed: &[u8],
+    network: dash_sdk::dpp::dashcore::Network,
+    timestamp: u32,
+) -> Result<ExtendedPrivKey, String> {
+    let master_xprv = ExtendedPrivKey::new_master(network, master_seed)
+        .map_err(|e| format!("Failed to create master key: {}", e))?;
+
+    let path = DerivationPath::from_str(&format!(
+        "m/9'/5'/{}'/{}'",
+        DASHPAY_AUTO_ACCEPT_FEATURE, timestamp
+    ))
+    .map_err(|e| format!("Invalid derivation path: {}", e))?;
+
+    master_xprv
+        .derive_priv(&Secp256k1::new(), &path)
+        .map_err(|e| format!("Failed to derive auto-accept key: {}", e))
 }
 
 /// Generate an auto-accept proof for QR code sharing

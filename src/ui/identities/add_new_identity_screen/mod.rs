@@ -35,7 +35,6 @@ use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::prelude::AssetLockProof;
 use dash_sdk::platform::Identifier;
 use eframe::egui::Context;
-use egui::ahash::HashSet;
 use egui::{Align, Button, Color32, ComboBox, ScrollArea, Ui};
 use egui_extras::{Column, TableBuilder};
 
@@ -265,7 +264,13 @@ impl AddNewIdentityScreen {
             // Check if we have access to the selected wallet
             if let Some(wallet_guard) = self.selected_wallet.as_ref() {
                 let wallet = wallet_guard.read().unwrap();
-                let used_indices: HashSet<u32> = wallet.identities.keys().cloned().collect();
+                let used_indices: std::collections::HashSet<u32> = self
+                    .app_context
+                    .db
+                    .get_wallet_identity_indices(
+                        &wallet.seed_hash(),
+                        self.app_context.network,
+                    );
 
                 // Modify the selected text to include "(used)" if the current index is used
                 let selected_text = {
@@ -406,22 +411,13 @@ impl AddNewIdentityScreen {
     }
 
     /// Generate next identity ID that can be used for the new identity.
-    ///
-    /// TODO: This function is not working in a reliable way, because it relies on the
-    /// `identities` map in the wallet, which may not be up to date (user can remove
-    /// identities from the wallet while they still are stored on the Platform).
     fn next_identity_id(&self) -> u32 {
-        self.selected_wallet
-            .as_ref()
-            .unwrap()
-            .read()
-            .unwrap()
-            .identities
-            .keys()
-            .copied()
-            .max()
-            .map(|max| max + 1)
-            .unwrap_or_default()
+        let wallet = self.selected_wallet.as_ref().unwrap().read().unwrap();
+        let used = self
+            .app_context
+            .db
+            .get_wallet_identity_indices(&wallet.seed_hash(), self.app_context.network);
+        used.iter().copied().max().map(|max| max + 1).unwrap_or_default()
     }
 
     fn render_funding_method(&mut self, ui: &mut egui::Ui) {
@@ -1186,9 +1182,8 @@ impl ScreenLike for AddNewIdentityScreen {
 
                     // Display the heading with an info icon that shows a tooltip on hover
                     ui.horizontal(|ui| {
-                        let wallet_guard = self.selected_wallet.as_ref().unwrap();
-                        let wallet = wallet_guard.read().unwrap();
-                        if wallet.identities.is_empty() {
+                        let next_id = self.next_identity_id();
+                        if next_id == 0 {
                             ui.heading(format!(
                                 "{}. Choose an identity index for the wallet. Leaving this 0 is recommended.",
                                 step_number
@@ -1197,7 +1192,7 @@ impl ScreenLike for AddNewIdentityScreen {
                             ui.heading(format!(
                                 "{}. Choose an identity index for the wallet. Leaving this {} is recommended.",
                                 step_number,
-                                self.next_identity_id(),
+                                next_id,
                             ));
                         }
 

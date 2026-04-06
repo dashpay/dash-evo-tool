@@ -59,16 +59,13 @@ impl CreateAssetLockScreen {
     pub fn new(wallet: Arc<RwLock<Wallet>>, app_context: &Arc<AppContext>) -> Self {
         let selected_wallet = Some(wallet.clone());
 
-        // Calculate next unused identity index
+        // Calculate next unused identity index from the database
         let identity_index = {
             let wallet_guard = wallet.read().unwrap();
-            wallet_guard
-                .identities
-                .keys()
-                .copied()
-                .max()
-                .map(|max| max + 1)
-                .unwrap_or(0)
+            let used = app_context
+                .db
+                .get_wallet_identity_indices(&wallet_guard.seed_hash(), app_context.network);
+            used.iter().copied().max().map(|max| max + 1).unwrap_or(0)
         };
 
         Self {
@@ -199,16 +196,17 @@ impl CreateAssetLockScreen {
                 self.asset_lock_purpose = None;
                 self.selected_identity = None;
                 self.selected_identity_string.clear();
-                // Recalculate next unused identity index
+                // Recalculate next unused identity index from the database
                 self.identity_index = {
                     let wallet_guard = self.wallet.read().unwrap();
-                    wallet_guard
-                        .identities
-                        .keys()
-                        .copied()
-                        .max()
-                        .map(|max| max + 1)
-                        .unwrap_or(0)
+                    let used = self
+                        .app_context
+                        .db
+                        .get_wallet_identity_indices(
+                            &wallet_guard.seed_hash(),
+                            self.app_context.network,
+                        );
+                    used.iter().copied().max().map(|max| max + 1).unwrap_or(0)
                 };
                 self.top_up_index = 0;
                 // Reset amount input to default 0.5 DASH
@@ -472,9 +470,15 @@ impl ScreenLike for CreateAssetLockScreen {
                                 ui.heading(RichText::new("1. Index Selection").color(DashColors::text_primary(dark_mode)));
                                 ui.add_space(10.0);
 
-                                // Get used indices from wallet
+                                // Get used indices from the database
                                 let wallet_guard = self.wallet.read().unwrap();
-                                let used_indices: HashSet<u32> = wallet_guard.identities.keys().cloned().collect();
+                                let used_indices: HashSet<u32> = self
+                                    .app_context
+                                    .db
+                                    .get_wallet_identity_indices(
+                                        &wallet_guard.seed_hash(),
+                                        self.app_context.network,
+                                    );
                                 drop(wallet_guard);
 
                                 egui::Grid::new("registration_advanced_options_grid")

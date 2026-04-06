@@ -214,13 +214,6 @@ impl AppContext {
                 &Some((wallet_id, wallet_identity_index)),
             )?;
 
-            {
-                let mut wallet = wallet.write().map_err(TaskError::from)?;
-                wallet
-                    .identities
-                    .insert(wallet_identity_index, qualified_identity.identity.clone());
-            }
-
             self.db
                 .set_asset_lock_identity_id(tx_id.as_byte_array(), identity_id.as_bytes())?;
 
@@ -346,10 +339,6 @@ impl AppContext {
             &qualified_identity,
             &Some((wallet_id, wallet_identity_index)),
         )?;
-        {
-            let mut wallet = wallet.write().map_err(TaskError::from)?;
-            wallet.identities.insert(wallet_identity_index, identity);
-        }
 
         self.db
             .set_asset_lock_identity_id(tx_id.as_byte_array(), identity_id.as_bytes())?;
@@ -577,13 +566,6 @@ impl AppContext {
                     &qualified_identity,
                     &Some((wallet_seed_hash, wallet_identity_index)),
                 )?;
-
-                {
-                    let mut wallet_guard = wallet.write().map_err(TaskError::from)?;
-                    wallet_guard
-                        .identities
-                        .insert(wallet_identity_index, qualified_identity.identity.clone());
-                }
 
                 let fee_result = FeeResult::new(estimated_fee, estimated_fee);
                 Ok(BackendTaskSuccessResult::RegisteredIdentity(

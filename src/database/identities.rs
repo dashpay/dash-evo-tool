@@ -6,7 +6,7 @@ use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
 use rusqlite::{Connection, params};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 impl Database {
@@ -297,6 +297,35 @@ impl Database {
         }
 
         Ok(identity)
+    }
+
+    /// Returns the set of identity wallet indices already used by the given wallet.
+    ///
+    /// This queries the `identity` table for all rows belonging to the wallet
+    /// (identified by seed hash) and returns the `wallet_index` values as a set.
+    pub fn get_wallet_identity_indices(
+        &self,
+        wallet_seed_hash: &WalletSeedHash,
+        network: Network,
+    ) -> HashSet<u32> {
+        let network_str = network.to_string();
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT wallet_index FROM identity \
+                 WHERE wallet = ?1 AND network = ?2 AND wallet_index IS NOT NULL",
+            )
+            .unwrap_or_else(|e| {
+                tracing::warn!("Failed to prepare wallet identity indices query: {e}");
+                // Return an empty set below via early return isn't possible here,
+                // but the query is simple enough that prepare shouldn't fail.
+                panic!("Failed to prepare wallet identity indices query: {e}");
+            });
+        stmt.query_map(rusqlite::params![wallet_seed_hash.as_slice(), network_str], |row| {
+            row.get::<_, u32>(0)
+        })
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
     }
 
     /// Stops on the first corrupted identity blob and returns an error.

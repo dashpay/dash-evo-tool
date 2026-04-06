@@ -14,7 +14,7 @@ use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, ExtendedPubKey};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::CoreBlockHeight;
 use rusqlite::{Connection, params};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::str::FromStr;
 
 impl Database {
@@ -562,7 +562,6 @@ impl Database {
                     uses_password,
                     master_bip44_ecdsa_extended_public_key: master_ecdsa_extended_public_key,
                     alias,
-                    identities: HashMap::new(),
                     is_main,
                     core_wallet_name,
                 },
@@ -640,8 +639,6 @@ impl Database {
                     wallet_index = wallet_index,
                     "adding identity to wallet"
                 );
-                // Insert the identity into the wallet's identities HashMap with wallet_index as the key
-                wallet.identities.insert(wallet_index, identity.identity);
             }
         }
 

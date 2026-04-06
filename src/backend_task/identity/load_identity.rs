@@ -365,15 +365,6 @@ impl AppContext {
         // Insert qualified identity into the database
         self.insert_local_qualified_identity(&qualified_identity, &wallet_info)?;
 
-        if let Some((wallet_seed_hash, identity_index)) = wallet_info
-            && let Some(wallet_arc) = wallets.get(&wallet_seed_hash)
-        {
-            let mut wallet = wallet_arc.write().map_err(TaskError::from)?;
-            wallet
-                .identities
-                .insert(identity_index, qualified_identity.identity.clone());
-        }
-
         Ok(BackendTaskSuccessResult::LoadedIdentity(qualified_identity))
     }
 
@@ -425,35 +416,6 @@ impl AppContext {
         wallet_seed_hash: WalletSeedHash,
         top_bound: u32,
     ) -> Result<Option<(u32, WalletKeyMap)>, TaskError> {
-        let identity_id = identity.id();
-
-        if let Some((&identity_index, _)) = wallet
-            .identities
-            .iter()
-            .find(|(_, existing)| existing.id() == identity_id)
-        {
-            let (public_key_map, public_key_hash_map) = wallet
-                .identity_authentication_ecdsa_public_keys_data_map(
-                    self,
-                    true,
-                    self.network,
-                    identity_index,
-                    0..top_bound,
-                )
-                .map_err(|e| TaskError::WalletAddressDerivationFailed { detail: e })?;
-            let wallet_private_keys = self.build_wallet_private_key_map(
-                identity,
-                wallet_seed_hash,
-                identity_index,
-                &public_key_map,
-                &public_key_hash_map,
-            );
-
-            if !wallet_private_keys.is_empty() {
-                return Ok(Some((identity_index, wallet_private_keys)));
-            }
-        }
-
         for candidate_index in 0..MAX_IDENTITY_INDEX {
             let (public_key_map, public_key_hash_map) = wallet
                 .identity_authentication_ecdsa_public_keys_data_map(

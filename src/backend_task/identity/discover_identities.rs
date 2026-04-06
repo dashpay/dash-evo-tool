@@ -193,12 +193,6 @@ impl AppContext {
                     "Failed to store discovered identity"
                 );
             } else {
-                // Add to wallet's identities map.
-                if let Ok(mut wallet_guard) = wallet.write() {
-                    wallet_guard
-                        .identities
-                        .insert(identity_index, qualified_identity.identity.clone());
-                }
                 found_count += 1;
                 tracing::info!(
                     identity_id = %identity_id,
@@ -333,12 +327,6 @@ impl AppContext {
                                 "Failed to store discovered identity"
                             );
                         } else {
-                            // Add to wallet's identities map
-                            if let Ok(mut wallet_guard) = wallet.write() {
-                                wallet_guard
-                                    .identities
-                                    .insert(identity_index, qualified_identity.identity.clone());
-                            }
                             found_count += 1;
                             tracing::info!(
                                 identity_id = %identity_id,

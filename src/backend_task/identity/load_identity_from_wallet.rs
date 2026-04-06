@@ -166,13 +166,6 @@ impl AppContext {
         )
         .map_err(|e| TaskError::Database { source: e })?;
 
-        {
-            let mut wallet = wallet_arc_ref.wallet.write()?;
-            wallet
-                .identities
-                .insert(identity_index, qualified_identity.identity.clone());
-        }
-
         Ok(BackendTaskSuccessResult::Message(
             "Successfully loaded identity".to_string(),
         ))
@@ -388,13 +381,6 @@ impl AppContext {
             &Some((wallet_seed_hash, identity_index)),
         )
         .map_err(|e| TaskError::Database { source: e })?;
-
-        {
-            let mut wallet = wallet_arc_ref.wallet.write()?;
-            wallet
-                .identities
-                .insert(identity_index, qualified_identity.identity.clone());
-        }
 
         Ok(BackendTaskSuccessResult::Message(
             "Successfully loaded identity".to_string(),

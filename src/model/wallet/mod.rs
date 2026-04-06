@@ -1,4 +1,3 @@
-mod asset_lock_transaction;
 pub mod encryption;
 pub mod shielded;
 pub mod single_key;
@@ -20,7 +19,7 @@ use dash_sdk::dpp::dashcore::{
     Txid,
 };
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
 use std::ops::Range;
 use std::sync::{Arc, RwLock};
@@ -249,7 +248,6 @@ use crate::context::AppContext;
 use bitflags::bitflags;
 use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::dashcore::hashes::Hash;
-use dash_sdk::platform::Identity;
 use zeroize::Zeroize;
 
 bitflags! {
@@ -310,7 +308,6 @@ pub struct Wallet {
     pub uses_password: bool,
     pub master_bip44_ecdsa_extended_public_key: ExtendedPubKey,
     pub alias: Option<String>,
-    pub identities: HashMap<u32, Identity>,
     pub is_main: bool,
     /// Dash Core wallet name for multi-wallet RPC calls
     pub core_wallet_name: Option<String>,
@@ -376,7 +373,6 @@ impl Wallet {
             uses_password,
             master_bip44_ecdsa_extended_public_key,
             alias,
-            identities: Default::default(),
             is_main: true,
             core_wallet_name: None,
         })
@@ -1527,7 +1523,6 @@ mod tests {
             uses_password: false,
             master_bip44_ecdsa_extended_public_key,
             alias: Some("Test Wallet".to_string()),
-            identities: HashMap::new(),
             is_main: true,
             core_wallet_name: None,
         }

@@ -30,10 +30,9 @@ use crossbeam_channel::{Receiver, Sender};
 use dash_sdk::Sdk;
 use dash_sdk::dapi_client::AddressList;
 use dash_sdk::dashcore_rpc::{Auth, Client, RpcApi};
-use dash_sdk::dpp::dashcore::{Address, Network, Txid};
+use dash_sdk::dpp::dashcore::{Address, Network};
 #[cfg(any(test, feature = "testing"))]
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
-use dash_sdk::dpp::prelude::AssetLockProof;
 use dash_sdk::dpp::state_transition::StateTransitionSigningOptions;
 use dash_sdk::dpp::state_transition::batch_transition::methods::StateTransitionCreationOptions;
 use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
@@ -108,7 +107,6 @@ pub struct AppContext {
     pub(crate) wallet_id_mapping: Mutex<WalletIdMapping>,
     #[allow(dead_code)] // May be used for password validation
     pub(crate) password_info: Option<PasswordInfo>,
-    pub(crate) transactions_waiting_for_finality: Mutex<BTreeMap<Txid, Option<AssetLockProof>>>,
     /// Whether to animate the UI elements.
     ///
     /// This is used to control animations in the UI, such as loading spinners or transitions.
@@ -389,7 +387,6 @@ impl AppContext {
             wallet_manager,
             wallet_id_mapping: Mutex::new(WalletIdMapping::new()),
             password_info,
-            transactions_waiting_for_finality: Mutex::new(BTreeMap::new()),
             animate,
             cached_settings: RwLock::new(None),
             subtasks,

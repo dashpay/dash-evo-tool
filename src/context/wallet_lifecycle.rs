@@ -1,5 +1,4 @@
 use super::AppContext;
-use super::get_transaction_info;
 use crate::backend_task::error::TaskError;
 use crate::database::is_unique_constraint_violation;
 use crate::model::qualified_identity::encrypted_key_storage::{
@@ -13,8 +12,7 @@ use crate::platform_wallet_bridge::{
     ManagedDpnsNameInfo, ManagedIdentityStatus, ManagedKeyStorage, ManagedPrivateKeyData,
     PlatformWallet,
 };
-use crate::spv::{AssetLockFinalityEvent, CoreBackendMode, SpvManager};
-use dash_sdk::dpp::dashcore::hashes::Hash;
+use crate::spv::{CoreBackendMode, SpvManager};
 use dash_sdk::dpp::dashcore::{Address, Network};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::key_wallet::Network as WalletNetwork;
@@ -166,7 +164,6 @@ impl AppContext {
         // Register reconcile channel BEFORE starting SPV so the event handlers
         // (spawned inside run_spv_loop) always capture a valid sender.
         self.spv_setup_reconcile_listener();
-        self.spv_setup_finality_listener();
         self.spv_manager
             .start(expected_wallets)
             .map_err(|e| TaskError::SpvStartFailed { detail: e })?;
@@ -727,102 +724,6 @@ impl AppContext {
         }
 
         (default_ref, default_type)
-    }
-
-    /// Listen for SPV instant lock / chain lock events and populate
-    /// transactions_waiting_for_finality so identity registration can proceed.
-    pub fn spv_setup_finality_listener(self: &Arc<Self>) {
-        let rx = self.spv_manager.register_finality_channel();
-        let ctx = Arc::clone(self);
-        let cancel = self.subtasks.cancellation_token.clone();
-        self.subtasks
-            .spawn_sync("spv_finality_listener", async move {
-                tokio::pin!(rx);
-                loop {
-                    tokio::select! {
-                        _ = cancel.cancelled() => break,
-                        maybe = rx.recv() => {
-                            let Some(event) = maybe else { break; };
-                            // Wrap handler in select so cancellation can interrupt
-                            // even when blocked on locks held by the SPV sync thread.
-                            tokio::select! {
-                                _ = cancel.cancelled() => break,
-                                result = ctx.handle_spv_finality_event(event) => {
-                                    if let Err(e) = result {
-                                        tracing::debug!("SPV finality event error: {}", e);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            });
-    }
-
-    async fn handle_spv_finality_event(
-        &self,
-        event: AssetLockFinalityEvent,
-    ) -> Result<(), TaskError> {
-        match event {
-            AssetLockFinalityEvent::InstantLock { txid, instant_lock } => {
-                // Check if this txid is pending in transactions_waiting_for_finality
-                let is_pending = {
-                    let transactions = self.transactions_waiting_for_finality.lock()?;
-                    matches!(transactions.get(&txid), Some(None))
-                };
-                if !is_pending {
-                    return Ok(());
-                }
-
-                // Retrieve the full transaction from the database
-                let (tx, ..) = self
-                    .db
-                    .get_asset_lock_transaction(txid.as_byte_array())?
-                    .ok_or(TaskError::AssetLockTransactionNotFoundInDatabase)?;
-
-                self.received_asset_lock_finality(&tx, Some(*instant_lock), None)?;
-            }
-            AssetLockFinalityEvent::ChainLock {
-                height: _height, ..
-            } => {
-                // Get all pending txids (where proof is None)
-                let pending_txids: Vec<dash_sdk::dpp::dashcore::Txid> = {
-                    let transactions = self.transactions_waiting_for_finality.lock()?;
-                    transactions
-                        .iter()
-                        .filter_map(
-                            |(txid, proof)| if proof.is_none() { Some(*txid) } else { None },
-                        )
-                        .collect()
-                };
-                if pending_txids.is_empty() {
-                    return Ok(());
-                }
-
-                let sdk = self.sdk.load().as_ref().clone();
-
-                for txid in pending_txids {
-                    match get_transaction_info(&sdk, &txid).await {
-                        Ok(tx_info) if tx_info.is_chain_locked && tx_info.height > 0 => {
-                            if let Ok(Some((tx, ..))) =
-                                self.db.get_asset_lock_transaction(txid.as_byte_array())
-                            {
-                                let _ = self.received_asset_lock_finality(
-                                    &tx,
-                                    None,
-                                    Some(tx_info.height),
-                                );
-                            }
-                        }
-                        _ => {
-                            // Transaction not yet chain-locked at this height, or DAPI
-                            // lookup failed — will retry on next chain lock event.
-                        }
-                    }
-                }
-            }
-        }
-        Ok(())
     }
 
     /// Subscribe to SPV reconcile signals and debounce updates.

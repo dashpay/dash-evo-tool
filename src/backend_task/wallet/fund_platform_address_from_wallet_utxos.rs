@@ -22,12 +22,9 @@ impl AppContext {
         use dash_sdk::dpp::address_funds::AddressFundsFeeStrategyStep;
         use dash_sdk::platform::transition::top_up_address::TopUpAddress;
 
-        // Validate via platform wallet bridge (establishes the new lookup path)
-        let _platform_wallet = self.require_platform_wallet(&seed_hash)?;
-
         // When fee_deduct_from_output is false, we need to create a larger asset lock
         // that includes the estimated platform fee, so the recipient receives the exact amount.
-        let (asset_lock_amount, allow_take_fee_from_amount) = if fee_deduct_from_output {
+        let (asset_lock_amount, _allow_take_fee_from_amount) = if fee_deduct_from_output {
             // Fees deducted from output: use the requested amount, allow core fee to be taken from it
             (amount, true)
         } else {
@@ -41,12 +38,14 @@ impl AppContext {
             (asset_lock_amount, false)
         };
 
-        // Step 1: Build asset lock via PlatformWallet
+        // Build, broadcast, and wait for finality proof in a single call.
+        // AssetLockManager handles the full lifecycle: UTXO selection, TX
+        // construction, broadcast, and IS-lock / ChainLock proof wait.
         let platform_wallet = self.require_platform_wallet(&seed_hash)?;
 
-        let (asset_lock_transaction, asset_lock_private_key) = platform_wallet
+        let (asset_lock_proof, asset_lock_private_key, _out_point) = platform_wallet
             .asset_locks()
-            .build_asset_lock_transaction(
+            .create_funded_asset_lock_proof(
                 asset_lock_amount,
                 0,
                 platform_wallet::AssetLockFundingType::IdentityRegistration,
@@ -56,69 +55,6 @@ impl AppContext {
             .map_err(|e| TaskError::AssetLockTransactionBuildFailed {
                 detail: e.to_string(),
             })?;
-
-        // Step 2–4: Store → broadcast (UTXOs already consumed by PlatformWallet).
-        let wallet_arc = {
-            let wallets = self.wallets.read()?;
-            wallets
-                .get(&seed_hash)
-                .cloned()
-                .ok_or(TaskError::WalletNotFound)?
-        };
-
-        let tx_id = self
-            .broadcast_and_commit_asset_lock(
-                &asset_lock_transaction,
-                asset_lock_amount,
-                &seed_hash,
-                &wallet_arc,
-                None,
-            )
-            .await?;
-
-        // Step 5: Wait for asset lock proof (InstantLock or ChainLock) via shared helper.
-        // On timeout the helper cleans up the finality tracking entry.
-        // Post-timeout recovery is mode-dependent:
-        //   RPC  — fire-and-forget refresh_wallet_info to reconcile spent UTXOs
-        //   SPV  — spent UTXOs are reconciled automatically on the next sync cycle
-        let asset_lock_proof = match self.wait_for_asset_lock_proof(tx_id).await {
-            Ok(proof) => proof,
-            Err(timeout_err) => {
-                use crate::spv::CoreBackendMode;
-
-                match self.core_backend_mode() {
-                    CoreBackendMode::Rpc => {
-                        if let Some(wallet_arc) = self
-                            .wallets
-                            .read()
-                            .ok()
-                            .and_then(|w| w.get(&seed_hash).cloned())
-                        {
-                            let ctx = Arc::clone(self);
-                            // Fire-and-forget — don't block the error return on refresh
-                            tokio::task::spawn_blocking(move || {
-                                if let Err(e) = ctx.refresh_wallet_info(wallet_arc) {
-                                    tracing::warn!(
-                                        "Failed to auto-refresh wallet after timeout: {}",
-                                        e
-                                    );
-                                }
-                            });
-                        }
-                    }
-                    CoreBackendMode::Spv => {
-                        tracing::warn!(
-                            "Asset lock proof timed out in SPV mode (tx {}). \
-                             Spent UTXOs will be reconciled automatically during \
-                             the next SPV sync cycle when a new block arrives.",
-                            tx_id
-                        );
-                    }
-                }
-
-                return Err(timeout_err);
-            }
-        };
 
         // Step 6: Get platform wallet, SDK, and derive a fresh change address if needed
         let (platform_wallet, sdk, change_platform_address) = {

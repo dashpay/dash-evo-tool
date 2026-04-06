@@ -3,6 +3,7 @@ use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
+use dash_sdk::dpp::dashcore::OutPoint;
 use dash_sdk::dpp::fee::Credits;
 use std::sync::{Arc, RwLock};
 
@@ -16,7 +17,7 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let amount_duffs = amount / CREDITS_PER_DUFF;
 
-        let (platform_wallet, seed_hash) = {
+        let (platform_wallet, _seed_hash) = {
             let guard = wallet.read()?;
             let pw = guard
                 .platform_wallet
@@ -38,10 +39,15 @@ impl AppContext {
                 detail: e.to_string(),
             })?;
 
-        let result = self.broadcast_and_track_asset_lock(tx).await?;
-
-        // Wallet changes (UTXO updates) are auto-flushed via
-        // FlushStrategy::Immediate when queued by the platform wallet.
+        let result = self
+            .broadcast_and_track_asset_lock_via_manager(
+                tx,
+                amount_duffs,
+                platform_wallet::AssetLockFundingType::IdentityRegistration,
+                identity_index,
+                &platform_wallet,
+            )
+            .await?;
 
         Ok(result)
     }
@@ -56,7 +62,7 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let amount_duffs = amount / CREDITS_PER_DUFF;
 
-        let (platform_wallet, seed_hash) = {
+        let (platform_wallet, _seed_hash) = {
             let guard = wallet.read()?;
             let pw = guard
                 .platform_wallet
@@ -78,38 +84,53 @@ impl AppContext {
                 detail: e.to_string(),
             })?;
 
-        let result = self.broadcast_and_track_asset_lock(tx).await?;
-
-        // Wallet changes (UTXO updates) are auto-flushed via
-        // FlushStrategy::Immediate when queued by the platform wallet.
+        let result = self
+            .broadcast_and_track_asset_lock_via_manager(
+                tx,
+                amount_duffs,
+                platform_wallet::AssetLockFundingType::IdentityTopUp,
+                identity_index,
+                &platform_wallet,
+            )
+            .await?;
 
         Ok(result)
     }
 
-    /// Broadcast an asset lock transaction and register it for finality tracking.
-    async fn broadcast_and_track_asset_lock(
+    /// Build, register, and broadcast an asset lock transaction via
+    /// AssetLockManager. The TX is tracked internally by the manager;
+    /// the proof will arrive later via SPV events.
+    async fn broadcast_and_track_asset_lock_via_manager(
         &self,
         asset_lock_transaction: dash_sdk::dpp::dashcore::Transaction,
+        amount_duffs: u64,
+        funding_type: platform_wallet::AssetLockFundingType,
+        identity_index: u32,
+        platform_wallet: &platform_wallet::PlatformWallet,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let tx_id = asset_lock_transaction.txid();
+        let out_point = OutPoint::new(tx_id, 0);
 
-        {
-            let mut proofs = self.transactions_waiting_for_finality.lock()?;
-            proofs.insert(tx_id, None);
-        }
+        // Register with AssetLockManager so SPV events can resolve it.
+        platform_wallet.asset_locks().recover_asset_lock_blocking(
+            asset_lock_transaction.clone(),
+            amount_duffs,
+            0,
+            funding_type,
+            identity_index,
+            out_point,
+            None,
+        );
 
-        if let Err(e) = self
-            .broadcast_raw_transaction(&asset_lock_transaction)
+        // Broadcast via AssetLockManager (uses DAPI).
+        if let Err(e) = platform_wallet
+            .asset_locks()
+            .broadcast_transaction(&asset_lock_transaction)
             .await
         {
-            if let Ok(mut proofs) = self.transactions_waiting_for_finality.lock() {
-                proofs.remove(&tx_id);
-            } else {
-                tracing::warn!(
-                    "Failed to clean up finality tracking for tx {tx_id}: Mutex poisoned"
-                );
-            }
-            return Err(e);
+            return Err(TaskError::AssetLockTransactionBuildFailed {
+                detail: e.to_string(),
+            });
         }
 
         Ok(BackendTaskSuccessResult::Message(format!(

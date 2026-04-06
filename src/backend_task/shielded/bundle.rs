@@ -432,9 +432,7 @@ pub async fn shield_from_asset_lock(
     amount_duffs: u64,
     source_address: Option<&Address>,
 ) -> Result<u64, TaskError> {
-    use dash_sdk::dashcore_rpc::RpcApi;
     use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
-    use dash_sdk::dpp::prelude::AssetLockProof;
     use dash_sdk::dpp::shielded::builder::build_shield_from_asset_lock_transition;
     use std::time::Duration;
 
@@ -446,7 +444,7 @@ pub async fn shield_from_asset_lock(
     let asset_lock_duffs = amount_duffs.saturating_add(platform_fee_duffs);
 
     // Step 1: Create the asset lock transaction
-    let (asset_lock_transaction, asset_lock_private_key, _asset_lock_address) = {
+    let platform_wallet = {
         let wallet_arc = {
             let wallets = app_context.wallets.read()?;
             wallets
@@ -459,93 +457,44 @@ pub async fn shield_from_asset_lock(
             .read()
             .map_err(|_| TaskError::LockPoisoned { resource: "wallet" })?;
 
-        let platform_wallet = wallet
+        wallet
             .platform_wallet
             .clone()
-            .ok_or(TaskError::WalletNotFound)?;
-
-        drop(wallet);
-
-        let (tx, private_key) = platform_wallet
-            .asset_locks()
-            .build_asset_lock_transaction(
-                asset_lock_duffs,
-                0,
-                platform_wallet::AssetLockFundingType::IdentityRegistration,
-                0,
-            )
-            .await
-            .map_err(|e| shielded_build_error(e.to_string()))?;
-
-        let secp = dash_sdk::dpp::dashcore::secp256k1::Secp256k1::new();
-        let address = dash_sdk::dpp::dashcore::Address::p2pkh(
-            &private_key.public_key(&secp),
-            app_context.network,
-        );
-
-        (tx, private_key, address)
+            .ok_or(TaskError::WalletNotFound)?
     };
 
+    let (asset_lock_transaction, _asset_lock_private_key) = platform_wallet
+        .asset_locks()
+        .build_asset_lock_transaction(
+            asset_lock_duffs,
+            0,
+            platform_wallet::AssetLockFundingType::IdentityRegistration,
+            0,
+        )
+        .await
+        .map_err(|e| shielded_build_error(e.to_string()))?;
+
     let tx_id = asset_lock_transaction.txid();
+    let out_point = dash_sdk::dpp::dashcore::OutPoint::new(tx_id, 0);
 
-    // Step 2: Register this transaction as waiting for finality
-    {
-        let mut proofs = app_context.transactions_waiting_for_finality.lock()?;
-        proofs.insert(tx_id, None);
-    }
+    // Step 2–5: Register with AssetLockManager, broadcast via DAPI, and wait
+    // for finality proof (IS-lock or ChainLock). The manager handles the full
+    // lifecycle internally via SPV event subscription.
+    platform_wallet.asset_locks().recover_asset_lock_blocking(
+        asset_lock_transaction.clone(),
+        asset_lock_duffs,
+        0,
+        platform_wallet::AssetLockFundingType::IdentityRegistration,
+        0,
+        out_point,
+        None,
+    );
 
-    // Step 3: Broadcast the transaction
-    app_context
-        .core_client
-        .read()
-        .map_err(|_| TaskError::LockPoisoned {
-            resource: "core_client",
-        })?
-        .send_raw_transaction(&asset_lock_transaction)?;
-
-    // Step 4: UTXOs already consumed by PlatformWallet's build_asset_lock_transaction
-
-    // Step 5: Wait for asset lock proof (InstantLock or ChainLock) with timeout
-    let asset_lock_proof: AssetLockProof;
-    let timeout = tokio::time::sleep(Duration::from_secs(300));
-    tokio::pin!(timeout);
-
-    loop {
-        tokio::select! {
-            _ = &mut timeout => {
-                if let Ok(mut proofs) = app_context.transactions_waiting_for_finality.try_lock() {
-                    proofs.remove(&tx_id);
-                }
-
-                if app_context.core_backend_mode() == crate::spv::CoreBackendMode::Rpc
-                    && let Some(wallet_arc) = app_context.wallets.read().ok()
-                        .and_then(|w| w.get(seed_hash).cloned())
-                {
-                    let ctx = Arc::clone(app_context);
-                    tokio::task::spawn_blocking(move || {
-                        if let Err(e) = ctx.refresh_wallet_info(wallet_arc) {
-                            tracing::warn!("Failed to auto-refresh wallet after timeout: {}", e);
-                        }
-                    });
-                }
-
-                return Err(TaskError::ShieldedAssetLockTimeout);
-            }
-            _ = tokio::time::sleep(Duration::from_millis(200)) => {
-                let proofs = app_context.transactions_waiting_for_finality.lock()?;
-                if let Some(Some(proof)) = proofs.get(&tx_id) {
-                    asset_lock_proof = proof.clone();
-                    break;
-                }
-            }
-        }
-    }
-
-    // Step 6: Clean up the finality tracking
-    {
-        let mut proofs = app_context.transactions_waiting_for_finality.lock()?;
-        proofs.remove(&tx_id);
-    }
+    let (asset_lock_proof, asset_lock_private_key) = platform_wallet
+        .asset_locks()
+        .resume_asset_lock(&out_point, Duration::from_secs(300))
+        .await
+        .map_err(|e| shielded_build_error(e.to_string()))?;
 
     // Step 7: Build and broadcast the shield-from-asset-lock transition
     let sdk = { app_context.sdk.load().as_ref().clone() };

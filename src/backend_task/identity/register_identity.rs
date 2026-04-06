@@ -145,10 +145,10 @@ impl AppContext {
                 identity_index,
             ) => {
                 // Scope the write lock to avoid holding it across an await.
-                let (asset_lock_transaction, asset_lock_proof_private_key) = {
+                let (asset_lock_transaction, platform_wallet) = {
                     let mut wallet = wallet.write().map_err(TaskError::from)?;
                     wallet_id = wallet.seed_hash();
-                    wallet
+                    let (tx, _key) = wallet
                         .registration_asset_lock_transaction_for_utxo(
                             self,
                             sdk.network,
@@ -157,22 +157,57 @@ impl AppContext {
                             input_address.clone(),
                             identity_index,
                         )
-                        .map_err(|e| TaskError::AssetLockTransactionBuildFailed { detail: e })?
+                        .map_err(|e| TaskError::AssetLockTransactionBuildFailed { detail: e })?;
+                    let pw = wallet
+                        .platform_wallet
+                        .clone()
+                        .ok_or(TaskError::WalletNotFound)?;
+                    (tx, pw)
                 };
 
                 let used_utxos = BTreeMap::from([(utxo, (tx_out.clone(), input_address.clone()))]);
 
-                let tx_id = self
-                    .broadcast_and_commit_asset_lock(
-                        &asset_lock_transaction,
-                        tx_out.value,
-                        &wallet_id,
-                        &wallet,
-                        Some(&used_utxos),
-                    )
-                    .await?;
+                // Store the asset lock in the DB before broadcast for crash safety.
+                self.db.store_asset_lock_transaction(
+                    &asset_lock_transaction,
+                    tx_out.value,
+                    None,
+                    &wallet_id,
+                    self.network,
+                )?;
 
-                let asset_lock_proof = self.wait_for_asset_lock_proof(tx_id).await?;
+                let tx_id = asset_lock_transaction.txid();
+                let out_point = OutPoint::new(tx_id, 0);
+
+                // Register the TX with AssetLockManager so it can track
+                // broadcast and proof lifecycle.
+                platform_wallet.asset_locks().recover_asset_lock_blocking(
+                    asset_lock_transaction,
+                    tx_out.value,
+                    0,
+                    platform_wallet::AssetLockFundingType::IdentityRegistration,
+                    identity_index,
+                    out_point,
+                    None,
+                );
+
+                // resume_asset_lock handles broadcast (if Built status) and
+                // waits for the finality proof (IS-lock or ChainLock).
+                let (asset_lock_proof, asset_lock_proof_private_key) = platform_wallet
+                    .asset_locks()
+                    .resume_asset_lock(&out_point, std::time::Duration::from_secs(300))
+                    .await
+                    .map_err(|e| TaskError::AssetLockTransactionBuildFailed {
+                        detail: e.to_string(),
+                    })?;
+
+                // Remove consumed UTXOs from the old Wallet model (QR-funded-UTXO flow).
+                {
+                    let wallet_guard = wallet.write()?;
+                    wallet_guard
+                        .remove_selected_utxos(&used_utxos, &self.db, self.network)
+                        .map_err(|e| TaskError::UtxoUpdateFailed { detail: e })?;
+                }
 
                 (asset_lock_proof, asset_lock_proof_private_key, tx_id)
             }

@@ -6506,6 +6506,7 @@ dependencies = [
  "platform-encryption",
  "thiserror 1.0.69",
  "tokio",
+ "tokio-util",
  "tracing",
  "zeroize",
 ]

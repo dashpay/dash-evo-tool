@@ -449,6 +449,7 @@ impl AppContext {
                     asset_lock_proof.clone(),
                     asset_lock_proof_private_key,
                     &qualified_identity,
+                    None,
                 )
                 .await
         } else {
@@ -477,6 +478,7 @@ impl AppContext {
                                     asset_lock_proof.clone(),
                                     asset_lock_proof_private_key,
                                     &qualified_identity,
+                                    None,
                                 )
                                 .await
                         } else {

@@ -56,6 +56,7 @@ impl AppContext {
                 vec![public_key_to_add.identity_public_key.clone()],
                 vec![],
                 &qualified_identity,
+                None,
             )
             .await?;
 

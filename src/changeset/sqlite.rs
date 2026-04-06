@@ -1088,7 +1088,7 @@ mod tests {
         let db = Arc::new(create_test_database().expect("create test db"));
         let persister = make_persister(db);
 
-        let cs = persister.initialize(TEST_WALLET_ID).expect("initialize");
+        let cs = persister.load(TEST_WALLET_ID).expect("initialize");
         assert!(cs.is_empty());
     }
 
@@ -1265,7 +1265,7 @@ mod tests {
         persister.flush(TEST_WALLET_ID).expect("flush changeset");
 
         // Now initialize and verify the state was loaded.
-        let loaded = persister.initialize(TEST_WALLET_ID).expect("initialize");
+        let loaded = persister.load(TEST_WALLET_ID).expect("initialize");
         assert!(!loaded.is_empty());
 
         // Chain height should match.

@@ -190,7 +190,7 @@ pub(crate) fn qualified_identity(
 pub(crate) fn platform_wallet(
     ctx: &AppContext,
     seed_hash: WalletSeedHash,
-) -> Result<crate::platform_wallet_bridge::PlatformWallet, McpToolError> {
+) -> Result<std::sync::Arc<crate::platform_wallet_bridge::PlatformWallet>, McpToolError> {
     ctx.get_platform_wallet(&seed_hash)
         .ok_or_else(|| McpToolError::WalletNotFound {
             id: hex::encode(seed_hash),

@@ -12,6 +12,28 @@ use platform_wallet::CoreAddressInfo;
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
+/// Register a recovered asset lock with the PlatformWallet's AssetLockManager.
+///
+/// This keeps the AssetLockManager in sync with evo-tool's own tracking. The
+/// `funding_type` is set to `IdentityRegistration` as a default since recovery
+/// cannot determine the original funding type.
+fn register_with_asset_lock_manager(
+    wallet: &Wallet,
+    tx: &dash_sdk::dpp::dashcore::Transaction,
+    amount: u64,
+    proof: Option<AssetLockProof>,
+) {
+    if let Some(pw) = wallet.platform_wallet.as_ref() {
+        pw.asset_locks().blocking_recover_asset_lock(
+            tx.clone(),
+            amount,
+            platform_wallet::AssetLockFundingType::IdentityRegistration,
+            0, // identity_index unknown for recovered locks
+            proof,
+        );
+    }
+}
+
 impl AppContext {
     /// Search for unused asset locks by scanning the Core wallet for asset lock transactions
     /// that belong to this wallet but aren't tracked in the database.
@@ -195,7 +217,7 @@ impl AppContext {
                 tracing::warn!("Failed to update chain locked height for {}: {}", txid, e);
             }
 
-            // Add to wallet's in-memory unused_asset_locks
+            // Add to wallet's in-memory unused_asset_locks and AssetLockManager
             {
                 let mut wallet_guard = wallet.write()?;
 
@@ -205,6 +227,14 @@ impl AppContext {
                     .any(|(tx, _, _, _, _)| tx.txid() == txid);
 
                 if !already_exists {
+                    // Register with PlatformWallet's AssetLockManager
+                    register_with_asset_lock_manager(
+                        &wallet_guard,
+                        &raw_tx,
+                        credit_amount,
+                        proof.clone(),
+                    );
+
                     wallet_guard.unused_asset_locks.push((
                         raw_tx.clone(),
                         addr,
@@ -337,7 +367,7 @@ impl AppContext {
                     tracing::warn!("Failed to update chain locked height for {}: {}", txid, e);
                 }
 
-                // Add to wallet
+                // Add to wallet and AssetLockManager
                 {
                     let mut wallet_guard = wallet.write()?;
 
@@ -347,6 +377,14 @@ impl AppContext {
                         .any(|(tx, _, _, _, _)| tx.txid() == txid);
 
                     if !already_exists {
+                        // Register with PlatformWallet's AssetLockManager
+                        register_with_asset_lock_manager(
+                            &wallet_guard,
+                            &raw_tx,
+                            credit_amount,
+                            proof.clone(),
+                        );
+
                         wallet_guard.unused_asset_locks.push((
                             raw_tx.clone(),
                             credit_addr,

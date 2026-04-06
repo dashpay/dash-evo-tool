@@ -305,11 +305,22 @@ impl AppContext {
 
                 let platform_wallet = Arc::new(platform_wallet);
 
-                // Store on the Wallet struct itself
+                // Store on the Wallet struct itself and sync asset locks
                 if let Ok(wallets) = self.wallets.read() {
                     if let Some(wallet_arc) = wallets.get(&seed_hash) {
                         if let Ok(mut wallet) = wallet_arc.write() {
                             wallet.platform_wallet = Some(Arc::clone(&platform_wallet));
+
+                            // Sync DB-loaded asset locks into AssetLockManager
+                            for (tx, _, amount, _, proof) in &wallet.unused_asset_locks {
+                                platform_wallet.asset_locks().blocking_recover_asset_lock(
+                                    tx.clone(),
+                                    *amount,
+                                    platform_wallet::AssetLockFundingType::IdentityRegistration,
+                                    0,
+                                    proof.clone(),
+                                );
+                            }
                         }
                     }
                 }

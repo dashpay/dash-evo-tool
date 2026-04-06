@@ -132,7 +132,7 @@ impl TopUpIdentityScreen {
                 let Some(selected_wallet) = &self.wallet else {
                     return AppAction::None;
                 };
-                if let Some((utxo, tx_out, address)) = self.funding_utxo.clone() {
+                if let Some((_utxo, tx_out, _address)) = self.funding_utxo.clone() {
                     let wallet_index = self.identity.wallet_index.unwrap_or(u32::MAX >> 1);
                     let top_up_index = self
                         .identity
@@ -142,13 +142,14 @@ impl TopUpIdentityScreen {
                         .cloned()
                         .map(|i| i + 1)
                         .unwrap_or_default();
+                    // Note: the specific QR-funded UTXO is not forced — the wallet's
+                    // coin selection will pick UTXOs automatically. The amount matches
+                    // what was received via QR.
                     let identity_input = IdentityTopUpInfo {
                         qualified_identity: self.identity.clone(),
                         wallet: Arc::clone(selected_wallet),
-                        identity_funding_method: TopUpIdentityFundingMethod::FundWithUtxo(
-                            utxo,
-                            tx_out,
-                            address,
+                        identity_funding_method: TopUpIdentityFundingMethod::FundWithWallet(
+                            tx_out.value,
                             wallet_index,
                             top_up_index,
                         ),

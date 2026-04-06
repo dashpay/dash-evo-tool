@@ -161,16 +161,17 @@ impl AddNewIdentityScreen {
                     let Some(selected_wallet) = &self.selected_wallet else {
                         return AppAction::None;
                     };
-                    if let Some((utxo, tx_out, address)) = self.funding_utxo.clone() {
+                    if let Some((_utxo, tx_out, _address)) = self.funding_utxo.clone() {
+                        // Note: the specific QR-funded UTXO is not forced — the wallet's
+                        // coin selection will pick UTXOs automatically. The amount matches
+                        // what was received via QR.
                         let identity_input = IdentityRegistrationInfo {
                             alias_input: self.alias_input.clone(),
                             keys: self.identity_keys.clone(),
                             wallet: Arc::clone(selected_wallet), // Clone the Arc reference
                             wallet_identity_index: self.identity_id_number,
-                            identity_funding_method: RegisterIdentityFundingMethod::FundWithUtxo(
-                                utxo,
-                                tx_out,
-                                address,
+                            identity_funding_method: RegisterIdentityFundingMethod::FundWithWallet(
+                                tx_out.value,
                                 self.identity_id_number,
                             ),
                         };

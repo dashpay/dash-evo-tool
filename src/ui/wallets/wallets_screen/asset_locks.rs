@@ -19,7 +19,10 @@ impl WalletsBalancesScreen {
         if let Some(arc_wallet) = &self.selected_wallet {
             let wallet = arc_wallet.read().unwrap();
 
-            // Read tracked locks from AssetLockManager
+            // TODO: Read asset locks from the database instead of AssetLockManager.
+            // AssetLockManager only tracks ACTIVE locks — consumed locks are removed
+            // and won't appear here. The DB (get_all_asset_lock_transactions) is the
+            // source of truth and includes consumed locks with their identity_id.
             let locks = if let Some(pw) = wallet.platform_wallet.as_ref() {
                 pw.asset_locks().list_tracked_locks_blocking()
             } else {

@@ -615,6 +615,9 @@ impl Wallet {
             .unwrap_or(false)
     }
 
+    /// TODO: Read from the database instead of AssetLockManager.
+    /// AssetLockManager only tracks ACTIVE locks — consumed locks are removed.
+    /// The DB (where identity_id IS NULL) is the source of truth for unused locks.
     pub fn has_unused_asset_lock(&self) -> bool {
         self.platform_wallet
             .as_ref()

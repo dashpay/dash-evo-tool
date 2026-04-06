@@ -54,6 +54,11 @@ impl AssetLockDetailScreen {
     }
 
     /// Get the asset lock data from AssetLockManager by index.
+    ///
+    /// TODO: Read from the database instead of AssetLockManager.
+    /// AssetLockManager only tracks ACTIVE locks — consumed locks are removed
+    /// and won't appear here. The DB (get_all_asset_lock_transactions) is the
+    /// source of truth and includes consumed locks with their identity_id.
     fn get_asset_lock_data(
         &self,
     ) -> Option<(

@@ -19,6 +19,9 @@ impl TopUpIdentityScreen {
         };
 
         // Read the wallet to access tracked locks from AssetLockManager
+        // TODO: Read from the database instead, filtering for UNUSED locks
+        // (where identity_id IS NULL). AssetLockManager only tracks ACTIVE locks —
+        // consumed locks are removed. The DB is the source of truth.
         let wallet = selected_wallet.read().unwrap();
 
         let locks = if let Some(pw) = wallet.platform_wallet.as_ref() {

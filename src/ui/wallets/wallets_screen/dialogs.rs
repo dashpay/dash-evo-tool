@@ -1059,6 +1059,9 @@ impl WalletsBalancesScreen {
                 }
             };
 
+            // TODO: Read from the database instead of AssetLockManager.
+            // AssetLockManager only tracks ACTIVE locks — consumed locks are removed.
+            // The DB is the source of truth.
             let locks = if let Some(pw) = wallet.platform_wallet.as_ref() {
                 pw.asset_locks().list_tracked_locks_blocking()
             } else {

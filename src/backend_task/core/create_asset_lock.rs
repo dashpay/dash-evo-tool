@@ -122,9 +122,10 @@ impl AppContext {
             None,
         );
 
-        // Broadcast via AssetLockManager (uses DAPI).
-        if let Err(e) = platform_wallet
-            .asset_locks()
+        // Broadcast via SPV P2P peers.
+        if let Err(e) = self
+            .wallet_manager
+            .spv()
             .broadcast_transaction(&asset_lock_transaction)
             .await
         {

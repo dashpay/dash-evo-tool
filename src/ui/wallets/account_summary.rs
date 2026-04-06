@@ -263,7 +263,7 @@ pub fn collect_account_summaries(
     // Use PlatformWallet's CoreAddressInfo as the canonical source.
     // Locked wallets (no PlatformWallet) show no account summaries.
     if let Some(pw) = wallet.platform_wallet.as_ref() {
-        let info = pw.core().blocking_wallet_info();
+        let info = pw.core().wallet_info_blocking();
         for addr_info in platform_wallet::CoreAddressInfo::all_from_wallet_info(&info) {
             let (category, index) = categorize_account_path(
                 &addr_info.derivation_path,

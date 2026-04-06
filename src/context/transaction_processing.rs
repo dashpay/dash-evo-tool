@@ -315,9 +315,10 @@ impl AppContext {
 
                 // Register with PlatformWallet's AssetLockManager
                 if let Some(pw) = wallet.platform_wallet.as_ref() {
-                    pw.asset_locks().blocking_recover_asset_lock(
+                    pw.asset_locks().recover_asset_lock_blocking(
                         tx.clone(),
                         amount,
+                        0,
                         platform_wallet::AssetLockFundingType::IdentityRegistration,
                         0,
                         proof.clone(),

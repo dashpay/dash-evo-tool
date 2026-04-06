@@ -682,7 +682,7 @@ impl WalletSendScreen {
         else {
             return vec![];
         };
-        let info = pw.core().blocking_wallet_info();
+        let info = pw.core().wallet_info_blocking();
         let mut addresses: Vec<(Address, u64)> =
             platform_wallet::CoreAddressInfo::all_from_wallet_info(&info)
                 .into_iter()

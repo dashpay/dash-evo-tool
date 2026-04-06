@@ -29,6 +29,7 @@ impl AppContext {
             .asset_locks()
             .build_asset_lock_transaction(
                 amount_duffs,
+                0,
                 platform_wallet::AssetLockFundingType::IdentityRegistration,
                 identity_index,
             )
@@ -68,6 +69,7 @@ impl AppContext {
             .asset_locks()
             .build_asset_lock_transaction(
                 amount_duffs,
+                0,
                 platform_wallet::AssetLockFundingType::IdentityTopUp,
                 identity_index,
             )

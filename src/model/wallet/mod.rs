@@ -636,7 +636,7 @@ impl Wallet {
         self.platform_wallet
             .as_ref()
             .map(|pw| {
-                let info = pw.core().blocking_wallet_info();
+                let info = pw.core().wallet_info_blocking();
                 platform_wallet::CoreAddressInfo::all_from_wallet_info(&info)
             })
             .unwrap_or_default()
@@ -646,7 +646,7 @@ impl Wallet {
     /// Returns `None` if the wallet is locked (no PlatformWallet).
     pub fn derivation_path_for_address(&self, address: &Address) -> Option<DerivationPath> {
         let pw = self.platform_wallet.as_ref()?;
-        let info = pw.core().blocking_wallet_info();
+        let info = pw.core().wallet_info_blocking();
         platform_wallet::CoreAddressInfo::all_from_wallet_info(&info)
             .into_iter()
             .find(|a| &a.address == address)
@@ -664,7 +664,7 @@ impl Wallet {
         self.platform_wallet
             .as_ref()
             .map(|pw| {
-                let info = pw.core().blocking_wallet_info();
+                let info = pw.core().wallet_info_blocking();
                 platform_wallet::CoreAddressInfo::all_from_wallet_info(&info)
                     .into_iter()
                     .find(|a| &a.address == address)
@@ -711,7 +711,7 @@ impl Wallet {
         let Some(pw) = self.platform_wallet.as_ref() else {
             return Vec::new();
         };
-        let info = pw.core().blocking_wallet_info();
+        let info = pw.core().wallet_info_blocking();
         info.transaction_history()
             .into_iter()
             .map(|record| {
@@ -1073,7 +1073,7 @@ impl Wallet {
         if let Some(pw) = &self.platform_wallet {
             return pw
                 .core()
-                .blocking_next_receive_address()
+                .next_receive_address_blocking()
                 .map_err(|e| e.to_string());
         }
         Err("Wallet is locked".to_string())
@@ -1087,7 +1087,7 @@ impl Wallet {
         if let Some(pw) = &self.platform_wallet {
             return pw
                 .core()
-                .blocking_next_change_address()
+                .next_change_address_blocking()
                 .map_err(|e| e.to_string());
         }
         Err("Wallet is locked".to_string())

@@ -28,7 +28,7 @@ impl AppContext {
             // Locked wallets (no PlatformWallet) have no addresses — return empty.
             // Exclude platform payment addresses since those are not tracked by Core.
             let addrs = if let Some(pw) = wallet_guard.platform_wallet.as_ref() {
-                let info = pw.core().blocking_wallet_info();
+                let info = pw.core().wallet_info_blocking();
                 CoreAddressInfo::all_from_wallet_info(&info)
                     .into_iter()
                     .filter(|a| !a.derivation_path.is_platform_payment(self.network))

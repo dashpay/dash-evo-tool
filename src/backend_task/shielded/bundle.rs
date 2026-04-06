@@ -470,6 +470,7 @@ pub async fn shield_from_asset_lock(
             .asset_locks()
             .build_asset_lock_transaction(
                 asset_lock_duffs,
+                0,
                 platform_wallet::AssetLockFundingType::IdentityRegistration,
                 0,
             )

@@ -313,9 +313,10 @@ impl AppContext {
 
                             // Sync DB-loaded asset locks into AssetLockManager
                             for (tx, _, amount, _, proof) in &wallet.unused_asset_locks {
-                                platform_wallet.asset_locks().blocking_recover_asset_lock(
+                                platform_wallet.asset_locks().recover_asset_lock_blocking(
                                     tx.clone(),
                                     *amount,
+                                    0,
                                     platform_wallet::AssetLockFundingType::IdentityRegistration,
                                     0,
                                     proof.clone(),
@@ -1223,7 +1224,7 @@ impl AppContext {
 
                 // Derive xpub and add account to key-wallet's Wallet (key store)
                 let account = {
-                    let mut wallet = pw.core().blocking_wallet_mut();
+                    let mut wallet = pw.core().wallet_mut_blocking();
                     let path = match account_type.derivation_path(kw_network) {
                         Ok(p) => p,
                         Err(e) => {

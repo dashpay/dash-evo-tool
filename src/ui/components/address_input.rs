@@ -397,7 +397,7 @@ impl AddressInput {
         // Core addresses: only BIP44 paths (m/44'/coin'/account'/change/index).
         // Read from PlatformWallet's CoreAddressInfo if available.
         if let Some(pw) = guard.platform_wallet.as_ref() {
-            let info = pw.core().blocking_wallet_info();
+            let info = pw.core().wallet_info_blocking();
             for addr_info in platform_wallet::CoreAddressInfo::all_from_wallet_info(&info) {
                 if !addr_info.derivation_path.is_bip44(self.network) {
                     continue;
@@ -440,7 +440,7 @@ impl AddressInput {
 
         let mut seen_platform = std::collections::HashSet::new();
         if let Some(pw) = guard.platform_wallet.as_ref() {
-            let info = pw.core().blocking_wallet_info();
+            let info = pw.core().wallet_info_blocking();
             for addr_info in platform_wallet::CoreAddressInfo::all_from_wallet_info(&info) {
                 if !addr_info.derivation_path.is_platform_payment(self.network) {
                     continue;

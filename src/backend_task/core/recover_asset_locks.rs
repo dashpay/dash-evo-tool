@@ -24,9 +24,10 @@ fn register_with_asset_lock_manager(
     proof: Option<AssetLockProof>,
 ) {
     if let Some(pw) = wallet.platform_wallet.as_ref() {
-        pw.asset_locks().blocking_recover_asset_lock(
+        pw.asset_locks().recover_asset_lock_blocking(
             tx.clone(),
             amount,
+            0, // account_index unknown for recovered locks, default to 0
             platform_wallet::AssetLockFundingType::IdentityRegistration,
             0, // identity_index unknown for recovered locks
             proof,
@@ -47,7 +48,7 @@ impl AppContext {
             // Read addresses from PlatformWallet (canonical source).
             // Locked wallets (no PlatformWallet) have no addresses — return empty.
             let addresses: Vec<Address> = if let Some(pw) = wallet_guard.platform_wallet.as_ref() {
-                let info = pw.core().blocking_wallet_info();
+                let info = pw.core().wallet_info_blocking();
                 CoreAddressInfo::all_from_wallet_info(&info)
                     .into_iter()
                     .map(|a| a.address)

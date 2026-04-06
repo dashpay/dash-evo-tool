@@ -103,6 +103,7 @@ impl AppContext {
                     .asset_locks()
                     .create_funded_asset_lock_proof(
                         amount,
+                        0,
                         platform_wallet::AssetLockFundingType::IdentityRegistration,
                         identity_index,
                     )

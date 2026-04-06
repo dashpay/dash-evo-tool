@@ -255,9 +255,6 @@ impl AppContext {
             {
                 let mut wallet = wallet.write().map_err(TaskError::from)?;
                 wallet
-                    .unused_asset_locks
-                    .retain(|(tx, _, _, _, _)| tx.txid() != tx_id);
-                wallet
                     .identities
                     .insert(wallet_identity_index, qualified_identity.identity.clone());
             }
@@ -389,9 +386,6 @@ impl AppContext {
         )?;
         {
             let mut wallet = wallet.write().map_err(TaskError::from)?;
-            wallet
-                .unused_asset_locks
-                .retain(|(tx, _, _, _, _)| tx.txid() != tx_id);
             wallet.identities.insert(wallet_identity_index, identity);
         }
 

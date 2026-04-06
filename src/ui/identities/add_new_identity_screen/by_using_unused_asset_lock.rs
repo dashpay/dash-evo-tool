@@ -6,7 +6,10 @@ use crate::ui::identities::add_new_identity_screen::{
     AddNewIdentityScreen, FundingMethod, WalletFundedScreenStep,
 };
 use crate::ui::theme::DashColors;
+use dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayload;
+use dash_sdk::dpp::dashcore::Address;
 use egui::{RichText, Ui};
+use platform_wallet::AssetLockStatus;
 
 impl AddNewIdentityScreen {
     fn render_choose_funding_asset_lock(&mut self, ui: &mut egui::Ui) {
@@ -16,10 +19,16 @@ impl AddNewIdentityScreen {
             return;
         };
 
-        // Read the wallet to access unused asset locks
+        // Read the wallet to access tracked locks from AssetLockManager
         let wallet = selected_wallet.read().unwrap();
 
-        if wallet.unused_asset_locks.is_empty() {
+        let locks = if let Some(pw) = wallet.platform_wallet.as_ref() {
+            pw.asset_locks().list_tracked_locks_blocking()
+        } else {
+            Vec::new()
+        };
+
+        if locks.is_empty() {
             ui.label("No unused asset locks available.");
             return;
         }
@@ -27,12 +36,13 @@ impl AddNewIdentityScreen {
         ui.heading("Select an unused asset lock:");
         ui.add_space(8.0);
 
+        let network = self.app_context.network;
+
         // Track the index of the currently selected asset lock (if any)
         let selected_index = self.funding_asset_lock.as_ref().and_then(|(_, proof, _)| {
-            wallet
-                .unused_asset_locks
+            locks
                 .iter()
-                .position(|(_, _, _, _, p)| p.as_ref() == Some(proof))
+                .position(|lock| lock.proof.as_ref() == Some(proof))
         });
 
         // Display the asset locks in a scrollable area
@@ -40,14 +50,21 @@ impl AddNewIdentityScreen {
             .auto_shrink([false, true])
             .min_scrolled_height(180.0)
             .show(ui, |ui| {
-                for (index, (tx, address, amount, islock, proof)) in
-                    wallet.unused_asset_locks.iter().enumerate()
-                {
+                for (index, lock) in locks.iter().enumerate() {
                     ui.group(|ui| {
                         ui.vertical(|ui| {
-                            let tx_id = tx.txid().to_string();
-                            let lock_amount = *amount as f64 * 1e-8; // Convert to DASH
-                            let is_locked = if islock.is_some() { "Yes" } else { "No" };
+                            let tx_id = lock.out_point.txid.to_string();
+                            let lock_amount = lock.amount as f64 * 1e-8; // Convert to DASH
+                            let is_locked = matches!(lock.status, AssetLockStatus::InstantSendLocked | AssetLockStatus::ChainLocked);
+
+                            let address_str = if let Some(TransactionPayload::AssetLockPayloadType(payload)) = &lock.transaction.special_transaction_payload {
+                                payload.credit_outputs.get(lock.out_point.vout as usize)
+                                    .and_then(|output| Address::from_script(&output.script_pubkey, network).ok())
+                                    .map(|a| a.to_string())
+                                    .unwrap_or_else(|| "Unknown".to_string())
+                            } else {
+                                "Unknown".to_string()
+                            };
 
                             // Display asset lock information with "Selected" if this one is selected
                             if Some(index) == selected_index {
@@ -55,18 +72,26 @@ impl AddNewIdentityScreen {
                             }
 
                             ui.label(format!("TxID: {}", tx_id));
-                            ui.label(format!("Address: {}", address));
+                            ui.label(format!("Address: {}", address_str));
                             ui.label(format!("Amount: {:.8} DASH", lock_amount));
-                            ui.label(format!("InstantLock: {}", is_locked));
+                            ui.label(format!("InstantLock: {}", if is_locked { "Yes" } else { "No" }));
 
                             ui.add_space(6.0);
 
-                            if let Some(asset_lock_proof) = proof {
+                            if let Some(asset_lock_proof) = &lock.proof {
                                 if ui.button("Select").clicked() {
+                                    let address = if let Some(TransactionPayload::AssetLockPayloadType(payload)) = &lock.transaction.special_transaction_payload {
+                                        payload.credit_outputs.get(lock.out_point.vout as usize)
+                                            .and_then(|output| Address::from_script(&output.script_pubkey, network).ok())
+                                            .unwrap_or_else(|| Address::from_script(&lock.transaction.output[0].script_pubkey, network).unwrap())
+                                    } else {
+                                        Address::from_script(&lock.transaction.output[0].script_pubkey, network).unwrap()
+                                    };
+
                                     self.funding_asset_lock = Some((
-                                        tx.clone(),
+                                        lock.transaction.clone(),
                                         asset_lock_proof.clone(),
-                                        address.clone(),
+                                        address,
                                     ));
 
                                     let mut step = self.step.write().unwrap();

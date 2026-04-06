@@ -59,10 +59,16 @@ impl AppContext {
             };
 
             let tracked: HashSet<_> = wallet_guard
-                .unused_asset_locks
-                .iter()
-                .map(|(tx, _, _, _, _)| tx.txid())
-                .collect();
+                .platform_wallet
+                .as_ref()
+                .map(|pw| {
+                    pw.asset_locks()
+                        .list_tracked_locks_blocking()
+                        .into_iter()
+                        .map(|lock| lock.out_point.txid)
+                        .collect()
+                })
+                .unwrap_or_default();
             (
                 addresses,
                 wallet_guard.seed_hash(),
@@ -219,41 +225,25 @@ impl AppContext {
                 tracing::warn!("Failed to update chain locked height for {}: {}", txid, e);
             }
 
-            // Add to wallet's in-memory unused_asset_locks and AssetLockManager
+            // Register with PlatformWallet's AssetLockManager
             {
-                let mut wallet_guard = wallet.write()?;
-
-                let already_exists = wallet_guard
-                    .unused_asset_locks
-                    .iter()
-                    .any(|(tx, _, _, _, _)| tx.txid() == txid);
-
-                if !already_exists {
-                    // Register with PlatformWallet's AssetLockManager
-                    register_with_asset_lock_manager(
-                        &wallet_guard,
-                        &raw_tx,
-                        credit_amount,
-                        proof.clone(),
-                    );
-
-                    wallet_guard.unused_asset_locks.push((
-                        raw_tx.clone(),
-                        addr,
-                        credit_amount,
-                        None,
-                        proof,
-                    ));
-                    recovered_count += 1;
-                    total_amount += credit_amount;
-
-                    tracing::info!(
-                        "Found unused asset lock: txid={}, amount={} duffs",
-                        txid,
-                        credit_amount
-                    );
-                }
+                let wallet_guard = wallet.read()?;
+                register_with_asset_lock_manager(
+                    &wallet_guard,
+                    &raw_tx,
+                    credit_amount,
+                    proof,
+                );
             }
+
+            recovered_count += 1;
+            total_amount += credit_amount;
+
+            tracing::info!(
+                "Found unused asset lock: txid={}, amount={} duffs",
+                txid,
+                credit_amount
+            );
         }
 
         // Method 2: Also check Core's wallet for any transactions we might have missed
@@ -369,85 +359,26 @@ impl AppContext {
                     tracing::warn!("Failed to update chain locked height for {}: {}", txid, e);
                 }
 
-                // Add to wallet and AssetLockManager
+                // Register with PlatformWallet's AssetLockManager
                 {
-                    let mut wallet_guard = wallet.write()?;
-
-                    let already_exists = wallet_guard
-                        .unused_asset_locks
-                        .iter()
-                        .any(|(tx, _, _, _, _)| tx.txid() == txid);
-
-                    if !already_exists {
-                        // Register with PlatformWallet's AssetLockManager
-                        register_with_asset_lock_manager(
-                            &wallet_guard,
-                            &raw_tx,
-                            credit_amount,
-                            proof.clone(),
-                        );
-
-                        wallet_guard.unused_asset_locks.push((
-                            raw_tx.clone(),
-                            credit_addr,
-                            credit_amount,
-                            None,
-                            proof,
-                        ));
-                        recovered_count += 1;
-                        total_amount += credit_amount;
-
-                        tracing::info!(
-                            "Found unused asset lock (full scan): txid={}, amount={} duffs",
-                            txid,
-                            credit_amount
-                        );
-                    }
+                    let wallet_guard = wallet.read()?;
+                    register_with_asset_lock_manager(
+                        &wallet_guard,
+                        &raw_tx,
+                        credit_amount,
+                        proof,
+                    );
                 }
-            }
-        }
 
-        // Clean up: Remove asset locks from wallet that don't belong to it
-        // (credit address not in wallet_addresses)
-        let mut txids_to_remove = Vec::new();
-        let removed_count = {
-            let mut wallet_guard = wallet.write()?;
-            let before_count = wallet_guard.unused_asset_locks.len();
+                recovered_count += 1;
+                total_amount += credit_amount;
 
-            wallet_guard.unused_asset_locks.retain(|(tx, _, _, _, _)| {
-                // Get the credit output address from the transaction
-                if let Some(TransactionPayload::AssetLockPayloadType(payload)) =
-                    &tx.special_transaction_payload
-                    && let Some(credit_output) = payload.credit_outputs.first()
-                    && let Ok(addr) =
-                        Address::from_script(&credit_output.script_pubkey, self.network)
-                    && wallet_addresses.contains(&addr)
-                {
-                    return true; // Keep this asset lock
-                }
                 tracing::info!(
-                    "Removing asset lock {} - credit address not in wallet",
-                    tx.txid()
+                    "Found unused asset lock (full scan): txid={}, amount={} duffs",
+                    txid,
+                    credit_amount
                 );
-                txids_to_remove.push(tx.txid());
-                false // Remove this asset lock
-            });
-
-            before_count - wallet_guard.unused_asset_locks.len()
-        };
-
-        // Also delete from database
-        for txid in &txids_to_remove {
-            if let Err(e) = self.db.delete_asset_lock_transaction(txid.as_byte_array()) {
-                tracing::warn!("Failed to delete asset lock {} from database: {}", txid, e);
             }
-        }
-
-        if removed_count > 0 {
-            tracing::info!(
-                "Removed {} asset locks that don't belong to this wallet",
-                removed_count
-            );
         }
 
         tracing::info!(

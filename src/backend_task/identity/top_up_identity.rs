@@ -364,12 +364,6 @@ impl AppContext {
             pw.queue_persist(changeset);
         }
 
-        {
-            let mut wallet = wallet.write().map_err(TaskError::from)?;
-            wallet
-                .unused_asset_locks
-                .retain(|(tx, _, _, _, _)| tx.txid() != tx_id);
-        }
 
         self.db.set_asset_lock_identity_id(
             tx_id.as_byte_array(),

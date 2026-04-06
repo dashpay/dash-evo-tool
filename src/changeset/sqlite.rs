@@ -13,6 +13,7 @@ use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::asset_lock_builder::
 use dash_sdk::dpp::key_wallet::PlatformP2PKHAddress;
 use dash_sdk::dpp::prelude::{AssetLockProof, Identifier};
 use dash_sdk::dpp::serialization::{PlatformDeserializable, PlatformSerializable};
+use platform_wallet::AssetLockStatus;
 use platform_wallet::changeset::Merge;
 use platform_wallet::changeset::PlatformWalletPersistence;
 use platform_wallet::changeset::changeset::{
@@ -402,11 +403,12 @@ impl SqliteWalletPersister {
         for (out_point, entry) in &asset_locks.asset_locks {
             let raw = serialize(&entry.transaction);
             // Encode chain-lock status as a height sentinel.
-            let chain_locked_height: Option<i64> = if entry.is_chain_locked {
-                Some(0) // chain-locked but exact height unknown from changeset
-            } else {
-                None
-            };
+            let chain_locked_height: Option<i64> =
+                if entry.status == AssetLockStatus::ChainLocked {
+                    Some(0) // chain-locked but exact height unknown from changeset
+                } else {
+                    None
+                };
 
             // Serialize AssetLockProof using bincode.
             let proof_bytes: Option<Vec<u8>> = entry.proof.as_ref().map(|p| {
@@ -422,7 +424,7 @@ impl SqliteWalletPersister {
                 out_point.vout as i64,
                 &raw,
                 entry.amount_duffs as i64,
-                entry.identity_id.as_ref().map(|id| id.as_bytes().to_vec()),
+                None::<Vec<u8>>, // identity_id: not tracked in changeset
                 &seed_hash[..],
                 network,
                 chain_locked_height,
@@ -755,7 +757,7 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                 let Ok(transaction) = deserialize::<Transaction>(&raw) else {
                     continue;
                 };
-                let identity_id = identity_id_bytes
+                let _identity_id = identity_id_bytes
                     .as_deref()
                     .and_then(|b| Identifier::from_bytes(b).ok());
 
@@ -785,10 +787,13 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                         funding_type,
                         identity_index: identity_index.unwrap_or(0) as u32,
                         amount_duffs: amount as u64,
-                        is_instant_locked: islock_bytes.is_some(),
-                        is_chain_locked: chain_locked_height.is_some(),
-                        is_used: identity_id.is_some(),
-                        identity_id,
+                        status: if chain_locked_height.is_some() {
+                            AssetLockStatus::ChainLocked
+                        } else if islock_bytes.is_some() {
+                            AssetLockStatus::InstantSendLocked
+                        } else {
+                            AssetLockStatus::Broadcast
+                        },
                         proof,
                     },
                 );

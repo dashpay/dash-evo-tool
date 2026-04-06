@@ -117,21 +117,8 @@ impl AppContext {
             .await
             .map_err(crate::backend_task::error::TaskError::from)?;
 
-        // Remove the used asset lock from the wallet and database
+        // Remove the used asset lock from the database
         {
-            let wallet_arc = {
-                self.wallets
-                    .read()
-                    .ok()
-                    .and_then(|w| w.get(&seed_hash).cloned())
-            };
-            if let Some(wallet_arc) = wallet_arc {
-                let mut wallet = wallet_arc.write()?;
-                wallet
-                    .unused_asset_locks
-                    .retain(|(tx, _, _, _, _)| tx.txid() != tx_id);
-            }
-            // Also remove from database
             if let Err(e) = self
                 .db
                 .delete_asset_lock_transaction(&tx_id.to_byte_array())

@@ -1059,10 +1059,33 @@ impl WalletsBalancesScreen {
                 }
             };
 
-            let asset_lock = wallet.unused_asset_locks.get(asset_lock_idx);
-            let Some((_, addr, _, _, Some(proof))) = asset_lock else {
+            let locks = if let Some(pw) = wallet.platform_wallet.as_ref() {
+                pw.asset_locks().list_tracked_locks_blocking()
+            } else {
+                Vec::new()
+            };
+            let lock = locks.get(asset_lock_idx);
+            let Some(lock) = lock else {
                 self.fund_platform_dialog.status =
                     Some("Asset lock not found or not ready".to_string());
+                self.fund_platform_dialog.status_is_error = true;
+                return AppAction::None;
+            };
+            let Some(ref proof) = lock.proof else {
+                self.fund_platform_dialog.status =
+                    Some("Asset lock proof not yet available".to_string());
+                self.fund_platform_dialog.status_is_error = true;
+                return AppAction::None;
+            };
+
+            // Derive address from credit output
+            let addr = if let Some(dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayload::AssetLockPayloadType(payload)) = &lock.transaction.special_transaction_payload {
+                payload.credit_outputs.get(lock.out_point.vout as usize)
+                    .and_then(|output| dash_sdk::dpp::dashcore::Address::from_script(&output.script_pubkey, self.app_context.network).ok())
+                    .unwrap_or_else(|| dash_sdk::dpp::dashcore::Address::from_script(&lock.transaction.output[0].script_pubkey, self.app_context.network).unwrap())
+            } else {
+                self.fund_platform_dialog.status =
+                    Some("Could not derive address from asset lock".to_string());
                 self.fund_platform_dialog.status_is_error = true;
                 return AppAction::None;
             };

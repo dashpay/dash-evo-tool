@@ -5,18 +5,14 @@ use crate::model::wallet::{
     WalletTransaction,
 };
 use dash_sdk::dashcore_rpc::dashcore::Address;
-use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
-use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::dashcore::address::{NetworkChecked, NetworkUnchecked};
 use dash_sdk::dpp::dashcore::consensus::{deserialize, serialize};
 use dash_sdk::dpp::dashcore::hashes::Hash;
-use dash_sdk::dpp::dashcore::{self, InstantLock, Network, OutPoint, Transaction};
+use dash_sdk::dpp::dashcore::{self, Network, OutPoint, Transaction};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::identity::state_transition::asset_lock_proof::InstantAssetLockProof;
-use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
 use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, ExtendedPubKey};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::dpp::prelude::{AssetLockProof, CoreBlockHeight};
+use dash_sdk::dpp::prelude::CoreBlockHeight;
 use rusqlite::{Connection, params};
 use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
@@ -565,7 +561,6 @@ impl Database {
                     wallet_seed,
                     uses_password,
                     master_bip44_ecdsa_extended_public_key: master_ecdsa_extended_public_key,
-                    unused_asset_locks: vec![],
                     alias,
                     identities: HashMap::new(),
                     is_main,
@@ -588,94 +583,9 @@ impl Database {
         // UTXOs are tracked by ManagedWalletInfo — no longer loaded into the
         // Wallet struct.
 
-        tracing::trace!("step 2: load asset lock transactions for each wallet");
-        let mut asset_lock_stmt = conn.prepare(
-            "SELECT wallet, amount, transaction_data, instant_lock_data, chain_locked_height FROM asset_lock_transaction where identity_id IS NULL AND network = ?",
-        )?;
-
-        let asset_lock_rows = asset_lock_stmt.query_map([network.to_string()], |row| {
-            let wallet_seed: Vec<u8> = row.get(0)?;
-            let amount: Duffs = row.get(1)?;
-            let tx_data: Vec<u8> = row.get(2)?;
-            let islock_data: Option<Vec<u8>> = row.get(3)?;
-            let chain_locked_height: Option<CoreBlockHeight> = row.get(4)?;
-
-            let wallet_seed_hash_array: [u8; 32] = wallet_seed.try_into().map_err(|_| {
-                rusqlite::Error::InvalidParameterName("Wallet seed should be 32 bytes".to_string())
-            })?;
-            let tx: Transaction = deserialize(&tx_data).map_err(|e| {
-                rusqlite::Error::InvalidParameterName(format!(
-                    "Failed to deserialize asset lock transaction: {}",
-                    e
-                ))
-            })?;
-
-            // Ensure the transaction payload is AssetLockPayloadType
-            let Some(TransactionPayload::AssetLockPayloadType(payload)) =
-                &tx.special_transaction_payload
-            else {
-                return Err(rusqlite::Error::InvalidParameterName(
-                    "Expected AssetLockPayloadType in special_transaction_payload".to_string(),
-                ));
-            };
-
-            // Get the first credit output
-            let first =
-                payload
-                    .credit_outputs
-                    .first()
-                    .ok_or(rusqlite::Error::InvalidParameterName(
-                        "Expected at least one credit output in asset lock".to_string(),
-                    ))?;
-
-            let address = Address::from_script(&first.script_pubkey, *network).map_err(|e| {
-                rusqlite::Error::InvalidParameterName(format!(
-                    "Failed to derive address from credit output: {}",
-                    e
-                ))
-            })?;
-
-            let (islock, proof) = if let Some(islock_bytes) = islock_data {
-                // Deserialize the InstantLock
-                let is_lock: InstantLock = deserialize(&islock_bytes).map_err(|e| {
-                    rusqlite::Error::InvalidParameterName(format!(
-                        "Failed to deserialize InstantLock: {}",
-                        e
-                    ))
-                })?;
-                (
-                    Some(is_lock.clone()),
-                    Some(AssetLockProof::Instant(InstantAssetLockProof::new(
-                        is_lock,
-                        tx.clone(),
-                        0,
-                    ))),
-                )
-            } else if let Some(chain_locked_height) = chain_locked_height {
-                (
-                    None,
-                    Some(AssetLockProof::Chain(ChainAssetLockProof {
-                        core_chain_locked_height: chain_locked_height,
-                        out_point: OutPoint::new(tx.txid(), 0),
-                    })),
-                )
-            } else {
-                (None, None)
-            };
-
-            Ok((wallet_seed_hash_array, tx, address, amount, islock, proof))
-        })?;
-
-        tracing::trace!("step 3: add the asset lock transactions to the wallet");
-        for row in asset_lock_rows {
-            let (wallet_seed, tx, address, amount, islock, proof) = row?;
-
-            if let Some(wallet) = wallets_map.get_mut(&wallet_seed) {
-                wallet
-                    .unused_asset_locks
-                    .push((tx, address, amount, islock, proof));
-            }
-        }
+        // Asset locks are loaded via AssetLockManager's changeset persistence
+        // (restore_from_changeset_blocking in PlatformWallet::apply), not from
+        // the legacy asset_lock_transaction table into the Wallet struct.
 
         tracing::trace!(
             network = network_str,

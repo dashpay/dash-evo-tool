@@ -10,8 +10,8 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
-use dash_sdk::dashcore_rpc::dashcore::{Address, InstantLock, Transaction};
-use dash_sdk::dpp::fee::Credits;
+use dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayload;
+use dash_sdk::dpp::dashcore::{Address, Transaction};
 use dash_sdk::dpp::prelude::AssetLockProof;
 use eframe::egui::{self, Context, Ui};
 use egui::{Color32, Frame, Margin, RichText};
@@ -53,29 +53,51 @@ impl AssetLockDetailScreen {
         }
     }
 
-    #[allow(clippy::type_complexity)]
+    /// Get the asset lock data from AssetLockManager by index.
     fn get_asset_lock_data(
         &self,
     ) -> Option<(
         Transaction,
         Address,
-        Credits,
-        Option<InstantLock>,
+        u64,
         Option<AssetLockProof>,
     )> {
-        self.wallet.as_ref().and_then(|wallet| {
-            let wallet = wallet.read().unwrap();
-            wallet
-                .unused_asset_locks
-                .get(self.asset_lock_index)
-                .cloned()
-        })
+        let wallet = self.wallet.as_ref()?.read().ok()?;
+        let pw = wallet.platform_wallet.as_ref()?;
+        let locks = pw.asset_locks().list_tracked_locks_blocking();
+        let lock = locks.get(self.asset_lock_index)?;
+
+        let network = self.app_context.network;
+        let address = if let Some(TransactionPayload::AssetLockPayloadType(payload)) =
+            &lock.transaction.special_transaction_payload
+        {
+            payload
+                .credit_outputs
+                .get(lock.out_point.vout as usize)
+                .and_then(|output| Address::from_script(&output.script_pubkey, network).ok())
+                .unwrap_or_else(|| {
+                    Address::from_script(
+                        &lock.transaction.output[0].script_pubkey,
+                        network,
+                    )
+                    .unwrap()
+                })
+        } else {
+            return None;
+        };
+
+        Some((
+            lock.transaction.clone(),
+            address,
+            lock.amount,
+            lock.proof.clone(),
+        ))
     }
 
     fn render_asset_lock_info(&mut self, ui: &mut Ui) {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
 
-        if let Some((tx, address, amount, _islock, proof)) = self.get_asset_lock_data() {
+        if let Some((tx, address, amount, proof)) = self.get_asset_lock_data() {
             Frame::new()
                 .fill(DashColors::surface(dark_mode))
                 .corner_radius(5.0)
@@ -104,7 +126,7 @@ impl AssetLockDetailScreen {
 
                     ui.horizontal(|ui| {
                         ui.label("Amount:");
-                        let dash_amount = amount.to_string().parse::<u64>().unwrap_or(0) as f64 * 1e-8;
+                        let dash_amount = amount as f64 * 1e-8;
                         ui.label(RichText::new(format!("{:.8} DASH ({} duffs)", dash_amount, amount))
                             .strong()
                             .color(DashColors::text_primary(dark_mode)));

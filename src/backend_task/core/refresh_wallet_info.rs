@@ -39,10 +39,16 @@ impl AppContext {
             };
 
             let asset_locks: Vec<Transaction> = wallet_guard
-                .unused_asset_locks
-                .iter()
-                .map(|(tx, _, _, _, _)| tx.clone())
-                .collect();
+                .platform_wallet
+                .as_ref()
+                .map(|pw| {
+                    pw.asset_locks()
+                        .list_tracked_locks_blocking()
+                        .into_iter()
+                        .map(|lock| lock.transaction)
+                        .collect()
+                })
+                .unwrap_or_default();
             let seed = wallet_guard.seed_hash();
             let cwn = wallet_guard.core_wallet_name.clone();
             (addrs, asset_locks, seed, cwn)
@@ -273,15 +279,7 @@ impl AppContext {
 
         // Step 10: Update wallet IN-MEMORY state only (brief write lock, no I/O)
         {
-            let mut wallet_guard = wallet.write()?;
-
-            if !stale_txids.is_empty() {
-                let stale_count = stale_txids.len();
-                wallet_guard
-                    .unused_asset_locks
-                    .retain(|(tx, _, _, _, _)| !stale_txids.contains(&tx.txid()));
-                tracing::info!("Removed {} stale asset locks", stale_count);
-            }
+            let wallet_guard = wallet.read()?;
 
             // Update PlatformWallet balance via WalletInfoWriteGuard (auto-refreshes WalletBalance)
             if let Some(pw) = wallet_guard.platform_wallet.as_ref() {

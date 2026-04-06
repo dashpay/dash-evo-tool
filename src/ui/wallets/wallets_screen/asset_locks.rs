@@ -1,9 +1,12 @@
 use crate::app::AppAction;
 use crate::ui::ScreenType;
 use crate::ui::theme::{DashColors, ResponseExt};
+use dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayload;
+use dash_sdk::dpp::dashcore::Address;
 use eframe::egui::{self, Ui};
 use egui::{Color32, Frame, Margin, RichText};
 use egui_extras::{Column, TableBuilder};
+use platform_wallet::AssetLockStatus;
 
 use super::WalletsBalancesScreen;
 
@@ -15,6 +18,13 @@ impl WalletsBalancesScreen {
 
         if let Some(arc_wallet) = &self.selected_wallet {
             let wallet = arc_wallet.read().unwrap();
+
+            // Read tracked locks from AssetLockManager
+            let locks = if let Some(pw) = wallet.platform_wallet.as_ref() {
+                pw.asset_locks().list_tracked_locks_blocking()
+            } else {
+                Vec::new()
+            };
 
             let dark_mode = ui.ctx().style().visuals.dark_mode;
             Frame::new()
@@ -39,7 +49,7 @@ impl WalletsBalancesScreen {
                     });
                     ui.add_space(10.0);
 
-                    if wallet.unused_asset_locks.is_empty() {
+                    if locks.is_empty() {
                         ui.vertical_centered(|ui| {
                             ui.add_space(20.0);
                             ui.label(RichText::new("No asset locks found").color(Color32::GRAY).size(14.0));
@@ -99,23 +109,35 @@ impl WalletsBalancesScreen {
                             });
                         })
                         .body(|mut body| {
-                            for (index, (tx, address, amount, islock, proof)) in wallet.unused_asset_locks.iter().enumerate() {
+                            for (index, lock) in locks.iter().enumerate() {
+                                let address_str = if let Some(TransactionPayload::AssetLockPayloadType(payload)) = &lock.transaction.special_transaction_payload {
+                                    payload.credit_outputs.get(lock.out_point.vout as usize)
+                                        .and_then(|output| Address::from_script(&output.script_pubkey, network).ok())
+                                        .map(|a| a.to_string())
+                                        .unwrap_or_else(|| "Unknown".to_string())
+                                } else {
+                                    "Unknown".to_string()
+                                };
+
+                                let is_locked = matches!(lock.status, AssetLockStatus::InstantSendLocked | AssetLockStatus::ChainLocked);
+                                let has_proof = lock.proof.is_some();
+
                                 body.row(25.0, |mut row| {
                                     row.col(|ui| {
-                                        ui.label(tx.txid().to_string());
+                                        ui.label(lock.out_point.txid.to_string());
                                     });
                                     row.col(|ui| {
-                                        ui.label(address.to_string());
+                                        ui.label(&address_str);
                                     });
                                     row.col(|ui| {
-                                        ui.label(format!("{}", amount));
+                                        ui.label(format!("{}", lock.amount));
                                     });
                                     row.col(|ui| {
-                                        let status = if islock.is_some() { "Yes" } else { "No" };
+                                        let status = if is_locked { "Yes" } else { "No" };
                                         ui.label(status);
                                     });
                                     row.col(|ui| {
-                                        let status = if proof.is_some() { "Yes" } else { "No" };
+                                        let status = if has_proof { "Yes" } else { "No" };
                                         ui.label(status);
                                     });
                                     row.col(|ui| {
@@ -127,7 +149,7 @@ impl WalletsBalancesScreen {
                                                 ).create_screen(&self.app_context)
                                             );
                                         }
-                                        if proof.is_some()
+                                        if has_proof
                                             && ui.small_button("Fund").clickable_tooltip("Fund a Platform address with this asset lock").clicked() {
                                                 open_fund_dialog_for_idx = Some((index, platform_addresses.clone()));
                                             }

@@ -305,14 +305,6 @@ impl AppContext {
                     self.network,
                 )?;
 
-                let first = payload
-                    .credit_outputs
-                    .first()
-                    .ok_or(TaskError::AssetLockNoCreditOutputs)?;
-
-                let address = Address::from_script(&first.script_pubkey, self.network)
-                    .map_err(|e| TaskError::AssetLockAddressDerivationFailed { source: e })?;
-
                 // Register with PlatformWallet's AssetLockManager
                 if let Some(pw) = wallet.platform_wallet.as_ref() {
                     pw.asset_locks().recover_asset_lock_blocking(
@@ -325,11 +317,6 @@ impl AppContext {
                         proof.clone(),
                     );
                 }
-
-                // Add the asset lock to the wallet's unused_asset_locks
-                wallet
-                    .unused_asset_locks
-                    .push((tx.clone(), address, amount, islock, proof));
 
                 break; // Exit the loop after updating the relevant wallet
             }

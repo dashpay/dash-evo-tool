@@ -10,7 +10,6 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
-use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayload;
 use dash_sdk::dpp::dashcore::{Address, InstantLock, OutPoint, Transaction};
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::InstantAssetLockProof;

@@ -456,7 +456,7 @@ impl AppContext {
                 }),
                 ..Default::default()
             };
-            pw.stage_changeset(changeset);
+            pw.queue_persist(changeset);
             self.persist_platform_wallet(&pw, &wallet_id);
         }
 

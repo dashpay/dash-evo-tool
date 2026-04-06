@@ -98,23 +98,19 @@ impl AppContext {
             .ok_or(TaskError::WalletNotFound)
     }
 
-    /// Persist staged changesets from a `PlatformWallet` to SQLite.
+    /// Flush queued changesets from a `PlatformWallet` to SQLite.
     ///
-    /// Creates a [`SqliteWalletPersister`] and drains whatever has been staged
-    /// via `PlatformWallet::stage_changeset()`. If nothing is staged the call
-    /// is a no-op. Persistence failures are logged but never propagated — the
-    /// in-memory state remains authoritative.
+    /// Calls [`PlatformWallet::flush_persist`] which delegates to the
+    /// attached persister's `flush()`. If no persister is attached or nothing
+    /// is queued the call is a no-op. Persistence failures are logged but
+    /// never propagated — the in-memory state remains authoritative.
     pub(crate) fn persist_platform_wallet(
         &self,
         platform_wallet: &PlatformWallet,
-        seed_hash: &WalletSeedHash,
+        _seed_hash: &WalletSeedHash,
     ) {
-        use crate::persistence::SqliteWalletPersister;
-        let mut persister =
-            SqliteWalletPersister::new(self.db.clone(), *seed_hash, self.network.to_string());
-        if let Err(e) = platform_wallet.persist(&mut persister) {
+        if let Err(e) = platform_wallet.flush_persist() {
             tracing::warn!(
-                wallet = %hex::encode(seed_hash),
                 error = %e,
                 "Failed to persist wallet changes"
             );
@@ -276,8 +272,16 @@ impl AppContext {
         // Create a PlatformWallet to discover its WalletId (SHA256 of root pubkey).
         // This is a lightweight, synchronous operation (no network I/O).
         match PlatformWallet::from_seed_bytes(sdk, kw_network, seed_bytes, options) {
-            Ok(platform_wallet) => {
+            Ok(mut platform_wallet) => {
                 let wallet_id = platform_wallet.wallet_id();
+
+                // Attach SQLite persistence backend.
+                let persister = crate::persistence::SqliteWalletPersister::new(
+                    self.db.clone(),
+                    seed_hash,
+                    self.network.to_string(),
+                );
+                platform_wallet.set_persister(Box::new(persister));
 
                 // Update the bidirectional mapping
                 if let Ok(mut mapping) = self.wallet_id_mapping.lock() {

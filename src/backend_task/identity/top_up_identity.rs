@@ -403,7 +403,7 @@ impl AppContext {
                 }),
                 ..Default::default()
             };
-            pw.stage_changeset(changeset);
+            pw.queue_persist(changeset);
 
             if let Ok(Some((seed_hash, _))) = qualified_identity.determine_wallet_info() {
                 self.persist_platform_wallet(pw, &seed_hash);

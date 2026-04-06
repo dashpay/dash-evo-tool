@@ -1,4 +1,4 @@
-//! SQLite-backed implementation of [`WalletPersistence`].
+//! SQLite-backed implementation of [`PlatformWalletPersistence`].
 //!
 //! Persists wallet change deltas into the existing evo-tool database tables
 //! (`wallet`, `wallet_transactions`, `utxos`) using a single `rusqlite::Transaction`
@@ -13,7 +13,7 @@ use dash_sdk::dpp::key_wallet::PlatformP2PKHAddress;
 use dash_sdk::dpp::prelude::Identifier;
 use dash_sdk::dpp::serialization::{PlatformDeserializable, PlatformSerializable};
 use platform_wallet::persistence::Merge;
-use platform_wallet::persistence::WalletPersistence;
+use platform_wallet::persistence::PlatformWalletPersistence;
 use platform_wallet::persistence::changeset::{
     AccountChangeSet, AssetLockChangeSet, AssetLockEntry, ChainChangeSet, IdentityChangeSet,
     IdentityEntry, PlatformAddressChangeSet, PlatformAddressEntry, PlatformWalletChangeSet,
@@ -24,13 +24,14 @@ use std::sync::Arc;
 
 /// Persists [`PlatformWalletChangeSet`] deltas into the evo-tool SQLite database.
 ///
-/// Each call to [`persist`](WalletPersistence::persist) acquires the database
-/// connection lock, opens a transaction, writes all sub-changesets, and commits
-/// atomically.
+/// Changesets are buffered via [`queue`](PlatformWalletPersistence::queue) and
+/// written atomically on [`flush`](PlatformWalletPersistence::flush).
 pub struct SqliteWalletPersister {
     db: Arc<Database>,
     seed_hash: [u8; 32],
     network: String,
+    /// Accumulated changesets waiting to be flushed.
+    staged: PlatformWalletChangeSet,
 }
 
 /// Error type for [`SqliteWalletPersister`].
@@ -47,6 +48,7 @@ impl SqliteWalletPersister {
             db,
             seed_hash,
             network,
+            staged: PlatformWalletChangeSet::default(),
         }
     }
 }
@@ -368,10 +370,8 @@ impl SqliteWalletPersister {
     }
 }
 
-impl WalletPersistence for SqliteWalletPersister {
-    type Error = SqlitePersistError;
-
-    fn initialize(&mut self) -> Result<PlatformWalletChangeSet, Self::Error> {
+impl PlatformWalletPersistence for SqliteWalletPersister {
+    fn initialize(&mut self) -> Result<PlatformWalletChangeSet, Box<dyn std::error::Error + Send + Sync>> {
         let conn = self.db.shared_connection();
         let guard = conn.lock().unwrap();
 
@@ -733,7 +733,22 @@ impl WalletPersistence for SqliteWalletPersister {
         }
     }
 
-    fn persist(&mut self, changeset: &PlatformWalletChangeSet) -> Result<(), Self::Error> {
+    fn queue(&mut self, changeset: PlatformWalletChangeSet) {
+        self.staged.merge(changeset);
+    }
+
+    fn flush(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let changeset = std::mem::take(&mut self.staged);
+        if changeset.is_empty() {
+            return Ok(());
+        }
+        self.persist_inner(&changeset).map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+    }
+}
+
+impl SqliteWalletPersister {
+    /// Internal persist implementation used by [`flush`].
+    fn persist_inner(&mut self, changeset: &PlatformWalletChangeSet) -> Result<(), SqlitePersistError> {
         let conn = self.db.shared_connection();
         let mut guard = conn.lock().unwrap();
         let tx = guard.transaction()?;
@@ -967,7 +982,8 @@ mod tests {
         let mut persister = make_persister(db);
 
         let cs = PlatformWalletChangeSet::default();
-        persister.persist(&cs).expect("persist empty changeset");
+        persister.queue(cs);
+        persister.flush().expect("flush empty changeset");
     }
 
     /// Persisting a chain changeset updates the wallet row.
@@ -1001,7 +1017,8 @@ mod tests {
             }),
             ..Default::default()
         };
-        persister.persist(&cs).expect("persist chain changeset");
+        persister.queue(cs);
+        persister.flush().expect("flush chain changeset");
 
         // Verify the height was written.
         let conn = db.shared_connection();
@@ -1039,7 +1056,8 @@ mod tests {
             }),
             ..Default::default()
         };
-        persister.persist(&cs).expect("persist add utxo");
+        persister.queue(cs);
+        persister.flush().expect("flush add utxo");
 
         // Verify it was inserted.
         let conn = db.shared_connection();
@@ -1065,7 +1083,8 @@ mod tests {
             }),
             ..Default::default()
         };
-        persister.persist(&cs2).expect("persist spend utxo");
+        persister.queue(cs2);
+        persister.flush().expect("flush spend utxo");
 
         // Verify it was removed.
         {
@@ -1125,7 +1144,8 @@ mod tests {
             }),
             ..Default::default()
         };
-        persister.persist(&cs).expect("persist changeset");
+        persister.queue(cs);
+        persister.flush().expect("flush changeset");
 
         // Now initialize and verify the state was loaded.
         let loaded = persister.initialize().expect("initialize");

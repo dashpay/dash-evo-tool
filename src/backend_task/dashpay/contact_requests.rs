@@ -318,7 +318,7 @@ pub async fn send_contact_request_with_proof(
         }),
         ..Default::default()
     };
-    platform_wallet.stage_changeset(changeset);
+    platform_wallet.queue_persist(changeset);
 
     let (seed_hash, _) = identity
         .determine_wallet_info()
@@ -493,7 +493,7 @@ pub async fn accept_contact_request(
         }),
         ..Default::default()
     };
-    platform_wallet.stage_changeset(changeset);
+    platform_wallet.queue_persist(changeset);
 
     let (seed_hash, _) = identity
         .determine_wallet_info()

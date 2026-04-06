@@ -52,23 +52,13 @@ impl AppContext {
             wallet_guard.update_balances(total_balance, 0, total_balance);
         }
 
-        if let Err(e) =
-            self.db
-                .update_single_key_wallet_balances(&key_hash, total_balance, 0, total_balance)
-        {
-            tracing::warn!(error = %e, "Failed to persist single key wallet balances");
-        }
-
-        for (outpoint, tx_out) in &utxo_map {
-            self.db.insert_utxo(
-                outpoint.txid.as_ref(),
-                outpoint.vout,
-                &address,
-                tx_out.value,
-                &tx_out.script_pubkey.to_bytes(),
-                self.network,
-            )?;
-        }
+        self.db.persist_single_key_wallet_refresh(
+            &key_hash,
+            total_balance,
+            &utxo_map,
+            &address,
+            self.network,
+        )?;
 
         Ok(())
     }

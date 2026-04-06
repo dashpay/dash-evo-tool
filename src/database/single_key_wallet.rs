@@ -4,7 +4,8 @@ use crate::database::Database;
 use crate::model::wallet::single_key::{
     ClosedSingleKey, SingleKeyData, SingleKeyHash, SingleKeyWallet,
 };
-use dash_sdk::dpp::dashcore::{Address, Network, PublicKey};
+use dash_sdk::dpp::dashcore::hashes::Hash;
+use dash_sdk::dpp::dashcore::{Address, Network, OutPoint, PublicKey, TxOut};
 use rusqlite::{Connection, params};
 use std::collections::HashMap;
 
@@ -291,5 +292,82 @@ impl Database {
             params![alias, key_hash.as_slice()],
         )?;
         Ok(())
+    }
+
+    /// Atomically persist balance and UTXO changes after spending from a single key wallet.
+    ///
+    /// Drops spent UTXOs and updates balances in a single SQLite transaction.
+    pub fn persist_single_key_wallet_spend(
+        &self,
+        key_hash: &SingleKeyHash,
+        spent_outpoints: &[OutPoint],
+        balance: u64,
+        network: &str,
+    ) -> rusqlite::Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+
+        for outpoint in spent_outpoints {
+            let txid_bytes = outpoint.txid.as_byte_array();
+            let vout = outpoint.vout as i64;
+            tx.execute(
+                "DELETE FROM utxos WHERE txid = ? AND vout = ? AND network = ?",
+                params![txid_bytes, vout, network],
+            )?;
+        }
+
+        tx.execute(
+            "UPDATE single_key_wallet SET
+                confirmed_balance = ?1,
+                unconfirmed_balance = ?2,
+                total_balance = ?3
+            WHERE key_hash = ?4",
+            params![balance as i64, 0i64, balance as i64, key_hash.as_slice()],
+        )?;
+
+        tx.commit()
+    }
+
+    /// Atomically persist balance and UTXOs after refreshing a single key wallet from RPC.
+    ///
+    /// Updates balances and inserts all current UTXOs in a single SQLite transaction.
+    pub fn persist_single_key_wallet_refresh(
+        &self,
+        key_hash: &SingleKeyHash,
+        balance: u64,
+        utxos: &HashMap<OutPoint, TxOut>,
+        address: &Address,
+        network: Network,
+    ) -> rusqlite::Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+
+        tx.execute(
+            "UPDATE single_key_wallet SET
+                confirmed_balance = ?1,
+                unconfirmed_balance = ?2,
+                total_balance = ?3
+            WHERE key_hash = ?4",
+            params![balance as i64, 0i64, balance as i64, key_hash.as_slice()],
+        )?;
+
+        let address_str = address.to_string();
+        let network_str = network.to_string();
+        for (outpoint, tx_out) in utxos {
+            tx.execute(
+                "INSERT OR IGNORE INTO utxos (txid, vout, address, value, script_pubkey, network)
+                 VALUES (?, ?, ?, ?, ?, ?)",
+                params![
+                    outpoint.txid.as_byte_array().as_slice(),
+                    outpoint.vout,
+                    address_str,
+                    tx_out.value,
+                    tx_out.script_pubkey.as_bytes(),
+                    network_str
+                ],
+            )?;
+        }
+
+        tx.commit()
     }
 }

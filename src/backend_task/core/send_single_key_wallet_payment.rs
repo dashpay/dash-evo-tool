@@ -199,25 +199,20 @@ impl AppContext {
             wallet_guard.update_balances(new_balance, 0, new_balance);
         }
 
-        let key_hash = wallet.read()?.key_hash;
+        let (key_hash, balance) = {
+            let guard = wallet.read()?;
+            (guard.key_hash, guard.total_balance)
+        };
 
-        for (outpoint, _) in &selected_utxos {
-            if let Err(e) = self.db.drop_utxo(outpoint, &self.network.to_string()) {
-                tracing::warn!(
-                    "Failed to remove spent UTXO {:?} from database: {}",
-                    outpoint,
-                    e
-                );
-            }
-        }
-
-        let balance = wallet.read()?.total_balance;
-        if let Err(e) = self
-            .db
-            .update_single_key_wallet_balances(&key_hash, balance, 0, balance)
-        {
+        let spent_outpoints: Vec<_> = selected_utxos.iter().map(|(op, _)| *op).collect();
+        if let Err(e) = self.db.persist_single_key_wallet_spend(
+            &key_hash,
+            &spent_outpoints,
+            balance,
+            &self.network.to_string(),
+        ) {
             tracing::warn!(
-                "Failed to update single key wallet balances in database: {}",
+                "Failed to persist single key wallet spend to database: {}",
                 e
             );
         }

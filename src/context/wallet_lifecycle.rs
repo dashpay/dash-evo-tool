@@ -104,15 +104,20 @@ impl AppContext {
     /// attached persister's `flush()`. If no persister is attached or nothing
     /// is queued the call is a no-op. Persistence failures are logged but
     /// never propagated — the in-memory state remains authoritative.
-    pub(crate) fn persist_platform_wallet(
+    ///
+    /// With [`FlushStrategy::Immediate`](crate::persistence::FlushStrategy::Immediate)
+    /// (the default), each `queue()` call auto-flushes, making explicit calls
+    /// here unnecessary for most code paths. This method remains available for
+    /// batch operations that use [`FlushStrategy::Manual`](crate::persistence::FlushStrategy::Manual).
+    #[allow(dead_code)]
+    pub(crate) fn flush_wallet_persistence(
         &self,
         platform_wallet: &PlatformWallet,
-        _seed_hash: &WalletSeedHash,
     ) {
         if let Err(e) = platform_wallet.flush_persist() {
             tracing::warn!(
                 error = %e,
-                "Failed to persist wallet changes"
+                "Failed to flush wallet persistence"
             );
         }
     }
@@ -282,6 +287,16 @@ impl AppContext {
                     self.network.to_string(),
                 );
                 platform_wallet.set_persister(Box::new(persister));
+
+                // Load persisted state (transactions, UTXOs, balances, identities, etc.)
+                // from SQLite and apply it to the in-memory wallet.
+                if let Err(e) = platform_wallet.load_persisted_state() {
+                    tracing::warn!(
+                        seed = %hex::encode(seed_hash),
+                        error = %e,
+                        "Failed to load persisted wallet state"
+                    );
+                }
 
                 // Update the bidirectional mapping
                 if let Ok(mut mapping) = self.wallet_id_mapping.lock() {
@@ -902,8 +917,8 @@ impl AppContext {
             }
 
             // Wallet balances, UTXOs, and transactions are now persisted via
-            // the changeset path (persist_platform_wallet below). No direct DB
-            // writes for these are needed here.
+            // the changeset path (auto-flushed via FlushStrategy::Immediate).
+            // No direct DB writes for these are needed here.
 
             // Get the wallet's addresses from PlatformWallet to register unknown
             // SPV addresses in the DET address table (app-level metadata).
@@ -985,11 +1000,9 @@ impl AppContext {
                 "SPV reconcile summary"
             );
 
-            // Persist any staged changesets (from SPV adapter block processing)
-            // to SQLite so wallet state survives restarts.
-            if let Some(pw) = self.get_platform_wallet(seed_hash) {
-                self.persist_platform_wallet(&pw, seed_hash);
-            }
+            // Persistence is handled automatically by the SPV adapter's
+            // queue_persist() calls — the SqliteWalletPersister auto-flushes
+            // each queued changeset when FlushStrategy::Immediate is active.
         }
 
         Ok(())

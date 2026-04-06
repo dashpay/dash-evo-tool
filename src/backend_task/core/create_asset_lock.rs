@@ -39,8 +39,8 @@ impl AppContext {
 
         let result = self.broadcast_and_track_asset_lock(tx).await?;
 
-        // Persist wallet changes (UTXO updates from building the transaction)
-        self.persist_platform_wallet(&platform_wallet, &seed_hash);
+        // Wallet changes (UTXO updates) are auto-flushed via
+        // FlushStrategy::Immediate when queued by the platform wallet.
 
         Ok(result)
     }
@@ -78,8 +78,8 @@ impl AppContext {
 
         let result = self.broadcast_and_track_asset_lock(tx).await?;
 
-        // Persist wallet changes (UTXO updates from building the transaction)
-        self.persist_platform_wallet(&platform_wallet, &seed_hash);
+        // Wallet changes (UTXO updates) are auto-flushed via
+        // FlushStrategy::Immediate when queued by the platform wallet.
 
         Ok(result)
     }

@@ -22,16 +22,31 @@ use platform_wallet::persistence::changeset::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+/// Controls when queued changesets are written to storage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlushStrategy {
+    /// Flush to storage after every [`queue`](PlatformWalletPersistence::queue) call.
+    Immediate,
+    /// Caller must explicitly call [`flush`](PlatformWalletPersistence::flush).
+    Manual,
+}
+
 /// Persists [`PlatformWalletChangeSet`] deltas into the evo-tool SQLite database.
 ///
 /// Changesets are buffered via [`queue`](PlatformWalletPersistence::queue) and
 /// written atomically on [`flush`](PlatformWalletPersistence::flush).
+///
+/// When [`FlushStrategy::Immediate`] is set (the default), each `queue()` call
+/// automatically triggers a `flush()`, so callers don't need to call
+/// `persist_platform_wallet` / `flush_persist` separately.
 pub struct SqliteWalletPersister {
     db: Arc<Database>,
     seed_hash: [u8; 32],
     network: String,
     /// Accumulated changesets waiting to be flushed.
     staged: PlatformWalletChangeSet,
+    /// When to write queued changesets to storage.
+    strategy: FlushStrategy,
 }
 
 /// Error type for [`SqliteWalletPersister`].
@@ -43,13 +58,24 @@ pub enum SqlitePersistError {
 
 impl SqliteWalletPersister {
     /// Create a new persister for the wallet identified by `seed_hash` on `network`.
+    ///
+    /// Uses [`FlushStrategy::Immediate`] by default so that every `queue()` call
+    /// is automatically persisted.
     pub fn new(db: Arc<Database>, seed_hash: [u8; 32], network: String) -> Self {
         Self {
             db,
             seed_hash,
             network,
             staged: PlatformWalletChangeSet::default(),
+            strategy: FlushStrategy::Immediate,
         }
+    }
+
+    /// Set the flush strategy for this persister.
+    #[allow(dead_code)]
+    pub fn with_strategy(mut self, strategy: FlushStrategy) -> Self {
+        self.strategy = strategy;
+        self
     }
 }
 
@@ -735,6 +761,11 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
 
     fn queue(&mut self, changeset: PlatformWalletChangeSet) {
         self.staged.merge(changeset);
+        if matches!(self.strategy, FlushStrategy::Immediate) {
+            if let Err(e) = self.flush() {
+                tracing::warn!(error = %e, "Auto-flush after queue failed");
+            }
+        }
     }
 
     fn flush(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

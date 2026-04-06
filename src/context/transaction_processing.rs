@@ -184,9 +184,9 @@ impl AppContext {
                     continue;
                 };
                 // UTXOs and address balances are persisted via the changeset
-                // path (SPV adapter stages them, persist_platform_wallet writes
-                // them). Only in-memory wallet state and app-level metadata
-                // (DashPay contacts) are updated here.
+                // path (SPV adapter stages them, auto-flushed via
+                // FlushStrategy::Immediate). Only in-memory wallet state and
+                // app-level metadata (DashPay contacts) are updated here.
 
                 // Collect the outpoint (UTXOs tracked by ManagedWalletInfo)
                 let out_point = OutPoint::new(tx.txid(), vout as u32);

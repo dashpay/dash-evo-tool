@@ -257,8 +257,9 @@ impl AppContext {
         };
 
         // UTXOs, transactions, and balances are now persisted via the
-        // changeset path (persist_platform_wallet below). Only asset lock
-        // cleanup and in-memory state updates remain as direct operations.
+        // changeset path (auto-flushed via FlushStrategy::Immediate). Only
+        // asset lock cleanup and in-memory state updates remain as direct
+        // operations.
 
         // Step 8: Delete stale asset locks from database (no wallet lock needed)
         for txid in &stale_txids {
@@ -309,9 +310,8 @@ impl AppContext {
                 );
             }
 
-            // Persist any staged changesets to SQLite so wallet state
-            // survives restarts.
-            self.persist_platform_wallet(&pw, &seed_hash);
+            // Wallet changes are auto-flushed via FlushStrategy::Immediate
+            // when queued by the platform wallet.
         }
 
         let warning = if tx_truncated {

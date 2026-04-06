@@ -115,8 +115,8 @@ impl AppContext {
                             detail: e.to_string(),
                         })?;
 
-                    // Persist wallet changes (UTXO updates from building the transaction)
-                    self.persist_platform_wallet(&platform_wallet, &wallet_seed_hash);
+                    // Wallet changes (UTXO updates) are auto-flushed via
+                    // FlushStrategy::Immediate when queued by the platform wallet.
 
                     let tx_id = self
                         .broadcast_and_commit_asset_lock(
@@ -404,10 +404,6 @@ impl AppContext {
                 ..Default::default()
             };
             pw.queue_persist(changeset);
-
-            if let Ok(Some((seed_hash, _))) = qualified_identity.determine_wallet_info() {
-                self.persist_platform_wallet(pw, &seed_hash);
-            }
         }
 
         {

@@ -320,15 +320,6 @@ pub async fn send_contact_request_with_proof(
     };
     platform_wallet.queue_persist(changeset);
 
-    let (seed_hash, _) = identity
-        .determine_wallet_info()
-        .map_err(|e| {
-            tracing::error!("Failed to determine wallet info for persistence: {}", e);
-            TaskError::WalletNotFound
-        })?
-        .ok_or(TaskError::WalletNotFound)?;
-    app_context.persist_platform_wallet(&platform_wallet, &seed_hash);
-
     Ok(BackendTaskSuccessResult::DashPayContactRequestSent(
         to_username_or_id.to_string(),
     ))
@@ -494,15 +485,6 @@ pub async fn accept_contact_request(
         ..Default::default()
     };
     platform_wallet.queue_persist(changeset);
-
-    let (seed_hash, _) = identity
-        .determine_wallet_info()
-        .map_err(|e| {
-            tracing::error!("Failed to determine wallet info for persistence: {}", e);
-            TaskError::WalletNotFound
-        })?
-        .ok_or(TaskError::WalletNotFound)?;
-    app_context.persist_platform_wallet(&platform_wallet, &seed_hash);
 
     Ok(BackendTaskSuccessResult::DashPayContactRequestAccepted(
         request_id,

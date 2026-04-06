@@ -540,7 +540,7 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let parsed_recipients = self.parse_recipients(&request)?;
 
-        let (platform_wallet, seed_hash) = {
+        let (platform_wallet, _seed_hash) = {
             let guard = wallet.read()?;
             if !guard.is_open() {
                 return Err(TaskError::WalletLocked);
@@ -567,8 +567,8 @@ impl AppContext {
             .send_raw_transaction(&tx)
             .map_err(TaskError::from)?;
 
-        // Persist wallet changes (UTXO updates from sending the transaction)
-        self.persist_platform_wallet(&platform_wallet, &seed_hash);
+        // Wallet changes (UTXO updates) are auto-flushed via
+        // FlushStrategy::Immediate when queued by the platform wallet.
 
         let total_amount: u64 = request.recipients.iter().map(|r| r.amount_duffs).sum();
         let recipients_result: Vec<(String, u64)> = request

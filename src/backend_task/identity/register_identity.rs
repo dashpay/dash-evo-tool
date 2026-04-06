@@ -112,8 +112,8 @@ impl AppContext {
                         detail: e.to_string(),
                     })?;
 
-                // Persist wallet changes (UTXO updates from building the transaction)
-                self.persist_platform_wallet(&platform_wallet, &seed_hash);
+                // Wallet changes (UTXO updates) are auto-flushed via
+                // FlushStrategy::Immediate when queued by the platform wallet.
 
                 let tx_id = self
                     .broadcast_and_commit_asset_lock(
@@ -457,7 +457,6 @@ impl AppContext {
                 ..Default::default()
             };
             pw.queue_persist(changeset);
-            self.persist_platform_wallet(&pw, &wallet_id);
         }
 
         let fee_result = FeeResult::new(estimated_fee, estimated_fee);

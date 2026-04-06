@@ -879,6 +879,39 @@ impl AppState {
         }
     }
 
+    /// Flush all platform wallet persisters across every network context.
+    ///
+    /// Called during shutdown to ensure any staged-but-unflushed changesets
+    /// (e.g. from `FlushStrategy::Manual`) are written before the process exits.
+    fn flush_all_wallet_persistence(&self) {
+        let contexts: Vec<&Arc<AppContext>> = [
+            Some(&self.mainnet_app_context),
+            self.testnet_app_context.as_ref(),
+            self.devnet_app_context.as_ref(),
+            self.local_app_context.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+
+        for ctx in contexts {
+            if let Ok(wallets) = ctx.wallets.read() {
+                for wallet_arc in wallets.values() {
+                    if let Ok(wallet) = wallet_arc.read() {
+                        if let Some(pw) = &wallet.platform_wallet {
+                            if let Err(e) = pw.flush_persist() {
+                                tracing::warn!(
+                                    error = %e,
+                                    "Failed to flush wallet persistence on shutdown"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     fn context_available_for_network(&self, network: Network) -> bool {
         match network {
             Network::Mainnet => true, // Mainnet is always available
@@ -1200,6 +1233,7 @@ impl App for AppState {
                 MessageType::Warning,
             );
             tracing::debug!("Close requested, starting async shutdown");
+            self.flush_all_wallet_persistence();
             self.shutdown_receiver = Some(self.subtasks.shutdown_async());
             self.shutdown_started = Some(std::time::Instant::now());
             ctx.request_repaint();
@@ -1655,6 +1689,7 @@ impl App for AppState {
             return;
         }
         tracing::debug!("on_exit: fallback blocking shutdown");
+        self.flush_all_wallet_persistence();
         if let Err(e) = self.subtasks.shutdown() {
             tracing::error!("Error during task shutdown: {}", e);
         }

@@ -615,15 +615,11 @@ impl Wallet {
             .unwrap_or(false)
     }
 
-    /// TODO: Read from the database instead of AssetLockManager.
-    /// AssetLockManager only tracks ACTIVE locks — consumed locks are removed.
-    /// The DB (where identity_id IS NULL) is the source of truth for unused locks.
-    pub fn has_unused_asset_lock(&self) -> bool {
-        self.platform_wallet
-            .as_ref()
-            .map_or(false, |pw| {
-                !pw.asset_locks().list_tracked_locks_blocking().is_empty()
-            })
+    /// Checks whether this wallet has any unused asset locks in the database
+    /// (where identity_id IS NULL and identity_id_potentially_in_creation IS NULL).
+    pub fn has_unused_asset_lock(&self, db: &Database, network: Network) -> bool {
+        db.has_unused_asset_lock_transactions(&self.seed_hash(), network)
+            .unwrap_or(false)
     }
 
     /// All addresses from PlatformWallet's CoreAddressInfo.

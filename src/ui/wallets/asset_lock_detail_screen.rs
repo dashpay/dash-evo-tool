@@ -10,8 +10,11 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
+use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayload;
-use dash_sdk::dpp::dashcore::{Address, Transaction};
+use dash_sdk::dpp::dashcore::{Address, InstantLock, OutPoint, Transaction};
+use dash_sdk::dpp::identity::state_transition::asset_lock_proof::InstantAssetLockProof;
+use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
 use dash_sdk::dpp::prelude::AssetLockProof;
 use eframe::egui::{self, Context, Ui};
 use egui::{Color32, Frame, Margin, RichText};
@@ -19,7 +22,7 @@ use std::sync::{Arc, RwLock};
 
 pub struct AssetLockDetailScreen {
     pub wallet_seed_hash: [u8; 32],
-    pub asset_lock_index: usize,
+    pub asset_lock_txid: [u8; 32],
     pub app_context: Arc<AppContext>,
     wallet: Option<Arc<RwLock<Wallet>>>,
     password_input: PasswordInput,
@@ -30,7 +33,7 @@ pub struct AssetLockDetailScreen {
 impl AssetLockDetailScreen {
     pub fn new(
         wallet_seed_hash: [u8; 32],
-        asset_lock_index: usize,
+        asset_lock_txid: [u8; 32],
         app_context: &Arc<AppContext>,
     ) -> Self {
         // Find the wallet by seed hash
@@ -44,7 +47,7 @@ impl AssetLockDetailScreen {
 
         Self {
             wallet_seed_hash,
-            asset_lock_index,
+            asset_lock_txid,
             app_context: app_context.clone(),
             wallet,
             password_input: PasswordInput::new().with_hint_text("Enter password"),
@@ -53,12 +56,7 @@ impl AssetLockDetailScreen {
         }
     }
 
-    /// Get the asset lock data from AssetLockManager by index.
-    ///
-    /// TODO: Read from the database instead of AssetLockManager.
-    /// AssetLockManager only tracks ACTIVE locks — consumed locks are removed
-    /// and won't appear here. The DB (get_all_asset_lock_transactions) is the
-    /// source of truth and includes consumed locks with their identity_id.
+    /// Get the asset lock data from the database by txid.
     fn get_asset_lock_data(
         &self,
     ) -> Option<(
@@ -67,36 +65,52 @@ impl AssetLockDetailScreen {
         u64,
         Option<AssetLockProof>,
     )> {
-        let wallet = self.wallet.as_ref()?.read().ok()?;
-        let pw = wallet.platform_wallet.as_ref()?;
-        let locks = pw.asset_locks().list_tracked_locks_blocking();
-        let lock = locks.get(self.asset_lock_index)?;
+        let (tx, amount, islock, chain_locked_height, _identity_id, _wallet_seed, _network) = self
+            .app_context
+            .db
+            .get_asset_lock_transaction(&self.asset_lock_txid)
+            .ok()??;
 
         let network = self.app_context.network;
         let address = if let Some(TransactionPayload::AssetLockPayloadType(payload)) =
-            &lock.transaction.special_transaction_payload
+            &tx.special_transaction_payload
         {
             payload
                 .credit_outputs
-                .get(lock.out_point.vout as usize)
+                .first()
                 .and_then(|output| Address::from_script(&output.script_pubkey, network).ok())
                 .unwrap_or_else(|| {
-                    Address::from_script(
-                        &lock.transaction.output[0].script_pubkey,
-                        network,
-                    )
-                    .unwrap()
+                    Address::from_script(&tx.output[0].script_pubkey, network).unwrap()
                 })
         } else {
             return None;
         };
 
-        Some((
-            lock.transaction.clone(),
-            address,
-            lock.amount,
-            lock.proof.clone(),
-        ))
+        let proof = Self::build_asset_lock_proof(&tx, islock.as_ref(), chain_locked_height);
+
+        Some((tx, address, amount, proof))
+    }
+
+    /// Constructs an AssetLockProof from an InstantLock or chain_locked_height.
+    fn build_asset_lock_proof(
+        tx: &Transaction,
+        islock: Option<&InstantLock>,
+        chain_locked_height: Option<u32>,
+    ) -> Option<AssetLockProof> {
+        if let Some(islock) = islock {
+            Some(AssetLockProof::Instant(InstantAssetLockProof::new(
+                islock.clone(),
+                tx.clone(),
+                0,
+            )))
+        } else {
+            chain_locked_height.map(|height| {
+                AssetLockProof::Chain(ChainAssetLockProof {
+                    core_chain_locked_height: height,
+                    out_point: OutPoint::new(tx.txid(), 0),
+                })
+            })
+        }
     }
 
     fn render_asset_lock_info(&mut self, ui: &mut Ui) {

@@ -268,12 +268,11 @@ impl AppContext {
         }
 
         let kw_network = self.wallet_network_key();
-        let sdk = self.sdk.load_full();
         let options = WalletAccountCreationOptions::default();
 
-        // Create a PlatformWallet to discover its WalletId (SHA256 of root pubkey).
-        // This is a lightweight, synchronous operation (no network I/O).
-        match PlatformWallet::from_seed_bytes(sdk, kw_network, seed_bytes, options) {
+        // Create a PlatformWallet via the manager — this wires the shared
+        // SPV event channel so IS-lock/ChainLock events reach AssetLockManager.
+        match self.wallet_manager.create_wallet_from_seed_bytes(kw_network, seed_bytes, options) {
             Ok(mut platform_wallet) => {
                 let wallet_id = platform_wallet.wallet_id();
 
@@ -294,8 +293,6 @@ impl AppContext {
                         "Failed to load persisted wallet state"
                     );
                 }
-
-                // Update the bidirectional mapping
                 if let Ok(mut mapping) = self.wallet_id_mapping.lock() {
                     mapping.insert(seed_hash, wallet_id);
                 }

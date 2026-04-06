@@ -1,33 +1,32 @@
 use crate::app::AppAction;
 use crate::ui::ScreenType;
 use crate::ui::theme::{DashColors, ResponseExt};
+use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayload;
 use dash_sdk::dpp::dashcore::Address;
 use eframe::egui::{self, Ui};
 use egui::{Color32, Frame, Margin, RichText};
 use egui_extras::{Column, TableBuilder};
-use platform_wallet::AssetLockStatus;
 
 use super::WalletsBalancesScreen;
 
 impl WalletsBalancesScreen {
     pub(super) fn render_wallet_asset_locks(&mut self, ui: &mut Ui) -> AppAction {
         let mut app_action = AppAction::None;
-        let mut open_fund_dialog_for_idx: Option<(usize, Vec<(String, u64)>)> = None;
+        let mut open_fund_dialog_for_txid: Option<([u8; 32], Vec<(String, u64)>)> = None;
         let mut recover_asset_locks_clicked = false;
 
         if let Some(arc_wallet) = &self.selected_wallet {
             let wallet = arc_wallet.read().unwrap();
 
-            // TODO: Read asset locks from the database instead of AssetLockManager.
-            // AssetLockManager only tracks ACTIVE locks — consumed locks are removed
-            // and won't appear here. The DB (get_all_asset_lock_transactions) is the
-            // source of truth and includes consumed locks with their identity_id.
-            let locks = if let Some(pw) = wallet.platform_wallet.as_ref() {
-                pw.asset_locks().list_tracked_locks_blocking()
-            } else {
-                Vec::new()
-            };
+            let network = self.app_context.network;
+
+            // Read asset locks from the database (source of truth, includes consumed locks).
+            let locks = self
+                .app_context
+                .db
+                .get_asset_lock_transactions_for_wallet(&wallet.seed_hash(), network)
+                .unwrap_or_default();
 
             let dark_mode = ui.ctx().style().visuals.dark_mode;
             Frame::new()
@@ -62,7 +61,6 @@ impl WalletsBalancesScreen {
                         });
                     } else {
                         // Collect Platform addresses with balances from DB
-                        let network = self.app_context.network;
                         let platform_addresses: Vec<(String, u64)> = self
                             .app_context
                             .db
@@ -89,7 +87,7 @@ impl WalletsBalancesScreen {
                         .column(Column::initial(100.0)) // Address
                         .column(Column::initial(100.0)) // Amount (Duffs)
                         .column(Column::initial(100.0)) // InstantLock status
-                        .column(Column::initial(100.0)) // Usable status
+                        .column(Column::initial(100.0)) // Consumed
                         .column(Column::initial(200.0)) // Actions
                         .header(30.0, |mut header| {
                             header.col(|ui| {
@@ -105,16 +103,19 @@ impl WalletsBalancesScreen {
                                 ui.label("InstantLock");
                             });
                             header.col(|ui| {
-                                ui.label("Usable");
+                                ui.label("Status");
                             });
                             header.col(|ui| {
                                 ui.label("Actions");
                             });
                         })
                         .body(|mut body| {
-                            for (index, lock) in locks.iter().enumerate() {
-                                let address_str = if let Some(TransactionPayload::AssetLockPayloadType(payload)) = &lock.transaction.special_transaction_payload {
-                                    payload.credit_outputs.get(lock.out_point.vout as usize)
+                            for (tx, amount, islock, _chain_locked_height, identity_id) in &locks {
+                                let txid = tx.txid();
+                                let txid_bytes = txid.to_byte_array();
+
+                                let address_str = if let Some(TransactionPayload::AssetLockPayloadType(payload)) = &tx.special_transaction_payload {
+                                    payload.credit_outputs.first()
                                         .and_then(|output| Address::from_script(&output.script_pubkey, network).ok())
                                         .map(|a| a.to_string())
                                         .unwrap_or_else(|| "Unknown".to_string())
@@ -122,39 +123,42 @@ impl WalletsBalancesScreen {
                                     "Unknown".to_string()
                                 };
 
-                                let is_locked = matches!(lock.status, AssetLockStatus::InstantSendLocked | AssetLockStatus::ChainLocked);
-                                let has_proof = lock.proof.is_some();
+                                let is_locked = islock.is_some();
+                                let is_consumed = identity_id.is_some();
 
                                 body.row(25.0, |mut row| {
                                     row.col(|ui| {
-                                        ui.label(lock.out_point.txid.to_string());
+                                        ui.label(txid.to_string());
                                     });
                                     row.col(|ui| {
                                         ui.label(&address_str);
                                     });
                                     row.col(|ui| {
-                                        ui.label(format!("{}", lock.amount));
+                                        ui.label(format!("{}", amount));
                                     });
                                     row.col(|ui| {
                                         let status = if is_locked { "Yes" } else { "No" };
                                         ui.label(status);
                                     });
                                     row.col(|ui| {
-                                        let status = if has_proof { "Yes" } else { "No" };
-                                        ui.label(status);
+                                        if is_consumed {
+                                            ui.label(RichText::new("Used").color(Color32::GRAY));
+                                        } else {
+                                            ui.label(RichText::new("Available").color(DashColors::SUCCESS));
+                                        }
                                     });
                                     row.col(|ui| {
                                         if ui.small_button("View").clickable_tooltip("View full asset lock details").clicked() {
                                             app_action = AppAction::AddScreen(
                                                 ScreenType::AssetLockDetail(
                                                     wallet.seed_hash(),
-                                                    index
+                                                    txid_bytes,
                                                 ).create_screen(&self.app_context)
                                             );
                                         }
-                                        if has_proof
+                                        if !is_consumed && is_locked
                                             && ui.small_button("Fund").clickable_tooltip("Fund a Platform address with this asset lock").clicked() {
-                                                open_fund_dialog_for_idx = Some((index, platform_addresses.clone()));
+                                                open_fund_dialog_for_txid = Some((txid_bytes, platform_addresses.clone()));
                                             }
                                     });
                                 });
@@ -168,8 +172,8 @@ impl WalletsBalancesScreen {
         }
 
         // Handle dialog opening outside the borrow
-        if let Some((idx, platform_addresses)) = open_fund_dialog_for_idx {
-            self.fund_platform_dialog.selected_asset_lock_index = Some(idx);
+        if let Some((txid, platform_addresses)) = open_fund_dialog_for_txid {
+            self.fund_platform_dialog.selected_asset_lock_txid = Some(txid);
             self.fund_platform_dialog.is_open = true;
             self.fund_platform_dialog.platform_addresses = platform_addresses;
             self.fund_platform_dialog.selected_platform_address = None;

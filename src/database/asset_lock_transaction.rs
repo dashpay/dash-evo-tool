@@ -50,16 +50,29 @@ impl Database {
     }
 
     /// Retrieves an asset lock transaction by its transaction ID.
-    #[allow(dead_code)] // May be used for querying asset locks
+    ///
+    /// Returns (Transaction, amount, Option<InstantLock>, Option<chain_locked_height>,
+    /// Option<identity_id>, wallet_seed_hash, network).
     #[allow(clippy::type_complexity)]
     pub fn get_asset_lock_transaction(
         &self,
         txid: &[u8; 32],
-    ) -> rusqlite::Result<Option<(Transaction, u64, Option<InstantLock>, [u8; 32], String)>> {
+    ) -> rusqlite::Result<
+        Option<(
+            Transaction,
+            u64,
+            Option<InstantLock>,
+            Option<u32>,
+            Option<Vec<u8>>,
+            [u8; 32],
+            String,
+        )>,
+    > {
         let conn = self.conn.lock().unwrap();
 
         let mut stmt = conn.prepare(
-            "SELECT transaction_data, amount, instant_lock_data, wallet, network FROM asset_lock_transaction WHERE tx_id = ?1",
+            "SELECT transaction_data, amount, instant_lock_data, chain_locked_height, identity_id, wallet, network
+             FROM asset_lock_transaction WHERE tx_id = ?1",
         )?;
 
         let mut rows = stmt.query(params![txid])?;
@@ -68,8 +81,10 @@ impl Database {
             let tx_data: Vec<u8> = row.get(0)?;
             let amount: u64 = row.get(1)?;
             let islock_data: Option<Vec<u8>> = row.get(2)?;
-            let wallet_seed: Vec<u8> = row.get(3)?;
-            let network: String = row.get(4)?;
+            let chain_locked_height: Option<u32> = row.get(3)?;
+            let identity_id: Option<Vec<u8>> = row.get(4)?;
+            let wallet_seed: Vec<u8> = row.get(5)?;
+            let network: String = row.get(6)?;
 
             let tx: Transaction =
                 deserialize(&tx_data).map_err(|_| rusqlite::Error::InvalidQuery)?;
@@ -83,7 +98,15 @@ impl Database {
                 .try_into()
                 .map_err(|_| rusqlite::Error::InvalidQuery)?;
 
-            Ok(Some((tx, amount, islock, wallet_seed_hash, network)))
+            Ok(Some((
+                tx,
+                amount,
+                islock,
+                chain_locked_height,
+                identity_id,
+                wallet_seed_hash,
+                network,
+            )))
         } else {
             Ok(None)
         }
@@ -253,6 +276,118 @@ impl Database {
         }
 
         Ok(results)
+    }
+
+    /// Retrieves all asset lock transactions for a specific wallet seed hash and network.
+    ///
+    /// Returns tuples of (Transaction, amount, Option<InstantLock>, Option<chain_locked_height>,
+    /// Option<identity_id>).
+    #[allow(clippy::type_complexity)]
+    pub fn get_asset_lock_transactions_for_wallet(
+        &self,
+        wallet_seed_hash: &[u8; 32],
+        network: Network,
+    ) -> rusqlite::Result<
+        Vec<(
+            Transaction,
+            u64,
+            Option<InstantLock>,
+            Option<u32>,
+            Option<Vec<u8>>,
+        )>,
+    > {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT transaction_data, amount, instant_lock_data, chain_locked_height, identity_id
+             FROM asset_lock_transaction
+             WHERE wallet = ?1 AND network = ?2",
+        )?;
+
+        let mut rows = stmt.query(params![wallet_seed_hash, network.to_string()])?;
+        let mut results = Vec::new();
+
+        while let Some(row) = rows.next()? {
+            let tx_data: Vec<u8> = row.get(0)?;
+            let amount: u64 = row.get(1)?;
+            let islock_data: Option<Vec<u8>> = row.get(2)?;
+            let chain_locked_height: Option<u32> = row.get(3)?;
+            let identity_id: Option<Vec<u8>> = row.get(4)?;
+
+            let tx: Transaction =
+                deserialize(&tx_data).map_err(|_| rusqlite::Error::InvalidQuery)?;
+            let islock = if let Some(islock_bytes) = islock_data {
+                Some(deserialize(&islock_bytes).map_err(|_| rusqlite::Error::InvalidQuery)?)
+            } else {
+                None
+            };
+
+            results.push((tx, amount, islock, chain_locked_height, identity_id));
+        }
+
+        Ok(results)
+    }
+
+    /// Retrieves unused asset lock transactions for a specific wallet (where identity_id
+    /// IS NULL and identity_id_potentially_in_creation IS NULL).
+    #[allow(clippy::type_complexity)]
+    pub fn get_unused_asset_lock_transactions_for_wallet(
+        &self,
+        wallet_seed_hash: &[u8; 32],
+        network: Network,
+    ) -> rusqlite::Result<Vec<(Transaction, u64, Option<InstantLock>, Option<u32>)>> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT transaction_data, amount, instant_lock_data, chain_locked_height
+             FROM asset_lock_transaction
+             WHERE wallet = ?1 AND network = ?2
+               AND identity_id IS NULL
+               AND identity_id_potentially_in_creation IS NULL",
+        )?;
+
+        let mut rows = stmt.query(params![wallet_seed_hash, network.to_string()])?;
+        let mut results = Vec::new();
+
+        while let Some(row) = rows.next()? {
+            let tx_data: Vec<u8> = row.get(0)?;
+            let amount: u64 = row.get(1)?;
+            let islock_data: Option<Vec<u8>> = row.get(2)?;
+            let chain_locked_height: Option<u32> = row.get(3)?;
+
+            let tx: Transaction =
+                deserialize(&tx_data).map_err(|_| rusqlite::Error::InvalidQuery)?;
+            let islock = if let Some(islock_bytes) = islock_data {
+                Some(deserialize(&islock_bytes).map_err(|_| rusqlite::Error::InvalidQuery)?)
+            } else {
+                None
+            };
+
+            results.push((tx, amount, islock, chain_locked_height));
+        }
+
+        Ok(results)
+    }
+
+    /// Checks whether there are any unused asset locks for a wallet (identity_id IS NULL
+    /// and identity_id_potentially_in_creation IS NULL).
+    pub fn has_unused_asset_lock_transactions(
+        &self,
+        wallet_seed_hash: &[u8; 32],
+        network: Network,
+    ) -> rusqlite::Result<bool> {
+        let conn = self.conn.lock().unwrap();
+
+        let count: u32 = conn.query_row(
+            "SELECT COUNT(*) FROM asset_lock_transaction
+             WHERE wallet = ?1 AND network = ?2
+               AND identity_id IS NULL
+               AND identity_id_potentially_in_creation IS NULL",
+            params![wallet_seed_hash, network.to_string()],
+            |row| row.get(0),
+        )?;
+
+        Ok(count > 0)
     }
 
     /// Retrieves asset lock transactions by identity ID.

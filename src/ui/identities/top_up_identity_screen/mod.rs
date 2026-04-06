@@ -125,7 +125,7 @@ impl TopUpIdentityScreen {
                                 let has_resources = match funding_method {
                                     FundingMethod::UseWalletBalance => wallet_read.has_balance(),
                                     FundingMethod::UseUnusedAssetLock => {
-                                        wallet_read.has_unused_asset_lock()
+                                        wallet_read.has_unused_asset_lock(&self.app_context.db, self.app_context.network)
                                     }
                                     _ => true,
                                 };
@@ -158,7 +158,7 @@ impl TopUpIdentityScreen {
                         match funding_method {
                             FundingMethod::UseWalletBalance => wallet_read.has_balance(),
                             FundingMethod::UseUnusedAssetLock => {
-                                wallet_read.has_unused_asset_lock()
+                                wallet_read.has_unused_asset_lock(&self.app_context.db, self.app_context.network)
                             }
                             _ => true,
                         }
@@ -223,7 +223,7 @@ impl TopUpIdentityScreen {
 
             for wallet in wallets.values() {
                 let wallet = wallet.read().unwrap();
-                if wallet.has_unused_asset_lock() {
+                if wallet.has_unused_asset_lock(&self.app_context.db, self.app_context.network) {
                     has_unused_asset_lock = true;
                 }
                 if wallet.has_balance() {

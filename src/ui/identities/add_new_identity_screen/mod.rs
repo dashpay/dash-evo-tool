@@ -451,7 +451,10 @@ impl AddNewIdentityScreen {
 
                 let (has_unused_asset_lock, has_balance) = {
                     let wallet = selected_wallet.read().unwrap();
-                    (wallet.has_unused_asset_lock(), wallet.has_balance())
+                    (
+                        wallet.has_unused_asset_lock(&self.app_context.db, self.app_context.network),
+                        wallet.has_balance(),
+                    )
                 };
 
                 if has_unused_asset_lock

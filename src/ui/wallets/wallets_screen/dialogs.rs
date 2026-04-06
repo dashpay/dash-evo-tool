@@ -19,6 +19,7 @@ use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
 use dash_sdk::dashcore_rpc::dashcore::{Address, Network};
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
+use dash_sdk::dpp::prelude::AssetLockProof;
 use eframe::egui::{self, ComboBox, Context};
 use eframe::epaint::TextureHandle;
 use egui::load::SizedTexture;
@@ -72,8 +73,8 @@ pub(super) struct ReceiveDialogState {
 #[derive(Default)]
 pub(super) struct FundPlatformAddressDialogState {
     pub is_open: bool,
-    /// Selected asset lock index
-    pub selected_asset_lock_index: Option<usize>,
+    /// Selected asset lock txid (as byte array)
+    pub selected_asset_lock_txid: Option<[u8; 32]>,
     /// Selected Platform address to fund
     pub selected_platform_address: Option<String>,
     /// List of Platform addresses available
@@ -833,7 +834,7 @@ impl WalletsBalancesScreen {
                     // Buttons
                     ui.horizontal(|ui| {
                         let can_fund = self.fund_platform_dialog.selected_platform_address.is_some()
-                            && self.fund_platform_dialog.selected_asset_lock_index.is_some()
+                            && self.fund_platform_dialog.selected_asset_lock_txid.is_some()
                             && !self.fund_platform_dialog.is_processing;
 
                         // Cancel button
@@ -1042,13 +1043,13 @@ impl WalletsBalancesScreen {
             return AppAction::None;
         };
 
-        let Some(asset_lock_idx) = self.fund_platform_dialog.selected_asset_lock_index else {
+        let Some(asset_lock_txid) = self.fund_platform_dialog.selected_asset_lock_txid else {
             self.fund_platform_dialog.status = Some("No asset lock selected".to_string());
             self.fund_platform_dialog.status_is_error = true;
             return AppAction::None;
         };
 
-        // Get the asset lock proof and address from the wallet
+        // Get the asset lock proof and address from the database
         let (seed_hash, asset_lock_proof, asset_lock_address, platform_addr) = {
             let wallet = match wallet_arc.read() {
                 Ok(guard) => guard,
@@ -1059,22 +1060,36 @@ impl WalletsBalancesScreen {
                 }
             };
 
-            // TODO: Read from the database instead of AssetLockManager.
-            // AssetLockManager only tracks ACTIVE locks — consumed locks are removed.
-            // The DB is the source of truth.
-            let locks = if let Some(pw) = wallet.platform_wallet.as_ref() {
-                pw.asset_locks().list_tracked_locks_blocking()
-            } else {
-                Vec::new()
-            };
-            let lock = locks.get(asset_lock_idx);
-            let Some(lock) = lock else {
+            // Read from the database (source of truth for all asset locks).
+            let db_record = self
+                .app_context
+                .db
+                .get_asset_lock_transaction(&asset_lock_txid);
+            let Some((tx, _amount, islock, chain_locked_height, _identity_id, _wallet_seed, _network)) =
+                db_record.ok().flatten()
+            else {
                 self.fund_platform_dialog.status =
                     Some("Asset lock not found or not ready".to_string());
                 self.fund_platform_dialog.status_is_error = true;
                 return AppAction::None;
             };
-            let Some(ref proof) = lock.proof else {
+
+            // Build proof from IS-lock or chain-locked height
+            let proof = if let Some(ref islock) = islock {
+                use dash_sdk::dpp::identity::state_transition::asset_lock_proof::InstantAssetLockProof;
+                AssetLockProof::Instant(InstantAssetLockProof::new(
+                    islock.clone(),
+                    tx.clone(),
+                    0,
+                ))
+            } else if let Some(height) = chain_locked_height {
+                use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
+                use dash_sdk::dpp::dashcore::OutPoint;
+                AssetLockProof::Chain(ChainAssetLockProof {
+                    core_chain_locked_height: height,
+                    out_point: OutPoint::new(tx.txid(), 0),
+                })
+            } else {
                 self.fund_platform_dialog.status =
                     Some("Asset lock proof not yet available".to_string());
                 self.fund_platform_dialog.status_is_error = true;
@@ -1082,10 +1097,10 @@ impl WalletsBalancesScreen {
             };
 
             // Derive address from credit output
-            let addr = if let Some(dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayload::AssetLockPayloadType(payload)) = &lock.transaction.special_transaction_payload {
-                payload.credit_outputs.get(lock.out_point.vout as usize)
+            let addr = if let Some(dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayload::AssetLockPayloadType(payload)) = &tx.special_transaction_payload {
+                payload.credit_outputs.first()
                     .and_then(|output| dash_sdk::dpp::dashcore::Address::from_script(&output.script_pubkey, self.app_context.network).ok())
-                    .unwrap_or_else(|| dash_sdk::dpp::dashcore::Address::from_script(&lock.transaction.output[0].script_pubkey, self.app_context.network).unwrap())
+                    .unwrap_or_else(|| dash_sdk::dpp::dashcore::Address::from_script(&tx.output[0].script_pubkey, self.app_context.network).unwrap())
             } else {
                 self.fund_platform_dialog.status =
                     Some("Could not derive address from asset lock".to_string());

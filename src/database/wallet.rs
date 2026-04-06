@@ -569,7 +569,6 @@ impl Database {
                     alias,
                     identities: HashMap::new(),
                     is_main,
-                    platform_address_info: BTreeMap::new(),
                     core_wallet_name,
                 },
             );
@@ -736,46 +735,8 @@ impl Database {
             }
         }
 
-        tracing::trace!(
-            network = network_str,
-            "step 6: retrieve platform address info for wallets"
-        );
-        // Load platform address info for each wallet (using existing connection to avoid deadlock)
-        let mut platform_stmt = conn.prepare(
-            "SELECT seed_hash, address, balance, nonce FROM platform_address_balances WHERE network = ?",
-        )?;
-        let platform_rows = platform_stmt.query_map([network_str.clone()], |row| {
-            let seed_hash: Vec<u8> = row.get(0)?;
-            let address_str: String = row.get(1)?;
-            let balance: i64 = row.get(2)?;
-            let nonce: i64 = row.get(3)?;
-            let seed_hash_array: [u8; 32] = seed_hash.try_into().map_err(|_| {
-                rusqlite::Error::InvalidParameterName("Seed hash should be 32 bytes".to_string())
-            })?;
-            Ok((seed_hash_array, address_str, balance as u64, nonce as u32))
-        })?;
-
-        for row in platform_rows {
-            if let Ok((seed_hash, address_str, balance, nonce)) = row
-                && let Some(wallet) = wallets_map.get_mut(&seed_hash)
-                && let Ok(address) = Address::<NetworkUnchecked>::from_str(&address_str)
-            {
-                let address_checked = address.require_network(*network).map_err(|e| {
-                    tracing::error!(address = %address_str, error = ?e, "Failed to validate Platform address for network");
-                    rusqlite::Error::FromSqlConversionFailure(
-                        1,
-                        rusqlite::types::Type::Text,
-                        Box::new(std::fmt::Error),
-                    )
-                })?;
-                let canonical_address = Wallet::canonical_address(&address_checked, *network);
-
-                wallet.platform_address_info.insert(
-                    canonical_address,
-                    crate::model::wallet::PlatformAddressInfo { balance, nonce },
-                );
-            }
-        }
+        // Platform address info is stored in the platform_address_balances DB table
+        // and read on demand — no longer cached in the Wallet struct.
 
         // Convert the BTreeMap into a Vec of Wallets.
         Ok(wallets_map.into_values().collect())

@@ -37,11 +37,19 @@ impl AppContext {
         let (last_sync_timestamp, last_sync_height) =
             self.db.get_platform_sync_info(&seed_hash).unwrap_or((0, 0));
 
+        // Load stored platform address info from DB for incremental sync
+        let stored_info = self
+            .db
+            .get_all_platform_address_info(&seed_hash, &self.network)
+            .unwrap_or_default();
+
         // Create provider (requires wallet to be open for address derivation)
         let mut provider = {
             let wallet = wallet_arc.read()?;
             match WalletAddressProvider::new(&wallet, self.network) {
-                Ok(provider) => provider.with_stored_state(&wallet, self.network, last_sync_height),
+                Ok(provider) => {
+                    provider.with_stored_state(&stored_info, self.network, last_sync_height)
+                }
                 Err(_) if !wallet.is_open() => {
                     return Err(crate::backend_task::error::TaskError::WalletLocked);
                 }
@@ -126,58 +134,52 @@ impl AppContext {
             tracing::warn!("Failed to save platform sync info: {}", e);
         }
 
-        // Apply results to wallet and persist
-        let balances = {
-            let mut wallet = wallet_arc.write()?;
-
-            // Update wallet with synced balances
-            provider.apply_results_to_wallet(&mut wallet);
-
-            // Persist addresses and balances to database
-            for (index, (address, funds)) in provider.found_balances_with_indices() {
-                // Persist the address to wallet_addresses table if not already there
-                let derivation_path = DerivationPath::platform_payment_path(
-                    self.network,
-                    0, // account
-                    0, // key_class
-                    index,
-                );
-                if let Err(e) = self.db.add_address_if_not_exists(
-                    &seed_hash,
-                    address,
-                    &self.network,
-                    &derivation_path,
-                    DerivationPathReference::PlatformPayment,
-                    DerivationPathType::CLEAR_FUNDS,
-                    None,
-                ) {
-                    tracing::warn!("Failed to persist Platform address: {}", e);
-                }
-
-                // Persist balance to platform_address_balances table
-                if let Err(e) = self.db.set_platform_address_info(
-                    &seed_hash,
-                    address,
-                    funds.balance,
-                    funds.nonce,
-                    &self.network,
-                ) {
-                    tracing::warn!("Failed to persist Platform address info: {}", e);
-                }
+        // Persist addresses and balances to database
+        for (index, (address, funds)) in provider.found_balances_with_indices() {
+            // Persist the address to wallet_addresses table if not already there
+            let derivation_path = DerivationPath::platform_payment_path(
+                self.network,
+                0, // account
+                0, // key_class
+                index,
+            );
+            if let Err(e) = self.db.add_address_if_not_exists(
+                &seed_hash,
+                address,
+                &self.network,
+                &derivation_path,
+                DerivationPathReference::PlatformPayment,
+                DerivationPathType::CLEAR_FUNDS,
+                None,
+            ) {
+                tracing::warn!("Failed to persist Platform address: {}", e);
             }
 
-            // Return the wallet's complete platform_address_info, not just
-            // found_balances.  The SDK's incremental sync only reports addresses
-            // whose balance changed; unchanged addresses are absent from
-            // found_balances but still have valid nonces in the wallet.
-            // Returning only found_balances would cause the UI to lose nonce
-            // values for stable-balance addresses (issue #652).
-            wallet
-                .platform_address_info
-                .iter()
-                .map(|(addr, info)| (addr.clone(), (info.balance, info.nonce)))
-                .collect()
-        };
+            // Persist balance to platform_address_balances table
+            if let Err(e) = self.db.set_platform_address_info(
+                &seed_hash,
+                address,
+                funds.balance,
+                funds.nonce,
+                &self.network,
+            ) {
+                tracing::warn!("Failed to persist Platform address info: {}", e);
+            }
+        }
+
+        // Return the complete platform_address_info from DB, not just
+        // found_balances.  The SDK's incremental sync only reports addresses
+        // whose balance changed; unchanged addresses are absent from
+        // found_balances but still have valid nonces in the DB.
+        // Returning only found_balances would cause the UI to lose nonce
+        // values for stable-balance addresses (issue #652).
+        let balances = self
+            .db
+            .get_all_platform_address_info(&seed_hash, &self.network)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(addr, balance, nonce)| (addr, (balance, nonce)))
+            .collect();
 
         let addresses_with_balance = provider.found_balances().len();
         tracing::info!(

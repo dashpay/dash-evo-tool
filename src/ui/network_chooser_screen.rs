@@ -5,7 +5,6 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::config::Config;
 use crate::context::AppContext;
 use crate::context::connection_status::{ConnectionStatus, OverallConnectionState};
-use crate::model::wallet::DerivationPathHelpers;
 use crate::spv::{CoreBackendMode, SpvStatus, SpvStatusSnapshot};
 use crate::ui::components::MessageBanner;
 use crate::ui::components::component_trait::Component;
@@ -1250,16 +1249,11 @@ impl NetworkChooserScreen {
                                     );
                                     // Also clear from in-memory wallets
                                     if let Ok(wallets) = current_context.wallets.read() {
-                                        for wallet_arc in wallets.values() {
-                                            if let Ok(mut wallet) = wallet_arc.write() {
-                                                // Clear platform address info
-                                                wallet.platform_address_info.clear();
-
-                                                // Platform addresses managed by PlatformWallet —
-                                                // no manual cleanup needed on network switch.
-
-                                            }
-                                        }
+                                        // Platform address info is stored in the DB
+                                        // (cleared above via clear_all_platform_addresses).
+                                        // Platform addresses managed by PlatformWallet --
+                                        // no manual cleanup needed on network switch.
+                                        drop(wallets);
                                     }
                                 }
                                 Err(e) => {

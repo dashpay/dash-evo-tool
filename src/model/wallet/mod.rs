@@ -8,12 +8,10 @@ use crate::backend_task::error::TaskError;
 use crate::database::{Database, WalletError};
 use crate::model::secret::Secret;
 use dash_sdk::dpp::ProtocolError;
-use dash_sdk::dpp::address_funds::{AddressWitness, PlatformAddress};
-use dash_sdk::dpp::identity::signer::Signer;
+use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::key_wallet::bip32::{
     ChildNumber, DerivationPath, ExtendedPrivKey, ExtendedPubKey, KeyDerivationType,
 };
-use dash_sdk::dpp::prelude::AddressNonce;
 use dash_sdk::platform::address_sync::{AddressFunds, AddressIndex, AddressKey, AddressProvider};
 
 use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
@@ -22,7 +20,6 @@ use dash_sdk::dpp::dashcore::{
     Txid,
 };
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
-use dash_sdk::dpp::platform_value::BinaryData;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Debug;
 use std::ops::Range;
@@ -306,13 +303,6 @@ impl PartialEq for WalletArcRef {
     }
 }
 
-/// Information about a Platform address balance and nonce
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct PlatformAddressInfo {
-    pub balance: Credits,
-    pub nonce: AddressNonce,
-}
-
 #[derive(Debug, Clone)]
 pub struct Wallet {
     /// The platform wallet — `None` when the wallet is locked (encrypted seed).
@@ -332,8 +322,6 @@ pub struct Wallet {
     pub alias: Option<String>,
     pub identities: HashMap<u32, Identity>,
     pub is_main: bool,
-    /// DIP-17: Platform address balances and nonces (keyed by Core Address for lookup)
-    pub platform_address_info: BTreeMap<Address, PlatformAddressInfo>,
     /// Dash Core wallet name for multi-wallet RPC calls
     pub core_wallet_name: Option<String>,
 }
@@ -401,7 +389,6 @@ impl Wallet {
             alias,
             identities: Default::default(),
             is_main: true,
-            platform_address_info: Default::default(),
             core_wallet_name: None,
         })
     }
@@ -1030,40 +1017,6 @@ impl Wallet {
         Ok(())
     }
 
-    /// Register a Platform payment address (DIP-17/18).
-    /// Platform addresses use different version bytes and are NOT valid on Core chain.
-    fn register_platform_address(
-        &mut self,
-        address: Address,
-        derivation_path: &DerivationPath,
-        path_type: DerivationPathType,
-        path_reference: DerivationPathReference,
-        app_context: &AppContext,
-    ) -> Result<(), String> {
-        let canonical_address = Wallet::canonical_address(&address, app_context.network);
-
-        // Persist to DB. We don't import to Core wallet since Platform addresses are not valid there.
-        app_context
-            .db
-            .add_address_if_not_exists(
-                &self.seed_hash(),
-                &canonical_address,
-                &app_context.network,
-                derivation_path,
-                path_reference,
-                path_type,
-                None,
-            )
-            .map_err(|e| e.to_string())?;
-
-        tracing::trace!(
-            address = ?&address,
-            network = &app_context.network.to_string(),
-            "registered new Platform payment address"
-        );
-        Ok(())
-    }
-
     pub fn identity_top_up_ecdsa_private_key(
         &mut self,
         app_context: &AppContext,
@@ -1140,83 +1093,6 @@ impl Wallet {
         Err("Wallet is locked".to_string())
     }
 
-    /// Generate a Platform receive address.
-    /// Either returns an existing Platform address or generates a new one.
-    pub fn platform_receive_address(
-        &mut self,
-        network: Network,
-        force_new: bool,
-        register: Option<&AppContext>,
-    ) -> Result<Address, String> {
-        // If not forcing a new address, return first existing one from PlatformWallet
-        if !force_new {
-            if let Some(pw) = &self.platform_wallet {
-                let info = pw.core().blocking_wallet_info();
-                let all = platform_wallet::CoreAddressInfo::all_from_wallet_info(&info);
-                for addr_info in &all {
-                    if addr_info.derivation_path.is_platform_payment(network) {
-                        return Ok(addr_info.address.clone());
-                    }
-                }
-            }
-        }
-
-        // Need to generate a new address - this requires the wallet to be unlocked
-        let seed = *self.seed_bytes()?;
-        let secp = Secp256k1::new();
-        let account = 0u32;
-        let key_class = 0u32;
-
-        // Find the highest index in existing Platform payment addresses
-        let existing_indices: Vec<u32> = if let Some(pw) = &self.platform_wallet {
-            let info = pw.core().blocking_wallet_info();
-            platform_wallet::CoreAddressInfo::all_from_wallet_info(&info)
-                .iter()
-                .filter(|a| a.derivation_path.is_platform_payment(network))
-                .filter_map(|a| {
-                    a.derivation_path
-                        .as_ref()
-                        .last()
-                        .and_then(|child| match child {
-                            ChildNumber::Normal { index } | ChildNumber::Hardened { index } => {
-                                Some(*index)
-                            }
-                            _ => None,
-                        })
-                })
-                .collect()
-        } else {
-            vec![]
-        };
-
-        // Generate a new Platform address at the next index
-        let next_index = existing_indices.iter().max().map(|m| m + 1).unwrap_or(0);
-
-        let derivation_path =
-            DerivationPath::platform_payment_path(network, account, key_class, next_index);
-        let extended_private_key = derivation_path
-            .derive_priv_ecdsa_for_master_seed(&seed, network)
-            .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
-        let private_key = extended_private_key.to_priv();
-        let public_key = private_key.public_key(&secp);
-
-        // Create a P2PKH address for platform payment
-        let platform_address = Address::p2pkh(&public_key, network);
-
-        // Register the new address
-        if let Some(app_context) = register {
-            self.register_platform_address(
-                platform_address.clone(),
-                &derivation_path,
-                DerivationPathType::CLEAR_FUNDS,
-                DerivationPathReference::PlatformPayment,
-                app_context,
-            )?;
-        }
-
-        Ok(platform_address)
-    }
-
     pub fn derive_bip44_address(
         &self,
         network: Network,
@@ -1280,90 +1156,6 @@ impl Wallet {
             .map_err(|e| e.to_string())
     }
 
-    /// Get all Platform payment addresses from this wallet
-    pub fn platform_addresses(&self, _network: Network) -> Vec<(Address, PlatformAddress)> {
-        self.platform_address_info
-            .keys()
-            .filter_map(|addr| {
-                PlatformAddress::try_from(addr.clone())
-                    .ok()
-                    .map(|platform_addr| (addr.clone(), platform_addr))
-            })
-            .collect()
-    }
-
-    /// Get the total Platform balance (sum of all Platform address balances)
-    pub fn total_platform_balance(&self) -> Credits {
-        self.platform_address_info
-            .values()
-            .map(|info| info.balance)
-            .sum()
-    }
-
-    /// Get Platform address info by canonical address comparison.
-    ///
-    /// This method handles the case where the same platform address may be represented
-    /// by different Address objects. It normalizes by comparing PlatformAddress bytes
-    /// to find a matching entry.
-    pub fn get_platform_address_info(&self, address: &Address) -> Option<&PlatformAddressInfo> {
-        // First try direct lookup
-        if let Some(info) = self.platform_address_info.get(address) {
-            return Some(info);
-        }
-
-        // If direct lookup fails, try canonical comparison via PlatformAddress bytes
-        if let Ok(platform_addr) = PlatformAddress::try_from(address.clone()) {
-            let canonical_bytes = platform_addr.to_bytes();
-            for (existing_addr, info) in &self.platform_address_info {
-                if let Ok(existing_platform) = PlatformAddress::try_from(existing_addr.clone())
-                    && existing_platform.to_bytes() == canonical_bytes
-                {
-                    return Some(info);
-                }
-            }
-        }
-
-        None
-    }
-
-    /// Update Platform address info (balance and nonce).
-    ///
-    /// Handles canonical address deduplication: if the same platform address is
-    /// stored under a different `Address` key, the duplicate is removed first.
-    pub fn set_platform_address_info(
-        &mut self,
-        address: Address,
-        balance: Credits,
-        nonce: AddressNonce,
-    ) {
-        // Remove duplicate entries for the same canonical platform address
-        if let Ok(platform_addr) = PlatformAddress::try_from(address.clone()) {
-            let canonical_bytes = platform_addr.to_bytes();
-            let keys_to_remove: Vec<Address> = self
-                .platform_address_info
-                .keys()
-                .filter(|existing_addr| {
-                    if let Ok(existing_platform) =
-                        PlatformAddress::try_from((*existing_addr).clone())
-                    {
-                        existing_platform.to_bytes() == canonical_bytes
-                            && *existing_addr != &address
-                    } else {
-                        false
-                    }
-                })
-                .cloned()
-                .collect();
-
-            for key in keys_to_remove {
-                self.platform_address_info.remove(&key);
-            }
-        }
-
-        self.platform_address_info
-            .insert(address, PlatformAddressInfo { balance, nonce });
-    }
-
     /// Get the private key for a Platform address
     #[allow(clippy::result_large_err)]
     pub fn get_platform_address_private_key(
@@ -1393,89 +1185,6 @@ impl Wallet {
             .map_err(|e| ProtocolError::Generic(e.to_string()))?;
 
         Ok(extended_private_key.to_priv())
-    }
-}
-
-/// Signer implementation for Platform addresses
-/// Allows the wallet to sign transactions that spend from Platform addresses
-impl Signer<PlatformAddress> for Wallet {
-    fn sign(
-        &self,
-        platform_address: &PlatformAddress,
-        data: &[u8],
-    ) -> Result<BinaryData, ProtocolError> {
-        // Only P2PKH addresses are supported for now
-        if !platform_address.is_p2pkh() {
-            return Err(ProtocolError::Generic(
-                "Only P2PKH Platform addresses are currently supported for signing".to_string(),
-            ));
-        }
-
-        // The Signer trait doesn't pass network info, so we try each network.
-        // This is safe because:
-        // 1. A wallet instance only stores keys for ONE network (set at creation)
-        // 2. Platform addresses encode their network in the bech32m HRP (dash/tdash per DIP-18)
-        // 3. get_platform_address_private_key will only succeed for the correct network
-        // 4. Only one network's derivation will match the wallet's seed
-        let private_key = self
-            .get_platform_address_private_key(platform_address, Network::Mainnet)
-            .or_else(|_| self.get_platform_address_private_key(platform_address, Network::Testnet))
-            .or_else(|_| self.get_platform_address_private_key(platform_address, Network::Devnet))
-            .or_else(|_| {
-                self.get_platform_address_private_key(platform_address, Network::Regtest)
-            })?;
-
-        // Sign the data
-        let signature = dash_sdk::dpp::dashcore::signer::sign(data, private_key.inner.as_ref())
-            .map_err(|e| ProtocolError::Generic(format!("Failed to sign: {}", e)))?;
-
-        Ok(BinaryData::new(signature.to_vec()))
-    }
-
-    fn sign_create_witness(
-        &self,
-        platform_address: &PlatformAddress,
-        data: &[u8],
-    ) -> Result<AddressWitness, ProtocolError> {
-        // Only P2PKH addresses are supported for now
-        if !platform_address.is_p2pkh() {
-            return Err(ProtocolError::Generic(
-                "Only P2PKH Platform addresses are currently supported for signing".to_string(),
-            ));
-        }
-
-        // The Signer trait doesn't pass network info, so we try each network.
-        // This is safe - see comment in sign() above for explanation.
-        let private_key = self
-            .get_platform_address_private_key(platform_address, Network::Mainnet)
-            .or_else(|_| self.get_platform_address_private_key(platform_address, Network::Testnet))
-            .or_else(|_| self.get_platform_address_private_key(platform_address, Network::Devnet))
-            .or_else(|_| {
-                self.get_platform_address_private_key(platform_address, Network::Regtest)
-            })?;
-
-        // Sign the data - produces a compact recoverable signature
-        // The public key will be recovered from the signature during verification
-        let signature = dash_sdk::dpp::dashcore::signer::sign(data, private_key.inner.as_ref())
-            .map_err(|e| ProtocolError::Generic(format!("Failed to sign: {}", e)))?;
-
-        Ok(AddressWitness::P2pkh {
-            signature: BinaryData::new(signature.to_vec()),
-        })
-    }
-
-    fn can_sign_with(&self, platform_address: &PlatformAddress) -> bool {
-        // Only P2PKH addresses are supported
-        if !platform_address.is_p2pkh() {
-            return false;
-        }
-
-        // Check if we have the private key for this address
-        self.get_platform_address_private_key(platform_address, Network::Mainnet)
-            .or_else(|_| self.get_platform_address_private_key(platform_address, Network::Testnet))
-            .or_else(|_| self.get_platform_address_private_key(platform_address, Network::Devnet))
-            .or_else(|_| self.get_platform_address_private_key(platform_address, Network::Regtest))
-            .is_ok()
     }
 }
 
@@ -1613,34 +1322,23 @@ impl WalletAddressProvider {
             .insert(canonical_address, AddressFunds { nonce, balance });
     }
 
-    /// Apply the sync results to a wallet, updating Platform address info.
-    ///
-    /// This updates the wallet's `platform_address_info` with the balances found during sync.
-    /// Nonces are taken directly from the SDK sync results.
-    pub fn apply_results_to_wallet(&self, wallet: &mut Wallet) {
-        for (address, funds) in &self.found_balances {
-            let canonical_address = Wallet::canonical_address(address, self.network);
-
-            // Update wallet with synced balances
-            wallet.set_platform_address_info(canonical_address, funds.balance, funds.nonce);
-        }
-    }
-
-    /// Populate stored balances and sync height from a wallet's known state.
+    /// Populate stored balances and sync height from DB-provided state.
     ///
     /// Call this after construction to enable incremental catch-up.
     /// The SDK uses `current_balances()` as the baseline and `last_sync_height()`
     /// as the starting block for applying delta operations.
+    ///
+    /// `stored_info` contains `(Address, balance, nonce)` tuples loaded from the DB.
     pub fn with_stored_state(
         mut self,
-        wallet: &Wallet,
+        stored_info: &[(Address, u64, u32)],
         network: Network,
         last_sync_height: u64,
     ) -> Self {
         self.stored_sync_height = last_sync_height;
 
-        // Populate stored_balances from wallet's known platform addresses
-        for (core_addr, info) in &wallet.platform_address_info {
+        // Populate stored_balances from DB-provided platform address info
+        for (core_addr, balance, nonce) in stored_info {
             // Find the matching pending address to get the index and key
             for (index, (key, pending_addr)) in &self.pending {
                 let canonical = Wallet::canonical_address(pending_addr, network);
@@ -1649,8 +1347,8 @@ impl WalletAddressProvider {
                         *index,
                         key.clone(),
                         AddressFunds {
-                            balance: info.balance,
-                            nonce: info.nonce,
+                            balance: *balance,
+                            nonce: *nonce,
                         },
                     ));
                     break;
@@ -1840,7 +1538,6 @@ mod tests {
             alias: Some("Test Wallet".to_string()),
             identities: HashMap::new(),
             is_main: true,
-            platform_address_info: BTreeMap::new(),
             core_wallet_name: None,
         }
     }
@@ -1877,79 +1574,6 @@ mod tests {
         assert_eq!(wallet.total_balance_duffs(), 0);
         assert!(!wallet.has_balance());
         assert_eq!(wallet.spv_confirmed_balance(), None);
-    }
-
-    // ========================================================================
-    // Platform address info tests
-    // ========================================================================
-
-    #[test]
-    fn test_total_platform_balance_empty() {
-        let wallet = test_wallet();
-        assert_eq!(wallet.total_platform_balance(), 0);
-    }
-
-    #[test]
-    fn test_total_platform_balance_with_entries() {
-        let mut wallet = test_wallet();
-        let addr1 = test_address(1);
-        let addr2 = test_address(2);
-
-        wallet.platform_address_info.insert(
-            addr1,
-            PlatformAddressInfo {
-                balance: 1_000_000,
-                nonce: 0,
-            },
-        );
-        wallet.platform_address_info.insert(
-            addr2,
-            PlatformAddressInfo {
-                balance: 2_000_000,
-                nonce: 1,
-            },
-        );
-
-        assert_eq!(wallet.total_platform_balance(), 3_000_000);
-    }
-
-    #[test]
-    fn test_set_platform_address_info_update() {
-        let mut wallet = test_wallet();
-        let addr = test_address(1);
-
-        wallet.set_platform_address_info(addr.clone(), 500_000, 3);
-
-        wallet.set_platform_address_info(addr.clone(), 600_000, 4);
-
-        let info = wallet.platform_address_info.get(&addr).unwrap();
-        assert_eq!(info.balance, 600_000);
-        assert_eq!(info.nonce, 4);
-    }
-
-    #[test]
-    fn test_get_platform_address_info_direct_lookup() {
-        let mut wallet = test_wallet();
-        let addr = test_address(1);
-
-        wallet.platform_address_info.insert(
-            addr.clone(),
-            PlatformAddressInfo {
-                balance: 100_000,
-                nonce: 1,
-            },
-        );
-
-        let info = wallet.get_platform_address_info(&addr);
-        assert!(info.is_some());
-        assert_eq!(info.unwrap().balance, 100_000);
-    }
-
-    #[test]
-    fn test_get_platform_address_info_not_found() {
-        let wallet = test_wallet();
-        let addr = test_address(1);
-        assert!(wallet.get_platform_address_info(&addr).is_none());
     }
 
     // ========================================================================

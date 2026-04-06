@@ -119,8 +119,8 @@ impl AppContext {
             }
         };
 
-        // Step 6: Get wallet, SDK, and derive a fresh change address if needed
-        let (wallet, sdk, change_platform_address) = {
+        // Step 6: Get platform wallet, SDK, and derive a fresh change address if needed
+        let (platform_wallet, sdk, change_platform_address) = {
             let wallet_arc = {
                 let wallets = self.wallets.read()?;
                 wallets
@@ -147,9 +147,15 @@ impl AppContext {
                 None
             };
 
-            let wallet = wallet_arc.read()?.clone();
+            let wallet_guard = wallet_arc.read()?;
+            let platform_wallet = wallet_guard
+                .platform_wallet
+                .as_ref()
+                .cloned()
+                .ok_or(crate::backend_task::error::TaskError::WalletLocked)?;
+            drop(wallet_guard);
             let sdk = self.sdk.load().as_ref().clone();
-            (wallet, sdk, change_platform_address)
+            (platform_wallet, sdk, change_platform_address)
         };
 
         // Step 7: Fund the destination platform address
@@ -198,7 +204,7 @@ impl AppContext {
                 asset_lock_proof,
                 asset_lock_private_key,
                 fee_strategy,
-                &wallet,
+                platform_wallet.platform(),
                 None,
             )
             .await

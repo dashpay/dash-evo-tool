@@ -1,5 +1,4 @@
 use crate::app::AppAction;
-use crate::model::wallet::DerivationPathHelpers;
 use crate::ui::ScreenType;
 use crate::ui::theme::{DashColors, ResponseExt};
 use eframe::egui::{self, Ui};
@@ -49,19 +48,17 @@ impl WalletsBalancesScreen {
                             ui.add_space(20.0);
                         });
                     } else {
-                        // Collect Platform addresses from PlatformWallet
+                        // Collect Platform addresses with balances from DB
                         let network = self.app_context.network;
-                        let platform_addresses: Vec<(String, u64)> = wallet
-                            .all_addresses_info()
+                        let platform_addresses: Vec<(String, u64)> = self
+                            .app_context
+                            .db
+                            .get_all_platform_address_info(&wallet.seed_hash(), &network)
+                            .unwrap_or_default()
                             .into_iter()
-                            .filter(|a| a.derivation_path.is_platform_payment(network))
-                            .filter_map(|a| {
+                            .filter_map(|(core_addr, balance, _nonce)| {
                                 use dash_sdk::dpp::address_funds::PlatformAddress;
-                                let balance = wallet
-                                    .get_platform_address_info(&a.address)
-                                    .map(|info| info.balance)
-                                    .unwrap_or(0);
-                                PlatformAddress::try_from(a.address)
+                                PlatformAddress::try_from(core_addr)
                                     .ok()
                                     .map(|pa| (pa.to_bech32m_string(network), balance))
                             })

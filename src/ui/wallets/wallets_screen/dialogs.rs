@@ -658,15 +658,66 @@ impl WalletsBalancesScreen {
         wallet: &Arc<RwLock<Wallet>>,
     ) -> Result<String, String> {
         use dash_sdk::dpp::address_funds::PlatformAddress;
-        let mut wallet_guard = wallet.write().map_err(|e| e.to_string())?;
-        // Pass true to skip known addresses and generate a new one
-        let address = wallet_guard
-            .platform_receive_address(self.app_context.network, true, Some(&self.app_context))
+        use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
+        use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
+        use crate::model::wallet::{DerivationPathHelpers, DerivationPathReference, DerivationPathType};
+
+        let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
+        let pw = wallet_guard
+            .platform_wallet
+            .as_ref()
+            .ok_or_else(|| "Wallet is locked".to_string())?;
+        let network = self.app_context.network;
+
+        // Find the highest existing platform payment address index
+        let info = pw.core().blocking_wallet_info();
+        let existing_indices: Vec<u32> = platform_wallet::CoreAddressInfo::all_from_wallet_info(&info)
+            .iter()
+            .filter(|a| a.derivation_path.is_platform_payment(network))
+            .filter_map(|a| {
+                use dash_sdk::dpp::key_wallet::bip32::ChildNumber;
+                a.derivation_path
+                    .as_ref()
+                    .last()
+                    .and_then(|child| match child {
+                        ChildNumber::Normal { index } | ChildNumber::Hardened { index } => Some(*index),
+                        _ => None,
+                    })
+            })
+            .collect();
+
+        let next_index = existing_indices.iter().max().map(|m| m + 1).unwrap_or(0);
+
+        // Derive a new platform payment address
+        let seed = *wallet_guard.seed_bytes().map_err(|e| e.to_string())?;
+        let secp = Secp256k1::new();
+        let derivation_path = DerivationPath::platform_payment_path(network, 0, 0, next_index);
+        let extended_private_key = derivation_path
+            .derive_priv_ecdsa_for_master_seed(&seed, network)
             .map_err(|e| e.to_string())?;
+        let private_key = extended_private_key.to_priv();
+        let public_key = private_key.public_key(&secp);
+        let address = dash_sdk::dpp::dashcore::Address::p2pkh(&public_key, network);
+
+        // Persist to DB
+        let canonical = Wallet::canonical_address(&address, network);
+        self.app_context
+            .db
+            .add_address_if_not_exists(
+                &wallet_guard.seed_hash(),
+                &canonical,
+                &network,
+                &derivation_path,
+                DerivationPathReference::PlatformPayment,
+                DerivationPathType::CLEAR_FUNDS,
+                None,
+            )
+            .map_err(|e| e.to_string())?;
+
         // Convert to PlatformAddress and encode as Bech32m per DIP-18
         let platform_addr =
             PlatformAddress::try_from(address).map_err(|e| format!("Invalid address: {}", e))?;
-        Ok(platform_addr.to_bech32m_string(self.app_context.network))
+        Ok(platform_addr.to_bech32m_string(network))
     }
 
     /// Generate a new Core receive address for the wallet
@@ -1225,17 +1276,19 @@ impl WalletsBalancesScreen {
         };
 
         // Collect Platform addresses with their balances (using DIP-18 Bech32m format)
-        // Uses platform_addresses() which reads from platform_address_info
         let network = self.app_context.network;
-        let platform_addresses: Vec<(String, u64)> = wallet_guard
-            .platform_addresses(network)
+        let db_info = self
+            .app_context
+            .db
+            .get_all_platform_address_info(&wallet_guard.seed_hash(), &network)
+            .unwrap_or_default();
+        let platform_addresses: Vec<(String, u64)> = db_info
             .into_iter()
-            .map(|(core_addr, platform_addr)| {
-                let balance = wallet_guard
-                    .get_platform_address_info(&core_addr)
-                    .map(|info| info.balance)
-                    .unwrap_or(0);
-                (platform_addr.to_bech32m_string(network), balance)
+            .filter_map(|(core_addr, balance, _nonce)| {
+                use dash_sdk::dpp::address_funds::PlatformAddress;
+                PlatformAddress::try_from(core_addr)
+                    .ok()
+                    .map(|pa| (pa.to_bech32m_string(network), balance))
             })
             .collect();
 
@@ -1285,7 +1338,7 @@ impl WalletsBalancesScreen {
         let address_input = AddressInput::new(self.app_context.network)
             .with_label("Mine to address:")
             .with_address_kinds(&[AddressKind::Core])
-            .with_wallets(&[wallet])
+            .with_wallets(&[wallet], Some(&self.app_context.db))
             .with_selection_only(true)
             .with_full_addresses(true);
 

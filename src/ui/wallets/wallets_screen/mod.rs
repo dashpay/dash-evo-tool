@@ -535,7 +535,7 @@ impl WalletsBalancesScreen {
                     .as_ref()
                     .map(|pw| pw.core().balance().total())
                     .unwrap_or(0);
-                let platform_balance = Self::platform_balance_duffs(&guard);
+                let platform_balance = Self::platform_balance_duffs(&guard, &self.app_context.db, &self.app_context.network);
                 let shielded_balance = self.shielded_balance_duffs(&seed_hash);
                 let balance_dash =
                     (core_balance + platform_balance + shielded_balance) as f64 * 1e-8;
@@ -601,7 +601,7 @@ impl WalletsBalancesScreen {
                 .ok()
                 .map(|g| {
                     let core = self.core_balance_duffs();
-                    let platform = Self::platform_balance_duffs(&g);
+                    let platform = Self::platform_balance_duffs(&g, &self.app_context.db, &self.app_context.network);
                     let shielded = self.shielded_balance_duffs(&g.seed_hash());
                     core + platform + shielded
                 })
@@ -1050,13 +1050,17 @@ impl WalletsBalancesScreen {
             .unwrap_or(0)
     }
 
-    fn platform_balance_duffs(wallet: &Wallet) -> u64 {
-        // Only sum Platform address balances
+    fn platform_balance_duffs(
+        wallet: &Wallet,
+        db: &crate::database::Database,
+        network: &dash_sdk::dpp::dashcore::Network,
+    ) -> u64 {
+        // Only sum Platform address balances from DB
         // Identity balances are shown separately on the Identities screen
-        wallet
-            .platform_address_info
-            .values()
-            .map(|info| info.balance / CREDITS_PER_DUFF)
+        db.get_all_platform_address_info(&wallet.seed_hash(), network)
+            .unwrap_or_default()
+            .iter()
+            .map(|(_addr, balance, _nonce)| balance / CREDITS_PER_DUFF)
             .sum()
     }
 
@@ -1839,7 +1843,13 @@ impl WalletsBalancesScreen {
                     .selected_wallet
                     .as_ref()
                     .and_then(|w| w.read().ok())
-                    .map(|w| w.platform_address_info.len())
+                    .map(|w| {
+                        self.app_context
+                            .db
+                            .get_all_platform_address_info(&w.seed_hash(), &self.app_context.network)
+                            .unwrap_or_default()
+                            .len()
+                    })
                     .unwrap_or(0);
                 let addr_color = if self.refreshing {
                     syncing_color
@@ -1952,7 +1962,7 @@ impl WalletsBalancesScreen {
     fn render_balance_total(&self, ui: &mut Ui, wallet: &Wallet) {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
         let core_balance = self.core_balance_duffs();
-        let platform_balance = Self::platform_balance_duffs(wallet);
+        let platform_balance = Self::platform_balance_duffs(wallet, &self.app_context.db, &self.app_context.network);
         let shielded_balance = self.shielded_balance_duffs(&wallet.seed_hash());
         let total = core_balance + platform_balance + shielded_balance;
 
@@ -1968,7 +1978,7 @@ impl WalletsBalancesScreen {
     fn render_balance_breakdown_detail(&mut self, ui: &mut Ui, wallet: &Wallet) {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
         let core_balance = self.core_balance_duffs();
-        let platform_balance = Self::platform_balance_duffs(wallet);
+        let platform_balance = Self::platform_balance_duffs(wallet, &self.app_context.db, &self.app_context.network);
         let shielded_balance = self.shielded_balance_duffs(&wallet.seed_hash());
 
         let header = egui::CollapsingHeader::new(
@@ -2075,7 +2085,7 @@ impl WalletsBalancesScreen {
 
                         let summaries = {
                             let wallet = wallet_arc.read().unwrap();
-                            collect_account_summaries(&wallet, self.app_context.network)
+                            collect_account_summaries(&wallet, self.app_context.network, &self.app_context.db)
                         };
                         self.ensure_account_selection(&summaries);
                         action |= self.render_account_tabs(ui, &summaries);
@@ -2931,19 +2941,11 @@ impl ScreenLike for WalletsBalancesScreen {
             }
             crate::ui::BackendTaskSuccessResult::PlatformAddressBalances {
                 seed_hash,
-                balances,
+                balances: _,
             } => {
                 self.refreshing = false;
-                // Update wallet's platform_address_info if this is for the selected wallet
-                if let Some(selected) = &self.selected_wallet
-                    && let Ok(mut wallet) = selected.write()
-                    && wallet.seed_hash() == seed_hash
-                {
-                    // Update balances in the wallet
-                    for (addr, (balance, nonce)) in balances {
-                        wallet.set_platform_address_info(addr, balance, nonce);
-                    }
-                }
+                // Platform address balances are persisted to DB by the backend task.
+                // No in-memory wallet update needed.
                 self.refresh_platform_sync_info_cache(&seed_hash);
                 MessageBanner::set_global(
                     self.app_context.egui_ctx(),

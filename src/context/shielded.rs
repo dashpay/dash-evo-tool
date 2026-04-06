@@ -99,43 +99,24 @@ impl AppContext {
 
     /// Increment the stored nonce for a platform address after a successful state transition.
     ///
-    /// Updates both the in-memory wallet and the persisted DB record so that
-    /// subsequent operations (single-shot or batch) read the correct next nonce
-    /// without needing a full platform-address sync.
+    /// Updates the persisted DB record so that subsequent operations
+    /// (single-shot or batch) read the correct next nonce without needing
+    /// a full platform-address sync.
     pub fn bump_platform_address_nonce(
         &self,
         seed_hash: &WalletSeedHash,
         from_address: &dash_sdk::dpp::address_funds::PlatformAddress,
     ) {
-        let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
-        let wallet_arc = match wallets.get(seed_hash) {
-            Some(w) => w.clone(),
-            None => return,
-        };
-        drop(wallets);
-
-        let mut wallet = wallet_arc.write().unwrap_or_else(|e| e.into_inner());
-        // Find the matching entry (platform_address_info is keyed by core Address)
-        let mut found: Option<(dash_sdk::dpp::dashcore::Address, u64, u32)> = None;
-        for (core_addr, info) in wallet.platform_address_info.iter_mut() {
-            if let Ok(pa) =
-                dash_sdk::dpp::address_funds::PlatformAddress::try_from(core_addr.clone())
-                && &pa == from_address
-            {
-                info.nonce += 1;
-                found = Some((core_addr.clone(), info.balance, info.nonce));
-                break;
-            }
-        }
-        drop(wallet);
-
-        // Persist updated nonce to DB
-        if let Some((core_addr, balance, new_nonce)) = found {
+        let core_addr = from_address.to_address_with_network(self.network);
+        if let Ok(Some((balance, nonce))) =
+            self.db
+                .get_platform_address_info(seed_hash, &core_addr, &self.network)
+        {
             let _ = self.db.set_platform_address_info(
                 seed_hash,
                 &core_addr,
                 balance,
-                new_nonce,
+                nonce + 1,
                 &self.network,
             );
         }
@@ -150,29 +131,18 @@ impl AppContext {
         from_address: &dash_sdk::dpp::address_funds::PlatformAddress,
         nonce: u32,
     ) {
-        let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
-        let wallet_arc = match wallets.get(seed_hash) {
-            Some(w) => w.clone(),
-            None => return,
-        };
-        drop(wallets);
-
-        let mut wallet = wallet_arc.write().unwrap_or_else(|e| e.into_inner());
-        for (core_addr, info) in wallet.platform_address_info.iter_mut() {
-            if let Ok(pa) =
-                dash_sdk::dpp::address_funds::PlatformAddress::try_from(core_addr.clone())
-                && &pa == from_address
-            {
-                info.nonce = nonce;
-                let _ = self.db.set_platform_address_info(
-                    seed_hash,
-                    core_addr,
-                    info.balance,
-                    nonce,
-                    &self.network,
-                );
-                break;
-            }
+        let core_addr = from_address.to_address_with_network(self.network);
+        if let Ok(Some((balance, _old_nonce))) =
+            self.db
+                .get_platform_address_info(seed_hash, &core_addr, &self.network)
+        {
+            let _ = self.db.set_platform_address_info(
+                seed_hash,
+                &core_addr,
+                balance,
+                nonce,
+                &self.network,
+            );
         }
     }
 

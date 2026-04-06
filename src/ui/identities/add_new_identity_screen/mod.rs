@@ -501,10 +501,12 @@ impl AddNewIdentityScreen {
                 // Check if wallet has Platform address balance
                 let has_platform_balance = {
                     let wallet = selected_wallet.read().unwrap();
-                    wallet
-                        .platform_address_info
-                        .values()
-                        .any(|info| info.balance > 0)
+                    self.app_context
+                        .db
+                        .get_all_platform_address_info(&wallet.seed_hash(), &self.app_context.network)
+                        .unwrap_or_default()
+                        .iter()
+                        .any(|(_addr, balance, _nonce)| *balance > 0)
                 };
                 if has_platform_balance
                     && ui

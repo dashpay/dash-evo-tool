@@ -226,10 +226,14 @@ impl AddressInput {
     /// Entries are extracted immediately (read lock acquired once per wallet).
     /// Skips gracefully if a wallet lock is poisoned.
     /// When more than one wallet is provided, entries are prefixed with the wallet alias.
-    pub fn with_wallets(mut self, wallets: &[Arc<RwLock<Wallet>>]) -> Self {
+    pub fn with_wallets(
+        mut self,
+        wallets: &[Arc<RwLock<Wallet>>],
+        db: Option<&crate::database::Database>,
+    ) -> Self {
         let multi = wallets.len() > 1;
         for wallet in wallets {
-            self.extract_wallet_entries(wallet, multi);
+            self.extract_wallet_entries(wallet, multi, db);
         }
         self
     }
@@ -333,13 +337,17 @@ impl AddressInput {
     /// Update wallet data after initialization (e.g., balance refresh).
     ///
     /// When more than one wallet is provided, entries are prefixed with the wallet alias.
-    pub fn set_wallets(&mut self, wallets: &[Arc<RwLock<Wallet>>]) {
+    pub fn set_wallets(
+        &mut self,
+        wallets: &[Arc<RwLock<Wallet>>],
+        db: Option<&crate::database::Database>,
+    ) {
         self.all_entries.retain(|e| {
             e.address_kind != AddressKind::Core && e.address_kind != AddressKind::Platform
         });
         let multi = wallets.len() > 1;
         for wallet in wallets {
-            self.extract_wallet_entries(wallet, multi);
+            self.extract_wallet_entries(wallet, multi, db);
         }
     }
 
@@ -364,7 +372,12 @@ impl AddressInput {
 
     // --- Entry extraction ---
 
-    fn extract_wallet_entries(&mut self, wallet: &Arc<RwLock<Wallet>>, multi_wallet: bool) {
+    fn extract_wallet_entries(
+        &mut self,
+        wallet: &Arc<RwLock<Wallet>>,
+        multi_wallet: bool,
+        db: Option<&crate::database::Database>,
+    ) {
         let guard = match wallet.read().ok() {
             Some(g) => g,
             None => return,
@@ -412,9 +425,19 @@ impl AddressInput {
         }
 
         // Platform addresses: whitelist only PlatformPayment derivation paths,
-        // with balance from platform_address_info.
+        // with balance from DB.
         // This ensures fresh wallets with no on-chain activity still show
         // their derived platform addresses.
+        let platform_balances: std::collections::HashMap<_, _> = db
+            .and_then(|d| {
+                d.get_all_platform_address_info(&guard.seed_hash(), &self.network)
+                    .ok()
+            })
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(addr, balance, _nonce)| (addr, balance))
+            .collect();
+
         let mut seen_platform = std::collections::HashSet::new();
         if let Some(pw) = guard.platform_wallet.as_ref() {
             let info = pw.core().blocking_wallet_info();
@@ -428,11 +451,8 @@ impl AddressInput {
                     if !seen_platform.insert(addr_str.clone()) {
                         continue;
                     }
-                    let balance = guard
-                        .platform_address_info
-                        .get(core_addr)
-                        .map(|info| info.balance)
-                        .unwrap_or(0);
+                    let canonical = Wallet::canonical_address(core_addr, self.network);
+                    let balance = platform_balances.get(&canonical).copied().unwrap_or(0);
                     let display = if self.full_addresses {
                         format!("{}{}", prefix, addr_str)
                     } else {

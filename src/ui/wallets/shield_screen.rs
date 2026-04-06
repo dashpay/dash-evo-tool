@@ -172,17 +172,17 @@ impl ShieldScreen {
         let wallet_guard = wallet_arc.read().ok();
 
         if let Some(wallet) = &wallet_guard {
-            // Platform nonce and balance for selected address
+            // Platform nonce and balance for selected address from DB
             if let Some(from_address) = self.selected_platform_address() {
-                let info = wallet
-                    .platform_address_info
-                    .iter()
-                    .find_map(|(addr, info)| {
-                        let platform_addr = PlatformAddress::try_from(addr.clone()).ok()?;
-                        (platform_addr == from_address).then_some(info)
-                    });
-                self.cached_base_nonce = info.map(|i| i.nonce);
-                self.cached_platform_balance = info.map(|i| i.balance);
+                let core_addr = from_address.to_address_with_network(self.app_context.network);
+                let db_info = self
+                    .app_context
+                    .db
+                    .get_platform_address_info(&wallet.seed_hash(), &core_addr, &self.app_context.network)
+                    .ok()
+                    .flatten();
+                self.cached_base_nonce = db_info.as_ref().map(|(_balance, nonce)| *nonce);
+                self.cached_platform_balance = db_info.as_ref().map(|(balance, _nonce)| *balance);
             } else {
                 self.cached_base_nonce = None;
                 self.cached_platform_balance = None;
@@ -727,7 +727,7 @@ impl ScreenLike for ShieldScreen {
                         if let Ok(wallets) = self.app_context.wallets.read()
                             && let Some(wallet) = wallets.get(&self.seed_hash)
                         {
-                            builder = builder.with_wallets(std::slice::from_ref(wallet));
+                            builder = builder.with_wallets(std::slice::from_ref(wallet), Some(&self.app_context.db));
                         }
 
                         builder

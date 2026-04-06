@@ -115,13 +115,17 @@ pub fn build_shield_credit(
         vec![AddressFundsFeeStrategyStep::DeductFromInput(0)];
 
     let wallet = wallet_arc.read()?;
+    let platform_wallet = wallet
+        .platform_wallet
+        .as_ref()
+        .ok_or(TaskError::WalletLocked)?;
     // memo: 36-byte structured memo (4-byte type tag + 32-byte payload); all zeros = empty memo
     build_shield_transition(
         &recipient_addr,
         amount,
         inputs,
         fee_strategy,
-        &*wallet,
+        platform_wallet.platform(),
         0,
         &prover,
         [0u8; 36],
@@ -163,18 +167,13 @@ pub async fn shield_credits(
         n
     } else {
         let wallet = wallet_arc.read()?;
-        wallet
-            .platform_address_info
-            .iter()
-            .find_map(|(addr, info)| {
-                let platform_addr = PlatformAddress::try_from(addr.clone()).ok()?;
-                if platform_addr == from_address {
-                    Some(info.nonce + 1)
-                } else {
-                    None
-                }
-            })
-            .ok_or(TaskError::PlatformAddressNotFound)?
+        let core_addr = from_address.to_address_with_network(app_context.network);
+        let (_balance, db_nonce) = app_context
+            .db
+            .get_platform_address_info(&wallet.seed_hash(), &core_addr, &app_context.network)
+            .map_err(|_| TaskError::PlatformAddressNotFound)?
+            .ok_or(TaskError::PlatformAddressNotFound)?;
+        db_nonce + 1
     };
 
     let mut inputs = BTreeMap::new();
@@ -196,13 +195,17 @@ pub async fn shield_credits(
 
     let state_transition = {
         let wallet = wallet_arc.read()?;
+        let platform_wallet = wallet
+            .platform_wallet
+            .as_ref()
+            .ok_or(TaskError::WalletLocked)?;
         // memo: 36-byte structured memo (4-byte type tag + 32-byte payload); all zeros = empty memo
         build_shield_transition(
             &recipient_addr,
             amount,
             inputs,
             fee_strategy,
-            &*wallet,
+            platform_wallet.platform(),
             0,
             &prover,
             [0u8; 36],

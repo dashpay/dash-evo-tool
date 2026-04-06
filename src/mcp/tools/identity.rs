@@ -205,18 +205,21 @@ impl AsyncTool<DashMcpService> for IdentityCreditsTopupFromPlatform {
             .id()
             .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
 
-        // Read platform addresses from wallet state and allocate inputs (scoped to avoid Send issues)
+        // Read platform addresses from DB and allocate inputs (scoped to avoid Send issues)
         let platform_balances = {
             let wallet_arc = resolve::wallet_arc(&ctx, seed_hash)?;
             let wallet = wallet_arc.read().unwrap_or_else(|e| e.into_inner());
-            let mut balances: Vec<_> = wallet
-                .platform_address_info
-                .iter()
-                .filter_map(|(addr, info)| {
-                    if info.balance > 0 {
-                        dash_sdk::dpp::address_funds::PlatformAddress::try_from(addr.clone())
+            let db_info = ctx
+                .db
+                .get_all_platform_address_info(&wallet.seed_hash(), &ctx.network)
+                .unwrap_or_default();
+            let mut balances: Vec<_> = db_info
+                .into_iter()
+                .filter_map(|(addr, balance, _nonce)| {
+                    if balance > 0 {
+                        dash_sdk::dpp::address_funds::PlatformAddress::try_from(addr)
                             .ok()
-                            .map(|pa| (pa, info.balance))
+                            .map(|pa| (pa, balance))
                     } else {
                         None
                     }

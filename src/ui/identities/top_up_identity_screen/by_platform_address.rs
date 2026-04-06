@@ -219,18 +219,20 @@ impl TopUpIdentityScreen {
             return vec![];
         };
 
-        let network = self.app_context.network;
-        wallet
-            .platform_addresses(network)
+        self.app_context
+            .db
+            .get_all_platform_address_info(&wallet.seed_hash(), &self.app_context.network)
+            .unwrap_or_default()
             .into_iter()
-            .map(|(core_addr, platform_addr)| {
-                let balance = wallet
-                    .get_platform_address_info(&core_addr)
-                    .map(|info| info.balance)
-                    .unwrap_or(0);
-                (core_addr, platform_addr, balance)
+            .filter_map(|(core_addr, balance, _nonce)| {
+                if balance > 0 {
+                    PlatformAddress::try_from(core_addr.clone())
+                        .ok()
+                        .map(|pa| (core_addr, pa, balance))
+                } else {
+                    None
+                }
             })
-            .filter(|(_, _, balance)| *balance > 0)
             .collect()
     }
 

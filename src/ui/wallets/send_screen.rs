@@ -569,8 +569,6 @@ impl WalletSendScreen {
     /// Deduplicates addresses based on their canonical Bech32m string representation,
     /// preferring the entry with the highest nonce (most recent update)
     fn get_platform_addresses(&self) -> Vec<(Address, PlatformAddress, Credits)> {
-        use std::collections::HashMap;
-
         let Some(wallet_arc) = &self.selected_wallet else {
             return vec![];
         };
@@ -579,39 +577,25 @@ impl WalletSendScreen {
         };
 
         let network = self.app_context.network;
-        // Use HashMap to deduplicate by canonical address string
-        // Store (core_addr, platform_addr, balance, nonce) and prefer higher nonce
-        let mut address_map: HashMap<String, (Address, PlatformAddress, Credits, u32)> =
-            HashMap::new();
+        let db_info = self
+            .app_context
+            .db
+            .get_all_platform_address_info(&wallet.seed_hash(), &network)
+            .unwrap_or_default();
 
-        for (addr, info) in wallet.platform_address_info.iter() {
-            if let Ok(platform_addr) = PlatformAddress::try_from(addr.clone()) {
-                let canonical_str = platform_addr.to_bech32m_string(network);
-
-                // Check if we already have this address
-                let should_update = match address_map.get(&canonical_str) {
-                    Some((_, _, _, existing_nonce)) => {
-                        // Prefer the entry with higher nonce (more recent)
-                        info.nonce >= *existing_nonce
-                    }
-                    None => true,
-                };
-
-                if should_update {
-                    address_map.insert(
-                        canonical_str,
-                        (addr.clone(), platform_addr, info.balance, info.nonce),
-                    );
-                }
-            }
-        }
-
-        // Filter to only addresses with positive balance, sort by canonical string, and return
-        let mut result: Vec<_> = address_map
+        let mut result: Vec<_> = db_info
             .into_iter()
-            .filter(|(_, (_, _, balance, _))| *balance > 0)
-            .map(|(canonical_str, (addr, platform_addr, balance, _))| {
-                (canonical_str, addr, platform_addr, balance)
+            .filter_map(|(core_addr, balance, _nonce)| {
+                if balance > 0 {
+                    PlatformAddress::try_from(core_addr.clone())
+                        .ok()
+                        .map(|pa| {
+                            let canonical_str = pa.to_bech32m_string(network);
+                            (canonical_str, core_addr, pa, balance)
+                        })
+                } else {
+                    None
+                }
             })
             .collect();
 
@@ -2205,7 +2189,7 @@ impl WalletSendScreen {
                     let all_wallets: Vec<Arc<RwLock<Wallet>>> =
                         wallets_guard.values().cloned().collect();
                     if !all_wallets.is_empty() {
-                        builder = builder.with_wallets(&all_wallets);
+                        builder = builder.with_wallets(&all_wallets, Some(&self.app_context.db));
                     }
                 }
 

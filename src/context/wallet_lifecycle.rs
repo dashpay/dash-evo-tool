@@ -525,30 +525,25 @@ impl AppContext {
         }
     }
 
-    /// Update wallet platform address info from SDK-returned AddressInfos.
+    /// Update platform address info in DB from SDK-returned AddressInfos.
     /// This uses the proof-verified data from SDK operations rather than fetching.
     pub(crate) fn update_wallet_platform_address_info_from_sdk(
         &self,
         seed_hash: WalletSeedHash,
         address_infos: &dash_sdk::query_types::AddressInfos,
     ) -> Result<(), TaskError> {
-        let wallet_arc = {
+        // Verify the wallet exists
+        {
             let wallets = self.wallets.read()?;
-            wallets
-                .get(&seed_hash)
-                .cloned()
-                .ok_or(TaskError::WalletNotFound)?
-        };
-
-        let mut wallet = wallet_arc.write()?;
+            if !wallets.contains_key(&seed_hash) {
+                return Err(TaskError::WalletNotFound);
+            }
+        }
 
         for (platform_addr, maybe_info) in address_infos.iter() {
             if let Some(info) = maybe_info {
                 // Convert PlatformAddress to core Address using the network
                 let core_addr = platform_addr.to_address_with_network(self.network);
-
-                // Update in-memory wallet state
-                wallet.set_platform_address_info(core_addr.clone(), info.balance, info.nonce);
 
                 // Update database
                 if let Err(e) = self.db.set_platform_address_info(

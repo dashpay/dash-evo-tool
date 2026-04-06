@@ -18,10 +18,13 @@ impl AddNewIdentityScreen {
         if let Some(selected_wallet) = &self.selected_wallet {
             let wallet = selected_wallet.read().unwrap();
 
-            let total_platform_balance: u64 = wallet
-                .platform_address_info
-                .values()
-                .map(|info| info.balance)
+            let total_platform_balance: u64 = self
+                .app_context
+                .db
+                .get_all_platform_address_info(&wallet.seed_hash(), &self.app_context.network)
+                .unwrap_or_default()
+                .iter()
+                .map(|(_addr, balance, _nonce)| balance)
                 .sum();
 
             let dash_balance = total_platform_balance as f64 / CREDITS_PER_DUFF as f64 / 1e8;
@@ -50,27 +53,25 @@ impl AddNewIdentityScreen {
         self.show_platform_address_balance(ui);
         ui.add_space(10.0);
 
-        // Get Platform addresses from the wallet (using DIP-18 Bech32m format for display)
+        // Get Platform addresses from the DB (using DIP-18 Bech32m format for display)
         let network = self.app_context.network;
         let platform_addresses: Vec<(String, PlatformAddress, u64)> =
             if let Some(wallet_arc) = &self.selected_wallet {
                 let wallet = wallet_arc.read().unwrap();
-                wallet
-                    .platform_addresses(network)
+                self.app_context
+                    .db
+                    .get_all_platform_address_info(&wallet.seed_hash(), &network)
+                    .unwrap_or_default()
                     .into_iter()
-                    .map(|(core_addr, platform_addr)| {
-                        let balance = wallet
-                            .get_platform_address_info(&core_addr)
-                            .map(|info| info.balance)
-                            .unwrap_or(0);
-                        // Use Bech32m format for display
-                        (
-                            platform_addr.to_bech32m_string(network),
-                            platform_addr,
-                            balance,
-                        )
+                    .filter_map(|(core_addr, balance, _nonce)| {
+                        if balance > 0 {
+                            PlatformAddress::try_from(core_addr)
+                                .ok()
+                                .map(|pa| (pa.to_bech32m_string(network), pa, balance))
+                        } else {
+                            None
+                        }
                     })
-                    .filter(|(_, _, balance)| *balance > 0)
                     .collect()
             } else {
                 vec![]

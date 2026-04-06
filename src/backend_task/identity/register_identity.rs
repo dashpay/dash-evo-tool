@@ -594,8 +594,15 @@ impl AppContext {
             key_count,
         );
 
-        // Clone the wallet for use as the address signer (needed across async boundary)
-        let wallet_clone = { wallet.read().map_err(TaskError::from)?.clone() };
+        // Get the platform wallet's address signer (PlatformAddressWallet implements Signer<PlatformAddress>)
+        let platform_wallet = {
+            let wallet_guard = wallet.read().map_err(TaskError::from)?;
+            wallet_guard
+                .platform_wallet
+                .as_ref()
+                .cloned()
+                .ok_or(TaskError::WalletLocked)?
+        };
 
         let identity = Identity::new_with_input_addresses_and_keys(
             &inputs,
@@ -629,7 +636,7 @@ impl AppContext {
 
         // Send to Platform using address funding and wait for response
         match identity
-            .put_with_address_funding(&sdk, inputs, None, &qualified_identity, &wallet_clone, None)
+            .put_with_address_funding(&sdk, inputs, None, &qualified_identity, platform_wallet.platform(), None)
             .await
         {
             Ok((updated_identity, address_infos)) => {
@@ -682,13 +689,13 @@ impl AppContext {
 
     /// Get the best (most recent nonce) AddressInfo from all wallets for the given [PlatformAddress] in current [Self::network].
     ///
-    /// Returns `None`` if no info is found.
+    /// Returns `None` if no info is found.
     fn get_platform_address_best_info(
         &self,
         platform_address: &PlatformAddress,
         network: Network,
     ) -> Option<AddressInfo> {
-        let generic_address = platform_address.to_address_with_network(network);
+        let core_addr = platform_address.to_address_with_network(network);
         let wallets = self
             .wallets
             .read()
@@ -698,17 +705,20 @@ impl AppContext {
         let mut recent_info: Option<AddressInfo> = None;
         for wallet in wallets.values() {
             let wallet_guard = wallet.read().ok()?;
-
-            if let Some(new_info) = wallet_guard.get_platform_address_info(&generic_address)
-                && recent_info
-                    .as_ref()
-                    .is_none_or(|recent| new_info.nonce > recent.nonce)
+            if let Ok(Some((balance, nonce))) =
+                self.db
+                    .get_platform_address_info(&wallet_guard.seed_hash(), &core_addr, &network)
             {
-                recent_info = Some(AddressInfo {
-                    address: *platform_address,
-                    balance: new_info.balance,
-                    nonce: new_info.nonce,
-                });
+                if recent_info
+                    .as_ref()
+                    .is_none_or(|recent| nonce > recent.nonce)
+                {
+                    recent_info = Some(AddressInfo {
+                        address: *platform_address,
+                        balance,
+                        nonce,
+                    });
+                }
             }
         }
 

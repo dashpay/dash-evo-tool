@@ -245,8 +245,20 @@ impl AccountSummaryBuilder {
     }
 }
 
-pub fn collect_account_summaries(wallet: &Wallet, network: Network) -> Vec<AccountSummary> {
+pub fn collect_account_summaries(
+    wallet: &Wallet,
+    network: Network,
+    db: &crate::database::Database,
+) -> Vec<AccountSummary> {
     let mut builders: BTreeMap<AccountKey, AccountSummaryBuilder> = BTreeMap::new();
+
+    // Build a lookup map of platform address balances from DB
+    let platform_balances: std::collections::HashMap<_, _> = db
+        .get_all_platform_address_info(&wallet.seed_hash(), &network)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(addr, balance, _nonce)| (addr, balance))
+        .collect();
 
     // Use PlatformWallet's CoreAddressInfo as the canonical source.
     // Locked wallets (no PlatformWallet) show no account summaries.
@@ -259,10 +271,11 @@ pub fn collect_account_summaries(wallet: &Wallet, network: Network) -> Vec<Accou
                 DerivationPathReference::Unknown,
             );
 
-            // Get Platform credits balance for Platform Payment addresses
-            let platform_credits = wallet
-                .get_platform_address_info(&addr_info.address)
-                .map(|pi| pi.balance)
+            // Get Platform credits balance for Platform Payment addresses from DB
+            let canonical = Wallet::canonical_address(&addr_info.address, network);
+            let platform_credits = platform_balances
+                .get(&canonical)
+                .copied()
                 .unwrap_or_default();
 
             builders

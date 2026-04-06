@@ -284,10 +284,14 @@ impl AppContext {
             }
         };
 
-        // Create the PlatformWalletManager with the SDK
-        let wallet_manager = Arc::new(DebugWrapper(PlatformWalletManager::new(Arc::new(
-            sdk.clone(),
-        ))));
+        // Create the shared persister and PlatformWalletManager with the SDK
+        let persister: Arc<dyn platform_wallet::changeset::PlatformWalletPersistence> = Arc::new(
+            crate::changeset::SqliteWalletPersister::new(db.clone(), network.to_string()),
+        );
+        let wallet_manager = Arc::new(DebugWrapper(PlatformWalletManager::new(
+            Arc::new(sdk.clone()),
+            persister,
+        )));
 
         let wallets: BTreeMap<_, _> = match db.get_wallets(&network) {
             Ok(w) => w,

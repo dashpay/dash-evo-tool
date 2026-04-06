@@ -21,8 +21,9 @@ use platform_wallet::changeset::changeset::{
     IdentityEntry, PlatformAddressChangeSet, PlatformAddressEntry, PlatformWalletChangeSet,
     TransactionChangeSet, TransactionEntry, UtxoChangeSet,
 };
+use platform_wallet::wallet::WalletId;
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// Controls when queued changesets are written to storage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,12 +42,15 @@ pub enum FlushStrategy {
 /// When [`FlushStrategy::Immediate`] is set (the default), each `queue()` call
 /// automatically triggers a `flush()`, so callers don't need to call
 /// `persist_platform_wallet` / `flush_persist` separately.
+///
+/// A single persister instance is shared across all wallets managed by a
+/// [`PlatformWalletManager`]. Each wallet is identified by its `WalletId`
+/// (which equals the evo-tool `seed_hash`).
 pub struct SqliteWalletPersister {
     db: Arc<Database>,
-    seed_hash: [u8; 32],
     network: String,
-    /// Accumulated changesets waiting to be flushed.
-    staged: PlatformWalletChangeSet,
+    /// Per-wallet accumulated changesets waiting to be flushed.
+    staged: Mutex<BTreeMap<WalletId, PlatformWalletChangeSet>>,
     /// When to write queued changesets to storage.
     strategy: FlushStrategy,
 }
@@ -59,16 +63,17 @@ pub enum SqlitePersistError {
 }
 
 impl SqliteWalletPersister {
-    /// Create a new persister for the wallet identified by `seed_hash` on `network`.
+    /// Create a new persister for the given `network`.
     ///
     /// Uses [`FlushStrategy::Immediate`] by default so that every `queue()` call
-    /// is automatically persisted.
-    pub fn new(db: Arc<Database>, seed_hash: [u8; 32], network: String) -> Self {
+    /// is automatically persisted. The persister is wallet-id-aware: the
+    /// `wallet_id` is passed per-call to [`queue`], [`flush`] and
+    /// [`initialize`].
+    pub fn new(db: Arc<Database>, network: String) -> Self {
         Self {
             db,
-            seed_hash,
             network,
-            staged: PlatformWalletChangeSet::default(),
+            staged: Mutex::new(BTreeMap::new()),
             strategy: FlushStrategy::Immediate,
         }
     }
@@ -439,8 +444,10 @@ impl SqliteWalletPersister {
 
 impl PlatformWalletPersistence for SqliteWalletPersister {
     fn initialize(
-        &mut self,
+        &self,
+        wallet_id: WalletId,
     ) -> Result<PlatformWalletChangeSet, Box<dyn std::error::Error + Send + Sync>> {
+        let seed_hash = wallet_id;
         let conn = self.db.shared_connection();
         let guard = conn.lock().unwrap();
 
@@ -450,7 +457,7 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                 .query_row(
                     "SELECT last_terminal_block FROM wallet
                      WHERE seed_hash = ?1 AND network = ?2",
-                    rusqlite::params![&self.seed_hash[..], &self.network],
+                    rusqlite::params![&seed_hash[..], &self.network],
                     |row| row.get(0),
                 )
                 .ok();
@@ -471,7 +478,7 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
             )?;
 
             let mut txs = BTreeMap::new();
-            let mut rows = stmt.query(rusqlite::params![&self.seed_hash[..], &self.network])?;
+            let mut rows = stmt.query(rusqlite::params![&seed_hash[..], &self.network])?;
             while let Some(row) = rows.next()? {
                 let txid_bytes: Vec<u8> = row.get(0)?;
                 let raw: Vec<u8> = row.get(1)?;
@@ -554,7 +561,7 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                 .query_row(
                     "SELECT confirmed_balance, unconfirmed_balance FROM wallet
                      WHERE seed_hash = ?1 AND network = ?2",
-                    rusqlite::params![&self.seed_hash[..], &self.network],
+                    rusqlite::params![&seed_hash[..], &self.network],
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .ok();
@@ -593,7 +600,7 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                      WHERE seed_hash = ?1 AND network = ?2",
                 )?;
                 let mut last_revealed = BTreeMap::new();
-                let mut rows = stmt.query(rusqlite::params![&self.seed_hash[..], &self.network])?;
+                let mut rows = stmt.query(rusqlite::params![&seed_hash[..], &self.network])?;
                 while let Some(row) = rows.next()? {
                     let account_index: i64 = row.get(0)?;
                     let path_ref_val: i64 = row.get(1)?;
@@ -625,7 +632,7 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
             )?;
 
             let mut map: BTreeMap<Identifier, IdentityEntry> = BTreeMap::new();
-            let mut rows = stmt.query(rusqlite::params![&self.seed_hash[..], &self.network])?;
+            let mut rows = stmt.query(rusqlite::params![&seed_hash[..], &self.network])?;
             while let Some(row) = rows.next()? {
                 let id_bytes: Vec<u8> = row.get(0)?;
                 let data: Vec<u8> = row.get(1)?;
@@ -702,7 +709,7 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                  WHERE seed_hash = ?1 AND network = ?2",
             )?;
             let mut addresses = BTreeMap::new();
-            let mut rows = stmt.query(rusqlite::params![&self.seed_hash[..], &self.network])?;
+            let mut rows = stmt.query(rusqlite::params![&seed_hash[..], &self.network])?;
             while let Some(row) = rows.next()? {
                 let addr_bytes: Vec<u8> = row.get(0)?;
                 let credit_balance: i64 = row.get(1)?;
@@ -736,7 +743,7 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                  WHERE wallet = ?1 AND network = ?2",
             )?;
             let mut locks = BTreeMap::new();
-            let mut rows = stmt.query(rusqlite::params![&self.seed_hash[..], &self.network])?;
+            let mut rows = stmt.query(rusqlite::params![&seed_hash[..], &self.network])?;
             while let Some(row) = rows.next()? {
                 let txid_bytes: Vec<u8> = row.get(0)?;
                 let output_index: Option<i64> = row.get(1)?;
@@ -831,21 +838,30 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
         }
     }
 
-    fn queue(&mut self, changeset: PlatformWalletChangeSet) {
-        self.staged.merge(changeset);
+    fn queue(&self, wallet_id: WalletId, changeset: PlatformWalletChangeSet) {
+        {
+            let mut staged = self.staged.lock().unwrap();
+            staged
+                .entry(wallet_id)
+                .or_insert_with(PlatformWalletChangeSet::default)
+                .merge(changeset);
+        }
         if matches!(self.strategy, FlushStrategy::Immediate) {
-            if let Err(e) = self.flush() {
+            if let Err(e) = self.flush(wallet_id) {
                 tracing::warn!(error = %e, "Auto-flush after queue failed");
             }
         }
     }
 
-    fn flush(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let changeset = std::mem::take(&mut self.staged);
+    fn flush(&self, wallet_id: WalletId) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let changeset = {
+            let mut staged = self.staged.lock().unwrap();
+            staged.remove(&wallet_id).unwrap_or_default()
+        };
         if changeset.is_empty() {
             return Ok(());
         }
-        self.persist_inner(&changeset)
+        self.persist_inner(&wallet_id, &changeset)
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
     }
 }
@@ -853,9 +869,11 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
 impl SqliteWalletPersister {
     /// Internal persist implementation used by [`flush`].
     fn persist_inner(
-        &mut self,
+        &self,
+        wallet_id: &WalletId,
         changeset: &PlatformWalletChangeSet,
     ) -> Result<(), SqlitePersistError> {
+        let seed_hash = wallet_id;
         let conn = self.db.shared_connection();
         let mut guard = conn.lock().unwrap();
         let tx = guard.transaction()?;
@@ -871,13 +889,13 @@ impl SqliteWalletPersister {
             tx.execute(
                 "UPDATE wallet SET last_terminal_block = ?1
                  WHERE seed_hash = ?2 AND network = ?3",
-                rusqlite::params![height as i64, &self.seed_hash[..], &self.network],
+                rusqlite::params![height as i64, &seed_hash[..], &self.network],
             )?;
         }
 
         // -- Transactions ------------------------------------------------------
         if let Some(ref txs) = changeset.transactions {
-            Self::persist_transactions(&tx, &self.seed_hash, &self.network, txs)?;
+            Self::persist_transactions(&tx, &seed_hash, &self.network, txs)?;
         }
 
         // -- UTXOs -------------------------------------------------------------
@@ -894,7 +912,7 @@ impl SqliteWalletPersister {
                 tx.execute(
                     "UPDATE wallet SET last_terminal_block = ?1
                      WHERE seed_hash = ?2 AND network = ?3",
-                    rusqlite::params![height as i64, &self.seed_hash[..], &self.network],
+                    rusqlite::params![height as i64, &seed_hash[..], &self.network],
                 )?;
             }
 
@@ -921,7 +939,7 @@ impl SqliteWalletPersister {
                     };
 
                     stmt.execute(rusqlite::params![
-                        &self.seed_hash[..],
+                        &seed_hash[..],
                         txid.as_byte_array(),
                         &self.network,
                         entry.timestamp as i64,
@@ -970,7 +988,7 @@ impl SqliteWalletPersister {
             if let Some(ref kw_accounts) = wallet_cs.accounts {
                 Self::persist_key_wallet_accounts(
                     &tx,
-                    &self.seed_hash,
+                    &seed_hash,
                     &self.network,
                     kw_accounts,
                 )?;
@@ -988,7 +1006,7 @@ impl SqliteWalletPersister {
                     rusqlite::params![
                         bal.spendable_delta,
                         bal.unconfirmed_delta,
-                        &self.seed_hash[..],
+                        &seed_hash[..],
                         &self.network,
                     ],
                 )?;
@@ -997,7 +1015,7 @@ impl SqliteWalletPersister {
 
         // -- Accounts ----------------------------------------------------------
         if let Some(ref accounts) = changeset.accounts {
-            Self::persist_accounts(&tx, &self.seed_hash, &self.network, accounts)?;
+            Self::persist_accounts(&tx, &seed_hash, &self.network, accounts)?;
         }
 
         // -- Contacts ----------------------------------------------------------
@@ -1035,17 +1053,17 @@ impl SqliteWalletPersister {
 
         // -- Identities --------------------------------------------------------
         if let Some(ref identities) = changeset.identities {
-            Self::persist_identities(&tx, &self.seed_hash, &self.network, identities)?;
+            Self::persist_identities(&tx, &seed_hash, &self.network, identities)?;
         }
 
         // -- Platform addresses ------------------------------------------------
         if let Some(ref platform_addrs) = changeset.platform_addresses {
-            Self::persist_platform_addresses(&tx, &self.seed_hash, &self.network, platform_addrs)?;
+            Self::persist_platform_addresses(&tx, &seed_hash, &self.network, platform_addrs)?;
         }
 
         // -- Asset locks -------------------------------------------------------
         if let Some(ref asset_locks) = changeset.asset_locks {
-            Self::persist_asset_locks(&tx, &self.seed_hash, &self.network, asset_locks)?;
+            Self::persist_asset_locks(&tx, &seed_hash, &self.network, asset_locks)?;
         }
 
         tx.commit()?;
@@ -1058,17 +1076,19 @@ mod tests {
     use super::*;
     use crate::database::test_helpers::create_test_database;
 
+    const TEST_WALLET_ID: WalletId = [0u8; 32];
+
     fn make_persister(db: Arc<Database>) -> SqliteWalletPersister {
-        SqliteWalletPersister::new(db, [0u8; 32], "testnet".to_string())
+        SqliteWalletPersister::new(db, "testnet".to_string())
     }
 
     /// A persister can be created and initialized without error.
     #[test]
     fn test_initialize_returns_empty_changeset() {
         let db = Arc::new(create_test_database().expect("create test db"));
-        let mut persister = make_persister(db);
+        let persister = make_persister(db);
 
-        let cs = persister.initialize().expect("initialize");
+        let cs = persister.initialize(TEST_WALLET_ID).expect("initialize");
         assert!(cs.is_empty());
     }
 
@@ -1076,11 +1096,11 @@ mod tests {
     #[test]
     fn test_persist_empty_changeset() {
         let db = Arc::new(create_test_database().expect("create test db"));
-        let mut persister = make_persister(db);
+        let persister = make_persister(db);
 
         let cs = PlatformWalletChangeSet::default();
-        persister.queue(cs);
-        persister.flush().expect("flush empty changeset");
+        persister.queue(TEST_WALLET_ID, cs);
+        persister.flush(TEST_WALLET_ID).expect("flush empty changeset");
     }
 
     /// Persisting a chain changeset updates the wallet row.
@@ -1105,7 +1125,7 @@ mod tests {
         )
         .expect("insert wallet row");
 
-        let mut persister = make_persister(db.clone());
+        let persister = make_persister(db.clone());
 
         let cs = PlatformWalletChangeSet {
             chain: Some(ChainChangeSet {
@@ -1114,8 +1134,8 @@ mod tests {
             }),
             ..Default::default()
         };
-        persister.queue(cs);
-        persister.flush().expect("flush chain changeset");
+        persister.queue(TEST_WALLET_ID, cs);
+        persister.flush(TEST_WALLET_ID).expect("flush chain changeset");
 
         // Verify the height was written.
         let conn = db.shared_connection();
@@ -1138,7 +1158,7 @@ mod tests {
         use std::collections::{BTreeMap, BTreeSet};
 
         let db = Arc::new(create_test_database().expect("create test db"));
-        let mut persister = make_persister(db.clone());
+        let persister = make_persister(db.clone());
 
         let txid = Txid::from_slice(&[1u8; 32]).unwrap();
         let outpoint = OutPoint { txid, vout: 0 };
@@ -1153,8 +1173,8 @@ mod tests {
             }),
             ..Default::default()
         };
-        persister.queue(cs);
-        persister.flush().expect("flush add utxo");
+        persister.queue(TEST_WALLET_ID, cs);
+        persister.flush(TEST_WALLET_ID).expect("flush add utxo");
 
         // Verify it was inserted.
         let conn = db.shared_connection();
@@ -1180,8 +1200,8 @@ mod tests {
             }),
             ..Default::default()
         };
-        persister.queue(cs2);
-        persister.flush().expect("flush spend utxo");
+        persister.queue(TEST_WALLET_ID, cs2);
+        persister.flush(TEST_WALLET_ID).expect("flush spend utxo");
 
         // Verify it was removed.
         {
@@ -1222,7 +1242,7 @@ mod tests {
         )
         .expect("insert wallet row");
 
-        let mut persister = make_persister(db.clone());
+        let persister = make_persister(db.clone());
 
         // Persist chain height and a UTXO.
         let txid = Txid::from_slice(&[2u8; 32]).unwrap();
@@ -1241,11 +1261,11 @@ mod tests {
             }),
             ..Default::default()
         };
-        persister.queue(cs);
-        persister.flush().expect("flush changeset");
+        persister.queue(TEST_WALLET_ID, cs);
+        persister.flush(TEST_WALLET_ID).expect("flush changeset");
 
         // Now initialize and verify the state was loaded.
-        let loaded = persister.initialize().expect("initialize");
+        let loaded = persister.initialize(TEST_WALLET_ID).expect("initialize");
         assert!(!loaded.is_empty());
 
         // Chain height should match.

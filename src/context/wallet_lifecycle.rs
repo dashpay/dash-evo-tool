@@ -295,35 +295,18 @@ impl AppContext {
 
         // Create a PlatformWallet via the manager — this wires the shared
         // SPV event channel so IS-lock/ChainLock events reach AssetLockManager.
+        // The manager also initializes persisted state and registers the wallet
+        // for SPV processing in one call.
         match self
             .wallet_manager
             .create_wallet_from_seed_bytes(kw_network, seed_bytes, options)
         {
-            Ok(mut platform_wallet) => {
+            Ok(platform_wallet) => {
                 let wallet_id = platform_wallet.wallet_id();
 
-                // Attach SQLite persistence backend.
-                let persister = crate::changeset::SqliteWalletPersister::new(
-                    self.db.clone(),
-                    seed_hash,
-                    self.network.to_string(),
-                );
-                platform_wallet.set_persister(Box::new(persister));
-
-                // Load persisted state (transactions, UTXOs, balances, identities, etc.)
-                // from SQLite and apply it to the in-memory wallet.
-                if let Err(e) = platform_wallet.load_persisted_state() {
-                    tracing::warn!(
-                        seed = %hex::encode(seed_hash),
-                        error = %e,
-                        "Failed to load persisted wallet state"
-                    );
-                }
                 if let Ok(mut mapping) = self.wallet_id_mapping.lock() {
                     mapping.insert(seed_hash, wallet_id);
                 }
-
-                let platform_wallet = Arc::new(platform_wallet);
 
                 // Store on the Wallet struct itself
                 if let Ok(wallets) = self.wallets.read() {

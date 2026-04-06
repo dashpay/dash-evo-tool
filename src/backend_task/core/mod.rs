@@ -621,7 +621,6 @@ impl AppContext {
         };
 
         self.wallet_manager
-            .spv()
             .broadcast_transaction(&tx)
             .await
             .map_err(|e| TaskError::SpvBroadcastFailed {

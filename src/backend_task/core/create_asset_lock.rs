@@ -125,7 +125,6 @@ impl AppContext {
         // Broadcast via SPV P2P peers.
         if let Err(e) = self
             .wallet_manager
-            .spv()
             .broadcast_transaction(&asset_lock_transaction)
             .await
         {

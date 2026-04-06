@@ -467,7 +467,7 @@ pub async fn shield_from_asset_lock(
         drop(wallet);
 
         let (tx, private_key) = platform_wallet
-            .core()
+            .asset_locks()
             .build_asset_lock_transaction(
                 asset_lock_duffs,
                 platform_wallet::AssetLockFundingType::IdentityRegistration,

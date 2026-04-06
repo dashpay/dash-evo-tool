@@ -26,7 +26,7 @@ impl AppContext {
         };
 
         let (tx, _private_key) = platform_wallet
-            .core()
+            .asset_locks()
             .build_asset_lock_transaction(
                 amount_duffs,
                 platform_wallet::AssetLockFundingType::IdentityRegistration,
@@ -65,7 +65,7 @@ impl AppContext {
         };
 
         let (tx, _private_key) = platform_wallet
-            .core()
+            .asset_locks()
             .build_asset_lock_transaction(
                 amount_duffs,
                 platform_wallet::AssetLockFundingType::IdentityTopUp,

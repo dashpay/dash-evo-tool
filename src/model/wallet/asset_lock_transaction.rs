@@ -57,7 +57,7 @@ pub(crate) fn calculate_asset_lock_fee(
 }
 
 // Asset lock transaction building from wallet UTXO selection has been removed.
-// Use platform_wallet.core().build_asset_lock_transaction() instead.
+// Use platform_wallet.asset_locks().build_asset_lock_transaction() instead.
 //
 // The _for_utxo methods below remain for the QR-funded-UTXO flow where
 // the user provides a specific UTXO from a funding address.

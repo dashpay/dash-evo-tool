@@ -45,7 +45,7 @@ impl AppContext {
         let platform_wallet = self.require_platform_wallet(&seed_hash)?;
 
         let (asset_lock_transaction, asset_lock_private_key) = platform_wallet
-            .core()
+            .asset_locks()
             .build_asset_lock_transaction(
                 asset_lock_amount,
                 platform_wallet::AssetLockFundingType::IdentityRegistration,

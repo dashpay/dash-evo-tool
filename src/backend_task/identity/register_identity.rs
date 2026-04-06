@@ -105,7 +105,6 @@ impl AppContext {
                         amount,
                         platform_wallet::AssetLockFundingType::IdentityRegistration,
                         identity_index,
-                        None,
                     )
                     .await
                     .map_err(|e| TaskError::AssetLockTransactionBuildFailed {

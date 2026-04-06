@@ -25,9 +25,9 @@ impl Database {
         let conn = self.conn.lock().unwrap();
 
         let sql = "
-        INSERT INTO asset_lock_transaction (tx_id, transaction_data, amount, instant_lock_data, wallet, network)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-        ON CONFLICT(tx_id) DO UPDATE SET
+        INSERT INTO asset_lock_transaction (tx_id, output_index, transaction_data, amount, instant_lock_data, wallet, network)
+        VALUES (?1, 0, ?2, ?3, ?4, ?5, ?6)
+        ON CONFLICT(tx_id, output_index) DO UPDATE SET
             transaction_data = excluded.transaction_data,
             amount = excluded.amount,
             instant_lock_data = COALESCE(excluded.instant_lock_data, asset_lock_transaction.instant_lock_data),
@@ -356,7 +356,8 @@ impl Database {
 
         conn.execute(
             "CREATE TABLE asset_lock_transaction (
-                tx_id BLOB PRIMARY KEY,
+                tx_id BLOB NOT NULL,
+                output_index INTEGER NOT NULL DEFAULT 0,
                 transaction_data BLOB NOT NULL,
                 amount INTEGER,
                 instant_lock_data BLOB,
@@ -365,6 +366,11 @@ impl Database {
                 identity_id_potentially_in_creation BLOB,
                 wallet BLOB NOT NULL,
                 network TEXT NOT NULL,
+                account_index INTEGER NOT NULL DEFAULT 0,
+                funding_type INTEGER NOT NULL DEFAULT 0,
+                identity_index INTEGER NOT NULL DEFAULT 0,
+                proof_data BLOB,
+                PRIMARY KEY (tx_id, output_index),
                 FOREIGN KEY (identity_id)
                     REFERENCES identity(id) ON DELETE SET NULL,
                 FOREIGN KEY (identity_id_potentially_in_creation)
@@ -377,10 +383,10 @@ impl Database {
 
         conn.execute(
             "INSERT INTO asset_lock_transaction
-              (tx_id, transaction_data, amount, instant_lock_data,
+              (tx_id, output_index, transaction_data, amount, instant_lock_data,
                chain_locked_height, identity_id, identity_id_potentially_in_creation,
                wallet, network)
-             SELECT tx_id, transaction_data, amount, instant_lock_data,
+             SELECT tx_id, 0, transaction_data, amount, instant_lock_data,
                     chain_locked_height, identity_id,
                     identity_id_potentially_in_creation, wallet, network
              FROM asset_lock_transaction_old",

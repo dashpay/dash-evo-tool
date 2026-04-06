@@ -4,7 +4,7 @@ use rusqlite::{Connection, params};
 use std::fs;
 use std::path::Path;
 
-pub const DEFAULT_DB_VERSION: u16 = 33;
+pub const DEFAULT_DB_VERSION: u16 = 34;
 
 pub const DEFAULT_NETWORK: &str = "mainnet";
 
@@ -51,6 +51,9 @@ impl Database {
 
     fn apply_version_changes(&self, version: u16, tx: &Connection) -> rusqlite::Result<()> {
         match version {
+            34 => {
+                self.add_asset_lock_tracking_columns(tx)?;
+            }
             // Versions 28-32 were consolidated into v33 to resolve migration
             // numbering conflicts between the zk and v1.0-dev branches.
             // If migrating from < 28, these are no-ops that just bump the version.
@@ -410,7 +413,8 @@ impl Database {
         // Create asset lock transaction table
         conn.execute(
             "CREATE TABLE IF NOT EXISTS asset_lock_transaction (
-                        tx_id BLOB PRIMARY KEY,
+                        tx_id BLOB NOT NULL,
+                        output_index INTEGER NOT NULL DEFAULT 0,
                         transaction_data BLOB NOT NULL,
                         amount INTEGER,
                         instant_lock_data BLOB,
@@ -419,6 +423,11 @@ impl Database {
                         identity_id_potentially_in_creation BLOB,
                         wallet BLOB NOT NULL,
                         network TEXT NOT NULL,
+                        account_index INTEGER NOT NULL DEFAULT 0,
+                        funding_type INTEGER NOT NULL DEFAULT 0,
+                        identity_index INTEGER NOT NULL DEFAULT 0,
+                        proof_data BLOB,
+                        PRIMARY KEY (tx_id, output_index),
                         FOREIGN KEY (identity_id) REFERENCES identity(id) ON DELETE SET NULL,
                         FOREIGN KEY (identity_id_potentially_in_creation) REFERENCES identity(id) ON DELETE SET NULL,
                         FOREIGN KEY (wallet) REFERENCES wallet(seed_hash) ON DELETE CASCADE
@@ -974,6 +983,81 @@ impl Database {
         }
         Ok(())
     }
+
+    /// Migration 34: Recreate `asset_lock_transaction` with composite primary key
+    /// `(tx_id, output_index)` and add tracking columns for full `TrackedAssetLock`
+    /// round-trip persistence.
+    fn add_asset_lock_tracking_columns(&self, conn: &Connection) -> rusqlite::Result<()> {
+        // Check if already migrated (has the output_index column).
+        let has_output_index: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('asset_lock_transaction') WHERE name='output_index'",
+            [],
+            |row| row.get::<_, i32>(0).map(|c| c > 0),
+        )?;
+        if has_output_index {
+            return Ok(());
+        }
+
+        // Recreate the table with composite PK and new columns.
+        conn.execute("PRAGMA foreign_keys = OFF", [])?;
+
+        conn.execute(
+            "ALTER TABLE asset_lock_transaction RENAME TO asset_lock_transaction_old",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE TABLE asset_lock_transaction (
+                tx_id BLOB NOT NULL,
+                output_index INTEGER NOT NULL DEFAULT 0,
+                transaction_data BLOB NOT NULL,
+                amount INTEGER,
+                instant_lock_data BLOB,
+                chain_locked_height INTEGER,
+                identity_id BLOB,
+                identity_id_potentially_in_creation BLOB,
+                wallet BLOB NOT NULL,
+                network TEXT NOT NULL,
+                account_index INTEGER NOT NULL DEFAULT 0,
+                funding_type INTEGER NOT NULL DEFAULT 0,
+                identity_index INTEGER NOT NULL DEFAULT 0,
+                proof_data BLOB,
+                PRIMARY KEY (tx_id, output_index),
+                FOREIGN KEY (identity_id)
+                    REFERENCES identity(id) ON DELETE SET NULL,
+                FOREIGN KEY (identity_id_potentially_in_creation)
+                    REFERENCES identity(id) ON DELETE SET NULL,
+                FOREIGN KEY (wallet)
+                    REFERENCES wallet(seed_hash) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+
+        // Copy existing rows — new columns get defaults (0 / NULL).
+        conn.execute(
+            "INSERT INTO asset_lock_transaction
+              (tx_id, output_index, transaction_data, amount, instant_lock_data,
+               chain_locked_height, identity_id, identity_id_potentially_in_creation,
+               wallet, network)
+             SELECT tx_id, 0, transaction_data, amount, instant_lock_data,
+                    chain_locked_height, identity_id,
+                    identity_id_potentially_in_creation, wallet, network
+             FROM asset_lock_transaction_old",
+            [],
+        )?;
+
+        conn.execute("DROP TABLE asset_lock_transaction_old", [])?;
+
+        // Recreate index that existed before.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_asset_lock_transaction_network ON asset_lock_transaction (network)",
+            [],
+        )?;
+
+        conn.execute("PRAGMA foreign_keys = ON", [])?;
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -1144,7 +1228,7 @@ mod test {
             )
             .unwrap();
         assert_eq!(version, DEFAULT_DB_VERSION);
-        assert_eq!(version, 33);
+        assert_eq!(version, 34);
 
         assert_v33_schema(&conn);
     }
@@ -1261,7 +1345,7 @@ mod test {
         );
 
         // Verify final version
-        assert_eq!(db.db_schema_version().unwrap(), 33);
+        assert_eq!(db.db_schema_version().unwrap(), 34);
 
         // Verify full v33 schema
         let conn = db.conn.lock().unwrap();

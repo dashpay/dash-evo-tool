@@ -9,8 +9,9 @@ use dash_sdk::dpp::dashcore::consensus::{deserialize, serialize};
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{BlockHash, OutPoint, Transaction, Txid};
 use dash_sdk::dpp::key_wallet::dip9::DerivationPathReference;
+use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::asset_lock_builder::AssetLockFundingType;
 use dash_sdk::dpp::key_wallet::PlatformP2PKHAddress;
-use dash_sdk::dpp::prelude::Identifier;
+use dash_sdk::dpp::prelude::{AssetLockProof, Identifier};
 use dash_sdk::dpp::serialization::{PlatformDeserializable, PlatformSerializable};
 use platform_wallet::changeset::Merge;
 use platform_wallet::changeset::PlatformWalletPersistence;
@@ -105,6 +106,31 @@ fn derivation_path_reference_from_u32(v: u32) -> Option<DerivationPathReference>
         17 => Some(DerivationPathReference::BlockchainAssetLockAddressTopupFunding),
         18 => Some(DerivationPathReference::BlockchainAssetLockShieldedAddressTopupFunding),
         255 => Some(DerivationPathReference::Root),
+        _ => None,
+    }
+}
+
+/// Convert an [`AssetLockFundingType`] to an integer discriminant for SQLite storage.
+fn funding_type_to_i64(ft: AssetLockFundingType) -> i64 {
+    match ft {
+        AssetLockFundingType::IdentityRegistration => 0,
+        AssetLockFundingType::IdentityTopUp => 1,
+        AssetLockFundingType::IdentityTopUpNotBound => 2,
+        AssetLockFundingType::IdentityInvitation => 3,
+        AssetLockFundingType::AssetLockAddressTopUp => 4,
+        AssetLockFundingType::AssetLockShieldedAddressTopUp => 5,
+    }
+}
+
+/// Convert an integer discriminant back to [`AssetLockFundingType`].
+fn funding_type_from_i64(v: i64) -> Option<AssetLockFundingType> {
+    match v {
+        0 => Some(AssetLockFundingType::IdentityRegistration),
+        1 => Some(AssetLockFundingType::IdentityTopUp),
+        2 => Some(AssetLockFundingType::IdentityTopUpNotBound),
+        3 => Some(AssetLockFundingType::IdentityInvitation),
+        4 => Some(AssetLockFundingType::AssetLockAddressTopUp),
+        5 => Some(AssetLockFundingType::AssetLockShieldedAddressTopUp),
         _ => None,
     }
 }
@@ -368,28 +394,42 @@ impl SqliteWalletPersister {
     ) -> Result<(), rusqlite::Error> {
         let mut stmt = tx.prepare_cached(
             "INSERT OR REPLACE INTO asset_lock_transaction
-                (tx_id, transaction_data, amount, identity_id, wallet, network,
-                 chain_locked_height)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                (tx_id, output_index, transaction_data, amount, identity_id, wallet, network,
+                 chain_locked_height, account_index, funding_type, identity_index, proof_data)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         )?;
 
-        for (txid, entry) in &asset_locks.asset_locks {
+        for (out_point, entry) in &asset_locks.asset_locks {
             let raw = serialize(&entry.transaction);
-            // Encode chain-lock status as a height sentinel: -1 = not chain-locked.
+            // Encode chain-lock status as a height sentinel.
             let chain_locked_height: Option<i64> = if entry.is_chain_locked {
                 Some(0) // chain-locked but exact height unknown from changeset
             } else {
                 None
             };
 
+            // Serialize AssetLockProof using bincode.
+            let proof_bytes: Option<Vec<u8>> = entry.proof.as_ref().map(|p| {
+                bincode::encode_to_vec(p, bincode::config::standard())
+                    .expect("AssetLockProof bincode encoding should not fail")
+            });
+
+            // Map AssetLockFundingType to integer discriminant.
+            let funding_type_int: i64 = funding_type_to_i64(entry.funding_type);
+
             stmt.execute(rusqlite::params![
-                txid.as_byte_array(),
+                out_point.txid.as_byte_array(),
+                out_point.vout as i64,
                 &raw,
                 entry.amount_duffs as i64,
                 entry.identity_id.as_ref().map(|id| id.as_bytes().to_vec()),
                 &seed_hash[..],
                 network,
                 chain_locked_height,
+                entry.account_index as i64,
+                funding_type_int,
+                entry.identity_index as i64,
+                proof_bytes,
             ])?;
         }
         Ok(())
@@ -688,8 +728,9 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
         // -- Load asset locks ---------------------------------------------------
         let asset_locks = {
             let mut stmt = guard.prepare(
-                "SELECT tx_id, transaction_data, amount, identity_id,
-                        chain_locked_height, instant_lock_data
+                "SELECT tx_id, output_index, transaction_data, amount, identity_id,
+                        chain_locked_height, instant_lock_data,
+                        account_index, funding_type, identity_index, proof_data
                  FROM asset_lock_transaction
                  WHERE wallet = ?1 AND network = ?2",
             )?;
@@ -697,11 +738,16 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
             let mut rows = stmt.query(rusqlite::params![&self.seed_hash[..], &self.network])?;
             while let Some(row) = rows.next()? {
                 let txid_bytes: Vec<u8> = row.get(0)?;
-                let raw: Vec<u8> = row.get(1)?;
-                let amount: i64 = row.get(2)?;
-                let identity_id_bytes: Option<Vec<u8>> = row.get(3)?;
-                let chain_locked_height: Option<i64> = row.get(4)?;
-                let islock_bytes: Option<Vec<u8>> = row.get(5)?;
+                let output_index: Option<i64> = row.get(1)?;
+                let raw: Vec<u8> = row.get(2)?;
+                let amount: i64 = row.get(3)?;
+                let identity_id_bytes: Option<Vec<u8>> = row.get(4)?;
+                let chain_locked_height: Option<i64> = row.get(5)?;
+                let islock_bytes: Option<Vec<u8>> = row.get(6)?;
+                let account_index: Option<i64> = row.get(7)?;
+                let funding_type_int: Option<i64> = row.get(8)?;
+                let identity_index: Option<i64> = row.get(9)?;
+                let proof_bytes: Option<Vec<u8>> = row.get(10)?;
 
                 let Ok(txid) = Txid::from_slice(&txid_bytes) else {
                     continue;
@@ -713,15 +759,37 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                     .as_deref()
                     .and_then(|b| Identifier::from_bytes(b).ok());
 
+                let vout = output_index.unwrap_or(0) as u32;
+                let out_point = OutPoint { txid, vout };
+
+                let funding_type = funding_type_int
+                    .and_then(funding_type_from_i64)
+                    .unwrap_or(AssetLockFundingType::IdentityRegistration);
+
+                // Deserialize proof from bincode bytes, if present.
+                let proof: Option<AssetLockProof> = proof_bytes.and_then(|bytes| {
+                    bincode::decode_from_slice::<AssetLockProof, _>(
+                        &bytes,
+                        bincode::config::standard(),
+                    )
+                    .ok()
+                    .map(|(p, _)| p)
+                });
+
                 locks.insert(
-                    txid,
+                    out_point,
                     AssetLockEntry {
+                        out_point,
                         transaction,
+                        account_index: account_index.unwrap_or(0) as u32,
+                        funding_type,
+                        identity_index: identity_index.unwrap_or(0) as u32,
                         amount_duffs: amount as u64,
-                        identity_id,
                         is_instant_locked: islock_bytes.is_some(),
                         is_chain_locked: chain_locked_height.is_some(),
                         is_used: identity_id.is_some(),
+                        identity_id,
+                        proof,
                     },
                 );
             }

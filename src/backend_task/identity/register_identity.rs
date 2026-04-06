@@ -433,6 +433,33 @@ impl AppContext {
         self.db
             .set_asset_lock_identity_id(tx_id.as_byte_array(), identity_id.as_bytes())?;
 
+        // Stage an IdentityChangeSet capturing the confirmed identity and its
+        // balance so the changeset reflects the Platform confirmation.
+        if let Some(pw) = self.get_platform_wallet(&wallet_id) {
+            use platform_wallet::persistence::changeset::{
+                IdentityChangeSet, IdentityEntry, PlatformWalletChangeSet,
+            };
+            let changeset = PlatformWalletChangeSet {
+                identities: Some(IdentityChangeSet {
+                    identities: BTreeMap::from([(
+                        identity_id,
+                        IdentityEntry {
+                            identity: qualified_identity.identity.clone(),
+                            identity_index: wallet_identity_index,
+                            label: qualified_identity.alias.clone(),
+                            last_updated_balance_block_time: None,
+                            last_synced_keys_block_time: None,
+                            dpns_names: vec![],
+                            top_ups: Default::default(),
+                        },
+                    )]),
+                }),
+                ..Default::default()
+            };
+            pw.stage_changeset(changeset);
+            self.persist_platform_wallet(&pw, &wallet_id);
+        }
+
         let fee_result = FeeResult::new(estimated_fee, estimated_fee);
         Ok(BackendTaskSuccessResult::RegisteredIdentity(
             qualified_identity,

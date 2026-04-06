@@ -372,6 +372,44 @@ impl AppContext {
 
         self.update_local_qualified_identity(&qualified_identity)?;
 
+        // Stage an IdentityChangeSet capturing the updated identity balance
+        // so the changeset reflects the Platform confirmation.
+        if let Some(ref pw) = maybe_platform_wallet {
+            use platform_wallet::persistence::changeset::{
+                IdentityChangeSet, IdentityEntry, PlatformWalletChangeSet,
+            };
+            let changeset = PlatformWalletChangeSet {
+                identities: Some(IdentityChangeSet {
+                    identities: BTreeMap::from([(
+                        qualified_identity.identity.id(),
+                        IdentityEntry {
+                            identity: qualified_identity.identity.clone(),
+                            identity_index: qualified_identity.wallet_index.unwrap_or(0),
+                            label: qualified_identity.alias.clone(),
+                            last_updated_balance_block_time: None,
+                            last_synced_keys_block_time: None,
+                            dpns_names: qualified_identity
+                                .dpns_names
+                                .iter()
+                                .map(|n| n.name.clone())
+                                .collect(),
+                            top_ups: if let Some((amount, idx)) = top_up_index {
+                                BTreeMap::from([(idx, amount)])
+                            } else {
+                                Default::default()
+                            },
+                        },
+                    )]),
+                }),
+                ..Default::default()
+            };
+            pw.stage_changeset(changeset);
+
+            if let Ok(Some((seed_hash, _))) = qualified_identity.determine_wallet_info() {
+                self.persist_platform_wallet(pw, &seed_hash);
+            }
+        }
+
         {
             let mut wallet = wallet.write().map_err(TaskError::from)?;
             wallet

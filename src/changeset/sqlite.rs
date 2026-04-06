@@ -443,7 +443,7 @@ impl SqliteWalletPersister {
 }
 
 impl PlatformWalletPersistence for SqliteWalletPersister {
-    fn initialize(
+    fn load(
         &self,
         wallet_id: WalletId,
     ) -> Result<PlatformWalletChangeSet, Box<dyn std::error::Error + Send + Sync>> {
@@ -838,7 +838,7 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
         }
     }
 
-    fn queue(&self, wallet_id: WalletId, changeset: PlatformWalletChangeSet) {
+    fn store(&self, wallet_id: WalletId, changeset: PlatformWalletChangeSet) {
         {
             let mut staged = self.staged.lock().unwrap();
             staged
@@ -1099,7 +1099,7 @@ mod tests {
         let persister = make_persister(db);
 
         let cs = PlatformWalletChangeSet::default();
-        persister.queue(TEST_WALLET_ID, cs);
+        persister.store(TEST_WALLET_ID, cs);
         persister.flush(TEST_WALLET_ID).expect("flush empty changeset");
     }
 
@@ -1134,7 +1134,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        persister.queue(TEST_WALLET_ID, cs);
+        persister.store(TEST_WALLET_ID, cs);
         persister.flush(TEST_WALLET_ID).expect("flush chain changeset");
 
         // Verify the height was written.
@@ -1173,7 +1173,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        persister.queue(TEST_WALLET_ID, cs);
+        persister.store(TEST_WALLET_ID, cs);
         persister.flush(TEST_WALLET_ID).expect("flush add utxo");
 
         // Verify it was inserted.
@@ -1200,7 +1200,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        persister.queue(TEST_WALLET_ID, cs2);
+        persister.store(TEST_WALLET_ID, cs2);
         persister.flush(TEST_WALLET_ID).expect("flush spend utxo");
 
         // Verify it was removed.
@@ -1261,7 +1261,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        persister.queue(TEST_WALLET_ID, cs);
+        persister.store(TEST_WALLET_ID, cs);
         persister.flush(TEST_WALLET_ID).expect("flush changeset");
 
         // Now initialize and verify the state was loaded.

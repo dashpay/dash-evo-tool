@@ -114,6 +114,11 @@ name = "det-cli"
 path = "src/bin/det_cli/main.rs"
 required-features = ["cli"]
 
+[[test]]
+name = "backend-e2e"
+path = "tests/backend-e2e/main.rs"
+required-features = ["testing"]
+
 [build-dependencies]
 winres = "0.1"
 

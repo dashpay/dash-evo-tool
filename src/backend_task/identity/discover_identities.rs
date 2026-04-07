@@ -79,7 +79,7 @@ impl AppContext {
         );
 
         // Read back the managed identity data from the identity manager.
-        let manager = identity_wallet.identity_manager().await;
+        let manager = identity_wallet.state().await;
 
         let mut found_count = 0;
         for identity in &discovered {
@@ -100,7 +100,7 @@ impl AppContext {
                 continue;
             }
 
-            let managed = match manager.managed_identity(&identity_id) {
+            let managed = match manager.identity_manager.managed_identity(&identity_id) {
                 Some(m) => m,
                 None => {
                     tracing::warn!(
@@ -135,7 +135,10 @@ impl AppContext {
                             )
                         }
                         platform_wallet::PrivateKeyData::Clear(key_bytes) => {
-                            (PrivateKeyData::Clear(**key_bytes), None)
+                            {
+                        let bytes: &[u8; 32] = key_bytes;
+                        (PrivateKeyData::Clear(*bytes), None)
+                    }
                         }
                     };
 

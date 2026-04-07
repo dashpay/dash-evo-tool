@@ -6,13 +6,12 @@ use crate::model::wallet::{
 };
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dpp::dashcore::address::{NetworkChecked, NetworkUnchecked};
-use dash_sdk::dpp::dashcore::consensus::{deserialize, serialize};
+use dash_sdk::dpp::dashcore::consensus::serialize;
 use dash_sdk::dpp::dashcore::hashes::Hash;
-use dash_sdk::dpp::dashcore::{self, Network, OutPoint, Transaction};
+use dash_sdk::dpp::dashcore::{self, Network};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, ExtendedPubKey};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::dpp::prelude::CoreBlockHeight;
 use rusqlite::{Connection, params};
 use std::collections::BTreeMap;
 use std::str::FromStr;

@@ -161,6 +161,33 @@ impl BackendTestContext {
             Err(e) => panic!("Failed to register framework wallet: {}", e),
         }
 
+        // Set birth_height on the framework wallet so SPV filter scanning
+        // starts from a recent block instead of genesis. Without this, a
+        // fresh testnet scan (~1.4M blocks) takes >90 minutes and exceeds
+        // the test timeout. E2E_WALLET_BIRTH_HEIGHT can override the default.
+        {
+            use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+
+            let birth_height: u32 = std::env::var("E2E_WALLET_BIRTH_HEIGHT")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(1_400_000);
+
+            // Access the PlatformWallet through the old Wallet model.
+            let wallets = app_context.wallets().read().expect("wallets lock");
+            if let Some(wallet_arc) = wallets.get(&framework_wallet_hash) {
+                let wallet_guard = wallet_arc.read().expect("wallet lock");
+                if let Some(pw) = &wallet_guard.platform_wallet {
+                    if let Some(mut wi) = pw.core().try_state_mut() {
+                        if wi.wallet_info.birth_height() == 0 {
+                            wi.wallet_info.set_birth_height(birth_height);
+                            tracing::info!("Set framework wallet birth_height to {}", birth_height);
+                        }
+                    }
+                }
+            }
+        }
+
         // Switch to SPV mode and start (wallet already registered above)
         app_context.set_core_backend_mode(CoreBackendMode::Spv);
         app_context.start_spv().expect("Failed to start SPV");
@@ -231,10 +258,13 @@ impl BackendTestContext {
                             let addr = guard
                                 .platform_wallet
                                 .as_ref()
-                                .and_then(|pw| pw.core().try_wallet_info())
+                                .and_then(|pw| pw.core().try_state())
                                 .and_then(|info| {
-                                    info.accounts.standard_bip44_accounts.get(&0)
-                                        .and_then(|a| a.account_type.all_addresses().into_iter().next())
+                                    info.wallet_info.accounts.standard_bip44_accounts.get(&0)
+                                        .and_then(|a| {
+                                            let addrs = a.account_type.all_addresses();
+                                            addrs.into_iter().next()
+                                        })
                                         .map(|a| a.to_string())
                                 })
                                 .unwrap_or_else(|| "<unknown>".to_string());
@@ -253,10 +283,11 @@ impl BackendTestContext {
 
         // Wait for SPV to fully sync (including masternodes) so MempoolManager
         // is active and bloom filter is built before any test broadcasts.
+        // Masternode list sync on testnet can take several minutes on first run.
         tracing::info!("Waiting for SPV to complete full sync (masternodes + mempool)...");
-        wait::wait_for_spv_running(&app_context, Duration::from_secs(120))
+        wait::wait_for_spv_running(&app_context, Duration::from_secs(600))
             .await
-            .expect("SPV did not reach Running state within 120s");
+            .expect("SPV did not reach Running state within 600s");
         tracing::info!("SPV fully synced — mempool bloom filter active");
 
         // Verify balance is above minimum threshold

@@ -71,10 +71,10 @@ pub fn capture_qr_funding_utxo_if_available(
 
     let guard = wallet_arc.read().ok()?;
     let pw = guard.platform_wallet.as_ref()?;
-    let info = pw.core().wallet_info_blocking();
+    let info = pw.core().state_blocking();
 
     let candidate_utxo = info
-        .get_spendable_utxos()
+        .wallet_info.get_spendable_utxos()
         .iter()
         .filter(|utxo| utxo.address == address && utxo.value() > 0)
         .max_by_key(|utxo| utxo.value())

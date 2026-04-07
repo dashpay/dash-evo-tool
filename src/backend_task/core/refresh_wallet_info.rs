@@ -28,8 +28,8 @@ impl AppContext {
             // Locked wallets (no PlatformWallet) have no addresses — return empty.
             // Exclude platform payment addresses since those are not tracked by Core.
             let addrs = if let Some(pw) = wallet_guard.platform_wallet.as_ref() {
-                let info = pw.core().wallet_info_blocking();
-                CoreAddressInfo::all_from_wallet_info(&info)
+                let info = pw.core().state_blocking();
+                CoreAddressInfo::all_from_wallet_info(&info.wallet_info)
                     .into_iter()
                     .filter(|a| !a.derivation_path.is_platform_payment(self.network))
                     .map(|a| a.address)
@@ -281,10 +281,10 @@ impl AppContext {
         {
             let wallet_guard = wallet.read()?;
 
-            // Update PlatformWallet balance via WalletInfoWriteGuard (auto-refreshes WalletBalance)
+            // Update PlatformWallet balance via PlatformWalletInfoWriteGuard (auto-refreshes WalletBalance)
             if let Some(pw) = wallet_guard.platform_wallet.as_ref() {
-                if let Some(mut pw_info) = pw.core().try_wallet_info_mut() {
-                    pw_info.balance = WalletCoreBalance::new(
+                if let Some(mut pw_info) = pw.core().try_state_mut() {
+                    pw_info.wallet_info.balance = WalletCoreBalance::new(
                         total_balance,
                         0, // unconfirmed
                         0, // immature
@@ -296,11 +296,11 @@ impl AppContext {
 
         // Sync balance to PlatformWallet's ManagedWalletInfo so it stays
         // current and can serve as the canonical read source.
-        // Uses try_wallet_info_mut() because we are in a blocking context
+        // Uses try_state_mut() because we are in a blocking context
         // (spawn_blocking) where awaiting is not possible.
         if let Some(pw) = self.get_platform_wallet(&seed_hash) {
-            if let Some(mut pw_info) = pw.core().try_wallet_info_mut() {
-                pw_info.balance = WalletCoreBalance::new(
+            if let Some(mut pw_info) = pw.core().try_state_mut() {
+                pw_info.wallet_info.balance = WalletCoreBalance::new(
                     total_balance, // spendable
                     0,             // unconfirmed
                     0,             // immature

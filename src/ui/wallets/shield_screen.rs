@@ -192,12 +192,12 @@ impl ShieldScreen {
                 self.cached_platform_balance = None;
             }
 
-            // Core balance — read from PlatformWallet (wallet_info_blocking for
+            // Core balance — read from PlatformWallet (state_blocking for
             // per-address lookup, lock-free WalletBalance for total).
             if let Some(addr) = self.validated_source.as_ref().and_then(|v| v.as_core()) {
                 let per_addr_balance = wallet.platform_wallet.as_ref().map(|pw| {
-                    let info = pw.core().wallet_info_blocking();
-                    platform_wallet::CoreAddressInfo::all_from_wallet_info(&info)
+                    let info = pw.core().state_blocking();
+                    platform_wallet::CoreAddressInfo::all_from_wallet_info(&info.wallet_info)
                         .into_iter()
                         .find(|a| &a.address == addr)
                         .map(|a| a.balance)

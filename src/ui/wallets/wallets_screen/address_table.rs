@@ -156,8 +156,8 @@ impl WalletsBalancesScreen {
         let Some(pw) = pw else {
             return Vec::new();
         };
-        let info = pw.core().wallet_info_blocking();
-        let cached = CoreAddressInfo::all_from_wallet_info(&info);
+        let info = pw.core().state_blocking();
+        let cached = CoreAddressInfo::all_from_wallet_info(&info.wallet_info);
         Self::address_data_from_cache(&cached, screen.app_context.network)
     }
 

@@ -81,8 +81,8 @@ impl AppContext {
         let identity_id = identity.id();
 
         // Read the enriched ManagedIdentity from the identity manager.
-        let manager = identity_wallet.identity_manager().await;
-        let managed = manager.managed_identity(&identity_id).ok_or_else(|| {
+        let manager = identity_wallet.state().await;
+        let managed = manager.identity_manager.managed_identity(&identity_id).ok_or_else(|| {
             TaskError::WalletIdentityNotFound {
                 identity_index,
                 auth_key_count: 12,
@@ -109,7 +109,8 @@ impl AppContext {
                         )
                     }
                     platform_wallet::PrivateKeyData::Clear(key_bytes) => {
-                        (PrivateKeyData::Clear(**key_bytes), None)
+                        let bytes: &[u8; 32] = key_bytes;
+                        (PrivateKeyData::Clear(*bytes), None)
                     }
                 };
 

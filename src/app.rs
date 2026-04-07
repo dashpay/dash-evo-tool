@@ -117,6 +117,10 @@ pub struct AppState {
     /// Shared MCP context -- follows network switches via `ArcSwap`.
     #[cfg(feature = "mcp")]
     pub mcp_app_context: Option<Arc<arc_swap::ArcSwap<AppContext>>>,
+    /// Keeps the temporary data directory alive for the lifetime of `AppState`
+    /// when running under the `testing` feature.
+    #[cfg(feature = "testing")]
+    _temp_dir: Option<tempfile::TempDir>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -210,21 +214,31 @@ impl AppState {
         Self::new_inner(ctx, db, data_dir)
     }
 
-    /// Creates a new `AppState` using an in-memory database for testing.
+    /// Creates a new `AppState` using an in-memory database and an isolated
+    /// temporary data directory for testing.
     ///
     /// Available only when the `testing` feature is active. This prevents tests
-    /// from reading or writing the production database.
+    /// from reading or writing the production database and ensures parallel
+    /// tests never share the same data directory.
     #[cfg(feature = "testing")]
     pub fn new(ctx: egui::Context) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let data_dir = app_user_data_dir_path()?;
+        // Create an isolated temp directory so parallel tests never collide.
+        let temp_dir = tempfile::tempdir()
+            .map_err(|e| format!("Failed to create temp data dir: {}", e))?;
+        let data_dir = temp_dir.path().to_path_buf();
         ensure_data_dir_exists(&data_dir)?;
+
+        // Copy the bundled .env.example so Config::load_from succeeds.
         ensure_env_file(&data_dir);
 
         let db = Arc::new(
             crate::database::test_helpers::create_test_database()
                 .map_err(|e| format!("Failed to create test database: {}", e))?,
         );
-        Self::new_inner(ctx, db, data_dir)
+        let mut state = Self::new_inner(ctx, db, data_dir)?;
+        // Keep the temp dir alive for the lifetime of AppState.
+        state._temp_dir = Some(temp_dir);
+        Ok(state)
     }
 
     fn new_inner(
@@ -791,6 +805,8 @@ impl AppState {
             accessibility_retries: 0,
             #[cfg(feature = "mcp")]
             mcp_app_context,
+            #[cfg(feature = "testing")]
+            _temp_dir: None,
         };
 
         // Initialize welcome screen if needed (after mainnet_app_context is owned by the struct)

@@ -623,8 +623,8 @@ impl Wallet {
         self.platform_wallet
             .as_ref()
             .map(|pw| {
-                let info = pw.core().wallet_info_blocking();
-                platform_wallet::CoreAddressInfo::all_from_wallet_info(&info)
+                let info = pw.core().state_blocking();
+                platform_wallet::CoreAddressInfo::all_from_wallet_info(&info.wallet_info)
             })
             .unwrap_or_default()
     }
@@ -633,11 +633,11 @@ impl Wallet {
     /// Returns `None` if the wallet is locked (no PlatformWallet).
     pub fn derivation_path_for_address(&self, address: &Address) -> Option<DerivationPath> {
         let pw = self.platform_wallet.as_ref()?;
-        // Use try_wallet_info() to avoid panic when called from async context
-        // (wallet_info_blocking panics inside tokio runtime).
+        // Use try_state() to avoid panic when called from async context
+        // (state_blocking panics inside tokio runtime).
         // Returns None if the lock is held, which is safe — the caller retries next cycle.
-        let info = pw.core().try_wallet_info()?;
-        platform_wallet::CoreAddressInfo::all_from_wallet_info(&info)
+        let info = pw.core().try_state()?;
+        platform_wallet::CoreAddressInfo::all_from_wallet_info(&info.wallet_info)
             .into_iter()
             .find(|a| &a.address == address)
             .map(|a| a.derivation_path)
@@ -646,8 +646,8 @@ impl Wallet {
     /// Async version of `derivation_path_for_address` — safe to call from async context.
     pub async fn derivation_path_for_address_async(&self, address: &Address) -> Option<DerivationPath> {
         let pw = self.platform_wallet.as_ref()?;
-        let info = pw.core().wallet_info().await;
-        platform_wallet::CoreAddressInfo::all_from_wallet_info(&info)
+        let info = pw.core().state().await;
+        platform_wallet::CoreAddressInfo::all_from_wallet_info(&info.wallet_info)
             .into_iter()
             .find(|a| &a.address == address)
             .map(|a| a.derivation_path)
@@ -669,8 +669,8 @@ impl Wallet {
         self.platform_wallet
             .as_ref()
             .map(|pw| {
-                let info = pw.core().wallet_info_blocking();
-                platform_wallet::CoreAddressInfo::all_from_wallet_info(&info)
+                let info = pw.core().state_blocking();
+                platform_wallet::CoreAddressInfo::all_from_wallet_info(&info.wallet_info)
                     .into_iter()
                     .find(|a| &a.address == address)
                     .map(|a| a.balance)
@@ -716,8 +716,8 @@ impl Wallet {
         let Some(pw) = self.platform_wallet.as_ref() else {
             return Vec::new();
         };
-        let info = pw.core().wallet_info_blocking();
-        info.transaction_history()
+        let info = pw.core().state_blocking();
+        info.wallet_info.transaction_history()
             .into_iter()
             .map(|record| {
                 let height = record.height();

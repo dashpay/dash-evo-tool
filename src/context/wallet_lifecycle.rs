@@ -19,7 +19,6 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::key_wallet::Network as WalletNetwork;
 use dash_sdk::dpp::key_wallet::account::AccountType;
 use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
-use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::{
     ManagedWalletInfo, wallet_info_interface::WalletInfoInterface,
 };
@@ -297,7 +296,6 @@ impl AppContext {
         }
 
         let kw_network = self.wallet_network_key();
-        let options = WalletAccountCreationOptions::default();
 
         // Create a PlatformWallet via the manager — this wires the shared
         // SPV event channel so IS-lock/ChainLock events reach AssetLockManager.
@@ -305,8 +303,11 @@ impl AppContext {
         // for SPV processing in one call.
         match tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(
-                self.wallet_manager
-                    .create_wallet_from_seed_bytes(kw_network, seed_bytes, options),
+                self.wallet_manager.create_wallet_from_seed_bytes(
+                    kw_network,
+                    seed_bytes,
+                    Default::default(),
+                ),
             )
         })
         {
@@ -580,10 +581,10 @@ impl AppContext {
             (guard.platform_wallet.clone(), guard.seed_hash())
         };
 
-        // Check address ownership via PlatformWallet's async wallet_info lock.
+        // Check address ownership via PlatformWallet's async state lock.
         if let Some(pw) = &platform_wallet {
-            let info = pw.core().wallet_info().await;
-            let has_it = platform_wallet::CoreAddressInfo::all_from_wallet_info(&info)
+            let info = pw.core().state().await;
+            let has_it = platform_wallet::CoreAddressInfo::all_from_wallet_info(&info.wallet_info)
                 .iter()
                 .any(|a| a.address == address);
             if has_it {
@@ -804,11 +805,11 @@ impl AppContext {
             let balance = pw.core().balance();
             tracing::debug!(wallet = %hex::encode(seed_hash), spendable = balance.spendable(), unconfirmed = balance.unconfirmed(), total = balance.total(), "SPV balance snapshot");
 
-            let Some(wallet_info) = pw.core().try_wallet_info() else {
+            let Some(wallet_info) = pw.core().try_state() else {
                 continue;
             };
 
-            self.sync_spv_account_addresses(&wallet_info, wallet_arc).await;
+            self.sync_spv_account_addresses(&wallet_info.wallet_info, wallet_arc).await;
 
             // Wallet balances, UTXOs, and transactions are now persisted via
             // the changeset path (auto-flushed via FlushStrategy::Immediate).
@@ -816,17 +817,17 @@ impl AppContext {
 
             // Get the wallet's addresses from PlatformWallet to register unknown
             // SPV addresses in the DET address table (app-level metadata).
-            // Uses async wallet_info() to avoid blocking_read panic in async context.
+            // Uses async state() to avoid blocking_read panic in async context.
             let mut wallet_addresses: std::collections::BTreeSet<Address> = {
-                let info = pw.core().wallet_info().await;
-                platform_wallet::CoreAddressInfo::all_from_wallet_info(&info)
+                let info = pw.core().state().await;
+                platform_wallet::CoreAddressInfo::all_from_wallet_info(&info.wallet_info)
                     .into_iter()
                     .map(|a| a.address)
                     .collect()
             };
 
             // Register unknown addresses found in SPV account metadata
-            let collection = wallet_info.accounts();
+            let collection = wallet_info.wallet_info.accounts();
             for acc in collection.all_accounts() {
                 let account_type = acc.account_type.to_account_type();
                 for address in acc.account_type.all_addresses() {
@@ -925,7 +926,7 @@ impl AppContext {
 
         // 2. Access the identity_manager (tokio RwLock, use try_write)
         let identity_wallet = platform_wallet.identity();
-        let mut manager = match identity_wallet.try_identity_manager_mut() {
+        let mut manager = match identity_wallet.try_state_mut() {
             Some(guard) => guard,
             None => {
                 tracing::debug!(
@@ -946,7 +947,7 @@ impl AppContext {
         let mi_status = Self::convert_identity_status(qualified_identity.status);
 
         // 4. Add or update the identity in the manager
-        if let Some(managed) = manager.managed_identity_mut(&identity_id) {
+        if let Some(managed) = manager.identity_manager.managed_identity_mut(&identity_id) {
             // Update existing managed identity
             managed.identity = qualified_identity.identity.clone();
             managed.key_storage = mi_key_storage;
@@ -963,10 +964,10 @@ impl AppContext {
             );
         } else {
             // Add new identity
-            match manager.add_identity(qualified_identity.identity.clone(), identity_index) {
+            match manager.identity_manager.add_identity(qualified_identity.identity.clone(), identity_index) {
                 Ok(()) => {
                     // Now set extra fields on the newly added managed identity
-                    if let Some(managed) = manager.managed_identity_mut(&identity_id) {
+                    if let Some(managed) = manager.identity_manager.managed_identity_mut(&identity_id) {
                         managed.key_storage = mi_key_storage;
                         managed.dpns_names = mi_dpns_names;
                         managed.status = mi_status;
@@ -1085,9 +1086,10 @@ impl AppContext {
 
                 let kw_network = self.wallet_network_key();
 
-                // Derive xpub and add account to key-wallet's Wallet (key store)
-                let account = {
-                    let mut wallet = pw.core().wallet_mut_blocking();
+                // Derive xpub and add account to key-wallet's Wallet (key store),
+                // then add managed wrapper to ManagedWalletInfo (address pools).
+                // Both live inside the single PlatformWalletInfo guard.
+                if let Some(mut info_guard) = pw.core().try_state_mut() {
                     let path = match account_type.derivation_path(kw_network) {
                         Ok(p) => p,
                         Err(e) => {
@@ -1095,7 +1097,7 @@ impl AppContext {
                             continue;
                         }
                     };
-                    let account_xpub = match wallet.derive_extended_public_key(&path) {
+                    let account_xpub = match info_guard.wallet.derive_extended_public_key(&path) {
                         Ok(xpub) => xpub,
                         Err(e) => {
                             tracing::debug!(contact = %contact_id, error = %e, "Failed to derive contact xpub");
@@ -1103,20 +1105,16 @@ impl AppContext {
                         }
                     };
                     let account = Account {
-                        parent_wallet_id: Some(wallet.wallet_id),
+                        parent_wallet_id: Some(info_guard.wallet.wallet_id),
                         account_type,
                         network: kw_network,
                         account_xpub,
                         is_watch_only: false,
                     };
-                    let _ = wallet.accounts.insert(account.clone());
-                    account
-                };
+                    let _ = info_guard.wallet.accounts.insert(account.clone());
 
-                // Add managed wrapper to ManagedWalletInfo (address pools)
-                let managed = ManagedCoreAccount::from_account(&account);
-                if let Some(mut info) = pw.core().try_wallet_info_mut() {
-                    if let Err(e) = info.accounts.insert(managed) {
+                    let managed = ManagedCoreAccount::from_account(&account);
+                    if let Err(e) = info_guard.wallet_info.accounts.insert(managed) {
                         tracing::debug!(contact = %contact_id, error = %e, "Failed to insert contact account");
                     } else {
                         registered += 1;

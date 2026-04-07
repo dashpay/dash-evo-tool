@@ -157,8 +157,8 @@ impl AppContext {
         };
 
         if let Some(pw) = platform_wallet {
-            let info = pw.core().wallet_info().await;
-            let first_addr = platform_wallet::CoreAddressInfo::all_from_wallet_info(&info)
+            let info = pw.core().state().await;
+            let first_addr = platform_wallet::CoreAddressInfo::all_from_wallet_info(&info.wallet_info)
                 .into_iter()
                 .next()
                 .map(|a| a.address);
@@ -604,20 +604,19 @@ impl AppContext {
         let core_wallet = pw.core();
 
         let tx = {
-            let wallet_info =
+            let info_guard =
                 core_wallet
-                    .try_wallet_info()
+                    .try_state()
                     .ok_or_else(|| TaskError::WalletPaymentFailed {
                         detail: "Wallet info unavailable".to_string(),
                     })?;
-            let wallet = core_wallet.wallet_blocking();
             let unsigned = self.build_spv_unsigned_transaction_multi_pw(
-                &wallet_info,
-                &wallet,
+                &info_guard.wallet_info,
+                &info_guard.wallet,
                 &parsed_recipients,
                 &request,
             )?;
-            self.sign_spv_transaction_pw(&wallet_info, &wallet, unsigned)?
+            self.sign_spv_transaction_pw(&info_guard.wallet_info, &info_guard.wallet, unsigned)?
         };
 
         self.wallet_manager

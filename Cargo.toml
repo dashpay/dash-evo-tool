@@ -115,6 +115,11 @@ path = "src/bin/det_cli/main.rs"
 required-features = ["cli"]
 
 [[test]]
+name = "e2e"
+path = "tests/e2e/main.rs"
+required-features = ["testing"]
+
+[[test]]
 name = "backend-e2e"
 path = "tests/backend-e2e/main.rs"
 required-features = ["testing"]

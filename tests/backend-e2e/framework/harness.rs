@@ -90,16 +90,10 @@ impl BackendTestContext {
             tracing::debug!(".env not loaded ({e}), relying on environment");
         }
 
-        // Persistent workdir keyed by git revision
-        let git_hash = std::process::Command::new("git")
-            .args(["rev-parse", "--short", "HEAD"])
-            .output()
-            .ok()
-            .and_then(|o| String::from_utf8(o.stdout).ok())
-            .map(|s| s.trim().to_string())
-            .unwrap_or_else(|| "unknown".to_string());
-
-        let workdir = std::env::temp_dir().join(format!("dash-evo-e2e-testnet-{}", git_hash));
+        // Persistent workdir — stable across commits so SPV cache is reused.
+        // The SPV filter sync from genesis takes ~90 min for testnet; reusing
+        // cached data makes subsequent runs fast (~seconds for incremental sync).
+        let workdir = std::env::temp_dir().join("dash-evo-e2e-testnet");
         std::fs::create_dir_all(&workdir).expect("Failed to create workdir");
         tracing::info!("E2E workdir: {}", workdir.display());
 

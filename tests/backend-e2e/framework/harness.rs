@@ -128,7 +128,46 @@ impl BackendTestContext {
         )
         .expect("Failed to create AppContext for testnet");
 
-        // Switch to SPV mode and start
+        // E2E_WALLET_MNEMONIC is required
+        let mnemonic_phrase = std::env::var("E2E_WALLET_MNEMONIC").unwrap_or_else(|_| {
+            panic!(
+                "E2E_WALLET_MNEMONIC is not set.\n\
+                 This environment variable is required for backend E2E tests.\n\
+                 Set it to a BIP-39 mnemonic of a pre-funded testnet wallet.\n\
+                 Example: E2E_WALLET_MNEMONIC=\"word1 word2 word3 ... word12\"\n\
+                 You can also add it to the project root .env file."
+            );
+        });
+
+        tracing::info!("Restoring framework wallet from E2E_WALLET_MNEMONIC");
+        let mnemonic = Mnemonic::parse_in(Language::English, &mnemonic_phrase)
+            .expect("Invalid E2E_WALLET_MNEMONIC");
+
+        let seed = mnemonic.to_seed("");
+        let wallet = dash_evo_tool::model::wallet::Wallet::new_from_seed(
+            seed,
+            Network::Testnet,
+            Some("E2E Framework Wallet".to_string()),
+            None,
+        )
+        .expect("Failed to create framework wallet");
+
+        let framework_wallet_hash = wallet.seed_hash();
+
+        // Register wallet BEFORE starting SPV so the wallet's addresses
+        // are in the bloom filter from the start. This is important because
+        // the SPV filter scan checks monitored_addresses() once at startup.
+        match app_context.register_wallet(wallet) {
+            Ok((hash, _)) => {
+                tracing::info!("Registered framework wallet (seed_hash: {:?})", &hash[..4]);
+            }
+            Err(TaskError::WalletAlreadyImported) => {
+                tracing::info!("Framework wallet already registered (reusing from persistent DB)");
+            }
+            Err(e) => panic!("Failed to register framework wallet: {}", e),
+        }
+
+        // Switch to SPV mode and start (wallet already registered above)
         app_context.set_core_backend_mode(CoreBackendMode::Spv);
         app_context.start_spv().expect("Failed to start SPV");
 
@@ -168,43 +207,6 @@ impl BackendTestContext {
             .expect("SPV failed to connect to any peers within 60s");
         tracing::info!("SPV connected to peers");
 
-        // E2E_WALLET_MNEMONIC is required
-        let mnemonic_phrase = std::env::var("E2E_WALLET_MNEMONIC").unwrap_or_else(|_| {
-            panic!(
-                "E2E_WALLET_MNEMONIC is not set.\n\
-                 This environment variable is required for backend E2E tests.\n\
-                 Set it to a BIP-39 mnemonic of a pre-funded testnet wallet.\n\
-                 Example: E2E_WALLET_MNEMONIC=\"word1 word2 word3 ... word12\"\n\
-                 You can also add it to the project root .env file."
-            );
-        });
-
-        tracing::info!("Restoring framework wallet from E2E_WALLET_MNEMONIC");
-        let mnemonic = Mnemonic::parse_in(Language::English, &mnemonic_phrase)
-            .expect("Invalid E2E_WALLET_MNEMONIC");
-
-        let seed = mnemonic.to_seed("");
-        let wallet = dash_evo_tool::model::wallet::Wallet::new_from_seed(
-            seed,
-            Network::Testnet,
-            Some("E2E Framework Wallet".to_string()),
-            None,
-        )
-        .expect("Failed to create framework wallet");
-
-        let framework_wallet_hash = wallet.seed_hash();
-
-        // Try to register; if the wallet already exists (persistent DB), just look it up.
-        match app_context.register_wallet(wallet) {
-            Ok((hash, _)) => {
-                tracing::info!("Registered framework wallet (seed_hash: {:?})", &hash[..4]);
-            }
-            Err(TaskError::WalletAlreadyImported) => {
-                tracing::info!("Framework wallet already registered (reusing from persistent DB)");
-            }
-            Err(e) => panic!("Failed to register framework wallet: {}", e),
-        }
-
         // Wait for wallet to appear in SPV
         wait::wait_for_wallet_in_spv(&app_context, framework_wallet_hash, Duration::from_secs(30))
             .await
@@ -233,9 +235,15 @@ impl BackendTestContext {
                             let bal =
                                 (guard.confirmed_balance_duffs(), guard.total_balance_duffs());
                             let addr = guard
-                                .receive_address(Network::Testnet, false, Some(&app_context))
-                                .map(|a| a.to_string())
-                                .unwrap_or_else(|_| "<unknown>".to_string());
+                                .platform_wallet
+                                .as_ref()
+                                .and_then(|pw| pw.core().try_wallet_info())
+                                .and_then(|info| {
+                                    info.accounts.standard_bip44_accounts.get(&0)
+                                        .and_then(|a| a.account_type.all_addresses().into_iter().next())
+                                        .map(|a| a.to_string())
+                                })
+                                .unwrap_or_else(|| "<unknown>".to_string());
                             (bal.0, bal.1, addr)
                         })
                         .unwrap_or((0, 0, "<unknown>".to_string()))

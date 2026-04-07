@@ -146,12 +146,18 @@ impl AppContext {
     pub fn start_spv(self: &Arc<Self>) -> Result<(), TaskError> {
         // Skip if SPV is already running.
         if self.wallet_manager.spv().is_started() {
+            tracing::info!("start_spv: SPV already started, skipping");
             return Ok(());
         }
 
+        tracing::info!("start_spv: building SPV config...");
         let config = self
             .build_spv_config()
-            .map_err(|e| TaskError::SpvStartFailed { detail: e })?;
+            .map_err(|e| {
+                tracing::error!("start_spv: failed to build config: {}", e);
+                TaskError::SpvStartFailed { detail: e }
+            })?;
+        tracing::info!("start_spv: config built, starting SPV...");
 
         // Spawn the SpvEventBridge run-loop using the existing bridge
         // (created in AppContext::new). Each start subscribes to the wallet
@@ -559,7 +565,7 @@ impl AppContext {
         Ok(())
     }
 
-    pub(crate) fn register_spv_address(
+    pub(crate) async fn register_spv_address(
         &self,
         wallet: &Arc<RwLock<Wallet>>,
         address: Address,
@@ -567,15 +573,26 @@ impl AppContext {
         path_type: DerivationPathType,
         path_reference: DerivationPathReference,
     ) -> Result<bool, TaskError> {
-        let guard = wallet.read()?;
-        if guard.has_address(&address) {
-            return Ok(false);
+        // Extract what we need from the wallet under a short-lived sync lock,
+        // then drop the guard before any async work.
+        let (platform_wallet, seed_hash) = {
+            let guard = wallet.read()?;
+            (guard.platform_wallet.clone(), guard.seed_hash())
+        };
+
+        // Check address ownership via PlatformWallet's async wallet_info lock.
+        if let Some(pw) = &platform_wallet {
+            let info = pw.core().wallet_info().await;
+            let has_it = platform_wallet::CoreAddressInfo::all_from_wallet_info(&info)
+                .iter()
+                .any(|a| a.address == address);
+            if has_it {
+                return Ok(false);
+            }
         }
 
         let (path_reference, path_type) =
             self.classify_derivation_metadata(&derivation_path, path_reference, path_type);
-
-        let seed_hash = guard.seed_hash();
 
         self.db.add_address_if_not_exists(
             &seed_hash,
@@ -606,7 +623,7 @@ impl AppContext {
         }
     }
 
-    fn sync_spv_account_addresses(
+    async fn sync_spv_account_addresses(
         &self,
         wallet_info: &ManagedWalletInfo,
         wallet_arc: &Arc<RwLock<Wallet>>,
@@ -629,7 +646,7 @@ impl AppContext {
                         info.path.clone(),
                         path_type,
                         path_reference,
-                    )
+                    ).await
                 {
                     inserted += 1;
                 }
@@ -769,10 +786,16 @@ impl AppContext {
     /// data as the SPV adapter through `Arc`) instead of the old
     /// `PlatformWallet::core()`.
     pub async fn reconcile_spv_wallets(&self) -> Result<(), TaskError> {
-        // Take a snapshot of known addresses per wallet so we can scope DB updates
-        let wallets_guard = self.wallets.read()?;
+        // Snapshot the wallets map under a short sync lock, then drop.
+        let wallet_entries: Vec<_> = {
+            let wallets_guard = self.wallets.read()?;
+            wallets_guard
+                .iter()
+                .map(|(k, v)| (*k, Arc::clone(v)))
+                .collect()
+        };
 
-        for (seed_hash, wallet_arc) in wallets_guard.iter() {
+        for (seed_hash, wallet_arc) in &wallet_entries {
             let Some(pw) = self.get_platform_wallet(seed_hash) else {
                 continue;
             };
@@ -785,7 +808,7 @@ impl AppContext {
                 continue;
             };
 
-            self.sync_spv_account_addresses(&wallet_info, wallet_arc);
+            self.sync_spv_account_addresses(&wallet_info, wallet_arc).await;
 
             // Wallet balances, UTXOs, and transactions are now persisted via
             // the changeset path (auto-flushed via FlushStrategy::Immediate).
@@ -793,9 +816,10 @@ impl AppContext {
 
             // Get the wallet's addresses from PlatformWallet to register unknown
             // SPV addresses in the DET address table (app-level metadata).
+            // Uses async wallet_info() to avoid blocking_read panic in async context.
             let mut wallet_addresses: std::collections::BTreeSet<Address> = {
-                let w = wallet_arc.read()?;
-                w.all_addresses_info()
+                let info = pw.core().wallet_info().await;
+                platform_wallet::CoreAddressInfo::all_from_wallet_info(&info)
                     .into_iter()
                     .map(|a| a.address)
                     .collect()
@@ -832,7 +856,7 @@ impl AppContext {
                             ai.path.clone(),
                             path_type,
                             path_reference,
-                        ) {
+                        ).await {
                             wallet_addresses.insert(address.clone());
                         }
                     }

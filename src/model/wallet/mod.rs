@@ -633,7 +633,20 @@ impl Wallet {
     /// Returns `None` if the wallet is locked (no PlatformWallet).
     pub fn derivation_path_for_address(&self, address: &Address) -> Option<DerivationPath> {
         let pw = self.platform_wallet.as_ref()?;
-        let info = pw.core().wallet_info_blocking();
+        // Use try_wallet_info() to avoid panic when called from async context
+        // (wallet_info_blocking panics inside tokio runtime).
+        // Returns None if the lock is held, which is safe — the caller retries next cycle.
+        let info = pw.core().try_wallet_info()?;
+        platform_wallet::CoreAddressInfo::all_from_wallet_info(&info)
+            .into_iter()
+            .find(|a| &a.address == address)
+            .map(|a| a.derivation_path)
+    }
+
+    /// Async version of `derivation_path_for_address` — safe to call from async context.
+    pub async fn derivation_path_for_address_async(&self, address: &Address) -> Option<DerivationPath> {
+        let pw = self.platform_wallet.as_ref()?;
+        let info = pw.core().wallet_info().await;
         platform_wallet::CoreAddressInfo::all_from_wallet_info(&info)
             .into_iter()
             .find(|a| &a.address == address)
@@ -644,6 +657,11 @@ impl Wallet {
     /// Returns `false` if the wallet is locked (no PlatformWallet).
     pub fn has_address(&self, address: &Address) -> bool {
         self.derivation_path_for_address(address).is_some()
+    }
+
+    /// Async version of `has_address` — safe to call from async context.
+    pub async fn has_address_async(&self, address: &Address) -> bool {
+        self.derivation_path_for_address_async(address).await.is_some()
     }
 
     /// Per-address balance from PlatformWallet's CoreAddressInfo.

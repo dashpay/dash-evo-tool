@@ -847,6 +847,11 @@ impl AppContext {
     pub fn dashpay_contract_id(&self) -> Identifier {
         self.dashpay_contract.id()
     }
+
+    /// Returns a reference to the wallet-ID mapping (seed hash ↔ wallet ID).
+    pub fn wallet_id_mapping(&self) -> &Mutex<WalletIdMapping> {
+        &self.wallet_id_mapping
+    }
 }
 
 /// Returns the default platform version for the given network.

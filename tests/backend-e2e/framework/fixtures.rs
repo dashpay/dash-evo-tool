@@ -254,6 +254,58 @@ pub async fn shared_dashpay_pair() -> &'static SharedDashPayPair {
                 result_b
             );
 
+            // Wait for both DPNS names to propagate before returning.
+            // Platform needs time to make names queryable after registration.
+            tracing::info!("SharedDashPayPair: waiting for DPNS names to propagate...");
+            let propagation_timeout = std::time::Duration::from_secs(60);
+            let poll_interval = std::time::Duration::from_secs(5);
+            let start = std::time::Instant::now();
+            loop {
+                let search_a = run_task(
+                    &ctx.app_context,
+                    BackendTask::IdentityTask(IdentityTask::SearchIdentityByDpnsName(
+                        username_a.clone(),
+                        None,
+                    )),
+                )
+                .await;
+                let search_b = run_task(
+                    &ctx.app_context,
+                    BackendTask::IdentityTask(IdentityTask::SearchIdentityByDpnsName(
+                        username_b.clone(),
+                        None,
+                    )),
+                )
+                .await;
+
+                let a_found = matches!(search_a, Ok(BackendTaskSuccessResult::LoadedIdentity(_)));
+                let b_found = matches!(search_b, Ok(BackendTaskSuccessResult::LoadedIdentity(_)));
+
+                if a_found && b_found {
+                    tracing::info!(
+                        "SharedDashPayPair: both DPNS names propagated after {:?}",
+                        start.elapsed()
+                    );
+                    break;
+                }
+
+                if start.elapsed() > propagation_timeout {
+                    panic!(
+                        "SharedDashPayPair: DPNS names did not propagate within {:?} \
+                         (a_found={}, b_found={})",
+                        propagation_timeout, a_found, b_found
+                    );
+                }
+
+                tracing::info!(
+                    "SharedDashPayPair: DPNS not yet queryable (a={}, b={}), retrying in {:?}...",
+                    a_found,
+                    b_found,
+                    poll_interval
+                );
+                tokio::time::sleep(poll_interval).await;
+            }
+
             let signing_key_a = (find_authentication_public_key(&qi_a), key_bytes_a);
             let signing_key_b = (find_authentication_public_key(&qi_b), key_bytes_b);
 

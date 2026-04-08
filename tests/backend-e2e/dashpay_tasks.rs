@@ -9,9 +9,13 @@ use crate::framework::fixtures;
 use crate::framework::harness;
 use crate::framework::task_runner::run_task;
 use dash_evo_tool::backend_task::dashpay::DashPayTask;
+use dash_evo_tool::backend_task::identity::IdentityTask;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
+use dash_evo_tool::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::platform::Identifier;
+use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
+use dash_sdk::platform::{Identifier, IdentityPublicKey};
 
 /// Stores the incoming request ID captured during TC-038 for use in TC-039.
 static INCOMING_REQUEST_ID: tokio::sync::OnceCell<Identifier> = tokio::sync::OnceCell::const_new();
@@ -106,35 +110,53 @@ async fn tc_033_search_profiles() {
     let ctx = harness::ctx().await;
     let pair = fixtures::shared_dashpay_pair().await;
 
-    let task = BackendTask::DashPayTask(Box::new(DashPayTask::SearchProfiles {
-        search_query: pair.username_a.clone(),
-    }));
+    // Retry search up to 30s — DPNS name may not be immediately queryable
+    // after registration due to platform propagation delay.
+    let poll_interval = std::time::Duration::from_secs(5);
+    let timeout = std::time::Duration::from_secs(30);
+    let start = std::time::Instant::now();
 
-    let result = run_task(&ctx.app_context, task)
-        .await
-        .expect("SearchProfiles should succeed");
+    loop {
+        let task = BackendTask::DashPayTask(Box::new(DashPayTask::SearchProfiles {
+            search_query: pair.username_a.clone(),
+        }));
 
-    match result {
-        BackendTaskSuccessResult::DashPayProfileSearchResults(results) => {
-            tracing::info!(
-                "TC-033: search for '{}' returned {} results",
-                pair.username_a,
-                results.len()
-            );
-            assert!(
-                !results.is_empty(),
-                "Search for '{}' should return at least one result",
-                pair.username_a
-            );
-            let found = results
-                .iter()
-                .any(|(_id, _profile, username)| username == &pair.username_a);
-            assert!(found, "Expected username '{}' in results", pair.username_a);
+        let result = run_task(&ctx.app_context, task)
+            .await
+            .expect("SearchProfiles should succeed");
+
+        match result {
+            BackendTaskSuccessResult::DashPayProfileSearchResults(results) => {
+                tracing::info!(
+                    "TC-033: search for '{}' returned {} results",
+                    pair.username_a,
+                    results.len()
+                );
+                let found = results
+                    .iter()
+                    .any(|(_id, _profile, username)| username == &pair.username_a);
+                if found {
+                    tracing::info!("TC-033: found username '{}' in results", pair.username_a);
+                    break;
+                }
+                if start.elapsed() > timeout {
+                    panic!(
+                        "TC-033: search for '{}' did not return expected result within {:?}",
+                        pair.username_a, timeout
+                    );
+                }
+                tracing::info!(
+                    "TC-033: username '{}' not yet in results, retrying in {:?}...",
+                    pair.username_a,
+                    poll_interval
+                );
+                tokio::time::sleep(poll_interval).await;
+            }
+            other => panic!(
+                "TC-033: expected DashPayProfileSearchResults, got: {:?}",
+                other
+            ),
         }
-        other => panic!(
-            "TC-033: expected DashPayProfileSearchResults, got: {:?}",
-            other
-        ),
     }
 }
 
@@ -397,16 +419,100 @@ async fn tc_041_load_payment_history_empty() {
 }
 
 /// TC-042: UpdateContactInfo
+///
+/// UpdateContactInfo requires an ECDSA_SECP256K1 AUTHENTICATION key on the
+/// identity. The default key specs only create ECDSA_HASH160 for AUTHENTICATION,
+/// so we first add a secp256k1 authentication key via AddKeyToIdentity,
+/// then refresh the identity from Platform before calling UpdateContactInfo.
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn tc_042_update_contact_info() {
     let ctx = harness::ctx().await;
     let pair = fixtures::shared_dashpay_pair().await;
 
+    let mut identity_b = pair.identity_b.clone();
     let contact_id = pair.identity_a.identity.id();
 
+    // Check if identity B already has an ECDSA_SECP256K1 AUTHENTICATION key.
+    let has_secp_auth = identity_b
+        .identity
+        .get_first_public_key_matching(
+            Purpose::AUTHENTICATION,
+            [
+                SecurityLevel::CRITICAL,
+                SecurityLevel::HIGH,
+                SecurityLevel::MEDIUM,
+            ]
+            .into(),
+            [KeyType::ECDSA_SECP256K1].into(),
+            false,
+        )
+        .is_some();
+
+    if !has_secp_auth {
+        tracing::info!(
+            "TC-042: identity B lacks ECDSA_SECP256K1 AUTHENTICATION key, adding one..."
+        );
+        let private_key_bytes: [u8; 32] = rand::random();
+        let new_ipk = IdentityPublicKey::V0(IdentityPublicKeyV0 {
+            id: 0, // placeholder, AddKeyToIdentity reassigns
+            purpose: Purpose::AUTHENTICATION,
+            security_level: SecurityLevel::HIGH,
+            contract_bounds: None,
+            key_type: KeyType::ECDSA_SECP256K1,
+            read_only: false,
+            data: {
+                use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
+                use dash_sdk::dpp::dashcore::PrivateKey;
+                let secp = Secp256k1::new();
+                let secret_key =
+                    dash_sdk::dpp::dashcore::secp256k1::SecretKey::from_slice(&private_key_bytes)
+                        .expect("TC-042: invalid secret key");
+                let pk = PrivateKey::new(secret_key, dash_sdk::dpp::dashcore::Network::Testnet);
+                pk.public_key(&secp).to_bytes().into()
+            },
+            disabled_at: None,
+        });
+
+        let new_qualified_key = QualifiedIdentityPublicKey::from(new_ipk);
+
+        let add_result = run_task(
+            &ctx.app_context,
+            BackendTask::IdentityTask(IdentityTask::AddKeyToIdentity(
+                identity_b.clone(),
+                new_qualified_key,
+                private_key_bytes,
+            )),
+        )
+        .await
+        .expect("TC-042: AddKeyToIdentity should succeed");
+
+        assert!(
+            matches!(add_result, BackendTaskSuccessResult::AddedKeyToIdentity(_)),
+            "TC-042: expected AddedKeyToIdentity, got: {:?}",
+            add_result
+        );
+
+        // Refresh identity B from Platform to pick up the new key.
+        let refresh_result = run_task(
+            &ctx.app_context,
+            BackendTask::IdentityTask(IdentityTask::RefreshIdentity(identity_b.clone())),
+        )
+        .await
+        .expect("TC-042: RefreshIdentity should succeed");
+
+        identity_b = match refresh_result {
+            BackendTaskSuccessResult::RefreshedIdentity(qi) => qi,
+            other => panic!("TC-042: expected RefreshedIdentity, got: {:?}", other),
+        };
+        tracing::info!(
+            "TC-042: identity B refreshed, keys={}",
+            identity_b.identity.public_keys().len()
+        );
+    }
+
     let task = BackendTask::DashPayTask(Box::new(DashPayTask::UpdateContactInfo {
-        identity: pair.identity_b.clone(),
+        identity: identity_b,
         contact_id,
         nickname: Some("Test Nickname".into()),
         note: Some("E2E note".into()),
@@ -416,7 +522,7 @@ async fn tc_042_update_contact_info() {
 
     let result = run_task(&ctx.app_context, task)
         .await
-        .expect("UpdateContactInfo should succeed");
+        .expect("TC-042: UpdateContactInfo should succeed");
 
     match result {
         BackendTaskSuccessResult::DashPayContactInfoUpdated(id) => {
@@ -466,6 +572,45 @@ async fn tc_043_reject_contact_request() {
         "TC-043: expected RegisteredDpnsName for C, got: {:?}",
         dpns_result
     );
+
+    // Wait for C's DPNS name to propagate before sending a contact request.
+    tracing::info!(
+        "TC-043: waiting for DPNS name '{}' to propagate...",
+        username_c
+    );
+    let propagation_timeout = std::time::Duration::from_secs(60);
+    let poll_interval = std::time::Duration::from_secs(5);
+    let start = std::time::Instant::now();
+    loop {
+        let search = run_task(
+            &ctx.app_context,
+            BackendTask::IdentityTask(
+                dash_evo_tool::backend_task::identity::IdentityTask::SearchIdentityByDpnsName(
+                    username_c.clone(),
+                    None,
+                ),
+            ),
+        )
+        .await;
+
+        if matches!(search, Ok(BackendTaskSuccessResult::LoadedIdentity(_))) {
+            tracing::info!(
+                "TC-043: DPNS name '{}' propagated after {:?}",
+                username_c,
+                start.elapsed()
+            );
+            break;
+        }
+
+        if start.elapsed() > propagation_timeout {
+            panic!(
+                "TC-043: DPNS name '{}' did not propagate within {:?}",
+                username_c, propagation_timeout
+            );
+        }
+
+        tokio::time::sleep(poll_interval).await;
+    }
 
     // Send contact request from A to C
     let (signing_key_a, _) = &pair.signing_key_a;

@@ -163,7 +163,22 @@ async fn tc_067_broadcast_invalid_state_transition() {
     let si = shared_identity().await;
 
     let platform_version = ctx.app_context.platform_version();
-    let identity = &si.qualified_identity.identity;
+
+    // Refresh identity from Platform to get the current key state.
+    // Other tests (tc_022, tc_066) may have added keys, making the cached
+    // SharedIdentity stale. We need accurate `get_public_key_max_id()`.
+    let refresh_result = run_task(
+        &ctx.app_context,
+        BackendTask::IdentityTask(IdentityTask::RefreshIdentity(si.qualified_identity.clone())),
+    )
+    .await
+    .expect("TC-067: RefreshIdentity should succeed");
+
+    let refreshed_qi = match refresh_result {
+        BackendTaskSuccessResult::RefreshedIdentity(qi) => qi,
+        other => panic!("TC-067: expected RefreshedIdentity, got: {:?}", other),
+    };
+    let identity = &refreshed_qi.identity;
 
     // Generate a fresh key to add (content doesn't matter — nonce makes it invalid).
     let new_private_key_bytes: [u8; 32] = rand::random();

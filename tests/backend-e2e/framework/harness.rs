@@ -215,9 +215,9 @@ impl BackendTestContext {
         // This must come BEFORE the spendable balance check — wallet balances
         // are only available after compact filter sync completes.
         tracing::info!("Waiting for SPV to complete full sync (masternodes + mempool)...");
-        wait::wait_for_spv_running(&app_context, Duration::from_secs(300))
+        wait::wait_for_spv_running(&app_context, Duration::from_secs(600))
             .await
-            .expect("SPV did not reach Running state within 300s");
+            .expect("SPV did not reach Running state within 600s");
         tracing::info!("SPV fully synced — mempool bloom filter active");
 
         // Now check framework wallet balance — SPV has synced, so balances

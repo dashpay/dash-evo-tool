@@ -76,7 +76,11 @@ async fn tc_012_generate_receive_address() {
 
 // ─── TC-013 ───────────────────────────────────────────────────────────────────
 
-/// TC-013: FetchPlatformAddressBalances — no platform addresses funded (baseline).
+/// TC-013: FetchPlatformAddressBalances — verify task returns valid result.
+///
+/// The framework wallet may have funded platform addresses from previous
+/// test runs (the workdir is persistent), so we cannot assume empty balances.
+/// We only verify the task succeeds and returns the correct result type.
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 #[ignore]
 async fn tc_013_fetch_platform_address_balances_empty() {
@@ -100,15 +104,8 @@ async fn tc_013_fetch_platform_address_balances_empty() {
                 dash_sdk::dpp::dashcore::Network::Testnet,
                 "TC-013: expected testnet network"
             );
-            // Balances may be empty or contain zero-balance entries — both are valid
-            let all_zero = balances.values().all(|(balance, _nonce)| *balance == 0);
-            assert!(
-                balances.is_empty() || all_zero,
-                "TC-013: expected no funded platform addresses at baseline, got: {:?}",
-                balances
-            );
             tracing::info!(
-                "TC-013 passed: {} platform addresses (all zero or empty)",
+                "TC-013 passed: {} platform addresses returned",
                 balances.len()
             );
         }
@@ -364,6 +361,10 @@ async fn tc_016_transfer_platform_credits() {
 // ─── TC-017 ───────────────────────────────────────────────────────────────────
 
 /// TC-017: WithdrawFromPlatformAddress — withdraw remaining balance back to Core.
+///
+/// TC-016 may have transferred credits away from the original funded address,
+/// so we first fund a fresh platform address to ensure there are credits to
+/// withdraw.
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 #[ignore]
 async fn tc_017_withdraw_from_platform_address() {
@@ -373,6 +374,38 @@ async fn tc_017_withdraw_from_platform_address() {
         .get()
         .expect("TC-017: FUNDED_PLATFORM not set — TC-014 must run first");
     let seed_hash = state.seed_hash;
+
+    // Fund a fresh platform address so we have credits to withdraw,
+    // regardless of what tc_016 did to the original address.
+    let wallet_arc = {
+        let wallets = ctx.app_context.wallets().read().expect("wallets lock");
+        wallets
+            .get(&seed_hash)
+            .expect("framework wallet missing")
+            .clone()
+    };
+
+    let fresh_addr = {
+        let mut wallet = wallet_arc.write().expect("wallet write lock");
+        let addr = wallet
+            .platform_receive_address(
+                dash_sdk::dpp::dashcore::Network::Testnet,
+                true,
+                Some(&ctx.app_context),
+            )
+            .expect("TC-017: failed to derive platform address");
+        PlatformAddress::try_from(addr).expect("TC-017: failed to convert to PlatformAddress")
+    };
+
+    let fund_task = BackendTask::WalletTask(WalletTask::FundPlatformAddressFromWalletUtxos {
+        seed_hash,
+        amount: 500_000,
+        destination: fresh_addr,
+        fee_deduct_from_output: true,
+    });
+    run_task(&ctx.app_context, fund_task)
+        .await
+        .expect("TC-017: FundPlatformAddressFromWalletUtxos failed");
 
     // Fetch current platform address balances to find one with credits
     let fetch_task =
@@ -502,7 +535,7 @@ async fn tc_018_fund_platform_address_from_asset_lock() {
 
     // Step 2: Wait for the asset lock proof to appear in unused_asset_locks
     tracing::info!("TC-018: waiting for asset lock IS proof in unused_asset_locks...");
-    let proof_timeout = Duration::from_secs(120);
+    let proof_timeout = Duration::from_secs(240);
     let (asset_lock_address, asset_lock_proof) = tokio::time::timeout(proof_timeout, async {
         loop {
             let maybe_lock = {

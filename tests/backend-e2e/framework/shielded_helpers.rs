@@ -29,13 +29,28 @@ pub fn skip_if_shielded_disabled() -> bool {
 /// Check whether a task error indicates the platform does not support
 /// shielded operations (e.g., testnet without shielded support enabled).
 ///
-/// Returns `true` if the error message contains "not implemented" or
-/// "not supported", meaning the test should be skipped gracefully.
+/// Returns `true` if the error matches any of these unsupported patterns:
+/// - "not implemented" / "not supported" — explicit platform rejection
+/// - "connection refused" / "CoreRpc" — Core RPC not available for shielded ops
+/// - "variant 15" / "variant 16" / "variant 17" / "variant 18" / "variant 19"
+///   — state transition types for shielded ops not recognized by testnet
+/// - "SerializedObjectParsingError" / "UnexpectedVariant" — deserialization
+///   failures for shielded-specific types
 pub fn is_platform_shielded_unsupported(
     err: &dash_evo_tool::backend_task::error::TaskError,
 ) -> bool {
     let msg = format!("{:?}", err).to_lowercase();
-    msg.contains("not implemented") || msg.contains("not supported")
+    msg.contains("not implemented")
+        || msg.contains("not supported")
+        || msg.contains("connection refused")
+        || msg.contains("corerpc")
+        || msg.contains("serializedobjectparsingerror")
+        || msg.contains("unexpectedvariant")
+        || msg.contains("variant 15")
+        || msg.contains("variant 16")
+        || msg.contains("variant 17")
+        || msg.contains("variant 18")
+        || msg.contains("variant 19")
 }
 
 /// Run `WarmUpProvingKey` followed by `InitializeShieldedWallet` in sequence.

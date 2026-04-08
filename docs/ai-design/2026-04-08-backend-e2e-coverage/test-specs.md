@@ -4,6 +4,17 @@
 **Target:** ~68 test cases across 8 BackendTask groups
 **Framework:** `tests/backend-e2e/`, `#[tokio_shared_rt::test(shared)]`, `#[ignore]`, serial execution
 
+> **Post-implementation update (2026-04-08):** The following test cases were **removed** because
+> they require Core RPC which is not available in SPV mode. These are not test bugs — the
+> underlying BackendTask variants inherently depend on Core RPC:
+> - TC-007 (GetBestChainLock), TC-008 (GetBestChainLocks), TC-010 (ListCoreWallets)
+> - TC-068 (FetchEndDmlDiff), TC-069 (FetchEndQrInfo), TC-070 (FetchEndQrInfoWithDmls),
+>   TC-071 (FetchDiffsChain), TC-072 (FetchChainLocks)
+>
+> Additionally, TC-003 (RefreshSingleKeyWalletInfo), TC-006 (RecoverAssetLocks), and
+> TC-009 (SendSingleKeyWalletPayment) are **kept but expected to fail** — they expose
+> production code that incorrectly requires Core RPC in SPV mode.
+
 ---
 
 ## 1. CoreTask Tests (`core_tasks.rs`)

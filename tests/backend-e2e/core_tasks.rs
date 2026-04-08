@@ -4,7 +4,7 @@ use crate::framework::fixtures;
 use crate::framework::harness::ctx;
 use crate::framework::task_runner::run_task;
 use dash_evo_tool::backend_task::core::{
-    CoreItem, CoreTask, PaymentRecipient, WalletPaymentRequest,
+    CoreTask, PaymentRecipient, WalletPaymentRequest,
 };
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_evo_tool::model::wallet::single_key::SingleKeyWallet;
@@ -230,60 +230,8 @@ async fn test_tc006_recover_asset_locks() {
     }
 }
 
-// TC-007: GetBestChainLock
-#[ignore]
-#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
-async fn test_tc007_get_best_chain_lock() {
-    let ctx = ctx().await;
-    let app_context = &ctx.app_context;
-
-    let task = BackendTask::CoreTask(CoreTask::GetBestChainLock);
-    let result = run_task(app_context, task)
-        .await
-        .expect("GetBestChainLock should succeed");
-
-    match result {
-        BackendTaskSuccessResult::CoreItem(CoreItem::ChainLock(cl, network)) => {
-            assert!(cl.block_height > 0, "Chain lock block height should be > 0");
-            assert_eq!(
-                network,
-                dash_sdk::dpp::dashcore::Network::Testnet,
-                "Should be testnet"
-            );
-        }
-        other => panic!("Expected CoreItem(ChainLock), got: {:?}", other),
-    }
-}
-
-// TC-008: GetBestChainLocks
-#[ignore]
-#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
-async fn test_tc008_get_best_chain_locks() {
-    let ctx = ctx().await;
-    let app_context = &ctx.app_context;
-
-    let task = BackendTask::CoreTask(CoreTask::GetBestChainLocks);
-    let result = run_task(app_context, task)
-        .await
-        .expect("GetBestChainLocks should succeed");
-
-    match result {
-        BackendTaskSuccessResult::CoreItem(CoreItem::ChainLocks(
-            _mainnet,
-            testnet,
-            _devnet,
-            _local,
-            _rpc_error,
-        )) => {
-            let testnet_cl = testnet.expect("Testnet chain lock should be Some");
-            assert!(
-                testnet_cl.block_height > 0,
-                "Testnet chain lock block height should be > 0"
-            );
-        }
-        other => panic!("Expected CoreItem(ChainLocks), got: {:?}", other),
-    }
-}
+// TC-007: GetBestChainLock — REMOVED (Core RPC-specific, not available in SPV mode)
+// TC-008: GetBestChainLocks — REMOVED (Core RPC-specific, not available in SPV mode)
 
 // TC-009: SendSingleKeyWalletPayment
 #[ignore]
@@ -406,30 +354,7 @@ async fn test_tc009_send_single_key_wallet_payment() {
     }
 }
 
-// TC-010: ListCoreWallets (conditional on E2E_CORE_RPC_URL)
-#[ignore]
-#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
-async fn test_tc010_list_core_wallets() {
-    if std::env::var("E2E_CORE_RPC_URL").is_err() {
-        println!("TC-010: E2E_CORE_RPC_URL not set — skipping ListCoreWallets test");
-        return;
-    }
-
-    let ctx = ctx().await;
-    let app_context = &ctx.app_context;
-
-    let task = BackendTask::CoreTask(CoreTask::ListCoreWallets);
-    let result = run_task(app_context, task)
-        .await
-        .expect("ListCoreWallets should succeed when E2E_CORE_RPC_URL is set");
-
-    match result {
-        BackendTaskSuccessResult::CoreWalletsList(wallets) => {
-            tracing::info!("TC-010: ListCoreWallets returned {} wallets", wallets.len());
-        }
-        other => panic!("Expected CoreWalletsList, got: {:?}", other),
-    }
-}
+// TC-010: ListCoreWallets — REMOVED (Core RPC-specific, not available in SPV mode)
 
 // TC-011: CoreTask error — invalid payment address
 #[ignore]

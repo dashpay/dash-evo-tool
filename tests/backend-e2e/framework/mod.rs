@@ -6,8 +6,7 @@ pub mod fixtures;
 pub mod funding;
 pub mod harness;
 pub mod identity_helpers;
-#[allow(dead_code)]
-pub mod mnlist_helpers;
+// mnlist_helpers removed — all MnList tests that used it required Core RPC (not available in SPV mode)
 #[allow(dead_code)]
 pub mod shielded_helpers;
 pub mod task_runner;

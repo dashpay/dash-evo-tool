@@ -19,9 +19,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::key_wallet::Network as WalletNetwork;
 use dash_sdk::dpp::key_wallet::account::AccountType;
 use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
-use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::{
-    ManagedWalletInfo, wallet_info_interface::WalletInfoInterface,
-};
+use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use zeroize::Zeroizing;
@@ -145,8 +143,8 @@ impl AppContext {
     /// Reset SPV filter_committed_height to force a rescan from birth_height.
     ///
     /// Call before `start_spv()` when wallet state isn't persisted yet.
-    pub fn reset_spv_filter_committed_height(&self) {
-        self.wallet_manager.spv().reset_filter_committed_height();
+    pub async fn reset_spv_filter_committed_height(&self) {
+        self.wallet_manager.spv().reset_filter_committed_height().await;
     }
 
     pub fn start_spv(self: &Arc<Self>) -> Result<(), TaskError> {
@@ -256,8 +254,8 @@ impl AppContext {
             // AssetLockManager). Wallet loading into SPV is handled by the
             // SpvRuntime's wallet adapter automatically.
             self.register_with_platform_wallet_manager(seed_hash, seed_bytes);
-            // Notify SPV that wallets changed so it rebuilds bloom filters.
-            self.wallet_manager.spv().notify_wallets_changed();
+            // WalletManager bumps its own structural revision when wallets
+            // are added/removed, so no external notify_wallets_changed() is needed.
             // Note: Platform address sync is not done here.
             // Core UTXO refresh is handled at startup in bootstrap_loaded_wallets.
 
@@ -591,7 +589,7 @@ impl AppContext {
         // Check address ownership via PlatformWallet's async state lock.
         if let Some(pw) = &platform_wallet {
             let info = pw.state().await;
-            let has_it = crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.wallet_info)
+            let has_it = crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(info.managed_state.wallet_info())
                 .iter()
                 .any(|a| a.address == address);
             if has_it {
@@ -816,7 +814,7 @@ impl AppContext {
                 continue;
             };
 
-            self.sync_spv_account_addresses(&wallet_info.wallet_info, wallet_arc).await;
+            self.sync_spv_account_addresses(wallet_info.managed_state.wallet_info(), wallet_arc).await;
 
             // Wallet balances, UTXOs, and transactions are now persisted via
             // the changeset path (auto-flushed via FlushStrategy::Immediate).
@@ -827,14 +825,14 @@ impl AppContext {
             // Uses async state() to avoid blocking_read panic in async context.
             let mut wallet_addresses: std::collections::BTreeSet<Address> = {
                 let info = pw.state().await;
-                crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.wallet_info)
+                crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(info.managed_state.wallet_info())
                     .into_iter()
                     .map(|a| a.address)
                     .collect()
             };
 
             // Register unknown addresses found in SPV account metadata
-            let collection = wallet_info.wallet_info.accounts();
+            let collection = wallet_info.managed_state.wallet_info().accounts();
             for acc in collection.all_accounts() {
                 let account_type = acc.account_type.to_account_type();
                 for address in acc.account_type.all_addresses() {
@@ -1104,24 +1102,25 @@ impl AppContext {
                             continue;
                         }
                     };
-                    let account_xpub = match info_guard.wallet.derive_extended_public_key(&path) {
+                    let account_xpub = match info_guard.managed_state.wallet().derive_extended_public_key(&path) {
                         Ok(xpub) => xpub,
                         Err(e) => {
                             tracing::debug!(contact = %contact_id, error = %e, "Failed to derive contact xpub");
                             continue;
                         }
                     };
+                    let wallet_id = info_guard.managed_state.wallet().wallet_id;
                     let account = Account {
-                        parent_wallet_id: Some(info_guard.wallet.wallet_id),
+                        parent_wallet_id: Some(wallet_id),
                         account_type,
                         network: kw_network,
                         account_xpub,
                         is_watch_only: false,
                     };
-                    let _ = info_guard.wallet.accounts.insert(account.clone());
+                    let _ = info_guard.managed_state.wallet_mut().accounts.insert(account.clone());
 
                     let managed = ManagedCoreAccount::from_account(&account);
-                    if let Err(e) = info_guard.wallet_info.accounts.insert(managed) {
+                    if let Err(e) = info_guard.managed_state.wallet_info_mut().accounts.insert(managed) {
                         tracing::debug!(contact = %contact_id, error = %e, "Failed to insert contact account");
                     } else {
                         registered += 1;

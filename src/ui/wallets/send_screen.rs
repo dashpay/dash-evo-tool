@@ -682,7 +682,7 @@ impl WalletSendScreen {
         };
         let info = pw.state_blocking();
         let mut addresses: Vec<(Address, u64)> =
-            crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.wallet_info)
+            crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(info.managed_state.wallet_info())
                 .into_iter()
                 .filter(|a| a.balance > 0)
                 .map(|a| (a.address, a.balance))

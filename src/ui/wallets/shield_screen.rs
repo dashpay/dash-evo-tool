@@ -197,7 +197,7 @@ impl ShieldScreen {
             if let Some(addr) = self.validated_source.as_ref().and_then(|v| v.as_core()) {
                 let per_addr_balance = wallet.platform_wallet.as_ref().map(|pw| {
                     let info = pw.state_blocking();
-                    crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.wallet_info)
+                    crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(info.managed_state.wallet_info())
                         .into_iter()
                         .find(|a| &a.address == addr)
                         .map(|a| a.balance)

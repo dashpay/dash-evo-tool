@@ -8,7 +8,6 @@ use std::sync::{Arc, RwLock};
 use crate::model::wallet::Wallet;
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dpp::dashcore::{OutPoint, TxOut};
-use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
 
 #[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Copy, Clone)]
 pub enum WalletFundedScreenStep {
@@ -74,7 +73,7 @@ pub fn capture_qr_funding_utxo_if_available(
     let info = pw.state_blocking();
 
     let candidate_utxo = info
-        .wallet_info.get_spendable_utxos()
+        .managed_state.wallet_info().get_spendable_utxos()
         .iter()
         .filter(|utxo| utxo.address == address && utxo.value() > 0)
         .max_by_key(|utxo| utxo.value())

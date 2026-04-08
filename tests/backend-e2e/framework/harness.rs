@@ -186,8 +186,8 @@ impl BackendTestContext {
                 let wallet_guard = wallet_arc.read().expect("wallet lock");
                 if let Some(pw) = &wallet_guard.platform_wallet {
                     if let Some(mut wi) = pw.try_state_mut() {
-                        if wi.wallet_info.birth_height() == 0 {
-                            wi.wallet_info.set_birth_height(birth_height);
+                        if wi.managed_state.wallet_info().birth_height() == 0 {
+                            wi.managed_state.wallet_info_mut().set_birth_height(birth_height);
                             tracing::info!("Set framework wallet birth_height to {}", birth_height);
                         }
                     }
@@ -201,7 +201,10 @@ impl BackendTestContext {
         // birth_height. Without this, cached committed height from a previous
         // run causes the scan to skip historical blocks, and since wallet
         // state isn't persisted yet (apply() TODO), the balance stays 0.
-        app_context.reset_spv_filter_committed_height();
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current()
+                .block_on(app_context.reset_spv_filter_committed_height());
+        });
         app_context.start_spv().expect("Failed to start SPV");
 
         // Stash the cancellation token so the panic hook can stop SPV if
@@ -279,12 +282,12 @@ impl BackendTestContext {
                                 .as_ref()
                                 .and_then(|pw| pw.try_state())
                                 .and_then(|info| {
-                                    info.wallet_info.accounts.standard_bip44_accounts.get(&0)
+                                    info.managed_state.wallet_info().accounts.standard_bip44_accounts.get(&0)
                                         .and_then(|a| {
                                             let addrs = a.account_type.all_addresses();
                                             addrs.into_iter().next()
                                         })
-                                        .map(|a| a.to_string())
+                                        .map(|a: dash_sdk::dpp::dashcore::Address| a.to_string())
                                 })
                                 .unwrap_or_else(|| "<unknown>".to_string());
                             (bal.0, bal.1, addr)

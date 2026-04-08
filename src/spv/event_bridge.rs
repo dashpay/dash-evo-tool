@@ -10,7 +10,7 @@ use crate::spv::types::failed_manager_name;
 use crate::spv::types::{SpvStatus, SpvStatusSnapshot};
 use dash_sdk::dash_spv::network::NetworkEvent;
 use dash_sdk::dash_spv::sync::{SyncEvent, SyncProgress as SpvSyncProgress, SyncState};
-use platform_wallet::events::{PlatformWalletEvent, SpvEvent};
+use platform_wallet::events::{PlatformWalletEvent, SpvEvent, WalletEvent};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::SystemTime;
 use tokio::sync::{broadcast, mpsc};
@@ -67,8 +67,9 @@ impl SpvEventBridge {
                 SpvEvent::Sync(sync_event) => self.handle_sync_event(sync_event),
                 SpvEvent::Network(net_event) => self.handle_network_event(net_event),
             },
-            // Wallet-level events are handled elsewhere; ignore here.
-            PlatformWalletEvent::Wallet(_) => {}
+            PlatformWalletEvent::Wallet(wallet_event) => {
+                self.handle_wallet_event(wallet_event);
+            }
         }
     }
 
@@ -89,6 +90,58 @@ impl SpvEventBridge {
     // ------------------------------------------------------------------
     // Internal handlers — logic extracted from the old SpvEventHandler
     // ------------------------------------------------------------------
+
+    /// Handle wallet-level events (balance changes, transaction status, etc.).
+    ///
+    /// `BalanceUpdated` events are emitted by `WalletManager` after SPV block
+    /// processing. The `WalletBalance` atomics are already updated during block
+    /// processing via `PlatformWalletInfo::check_core_transaction()`, so the
+    /// main purpose here is to signal reconciliation so evo-tool's UI-facing
+    /// state picks up the change.
+    fn handle_wallet_event(&self, event: &WalletEvent) {
+        match event {
+            WalletEvent::BalanceUpdated {
+                wallet_id,
+                spendable,
+                unconfirmed,
+                ..
+            } => {
+                tracing::debug!(
+                    wallet_id = %hex::encode(wallet_id),
+                    spendable,
+                    unconfirmed,
+                    "BalanceUpdated event received"
+                );
+                // Signal reconciliation so the UI picks up the new balance.
+                if let Ok(tx) = self.reconcile_tx.lock() {
+                    let _ = tx.try_send(());
+                }
+            }
+            WalletEvent::TransactionReceived { wallet_id, record, .. } => {
+                tracing::debug!(
+                    wallet_id = %hex::encode(wallet_id),
+                    txid = %record.txid,
+                    "TransactionReceived event"
+                );
+                // Signal reconciliation for new transactions.
+                if let Ok(tx) = self.reconcile_tx.lock() {
+                    let _ = tx.try_send(());
+                }
+            }
+            WalletEvent::TransactionStatusChanged { wallet_id, txid, status, .. } => {
+                tracing::debug!(
+                    wallet_id = %hex::encode(wallet_id),
+                    %txid,
+                    %status,
+                    "TransactionStatusChanged event"
+                );
+                // Signal reconciliation for status changes.
+                if let Ok(tx) = self.reconcile_tx.lock() {
+                    let _ = tx.try_send(());
+                }
+            }
+        }
+    }
 
     /// Translate a sync progress update into status + connection status changes.
     ///

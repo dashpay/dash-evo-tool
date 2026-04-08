@@ -17,7 +17,6 @@ use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
 use dash_sdk::dpp::dashcore::{
     Address, BlockHash, Network, OutPoint, PrivateKey, PublicKey, Transaction, TxOut, Txid,
 };
-use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
 use std::ops::Range;
@@ -624,7 +623,7 @@ impl Wallet {
             .as_ref()
             .map(|pw| {
                 let info = pw.state_blocking();
-                crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.wallet_info)
+                crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(info.managed_state.wallet_info())
             })
             .unwrap_or_default()
     }
@@ -637,7 +636,7 @@ impl Wallet {
         // (state_blocking panics inside tokio runtime).
         // Returns None if the lock is held, which is safe — the caller retries next cycle.
         let info = pw.try_state()?;
-        crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.wallet_info)
+        crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(info.managed_state.wallet_info())
             .into_iter()
             .find(|a| &a.address == address)
             .map(|a| a.derivation_path)
@@ -647,7 +646,7 @@ impl Wallet {
     pub async fn derivation_path_for_address_async(&self, address: &Address) -> Option<DerivationPath> {
         let pw = self.platform_wallet.as_ref()?;
         let info = pw.state().await;
-        crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.wallet_info)
+        crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(info.managed_state.wallet_info())
             .into_iter()
             .find(|a| &a.address == address)
             .map(|a| a.derivation_path)
@@ -670,7 +669,7 @@ impl Wallet {
             .as_ref()
             .map(|pw| {
                 let info = pw.state_blocking();
-                crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.wallet_info)
+                crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(info.managed_state.wallet_info())
                     .into_iter()
                     .find(|a| &a.address == address)
                     .map(|a| a.balance)
@@ -717,7 +716,7 @@ impl Wallet {
             return Vec::new();
         };
         let info = pw.state_blocking();
-        info.wallet_info.transaction_history()
+        info.managed_state.wallet_info().transaction_history()
             .into_iter()
             .map(|record| {
                 let height = record.height();

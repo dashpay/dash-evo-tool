@@ -32,8 +32,7 @@ use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::fee::FeeRate;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_builder::{
     BuilderError, TransactionBuilder,
 };
-use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
-use dash_sdk::dpp::key_wallet_manager::{WalletError, WalletId, WalletManager};
+use dash_sdk::dpp::key_wallet_manager::WalletError;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
@@ -158,7 +157,7 @@ impl AppContext {
 
         if let Some(pw) = platform_wallet {
             let info = pw.state().await;
-            let first_addr = crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.wallet_info)
+            let first_addr = crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(info.managed_state.wallet_info())
                 .into_iter()
                 .next()
                 .map(|a| a.address);
@@ -610,12 +609,12 @@ impl AppContext {
                         detail: "Wallet info unavailable".to_string(),
                     })?;
             let unsigned = self.build_spv_unsigned_transaction_multi_pw(
-                &info_guard.wallet_info,
-                &info_guard.wallet,
+                info_guard.managed_state.wallet_info(),
+                info_guard.managed_state.wallet(),
                 &parsed_recipients,
                 &request,
             )?;
-            self.sign_spv_transaction_pw(&info_guard.wallet_info, &info_guard.wallet, unsigned)?
+            self.sign_spv_transaction_pw(info_guard.managed_state.wallet_info(), info_guard.managed_state.wallet(), unsigned)?
         };
 
         self.wallet_manager
@@ -848,17 +847,13 @@ impl AppContext {
     /// Build an unsigned payment transaction using TransactionBuilder.
     #[allow(dead_code)]
     fn build_unsigned_payment_tx(
-        wm: &mut WalletManager<ManagedWalletInfo>,
-        wallet_id: &WalletId,
+        managed_info: &ManagedWalletInfo,
         account_index: u32,
         recipients: Vec<(Address, u64)>,
         current_height: u32,
         change_address: &Address,
     ) -> Result<Transaction, WalletError> {
         // Get spendable UTXOs from the managed wallet info
-        let managed_info = wm
-            .get_wallet_info(wallet_id)
-            .ok_or(WalletError::WalletNotFound(*wallet_id))?;
         let collection = managed_info.accounts();
         let account = collection
             .standard_bip44_accounts

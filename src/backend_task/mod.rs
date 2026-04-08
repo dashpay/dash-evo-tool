@@ -550,7 +550,7 @@ impl AppContext {
             WalletTask::LoadAddressInfo { seed_hash } => {
                 let platform_wallet = self.require_platform_wallet(&seed_hash)?;
                 let wallet_info = platform_wallet.state().await;
-                let info = CoreAddressInfo::all_from_wallet_info(&wallet_info.wallet_info);
+                let info = CoreAddressInfo::all_from_wallet_info(wallet_info.managed_state.wallet_info());
                 Ok(BackendTaskSuccessResult::AddressInfo(info))
             }
         }

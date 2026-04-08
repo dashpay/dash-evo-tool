@@ -11,6 +11,7 @@ use dash_evo_tool::backend_task::tokens::TokenTask;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_evo_tool::context::AppContext;
 use dash_evo_tool::model::qualified_identity::QualifiedIdentity;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::data_contract::TokenContractPosition;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::TokenDistributionRules;
@@ -109,7 +110,7 @@ pub async fn mint_tokens(
         signing_key: signing_key.clone(),
         public_note: Some("E2E test mint".to_string()),
         amount,
-        recipient_id: None,
+        recipient_id: Some(identity.identity.id()),
         group_info: None,
     }));
 

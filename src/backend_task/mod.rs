@@ -475,7 +475,10 @@ impl AppContext {
                         egui_ctx,
                     )
                 })
-                .ok_or(TaskError::NetworkContextCreationFailed { network })?;
+                .ok_or(TaskError::NetworkContextCreationFailed {
+                    network,
+                    detail: "AppContext::new() returned None".into(),
+                })?;
 
                 let spv_started = if start_spv {
                     if new_ctx.core_backend_mode() != CoreBackendMode::Spv {

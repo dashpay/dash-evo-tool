@@ -170,11 +170,17 @@ impl AppContext {
             wallet
                 .platform_address_info
                 .iter()
-                .filter_map(|(addr, info)| {
-                    PlatformAddress::try_from(addr.clone())
-                        .ok()
-                        .map(|pa| (pa, (info.balance, info.nonce)))
-                })
+                .filter_map(
+                    |(addr, info)| match PlatformAddress::try_from(addr.clone()) {
+                        Ok(pa) => Some((pa, (info.balance, info.nonce))),
+                        Err(e) => {
+                            tracing::warn!(
+                                "Skipping platform address that could not be re-encoded: {e}"
+                            );
+                            None
+                        }
+                    },
+                )
                 .collect()
         };
 

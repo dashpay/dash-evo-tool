@@ -225,9 +225,10 @@ impl AsyncTool<DashMcpService> for NetworkSwitch {
 
         // Already on the target network — no-op.
         if ctx.network() == target {
+            let spv_running = ctx.connection_status().spv_status().is_active();
             return Ok(NetworkSwitchOutput {
                 active: network_display_name(target).to_owned(),
-                spv_started: true,
+                spv_started: spv_running,
             });
         }
 

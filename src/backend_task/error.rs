@@ -390,8 +390,9 @@ pub enum TaskError {
 
     /// The token name contains whitespace or control characters.
     #[error(
-        "The token name \"{token_name}\" in {form} contains invalid characters. \
-         Token names must not include spaces or control characters. Please rename and try again."
+        "The token name \"{}\" in {form} contains invalid characters. \
+         Token names must not include spaces or control characters. Please rename and try again.",
+        escape_token_name(token_name)
     )]
     InvalidTokenNameCharacter {
         form: String,
@@ -977,7 +978,12 @@ pub enum TaskError {
     // ──────────────────────────────────────────────────────────────────────────
     /// Creating a network context failed during a network switch.
     #[error("Could not connect to {network}. Check your network configuration and retry.")]
-    NetworkContextCreationFailed { network: Network },
+    NetworkContextCreationFailed { network: Network, detail: String },
+}
+
+/// Escapes control characters in a token name for safe display in error messages.
+fn escape_token_name(name: &str) -> String {
+    name.chars().filter(|c| !c.is_control()).collect()
 }
 
 /// Returns `true` when a `dashcore_rpc::Error` wraps an HTTP 401 response,

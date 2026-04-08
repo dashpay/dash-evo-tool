@@ -61,12 +61,12 @@ impl Database {
                 // Every sub-migration is idempotent (IF NOT EXISTS / column checks),
                 // so this is safe to run on any DB that already applied some or all
                 // of the individual steps.
+                self.clean_orphaned_fk_rows(tx)?;
                 self.add_core_wallet_name_column(tx)?;
                 self.init_contacts_tables(tx)?;
                 self.create_shielded_tables(tx)?;
                 self.create_shielded_wallet_meta_table(tx)?;
                 self.add_nullifier_sync_timestamp_column(tx)?;
-                self.clean_orphaned_fk_rows(tx)?;
                 self.rename_network_dash_to_mainnet(tx)?;
                 self.add_wallet_transaction_status_column(tx)?;
             }

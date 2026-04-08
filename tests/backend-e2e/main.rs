@@ -17,3 +17,12 @@ mod register_dpns;
 mod send_funds;
 mod spv_wallet;
 mod tx_is_ours;
+
+mod broadcast_st_tasks;
+mod core_tasks;
+mod dashpay_tasks;
+mod identity_tasks;
+mod mnlist_tasks;
+mod shielded_tasks;
+mod token_tasks;
+mod wallet_tasks;

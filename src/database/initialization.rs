@@ -60,17 +60,27 @@ impl Database {
                 // Every sub-migration is idempotent (IF NOT EXISTS / column checks),
                 // so this is safe to run on any DB that already applied some or all
                 // of the individual steps.
+                tracing::debug!("v33: cleaning orphaned FK rows");
                 self.clean_orphaned_fk_rows(tx)?;
+                tracing::debug!("v33: adding core_wallet_name column");
                 self.add_core_wallet_name_column(tx)?;
+                tracing::debug!("v33: creating contacts tables");
                 self.init_contacts_tables(tx)?;
+                tracing::debug!("v33: creating shielded tables");
                 self.create_shielded_tables(tx)?;
+                tracing::debug!("v33: creating shielded_wallet_meta table");
                 self.create_shielded_wallet_meta_table(tx)?;
+                tracing::debug!("v33: adding nullifier_sync_timestamp column");
                 self.add_nullifier_sync_timestamp_column(tx)?;
                 // Defer FK checks so parent→child rename order doesn't matter
                 // (contestant and token have composite FKs that include network).
+                tracing::debug!("v33: deferring FK checks for network rename");
                 tx.execute_batch("PRAGMA defer_foreign_keys = ON")?;
+                tracing::debug!("v33: renaming network dash -> mainnet");
                 self.rename_network_dash_to_mainnet(tx)?;
+                tracing::debug!("v33: adding wallet_transaction status column");
                 self.add_wallet_transaction_status_column(tx)?;
+                tracing::debug!("v33: migration complete");
             }
             27 => {
                 self.add_network_indexes(tx)?;
@@ -203,12 +213,13 @@ impl Database {
                     .expect("Failed to lock database connection");
 
                 for version in (original_version + 1)..=to_version {
+                    tracing::debug!("Applying migration v{version}");
                     let tx = conn.transaction().map_err(|e| e.to_string())?;
                     self.apply_version_changes(version, &tx)
-                        .map_err(|e| e.to_string())?;
+                        .map_err(|e| format!("v{version} apply_version_changes: {e}"))?;
                     self.update_database_version(version, &tx)
-                        .map_err(|e| e.to_string())?;
-                    tx.commit().map_err(|e| e.to_string())?;
+                        .map_err(|e| format!("v{version} update_database_version: {e}"))?;
+                    tx.commit().map_err(|e| format!("v{version} commit: {e}"))?;
                 }
                 Ok(true)
             }
@@ -1102,10 +1113,15 @@ impl Database {
             "shielded_wallet_meta",
         ];
         for table in tables {
+            tracing::debug!("  rename_network: updating {table}");
             conn.execute(
                 &format!("UPDATE {table} SET network = 'mainnet' WHERE network = 'dash'"),
                 [],
-            )?;
+            )
+            .map_err(|e| {
+                tracing::error!("  rename_network: FAILED on {table}: {e}");
+                e
+            })?;
         }
         Ok(())
     }

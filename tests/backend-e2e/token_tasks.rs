@@ -104,6 +104,9 @@ async fn ensure_minted() {
 }
 
 /// Find the first AUTHENTICATION public key from a QualifiedIdentity.
+///
+/// Tries CRITICAL first — it can do everything HIGH can, and some
+/// operations (e.g. token minting) require CRITICAL specifically.
 fn find_auth_public_key(
     qi: &dash_evo_tool::model::qualified_identity::QualifiedIdentity,
 ) -> dash_sdk::platform::IdentityPublicKey {
@@ -112,9 +115,9 @@ fn find_auth_public_key(
     use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
 
     for target_level in [
-        SecurityLevel::MASTER,
-        SecurityLevel::HIGH,
         SecurityLevel::CRITICAL,
+        SecurityLevel::HIGH,
+        SecurityLevel::MASTER,
     ] {
         for ((target, _key_id), (qualified_key, _)) in qi.private_keys.private_keys.iter() {
             if *target != PrivateKeyTarget::PrivateKeyOnMainIdentity {
@@ -218,15 +221,17 @@ async fn tc_048_fetch_token_by_contract_id() {
         .await
         .expect("TC-048: FetchTokenByContractId failed");
 
+    // FetchTokenByContractId returns FetchedContract (not FetchedContractWithTokenPosition,
+    // which is returned by FetchTokenByTokenId that can resolve the position).
     match result {
-        BackendTaskSuccessResult::FetchedContractWithTokenPosition(contract, position) => {
+        BackendTaskSuccessResult::FetchedContract(contract) => {
             assert_eq!(contract.id(), contract_id, "Contract ID should match");
-            assert_eq!(position, 0, "Token position should be 0");
+            assert!(
+                !contract.tokens().is_empty(),
+                "Contract should have token data"
+            );
         }
-        other => panic!(
-            "TC-048: expected FetchedContractWithTokenPosition, got: {:?}",
-            other
-        ),
+        other => panic!("TC-048: expected FetchedContract, got: {:?}", other),
     }
 }
 

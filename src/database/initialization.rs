@@ -32,7 +32,8 @@ impl Database {
             self.create_tables()?;
             self.set_default_version()?;
         } else {
-            // If outdated, back up and either migrate or recreate the database.
+            self.run_consistency_checks();
+
             let current_version = self.db_schema_version()?;
             if current_version != DEFAULT_DB_VERSION {
                 self.backup_db(db_file_path)?;
@@ -1003,6 +1004,63 @@ impl Database {
             )?;
         }
         Ok(())
+    }
+
+    /// Run database consistency checks on startup.
+    /// Non-fatal: logs warnings for any issues found but does not fail.
+    fn run_consistency_checks(&self) {
+        let conn = self.conn.lock().unwrap();
+
+        // PRAGMA quick_check is a faster subset of integrity_check.
+        // It verifies b-tree structure without cross-checking indexes.
+        match conn.query_row("PRAGMA quick_check", [], |row| row.get::<_, String>(0)) {
+            Ok(ref result) if result == "ok" => {
+                tracing::debug!("Database quick_check passed");
+            }
+            Ok(result) => {
+                tracing::warn!("Database quick_check found issues: {result}");
+            }
+            Err(e) => {
+                tracing::warn!("Database quick_check failed to execute: {e}");
+            }
+        }
+
+        // PRAGMA foreign_key_check returns rows for each FK violation.
+        match conn.prepare("PRAGMA foreign_key_check") {
+            Ok(mut stmt) => {
+                match stmt.query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                }) {
+                    Ok(rows) => {
+                        let violations: Vec<_> = rows.filter_map(|r| r.ok()).collect();
+                        if violations.is_empty() {
+                            tracing::debug!("Database foreign_key_check passed — no violations");
+                        } else {
+                            tracing::warn!(
+                                "Database foreign_key_check found {} violation(s):",
+                                violations.len()
+                            );
+                            for (table, rowid, parent, fk_idx) in &violations {
+                                tracing::warn!(
+                                    "  FK violation: {table} rowid={rowid} -> {parent} (fk_index={fk_idx})"
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Database foreign_key_check query failed: {e}");
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Database foreign_key_check failed to prepare: {e}");
+            }
+        }
     }
 }
 

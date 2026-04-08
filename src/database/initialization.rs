@@ -947,12 +947,14 @@ impl Database {
     /// orphans. All affected data is fully recoverable from the network via
     /// resync, so deletion is safe.
     fn clean_orphaned_fk_rows(&self, conn: &Connection) -> rusqlite::Result<()> {
-        let tables: &[(&str, &str)] = &[
+        // Tables with FK to wallet(seed_hash) — delete orphaned rows.
+        let wallet_children: &[(&str, &str)] = &[
             ("shielded_notes", "wallet_seed_hash"),
             ("shielded_wallet_meta", "wallet_seed_hash"),
             ("wallet_transactions", "seed_hash"),
+            ("wallet_addresses", "seed_hash"),
         ];
-        for (table, fk_col) in tables {
+        for (table, fk_col) in wallet_children {
             let exists: bool = conn.query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
                 [table],
@@ -967,6 +969,21 @@ impl Database {
                 )?;
             }
         }
+
+        // asset_lock_transaction has ON DELETE SET NULL for identity_id columns.
+        // Apply the intended SET NULL for orphaned identity references.
+        conn.execute(
+            "UPDATE asset_lock_transaction SET identity_id = NULL
+             WHERE identity_id IS NOT NULL AND identity_id NOT IN (SELECT id FROM identity)",
+            [],
+        )?;
+        conn.execute(
+            "UPDATE asset_lock_transaction SET identity_id_potentially_in_creation = NULL
+             WHERE identity_id_potentially_in_creation IS NOT NULL
+               AND identity_id_potentially_in_creation NOT IN (SELECT id FROM identity)",
+            [],
+        )?;
+
         Ok(())
     }
 
@@ -1433,6 +1450,75 @@ mod test {
             )
             .unwrap();
 
+            // Insert orphaned wallet_addresses row
+            conn.execute(
+                "INSERT INTO wallet_addresses (
+                    seed_hash, address, derivation_path, balance,
+                    path_reference, path_type
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![orphan_seed_hash, "yOrphanAddr1", "m/44'/1'/0'/0/0", 0, 0, 0],
+            )
+            .unwrap();
+
+            // Insert valid wallet_addresses row
+            conn.execute(
+                "INSERT INTO wallet_addresses (
+                    seed_hash, address, derivation_path, balance,
+                    path_reference, path_type
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    valid_seed_hash,
+                    "yValidAddr1",
+                    "m/44'/1'/0'/0/0",
+                    1000,
+                    0,
+                    0
+                ],
+            )
+            .unwrap();
+
+            // Insert a real identity for the valid wallet
+            let valid_identity_id = vec![0xEEu8; 32];
+            let orphan_identity_id = vec![0xFFu8; 32];
+            conn.execute(
+                "INSERT INTO identity (id, is_local, identity_type, alias, network)
+                 VALUES (?1, 1, 'user', 'test', 'dash')",
+                params![valid_identity_id],
+            )
+            .unwrap();
+
+            // Insert asset_lock_transaction referencing a deleted identity
+            conn.execute(
+                "INSERT INTO asset_lock_transaction (
+                    tx_id, transaction_data, amount, identity_id, wallet, network
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    vec![0xA1u8; 32],
+                    vec![0u8; 50],
+                    100_000,
+                    orphan_identity_id,
+                    valid_seed_hash,
+                    "dash"
+                ],
+            )
+            .unwrap();
+
+            // Insert asset_lock_transaction referencing a valid identity
+            conn.execute(
+                "INSERT INTO asset_lock_transaction (
+                    tx_id, transaction_data, amount, identity_id, wallet, network
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    vec![0xA2u8; 32],
+                    vec![1u8; 50],
+                    200_000,
+                    valid_identity_id,
+                    valid_seed_hash,
+                    "dash"
+                ],
+            )
+            .unwrap();
+
             // Strip v28+ additions to simulate v27 state (same as test_v33_migration_from_v27)
             // Remove shielded tables — they'll be recreated by migration
             conn.execute("DROP TABLE IF EXISTS shielded_notes", [])
@@ -1587,5 +1673,60 @@ mod test {
             )
             .unwrap();
         assert_eq!(wallet_network, "mainnet");
+
+        // Orphaned wallet_addresses should be gone, valid ones survive
+        let orphan_addrs: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM wallet_addresses WHERE seed_hash = ?1",
+                params![orphan_seed_hash],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            orphan_addrs, 0,
+            "orphaned wallet_addresses should be deleted"
+        );
+
+        let valid_addrs: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM wallet_addresses WHERE seed_hash = ?1",
+                params![valid_seed_hash],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            valid_addrs, 1,
+            "valid wallet_addresses should survive migration"
+        );
+
+        // asset_lock_transaction with orphaned identity_id should be SET NULL
+        let valid_identity_id = vec![0xEEu8; 32];
+
+        let orphan_lock_identity: Option<Vec<u8>> = conn
+            .query_row(
+                "SELECT identity_id FROM asset_lock_transaction WHERE tx_id = ?1",
+                params![vec![0xA1u8; 32]],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            orphan_lock_identity.is_none(),
+            "orphaned asset_lock identity_id should be NULL, got {:?}",
+            orphan_lock_identity
+        );
+
+        // asset_lock_transaction with valid identity_id should keep it
+        let valid_lock_identity: Option<Vec<u8>> = conn
+            .query_row(
+                "SELECT identity_id FROM asset_lock_transaction WHERE tx_id = ?1",
+                params![vec![0xA2u8; 32]],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            valid_lock_identity,
+            Some(valid_identity_id),
+            "valid asset_lock identity_id should be preserved"
+        );
     }
 }

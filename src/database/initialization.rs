@@ -65,6 +65,7 @@ impl Database {
                 self.create_shielded_tables(tx)?;
                 self.create_shielded_wallet_meta_table(tx)?;
                 self.add_nullifier_sync_timestamp_column(tx)?;
+                self.clean_orphaned_fk_rows(tx)?;
                 self.rename_network_dash_to_mainnet(tx)?;
                 self.add_wallet_transaction_status_column(tx)?;
             }
@@ -939,6 +940,35 @@ impl Database {
     // Shielded table helpers (create_shielded_tables, create_shielded_wallet_meta_table,
     // add_nullifier_sync_timestamp_column) are implemented in database/shielded.rs.
 
+    /// Remove orphaned child rows whose parent wallet was deleted while FK
+    /// enforcement was off (system SQLite before bundled build). The UPDATE in
+    /// `rename_network_dash_to_mainnet` re-validates FKs and fails on these
+    /// orphans. All affected data is fully recoverable from the network via
+    /// resync, so deletion is safe.
+    fn clean_orphaned_fk_rows(&self, conn: &Connection) -> rusqlite::Result<()> {
+        let tables: &[(&str, &str)] = &[
+            ("shielded_notes", "wallet_seed_hash"),
+            ("shielded_wallet_meta", "wallet_seed_hash"),
+            ("wallet_transactions", "seed_hash"),
+        ];
+        for (table, fk_col) in tables {
+            let exists: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                [table],
+                |row| row.get(0),
+            )?;
+            if exists {
+                conn.execute(
+                    &format!(
+                        "DELETE FROM {table} WHERE {fk_col} NOT IN (SELECT seed_hash FROM wallet)"
+                    ),
+                    [],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
     /// Migration 29: rename network value `"dash"` to `"mainnet"` in all tables.
     ///
     /// Upstream `dashcore` renamed `Network::Dash` to `Network::Mainnet`,
@@ -1266,5 +1296,238 @@ mod test {
         // Verify full v33 schema
         let conn = db.conn.lock().unwrap();
         assert_v33_schema(&conn);
+    }
+
+    #[test]
+    fn test_v33_migration_with_orphaned_fk_rows() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_file_path = temp_dir.path().join("orphans.db");
+        let db = super::Database::new(&db_file_path).unwrap();
+
+        // Build full schema at current version
+        db.create_tables().unwrap();
+        db.set_default_version().unwrap();
+
+        let valid_seed_hash = vec![0xAAu8; 32];
+        let orphan_seed_hash = vec![0xBBu8; 32];
+
+        {
+            let conn = db.conn.lock().unwrap();
+
+            // Insert a real wallet with the old network name
+            conn.execute(
+                "INSERT INTO wallet (
+                    seed_hash, encrypted_seed, salt, nonce,
+                    master_ecdsa_bip44_account_0_epk, uses_password, network
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    valid_seed_hash,
+                    vec![1u8; 16],
+                    vec![2u8; 16],
+                    vec![3u8; 12],
+                    vec![4u8; 33],
+                    0,
+                    "dash"
+                ],
+            )
+            .unwrap();
+
+            // Disable FK enforcement to simulate legacy system SQLite
+            conn.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
+
+            // Insert orphaned wallet_transactions row (seed_hash not in wallet table).
+            // Shielded table orphans are not needed: those tables get dropped to
+            // simulate v27, then recreated empty by the migration.
+            conn.execute(
+                "INSERT INTO wallet_transactions (
+                    seed_hash, txid, network, timestamp, net_amount,
+                    is_ours, raw_transaction, status
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    orphan_seed_hash,
+                    vec![0xCCu8; 32],
+                    "dash",
+                    1000,
+                    -50000,
+                    1,
+                    vec![0u8; 100],
+                    0
+                ],
+            )
+            .unwrap();
+
+            // Insert valid wallet_transactions row for the real wallet
+            conn.execute(
+                "INSERT INTO wallet_transactions (
+                    seed_hash, txid, network, timestamp, net_amount,
+                    is_ours, raw_transaction, status
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    valid_seed_hash,
+                    vec![0xDDu8; 32],
+                    "dash",
+                    2000,
+                    100000,
+                    1,
+                    vec![1u8; 100],
+                    0
+                ],
+            )
+            .unwrap();
+
+            // Strip v28+ additions to simulate v27 state (same as test_v33_migration_from_v27)
+            // Remove shielded tables — they'll be recreated by migration
+            conn.execute("DROP TABLE IF EXISTS shielded_notes", [])
+                .unwrap();
+            conn.execute("DROP TABLE IF EXISTS shielded_wallet_meta", [])
+                .unwrap();
+            conn.execute("DROP TABLE IF EXISTS contact_private_info", [])
+                .unwrap();
+
+            // Recreate wallet without core_wallet_name
+            conn.execute_batch(
+                "CREATE TABLE wallet_old AS SELECT
+                    seed_hash, encrypted_seed, salt, nonce,
+                    master_ecdsa_bip44_account_0_epk, alias, is_main,
+                    uses_password, password_hint, network,
+                    confirmed_balance, unconfirmed_balance, total_balance,
+                    last_platform_full_sync, last_platform_sync_checkpoint,
+                    last_terminal_block
+                 FROM wallet;
+                 DROP TABLE wallet;
+                 CREATE TABLE wallet (
+                    seed_hash BLOB NOT NULL PRIMARY KEY,
+                    encrypted_seed BLOB NOT NULL,
+                    salt BLOB NOT NULL,
+                    nonce BLOB NOT NULL,
+                    master_ecdsa_bip44_account_0_epk BLOB NOT NULL,
+                    alias TEXT,
+                    is_main INTEGER,
+                    uses_password INTEGER NOT NULL,
+                    password_hint TEXT,
+                    network TEXT NOT NULL,
+                    confirmed_balance INTEGER DEFAULT 0,
+                    unconfirmed_balance INTEGER DEFAULT 0,
+                    total_balance INTEGER DEFAULT 0,
+                    last_platform_full_sync INTEGER DEFAULT 0,
+                    last_platform_sync_checkpoint INTEGER DEFAULT 0,
+                    last_terminal_block INTEGER DEFAULT 0
+                 );
+                 INSERT INTO wallet SELECT * FROM wallet_old;
+                 DROP TABLE wallet_old;",
+            )
+            .unwrap();
+
+            // Recreate wallet_transactions without status but WITH FK constraint,
+            // preserving orphaned rows (FK enforcement is still OFF).
+            conn.execute_batch(
+                "CREATE TABLE wallet_transactions_old AS SELECT
+                    seed_hash, txid, network, timestamp, height, block_hash,
+                    net_amount, fee, label, is_ours, raw_transaction
+                 FROM wallet_transactions;
+                 DROP TABLE wallet_transactions;
+                 CREATE TABLE wallet_transactions (
+                    seed_hash BLOB NOT NULL,
+                    txid BLOB NOT NULL,
+                    network TEXT NOT NULL,
+                    timestamp INTEGER NOT NULL,
+                    height INTEGER,
+                    block_hash BLOB,
+                    net_amount INTEGER NOT NULL,
+                    fee INTEGER,
+                    label TEXT,
+                    is_ours INTEGER NOT NULL,
+                    raw_transaction BLOB NOT NULL,
+                    PRIMARY KEY (seed_hash, txid, network),
+                    FOREIGN KEY (seed_hash) REFERENCES wallet(seed_hash) ON DELETE CASCADE
+                 );
+                 INSERT INTO wallet_transactions SELECT * FROM wallet_transactions_old;
+                 DROP TABLE wallet_transactions_old;",
+            )
+            .unwrap();
+
+            // Recreate single_key_wallet without core_wallet_name
+            conn.execute_batch(
+                "DROP TABLE IF EXISTS single_key_wallet;
+                 CREATE TABLE single_key_wallet (
+                    key_hash BLOB NOT NULL PRIMARY KEY,
+                    encrypted_private_key BLOB NOT NULL,
+                    salt BLOB NOT NULL,
+                    nonce BLOB NOT NULL,
+                    public_key BLOB NOT NULL,
+                    address TEXT NOT NULL,
+                    alias TEXT,
+                    uses_password INTEGER NOT NULL,
+                    network TEXT NOT NULL,
+                    confirmed_balance INTEGER DEFAULT 0,
+                    unconfirmed_balance INTEGER DEFAULT 0,
+                    total_balance INTEGER DEFAULT 0
+                 );",
+            )
+            .unwrap();
+
+            // Re-enable FK enforcement
+            conn.execute_batch("PRAGMA foreign_keys = ON").unwrap();
+
+            // Set version to 27
+            conn.execute("UPDATE settings SET database_version = 27 WHERE id = 1", [])
+                .unwrap();
+        }
+
+        assert_eq!(db.db_schema_version().unwrap(), 27);
+
+        // Run migration — this would fail without clean_orphaned_fk_rows
+        let result = db.try_perform_migration(27, DEFAULT_DB_VERSION);
+        assert!(
+            result.is_ok(),
+            "migration with orphaned FK rows failed: {:?}",
+            result.err()
+        );
+
+        assert_eq!(db.db_schema_version().unwrap(), DEFAULT_DB_VERSION);
+
+        let conn = db.conn.lock().unwrap();
+        assert_v33_schema(&conn);
+
+        // Orphaned wallet_transactions should be gone
+        let orphan_txs: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM wallet_transactions WHERE seed_hash = ?1",
+                params![orphan_seed_hash],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            orphan_txs, 0,
+            "orphaned wallet_transactions should be deleted"
+        );
+
+        // Shielded tables should exist but be empty (recreated fresh by migration;
+        // the cleanup handles them gracefully even when just-created)
+        assert_table_exists(&conn, "shielded_notes");
+        assert_table_exists(&conn, "shielded_wallet_meta");
+
+        // Valid wallet_transactions should survive with network renamed to mainnet
+        let valid_txs: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM wallet_transactions WHERE seed_hash = ?1 AND network = 'mainnet'",
+                params![valid_seed_hash],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            valid_txs, 1,
+            "valid wallet_transactions should survive with network=mainnet"
+        );
+
+        // Wallet itself should have mainnet
+        let wallet_network: String = conn
+            .query_row(
+                "SELECT network FROM wallet WHERE seed_hash = ?1",
+                params![valid_seed_hash],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(wallet_network, "mainnet");
     }
 }

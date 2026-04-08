@@ -4,8 +4,12 @@
 //! network. They are marked `#[ignore]` and must be run explicitly:
 //!
 //! ```bash
-//! cargo test --test backend-e2e --all-features -- --ignored --nocapture --test-threads=1
+//! RUST_MIN_STACK=16777216 cargo test --test backend-e2e --all-features -- --ignored --nocapture --test-threads=1
 //! ```
+//!
+//! The `RUST_MIN_STACK=16777216` (16 MB) is required because the Dash Platform SDK
+//! uses deep call stacks during state transition construction, exceeding the
+//! default 8 MB thread stack size.
 
 mod framework;
 

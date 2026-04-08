@@ -289,7 +289,7 @@ pub fn extract_authentication_key(
 ) -> (IdentityPublicKey, Vec<u8>) {
     // Try HIGH first, then CRITICAL
     for target_level in [SecurityLevel::HIGH, SecurityLevel::CRITICAL] {
-        for ((target, key_id), (qualified_key, private_key_data)) in
+        for ((target, _key_id), (qualified_key, private_key_data)) in
             qi.private_keys.private_keys.iter()
         {
             if *target != PrivateKeyTarget::PrivateKeyOnMainIdentity {
@@ -299,10 +299,7 @@ pub fn extract_authentication_key(
             if ipk.purpose() == Purpose::AUTHENTICATION && ipk.security_level() == target_level {
                 let bytes = match private_key_data {
                     PrivateKeyData::Clear(b) | PrivateKeyData::AlwaysClear(b) => b.to_vec(),
-                    _ => panic!(
-                        "extract_authentication_key: key {} has non-clear private data",
-                        key_id
-                    ),
+                    _ => continue, // Skip encrypted keys — only cleartext keys are usable in tests
                 };
                 return (ipk.clone(), bytes);
             }

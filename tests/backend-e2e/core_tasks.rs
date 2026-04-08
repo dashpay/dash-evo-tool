@@ -3,9 +3,7 @@
 use crate::framework::fixtures;
 use crate::framework::harness::ctx;
 use crate::framework::task_runner::run_task;
-use dash_evo_tool::backend_task::core::{
-    CoreTask, PaymentRecipient, WalletPaymentRequest,
-};
+use dash_evo_tool::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_evo_tool::model::wallet::single_key::SingleKeyWallet;
 use std::sync::{Arc, RwLock};

@@ -39,6 +39,23 @@ pub fn strip_dash_suffix(input: &str) -> &str {
     }
 }
 
+/// Validate that a DPNS username-or-ID input has an acceptable format.
+///
+/// Returns `Ok(())` for:
+/// - Bare labels: `"alice"`, `"olivia22"`
+/// - `.dash` names (case-insensitive): `"alice.dash"`, `"Alice.DASH"`
+/// - Identity IDs (no dots): `"4EfA..."`
+///
+/// Returns `Err(input)` for inputs with non-`.dash` domains: `"alice.foo"`, `"alice.com"`
+pub fn validate_dpns_input(input: &str) -> Result<(), String> {
+    let trimmed = input.trim();
+    if trimmed.contains('.') && !has_dash_suffix(trimmed) {
+        Err(trimmed.to_string())
+    } else {
+        Ok(())
+    }
+}
+
 /// Check whether the input looks like a full DPNS name (ends with `.dash`,
 /// case-insensitive) rather than a bare label or identity ID.
 pub fn has_dash_suffix(input: &str) -> bool {
@@ -105,5 +122,27 @@ mod tests {
         // Non-ASCII: must not panic even though byte offset isn't a char boundary
         assert_eq!(strip_dash_suffix("ünïcödë"), "ünïcödë");
         assert_eq!(strip_dash_suffix("  alice  "), "alice"); // trims whitespace
+    }
+
+    #[test]
+    fn validate_dpns_input_accepts_valid_inputs() {
+        assert!(validate_dpns_input("alice").is_ok());
+        assert!(validate_dpns_input("olivia22").is_ok());
+        assert!(validate_dpns_input("alice.dash").is_ok());
+        assert!(validate_dpns_input("Alice.DASH").is_ok());
+        assert!(validate_dpns_input("alice.Dash").is_ok());
+        assert!(validate_dpns_input("  alice.dash  ").is_ok());
+        // Identity IDs (no dots)
+        assert!(validate_dpns_input("4EfA78bC").is_ok());
+    }
+
+    #[test]
+    fn validate_dpns_input_rejects_non_dash_domains() {
+        assert_eq!(validate_dpns_input("alice.foo"), Err("alice.foo".into()));
+        assert_eq!(validate_dpns_input("alice.com"), Err("alice.com".into()));
+        assert_eq!(
+            validate_dpns_input("  alice.xyz  "),
+            Err("alice.xyz".into())
+        );
     }
 }

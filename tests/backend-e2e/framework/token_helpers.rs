@@ -64,7 +64,7 @@ pub fn build_register_token_task(
             "E2ETK".to_string(),
             "en".to_string(),
         )],
-        contract_keywords: vec!["e2e".to_string(), "test".to_string()],
+        contract_keywords: vec![], // No keywords — each costs 10B credits (0.1 DASH)
         token_description: Some("Token created by backend E2E tests".to_string()),
         should_capitalize: false,
         decimals: 8,

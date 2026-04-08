@@ -24,7 +24,12 @@ impl Database {
             if settings_exists {
                 self.ensure_settings_columns_exist(&conn)?;
             }
-            self.ensure_wallet_columns_exist(&conn)?;
+            // NOTE: ensure_wallet_columns_exist() used to run here, but it
+            // ALTERs wallet_addresses which triggers FK re-validation on
+            // orphaned rows before our migration cleanup has a chance to run.
+            // Those column additions (v16 balance cols, v17 total_received)
+            // are now covered idempotently inside the v33 migration step,
+            // after clean_orphaned_fk_rows().
         }
 
         // Check if this is the first time setup by looking for entries in the settings table.
@@ -62,6 +67,12 @@ impl Database {
                 // so this is safe to run on any DB that already applied some or all
                 // of the individual steps.
                 self.clean_orphaned_fk_rows(tx)?;
+                // Wallet column additions formerly in ensure_wallet_columns_exist().
+                // Moved here so they run after orphan cleanup (ALTER TABLE on
+                // wallet_addresses triggers FK re-validation on orphaned rows).
+                // Idempotent — safe if columns already exist from v16/v17.
+                self.add_wallet_balance_columns(tx)?;
+                self.add_address_total_received_column(tx)?;
                 self.add_core_wallet_name_column(tx)?;
                 self.init_contacts_tables(tx)?;
                 self.create_shielded_tables(tx)?;

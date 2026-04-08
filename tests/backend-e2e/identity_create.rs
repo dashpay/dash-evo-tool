@@ -13,8 +13,8 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 async fn test_create_identity() {
     let ctx = ctx().await;
 
-    // Asset lock (1M duffs) + tx fees. 2M duffs is sufficient.
-    let (seed_hash, wallet_arc) = ctx.create_funded_test_wallet(2_000_000).await;
+    // Asset lock (5M duffs) + tx fees. 10M duffs provides margin.
+    let (seed_hash, wallet_arc) = ctx.create_funded_test_wallet(10_000_000).await;
 
     // Register identity on Platform
     let (reg_info, _master_key_bytes) =

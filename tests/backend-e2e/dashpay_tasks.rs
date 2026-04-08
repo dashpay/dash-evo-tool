@@ -548,7 +548,7 @@ async fn tc_043_reject_contact_request() {
 
     // Create a third DashPay identity (C) from a fresh funded wallet
     tracing::info!("TC-043: creating third DashPay identity (C)...");
-    let (seed_hash_c, wallet_c) = ctx.create_funded_test_wallet(3_000_000).await;
+    let (seed_hash_c, wallet_c) = ctx.create_funded_test_wallet(10_000_000).await;
     let (qi_c, _key_bytes_c) =
         dashpay_helpers::create_dashpay_identity(&ctx.app_context, &wallet_c, seed_hash_c).await;
 

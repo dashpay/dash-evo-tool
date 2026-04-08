@@ -77,9 +77,16 @@ pub fn build_identity_registration(
 }
 
 /// Get a receive address string from a wallet.
+///
+/// Extracts the `PlatformWallet` under a short sync lock, then drops the lock
+/// before awaiting the async `next_receive_address` (which takes a tokio write
+/// lock on `PlatformWalletInfo`). Holding `std::sync::RwLock` across `.await`
+/// would deadlock with SPV block processing.
 pub async fn get_receive_address(_app_context: &AppContext, wallet_arc: &Arc<RwLock<Wallet>>) -> String {
-    let wallet = wallet_arc.read().expect("wallet lock");
-    let pw = wallet.platform_wallet.as_ref().expect("platform wallet must exist");
+    let pw = {
+        let wallet = wallet_arc.read().expect("wallet lock");
+        wallet.platform_wallet.clone().expect("platform wallet must exist")
+    };
     pw.core()
         .next_receive_address()
         .await

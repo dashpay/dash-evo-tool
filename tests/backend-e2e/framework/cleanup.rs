@@ -22,14 +22,16 @@ pub async fn cleanup_test_wallets(
     app_context: &Arc<AppContext>,
     framework_wallet_hash: WalletSeedHash,
 ) {
-    // Framework wallet receive address
-    let framework_address = {
+    // Framework wallet receive address — extract Arc before awaiting to avoid
+    // holding std::sync::RwLock across .await (deadlocks with SPV's tokio lock).
+    let framework_wallet = {
         let wallets = app_context.wallets().read().expect("wallets lock");
-        let framework_wallet = wallets
+        wallets
             .get(&framework_wallet_hash)
-            .expect("framework wallet must exist");
-        get_receive_address(app_context, framework_wallet).await
+            .expect("framework wallet must exist")
+            .clone()
     };
+    let framework_address = get_receive_address(app_context, &framework_wallet).await;
 
     // Collect non-framework wallet hashes
     let wallet_hashes: Vec<WalletSeedHash> = {

@@ -271,7 +271,7 @@ impl BackendTestContext {
                     wallets
                         .get(&framework_wallet_hash)
                         .map(|w| {
-                            let mut guard = w.write().expect("wallet lock");
+                            let guard = w.read().expect("wallet lock");
                             let bal =
                                 (guard.confirmed_balance_duffs(), guard.total_balance_duffs());
                             let addr = guard

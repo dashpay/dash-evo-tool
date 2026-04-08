@@ -24,12 +24,6 @@ impl Database {
             if settings_exists {
                 self.ensure_settings_columns_exist(&conn)?;
             }
-            // NOTE: ensure_wallet_columns_exist() used to run here, but it
-            // ALTERs wallet_addresses which triggers FK re-validation on
-            // orphaned rows before our migration cleanup has a chance to run.
-            // Removed: those columns are added by their own migration steps
-            // (v16 balance cols, v17 total_received) which run sequentially
-            // before v33, so they always exist by the time v33 executes.
         }
 
         // Check if this is the first time setup by looking for entries in the settings table.
@@ -946,14 +940,14 @@ impl Database {
     // Shielded table helpers (create_shielded_tables, create_shielded_wallet_meta_table,
     // add_nullifier_sync_timestamp_column) are implemented in database/shielded.rs.
 
-    /// Remove orphaned child rows whose parent wallet was deleted while FK
-    /// enforcement was off (system SQLite before bundled build). The UPDATE in
-    /// `rename_network_dash_to_mainnet` re-validates FKs and fails on these
-    /// orphans. All affected data is fully recoverable from the network via
-    /// resync, so deletion is safe.
+    /// Remove orphaned child rows left behind when parent rows were deleted
+    /// while FK enforcement was off (system SQLite before bundled build).
+    /// Bundled SQLite enables FK checks by default, so any subsequent UPDATE
+    /// on these rows triggers re-validation and fails. Covers all FK
+    /// relationships in the schema: wallet→children, identity→children,
+    /// token→children, contract→children, contested_name→children.
     fn clean_orphaned_fk_rows(&self, conn: &Connection) -> rusqlite::Result<()> {
         // --- CASCADE children of wallet(seed_hash) ---
-        // Delete orphaned rows where parent wallet no longer exists.
         let wallet_fk_delete: &[(&str, &str)] = &[
             ("wallet_addresses", "seed_hash"),
             ("wallet_transactions", "seed_hash"),
@@ -1014,7 +1008,6 @@ impl Database {
         }
 
         // --- SET NULL children of identity(id) ---
-        // asset_lock_transaction has ON DELETE SET NULL for identity_id columns.
         if self.table_exists(conn, "asset_lock_transaction")? {
             conn.execute(
                 "UPDATE asset_lock_transaction SET identity_id = NULL
@@ -1711,7 +1704,7 @@ mod test {
 
         assert_eq!(db.db_schema_version().unwrap(), 27);
 
-        // Run migration — this would fail without clean_orphaned_fk_rows
+        // Run migration with orphaned FK rows present
         let result = db.try_perform_migration(27, DEFAULT_DB_VERSION);
         assert!(
             result.is_ok(),

@@ -774,11 +774,15 @@ impl Screen {
         /// Assigns `app_context` for the majority of screen variants that simply
         /// store it as a field.  Only screens with additional side-effects are
         /// handled in the explicit match arms below.
+        ///
+        /// Every `Screen` variant must appear in exactly one of the two lists
+        /// (`set` or `skip`) so the compiler catches new additions.
         macro_rules! set_ctx {
-            ($($variant:ident),+ $(,)?) => {
+            (set: $($variant:ident),+ $(,)?; skip: $($skip:ident),* $(,)?) => {
                 match self {
                     $(Screen::$variant(screen) => screen.app_context = app_context,)+
-                    _ => {}
+                    // Handled by the explicit match above (side-effects + return).
+                    $(Screen::$skip(_) => {},)*
                 }
             }
         }
@@ -861,7 +865,9 @@ impl Screen {
         }
 
         // Simple context assignment for all remaining screens.
+        // The `skip` list must exactly match the explicit match arms above.
         set_ctx!(
+            set:
             IdentitiesScreen,
             DPNSScreen,
             AddExistingIdentityScreen,
@@ -909,7 +915,20 @@ impl Screen {
             DashPaySendPaymentScreen,
             DashPayContactInfoEditorScreen,
             DashPayQRGeneratorScreen,
-            DashPayProfileSearchScreen,
+            DashPayProfileSearchScreen;
+            skip:
+            NetworkChooserScreen,
+            AddNewWalletScreen,
+            TransferScreen,
+            WalletsBalancesScreen,
+            ImportMnemonicScreen,
+            WalletSendScreen,
+            MasternodeListDiffScreen,
+            AddressBalanceScreen,
+            DashPayScreen,
+            ShieldScreen,
+            ShieldedSendScreen,
+            UnshieldCreditsScreen,
         );
     }
 }

@@ -13,7 +13,7 @@ use crate::database::Database;
 use crate::logging::initialize_logger;
 use crate::model::settings::Settings;
 use crate::spv::CoreBackendMode;
-use crate::ui::components::{BannerHandle, MessageBanner};
+use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
 use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen, ProfileSearchScreen};
 use crate::ui::dpns::dpns_contested_names_screen::{
@@ -136,6 +136,8 @@ pub struct AppState {
     /// Network whose context is being created asynchronously. While `Some`,
     /// the UI shows a progress banner and ignores further switch requests.
     network_switch_pending: Option<Network>,
+    /// Progress banner displayed while a network switch is in progress.
+    network_switch_banner: Option<BannerHandle>,
     #[allow(dead_code)] // Kept alive for the lifetime of the app
     zmq_listeners: BTreeMap<Network, CoreZMQListener>,
     core_message_sender: egui_mpsc::SenderSync<(ZMQMessage, Network)>,
@@ -558,6 +560,7 @@ impl AppState {
             connection_status,
             network_contexts,
             network_switch_pending: None,
+            network_switch_banner: None,
             zmq_listeners,
             core_message_sender,
             core_message_receiver,
@@ -750,6 +753,11 @@ impl AppState {
         // (NetworkContextCreated) comes back through the task result channel
         // and is handled in update(). Same path used by MCP tools.
         self.network_switch_pending = Some(network);
+        self.network_switch_banner = Some(MessageBanner::set_global(
+            self.current_app_context().egui_ctx(),
+            format!("Connecting to {network:?}..."),
+            MessageType::Info,
+        ));
         let start_spv = self
             .current_app_context()
             .db
@@ -1091,6 +1099,7 @@ impl App for AppState {
                         } => {
                             self.network_contexts.insert(network, context);
                             self.network_switch_pending = None;
+                            self.network_switch_banner.take_and_clear();
                             self.finalize_network_switch(network);
                         }
                         _ => {
@@ -1109,6 +1118,7 @@ impl App for AppState {
                 }
                 TaskResult::Error(err @ TaskError::NetworkContextCreationFailed { .. }) => {
                     self.network_switch_pending = None;
+                    self.network_switch_banner.take_and_clear();
                     MessageBanner::set_global(ctx, err.to_string(), MessageType::Error);
                 }
                 TaskResult::Error(err) => {
@@ -1130,15 +1140,6 @@ impl App for AppState {
                     self.visible_screen_mut().refresh();
                 }
             }
-        }
-
-        // Show a progress banner while a network switch is in progress.
-        if let Some(pending_network) = self.network_switch_pending {
-            MessageBanner::set_global(
-                ctx,
-                format!("Connecting to {pending_network:?}..."),
-                MessageType::Info,
-            );
         }
 
         // Schedule a periodic repaint every ~1 second so timed messages update

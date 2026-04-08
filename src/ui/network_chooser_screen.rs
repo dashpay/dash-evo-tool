@@ -117,7 +117,10 @@ pub struct NetworkChooserScreen {
     /// Progress banner shown while reinit runs in the background.
     reinit_banner: Option<BannerHandle>,
     discovery_in_progress: bool,
-    show_fetch_confirmation: bool,
+    fetch_confirmation_dialog: Option<ConfirmationDialog>,
+    /// Set when DAPI discovery completes and an SDK reinit is needed.
+    /// Dispatched as a `BackendTask` from the next `ui()` call.
+    pending_reinit_after_discovery: bool,
 }
 
 impl NetworkChooserScreen {
@@ -206,7 +209,8 @@ impl NetworkChooserScreen {
             config_save_failed: false,
             reinit_banner: None,
             discovery_in_progress: false,
-            show_fetch_confirmation: false,
+            fetch_confirmation_dialog: None,
+            pending_reinit_after_discovery: false,
         }
     }
 
@@ -788,7 +792,16 @@ impl NetworkChooserScreen {
                     );
                     if clicked {
                         if dapi_total > 0 {
-                            self.show_fetch_confirmation = true;
+                            let message = format!(
+                                "This will fetch a fresh list of DAPI nodes, replacing your current {} \
+                                configured addresses in the config file.",
+                                dapi_total
+                            );
+                            self.fetch_confirmation_dialog = Some(
+                                ConfirmationDialog::new("Update Node Addresses?", message)
+                                    .confirm_text(Some("Fetch"))
+                                    .cancel_text(Some("Cancel")),
+                            );
                         } else {
                             self.discovery_in_progress = true;
                             app_action = AppAction::BackendTask(
@@ -802,33 +815,8 @@ impl NetworkChooserScreen {
             });
 
             // Fetch confirmation dialog
-            if self.show_fetch_confirmation {
-                egui::Window::new("Update Node Addresses?")
-                    .collapsible(false)
-                    .resizable(false)
-                    .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-                    .show(ui.ctx(), |ui| {
-                        ui.label(format!(
-                            "This will fetch a fresh list of DAPI nodes, replacing your current {} \
-                            configured addresses in the config file.",
-                            dapi_total
-                        ));
-                        ui.add_space(12.0);
-                        ui.horizontal(|ui| {
-                            if ui.button("Cancel").clicked() {
-                                self.show_fetch_confirmation = false;
-                            }
-                            if ui.button("Fetch").clicked() {
-                                self.show_fetch_confirmation = false;
-                                self.discovery_in_progress = true;
-                                app_action = AppAction::BackendTask(
-                                    BackendTask::DiscoverDapiNodes {
-                                        network: self.current_network,
-                                    },
-                                );
-                            }
-                        });
-                    });
+            if self.fetch_confirmation_dialog.is_some() {
+                app_action |= self.show_fetch_confirmation(ui);
             }
         });
 
@@ -1732,6 +1720,23 @@ impl NetworkChooserScreen {
         action
     }
 
+    fn show_fetch_confirmation(&mut self, ui: &mut Ui) -> AppAction {
+        let mut action = AppAction::None;
+        if let Some(dialog) = self.fetch_confirmation_dialog.as_mut() {
+            let response = dialog.show(ui);
+            if let Some(result) = response.inner.dialog_response {
+                self.fetch_confirmation_dialog = None;
+                if matches!(result, ConfirmationStatus::Confirmed) {
+                    self.discovery_in_progress = true;
+                    action = AppAction::BackendTask(BackendTask::DiscoverDapiNodes {
+                        network: self.current_network,
+                    });
+                }
+            }
+        }
+        action
+    }
+
     fn show_spv_clear_confirmation(&mut self, ui: &mut Ui) -> AppAction {
         if let Some(dialog) = self.spv_clear_dialog.as_mut() {
             let response = dialog.show(ui);
@@ -2096,6 +2101,12 @@ impl ScreenLike for NetworkChooserScreen {
                 .inner
         });
 
+        // Dispatch deferred SDK reinit after DAPI discovery
+        if self.pending_reinit_after_discovery {
+            self.pending_reinit_after_discovery = false;
+            action |= AppAction::BackendTask(BackendTask::ReinitCoreClientAndSdk);
+        }
+
         // Recheck both network status every 3 seconds
         let recheck_time = Duration::from_secs(3);
         if action == AppAction::None {
@@ -2168,18 +2179,12 @@ impl ScreenLike for NetworkChooserScreen {
                     tracing::error!("Failed to save config after DAPI discovery: {e}");
                 }
 
-                // Update in-memory config and reinit SDK if context exists
+                // Update in-memory config and schedule async SDK reinit
                 if let Some(app_context) = self.context_for_network(network) {
                     if let Ok(mut cfg_lock) = app_context.config.write() {
                         *cfg_lock = network_cfg;
                     }
-                    if let Err(e) = Arc::clone(app_context).reinit_core_client_and_sdk() {
-                        tracing::error!(
-                            "Failed to reinit SDK after DAPI discovery for {:?}: {}",
-                            network,
-                            e
-                        );
-                    }
+                    self.pending_reinit_after_discovery = true;
                 }
 
                 MessageBanner::set_global(

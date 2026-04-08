@@ -456,15 +456,25 @@ impl AppContext {
             BackendTask::SwitchNetwork { network, start_spv } => {
                 // Create a new AppContext for the target network, reusing shared
                 // resources (db, subtasks, connection_status) from the current context.
-                let new_ctx = AppContext::new(
-                    self.data_dir.clone(),
-                    network,
-                    self.db.clone(),
-                    self.password_info.clone(),
-                    self.subtasks.clone(),
-                    self.connection_status.clone(),
-                    self.egui_ctx().clone(),
-                )
+                // Wrapped in block_in_place because AppContext::new() does DB init
+                // and file I/O which would block the async runtime.
+                let data_dir = self.data_dir.clone();
+                let db = self.db.clone();
+                let password_info = self.password_info.clone();
+                let subtasks = self.subtasks.clone();
+                let connection_status = self.connection_status.clone();
+                let egui_ctx = self.egui_ctx().clone();
+                let new_ctx = tokio::task::block_in_place(|| {
+                    AppContext::new(
+                        data_dir,
+                        network,
+                        db,
+                        password_info,
+                        subtasks,
+                        connection_status,
+                        egui_ctx,
+                    )
+                })
                 .ok_or(TaskError::NetworkContextCreationFailed { network })?;
 
                 let spv_started = if start_spv {

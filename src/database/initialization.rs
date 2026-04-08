@@ -947,44 +947,130 @@ impl Database {
     /// orphans. All affected data is fully recoverable from the network via
     /// resync, so deletion is safe.
     fn clean_orphaned_fk_rows(&self, conn: &Connection) -> rusqlite::Result<()> {
-        // Tables with FK to wallet(seed_hash) — delete orphaned rows.
-        let wallet_children: &[(&str, &str)] = &[
+        // --- CASCADE children of wallet(seed_hash) ---
+        // Delete orphaned rows where parent wallet no longer exists.
+        let wallet_fk_delete: &[(&str, &str)] = &[
+            ("wallet_addresses", "seed_hash"),
+            ("wallet_transactions", "seed_hash"),
+            ("platform_address_balances", "seed_hash"),
             ("shielded_notes", "wallet_seed_hash"),
             ("shielded_wallet_meta", "wallet_seed_hash"),
-            ("wallet_transactions", "seed_hash"),
-            ("wallet_addresses", "seed_hash"),
+            ("asset_lock_transaction", "wallet"),
         ];
-        for (table, fk_col) in wallet_children {
-            let exists: bool = conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
-                [table],
-                |row| row.get(0),
-            )?;
-            if exists {
-                conn.execute(
+        for (table, fk_col) in wallet_fk_delete {
+            if self.table_exists(conn, table)? {
+                let deleted = conn.execute(
                     &format!(
                         "DELETE FROM {table} WHERE {fk_col} NOT IN (SELECT seed_hash FROM wallet)"
                     ),
                     [],
                 )?;
+                if deleted > 0 {
+                    tracing::info!(
+                        "Cleaned {deleted} orphaned row(s) from {table} (missing wallet)"
+                    );
+                }
             }
         }
 
+        // identity.wallet is nullable with ON DELETE CASCADE — delete orphaned
+        // identities whose wallet no longer exists (but skip NULL wallet).
+        if self.table_exists(conn, "identity")? {
+            let deleted = conn.execute(
+                "DELETE FROM identity WHERE wallet IS NOT NULL
+                 AND wallet NOT IN (SELECT seed_hash FROM wallet)",
+                [],
+            )?;
+            if deleted > 0 {
+                tracing::info!("Cleaned {deleted} orphaned identity row(s) (missing wallet)");
+            }
+        }
+
+        // --- CASCADE children of identity(id) ---
+        let identity_fk_delete: &[(&str, &str)] = &[
+            ("top_up", "identity_id"),
+            ("scheduled_votes", "identity_id"),
+            ("identity_order", "identity_id"),
+            ("identity_token_balances", "identity_id"),
+            ("token_order", "identity_id"),
+        ];
+        for (table, fk_col) in identity_fk_delete {
+            if self.table_exists(conn, table)? {
+                let deleted = conn.execute(
+                    &format!("DELETE FROM {table} WHERE {fk_col} NOT IN (SELECT id FROM identity)"),
+                    [],
+                )?;
+                if deleted > 0 {
+                    tracing::info!(
+                        "Cleaned {deleted} orphaned row(s) from {table} (missing identity)"
+                    );
+                }
+            }
+        }
+
+        // --- SET NULL children of identity(id) ---
         // asset_lock_transaction has ON DELETE SET NULL for identity_id columns.
-        // Apply the intended SET NULL for orphaned identity references.
-        conn.execute(
-            "UPDATE asset_lock_transaction SET identity_id = NULL
-             WHERE identity_id IS NOT NULL AND identity_id NOT IN (SELECT id FROM identity)",
-            [],
-        )?;
-        conn.execute(
-            "UPDATE asset_lock_transaction SET identity_id_potentially_in_creation = NULL
-             WHERE identity_id_potentially_in_creation IS NOT NULL
-               AND identity_id_potentially_in_creation NOT IN (SELECT id FROM identity)",
-            [],
-        )?;
+        if self.table_exists(conn, "asset_lock_transaction")? {
+            conn.execute(
+                "UPDATE asset_lock_transaction SET identity_id = NULL
+                 WHERE identity_id IS NOT NULL
+                   AND identity_id NOT IN (SELECT id FROM identity)",
+                [],
+            )?;
+            conn.execute(
+                "UPDATE asset_lock_transaction SET identity_id_potentially_in_creation = NULL
+                 WHERE identity_id_potentially_in_creation IS NOT NULL
+                   AND identity_id_potentially_in_creation NOT IN (SELECT id FROM identity)",
+                [],
+            )?;
+        }
+
+        // --- CASCADE children of token(id) ---
+        if self.table_exists(conn, "identity_token_balances")?
+            && self.table_exists(conn, "token")?
+        {
+            conn.execute(
+                "DELETE FROM identity_token_balances
+                 WHERE token_id NOT IN (SELECT id FROM token)",
+                [],
+            )?;
+        }
+        if self.table_exists(conn, "token_order")? && self.table_exists(conn, "token")? {
+            conn.execute(
+                "DELETE FROM token_order WHERE token_id NOT IN (SELECT id FROM token)",
+                [],
+            )?;
+        }
+
+        // --- CASCADE children of contract ---
+        if self.table_exists(conn, "token")? && self.table_exists(conn, "contract")? {
+            conn.execute(
+                "DELETE FROM token WHERE (data_contract_id, network)
+                 NOT IN (SELECT contract_id, network FROM contract)",
+                [],
+            )?;
+        }
+
+        // --- CASCADE children of contested_name ---
+        if self.table_exists(conn, "contestant")? && self.table_exists(conn, "contested_name")? {
+            conn.execute(
+                "DELETE FROM contestant
+                 WHERE (normalized_contested_name, network)
+                 NOT IN (SELECT normalized_contested_name, network FROM contested_name)",
+                [],
+            )?;
+        }
 
         Ok(())
+    }
+
+    /// Check if a table exists in the database.
+    fn table_exists(&self, conn: &Connection, table: &str) -> rusqlite::Result<bool> {
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+            [table],
+            |row| row.get(0),
+        )
     }
 
     /// Migration 29: rename network value `"dash"` to `"mainnet"` in all tables.

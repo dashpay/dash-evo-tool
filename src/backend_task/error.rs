@@ -976,7 +976,7 @@ pub enum TaskError {
     // Network context errors
     // ──────────────────────────────────────────────────────────────────────────
     /// Creating a network context failed during a network switch.
-    #[error("Could not connect to {network:?}. Check your network configuration and retry.")]
+    #[error("Could not connect to {network}. Check your network configuration and retry.")]
     NetworkContextCreationFailed { network: Network },
 }
 

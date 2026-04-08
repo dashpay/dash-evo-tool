@@ -104,8 +104,8 @@ pub enum BackendTask {
     /// (which includes DAPI discovery) runs off the UI thread.
     ReinitCoreClientAndSdk,
     /// Create a new network context and switch to it.
-    /// Intercepted by `AppState` — never dispatched to `AppContext::run_backend_task`.
-    /// When `start_spv` is true, SPV sync is started on the new context automatically.
+    /// Dispatched to `AppContext::run_backend_task`, which creates the new `AppContext`
+    /// and optionally starts SPV sync when `start_spv` is true.
     SwitchNetwork {
         network: Network,
         start_spv: bool,
@@ -466,11 +466,6 @@ impl AppContext {
                     self.egui_ctx().clone(),
                 )
                 .ok_or(TaskError::NetworkContextCreationFailed { network })?;
-                // Persist the network choice so subsequent startups (GUI, CLI,
-                // MCP) all begin on the same network.
-                new_ctx
-                    .update_settings(crate::ui::RootScreenType::RootScreenNetworkChooser)
-                    .ok();
 
                 let spv_started = if start_spv {
                     if new_ctx.core_backend_mode() != CoreBackendMode::Spv {

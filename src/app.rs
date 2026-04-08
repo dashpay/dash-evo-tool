@@ -798,8 +798,7 @@ impl AppState {
             self.zmq_listeners.insert(network, listener);
         }
 
-        // Persist the network choice (fast path — slow path persists in the
-        // BackendTask::SwitchNetwork handler, but fast path skips the handler).
+        // Persist the network choice.
         app_context
             .update_settings(RootScreenType::RootScreenNetworkChooser)
             .ok();

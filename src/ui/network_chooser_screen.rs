@@ -2156,9 +2156,11 @@ impl ScreenLike for NetworkChooserScreen {
 
             // Update config with new addresses
             let data_dir = &self.current_app_context().data_dir;
-            if let Ok(mut config) = Config::load_from(data_dir)
-                && let Some(mut network_cfg) = config.config_for_network(network).clone()
-            {
+            if let Ok(mut config) = Config::load_from(data_dir) {
+                let mut network_cfg = config
+                    .config_for_network(network)
+                    .clone()
+                    .unwrap_or_default();
                 network_cfg.dapi_addresses = Some(addresses_csv);
                 config.update_config_for_network(network, network_cfg.clone());
 

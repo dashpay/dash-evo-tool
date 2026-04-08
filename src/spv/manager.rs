@@ -144,6 +144,13 @@ pub(crate) struct SpvEventHandler {
     connection_status: Option<Arc<ConnectionStatus>>,
     reconcile_tx: Arc<Mutex<Option<mpsc::Sender<()>>>>,
     finality_tx: Arc<Mutex<Option<mpsc::Sender<AssetLockFinalityEvent>>>>,
+    /// Wallet manager reference for applying InstantSend locks directly.
+    ///
+    /// Self-broadcast transactions bypass the MempoolManager and are fed to
+    /// the WalletManager via `notify_wallet_after_broadcast()`. When the IS
+    /// lock arrives later, the MempoolManager doesn't know about the tx and
+    /// cannot apply the lock. We apply it here directly on the WalletManager.
+    wallet: Arc<AsyncRwLock<WalletManager<ManagedWalletInfo>>>,
 }
 
 impl EventHandler for SpvEventHandler {
@@ -255,6 +262,33 @@ impl EventHandler for SpvEventHandler {
                 | SyncEvent::InstantLockReceived { .. }
                 | SyncEvent::SyncComplete { .. }
         );
+
+        // TODO(workaround): Remove once dashpay/rust-dashcore#487 is fixed.
+        //
+        // Apply InstantSend locks directly on the WalletManager.
+        //
+        // Self-broadcast transactions bypass the MempoolManager (they are fed
+        // directly to WalletManager via notify_wallet_after_broadcast — see
+        // the other workaround in spawn_request_handler). When the IS lock
+        // arrives from the network, the MempoolManager doesn't know about
+        // the tx and stores it as a "pending IS lock" that is never matched.
+        // Applying the lock here ensures self-broadcast txs transition from
+        // unconfirmed to spendable.
+        //
+        // Once upstream broadcast calls handle_tx() on the MempoolManager,
+        // both workarounds (notify_wallet_after_broadcast and this) can be
+        // removed — the normal MempoolManager pipeline will handle everything.
+        //
+        // For MempoolManager-tracked txs this is a harmless no-op — the
+        // WalletManager deduplicates via its instant_send_locks HashSet.
+        if let SyncEvent::InstantLockReceived { instant_lock, .. } = event {
+            let txid = instant_lock.txid;
+            let wallet = Arc::clone(&self.wallet);
+            tokio::spawn(async move {
+                let mut wm = wallet.write().await;
+                wm.process_instant_send_lock(txid);
+            });
+        }
 
         // Forward finality-relevant events for asset lock proof construction.
         let finality_tx = self.finality_tx.lock().ok().and_then(|g| g.clone());
@@ -1379,6 +1413,7 @@ impl SpvManager {
             connection_status: self.connection_status_snapshot(),
             reconcile_tx: Arc::clone(&self.reconcile_tx),
             finality_tx: Arc::clone(&self.finality_tx),
+            wallet: Arc::clone(&self.wallet),
         });
 
         DashSpvClient::new(

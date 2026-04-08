@@ -210,13 +210,24 @@ impl BackendTestContext {
             .await
             .expect("Framework wallet not picked up by SPV");
 
-        // Wait for SPV to sync and funds to become spendable
+        // Wait for SPV to fully sync (including masternodes) so MempoolManager
+        // is active and bloom filter is built before any test broadcasts.
+        // This must come BEFORE the spendable balance check — wallet balances
+        // are only available after compact filter sync completes.
+        tracing::info!("Waiting for SPV to complete full sync (masternodes + mempool)...");
+        wait::wait_for_spv_running(&app_context, Duration::from_secs(300))
+            .await
+            .expect("SPV did not reach Running state within 300s");
+        tracing::info!("SPV fully synced — mempool bloom filter active");
+
+        // Now check framework wallet balance — SPV has synced, so balances
+        // should be available immediately (no need for a long timeout).
         tracing::info!("Waiting for SPV to sync framework wallet spendable balance...");
         match wait::wait_for_spendable_balance(
             &app_context,
             framework_wallet_hash,
             1, // at least 1 duff spendable
-            Duration::from_secs(180),
+            Duration::from_secs(30),
         )
         .await
         {
@@ -248,14 +259,6 @@ impl BackendTestContext {
                 );
             }
         }
-
-        // Wait for SPV to fully sync (including masternodes) so MempoolManager
-        // is active and bloom filter is built before any test broadcasts.
-        tracing::info!("Waiting for SPV to complete full sync (masternodes + mempool)...");
-        wait::wait_for_spv_running(&app_context, Duration::from_secs(120))
-            .await
-            .expect("SPV did not reach Running state within 120s");
-        tracing::info!("SPV fully synced — mempool bloom filter active");
 
         // Verify balance is above minimum threshold
         funding::verify_framework_funded(&app_context, framework_wallet_hash).await;

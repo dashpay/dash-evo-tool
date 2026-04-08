@@ -66,6 +66,9 @@ impl Database {
                 self.create_shielded_tables(tx)?;
                 self.create_shielded_wallet_meta_table(tx)?;
                 self.add_nullifier_sync_timestamp_column(tx)?;
+                // Defer FK checks so parent→child rename order doesn't matter
+                // (contestant and token have composite FKs that include network).
+                tx.execute_batch("PRAGMA defer_foreign_keys = ON")?;
                 self.rename_network_dash_to_mainnet(tx)?;
                 self.add_wallet_transaction_status_column(tx)?;
             }
@@ -1110,23 +1113,44 @@ impl Database {
     /// Run database consistency checks on startup.
     /// Non-fatal: logs warnings for any issues found but does not fail.
     fn run_consistency_checks(&self) {
+        const MAX_ISSUES_TO_LOG: usize = 20;
+
         let conn = self.conn.lock().unwrap();
 
-        // PRAGMA quick_check is a faster subset of integrity_check.
-        // It verifies b-tree structure without cross-checking indexes.
-        match conn.query_row("PRAGMA quick_check", [], |row| row.get::<_, String>(0)) {
-            Ok(ref result) if result == "ok" => {
-                tracing::debug!("Database quick_check passed");
-            }
-            Ok(result) => {
-                tracing::warn!("Database quick_check found issues: {result}");
-            }
+        // PRAGMA quick_check can return multiple rows (one per issue).
+        match conn.prepare("PRAGMA quick_check") {
+            Ok(mut stmt) => match stmt
+                .query_map([], |row| row.get::<_, String>(0))
+                .and_then(|rows| rows.collect::<rusqlite::Result<Vec<_>>>())
+            {
+                Ok(results) if results.len() == 1 && results[0] == "ok" => {
+                    tracing::debug!("Database quick_check passed");
+                }
+                Ok(results) if results.is_empty() => {
+                    tracing::warn!("Database quick_check returned no results");
+                }
+                Ok(results) => {
+                    tracing::warn!("Database quick_check found {} issue(s):", results.len());
+                    for issue in results.iter().take(MAX_ISSUES_TO_LOG) {
+                        tracing::warn!("  {issue}");
+                    }
+                    if results.len() > MAX_ISSUES_TO_LOG {
+                        tracing::warn!(
+                            "  ... and {} more issue(s) not shown",
+                            results.len() - MAX_ISSUES_TO_LOG
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Database quick_check failed: {e}");
+                }
+            },
             Err(e) => {
-                tracing::warn!("Database quick_check failed to execute: {e}");
+                tracing::warn!("Database quick_check failed to prepare: {e}");
             }
         }
 
-        // PRAGMA foreign_key_check returns rows for each FK violation.
+        // PRAGMA foreign_key_check returns one row per FK violation.
         match conn.prepare("PRAGMA foreign_key_check") {
             Ok(mut stmt) => {
                 match stmt.query_map([], |row| {
@@ -1138,17 +1162,46 @@ impl Database {
                     ))
                 }) {
                     Ok(rows) => {
-                        let violations: Vec<_> = rows.filter_map(|r| r.ok()).collect();
-                        if violations.is_empty() {
+                        let mut violations = Vec::new();
+                        let mut row_errors = 0usize;
+                        for row in rows {
+                            match row {
+                                Ok(v) => violations.push(v),
+                                Err(e) => {
+                                    row_errors += 1;
+                                    if row_errors <= 3 {
+                                        tracing::warn!(
+                                            "Database foreign_key_check row decode error: {e}"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        if violations.is_empty() && row_errors == 0 {
                             tracing::debug!("Database foreign_key_check passed — no violations");
                         } else {
-                            tracing::warn!(
-                                "Database foreign_key_check found {} violation(s):",
-                                violations.len()
-                            );
-                            for (table, rowid, parent, fk_idx) in &violations {
+                            if !violations.is_empty() {
                                 tracing::warn!(
-                                    "  FK violation: {table} rowid={rowid} -> {parent} (fk_index={fk_idx})"
+                                    "Database foreign_key_check found {} violation(s):",
+                                    violations.len()
+                                );
+                                for (table, rowid, parent, fk_idx) in
+                                    violations.iter().take(MAX_ISSUES_TO_LOG)
+                                {
+                                    tracing::warn!(
+                                        "  FK violation: {table} rowid={rowid} -> {parent} (fk_index={fk_idx})"
+                                    );
+                                }
+                                if violations.len() > MAX_ISSUES_TO_LOG {
+                                    tracing::warn!(
+                                        "  ... and {} more violation(s) not shown",
+                                        violations.len() - MAX_ISSUES_TO_LOG
+                                    );
+                                }
+                            }
+                            if row_errors > 0 {
+                                tracing::warn!(
+                                    "Database foreign_key_check had {row_errors} row decode error(s)"
                                 );
                             }
                         }

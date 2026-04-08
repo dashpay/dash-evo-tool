@@ -28,7 +28,7 @@ pub async fn cleanup_test_wallets(
         let framework_wallet = wallets
             .get(&framework_wallet_hash)
             .expect("framework wallet must exist");
-        get_receive_address(app_context, framework_wallet)
+        get_receive_address(app_context, framework_wallet).await
     };
 
     // Collect non-framework wallet hashes

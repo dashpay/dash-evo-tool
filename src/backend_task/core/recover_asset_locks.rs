@@ -8,7 +8,7 @@ use dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayloa
 use dash_sdk::dpp::dashcore::{Address, OutPoint};
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
 use dash_sdk::dpp::prelude::AssetLockProof;
-use platform_wallet::CoreAddressInfo;
+use crate::platform_wallet_bridge::CoreAddressInfo;
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
@@ -49,7 +49,7 @@ impl AppContext {
             // Read addresses from PlatformWallet (canonical source).
             // Locked wallets (no PlatformWallet) have no addresses — return empty.
             let addresses: Vec<Address> = if let Some(pw) = wallet_guard.platform_wallet.as_ref() {
-                let info = pw.core().state_blocking();
+                let info = pw.state_blocking();
                 CoreAddressInfo::all_from_wallet_info(&info.wallet_info)
                     .into_iter()
                     .map(|a| a.address)

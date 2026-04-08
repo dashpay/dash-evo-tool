@@ -35,7 +35,7 @@ async fn test_withdraw_from_identity() {
     tracing::info!("Identity balance before withdrawal: {}", initial_balance);
 
     // Get a Core address to withdraw to
-    let withdraw_address_str = get_receive_address(&ctx.app_context, &wallet_arc);
+    let withdraw_address_str = get_receive_address(&ctx.app_context, &wallet_arc).await;
     let withdraw_address = Address::from_str(&withdraw_address_str)
         .expect("Valid address")
         .assume_checked();

@@ -71,7 +71,7 @@ pub fn capture_qr_funding_utxo_if_available(
 
     let guard = wallet_arc.read().ok()?;
     let pw = guard.platform_wallet.as_ref()?;
-    let info = pw.core().state_blocking();
+    let info = pw.state_blocking();
 
     let candidate_utxo = info
         .wallet_info.get_spendable_utxos()

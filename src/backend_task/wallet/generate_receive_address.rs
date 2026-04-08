@@ -21,8 +21,7 @@ impl AppContext {
         let address_string = if self.core_backend_mode() == CoreBackendMode::Spv {
             // Use PlatformWallet's CoreWallet for address derivation in SPV mode.
             let platform_wallet = self.require_platform_wallet(&seed_hash)?;
-            let core_wallet = platform_wallet.core();
-            let address = core_wallet.next_receive_address().await.map_err(|e| {
+            let address = platform_wallet.core().next_receive_address().await.map_err(|e| {
                 TaskError::WalletAddressDerivationFailed {
                     detail: e.to_string(),
                 }
@@ -30,7 +29,7 @@ impl AppContext {
 
             // Register the address in DET's address table so it shows in the UI.
             // Read derivation path from the ManagedWalletInfo accounts.
-            if let Some(wallet_info) = core_wallet.try_state() {
+            if let Some(wallet_info) = platform_wallet.try_state() {
                 for acc in wallet_info.wallet_info.accounts.all_accounts() {
                     if let Some(ai) = acc.get_address_info(&address) {
                         let _ = self.register_spv_address(

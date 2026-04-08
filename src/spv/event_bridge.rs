@@ -172,25 +172,27 @@ impl SpvEventBridge {
             self.connection_status.refresh_state();
         }
 
-        // Transition to Error on ManagerError.
+        // Handle ManagerError — only fatal for core managers (headers, filters).
+        // Masternode sync errors are non-fatal: the wallet is fully functional
+        // for transactions without masternodes (testnet often has QRInfo errors).
         if let SyncEvent::ManagerError { manager, error } = event {
-            tracing::error!("SPV manager {manager} reported error: {error}");
-            if let Ok(mut snap) = self.status.write() {
-                snap.status = SpvStatus::Error;
-                if snap.last_error.is_none() {
-                    let limit = error.floor_char_boundary(100);
-                    let msg = format!("Sync manager {manager} failed: {}", &error[..limit]);
-                    snap.last_error = Some(msg.clone());
-                    self.connection_status.set_spv_last_error(Some(msg));
-                } else {
-                    tracing::warn!(
-                        %manager, error,
-                        "SPV last_error already set, ignoring"
-                    );
+            let is_masternode = manager.to_string() == "Masternode";
+            if is_masternode {
+                tracing::warn!("SPV masternode sync error (non-fatal): {error}");
+            } else {
+                tracing::error!("SPV manager {manager} reported error: {error}");
+                if let Ok(mut snap) = self.status.write() {
+                    snap.status = SpvStatus::Error;
+                    if snap.last_error.is_none() {
+                        let limit = error.floor_char_boundary(100);
+                        let msg = format!("Sync manager {manager} failed: {}", &error[..limit]);
+                        snap.last_error = Some(msg.clone());
+                        self.connection_status.set_spv_last_error(Some(msg));
+                    }
                 }
+                self.connection_status.set_spv_status(SpvStatus::Error);
+                self.connection_status.refresh_state();
             }
-            self.connection_status.set_spv_status(SpvStatus::Error);
-            self.connection_status.refresh_state();
         }
 
         // Signal reconciliation for wallet-relevant events.

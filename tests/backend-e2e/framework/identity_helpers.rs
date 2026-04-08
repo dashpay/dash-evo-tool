@@ -77,10 +77,12 @@ pub fn build_identity_registration(
 }
 
 /// Get a receive address string from a wallet.
-pub fn get_receive_address(app_context: &AppContext, wallet_arc: &Arc<RwLock<Wallet>>) -> String {
-    let mut wallet = wallet_arc.write().expect("wallet lock");
-    wallet
-        .receive_address(Network::Testnet, false, Some(app_context))
+pub async fn get_receive_address(_app_context: &AppContext, wallet_arc: &Arc<RwLock<Wallet>>) -> String {
+    let wallet = wallet_arc.read().expect("wallet lock");
+    let pw = wallet.platform_wallet.as_ref().expect("platform wallet must exist");
+    pw.core()
+        .next_receive_address()
+        .await
         .expect("Failed to get receive address")
         .to_string()
 }

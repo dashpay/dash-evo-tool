@@ -14,7 +14,14 @@ const MIN_BALANCE_DUFFS: u64 = 1_000_000_000; // 10 DASH
 /// If the balance is below the threshold, panics with the receive address
 /// and instructions for the user to fund it manually.
 pub async fn verify_framework_funded(app_context: &Arc<AppContext>, wallet_hash: WalletSeedHash) {
-    let (current_balance, address) = get_wallet_balance_and_address(app_context, wallet_hash);
+    // Read balance from lock-free atomics (no lock needed).
+    let current_balance = {
+        let wallets = app_context.wallets().read().expect("wallets lock");
+        wallets
+            .get(&wallet_hash)
+            .map(|w| w.read().expect("wallet lock").total_balance_duffs())
+            .unwrap_or(0)
+    };
 
     if current_balance >= MIN_BALANCE_DUFFS {
         tracing::info!(
@@ -24,6 +31,8 @@ pub async fn verify_framework_funded(app_context: &Arc<AppContext>, wallet_hash:
         return;
     }
 
+    // Only derive address in the panic path (rare).
+    let address = get_wallet_balance_and_address(app_context, wallet_hash).await.1;
     panic!(
         "Framework wallet balance is below minimum ({} duffs < {} duffs).\n\
          Fund this address manually: {}\n\
@@ -33,23 +42,28 @@ pub async fn verify_framework_funded(app_context: &Arc<AppContext>, wallet_hash:
 }
 
 /// Get the wallet's current total balance and receive address.
-fn get_wallet_balance_and_address(
+async fn get_wallet_balance_and_address(
     app_context: &Arc<AppContext>,
     wallet_hash: WalletSeedHash,
 ) -> (u64, String) {
-    let wallets = app_context.wallets().read().expect("wallets lock");
-    let wallet_arc = wallets
-        .get(&wallet_hash)
-        .expect("framework wallet must exist");
+    // Extract balance and PlatformWallet under short sync lock, then drop
+    // the guard before any .await to avoid holding std::sync::RwLock across
+    // an async yield point (which would deadlock with SPV reconcile).
+    let (balance, pw) = {
+        let wallets = app_context.wallets().read().expect("wallets lock");
+        let wallet_arc = wallets
+            .get(&wallet_hash)
+            .expect("framework wallet must exist");
+        let wallet = wallet_arc.read().expect("wallet lock");
+        let balance = wallet.total_balance_duffs();
+        let pw = wallet.platform_wallet.clone().expect("platform wallet");
+        (balance, pw)
+    };
 
-    let mut wallet = wallet_arc.write().expect("wallet lock");
-    let balance = wallet.total_balance_duffs();
-    let address = wallet
-        .receive_address(
-            dash_sdk::dpp::dashcore::Network::Testnet,
-            false,
-            Some(app_context),
-        )
+    let address = pw
+        .core()
+        .next_receive_address()
+        .await
         .expect("Failed to get receive address")
         .to_string();
     (balance, address)

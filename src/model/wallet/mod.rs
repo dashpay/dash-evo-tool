@@ -619,12 +619,12 @@ impl Wallet {
 
     /// All addresses from PlatformWallet's CoreAddressInfo.
     /// Returns empty if the wallet is locked (no PlatformWallet).
-    pub fn all_addresses_info(&self) -> Vec<platform_wallet::CoreAddressInfo> {
+    pub fn all_addresses_info(&self) -> Vec<crate::platform_wallet_bridge::CoreAddressInfo> {
         self.platform_wallet
             .as_ref()
             .map(|pw| {
-                let info = pw.core().state_blocking();
-                platform_wallet::CoreAddressInfo::all_from_wallet_info(&info.wallet_info)
+                let info = pw.state_blocking();
+                crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.wallet_info)
             })
             .unwrap_or_default()
     }
@@ -636,8 +636,8 @@ impl Wallet {
         // Use try_state() to avoid panic when called from async context
         // (state_blocking panics inside tokio runtime).
         // Returns None if the lock is held, which is safe — the caller retries next cycle.
-        let info = pw.core().try_state()?;
-        platform_wallet::CoreAddressInfo::all_from_wallet_info(&info.wallet_info)
+        let info = pw.try_state()?;
+        crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.wallet_info)
             .into_iter()
             .find(|a| &a.address == address)
             .map(|a| a.derivation_path)
@@ -646,8 +646,8 @@ impl Wallet {
     /// Async version of `derivation_path_for_address` — safe to call from async context.
     pub async fn derivation_path_for_address_async(&self, address: &Address) -> Option<DerivationPath> {
         let pw = self.platform_wallet.as_ref()?;
-        let info = pw.core().state().await;
-        platform_wallet::CoreAddressInfo::all_from_wallet_info(&info.wallet_info)
+        let info = pw.state().await;
+        crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.wallet_info)
             .into_iter()
             .find(|a| &a.address == address)
             .map(|a| a.derivation_path)
@@ -669,8 +669,8 @@ impl Wallet {
         self.platform_wallet
             .as_ref()
             .map(|pw| {
-                let info = pw.core().state_blocking();
-                platform_wallet::CoreAddressInfo::all_from_wallet_info(&info.wallet_info)
+                let info = pw.state_blocking();
+                crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.wallet_info)
                     .into_iter()
                     .find(|a| &a.address == address)
                     .map(|a| a.balance)
@@ -716,7 +716,7 @@ impl Wallet {
         let Some(pw) = self.platform_wallet.as_ref() else {
             return Vec::new();
         };
-        let info = pw.core().state_blocking();
+        let info = pw.state_blocking();
         info.wallet_info.transaction_history()
             .into_iter()
             .map(|record| {

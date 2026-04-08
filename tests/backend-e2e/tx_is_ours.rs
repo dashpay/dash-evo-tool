@@ -30,7 +30,7 @@ async fn test_spv_transactions_is_ours_flag() {
     let (hash_b, wallet_b) = ctx.create_funded_test_wallet(1_000_000).await;
 
     let send_amount: u64 = 500_000;
-    let b_address = get_receive_address(app_context, &wallet_b);
+    let b_address = get_receive_address(app_context, &wallet_b).await;
 
     // Wait for A to have spendable funds
     wait_for_spendable_balance(app_context, hash_a, send_amount, Duration::from_secs(120))

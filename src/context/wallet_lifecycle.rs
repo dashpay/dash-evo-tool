@@ -142,6 +142,13 @@ impl AppContext {
         self.require_platform_wallet(&seed_hash)
     }
 
+    /// Reset SPV filter_committed_height to force a rescan from birth_height.
+    ///
+    /// Call before `start_spv()` when wallet state isn't persisted yet.
+    pub fn reset_spv_filter_committed_height(&self) {
+        self.wallet_manager.spv().reset_filter_committed_height();
+    }
+
     pub fn start_spv(self: &Arc<Self>) -> Result<(), TaskError> {
         // Skip if SPV is already running.
         if self.wallet_manager.spv().is_started() {
@@ -583,8 +590,8 @@ impl AppContext {
 
         // Check address ownership via PlatformWallet's async state lock.
         if let Some(pw) = &platform_wallet {
-            let info = pw.core().state().await;
-            let has_it = platform_wallet::CoreAddressInfo::all_from_wallet_info(&info.wallet_info)
+            let info = pw.state().await;
+            let has_it = crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.wallet_info)
                 .iter()
                 .any(|a| a.address == address);
             if has_it {
@@ -805,7 +812,7 @@ impl AppContext {
             let balance = pw.core().balance();
             tracing::debug!(wallet = %hex::encode(seed_hash), spendable = balance.spendable(), unconfirmed = balance.unconfirmed(), total = balance.total(), "SPV balance snapshot");
 
-            let Some(wallet_info) = pw.core().try_state() else {
+            let Some(wallet_info) = pw.try_state() else {
                 continue;
             };
 
@@ -819,8 +826,8 @@ impl AppContext {
             // SPV addresses in the DET address table (app-level metadata).
             // Uses async state() to avoid blocking_read panic in async context.
             let mut wallet_addresses: std::collections::BTreeSet<Address> = {
-                let info = pw.core().state().await;
-                platform_wallet::CoreAddressInfo::all_from_wallet_info(&info.wallet_info)
+                let info = pw.state().await;
+                crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.wallet_info)
                     .into_iter()
                     .map(|a| a.address)
                     .collect()
@@ -1089,7 +1096,7 @@ impl AppContext {
                 // Derive xpub and add account to key-wallet's Wallet (key store),
                 // then add managed wrapper to ManagedWalletInfo (address pools).
                 // Both live inside the single PlatformWalletInfo guard.
-                if let Some(mut info_guard) = pw.core().try_state_mut() {
+                if let Some(mut info_guard) = pw.try_state_mut() {
                     let path = match account_type.derivation_path(kw_network) {
                         Ok(p) => p,
                         Err(e) => {

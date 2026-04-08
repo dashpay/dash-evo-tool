@@ -127,7 +127,7 @@ pub async fn register_dashpay_addresses_for_identity(
     let network = app_context.network;
 
     // Acquire the key-wallet read guard for derivation
-    let info_guard = platform_wallet_arc.core().state().await;
+    let info_guard = platform_wallet_arc.state().await;
     let key_wallet_guard = &info_guard.wallet;
 
     for contact in contacts {

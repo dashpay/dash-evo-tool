@@ -162,18 +162,20 @@ pub async fn wait_for_wallet_in_spv(
     .map_err(|_| "Timed out waiting for wallet in SPV".to_string())
 }
 
-/// Wait for SPV to complete initial sync (all managers including masternodes).
+/// Wait for SPV to reach at least Syncing state (filters active).
 ///
-/// `SpvStatus::Running` is set after `SyncComplete` fires, which means
-/// MempoolManager is activated and bloom filter is built.
-pub async fn wait_for_spv_running(
+/// Accepts both `Syncing` and `Running`. Does NOT require masternode
+/// sync which can fail on testnet (QRInfo errors). The wallet is fully
+/// functional for transactions once filters are synced.
+pub async fn wait_for_spv_syncing_or_running(
     app_context: &Arc<AppContext>,
     wait_timeout: Duration,
 ) -> Result<(), String> {
     use dash_evo_tool::spv::SpvStatus;
     timeout(wait_timeout, async {
         loop {
-            if app_context.connection_status().spv_status() == SpvStatus::Running {
+            let status = app_context.connection_status().spv_status();
+            if matches!(status, SpvStatus::Syncing | SpvStatus::Running) {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
@@ -182,7 +184,7 @@ pub async fn wait_for_spv_running(
     .await
     .map_err(|_| {
         format!(
-            "Timed out after {:?} waiting for SPV to reach Running state",
+            "Timed out after {:?} waiting for SPV to reach Syncing/Running state",
             wait_timeout
         )
     })

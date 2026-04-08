@@ -7,7 +7,7 @@ use dash_sdk::dashcore_rpc::json::GetTransactionResultDetailCategory;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{Address, BlockHash, OutPoint, Transaction, TxOut, Txid};
 use dash_sdk::dpp::key_wallet::WalletCoreBalance;
-use platform_wallet::CoreAddressInfo;
+use crate::platform_wallet_bridge::CoreAddressInfo;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
@@ -28,7 +28,7 @@ impl AppContext {
             // Locked wallets (no PlatformWallet) have no addresses — return empty.
             // Exclude platform payment addresses since those are not tracked by Core.
             let addrs = if let Some(pw) = wallet_guard.platform_wallet.as_ref() {
-                let info = pw.core().state_blocking();
+                let info = pw.state_blocking();
                 CoreAddressInfo::all_from_wallet_info(&info.wallet_info)
                     .into_iter()
                     .filter(|a| !a.derivation_path.is_platform_payment(self.network))
@@ -283,7 +283,7 @@ impl AppContext {
 
             // Update PlatformWallet balance via PlatformWalletInfoWriteGuard (auto-refreshes WalletBalance)
             if let Some(pw) = wallet_guard.platform_wallet.as_ref() {
-                if let Some(mut pw_info) = pw.core().try_state_mut() {
+                if let Some(mut pw_info) = pw.try_state_mut() {
                     pw_info.wallet_info.balance = WalletCoreBalance::new(
                         total_balance,
                         0, // unconfirmed
@@ -299,7 +299,7 @@ impl AppContext {
         // Uses try_state_mut() because we are in a blocking context
         // (spawn_blocking) where awaiting is not possible.
         if let Some(pw) = self.get_platform_wallet(&seed_hash) {
-            if let Some(mut pw_info) = pw.core().try_state_mut() {
+            if let Some(mut pw_info) = pw.try_state_mut() {
                 pw_info.wallet_info.balance = WalletCoreBalance::new(
                     total_balance, // spendable
                     0,             // unconfirmed

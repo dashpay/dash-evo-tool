@@ -157,8 +157,8 @@ impl AppContext {
         };
 
         if let Some(pw) = platform_wallet {
-            let info = pw.core().state().await;
-            let first_addr = platform_wallet::CoreAddressInfo::all_from_wallet_info(&info.wallet_info)
+            let info = pw.state().await;
+            let first_addr = crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.wallet_info)
                 .into_iter()
                 .next()
                 .map(|a| a.address);
@@ -601,11 +601,10 @@ impl AppContext {
         };
 
         let pw = self.require_platform_wallet(&seed_hash)?;
-        let core_wallet = pw.core();
 
         let tx = {
             let info_guard =
-                core_wallet
+                pw
                     .try_state()
                     .ok_or_else(|| TaskError::WalletPaymentFailed {
                         detail: "Wallet info unavailable".to_string(),

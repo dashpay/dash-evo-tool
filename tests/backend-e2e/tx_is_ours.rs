@@ -37,6 +37,11 @@ async fn test_spv_transactions_is_ours_flag() {
         .await
         .expect("Wallet A should have spendable funds");
 
+    // Allow bloom filter to propagate to peers so B's addresses are
+    // monitored before we broadcast A→B. Without this, peers may not
+    // relay the tx back through B's filter.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
     // Send from A to B
     let request = WalletPaymentRequest {
         recipients: vec![PaymentRecipient {

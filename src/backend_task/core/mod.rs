@@ -33,7 +33,7 @@ use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_builder:
     BuilderError, TransactionBuilder,
 };
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
-use dash_sdk::dpp::key_wallet_manager::{WalletError, WalletId, WalletManager};
+use dash_sdk::dpp::key_wallet_manager::{WalletError, WalletId, WalletInterface, WalletManager};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
@@ -593,7 +593,13 @@ impl AppContext {
                 &parsed_recipients,
                 &request,
             )?;
-            self.sign_spv_transaction(&mut wm, &wallet_id, unsigned)?
+            let signed = self.sign_spv_transaction(&mut wm, &wallet_id, unsigned)?;
+
+            // Notify the wallet about the outgoing tx while still holding the
+            // write lock. This marks spent UTXOs immediately so concurrent
+            // callers don't select the same inputs (double-spend prevention).
+            let _ = wm.process_mempool_transaction(&signed, false).await;
+            signed
         };
 
         self.spv_manager

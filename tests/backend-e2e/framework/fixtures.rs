@@ -284,7 +284,7 @@ pub async fn shared_dashpay_pair() -> &'static SharedDashPayPair {
 /// Extract the first AUTHENTICATION HIGH key and its private key bytes from a QualifiedIdentity.
 ///
 /// Falls back to AUTHENTICATION CRITICAL if no HIGH key is found.
-fn extract_authentication_key(
+pub fn extract_authentication_key(
     qi: &dash_evo_tool::model::qualified_identity::QualifiedIdentity,
 ) -> (IdentityPublicKey, Vec<u8>) {
     // Try HIGH first, then CRITICAL

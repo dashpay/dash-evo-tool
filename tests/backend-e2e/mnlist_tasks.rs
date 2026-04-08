@@ -12,6 +12,17 @@ use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_sdk::dpp::dashcore::BlockHash;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 
+/// Guard: MnList tests need Core RPC for block hash retrieval.
+/// Skip gracefully when Core RPC is unavailable.
+fn require_core_rpc() -> bool {
+    if std::env::var("E2E_CORE_RPC_URL").is_err() {
+        println!("Skipping: E2E_CORE_RPC_URL not set — MnList tests require Core RPC for block hash retrieval");
+        false
+    } else {
+        true
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // TC-068: FetchEndDmlDiff
 // ─────────────────────────────────────────────────────────────────────────────
@@ -22,6 +33,7 @@ use dash_sdk::dpp::dashcore::hashes::Hash;
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn tc_068_fetch_end_dml_diff() {
+    if !require_core_rpc() { return; }
     let ctx = ctx().await;
     let app_context = &ctx.app_context;
 
@@ -71,6 +83,7 @@ async fn tc_068_fetch_end_dml_diff() {
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn tc_069_fetch_end_qr_info() {
+    if !require_core_rpc() { return; }
     let ctx = ctx().await;
     let app_context = &ctx.app_context;
 
@@ -106,6 +119,7 @@ async fn tc_069_fetch_end_qr_info() {
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn tc_070_fetch_end_qr_info_with_dmls() {
+    if !require_core_rpc() { return; }
     let ctx = ctx().await;
     let app_context = &ctx.app_context;
 
@@ -142,6 +156,7 @@ async fn tc_070_fetch_end_qr_info_with_dmls() {
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn tc_071_fetch_diffs_chain() {
+    if !require_core_rpc() { return; }
     let ctx = ctx().await;
     let app_context = &ctx.app_context;
 

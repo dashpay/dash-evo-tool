@@ -25,7 +25,7 @@ static FUNDED_PLATFORM: OnceCell<FundedPlatformState> = OnceCell::const_new();
 // ─── TC-012 ───────────────────────────────────────────────────────────────────
 
 /// TC-012: GenerateReceiveAddress — basic derivation and uniqueness.
-#[tokio_shared_rt::test(shared)]
+#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 #[ignore]
 async fn tc_012_generate_receive_address() {
     let ctx = harness::ctx().await;
@@ -77,7 +77,7 @@ async fn tc_012_generate_receive_address() {
 // ─── TC-013 ───────────────────────────────────────────────────────────────────
 
 /// TC-013: FetchPlatformAddressBalances — no platform addresses funded (baseline).
-#[tokio_shared_rt::test(shared)]
+#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 #[ignore]
 async fn tc_013_fetch_platform_address_balances_empty() {
     let ctx = harness::ctx().await;
@@ -119,7 +119,7 @@ async fn tc_013_fetch_platform_address_balances_empty() {
 // ─── TC-014 ───────────────────────────────────────────────────────────────────
 
 /// TC-014: FundPlatformAddressFromWalletUtxos — funds a platform address and verifies balance.
-#[tokio_shared_rt::test(shared)]
+#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 #[ignore]
 async fn tc_014_fund_platform_address_from_wallet_utxos() {
     let ctx = harness::ctx().await;
@@ -202,7 +202,7 @@ async fn tc_014_fund_platform_address_from_wallet_utxos() {
 // ─── TC-015 ───────────────────────────────────────────────────────────────────
 
 /// TC-015: FetchPlatformAddressBalances — after TC-014 funding, at least one address has credits.
-#[tokio_shared_rt::test(shared)]
+#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 #[ignore]
 async fn tc_015_fetch_platform_address_balances_after_funding() {
     let ctx = harness::ctx().await;
@@ -250,7 +250,7 @@ async fn tc_015_fetch_platform_address_balances_after_funding() {
 // ─── TC-016 ───────────────────────────────────────────────────────────────────
 
 /// TC-016: TransferPlatformCredits — transfer half the funded balance to a second platform address.
-#[tokio_shared_rt::test(shared)]
+#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 #[ignore]
 async fn tc_016_transfer_platform_credits() {
     let ctx = harness::ctx().await;
@@ -364,7 +364,7 @@ async fn tc_016_transfer_platform_credits() {
 // ─── TC-017 ───────────────────────────────────────────────────────────────────
 
 /// TC-017: WithdrawFromPlatformAddress — withdraw remaining balance back to Core.
-#[tokio_shared_rt::test(shared)]
+#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 #[ignore]
 async fn tc_017_withdraw_from_platform_address() {
     let ctx = harness::ctx().await;
@@ -466,7 +466,7 @@ async fn tc_017_withdraw_from_platform_address() {
 
 /// TC-018: FundPlatformAddressFromAssetLock — create an asset lock via CoreTask and then
 /// fund a platform address directly from it.
-#[tokio_shared_rt::test(shared)]
+#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 #[ignore]
 async fn tc_018_fund_platform_address_from_asset_lock() {
     let ctx = harness::ctx().await;
@@ -572,7 +572,7 @@ async fn tc_018_fund_platform_address_from_asset_lock() {
 // ─── TC-019 ───────────────────────────────────────────────────────────────────
 
 /// TC-019: WalletTask error path — unknown seed hash returns a typed error, not a panic.
-#[tokio_shared_rt::test(shared)]
+#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 #[ignore]
 async fn tc_019_wallet_task_error_unknown_seed_hash() {
     let ctx = harness::ctx().await;

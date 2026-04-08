@@ -4,6 +4,22 @@ use rusqlite::{Connection, params};
 use std::fs;
 use std::path::Path;
 
+/// Error during database migration with structured context.
+#[derive(Debug, thiserror::Error)]
+#[error("migration failed on {}{}: {source}",
+    table.as_deref().unwrap_or("(unknown table)"),
+    if details.is_empty() { String::new() } else { format!(" ({})", details) }
+)]
+pub struct MigrationError {
+    /// Table being operated on when the error occurred, if known.
+    pub table: Option<String>,
+    /// Human-readable description of the operation that failed.
+    pub details: String,
+    /// Underlying SQLite error.
+    #[source]
+    pub source: rusqlite::Error,
+}
+
 pub const DEFAULT_DB_VERSION: u16 = 33;
 
 pub const DEFAULT_NETWORK: &str = "mainnet";
@@ -49,7 +65,7 @@ impl Database {
         Ok(())
     }
 
-    fn apply_version_changes(&self, version: u16, tx: &Connection) -> rusqlite::Result<()> {
+    fn apply_version_changes(&self, version: u16, tx: &Connection) -> Result<(), MigrationError> {
         match version {
             // Versions 28-32 were consolidated into v33 to resolve migration
             // numbering conflicts between the zk and v1.0-dev branches.
@@ -60,114 +76,330 @@ impl Database {
                 // Every sub-migration is idempotent (IF NOT EXISTS / column checks),
                 // so this is safe to run on any DB that already applied some or all
                 // of the individual steps.
-                tracing::debug!("v33: cleaning orphaned FK rows");
                 self.clean_orphaned_fk_rows(tx)?;
-                tracing::debug!("v33: adding core_wallet_name column");
-                self.add_core_wallet_name_column(tx)?;
-                tracing::debug!("v33: creating contacts tables");
-                self.init_contacts_tables(tx)?;
-                tracing::debug!("v33: creating shielded tables");
-                self.create_shielded_tables(tx)?;
-                tracing::debug!("v33: creating shielded_wallet_meta table");
-                self.create_shielded_wallet_meta_table(tx)?;
-                tracing::debug!("v33: adding nullifier_sync_timestamp column");
-                self.add_nullifier_sync_timestamp_column(tx)?;
-                // Defer FK checks so parent→child rename order doesn't matter
+                self.add_core_wallet_name_column(tx)
+                    .map_err(|e| MigrationError {
+                        table: Some("wallet".into()),
+                        details: "add core_wallet_name column".into(),
+                        source: e,
+                    })?;
+                self.init_contacts_tables(tx).map_err(|e| MigrationError {
+                    table: Some("contact_private_info".into()),
+                    details: "create contacts tables".into(),
+                    source: e,
+                })?;
+                self.create_shielded_tables(tx)
+                    .map_err(|e| MigrationError {
+                        table: Some("shielded_notes".into()),
+                        details: "create shielded tables".into(),
+                        source: e,
+                    })?;
+                self.create_shielded_wallet_meta_table(tx)
+                    .map_err(|e| MigrationError {
+                        table: Some("shielded_wallet_meta".into()),
+                        details: "create shielded_wallet_meta table".into(),
+                        source: e,
+                    })?;
+                self.add_nullifier_sync_timestamp_column(tx)
+                    .map_err(|e| MigrationError {
+                        table: Some("shielded_wallet_meta".into()),
+                        details: "add last_nullifier_sync_timestamp column".into(),
+                        source: e,
+                    })?;
+                // Defer FK checks so parent->child rename order doesn't matter
                 // (contestant and token have composite FKs that include network).
-                tracing::debug!("v33: deferring FK checks for network rename");
-                tx.execute_batch("PRAGMA defer_foreign_keys = ON")?;
-                tracing::debug!("v33: renaming network dash -> mainnet");
+                tx.execute_batch("PRAGMA defer_foreign_keys = ON")
+                    .map_err(|e| MigrationError {
+                        table: None,
+                        details: "defer FK checks for network rename".into(),
+                        source: e,
+                    })?;
                 self.rename_network_dash_to_mainnet(tx)?;
-                tracing::debug!("v33: adding wallet_transaction status column");
-                self.add_wallet_transaction_status_column(tx)?;
-                tracing::debug!("v33: migration complete");
+                self.add_wallet_transaction_status_column(tx)
+                    .map_err(|e| MigrationError {
+                        table: Some("wallet_transactions".into()),
+                        details: "add status column".into(),
+                        source: e,
+                    })?;
             }
             27 => {
-                self.add_network_indexes(tx)?;
+                self.add_network_indexes(tx).map_err(|e| MigrationError {
+                    table: None,
+                    details: "add network indexes".into(),
+                    source: e,
+                })?;
             }
             26 => {
-                self.add_last_full_sync_balance_column(tx)?;
+                self.add_last_full_sync_balance_column(tx)
+                    .map_err(|e| MigrationError {
+                        table: Some("platform_address_balances".into()),
+                        details: "add last_full_sync_balance column".into(),
+                        source: e,
+                    })?;
             }
             25 => {
-                self.add_avatar_bytes_column(tx)?;
+                self.add_avatar_bytes_column(tx)
+                    .map_err(|e| MigrationError {
+                        table: Some("dashpay_profiles".into()),
+                        details: "add avatar_bytes column".into(),
+                        source: e,
+                    })?;
             }
             24 => {
-                self.add_selected_wallet_columns(tx)?;
+                self.add_selected_wallet_columns(tx)
+                    .map_err(|e| MigrationError {
+                        table: Some("settings".into()),
+                        details: "add selected_wallet columns".into(),
+                        source: e,
+                    })?;
             }
             23 => {
-                self.add_last_terminal_block_column(tx)?;
+                self.add_last_terminal_block_column(tx)
+                    .map_err(|e| MigrationError {
+                        table: Some("wallet".into()),
+                        details: "add last_terminal_block column".into(),
+                        source: e,
+                    })?;
             }
             22 => {
-                self.add_network_column_to_dashpay_contact_requests(tx)?;
-                self.add_network_column_to_dashpay_contacts(tx)?;
+                self.add_network_column_to_dashpay_contact_requests(tx)
+                    .map_err(|e| MigrationError {
+                        table: Some("dashpay_contact_requests".into()),
+                        details: "add network column".into(),
+                        source: e,
+                    })?;
+                self.add_network_column_to_dashpay_contacts(tx)
+                    .map_err(|e| MigrationError {
+                        table: Some("dashpay_contacts".into()),
+                        details: "add network column".into(),
+                        source: e,
+                    })?;
             }
             21 => {
-                self.add_network_column_to_dashpay_profiles(tx)?;
+                self.add_network_column_to_dashpay_profiles(tx)
+                    .map_err(|e| MigrationError {
+                        table: Some("dashpay_profiles".into()),
+                        details: "add network column".into(),
+                        source: e,
+                    })?;
             }
             20 => {
-                self.add_platform_sync_columns(tx)?;
+                self.add_platform_sync_columns(tx)
+                    .map_err(|e| MigrationError {
+                        table: Some("wallet".into()),
+                        details: "add platform sync columns".into(),
+                        source: e,
+                    })?;
             }
             19 => {
-                self.initialize_platform_address_balances_table(tx)?;
+                self.initialize_platform_address_balances_table(tx)
+                    .map_err(|e| MigrationError {
+                        table: Some("platform_address_balances".into()),
+                        details: "create table".into(),
+                        source: e,
+                    })?;
             }
             18 => {
-                self.initialize_single_key_wallet_table(tx)?;
+                self.initialize_single_key_wallet_table(tx)
+                    .map_err(|e| MigrationError {
+                        table: Some("single_key_wallet".into()),
+                        details: "create table".into(),
+                        source: e,
+                    })?;
             }
             17 => {
-                self.add_address_total_received_column(tx)?;
+                self.add_address_total_received_column(tx)
+                    .map_err(|e| MigrationError {
+                        table: Some("wallet_addresses".into()),
+                        details: "add total_received column".into(),
+                        source: e,
+                    })?;
             }
             16 => {
-                self.add_wallet_balance_columns(tx)?;
+                self.add_wallet_balance_columns(tx)
+                    .map_err(|e| MigrationError {
+                        table: Some("wallet".into()),
+                        details: "add balance columns".into(),
+                        source: e,
+                    })?;
             }
             15 => {
-                self.add_core_backend_mode_column(tx)?;
+                self.add_core_backend_mode_column(tx)
+                    .map_err(|e| MigrationError {
+                        table: Some("settings".into()),
+                        details: "add core_backend_mode column".into(),
+                        source: e,
+                    })?;
             }
             14 => {
-                self.initialize_wallet_transactions_table(tx)?;
+                self.initialize_wallet_transactions_table(tx)
+                    .map_err(|e| MigrationError {
+                        table: Some("wallet_transactions".into()),
+                        details: "create table".into(),
+                        source: e,
+                    })?;
             }
             13 => {
-                // Add DashPay tables in version 12
-                self.init_dashpay_tables_in_tx(tx)?;
+                self.init_dashpay_tables_in_tx(tx)
+                    .map_err(|e| MigrationError {
+                        table: Some("dashpay_profiles".into()),
+                        details: "create DashPay tables".into(),
+                        source: e,
+                    })?;
             }
-            12 => self.add_disable_zmq_column(tx)?,
-            11 => self.rename_identity_column_is_in_creation_to_status(tx)?,
+            12 => {
+                self.add_disable_zmq_column(tx)
+                    .map_err(|e| MigrationError {
+                        table: Some("settings".into()),
+                        details: "add disable_zmq column".into(),
+                        source: e,
+                    })?;
+            }
+            11 => {
+                self.rename_identity_column_is_in_creation_to_status(tx)
+                    .map_err(|e| MigrationError {
+                        table: Some("identity".into()),
+                        details: "rename is_in_creation to status".into(),
+                        source: e,
+                    })?;
+            }
             10 => {
-                self.add_theme_preference_column(tx)?;
+                self.add_theme_preference_column(tx)
+                    .map_err(|e| MigrationError {
+                        table: Some("settings".into()),
+                        details: "add theme_preference column".into(),
+                        source: e,
+                    })?;
             }
             9 => {
-                self.delete_all_identities_in_all_devnets_and_regtest(tx)?;
-                self.delete_all_local_tokens_in_all_devnets_and_regtest(tx)?;
-                self.remove_all_asset_locks_identity_id_for_all_devnets_and_regtest(tx)?;
-                self.remove_all_contracts_in_all_devnets_and_regtest(tx)?;
-                self.fix_identity_devnet_network_name(tx)?;
+                self.delete_all_identities_in_all_devnets_and_regtest(tx)
+                    .map_err(|e| MigrationError {
+                        table: Some("identity".into()),
+                        details: "delete devnet/regtest identities".into(),
+                        source: e,
+                    })?;
+                self.delete_all_local_tokens_in_all_devnets_and_regtest(tx)
+                    .map_err(|e| MigrationError {
+                        table: Some("token".into()),
+                        details: "delete devnet/regtest tokens".into(),
+                        source: e,
+                    })?;
+                self.remove_all_asset_locks_identity_id_for_all_devnets_and_regtest(tx)
+                    .map_err(|e| MigrationError {
+                        table: Some("asset_lock_transaction".into()),
+                        details: "clear devnet/regtest asset lock identity IDs".into(),
+                        source: e,
+                    })?;
+                self.remove_all_contracts_in_all_devnets_and_regtest(tx)
+                    .map_err(|e| MigrationError {
+                        table: Some("contract".into()),
+                        details: "delete devnet/regtest contracts".into(),
+                        source: e,
+                    })?;
+                self.fix_identity_devnet_network_name(tx)
+                    .map_err(|e| MigrationError {
+                        table: Some("identity".into()),
+                        details: "fix devnet network name".into(),
+                        source: e,
+                    })?;
             }
             8 => {
-                self.change_contract_name_to_alias(tx)?;
+                self.change_contract_name_to_alias(tx)
+                    .map_err(|e| MigrationError {
+                        table: Some("contract".into()),
+                        details: "rename name to alias".into(),
+                        source: e,
+                    })?;
             }
             7 => {
-                self.migrate_asset_lock_fk_to_set_null(tx)?;
+                self.migrate_asset_lock_fk_to_set_null(tx)
+                    .map_err(|e| MigrationError {
+                        table: Some("asset_lock_transaction".into()),
+                        details: "migrate FK to SET NULL".into(),
+                        source: e,
+                    })?;
             }
             6 => {
-                self.update_scheduled_votes_table(tx)?;
-                self.initialize_token_table(tx)?;
-                self.drop_identity_token_balances_table(tx)?;
-                self.initialize_identity_token_balances_table(tx)?;
-                tx.execute("DROP TABLE IF EXISTS identity_order", [])?;
-                self.initialize_identity_order_table(tx)?;
-                tx.execute("DROP TABLE IF EXISTS token_order", [])?;
-                self.initialize_token_order_table(tx)?;
+                self.update_scheduled_votes_table(tx)
+                    .map_err(|e| MigrationError {
+                        table: Some("scheduled_votes".into()),
+                        details: "update table schema".into(),
+                        source: e,
+                    })?;
+                self.initialize_token_table(tx)
+                    .map_err(|e| MigrationError {
+                        table: Some("token".into()),
+                        details: "create table".into(),
+                        source: e,
+                    })?;
+                self.drop_identity_token_balances_table(tx)
+                    .map_err(|e| MigrationError {
+                        table: Some("identity_token_balances".into()),
+                        details: "drop table".into(),
+                        source: e,
+                    })?;
+                self.initialize_identity_token_balances_table(tx)
+                    .map_err(|e| MigrationError {
+                        table: Some("identity_token_balances".into()),
+                        details: "create table".into(),
+                        source: e,
+                    })?;
+                tx.execute("DROP TABLE IF EXISTS identity_order", [])
+                    .map_err(|e| MigrationError {
+                        table: Some("identity_order".into()),
+                        details: "drop table".into(),
+                        source: e,
+                    })?;
+                self.initialize_identity_order_table(tx)
+                    .map_err(|e| MigrationError {
+                        table: Some("identity_order".into()),
+                        details: "create table".into(),
+                        source: e,
+                    })?;
+                tx.execute("DROP TABLE IF EXISTS token_order", [])
+                    .map_err(|e| MigrationError {
+                        table: Some("token_order".into()),
+                        details: "drop table".into(),
+                        source: e,
+                    })?;
+                self.initialize_token_order_table(tx)
+                    .map_err(|e| MigrationError {
+                        table: Some("token_order".into()),
+                        details: "create table".into(),
+                        source: e,
+                    })?;
             }
             5 => {
-                self.initialize_scheduled_votes_table(tx)?;
+                self.initialize_scheduled_votes_table(tx)
+                    .map_err(|e| MigrationError {
+                        table: Some("scheduled_votes".into()),
+                        details: "create table".into(),
+                        source: e,
+                    })?;
             }
             4 => {
-                self.initialize_top_up_table(tx)?;
+                self.initialize_top_up_table(tx)
+                    .map_err(|e| MigrationError {
+                        table: Some("top_up".into()),
+                        details: "create table".into(),
+                        source: e,
+                    })?;
             }
             3 => {
-                self.add_custom_dash_qt_columns(tx)?;
+                self.add_custom_dash_qt_columns(tx)
+                    .map_err(|e| MigrationError {
+                        table: Some("settings".into()),
+                        details: "add custom dash_qt columns".into(),
+                        source: e,
+                    })?;
             }
             2 => {
-                self.initialize_proof_log_table(tx)?;
+                self.initialize_proof_log_table(tx)
+                    .map_err(|e| MigrationError {
+                        table: Some("proof_log".into()),
+                        details: "create table".into(),
+                        source: e,
+                    })?;
             }
             _ => {
                 tracing::warn!("No database changes for version {}", version);
@@ -193,7 +425,7 @@ impl Database {
         &self,
         original_version: u16,
         to_version: u16,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, MigrationError> {
         match original_version.cmp(&to_version) {
             std::cmp::Ordering::Equal => {
                 tracing::trace!(
@@ -202,10 +434,18 @@ impl Database {
                 );
                 Ok(false)
             }
-            std::cmp::Ordering::Greater => Err(format!(
-                "Database schema version {} is too new, max supported version: {}. Please update dash-evo-tool.",
-                original_version, to_version
-            )),
+            std::cmp::Ordering::Greater => Err(MigrationError {
+                table: None,
+                details: format!(
+                    "schema version {} is too new, max supported: {}",
+                    original_version, to_version
+                ),
+                source: rusqlite::Error::InvalidParameterName(format!(
+                    "Database schema version {} is too new, max supported version: {}. \
+                     Please update dash-evo-tool.",
+                    original_version, to_version
+                )),
+            }),
             std::cmp::Ordering::Less => {
                 let mut conn = self
                     .conn
@@ -214,12 +454,38 @@ impl Database {
 
                 for version in (original_version + 1)..=to_version {
                     tracing::debug!("Applying migration v{version}");
-                    let tx = conn.transaction().map_err(|e| e.to_string())?;
-                    self.apply_version_changes(version, &tx)
-                        .map_err(|e| format!("v{version} apply_version_changes: {e}"))?;
-                    self.update_database_version(version, &tx)
-                        .map_err(|e| format!("v{version} update_database_version: {e}"))?;
-                    tx.commit().map_err(|e| format!("v{version} commit: {e}"))?;
+                    let tx = conn.transaction().map_err(|e| MigrationError {
+                        table: None,
+                        details: format!("v{version}: begin transaction"),
+                        source: e,
+                    })?;
+                    let result = self
+                        .apply_version_changes(version, &tx)
+                        .and_then(|()| {
+                            self.update_database_version(version, &tx)
+                                .map_err(|e| MigrationError {
+                                    table: Some("settings".into()),
+                                    details: format!("v{version}: update_database_version"),
+                                    source: e,
+                                })
+                        })
+                        .and_then(|()| {
+                            tx.commit().map_err(|e| MigrationError {
+                                table: None,
+                                details: format!("v{version}: commit"),
+                                source: e,
+                            })
+                        });
+
+                    if let Err(ref migration_err) = result {
+                        if let rusqlite::Error::SqliteFailure(err, _) = &migration_err.source
+                            && err.extended_code == 787
+                        {
+                            // SQLITE_CONSTRAINT_FOREIGNKEY
+                            Self::log_fk_violations(&conn);
+                        }
+                        return result.map(|()| true);
+                    }
                 }
                 Ok(true)
             }
@@ -960,7 +1226,18 @@ impl Database {
     /// on these rows triggers re-validation and fails. Covers all FK
     /// relationships in the schema: wallet→children, identity→children,
     /// token→children, contract→children, contested_name→children.
-    fn clean_orphaned_fk_rows(&self, conn: &Connection) -> rusqlite::Result<()> {
+    fn clean_orphaned_fk_rows(&self, conn: &Connection) -> Result<(), MigrationError> {
+        // Helper to wrap rusqlite errors with table context for this function.
+        let wrap = |table: &str, details: &str| {
+            let table = table.to_string();
+            let details = details.to_string();
+            move |e: rusqlite::Error| MigrationError {
+                table: Some(table),
+                details,
+                source: e,
+            }
+        };
+
         // --- CASCADE children of wallet(seed_hash) ---
         let wallet_fk_delete: &[(&str, &str)] = &[
             ("wallet_addresses", "seed_hash"),
@@ -971,13 +1248,18 @@ impl Database {
             ("asset_lock_transaction", "wallet"),
         ];
         for (table, fk_col) in wallet_fk_delete {
-            if self.table_exists(conn, table)? {
-                let deleted = conn.execute(
-                    &format!(
-                        "DELETE FROM {table} WHERE {fk_col} NOT IN (SELECT seed_hash FROM wallet)"
-                    ),
-                    [],
-                )?;
+            if self
+                .table_exists(conn, table)
+                .map_err(wrap(table, "check table existence"))?
+            {
+                let deleted = conn
+                    .execute(
+                        &format!(
+                            "DELETE FROM {table} WHERE {fk_col} NOT IN (SELECT seed_hash FROM wallet)"
+                        ),
+                        [],
+                    )
+                    .map_err(wrap(table, "delete orphaned wallet FK rows"))?;
                 if deleted > 0 {
                     tracing::info!(
                         "Cleaned {deleted} orphaned row(s) from {table} (missing wallet)"
@@ -988,12 +1270,17 @@ impl Database {
 
         // identity.wallet is nullable with ON DELETE CASCADE — delete orphaned
         // identities whose wallet no longer exists (but skip NULL wallet).
-        if self.table_exists(conn, "identity")? {
-            let deleted = conn.execute(
-                "DELETE FROM identity WHERE wallet IS NOT NULL
+        if self
+            .table_exists(conn, "identity")
+            .map_err(wrap("identity", "check table existence"))?
+        {
+            let deleted = conn
+                .execute(
+                    "DELETE FROM identity WHERE wallet IS NOT NULL
                  AND wallet NOT IN (SELECT seed_hash FROM wallet)",
-                [],
-            )?;
+                    [],
+                )
+                .map_err(wrap("identity", "delete orphaned identity rows"))?;
             if deleted > 0 {
                 tracing::info!("Cleaned {deleted} orphaned identity row(s) (missing wallet)");
             }
@@ -1008,11 +1295,18 @@ impl Database {
             ("token_order", "identity_id"),
         ];
         for (table, fk_col) in identity_fk_delete {
-            if self.table_exists(conn, table)? {
-                let deleted = conn.execute(
-                    &format!("DELETE FROM {table} WHERE {fk_col} NOT IN (SELECT id FROM identity)"),
-                    [],
-                )?;
+            if self
+                .table_exists(conn, table)
+                .map_err(wrap(table, "check table existence"))?
+            {
+                let deleted = conn
+                    .execute(
+                        &format!(
+                            "DELETE FROM {table} WHERE {fk_col} NOT IN (SELECT id FROM identity)"
+                        ),
+                        [],
+                    )
+                    .map_err(wrap(table, "delete orphaned identity FK rows"))?;
                 if deleted > 0 {
                     tracing::info!(
                         "Cleaned {deleted} orphaned row(s) from {table} (missing identity)"
@@ -1022,58 +1316,122 @@ impl Database {
         }
 
         // --- SET NULL children of identity(id) ---
-        if self.table_exists(conn, "asset_lock_transaction")? {
+        if self
+            .table_exists(conn, "asset_lock_transaction")
+            .map_err(wrap("asset_lock_transaction", "check table existence"))?
+        {
             conn.execute(
                 "UPDATE asset_lock_transaction SET identity_id = NULL
                  WHERE identity_id IS NOT NULL
                    AND identity_id NOT IN (SELECT id FROM identity)",
                 [],
-            )?;
+            )
+            .map_err(wrap(
+                "asset_lock_transaction",
+                "nullify orphaned identity_id",
+            ))?;
             conn.execute(
                 "UPDATE asset_lock_transaction SET identity_id_potentially_in_creation = NULL
                  WHERE identity_id_potentially_in_creation IS NOT NULL
                    AND identity_id_potentially_in_creation NOT IN (SELECT id FROM identity)",
                 [],
-            )?;
+            )
+            .map_err(wrap(
+                "asset_lock_transaction",
+                "nullify orphaned identity_id_potentially_in_creation",
+            ))?;
         }
 
         // --- CASCADE children of token(id) ---
-        if self.table_exists(conn, "identity_token_balances")?
-            && self.table_exists(conn, "token")?
+        if self
+            .table_exists(conn, "identity_token_balances")
+            .map_err(wrap("identity_token_balances", "check table existence"))?
+            && self
+                .table_exists(conn, "token")
+                .map_err(wrap("token", "check table existence"))?
         {
             conn.execute(
                 "DELETE FROM identity_token_balances
                  WHERE token_id NOT IN (SELECT id FROM token)",
                 [],
-            )?;
+            )
+            .map_err(wrap(
+                "identity_token_balances",
+                "delete orphaned token FK rows",
+            ))?;
         }
-        if self.table_exists(conn, "token_order")? && self.table_exists(conn, "token")? {
+        if self
+            .table_exists(conn, "token_order")
+            .map_err(wrap("token_order", "check table existence"))?
+            && self
+                .table_exists(conn, "token")
+                .map_err(wrap("token", "check table existence"))?
+        {
             conn.execute(
                 "DELETE FROM token_order WHERE token_id NOT IN (SELECT id FROM token)",
                 [],
-            )?;
+            )
+            .map_err(wrap("token_order", "delete orphaned token FK rows"))?;
         }
 
         // --- CASCADE children of contract ---
-        if self.table_exists(conn, "token")? && self.table_exists(conn, "contract")? {
+        if self
+            .table_exists(conn, "token")
+            .map_err(wrap("token", "check table existence"))?
+            && self
+                .table_exists(conn, "contract")
+                .map_err(wrap("contract", "check table existence"))?
+        {
             conn.execute(
                 "DELETE FROM token WHERE (data_contract_id, network)
                  NOT IN (SELECT contract_id, network FROM contract)",
                 [],
-            )?;
+            )
+            .map_err(wrap("token", "delete orphaned contract FK rows"))?;
         }
 
         // --- CASCADE children of contested_name ---
-        if self.table_exists(conn, "contestant")? && self.table_exists(conn, "contested_name")? {
+        if self
+            .table_exists(conn, "contestant")
+            .map_err(wrap("contestant", "check table existence"))?
+            && self
+                .table_exists(conn, "contested_name")
+                .map_err(wrap("contested_name", "check table existence"))?
+        {
             conn.execute(
                 "DELETE FROM contestant
                  WHERE (normalized_contested_name, network)
                  NOT IN (SELECT normalized_contested_name, network FROM contested_name)",
                 [],
-            )?;
+            )
+            .map_err(wrap("contestant", "delete orphaned contested_name FK rows"))?;
         }
 
         Ok(())
+    }
+
+    /// Log all FK violations to help diagnose SQLITE_CONSTRAINT_FOREIGNKEY errors.
+    fn log_fk_violations(conn: &Connection) {
+        tracing::error!(
+            "FK constraint failure detected — running PRAGMA foreign_key_check for diagnostics:"
+        );
+        if let Ok(mut stmt) = conn.prepare("PRAGMA foreign_key_check")
+            && let Ok(rows) = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })
+        {
+            for row in rows.flatten() {
+                let (table, rowid, parent, fk_idx) = row;
+                tracing::error!(
+                    "  FK violation: {table} rowid={rowid} -> {parent} (fk_index={fk_idx})"
+                );
+            }
+        }
     }
 
     /// Check if a table exists in the database.
@@ -1090,7 +1448,7 @@ impl Database {
     /// Upstream `dashcore` renamed `Network::Dash` to `Network::Mainnet`,
     /// changing the `Display`/`FromStr` representation. This migration updates
     /// every table that stores the network as a string column.
-    fn rename_network_dash_to_mainnet(&self, conn: &Connection) -> rusqlite::Result<()> {
+    fn rename_network_dash_to_mainnet(&self, conn: &Connection) -> Result<(), MigrationError> {
         let tables = [
             "settings",
             "wallet",
@@ -1118,9 +1476,10 @@ impl Database {
                 &format!("UPDATE {table} SET network = 'mainnet' WHERE network = 'dash'"),
                 [],
             )
-            .map_err(|e| {
-                tracing::error!("  rename_network: FAILED on {table}: {e}");
-                e
+            .map_err(|e| MigrationError {
+                table: Some(table.to_string()),
+                details: "rename network dash -> mainnet".into(),
+                source: e,
             })?;
         }
         Ok(())

@@ -50,7 +50,7 @@ pub async fn shared_identity() -> &'static SharedIdentity {
             let ctx = harness::ctx().await;
 
             tracing::info!("SharedIdentity: creating funded test wallet (10M duffs)...");
-            let (seed_hash, wallet_arc) = ctx.create_funded_test_wallet(10_000_000).await;
+            let (seed_hash, wallet_arc) = ctx.create_funded_test_wallet(30_000_000).await;
 
             let (reg_info, master_key_bytes) =
                 build_identity_registration(&ctx.app_context, &wallet_arc, seed_hash);
@@ -200,8 +200,8 @@ pub async fn shared_dashpay_pair() -> &'static SharedDashPayPair {
             tracing::info!(
                 "SharedDashPayPair: creating two funded test wallets (10M duffs each)..."
             );
-            let (seed_hash_a, wallet_a) = ctx.create_funded_test_wallet(10_000_000).await;
-            let (seed_hash_b, wallet_b) = ctx.create_funded_test_wallet(10_000_000).await;
+            let (seed_hash_a, wallet_a) = ctx.create_funded_test_wallet(30_000_000).await;
+            let (seed_hash_b, wallet_b) = ctx.create_funded_test_wallet(30_000_000).await;
 
             // Register identities with DashPay keys
             tracing::info!("SharedDashPayPair: registering identity A...");

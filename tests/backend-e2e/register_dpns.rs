@@ -16,7 +16,7 @@ async fn test_register_dpns_name() {
     let app_context = &ctx.app_context;
 
     // Create funded test wallet (needs enough for identity + DPNS registration)
-    let (seed_hash, wallet_arc) = ctx.create_funded_test_wallet(10_000_000).await;
+    let (seed_hash, wallet_arc) = ctx.create_funded_test_wallet(30_000_000).await;
 
     // Register identity on Platform
     let (reg_info, _master_key_bytes) =

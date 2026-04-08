@@ -41,7 +41,7 @@ async fn ensure_second_identity() -> &'static SecondIdentity {
         .get_or_init(|| async {
             let ctx = harness::ctx().await;
             tracing::info!("SecondIdentity: creating funded test wallet (10M duffs)...");
-            let (seed_hash, wallet_arc) = ctx.create_funded_test_wallet(10_000_000).await;
+            let (seed_hash, wallet_arc) = ctx.create_funded_test_wallet(30_000_000).await;
 
             let (reg_info, master_key_bytes) =
                 build_identity_registration(&ctx.app_context, &wallet_arc, seed_hash);

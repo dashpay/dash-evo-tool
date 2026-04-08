@@ -226,7 +226,8 @@ async fn tc_023_transfer_credits() {
 
     // Register a minimal second identity in-test.
     let (seed_hash_b, wallet_b) = ctx.create_funded_test_wallet(2_000_000).await;
-    let reg_info = build_identity_registration(&ctx.app_context, &wallet_b, seed_hash_b);
+    let (reg_info, _key_bytes_b) =
+        build_identity_registration(&ctx.app_context, &wallet_b, seed_hash_b);
     let reg_result = run_task(
         &ctx.app_context,
         BackendTask::IdentityTask(IdentityTask::RegisterIdentity(reg_info)),

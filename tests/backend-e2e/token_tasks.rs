@@ -43,7 +43,8 @@ async fn ensure_second_identity() -> &'static SecondIdentity {
             tracing::info!("SecondIdentity: creating funded test wallet (2M duffs)...");
             let (seed_hash, wallet_arc) = ctx.create_funded_test_wallet(2_000_000).await;
 
-            let reg_info = build_identity_registration(&ctx.app_context, &wallet_arc, seed_hash);
+            let (reg_info, master_key_bytes) =
+                build_identity_registration(&ctx.app_context, &wallet_arc, seed_hash);
 
             let task = BackendTask::IdentityTask(
                 dash_evo_tool::backend_task::identity::IdentityTask::RegisterIdentity(reg_info),
@@ -60,12 +61,12 @@ async fn ensure_second_identity() -> &'static SecondIdentity {
                 ),
             };
 
-            let (signing_key, signing_key_bytes) = extract_auth_key(&qi);
+            let signing_key = find_auth_public_key(&qi);
 
             SecondIdentity {
                 qualified_identity: qi,
                 signing_key,
-                signing_key_bytes,
+                signing_key_bytes: master_key_bytes,
             }
         })
         .await
@@ -102,33 +103,30 @@ async fn ensure_minted() {
         .await;
 }
 
-/// Extract the first AUTHENTICATION key from a QualifiedIdentity.
-fn extract_auth_key(
+/// Find the first AUTHENTICATION public key from a QualifiedIdentity.
+fn find_auth_public_key(
     qi: &dash_evo_tool::model::qualified_identity::QualifiedIdentity,
-) -> (dash_sdk::platform::IdentityPublicKey, Vec<u8>) {
+) -> dash_sdk::platform::IdentityPublicKey {
     use dash_evo_tool::model::qualified_identity::PrivateKeyTarget;
-    use dash_evo_tool::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
     use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
     use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
 
-    for target_level in [SecurityLevel::HIGH, SecurityLevel::CRITICAL] {
-        for ((target, _key_id), (qualified_key, private_key_data)) in
-            qi.private_keys.private_keys.iter()
-        {
+    for target_level in [
+        SecurityLevel::MASTER,
+        SecurityLevel::HIGH,
+        SecurityLevel::CRITICAL,
+    ] {
+        for ((target, _key_id), (qualified_key, _)) in qi.private_keys.private_keys.iter() {
             if *target != PrivateKeyTarget::PrivateKeyOnMainIdentity {
                 continue;
             }
             let ipk = &qualified_key.identity_public_key;
             if ipk.purpose() == Purpose::AUTHENTICATION && ipk.security_level() == target_level {
-                let bytes = match private_key_data {
-                    PrivateKeyData::Clear(b) | PrivateKeyData::AlwaysClear(b) => b.to_vec(),
-                    _ => panic!("extract_auth_key: key has non-clear private data"),
-                };
-                return (ipk.clone(), bytes);
+                return ipk.clone();
             }
         }
     }
-    panic!("extract_auth_key: no AUTHENTICATION key found");
+    panic!("find_auth_public_key: no AUTHENTICATION key found");
 }
 
 // ---------------------------------------------------------------------------

@@ -12,7 +12,6 @@ use crate::framework::token_helpers;
 use dash_evo_tool::backend_task::identity::{IdentityTask, RegisterDpnsNameInput};
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_evo_tool::model::qualified_identity::PrivateKeyTarget;
-use dash_evo_tool::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
 use dash_evo_tool::model::wallet::{Wallet, WalletSeedHash};
 use dash_sdk::dpp::data_contract::TokenContractPosition;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
@@ -53,7 +52,8 @@ pub async fn shared_identity() -> &'static SharedIdentity {
             tracing::info!("SharedIdentity: creating funded test wallet (2M duffs)...");
             let (seed_hash, wallet_arc) = ctx.create_funded_test_wallet(2_000_000).await;
 
-            let reg_info = build_identity_registration(&ctx.app_context, &wallet_arc, seed_hash);
+            let (reg_info, master_key_bytes) =
+                build_identity_registration(&ctx.app_context, &wallet_arc, seed_hash);
 
             let task = BackendTask::IdentityTask(IdentityTask::RegisterIdentity(reg_info));
             let result = run_task(&ctx.app_context, task)
@@ -75,14 +75,14 @@ pub async fn shared_identity() -> &'static SharedIdentity {
                 ),
             };
 
-            let (signing_key, signing_key_bytes) = extract_authentication_key(&qi);
+            let signing_key = find_authentication_public_key(&qi);
 
             SharedIdentity {
                 qualified_identity: qi,
                 wallet_arc,
                 wallet_seed_hash: seed_hash,
                 signing_key,
-                signing_key_bytes,
+                signing_key_bytes: master_key_bytes,
             }
         })
         .await
@@ -205,12 +205,12 @@ pub async fn shared_dashpay_pair() -> &'static SharedDashPayPair {
 
             // Register identities with DashPay keys
             tracing::info!("SharedDashPayPair: registering identity A...");
-            let qi_a =
+            let (qi_a, key_bytes_a) =
                 dashpay_helpers::create_dashpay_identity(&ctx.app_context, &wallet_a, seed_hash_a)
                     .await;
 
             tracing::info!("SharedDashPayPair: registering identity B...");
-            let qi_b =
+            let (qi_b, key_bytes_b) =
                 dashpay_helpers::create_dashpay_identity(&ctx.app_context, &wallet_b, seed_hash_b)
                     .await;
 
@@ -254,8 +254,8 @@ pub async fn shared_dashpay_pair() -> &'static SharedDashPayPair {
                 result_b
             );
 
-            let signing_key_a = extract_authentication_key(&qi_a);
-            let signing_key_b = extract_authentication_key(&qi_b);
+            let signing_key_a = (find_authentication_public_key(&qi_a), key_bytes_a);
+            let signing_key_b = (find_authentication_public_key(&qi_b), key_bytes_b);
 
             tracing::info!(
                 "SharedDashPayPair: ready — A={:?} ({}), B={:?} ({})",
@@ -281,29 +281,28 @@ pub async fn shared_dashpay_pair() -> &'static SharedDashPayPair {
 
 // --- Helpers ---
 
-/// Extract the first AUTHENTICATION HIGH key and its private key bytes from a QualifiedIdentity.
+/// Find the first AUTHENTICATION public key in a QualifiedIdentity.
 ///
-/// Falls back to AUTHENTICATION CRITICAL if no HIGH key is found.
-pub fn extract_authentication_key(
+/// Tries MASTER first, then HIGH, then CRITICAL. Only inspects the public key
+/// metadata — does NOT attempt to extract private key bytes (which are
+/// typically encrypted after registration).
+pub fn find_authentication_public_key(
     qi: &dash_evo_tool::model::qualified_identity::QualifiedIdentity,
-) -> (IdentityPublicKey, Vec<u8>) {
-    // Try HIGH first, then CRITICAL
-    for target_level in [SecurityLevel::HIGH, SecurityLevel::CRITICAL] {
-        for ((target, _key_id), (qualified_key, private_key_data)) in
-            qi.private_keys.private_keys.iter()
-        {
+) -> IdentityPublicKey {
+    for target_level in [
+        SecurityLevel::MASTER,
+        SecurityLevel::HIGH,
+        SecurityLevel::CRITICAL,
+    ] {
+        for ((target, _key_id), (qualified_key, _)) in qi.private_keys.private_keys.iter() {
             if *target != PrivateKeyTarget::PrivateKeyOnMainIdentity {
                 continue;
             }
             let ipk = &qualified_key.identity_public_key;
             if ipk.purpose() == Purpose::AUTHENTICATION && ipk.security_level() == target_level {
-                let bytes = match private_key_data {
-                    PrivateKeyData::Clear(b) | PrivateKeyData::AlwaysClear(b) => b.to_vec(),
-                    _ => continue, // Skip encrypted keys — only cleartext keys are usable in tests
-                };
-                return (ipk.clone(), bytes);
+                return ipk.clone();
             }
         }
     }
-    panic!("extract_authentication_key: no AUTHENTICATION key found in QualifiedIdentity");
+    panic!("find_authentication_public_key: no AUTHENTICATION key found in QualifiedIdentity");
 }

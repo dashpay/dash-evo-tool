@@ -1,8 +1,9 @@
 //! MnListTask backend E2E tests: TC-068 to TC-073.
 //!
 //! These tests exercise read-only P2P masternode list queries against a live
-//! testnet. They require SPV to be synced. Block info is obtained via DAPI
-//! (Platform gRPC) and the well-known genesis hash — no Core RPC needed.
+//! testnet. They require SPV to be synced AND a local Dash Core node
+//! listening on 127.0.0.1:19999 (testnet P2P port). Tests that need P2P
+//! skip gracefully when no local node is detected.
 
 use crate::framework::harness::ctx;
 use crate::framework::mnlist_helpers::{get_current_block_info, get_genesis_hash};
@@ -11,6 +12,22 @@ use dash_evo_tool::backend_task::mnlist::MnListTask;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_sdk::dpp::dashcore::BlockHash;
 use dash_sdk::dpp::dashcore::hashes::Hash;
+
+/// Check whether a local Dash Core P2P node is reachable on testnet port.
+/// Returns `true` if the test should proceed, `false` if it should skip.
+fn require_local_core_p2p() -> bool {
+    if std::net::TcpStream::connect_timeout(
+        &"127.0.0.1:19999".parse().unwrap(),
+        std::time::Duration::from_secs(2),
+    )
+    .is_ok()
+    {
+        true
+    } else {
+        tracing::warn!("Skipping: no local Dash Core P2P node at 127.0.0.1:19999");
+        false
+    }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TC-068: FetchEndDmlDiff
@@ -23,6 +40,9 @@ use dash_sdk::dpp::dashcore::hashes::Hash;
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn tc_068_fetch_end_dml_diff() {
+    if !require_local_core_p2p() {
+        return;
+    }
     let ctx = ctx().await;
     let app_context = &ctx.app_context;
 
@@ -70,6 +90,9 @@ async fn tc_068_fetch_end_dml_diff() {
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn tc_069_fetch_end_qr_info() {
+    if !require_local_core_p2p() {
+        return;
+    }
     let ctx = ctx().await;
     let app_context = &ctx.app_context;
 
@@ -104,6 +127,9 @@ async fn tc_069_fetch_end_qr_info() {
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn tc_070_fetch_end_qr_info_with_dmls() {
+    if !require_local_core_p2p() {
+        return;
+    }
     let ctx = ctx().await;
     let app_context = &ctx.app_context;
 
@@ -143,6 +169,9 @@ async fn tc_070_fetch_end_qr_info_with_dmls() {
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn tc_071_fetch_diffs_chain() {
+    if !require_local_core_p2p() {
+        return;
+    }
     let ctx = ctx().await;
     let app_context = &ctx.app_context;
 
@@ -179,6 +208,9 @@ async fn tc_071_fetch_diffs_chain() {
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn tc_073_fetch_dml_diff_invalid_hash() {
+    if !require_local_core_p2p() {
+        return;
+    }
     let ctx = ctx().await;
     let app_context = &ctx.app_context;
 

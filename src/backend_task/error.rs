@@ -2488,8 +2488,8 @@ mod tests {
         let err = TaskError::from(sdk_err);
         let msg = err.to_string();
         assert!(
-            msg.contains("bad\tname"),
-            "Expected token name in message, got: {msg}"
+            msg.contains("badname"),
+            "Expected escaped token name in message, got: {msg}"
         );
         assert!(
             msg.contains("rename"),

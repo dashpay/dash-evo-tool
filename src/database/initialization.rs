@@ -288,14 +288,10 @@ impl Database {
             std::cmp::Ordering::Greater => Err(MigrationError {
                 table: None,
                 details: format!(
-                    "schema version {} is too new, max supported: {}",
-                    original_version, to_version
+                    "database is at version {original_version} but this build \
+                     only supports up to version {to_version} — please update dash-evo-tool"
                 ),
-                source: rusqlite::Error::InvalidParameterName(format!(
-                    "Database schema version {} is too new, max supported version: {}. \
-                     Please update dash-evo-tool.",
-                    original_version, to_version
-                )),
+                source: rusqlite::Error::InvalidQuery,
             }),
             std::cmp::Ordering::Less => {
                 let mut conn = self
@@ -1244,25 +1240,55 @@ impl Database {
 
     /// Log all FK violations to help diagnose SQLITE_CONSTRAINT_FOREIGNKEY errors.
     fn log_fk_violations(conn: &Connection) {
+        const MAX_VIOLATIONS_TO_LOG: usize = 50;
+
         tracing::error!(
             "FK constraint failure detected — running PRAGMA foreign_key_check for diagnostics:"
         );
-        if let Ok(mut stmt) = conn.prepare("PRAGMA foreign_key_check")
-            && let Ok(rows) = stmt.query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, i64>(3)?,
-                ))
-            })
-        {
-            for row in rows.flatten() {
-                let (table, rowid, parent, fk_idx) = row;
-                tracing::error!(
-                    "  FK violation: {table} rowid={rowid} -> {parent} (fk_index={fk_idx})"
-                );
+        let Ok(mut stmt) = conn.prepare("PRAGMA foreign_key_check") else {
+            tracing::error!("  failed to prepare PRAGMA foreign_key_check");
+            return;
+        };
+        let Ok(rows) = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        }) else {
+            tracing::error!("  failed to execute PRAGMA foreign_key_check");
+            return;
+        };
+
+        let mut count = 0usize;
+        let mut errors = 0usize;
+        for row in rows {
+            match row {
+                Ok((table, rowid, parent, fk_idx)) => {
+                    count += 1;
+                    if count <= MAX_VIOLATIONS_TO_LOG {
+                        tracing::error!(
+                            "  FK violation: {table} rowid={rowid} -> {parent} (fk_index={fk_idx})"
+                        );
+                    }
+                }
+                Err(e) => {
+                    errors += 1;
+                    if errors <= 3 {
+                        tracing::error!("  FK check row decode error: {e}");
+                    }
+                }
             }
+        }
+        if count > MAX_VIOLATIONS_TO_LOG {
+            tracing::error!(
+                "  ... and {} more violation(s) not shown",
+                count - MAX_VIOLATIONS_TO_LOG
+            );
+        }
+        if count == 0 && errors == 0 {
+            tracing::error!("  no violations found (failure may be from deferred FK check)");
         }
     }
 

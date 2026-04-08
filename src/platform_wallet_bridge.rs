@@ -44,6 +44,7 @@ pub use platform_wallet::wallet::WalletId;
 // ── Identity sub-types ────────────────────────────────────────────────
 
 pub use platform_wallet::DpnsNameInfo as ManagedDpnsNameInfo;
+pub use platform_wallet::IdentityFunding;
 pub use platform_wallet::IdentityStatus as ManagedIdentityStatus;
 pub use platform_wallet::KeyStorage as ManagedKeyStorage;
 pub use platform_wallet::PrivateKeyData as ManagedPrivateKeyData;

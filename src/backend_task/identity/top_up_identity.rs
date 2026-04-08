@@ -1,21 +1,14 @@
 use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::{IdentityTopUpInfo, TopUpIdentityFundingMethod};
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
-use crate::context::{AppContext, get_transaction_info};
+use crate::context::AppContext;
 use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::proof_log_item::RequestType;
+use crate::platform_wallet_bridge::IdentityFunding;
 use dash_sdk::Error;
 use dash_sdk::dpp::ProtocolError;
-use dash_sdk::dpp::block::extended_epoch_info::ExtendedEpochInfo;
-use dash_sdk::dpp::dashcore::OutPoint;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
-use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
-use dash_sdk::dpp::prelude::AssetLockProof;
-use dash_sdk::dpp::state_transition::identity_topup_transition::IdentityTopUpTransition;
-use dash_sdk::dpp::state_transition::identity_topup_transition::methods::IdentityTopUpTransitionMethodsV0;
-use dash_sdk::platform::Fetch;
-use dash_sdk::platform::transition::top_up_identity::TopUpIdentity;
 use std::collections::BTreeMap;
 
 impl AppContext {
@@ -29,71 +22,53 @@ impl AppContext {
             identity_funding_method,
         } = input;
 
-        let sdk = self.sdk.load().as_ref().clone();
+        let (out_point, identity_index, top_up_index) = match identity_funding_method {
+            TopUpIdentityFundingMethod::UseAssetLock(out_point) => {
+                let _platform_wallet = {
+                    let guard = wallet.read().map_err(TaskError::from)?;
+                    guard
+                        .platform_wallet
+                        .clone()
+                        .ok_or(TaskError::WalletNotFound)?
+                };
 
-        let (_, metadata) = ExtendedEpochInfo::fetch_with_metadata(&sdk, 0, None).await?;
+                (out_point, 0u32, None)
+            }
+            TopUpIdentityFundingMethod::FundWithWallet(
+                amount,
+                identity_index,
+                top_up_index,
+            ) => {
+                let platform_wallet = {
+                    let guard = wallet.read().map_err(TaskError::from)?;
+                    guard
+                        .platform_wallet
+                        .clone()
+                        .ok_or(TaskError::WalletNotFound)?
+                };
 
-        let (asset_lock_proof, asset_lock_proof_private_key, tx_id, top_up_index) =
-            match identity_funding_method {
-                TopUpIdentityFundingMethod::UseAssetLock(out_point) => {
-                    let tx_id = out_point.txid;
-
-                    let platform_wallet = {
-                        let guard = wallet.read().map_err(TaskError::from)?;
-                        guard
-                            .platform_wallet
-                            .clone()
-                            .ok_or(TaskError::WalletNotFound)?
-                    };
-
-                    // platform-wallet handles IS→CL fallback and key re-derivation internally
-                    let (asset_lock_proof, private_key) = platform_wallet
+                // Single call: builds asset lock TX, broadcasts, waits for
+                // finality proof (IS or CL), and returns the proof + key.
+                // The lock is tracked by AssetLockManager for later resumption.
+                let (_asset_lock_proof, _asset_lock_proof_private_key, out_point) =
+                    platform_wallet
                         .asset_locks()
-                        .resume_asset_lock(&out_point, std::time::Duration::from_secs(300))
+                        .create_funded_asset_lock_proof(
+                            amount,
+                            0,
+                            platform_wallet::AssetLockFundingType::IdentityTopUp,
+                            identity_index,
+                        )
                         .await
                         .map_err(|e| TaskError::AssetLockTransactionBuildFailed {
                             detail: e.to_string(),
                         })?;
 
-                    (asset_lock_proof, private_key, tx_id, None)
-                }
-                TopUpIdentityFundingMethod::FundWithWallet(
-                    amount,
-                    identity_index,
-                    top_up_index,
-                ) => {
-                    let platform_wallet = {
-                        let guard = wallet.read().map_err(TaskError::from)?;
-                        guard
-                            .platform_wallet
-                            .clone()
-                            .ok_or(TaskError::WalletNotFound)?
-                    };
+                (out_point, identity_index, Some((amount, top_up_index)))
+            }
+        };
 
-                    // Single call: builds asset lock TX, broadcasts, waits for
-                    // finality proof (IS or CL), and returns the proof + key.
-                    let (asset_lock_proof, asset_lock_proof_private_key, out_point) =
-                        platform_wallet
-                            .asset_locks()
-                            .create_funded_asset_lock_proof(
-                                amount,
-                                0,
-                                platform_wallet::AssetLockFundingType::IdentityTopUp,
-                                identity_index,
-                            )
-                            .await
-                            .map_err(|e| TaskError::AssetLockTransactionBuildFailed {
-                                detail: e.to_string(),
-                            })?;
-
-                    (
-                        asset_lock_proof,
-                        asset_lock_proof_private_key,
-                        out_point.txid,
-                        Some((amount, top_up_index)),
-                    )
-                }
-            };
+        let tx_id = out_point.txid;
 
         self.db
             .set_asset_lock_identity_id_before_confirmation_by_network(
@@ -105,137 +80,62 @@ impl AppContext {
         let balance_before = qualified_identity.identity.balance();
         let estimated_fee = PlatformFeeEstimator::new().estimate_identity_topup();
 
-        // Delegate the SDK call to platform-wallet when available,
-        // falling back to direct SDK call otherwise.
+        // Use the one-call API which handles IS→CL fallback internally.
+        // The asset lock is already tracked by the manager from the funding
+        // phase above, so FromExistingAssetLock resumes it efficiently.
         let maybe_platform_wallet = self.platform_wallet_for_identity(&qualified_identity).ok();
 
-        let top_up_result = if let Some(ref pw) = maybe_platform_wallet {
-            pw.identity()
-                .top_up_identity_with_signer(
-                    &qualified_identity.identity,
-                    asset_lock_proof.clone(),
-                    &asset_lock_proof_private_key,
-                    None,
-                )
-                .await
-        } else {
-            qualified_identity
-                .identity
-                .top_up_identity(
-                    &sdk,
-                    asset_lock_proof.clone(),
-                    &asset_lock_proof_private_key,
-                    None,
-                    None,
-                )
-                .await
-        };
+        let platform_wallet = maybe_platform_wallet
+            .as_ref()
+            .ok_or(TaskError::WalletNotFound)?;
+
+        let funding = IdentityFunding::FromExistingAssetLock { out_point };
+
+        let top_up_result = platform_wallet
+            .identity()
+            .funded_top_up_identity(
+                &qualified_identity.identity,
+                funding.clone(),
+                identity_index,
+                None,
+            )
+            .await;
 
         let updated_identity_balance = match top_up_result {
-            Ok(updated_identity) => updated_identity,
-            Err(e) => {
-                if crate::backend_task::error::is_instant_lock_proof_invalid(&e) {
-                    // Try to use chain asset lock proof instead
-                    let tx_info = get_transaction_info(&sdk, &tx_id).await?;
-
-                    if tx_info.is_chain_locked && tx_info.height > 0 {
-                        let tx_block_height = tx_info.height;
-
-                        if tx_block_height <= metadata.core_chain_locked_height {
-                            // Platform has verified this Core block, use chain lock proof
-                            let chain_asset_lock_proof =
-                                AssetLockProof::Chain(ChainAssetLockProof {
-                                    core_chain_locked_height: tx_block_height,
-                                    out_point: OutPoint::new(tx_id, 0),
-                                });
-
-                            // Retry with chain asset lock proof via platform-wallet or fallback
-                            let cl_result = if let Some(ref pw) = maybe_platform_wallet {
-                                pw.identity()
-                                    .top_up_identity_with_signer(
-                                        &qualified_identity.identity,
-                                        chain_asset_lock_proof,
-                                        &asset_lock_proof_private_key,
-                                        None,
-                                    )
-                                    .await
-                            } else {
-                                qualified_identity
-                                    .identity
-                                    .top_up_identity(
-                                        &sdk,
-                                        chain_asset_lock_proof,
-                                        &asset_lock_proof_private_key,
-                                        None,
-                                        None,
-                                    )
-                                    .await
-                            };
-
-                            cl_result.map_err(|e| {
-                                self.log_drive_proof_error(e, RequestType::BroadcastStateTransition)
-                            })?
-                        } else {
-                            return Err(TaskError::AssetLockExpired {
-                                tx_block_height,
-                                platform_height: metadata.core_chain_locked_height,
-                            });
-                        }
-                    } else {
-                        return Err(TaskError::AssetLockInstantLockExpiredNotChainlocked);
-                    }
-                } else if matches!(e, Error::Protocol(ProtocolError::UnknownVersionError(_))) {
-                    let retry_result = if let Some(ref pw) = maybe_platform_wallet {
-                        pw.identity()
-                            .top_up_identity_with_signer(
-                                &qualified_identity.identity,
-                                asset_lock_proof.clone(),
-                                &asset_lock_proof_private_key,
-                                None,
-                            )
-                            .await
-                    } else {
-                        qualified_identity
-                            .identity
-                            .top_up_identity(
-                                &sdk,
-                                asset_lock_proof.clone(),
-                                &asset_lock_proof_private_key,
-                                None,
-                                None,
-                            )
-                            .await
-                    };
-
-                    retry_result.map_err(|retry_err| {
-                        let logged = self.log_drive_proof_error(
-                            retry_err,
-                            RequestType::BroadcastStateTransition,
-                        );
-                        if matches!(logged, TaskError::ProofError { .. }) {
-                            return logged;
-                        }
-                        // Log the reconstructed transition for debugging before returning the error.
-                        if let Ok(transition) = IdentityTopUpTransition::try_from_identity(
-                            &qualified_identity.identity,
-                            asset_lock_proof,
-                            asset_lock_proof_private_key.inner.as_ref(),
-                            0,
-                            self.platform_version(),
-                            None,
-                        ) {
-                            tracing::debug!(
-                                "Top-up retry failed; reconstructed transition: {:?}",
-                                transition
-                            );
-                        }
-                        logged
+            Ok(new_balance) => new_balance,
+            Err(platform_wallet::PlatformWalletError::Sdk(ref e))
+                if matches!(e, Error::Protocol(ProtocolError::UnknownVersionError(_))) =>
+            {
+                // Retry once on version mismatch.
+                platform_wallet
+                    .identity()
+                    .funded_top_up_identity(
+                        &qualified_identity.identity,
+                        funding,
+                        identity_index,
+                        None,
+                    )
+                    .await
+                    .map_err(|retry_err| match retry_err {
+                        platform_wallet::PlatformWalletError::Sdk(sdk_err) => self
+                            .log_drive_proof_error(
+                                sdk_err,
+                                RequestType::BroadcastStateTransition,
+                            ),
+                        other => TaskError::PlatformWallet {
+                            source: Box::new(other),
+                        },
                     })?
-                } else {
-                    return Err(
-                        self.log_drive_proof_error(e, RequestType::BroadcastStateTransition)
-                    );
-                }
+            }
+            Err(platform_wallet::PlatformWalletError::Sdk(e)) => {
+                return Err(
+                    self.log_drive_proof_error(e, RequestType::BroadcastStateTransition)
+                );
+            }
+            Err(other) => {
+                return Err(TaskError::PlatformWallet {
+                    source: Box::new(other),
+                });
             }
         };
 

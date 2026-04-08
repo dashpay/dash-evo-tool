@@ -1,24 +1,18 @@
 use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::{IdentityRegistrationInfo, RegisterIdentityFundingMethod};
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
-use crate::context::{AppContext, get_transaction_info};
+use crate::context::AppContext;
 use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::proof_log_item::RequestType;
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
+use crate::platform_wallet_bridge::IdentityFunding;
 use dash_sdk::Error;
 use dash_sdk::dash_spv::Network;
 use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::address_funds::PlatformAddress;
-use dash_sdk::dpp::block::extended_epoch_info::ExtendedEpochInfo;
 use dash_sdk::dpp::dashcore::hashes::Hash;
-use dash_sdk::dpp::dashcore::{OutPoint, PrivateKey};
 use dash_sdk::dpp::fee::Credits;
-use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
-use dash_sdk::dpp::native_bls::NativeBlsModule;
-use dash_sdk::dpp::prelude::{AddressNonce, AssetLockProof};
-use dash_sdk::dpp::state_transition::identity_create_transition::IdentityCreateTransition;
-use dash_sdk::dpp::state_transition::identity_create_transition::methods::IdentityCreateTransitionMethodsV0;
-use dash_sdk::platform::transition::put_identity::PutIdentity;
+use dash_sdk::dpp::prelude::AddressNonce;
 use dash_sdk::platform::{Fetch, FetchMany, Identity};
 use dash_sdk::query_types::AddressInfo;
 use std::collections::BTreeMap;
@@ -38,15 +32,10 @@ impl AppContext {
 
         let sdk = self.sdk.load().as_ref().clone();
 
-        let (_, metadata) = ExtendedEpochInfo::fetch_with_metadata(&sdk, 0, None).await?;
-
         let wallet_id;
 
-        let (asset_lock_proof, asset_lock_proof_private_key, tx_id) = match identity_funding_method
-        {
+        let (asset_lock_proof, out_point) = match identity_funding_method {
             RegisterIdentityFundingMethod::UseAssetLock(out_point) => {
-                let tx_id = out_point.txid;
-
                 let platform_wallet = {
                     let guard = wallet.read().map_err(TaskError::from)?;
                     wallet_id = guard.seed_hash();
@@ -57,7 +46,7 @@ impl AppContext {
                 };
 
                 // platform-wallet handles IS→CL fallback and key re-derivation internally
-                let (asset_lock_proof, private_key) = platform_wallet
+                let (asset_lock_proof, _private_key) = platform_wallet
                     .asset_locks()
                     .resume_asset_lock(&out_point, std::time::Duration::from_secs(300))
                     .await
@@ -65,7 +54,7 @@ impl AppContext {
                         detail: e.to_string(),
                     })?;
 
-                (asset_lock_proof, private_key, tx_id)
+                (asset_lock_proof, out_point)
             }
             RegisterIdentityFundingMethod::FundWithWallet(amount, identity_index) => {
                 let platform_wallet = {
@@ -79,7 +68,7 @@ impl AppContext {
 
                 // Single call: builds asset lock TX, broadcasts, waits for
                 // finality proof (IS or CL), and returns the proof + key.
-                let (asset_lock_proof, asset_lock_proof_private_key, out_point) = platform_wallet
+                let (asset_lock_proof, _asset_lock_proof_private_key, out_point) = platform_wallet
                     .asset_locks()
                     .create_funded_asset_lock_proof(
                         amount,
@@ -92,11 +81,7 @@ impl AppContext {
                         detail: e.to_string(),
                     })?;
 
-                (
-                    asset_lock_proof,
-                    asset_lock_proof_private_key,
-                    out_point.txid,
-                )
+                (asset_lock_proof, out_point)
             }
             RegisterIdentityFundingMethod::FundWithPlatformAddresses {
                 inputs,
@@ -209,6 +194,8 @@ impl AppContext {
             qualified_identity.alias = Some(alias_input);
         }
 
+        let tx_id = out_point.txid;
+
         if let Some(existing_identity) = existing_identity {
             qualified_identity.identity = existing_identity;
             qualified_identity.status = IdentityStatus::Unknown;
@@ -238,11 +225,14 @@ impl AppContext {
                 identity_id.as_bytes(),
             )?;
 
+        // Use the one-call API which handles IS→CL fallback internally.
+        // The asset lock is already tracked by the manager from the funding
+        // phase above, so FromExistingAssetLock resumes it efficiently.
         match self
             .put_new_identity_to_platform(
                 &identity,
-                asset_lock_proof.clone(),
-                &asset_lock_proof_private_key,
+                IdentityFunding::FromExistingAssetLock { out_point },
+                wallet_identity_index,
                 qualified_identity.clone(),
                 &wallet_id,
             )
@@ -250,92 +240,19 @@ impl AppContext {
         {
             Ok(updated_identity) => {
                 qualified_identity.identity = updated_identity;
-                qualified_identity.status = IdentityStatus::Unknown; // force refresh of the status
+                qualified_identity.status = IdentityStatus::Unknown;
             }
             Err(e) => {
-                if matches!(e, TaskError::AssetLockInstantLockProofInvalid { .. }) {
-                    // Try to use chain asset lock proof instead
-                    let tx_info = get_transaction_info(&sdk, &tx_id).await?;
+                qualified_identity
+                    .status
+                    .update(IdentityStatus::FailedCreation);
 
-                    if tx_info.is_chain_locked && tx_info.height > 0 {
-                        let tx_block_height = tx_info.height;
+                self.insert_local_qualified_identity(
+                    &qualified_identity,
+                    &Some((wallet_id, wallet_identity_index)),
+                )?;
 
-                        if tx_block_height <= metadata.core_chain_locked_height {
-                            // Platform has verified this Core block, use chain lock proof
-                            let chain_asset_lock_proof =
-                                AssetLockProof::Chain(ChainAssetLockProof {
-                                    core_chain_locked_height: tx_block_height,
-                                    out_point: OutPoint::new(tx_id, 0),
-                                });
-
-                            // Retry with chain asset lock proof
-                            match self
-                                .put_new_identity_to_platform(
-                                    &identity,
-                                    chain_asset_lock_proof,
-                                    &asset_lock_proof_private_key,
-                                    qualified_identity.clone(),
-                                    &wallet_id,
-                                )
-                                .await
-                            {
-                                Ok(updated_identity) => {
-                                    qualified_identity.identity = updated_identity;
-                                    qualified_identity.status = IdentityStatus::Unknown;
-                                }
-                                Err(retry_err) => {
-                                    qualified_identity
-                                        .status
-                                        .update(IdentityStatus::FailedCreation);
-
-                                    self.insert_local_qualified_identity(
-                                        &qualified_identity,
-                                        &Some((wallet_id, wallet_identity_index)),
-                                    )?;
-
-                                    return Err(retry_err);
-                                }
-                            }
-                        } else {
-                            qualified_identity
-                                .status
-                                .update(IdentityStatus::FailedCreation);
-
-                            self.insert_local_qualified_identity(
-                                &qualified_identity,
-                                &Some((wallet_id, wallet_identity_index)),
-                            )?;
-
-                            return Err(TaskError::AssetLockExpired {
-                                tx_block_height,
-                                platform_height: metadata.core_chain_locked_height,
-                            });
-                        }
-                    } else {
-                        qualified_identity
-                            .status
-                            .update(IdentityStatus::FailedCreation);
-
-                        self.insert_local_qualified_identity(
-                            &qualified_identity,
-                            &Some((wallet_id, wallet_identity_index)),
-                        )?;
-
-                        return Err(TaskError::AssetLockInstantLockExpiredNotChainlocked);
-                    }
-                } else {
-                    // we failed, set the status accordingly and terminate the process
-                    qualified_identity
-                        .status
-                        .update(IdentityStatus::FailedCreation);
-
-                    self.insert_local_qualified_identity(
-                        &qualified_identity,
-                        &Some((wallet_id, wallet_identity_index)),
-                    )?;
-
-                    return Err(e);
-                }
+                return Err(e);
             }
         }
 
@@ -383,97 +300,59 @@ impl AppContext {
     async fn put_new_identity_to_platform(
         &self,
         identity: &Identity,
-        asset_lock_proof: AssetLockProof,
-        asset_lock_proof_private_key: &PrivateKey,
+        funding: IdentityFunding,
+        identity_index: u32,
         qualified_identity: QualifiedIdentity,
         wallet_seed_hash: &[u8; 32],
     ) -> Result<Identity, TaskError> {
-        // Delegate the SDK call to platform-wallet when available,
-        // falling back to direct SDK call otherwise.
-        let result = if let Some(platform_wallet) = self.get_platform_wallet(wallet_seed_hash) {
-            platform_wallet
-                .identity()
-                .register_identity_with_signer(
-                    identity,
-                    asset_lock_proof.clone(),
-                    asset_lock_proof_private_key,
-                    &qualified_identity,
-                    None,
-                )
-                .await
-        } else {
-            identity
-                .put_to_platform_and_wait_for_response(
-                    &self.sdk.load().as_ref().clone(),
-                    asset_lock_proof.clone(),
-                    asset_lock_proof_private_key,
-                    &qualified_identity,
-                    None,
-                )
-                .await
-        };
+        // Use the one-call API which handles IS→CL fallback internally.
+        let platform_wallet = self
+            .get_platform_wallet(wallet_seed_hash)
+            .ok_or(TaskError::WalletNotFound)?;
+
+        let result = platform_wallet
+            .identity()
+            .funded_register_identity(
+                identity,
+                funding.clone(),
+                identity_index,
+                &qualified_identity,
+                None,
+            )
+            .await;
 
         match result {
             Ok(updated_identity) => Ok(updated_identity),
-            Err(e) => {
-                if matches!(e, Error::Protocol(ProtocolError::UnknownVersionError(_))) {
-                    // Retry once on version mismatch.
-                    let retry_result =
-                        if let Some(platform_wallet) = self.get_platform_wallet(wallet_seed_hash) {
-                            platform_wallet
-                                .identity()
-                                .register_identity_with_signer(
-                                    identity,
-                                    asset_lock_proof.clone(),
-                                    asset_lock_proof_private_key,
-                                    &qualified_identity,
-                                    None,
-                                )
-                                .await
-                        } else {
-                            identity
-                                .put_to_platform_and_wait_for_response(
-                                    &self.sdk.load().as_ref().clone(),
-                                    asset_lock_proof.clone(),
-                                    asset_lock_proof_private_key,
-                                    &qualified_identity,
-                                    None,
-                                )
-                                .await
-                        };
+            Err(platform_wallet::PlatformWalletError::Sdk(ref e))
+                if matches!(e, Error::Protocol(ProtocolError::UnknownVersionError(_))) =>
+            {
+                // Retry once on version mismatch.
+                let retry_result = platform_wallet
+                    .identity()
+                    .funded_register_identity(
+                        identity,
+                        funding,
+                        identity_index,
+                        &qualified_identity,
+                        None,
+                    )
+                    .await;
 
-                    retry_result.map_err(|retry_err| {
-                        let logged = self.log_drive_proof_error(
-                            retry_err,
-                            RequestType::BroadcastStateTransition,
-                        );
-                        // If the logged variant is ProofError, return it directly;
-                        // otherwise log the reconstructed transition for debugging.
-                        if matches!(logged, TaskError::ProofError { .. }) {
-                            return logged;
-                        }
-                        if let Ok(transition) =
-                            IdentityCreateTransition::try_from_identity_with_signer(
-                                identity,
-                                asset_lock_proof,
-                                asset_lock_proof_private_key.inner.as_ref(),
-                                &qualified_identity,
-                                &NativeBlsModule,
-                                0,
-                                self.platform_version(),
-                            )
-                        {
-                            tracing::debug!(
-                                "Register identity retry failed; reconstructed transition: {:?}",
-                                transition
-                            );
-                        }
-                        logged
-                    })
-                } else {
-                    Err(self.log_drive_proof_error(e, RequestType::BroadcastStateTransition))
-                }
+                retry_result.map_err(|retry_err| match retry_err {
+                    platform_wallet::PlatformWalletError::Sdk(sdk_err) => {
+                        self.log_drive_proof_error(sdk_err, RequestType::BroadcastStateTransition)
+                    }
+                    other => TaskError::PlatformWallet {
+                        source: Box::new(other),
+                    },
+                })
             }
+            Err(platform_wallet::PlatformWalletError::Sdk(e)) => {
+                Err(self.log_drive_proof_error(e, RequestType::BroadcastStateTransition))
+            }
+            Err(other) => Err(TaskError::PlatformWallet {
+                source: Box::new(other),
+            }),
         }
     }
 

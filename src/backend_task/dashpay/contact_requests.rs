@@ -220,7 +220,12 @@ pub async fn send_contact_request_with_proof(
 
     let to_identity_id = to_identity.id();
 
-    // Step 2: Check if a contact request already exists
+    // Step 2: Reject self-contact (Platform would reject with code 40500 anyway)
+    if to_identity_id == identity.identity.id() {
+        return Err(TaskError::DashPay(DashPayError::CannotContactSelf));
+    }
+
+    // Step 3: Check if a contact request already exists
     let dashpay_contract = app_context.dashpay_contract.clone();
     let mut existing_query = DocumentQuery::new(dashpay_contract.clone(), "contactRequest")
         .map_err(|e| DashPayError::QueryCreation {

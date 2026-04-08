@@ -105,6 +105,9 @@ pub enum DashPayError {
     },
 
     // User Input Errors
+    #[error("You cannot send a contact request to yourself.")]
+    CannotContactSelf,
+
     #[error("The username format is not valid. Usernames must end with '.dash'.")]
     InvalidUsername { username: String },
 

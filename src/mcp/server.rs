@@ -69,7 +69,7 @@ impl DashMcpService {
         Self {
             ctx: ContextHolder::Shared(app_context),
             #[cfg(feature = "cli")]
-            init_guard: Arc::new(tokio::sync::OnceCell::const_new_with(())),
+            init_guard: Arc::new(tokio::sync::OnceCell::const_new()),
             tool_router: Self::tool_router(),
         }
     }
@@ -94,7 +94,10 @@ impl DashMcpService {
             let ctx_holder = self.ctx.clone();
             self.init_guard
                 .get_or_try_init(|| async {
-                    let app_context = init_app_context().await?;
+                    let app_context = init_app_context().await.map_err(|e| {
+                        tracing::error!("MCP context initialization failed: {e}");
+                        McpError::internal_error("Failed to initialize application context", None)
+                    })?;
                     ctx_holder.store(app_context);
                     Ok::<(), McpError>(())
                 })

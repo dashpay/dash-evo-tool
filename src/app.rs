@@ -399,7 +399,7 @@ impl AppState {
         let dashpay_profile_search_screen = ProfileSearchScreen::new(active_context.clone());
 
         let network_chooser_screen =
-            NetworkChooserScreen::new(&network_contexts, saved_network, overwrite_dash_conf);
+            NetworkChooserScreen::new(&network_contexts, chosen_network, overwrite_dash_conf);
 
         let masternode_list_diff_screen = MasternodeListDiffScreen::new(&active_context);
 
@@ -738,8 +738,13 @@ impl AppState {
     }
 
     pub fn change_network(&mut self, network: Network) {
-        // Ignore if we're already switching to this network.
-        if self.network_switch_pending == Some(network) {
+        // Block any new switch while one is already in progress.
+        if self.network_switch_pending.is_some() {
+            tracing::debug!(
+                "Ignoring network switch to {:?} — switch to {:?} already pending",
+                network,
+                self.network_switch_pending
+            );
             return;
         }
 

@@ -450,20 +450,9 @@ impl AppContext {
     }
 
     fn set_core_backend_mode_inner(self: &Arc<Self>, mode: CoreBackendMode, persist: bool) {
-        self.core_backend_mode
-            .store(mode.as_u8(), Ordering::Relaxed);
-
-        if persist {
-            // Persist the mode to the database (hold the guard to ensure cache invalidation)
-            let _guard = self.invalidate_settings_cache();
-            if let Err(e) = self.db.update_core_backend_mode(mode.as_u8()) {
-                tracing::error!("Failed to persist core backend mode: {}", e);
-            }
-        }
-
         // Switch SDK context provider to match the selected backend.
-        // Early returns are defensive: if code is added after this match, a failed
-        // bind should not proceed with a stale provider.
+        // Only store/persist the mode after binding succeeds — otherwise the app
+        // would report the new mode while still wired to the old provider.
         #[allow(clippy::needless_return)]
         match mode {
             CoreBackendMode::Spv => {
@@ -487,6 +476,16 @@ impl AppContext {
                     tracing::error!("Failed to bind RPC provider: {}", e);
                     return;
                 }
+            }
+        }
+
+        self.core_backend_mode
+            .store(mode.as_u8(), Ordering::Relaxed);
+
+        if persist {
+            let _guard = self.invalidate_settings_cache();
+            if let Err(e) = self.db.update_core_backend_mode(mode.as_u8()) {
+                tracing::error!("Failed to persist core backend mode: {}", e);
             }
         }
     }

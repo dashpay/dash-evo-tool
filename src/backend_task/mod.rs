@@ -212,6 +212,8 @@ pub enum BackendTaskSuccessResult {
         seed_hash: WalletSeedHash,
         /// Map of platform address to (balance, nonce)
         balances: BTreeMap<PlatformAddress, (u64, u32)>,
+        /// Network the balances were fetched from
+        network: Network,
     },
     /// Platform credits transferred between addresses
     PlatformCreditsTransferred {

@@ -194,6 +194,7 @@ impl AppContext {
         Ok(BackendTaskSuccessResult::PlatformAddressBalances {
             seed_hash,
             balances,
+            network: self.network(),
         })
     }
 }

@@ -470,6 +470,20 @@ impl WalletsBalancesScreen {
         self.pending_list_is_single_key = false;
     }
 
+    /// Clear all transient request/pending state that could fire against the
+    /// wrong context after a network switch.
+    pub(crate) fn reset_transient_state(&mut self) {
+        self.pending_platform_balance_refresh = None;
+        self.pending_refresh_after_unlock = false;
+        self.pending_asset_lock_search_after_unlock = false;
+        self.pending_wallet_refresh_on_switch = false;
+        self.pending_core_wallet_seed_hash = None;
+        self.pending_core_wallet_options = None;
+        self.core_wallet_dialog = None;
+        self.refreshing = false;
+        self.asset_lock_search_banner.take_and_clear();
+    }
+
     /// Reset all cached AddressInput widgets so they pick up the new network.
     pub(crate) fn invalidate_address_inputs(&mut self) {
         self.mine_dialog.address_input = None;
@@ -1089,7 +1103,7 @@ impl WalletsBalancesScreen {
             }
 
             // Dev-mode buttons: right-aligned, filling all remaining space
-            if self.app_context.is_developer_mode() {
+            if FeatureGate::DeveloperMode.is_available(&self.app_context) {
                 let remaining = ui.available_width();
                 ui.allocate_ui_with_layout(
                     egui::vec2(remaining, ui.min_size().y),
@@ -2009,7 +2023,7 @@ impl WalletsBalancesScreen {
                                             .color(DashColors::text_primary(dark_mode))
                                             .size(25.0),
                                     );
-                                    if self.app_context.is_developer_mode() {
+                                    if FeatureGate::DeveloperMode.is_available(&self.app_context) {
                                         ui.label(
                                             RichText::new("[DEV]")
                                                 .color(DashColors::text_secondary(dark_mode))
@@ -2874,15 +2888,24 @@ impl ScreenLike for WalletsBalancesScreen {
             crate::ui::BackendTaskSuccessResult::PlatformAddressBalances {
                 seed_hash,
                 balances,
+                network,
             } => {
                 self.refreshing = false;
+                // Skip stale results from a different network
+                if network != self.app_context.network {
+                    tracing::warn!(
+                        result_network = ?network,
+                        current_network = ?self.app_context.network,
+                        "Discarding PlatformAddressBalances from a previous network"
+                    );
+                    return;
+                }
                 // Update wallet's platform_address_info if this is for the selected wallet
                 if let Some(selected) = &self.selected_wallet
                     && let Ok(mut wallet) = selected.write()
                     && wallet.seed_hash() == seed_hash
                 {
                     // Convert PlatformAddress back to Core Address for wallet storage
-                    let network = self.app_context.network();
                     for (platform_addr, (balance, nonce)) in balances {
                         let core_addr = platform_addr.to_address_with_network(network);
                         wallet.set_platform_address_info(core_addr, balance, nonce);

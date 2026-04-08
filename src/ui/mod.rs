@@ -811,6 +811,7 @@ impl Screen {
                 screen.reset_pending_list_state();
                 screen.update_selected_wallet_for_network();
                 screen.invalidate_address_inputs();
+                screen.reset_transient_state();
                 return;
             }
             Screen::ImportMnemonicScreen(screen) => {
@@ -821,6 +822,20 @@ impl Screen {
             Screen::WalletSendScreen(screen) => {
                 screen.app_context = app_context;
                 screen.invalidate_address_input();
+                // Clear wallet reference — it belongs to the old network
+                screen.selected_wallet = None;
+                return;
+            }
+            Screen::SingleKeyWalletSendScreen(screen) => {
+                screen.app_context = app_context;
+                // Clear wallet reference — it belongs to the old network
+                screen.selected_wallet = None;
+                return;
+            }
+            Screen::CreateAssetLockScreen(screen) => {
+                screen.app_context = app_context;
+                // Clear wallet reference — it belongs to the old network
+                screen.selected_wallet = None;
                 return;
             }
             Screen::MasternodeListDiffScreen(screen) => {
@@ -885,7 +900,6 @@ impl Screen {
             DocumentActionScreen,
             GroupActionsScreen,
             TopUpIdentityScreen,
-            SingleKeyWalletSendScreen,
             ProofLogScreen,
             AddContractsScreen,
             ProofVisualizerScreen,
@@ -908,7 +922,6 @@ impl Screen {
             PurchaseTokenScreen,
             SetTokenPriceScreen,
             AssetLockDetailScreen,
-            CreateAssetLockScreen,
             DashPayAddContactScreen,
             DashPayContactDetailsScreen,
             DashPayContactProfileViewerScreen,
@@ -923,6 +936,8 @@ impl Screen {
             WalletsBalancesScreen,
             ImportMnemonicScreen,
             WalletSendScreen,
+            SingleKeyWalletSendScreen,
+            CreateAssetLockScreen,
             MasternodeListDiffScreen,
             AddressBalanceScreen,
             DashPayScreen,

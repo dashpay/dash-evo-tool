@@ -189,6 +189,13 @@ pub async fn send_contact_request_with_proof(
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     // Step 1: Resolve the recipient identity
     let to_username_or_id = to_username_or_id.trim().to_string();
+
+    if to_username_or_id.contains('.') && !crate::model::dpns::has_dash_suffix(&to_username_or_id) {
+        return Err(TaskError::DashPay(DashPayError::InvalidUsername {
+            username: to_username_or_id,
+        }));
+    }
+
     let to_identity = if crate::model::dpns::has_dash_suffix(&to_username_or_id) {
         // It's a complete username, resolve via DPNS
         resolve_username_to_identity(sdk, &to_username_or_id).await?

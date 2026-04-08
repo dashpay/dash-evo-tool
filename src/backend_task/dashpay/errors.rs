@@ -170,6 +170,10 @@ pub enum DashPayError {
     /// A contact request has already been sent to this recipient.
     #[error("You have already sent a contact request to '{to}'. Please wait for them to respond.")]
     ContactRequestAlreadySent { to: String },
+
+    /// Encrypted contact info fields exceed DashPay contract limits.
+    #[error("Contact info is too large to save. Try shortening your nickname or note.")]
+    ContactInfoValidationFailed { errors: Vec<String> },
 }
 
 impl DashPayError {

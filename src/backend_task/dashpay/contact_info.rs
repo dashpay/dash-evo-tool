@@ -408,6 +408,18 @@ pub async fn create_or_update_contact_info(
     let encrypted_private_data = encrypt_private_data(&private_data.serialize(), &private_data_key)
         .map_err(|e| TaskError::EncryptionError { detail: e })?;
 
+    let validation = crate::backend_task::dashpay::validation::validate_contact_info_field_sizes(
+        &encrypted_user_id,
+        &encrypted_private_data,
+    );
+    if !validation.is_valid {
+        return Err(TaskError::DashPay(
+            DashPayError::ContactInfoValidationFailed {
+                errors: validation.errors,
+            },
+        ));
+    }
+
     // Get signing key — accept any key type (BLS, ECDSA, EDDSA) since
     // Platform accepts all for document state transitions.
     let signing_key = identity

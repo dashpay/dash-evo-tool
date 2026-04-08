@@ -174,10 +174,25 @@ async fn tc_067_broadcast_invalid_state_transition() {
     .await
     .expect("TC-067: RefreshIdentity should succeed");
 
-    let refreshed_qi = match refresh_result {
-        BackendTaskSuccessResult::RefreshedIdentity(qi) => qi,
-        other => panic!("TC-067: expected RefreshedIdentity, got: {:?}", other),
-    };
+    assert!(
+        matches!(
+            refresh_result,
+            BackendTaskSuccessResult::RefreshedIdentity(_)
+        ),
+        "TC-067: expected RefreshedIdentity, got: {:?}",
+        refresh_result
+    );
+
+    // RefreshIdentity updates the local DB but returns the stale input QI.
+    // Re-load from local DB to get the identity with all current keys.
+    let identity_id = si.qualified_identity.identity.id();
+    let refreshed_qi = ctx
+        .app_context
+        .load_local_qualified_identities()
+        .expect("TC-067: load_local_qualified_identities should succeed")
+        .into_iter()
+        .find(|qi| qi.identity.id() == identity_id)
+        .expect("TC-067: shared identity should be in local DB after refresh");
     let identity = &refreshed_qi.identity;
 
     // Generate a fresh key to add (content doesn't matter — nonce makes it invalid).
@@ -208,10 +223,9 @@ async fn tc_067_broadcast_invalid_state_transition() {
     // Use an intentionally invalid nonce (u64::MAX) to force a Platform rejection.
     let invalid_nonce: u64 = u64::MAX;
 
-    let master_key = si
-        .qualified_identity
+    let master_key = refreshed_qi
         .can_sign_with_master_key()
-        .expect("TC-067: shared identity has no master key");
+        .expect("TC-067: refreshed identity has no master key");
     let master_key_id = master_key.identity_public_key.id();
 
     let invalid_state_transition = IdentityUpdateTransition::try_from_identity_with_signer(
@@ -221,7 +235,7 @@ async fn tc_067_broadcast_invalid_state_transition() {
         vec![],
         invalid_nonce,
         UserFeeIncrease::default(),
-        &si.qualified_identity,
+        &refreshed_qi,
         platform_version,
         None,
     )

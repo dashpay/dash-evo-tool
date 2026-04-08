@@ -113,7 +113,7 @@ async fn tc_033_search_profiles() {
     // Retry search up to 30s — DPNS name may not be immediately queryable
     // after registration due to platform propagation delay.
     let poll_interval = std::time::Duration::from_secs(5);
-    let timeout = std::time::Duration::from_secs(30);
+    let timeout = std::time::Duration::from_secs(90);
     let start = std::time::Instant::now();
 
     loop {
@@ -252,30 +252,53 @@ async fn tc_037_send_contact_request() {
 
     let (signing_key, _signing_key_bytes) = &pair.signing_key_a;
 
-    let task = BackendTask::DashPayTask(Box::new(DashPayTask::SendContactRequest {
-        identity: pair.identity_a.clone(),
-        signing_key: signing_key.clone(),
-        to_username: pair.username_b.clone(),
-        account_label: None,
-    }));
+    // SendContactRequest does username resolution internally. If the DPNS
+    // name hasn't fully propagated yet, it fails with UsernameResolutionFailed.
+    // Retry with backoff for up to 60s.
+    let retry_timeout = std::time::Duration::from_secs(60);
+    let retry_interval = std::time::Duration::from_secs(10);
+    let start = std::time::Instant::now();
 
-    let result = run_task(&ctx.app_context, task).await;
+    loop {
+        let task = BackendTask::DashPayTask(Box::new(DashPayTask::SendContactRequest {
+            identity: pair.identity_a.clone(),
+            signing_key: signing_key.clone(),
+            to_username: pair.username_b.clone(),
+            account_label: None,
+        }));
 
-    match result {
-        Ok(BackendTaskSuccessResult::DashPayContactRequestSent(username)) => {
-            tracing::info!("TC-037: contact request sent to '{}'", username);
+        let result = run_task(&ctx.app_context, task).await;
+
+        match result {
+            Ok(BackendTaskSuccessResult::DashPayContactRequestSent(username)) => {
+                tracing::info!("TC-037: contact request sent to '{}'", username);
+                break;
+            }
+            Ok(BackendTaskSuccessResult::DashPayContactAlreadyEstablished(id)) => {
+                tracing::info!(
+                    "TC-037: contact already established with {:?} (previous test run)",
+                    id
+                );
+                break;
+            }
+            Ok(other) => panic!(
+                "TC-037: expected DashPayContactRequestSent, got: {:?}",
+                other
+            ),
+            Err(e) => {
+                let is_resolution_failure = format!("{:?}", e).contains("UsernameResolution");
+                if is_resolution_failure && start.elapsed() < retry_timeout {
+                    tracing::info!(
+                        "TC-037: username resolution failed, retrying in {:?}... ({:?} elapsed)",
+                        retry_interval,
+                        start.elapsed()
+                    );
+                    tokio::time::sleep(retry_interval).await;
+                    continue;
+                }
+                panic!("TC-037: SendContactRequest failed: {:?}", e);
+            }
         }
-        Ok(BackendTaskSuccessResult::DashPayContactAlreadyEstablished(id)) => {
-            tracing::info!(
-                "TC-037: contact already established with {:?} (previous test run)",
-                id
-            );
-        }
-        Ok(other) => panic!(
-            "TC-037: expected DashPayContactRequestSent, got: {:?}",
-            other
-        ),
-        Err(e) => panic!("TC-037: SendContactRequest failed: {:?}", e),
     }
 }
 
@@ -494,6 +517,8 @@ async fn tc_042_update_contact_info() {
         );
 
         // Refresh identity B from Platform to pick up the new key.
+        // Note: RefreshIdentity updates the local DB but returns the input QI
+        // (a known limitation), so we re-load from the local DB afterward.
         let refresh_result = run_task(
             &ctx.app_context,
             BackendTask::IdentityTask(IdentityTask::RefreshIdentity(identity_b.clone())),
@@ -501,12 +526,27 @@ async fn tc_042_update_contact_info() {
         .await
         .expect("TC-042: RefreshIdentity should succeed");
 
-        identity_b = match refresh_result {
-            BackendTaskSuccessResult::RefreshedIdentity(qi) => qi,
-            other => panic!("TC-042: expected RefreshedIdentity, got: {:?}", other),
-        };
+        assert!(
+            matches!(
+                refresh_result,
+                BackendTaskSuccessResult::RefreshedIdentity(_)
+            ),
+            "TC-042: expected RefreshedIdentity, got: {:?}",
+            refresh_result
+        );
+
+        // Re-load from local DB to get the updated identity with the new key.
+        let identity_b_id = identity_b.identity.id();
+        identity_b = ctx
+            .app_context
+            .load_local_qualified_identities()
+            .expect("TC-042: load_local_qualified_identities should succeed")
+            .into_iter()
+            .find(|qi| qi.identity.id() == identity_b_id)
+            .expect("TC-042: identity B should be in local DB after refresh");
+
         tracing::info!(
-            "TC-042: identity B refreshed, keys={}",
+            "TC-042: identity B refreshed from local DB, keys={}",
             identity_b.identity.public_keys().len()
         );
     }
@@ -578,7 +618,7 @@ async fn tc_043_reject_contact_request() {
         "TC-043: waiting for DPNS name '{}' to propagate...",
         username_c
     );
-    let propagation_timeout = std::time::Duration::from_secs(60);
+    let propagation_timeout = std::time::Duration::from_secs(120);
     let poll_interval = std::time::Duration::from_secs(5);
     let start = std::time::Instant::now();
     loop {
@@ -612,29 +652,45 @@ async fn tc_043_reject_contact_request() {
         tokio::time::sleep(poll_interval).await;
     }
 
-    // Send contact request from A to C
+    // Send contact request from A to C, with retry on UsernameResolutionFailed
     let (signing_key_a, _) = &pair.signing_key_a;
     tracing::info!(
         "TC-043: sending contact request from A to C ('{}')",
         username_c
     );
-    let send_task = BackendTask::DashPayTask(Box::new(DashPayTask::SendContactRequest {
-        identity: pair.identity_a.clone(),
-        signing_key: signing_key_a.clone(),
-        to_username: username_c.clone(),
-        account_label: None,
-    }));
-    let send_result = run_task(&ctx.app_context, send_task)
-        .await
-        .expect("TC-043: SendContactRequest from A to C should succeed");
-    assert!(
-        matches!(
-            send_result,
-            BackendTaskSuccessResult::DashPayContactRequestSent(_)
-        ),
-        "TC-043: expected DashPayContactRequestSent, got: {:?}",
-        send_result
-    );
+
+    let retry_timeout = std::time::Duration::from_secs(60);
+    let retry_interval = std::time::Duration::from_secs(10);
+    let send_start = std::time::Instant::now();
+
+    loop {
+        let send_task = BackendTask::DashPayTask(Box::new(DashPayTask::SendContactRequest {
+            identity: pair.identity_a.clone(),
+            signing_key: signing_key_a.clone(),
+            to_username: username_c.clone(),
+            account_label: None,
+        }));
+
+        match run_task(&ctx.app_context, send_task).await {
+            Ok(BackendTaskSuccessResult::DashPayContactRequestSent(_)) => break,
+            Ok(other) => panic!(
+                "TC-043: expected DashPayContactRequestSent, got: {:?}",
+                other
+            ),
+            Err(e) => {
+                let is_resolution_failure = format!("{:?}", e).contains("UsernameResolution");
+                if is_resolution_failure && send_start.elapsed() < retry_timeout {
+                    tracing::info!(
+                        "TC-043: username resolution failed, retrying in {:?}...",
+                        retry_interval
+                    );
+                    tokio::time::sleep(retry_interval).await;
+                    continue;
+                }
+                panic!("TC-043: SendContactRequest from A to C failed: {:?}", e);
+            }
+        }
+    }
 
     // Load C's incoming requests to get the request_id
     tracing::info!("TC-043: loading C's incoming contact requests...");

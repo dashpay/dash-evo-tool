@@ -109,26 +109,47 @@ async fn tc_021_top_up_identity_from_platform_addresses() {
         fund_result
     );
 
-    // Fetch the funded balance so we can use it.
-    let balances_result = run_task(
-        &ctx.app_context,
-        BackendTask::WalletTask(WalletTask::FetchPlatformAddressBalances {
-            seed_hash: si.wallet_seed_hash,
-        }),
-    )
-    .await
-    .expect("TC-021: FetchPlatformAddressBalances should succeed");
+    // Fetch the funded balance with retry — funding may not have propagated
+    // to Platform yet.
+    let poll_timeout = std::time::Duration::from_secs(30);
+    let poll_interval = std::time::Duration::from_secs(3);
+    let start = std::time::Instant::now();
 
-    let balance = match &balances_result {
-        BackendTaskSuccessResult::PlatformAddressBalances { balances, .. } => balances
-            .get(&platform_addr)
-            .map(|(bal, _)| *bal)
-            .unwrap_or(0),
-        other => panic!("TC-021: expected PlatformAddressBalances, got: {:?}", other),
+    let balance = loop {
+        let balances_result = run_task(
+            &ctx.app_context,
+            BackendTask::WalletTask(WalletTask::FetchPlatformAddressBalances {
+                seed_hash: si.wallet_seed_hash,
+            }),
+        )
+        .await
+        .expect("TC-021: FetchPlatformAddressBalances should succeed");
+
+        let bal = match &balances_result {
+            BackendTaskSuccessResult::PlatformAddressBalances { balances, .. } => {
+                balances.get(&platform_addr).map(|(b, _)| *b).unwrap_or(0)
+            }
+            other => panic!("TC-021: expected PlatformAddressBalances, got: {:?}", other),
+        };
+
+        if bal > 0 {
+            tracing::info!("TC-021: platform address balance = {} credits", bal);
+            break bal;
+        }
+
+        if start.elapsed() > poll_timeout {
+            panic!(
+                "TC-021: platform address should have credits (waited {:?})",
+                poll_timeout
+            );
+        }
+
+        tracing::info!(
+            "TC-021: balance still 0, retrying in {:?}...",
+            poll_interval
+        );
+        tokio::time::sleep(poll_interval).await;
     };
-
-    tracing::info!("TC-021: platform address balance = {} credits", balance);
-    assert!(balance > 0, "TC-021: platform address should have credits");
 
     let mut inputs = std::collections::BTreeMap::new();
     // Use half the balance to top up the identity.

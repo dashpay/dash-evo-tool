@@ -15,6 +15,7 @@ use crate::config::{Config, NetworkConfig};
 use crate::context_provider::Provider as RpcProvider;
 use crate::context_provider_spv::SpvProvider;
 use crate::database::Database;
+use crate::model::feature_gate::FeatureGate;
 use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::password_info::PasswordInfo;
 use crate::model::proof_log_item::RequestType;
@@ -513,25 +514,14 @@ impl AppContext {
     /// retroactively initializes shielded wallets that were unlocked before
     /// the protocol version was known.
     pub fn set_platform_protocol_version(self: &Arc<Self>, version: u32) {
-        let old = self
-            .platform_protocol_version
+        let was_shielded = FeatureGate::Shielded.is_available(self);
+
+        self.platform_protocol_version
             .swap(version, Ordering::Relaxed);
 
-        if old < Self::SHIELDED_MIN_PROTOCOL_VERSION
-            && version >= Self::SHIELDED_MIN_PROTOCOL_VERSION
-        {
+        if !was_shielded && FeatureGate::Shielded.is_available(self) {
             self.init_missing_shielded_wallets();
         }
-    }
-
-    /// Minimum protocol version required for shielded (ZK) transactions.
-    pub const SHIELDED_MIN_PROTOCOL_VERSION: u32 = 12;
-
-    /// Whether the connected network supports shielded (ZK) transactions.
-    /// Returns `true` when the network's protocol version >= 12.
-    /// Returns `false` when the version hasn't been fetched yet (0).
-    pub fn supports_shielded(&self) -> bool {
-        self.platform_protocol_version() >= Self::SHIELDED_MIN_PROTOCOL_VERSION
     }
 
     /// Get a fee estimator configured with the cached fee multiplier.

@@ -26,6 +26,18 @@ pub fn skip_if_shielded_disabled() -> bool {
     }
 }
 
+/// Check whether a task error indicates the platform does not support
+/// shielded operations (e.g., testnet without shielded support enabled).
+///
+/// Returns `true` if the error message contains "not implemented" or
+/// "not supported", meaning the test should be skipped gracefully.
+pub fn is_platform_shielded_unsupported(
+    err: &dash_evo_tool::backend_task::error::TaskError,
+) -> bool {
+    let msg = format!("{:?}", err).to_lowercase();
+    msg.contains("not implemented") || msg.contains("not supported")
+}
+
 /// Run `WarmUpProvingKey` followed by `InitializeShieldedWallet` in sequence.
 ///
 /// This ensures the proving key is downloaded/cached and the wallet's

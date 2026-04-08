@@ -283,16 +283,16 @@ pub async fn shared_dashpay_pair() -> &'static SharedDashPayPair {
 
 /// Find the first AUTHENTICATION public key in a QualifiedIdentity.
 ///
-/// Tries MASTER first, then HIGH, then CRITICAL. Only inspects the public key
-/// metadata — does NOT attempt to extract private key bytes (which are
-/// typically encrypted after registration).
+/// Tries HIGH first, then CRITICAL. MASTER is skipped because Platform
+/// rejects MASTER-level keys for most state transitions (tokens, data
+/// contracts, etc.) — only HIGH or CRITICAL are accepted.
 pub fn find_authentication_public_key(
     qi: &dash_evo_tool::model::qualified_identity::QualifiedIdentity,
 ) -> IdentityPublicKey {
     for target_level in [
-        SecurityLevel::MASTER,
         SecurityLevel::HIGH,
         SecurityLevel::CRITICAL,
+        SecurityLevel::MASTER,
     ] {
         for ((target, _key_id), (qualified_key, _)) in qi.private_keys.private_keys.iter() {
             if *target != PrivateKeyTarget::PrivateKeyOnMainIdentity {

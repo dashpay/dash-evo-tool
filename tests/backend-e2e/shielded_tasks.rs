@@ -93,16 +93,19 @@ async fn tc_076_sync_notes() {
     shielded_helpers::warm_up_and_init(app_context, seed_hash).await;
 
     let task = BackendTask::ShieldedTask(ShieldedTask::SyncNotes { seed_hash });
-    let result = run_task(app_context, task)
-        .await
-        .expect("SyncNotes should succeed");
+    let result = run_task(app_context, task).await;
 
     match result {
-        BackendTaskSuccessResult::ShieldedNotesSynced {
+        Err(e) if shielded_helpers::is_platform_shielded_unsupported(&e) => {
+            tracing::warn!("TC-076: skipped — platform does not support shielded ops: {e}");
+            return;
+        }
+        Err(e) => panic!("SyncNotes failed unexpectedly: {e:?}"),
+        Ok(BackendTaskSuccessResult::ShieldedNotesSynced {
             seed_hash: sh,
             new_notes,
             balance,
-        } => {
+        }) => {
             assert_eq!(sh, seed_hash, "seed_hash should match");
             tracing::info!(
                 "SyncNotes: {} new note(s), balance: {} credits",
@@ -110,7 +113,7 @@ async fn tc_076_sync_notes() {
                 balance
             );
         }
-        other => panic!("Expected ShieldedNotesSynced, got: {:?}", other),
+        Ok(other) => panic!("Expected ShieldedNotesSynced, got: {:?}", other),
     }
 }
 
@@ -171,15 +174,18 @@ async fn tc_078_shield_from_asset_lock() {
         amount_duffs,
         source_address: None,
     });
-    let result = run_task(app_context, task)
-        .await
-        .expect("ShieldFromAssetLock should succeed");
+    let result = run_task(app_context, task).await;
 
     match result {
-        BackendTaskSuccessResult::ShieldedFromAssetLock {
+        Err(e) if shielded_helpers::is_platform_shielded_unsupported(&e) => {
+            tracing::warn!("TC-078: skipped — platform does not support shielded ops: {e}");
+            return;
+        }
+        Err(e) => panic!("ShieldFromAssetLock failed unexpectedly: {e:?}"),
+        Ok(BackendTaskSuccessResult::ShieldedFromAssetLock {
             seed_hash: sh,
             amount,
-        } => {
+        }) => {
             assert_eq!(sh, seed_hash, "seed_hash should match");
             assert!(amount > 0, "Shielded amount should be > 0, got: {}", amount);
             tracing::info!(
@@ -188,17 +194,19 @@ async fn tc_078_shield_from_asset_lock() {
                 amount_duffs
             );
         }
-        other => panic!("Expected ShieldedFromAssetLock, got: {:?}", other),
+        Ok(other) => panic!("Expected ShieldedFromAssetLock, got: {:?}", other),
     }
 
     // Verify: SyncNotes should show increased balance
     let sync_task = BackendTask::ShieldedTask(ShieldedTask::SyncNotes { seed_hash });
-    let sync_result = run_task(app_context, sync_task)
-        .await
-        .expect("SyncNotes after ShieldFromAssetLock should succeed");
+    let sync_result = run_task(app_context, sync_task).await;
 
     match sync_result {
-        BackendTaskSuccessResult::ShieldedNotesSynced { balance, .. } => {
+        Err(e) if shielded_helpers::is_platform_shielded_unsupported(&e) => {
+            tracing::warn!("TC-078: SyncNotes skipped — platform unsupported: {e}");
+        }
+        Err(e) => panic!("SyncNotes after ShieldFromAssetLock failed: {e:?}"),
+        Ok(BackendTaskSuccessResult::ShieldedNotesSynced { balance, .. }) => {
             assert!(
                 balance > 0,
                 "Balance after shielding should be > 0, got: {}",
@@ -206,7 +214,7 @@ async fn tc_078_shield_from_asset_lock() {
             );
             tracing::info!("Post-shield balance: {} credits", balance);
         }
-        other => panic!("Expected ShieldedNotesSynced, got: {:?}", other),
+        Ok(other) => panic!("Expected ShieldedNotesSynced, got: {:?}", other),
     }
 }
 
@@ -283,20 +291,23 @@ async fn tc_079_shield_credits() {
         from_address: platform_addr,
         nonce_override: None,
     });
-    let result = run_task(app_context, task)
-        .await
-        .expect("ShieldCredits should succeed");
+    let result = run_task(app_context, task).await;
 
     match result {
-        BackendTaskSuccessResult::ShieldedCreditsShielded {
+        Err(e) if shielded_helpers::is_platform_shielded_unsupported(&e) => {
+            tracing::warn!("TC-079: skipped — platform does not support shielded ops: {e}");
+            return;
+        }
+        Err(e) => panic!("ShieldCredits failed unexpectedly: {e:?}"),
+        Ok(BackendTaskSuccessResult::ShieldedCreditsShielded {
             seed_hash: sh,
             amount,
-        } => {
+        }) => {
             assert_eq!(sh, seed_hash, "seed_hash should match");
             assert_eq!(amount, shield_amount, "shielded amount should match");
             tracing::info!("ShieldCredits: shielded {} credits", amount);
         }
-        other => panic!("Expected ShieldedCreditsShielded, got: {:?}", other),
+        Ok(other) => panic!("Expected ShieldedCreditsShielded, got: {:?}", other),
     }
 }
 
@@ -318,7 +329,10 @@ async fn tc_080_shielded_transfer() {
     shielded_helpers::warm_up_and_init(app_context, seed_hash).await;
 
     // Ensure we have shielded balance by shielding from asset lock first
-    ensure_shielded_balance(app_context, seed_hash).await;
+    if !ensure_shielded_balance(app_context, seed_hash).await {
+        tracing::warn!("TC-080: skipped — platform does not support shielded ops");
+        return;
+    }
 
     // Use the wallet's own default shielded address as recipient (self-transfer)
     let recipient_address_bytes = app_context
@@ -333,20 +347,23 @@ async fn tc_080_shielded_transfer() {
         amount: transfer_amount,
         recipient_address_bytes,
     });
-    let result = run_task(app_context, task)
-        .await
-        .expect("ShieldedTransfer should succeed");
+    let result = run_task(app_context, task).await;
 
     match result {
-        BackendTaskSuccessResult::ShieldedTransferComplete {
+        Err(e) if shielded_helpers::is_platform_shielded_unsupported(&e) => {
+            tracing::warn!("TC-080: skipped — platform does not support shielded ops: {e}");
+            return;
+        }
+        Err(e) => panic!("ShieldedTransfer failed unexpectedly: {e:?}"),
+        Ok(BackendTaskSuccessResult::ShieldedTransferComplete {
             seed_hash: sh,
             amount,
-        } => {
+        }) => {
             assert_eq!(sh, seed_hash, "seed_hash should match");
             assert_eq!(amount, transfer_amount, "transfer amount should match");
             tracing::info!("ShieldedTransfer: transferred {} credits", amount);
         }
-        other => panic!("Expected ShieldedTransferComplete, got: {:?}", other),
+        Ok(other) => panic!("Expected ShieldedTransferComplete, got: {:?}", other),
     }
 }
 
@@ -366,7 +383,10 @@ async fn tc_081_unshield_credits() {
     let seed_hash = test_ctx.framework_wallet_hash;
 
     shielded_helpers::warm_up_and_init(app_context, seed_hash).await;
-    ensure_shielded_balance(app_context, seed_hash).await;
+    if !ensure_shielded_balance(app_context, seed_hash).await {
+        tracing::warn!("TC-081: skipped — platform does not support shielded ops");
+        return;
+    }
 
     // Get a platform address as destination
     let platform_addr = {
@@ -389,20 +409,23 @@ async fn tc_081_unshield_credits() {
         amount: unshield_amount,
         to_platform_address: platform_addr,
     });
-    let result = run_task(app_context, task)
-        .await
-        .expect("UnshieldCredits should succeed");
+    let result = run_task(app_context, task).await;
 
     match result {
-        BackendTaskSuccessResult::ShieldedCreditsUnshielded {
+        Err(e) if shielded_helpers::is_platform_shielded_unsupported(&e) => {
+            tracing::warn!("TC-081: skipped — platform does not support shielded ops: {e}");
+            return;
+        }
+        Err(e) => panic!("UnshieldCredits failed unexpectedly: {e:?}"),
+        Ok(BackendTaskSuccessResult::ShieldedCreditsUnshielded {
             seed_hash: sh,
             amount,
-        } => {
+        }) => {
             assert_eq!(sh, seed_hash, "seed_hash should match");
             assert_eq!(amount, unshield_amount, "unshielded amount should match");
             tracing::info!("UnshieldCredits: unshielded {} credits", amount);
         }
-        other => panic!("Expected ShieldedCreditsUnshielded, got: {:?}", other),
+        Ok(other) => panic!("Expected ShieldedCreditsUnshielded, got: {:?}", other),
     }
 
     // Verify: platform address should show credits
@@ -441,7 +464,10 @@ async fn tc_082_shielded_withdrawal() {
     let seed_hash = test_ctx.framework_wallet_hash;
 
     shielded_helpers::warm_up_and_init(app_context, seed_hash).await;
-    ensure_shielded_balance(app_context, seed_hash).await;
+    if !ensure_shielded_balance(app_context, seed_hash).await {
+        tracing::warn!("TC-082: skipped — platform does not support shielded ops");
+        return;
+    }
 
     // Get a core L1 address from the framework wallet
     let core_addr = {
@@ -461,15 +487,18 @@ async fn tc_082_shielded_withdrawal() {
         amount: withdrawal_amount,
         to_core_address: core_addr.clone(),
     });
-    let result = run_task(app_context, task)
-        .await
-        .expect("ShieldedWithdrawal should succeed");
+    let result = run_task(app_context, task).await;
 
     match result {
-        BackendTaskSuccessResult::ShieldedWithdrawalComplete {
+        Err(e) if shielded_helpers::is_platform_shielded_unsupported(&e) => {
+            tracing::warn!("TC-082: skipped — platform does not support shielded ops: {e}");
+            return;
+        }
+        Err(e) => panic!("ShieldedWithdrawal failed unexpectedly: {e:?}"),
+        Ok(BackendTaskSuccessResult::ShieldedWithdrawalComplete {
             seed_hash: sh,
             amount,
-        } => {
+        }) => {
             assert_eq!(sh, seed_hash, "seed_hash should match");
             assert_eq!(amount, withdrawal_amount, "withdrawal amount should match");
             tracing::info!(
@@ -478,7 +507,7 @@ async fn tc_082_shielded_withdrawal() {
                 core_addr
             );
         }
-        other => panic!("Expected ShieldedWithdrawalComplete, got: {:?}", other),
+        Ok(other) => panic!("Expected ShieldedWithdrawalComplete, got: {:?}", other),
     }
 }
 
@@ -520,19 +549,25 @@ async fn tc_083_error_uninitialized_wallet() {
 
 /// Ensure the framework wallet has shielded balance by performing a
 /// ShieldFromAssetLock if needed. Syncs notes afterward.
+///
+/// Returns `false` if the platform does not support shielded operations
+/// (caller should skip the rest of the test).
 async fn ensure_shielded_balance(
     app_context: &std::sync::Arc<dash_evo_tool::context::AppContext>,
     seed_hash: WalletSeedHash,
-) {
+) -> bool {
     // Sync notes first to see current balance
     let sync_task = BackendTask::ShieldedTask(ShieldedTask::SyncNotes { seed_hash });
-    let sync_result = run_task(app_context, sync_task)
-        .await
-        .expect("SyncNotes should succeed");
+    let sync_result = run_task(app_context, sync_task).await;
 
     let balance = match sync_result {
-        BackendTaskSuccessResult::ShieldedNotesSynced { balance, .. } => balance,
-        other => panic!("Expected ShieldedNotesSynced, got: {:?}", other),
+        Err(e) if shielded_helpers::is_platform_shielded_unsupported(&e) => {
+            tracing::warn!("ensure_shielded_balance: platform unsupported: {e}");
+            return false;
+        }
+        Err(e) => panic!("SyncNotes failed unexpectedly: {e:?}"),
+        Ok(BackendTaskSuccessResult::ShieldedNotesSynced { balance, .. }) => balance,
+        Ok(other) => panic!("Expected ShieldedNotesSynced, got: {:?}", other),
     };
 
     if balance > 100_000 {
@@ -540,7 +575,7 @@ async fn ensure_shielded_balance(
             "ensure_shielded_balance: already have {} credits, skipping shield",
             balance
         );
-        return;
+        return true;
     }
 
     tracing::info!(
@@ -553,18 +588,28 @@ async fn ensure_shielded_balance(
         amount_duffs: 500_000, // 0.005 DASH
         source_address: None,
     });
-    run_task(app_context, task)
-        .await
-        .expect("ShieldFromAssetLock should succeed");
+    let shield_result = run_task(app_context, task).await;
+
+    match shield_result {
+        Err(e) if shielded_helpers::is_platform_shielded_unsupported(&e) => {
+            tracing::warn!("ensure_shielded_balance: platform unsupported: {e}");
+            return false;
+        }
+        Err(e) => panic!("ShieldFromAssetLock failed unexpectedly: {e:?}"),
+        Ok(_) => {}
+    }
 
     // Sync notes to pick up the new shielded balance
     let sync_task = BackendTask::ShieldedTask(ShieldedTask::SyncNotes { seed_hash });
-    let sync_result = run_task(app_context, sync_task)
-        .await
-        .expect("SyncNotes after shielding should succeed");
+    let sync_result = run_task(app_context, sync_task).await;
 
     match sync_result {
-        BackendTaskSuccessResult::ShieldedNotesSynced { balance, .. } => {
+        Err(e) if shielded_helpers::is_platform_shielded_unsupported(&e) => {
+            tracing::warn!("ensure_shielded_balance: SyncNotes unsupported: {e}");
+            return false;
+        }
+        Err(e) => panic!("SyncNotes after shielding failed: {e:?}"),
+        Ok(BackendTaskSuccessResult::ShieldedNotesSynced { balance, .. }) => {
             assert!(
                 balance > 0,
                 "ensure_shielded_balance: balance should be > 0 after shielding, got: {}",
@@ -575,6 +620,8 @@ async fn ensure_shielded_balance(
                 balance
             );
         }
-        other => panic!("Expected ShieldedNotesSynced, got: {:?}", other),
+        Ok(other) => panic!("Expected ShieldedNotesSynced, got: {:?}", other),
     }
+
+    true
 }

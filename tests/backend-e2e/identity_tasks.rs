@@ -35,7 +35,7 @@ async fn tc_020_top_up_identity() {
         qualified_identity: si.qualified_identity.clone(),
         wallet: si.wallet_arc.clone(),
         identity_funding_method: TopUpIdentityFundingMethod::FundWithWallet(
-            50_000_000, 0, // identity_index
+            500_000, 0, // identity_index
             1, // topup_index — use 1 so it doesn't collide with registration
         ),
     };
@@ -85,12 +85,12 @@ async fn tc_021_top_up_identity_from_platform_addresses() {
     let platform_addr = PlatformAddress::try_from(receive_addr)
         .expect("TC-021: failed to convert to PlatformAddress");
 
-    // Fund the platform address from the wallet UTXOs (5M duffs).
+    // Fund the platform address from the wallet UTXOs (500K duffs).
     let fund_result = run_task(
         &ctx.app_context,
         BackendTask::WalletTask(WalletTask::FundPlatformAddressFromWalletUtxos {
             seed_hash: si.wallet_seed_hash,
-            amount: 5_000_000,
+            amount: 500_000,
             destination: platform_addr,
             fee_deduct_from_output: true,
         }),

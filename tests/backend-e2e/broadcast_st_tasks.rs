@@ -13,70 +13,23 @@ use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_sdk::SdkBuilder;
 use dash_sdk::dapi_client::AddressList;
 use dash_sdk::dpp::dashcore::Network;
-use dash_sdk::dpp::data_contract::TokenConfiguration;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::{
     IdentityPublicKeyGettersV0, IdentityPublicKeySettersV0,
 };
 use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
-use dash_sdk::dpp::prelude::CoreBlockHeight;
-use dash_sdk::dpp::prelude::DataContract;
 use dash_sdk::dpp::prelude::UserFeeIncrease;
 use dash_sdk::dpp::state_transition::identity_update_transition::IdentityUpdateTransition;
 use dash_sdk::dpp::state_transition::identity_update_transition::methods::IdentityUpdateTransitionMethodsV0;
-use dash_sdk::error::ContextProviderError;
-use dash_sdk::platform::{ContextProvider, Fetch, Identifier, IdentityPublicKey};
-use std::sync::Arc;
+use dash_sdk::platform::{Fetch, IdentityPublicKey};
 
-// --- Minimal ContextProvider for test SDK ---
+// --- Helper: build a proof-less test SDK from env-configured DAPI addresses ---
 
-/// A no-op ContextProvider used to build a test SDK instance.
+/// Build an Sdk instance connected to the testnet DAPI nodes with proofs disabled.
 ///
-/// We only use this SDK to fetch identity nonces from Platform DAPI.
-/// Proof verification (quorum key lookups) is not exercised in TC-066.
-struct TestContextProvider;
-
-impl ContextProvider for TestContextProvider {
-    fn get_data_contract(
-        &self,
-        _id: &Identifier,
-        _platform_version: &dash_sdk::dpp::version::PlatformVersion,
-    ) -> Result<Option<Arc<DataContract>>, ContextProviderError> {
-        Ok(None)
-    }
-
-    fn get_token_configuration(
-        &self,
-        _token_id: &Identifier,
-    ) -> Result<Option<TokenConfiguration>, ContextProviderError> {
-        Ok(None)
-    }
-
-    fn get_quorum_public_key(
-        &self,
-        _quorum_type: u32,
-        _quorum_hash: [u8; 32],
-        _core_chain_locked_height: u32,
-    ) -> Result<[u8; 48], ContextProviderError> {
-        Err(ContextProviderError::Config(
-            "TestContextProvider: no quorum keys (not needed for nonce fetch)".into(),
-        ))
-    }
-
-    fn get_platform_activation_height(&self) -> Result<CoreBlockHeight, ContextProviderError> {
-        Err(ContextProviderError::Config(
-            "TestContextProvider: no activation height (not needed for nonce fetch)".into(),
-        ))
-    }
-}
-
-// --- Helper: build a minimal test SDK from env-configured DAPI addresses ---
-
-/// Build a Sdk instance connected to the testnet DAPI nodes.
-///
-/// Reads `TESTNET_dapi_addresses` from the environment (populated by `.env` loaded
-/// in the harness init). Panics if the env var is missing or the SDK cannot be built.
+/// Proofs are disabled so we don't need a full ContextProvider with quorum keys.
+/// This SDK is only used for lightweight queries (nonce fetch, identity fetch).
 fn build_test_sdk(
     platform_version: &'static dash_sdk::dpp::version::PlatformVersion,
 ) -> dash_sdk::Sdk {
@@ -88,7 +41,7 @@ fn build_test_sdk(
     SdkBuilder::new(address_list)
         .with_network(Network::Testnet)
         .with_version(platform_version)
-        .with_context_provider(TestContextProvider)
+        .with_proofs(false)
         .build()
         .expect("TC-066: failed to build test SDK")
 }
@@ -135,7 +88,7 @@ async fn tc_066_broadcast_valid_identity_update() {
     });
     new_ipk.set_id(identity.get_public_key_max_id() + 1);
 
-    // Fetch the current identity nonce from Platform using a dedicated test SDK.
+    // Fetch the current identity nonce from Platform using a proof-less test SDK.
     let test_sdk = build_test_sdk(platform_version);
     let nonce = test_sdk
         .get_identity_nonce(identity_id, true, None)
@@ -181,8 +134,7 @@ async fn tc_066_broadcast_valid_identity_update() {
     tracing::info!("TC-066: broadcast succeeded");
 
     // Verify: re-fetch identity from Platform and confirm the new key is present.
-    let sdk = test_sdk;
-    let fetched = dash_sdk::platform::Identity::fetch_by_identifier(&sdk, identity_id)
+    let fetched = dash_sdk::platform::Identity::fetch_by_identifier(&test_sdk, identity_id)
         .await
         .expect("TC-066: failed to re-fetch identity")
         .expect("TC-066: identity not found on Platform after broadcast");
@@ -197,9 +149,6 @@ async fn tc_066_broadcast_valid_identity_update() {
     );
     tracing::info!("TC-066: new key confirmed on Platform");
 
-    // Clean up: remove the added key by dispatching AddKeyToIdentity via
-    // BackendTask (production path). We don't clean up here to keep the test
-    // focused — subsequent runs use a different random key.
     tracing::info!("TC-066: complete");
 }
 

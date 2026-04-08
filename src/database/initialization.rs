@@ -1820,4 +1820,299 @@ mod test {
             "valid asset_lock identity_id should be preserved"
         );
     }
+
+    /// Test migration from v0.9.0 schema (DB version 5) all the way to current.
+    /// This is the exact schema shipped in the v0.9.0 release, with realistic
+    /// data including wallets, addresses, identities, and asset locks.
+    #[test]
+    fn test_migration_from_v090_to_current() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_file_path = temp_dir.path().join("v090.db");
+        let db = super::Database::new(&db_file_path).unwrap();
+
+        {
+            let conn = db.conn.lock().unwrap();
+
+            // Exact v0.9.0 schema — copied from git show v0.9.0:src/database/initialization.rs
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS settings (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    password_check BLOB,
+                    main_password_salt BLOB,
+                    main_password_nonce BLOB,
+                    network TEXT NOT NULL,
+                    start_root_screen INTEGER NOT NULL,
+                    custom_dash_qt_path TEXT,
+                    overwrite_dash_conf INTEGER,
+                    database_version INTEGER NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS wallet (
+                    seed_hash BLOB NOT NULL PRIMARY KEY,
+                    encrypted_seed BLOB NOT NULL,
+                    salt BLOB NOT NULL,
+                    nonce BLOB NOT NULL,
+                    master_ecdsa_bip44_account_0_epk BLOB NOT NULL,
+                    alias TEXT,
+                    is_main INTEGER,
+                    uses_password INTEGER NOT NULL,
+                    password_hint TEXT,
+                    network TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS wallet_addresses (
+                    seed_hash BLOB NOT NULL,
+                    address TEXT NOT NULL,
+                    derivation_path TEXT NOT NULL,
+                    balance INTEGER,
+                    path_reference INTEGER NOT NULL,
+                    path_type INTEGER NOT NULL,
+                    PRIMARY KEY (seed_hash, address),
+                    FOREIGN KEY (seed_hash) REFERENCES wallet(seed_hash) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_wallet_addresses_path_reference
+                    ON wallet_addresses (path_reference);
+                CREATE INDEX IF NOT EXISTS idx_wallet_addresses_path_type
+                    ON wallet_addresses (path_type);
+
+                CREATE TABLE IF NOT EXISTS utxos (
+                    txid BLOB NOT NULL,
+                    vout INTEGER NOT NULL,
+                    address TEXT NOT NULL,
+                    value INTEGER NOT NULL,
+                    script_pubkey BLOB NOT NULL,
+                    network TEXT NOT NULL,
+                    PRIMARY KEY (txid, vout, network)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_utxos_address ON utxos (address);
+                CREATE INDEX IF NOT EXISTS idx_utxos_network ON utxos (network);
+
+                CREATE TABLE IF NOT EXISTS asset_lock_transaction (
+                    tx_id BLOB PRIMARY KEY,
+                    transaction_data BLOB NOT NULL,
+                    amount INTEGER,
+                    instant_lock_data BLOB,
+                    chain_locked_height INTEGER,
+                    identity_id BLOB,
+                    identity_id_potentially_in_creation BLOB,
+                    wallet BLOB NOT NULL,
+                    network TEXT NOT NULL,
+                    FOREIGN KEY (identity_id) REFERENCES identity(id) ON DELETE CASCADE,
+                    FOREIGN KEY (identity_id_potentially_in_creation) REFERENCES identity(id),
+                    FOREIGN KEY (wallet) REFERENCES wallet(seed_hash) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS identity (
+                    id BLOB PRIMARY KEY,
+                    data BLOB,
+                    is_in_creation INTEGER NOT NULL DEFAULT 0,
+                    is_local INTEGER NOT NULL,
+                    alias TEXT,
+                    info TEXT,
+                    wallet BLOB,
+                    wallet_index INTEGER,
+                    identity_type TEXT,
+                    network TEXT NOT NULL,
+                    CHECK ((wallet IS NOT NULL AND wallet_index IS NOT NULL)
+                        OR (wallet IS NULL AND wallet_index IS NULL)),
+                    FOREIGN KEY (wallet) REFERENCES wallet(seed_hash) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_identity_local_network_type
+                    ON identity (is_local, network, identity_type);
+
+                CREATE TABLE IF NOT EXISTS contested_name (
+                    normalized_contested_name TEXT NOT NULL,
+                    locked_votes INTEGER,
+                    abstain_votes INTEGER,
+                    awarded_to BLOB,
+                    end_time INTEGER,
+                    locked INTEGER NOT NULL DEFAULT 0,
+                    last_updated INTEGER,
+                    network TEXT NOT NULL,
+                    PRIMARY KEY (normalized_contested_name, network)
+                );
+
+                CREATE TABLE IF NOT EXISTS contestant (
+                    normalized_contested_name TEXT NOT NULL,
+                    identity_id BLOB NOT NULL,
+                    name TEXT,
+                    votes INTEGER,
+                    created_at INTEGER,
+                    created_at_block_height INTEGER,
+                    created_at_core_block_height INTEGER,
+                    document_id BLOB,
+                    network TEXT NOT NULL,
+                    PRIMARY KEY (normalized_contested_name, identity_id, network),
+                    FOREIGN KEY (normalized_contested_name, network)
+                        REFERENCES contested_name(normalized_contested_name, network)
+                        ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS contract (
+                    contract_id BLOB,
+                    contract BLOB,
+                    name TEXT,
+                    network TEXT NOT NULL,
+                    PRIMARY KEY (contract_id, network)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_name_network ON contract (name, network);",
+            )
+            .unwrap();
+
+            // v0.9.0 also created these via separate functions
+            // proof_log (v2)
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS proof_log (
+                    proof_log_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    proof_log BLOB NOT NULL,
+                    proof_log_timestamp INTEGER NOT NULL
+                );",
+            )
+            .unwrap();
+
+            // top_up (v4)
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS top_up (
+                    identity_id BLOB NOT NULL,
+                    top_up_index INTEGER NOT NULL,
+                    amount INTEGER NOT NULL,
+                    PRIMARY KEY (identity_id, top_up_index),
+                    FOREIGN KEY (identity_id) REFERENCES identity(id) ON DELETE CASCADE
+                );",
+            )
+            .unwrap();
+
+            // scheduled_votes (v5) — v0.9.0 schema had NO network column
+            // and NO FK to identity. The v6 migration handles both.
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS scheduled_votes (
+                    identity_id BLOB NOT NULL,
+                    contested_name TEXT NOT NULL,
+                    vote_choice TEXT NOT NULL,
+                    time INTEGER NOT NULL,
+                    executed INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (identity_id, contested_name)
+                );",
+            )
+            .unwrap();
+
+            // Insert settings at version 5
+            conn.execute(
+                "INSERT INTO settings (id, network, start_root_screen, database_version)
+                 VALUES (1, 'dash', 0, 5)",
+                [],
+            )
+            .unwrap();
+
+            // Insert a wallet with some addresses and an identity
+            let seed_hash = vec![0xAAu8; 32];
+            conn.execute(
+                "INSERT INTO wallet (seed_hash, encrypted_seed, salt, nonce,
+                    master_ecdsa_bip44_account_0_epk, alias, is_main, uses_password, network)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'test-wallet', 1, 0, 'dash')",
+                params![
+                    seed_hash,
+                    vec![1u8; 64],
+                    vec![2u8; 16],
+                    vec![3u8; 12],
+                    vec![4u8; 33]
+                ],
+            )
+            .unwrap();
+
+            conn.execute(
+                "INSERT INTO wallet_addresses (seed_hash, address, derivation_path,
+                    balance, path_reference, path_type)
+                 VALUES (?1, 'yTestAddr1', 'm/44''/1''/0''/0/0', 50000, 0, 0)",
+                params![seed_hash],
+            )
+            .unwrap();
+
+            let identity_id = vec![0xBBu8; 32];
+            conn.execute(
+                "INSERT INTO identity (id, is_local, alias, wallet, wallet_index,
+                    identity_type, network)
+                 VALUES (?1, 1, 'my-identity', ?2, 0, 'user', 'dash')",
+                params![identity_id, seed_hash],
+            )
+            .unwrap();
+
+            conn.execute(
+                "INSERT INTO asset_lock_transaction (tx_id, transaction_data, amount,
+                    identity_id, wallet, network)
+                 VALUES (?1, ?2, 100000, ?3, ?4, 'dash')",
+                params![vec![0xCCu8; 32], vec![0u8; 50], identity_id, seed_hash],
+            )
+            .unwrap();
+
+            conn.execute(
+                "INSERT INTO contract (contract_id, contract, name, network)
+                 VALUES (?1, ?2, 'dpns', 'dash')",
+                params![vec![0xDDu8; 32], vec![0u8; 100]],
+            )
+            .unwrap();
+        }
+
+        assert_eq!(db.db_schema_version().unwrap(), 5);
+
+        // Run full migration from v5 to current
+        let result = db.try_perform_migration(5, DEFAULT_DB_VERSION);
+        assert!(
+            result.is_ok(),
+            "migration from v0.9.0 (v5) to v{DEFAULT_DB_VERSION} failed: {:?}",
+            result.err()
+        );
+
+        assert_eq!(db.db_schema_version().unwrap(), DEFAULT_DB_VERSION);
+
+        let conn = db.conn.lock().unwrap();
+        assert_v33_schema(&conn);
+
+        // Verify data survived migration
+        let wallet_network: String = conn
+            .query_row(
+                "SELECT network FROM wallet WHERE seed_hash = ?1",
+                params![vec![0xAAu8; 32]],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            wallet_network, "mainnet",
+            "wallet network should be renamed"
+        );
+
+        // wallet_addresses should have total_received column (added by v17)
+        assert_column_exists(&conn, "wallet_addresses", "total_received");
+
+        // wallet should have balance columns (added by v16)
+        assert_column_exists(&conn, "wallet", "confirmed_balance");
+        assert_column_exists(&conn, "wallet", "total_balance");
+
+        // wallet should have core_wallet_name (added by v33)
+        assert_column_exists(&conn, "wallet", "core_wallet_name");
+
+        // Identity should survive with network renamed
+        let id_network: String = conn
+            .query_row(
+                "SELECT network FROM identity WHERE id = ?1",
+                params![vec![0xBBu8; 32]],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(id_network, "mainnet");
+
+        // Asset lock should survive with identity_id intact
+        let lock_identity: Option<Vec<u8>> = conn
+            .query_row(
+                "SELECT identity_id FROM asset_lock_transaction WHERE tx_id = ?1",
+                params![vec![0xCCu8; 32]],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(lock_identity, Some(vec![0xBBu8; 32]));
+    }
 }

@@ -132,6 +132,60 @@ impl BackendTestContext {
         )
         .expect("Failed to create AppContext for testnet");
 
+        // E2E_WALLET_MNEMONIC is required — read it early so we know which
+        // wallet to keep before SPV starts.
+        let mnemonic_phrase = std::env::var("E2E_WALLET_MNEMONIC").unwrap_or_else(|_| {
+            panic!(
+                "E2E_WALLET_MNEMONIC is not set.\n\
+                 This environment variable is required for backend E2E tests.\n\
+                 Set it to a BIP-39 mnemonic of a pre-funded testnet wallet.\n\
+                 Example: E2E_WALLET_MNEMONIC=\"word1 word2 word3 ... word12\"\n\
+                 You can also add it to the project root .env file."
+            );
+        });
+
+        let mnemonic = Mnemonic::parse_in(Language::English, &mnemonic_phrase)
+            .expect("Invalid E2E_WALLET_MNEMONIC");
+        let seed = mnemonic.to_seed("");
+        let framework_wallet_hash = {
+            let tmp_wallet = dash_evo_tool::model::wallet::Wallet::new_from_seed(
+                seed,
+                Network::Testnet,
+                None,
+                None,
+            )
+            .expect("Failed to compute framework wallet hash");
+            tmp_wallet.seed_hash()
+        };
+
+        // Purge stale wallets from the persistent DB before SPV starts.
+        // SPV builds a bloom filter for every loaded wallet address — accumulated
+        // test wallets from previous runs cause SPV sync to exceed the 600s timeout.
+        {
+            let stale: Vec<WalletSeedHash> = {
+                let wallets = app_context.wallets().read().expect("wallets lock");
+                wallets
+                    .keys()
+                    .filter(|h| **h != framework_wallet_hash)
+                    .copied()
+                    .collect()
+            };
+            if !stale.is_empty() {
+                tracing::info!(
+                    "Purging {} stale wallet(s) from DB before SPV starts",
+                    stale.len()
+                );
+                for hash in stale {
+                    match app_context.remove_wallet(&hash) {
+                        Ok(()) => tracing::debug!("Purged stale wallet {:?}", &hash[..4]),
+                        Err(e) => {
+                            tracing::warn!("Failed to purge stale wallet {:?}: {}", &hash[..4], e)
+                        }
+                    }
+                }
+            }
+        }
+
         // Switch to SPV mode and start
         app_context.set_core_backend_mode(CoreBackendMode::Spv);
         app_context.start_spv().expect("Failed to start SPV");
@@ -172,22 +226,7 @@ impl BackendTestContext {
             .expect("SPV failed to connect to any peers within 60s");
         tracing::info!("SPV connected to peers");
 
-        // E2E_WALLET_MNEMONIC is required
-        let mnemonic_phrase = std::env::var("E2E_WALLET_MNEMONIC").unwrap_or_else(|_| {
-            panic!(
-                "E2E_WALLET_MNEMONIC is not set.\n\
-                 This environment variable is required for backend E2E tests.\n\
-                 Set it to a BIP-39 mnemonic of a pre-funded testnet wallet.\n\
-                 Example: E2E_WALLET_MNEMONIC=\"word1 word2 word3 ... word12\"\n\
-                 You can also add it to the project root .env file."
-            );
-        });
-
         tracing::info!("Restoring framework wallet from E2E_WALLET_MNEMONIC");
-        let mnemonic = Mnemonic::parse_in(Language::English, &mnemonic_phrase)
-            .expect("Invalid E2E_WALLET_MNEMONIC");
-
-        let seed = mnemonic.to_seed("");
         let wallet = dash_evo_tool::model::wallet::Wallet::new_from_seed(
             seed,
             Network::Testnet,
@@ -195,8 +234,6 @@ impl BackendTestContext {
             None,
         )
         .expect("Failed to create framework wallet");
-
-        let framework_wallet_hash = wallet.seed_hash();
 
         // Try to register; if the wallet already exists (persistent DB), just look it up.
         match app_context.register_wallet(wallet) {

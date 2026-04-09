@@ -106,7 +106,7 @@ async fn tc_013_fetch_platform_address_balances_empty() {
 
 /// Fund a platform address from wallet UTXOs and return the seed hash.
 async fn step_fund_platform_address(
-    ctx: &crate::framework::harness::TestContext,
+    ctx: &crate::framework::harness::BackendTestContext,
 ) -> WalletSeedHash {
     tracing::info!("=== Step 1: Fund platform address from wallet UTXOs ===");
     let seed_hash = ctx.framework_wallet_hash;
@@ -167,7 +167,7 @@ async fn step_fund_platform_address(
 
 /// Fetch platform address balances and assert at least one is funded.
 async fn step_fetch_balances(
-    ctx: &crate::framework::harness::TestContext,
+    ctx: &crate::framework::harness::BackendTestContext,
     seed_hash: WalletSeedHash,
 ) {
     tracing::info!("=== Step 2: Fetch platform address balances after funding ===");
@@ -209,7 +209,7 @@ async fn step_fetch_balances(
 
 /// Transfer half the funded balance to a second platform address.
 async fn step_transfer_credits(
-    ctx: &crate::framework::harness::TestContext,
+    ctx: &crate::framework::harness::BackendTestContext,
     seed_hash: WalletSeedHash,
 ) {
     tracing::info!("=== Step 3: Transfer platform credits to a second address ===");
@@ -350,7 +350,10 @@ async fn step_transfer_credits(
 }
 
 /// Fund a fresh platform address and withdraw its balance back to Core.
-async fn step_withdraw(ctx: &crate::framework::harness::TestContext, seed_hash: WalletSeedHash) {
+async fn step_withdraw(
+    ctx: &crate::framework::harness::BackendTestContext,
+    seed_hash: WalletSeedHash,
+) {
     tracing::info!("=== Step 4: Withdraw from platform address back to Core ===");
 
     let wallet_arc = {
@@ -518,10 +521,10 @@ async fn step_withdraw(ctx: &crate::framework::harness::TestContext, seed_hash: 
 async fn tc_014_wallet_platform_lifecycle() {
     let ctx = harness::ctx().await;
 
-    let seed_hash = step_fund_platform_address(&ctx).await;
-    step_fetch_balances(&ctx, seed_hash).await;
-    step_transfer_credits(&ctx, seed_hash).await;
-    step_withdraw(&ctx, seed_hash).await;
+    let seed_hash = step_fund_platform_address(ctx).await;
+    step_fetch_balances(ctx, seed_hash).await;
+    step_transfer_credits(ctx, seed_hash).await;
+    step_withdraw(ctx, seed_hash).await;
 
     tracing::info!("TC-014 wallet platform lifecycle passed");
 }

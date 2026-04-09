@@ -564,21 +564,21 @@ async fn tc_037_dashpay_contact_lifecycle() {
     let ctx = harness::ctx().await;
     let pair = fixtures::shared_dashpay_pair().await;
 
-    step_send_contact_request(&ctx, &pair).await;
+    step_send_contact_request(ctx, pair).await;
 
-    let request_id = step_load_contact_requests(&ctx, &pair).await;
+    let request_id = step_load_contact_requests(ctx, pair).await;
 
     if let Some(id) = request_id {
-        step_accept_contact_request(&ctx, &pair, id).await;
+        step_accept_contact_request(ctx, pair, id).await;
     } else {
         tracing::warn!(
             "TC-037: no pending request — skipping accept step (contact already established)"
         );
     }
 
-    step_register_dashpay_addresses(&ctx, &pair).await;
+    step_register_dashpay_addresses(ctx, pair).await;
 
-    step_update_contact_info(&ctx, &pair).await;
+    step_update_contact_info(ctx, pair).await;
 }
 
 /// TC-041: LoadPaymentHistory — empty

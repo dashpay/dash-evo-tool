@@ -6,6 +6,7 @@ use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_evo_tool::context::AppContext;
 use dash_evo_tool::utils::egui_mpsc::SenderAsync;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// Run a single backend task and return its result.
 ///
@@ -20,4 +21,40 @@ pub async fn run_task(
     let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
     let sender = SenderAsync::new(tx, egui::Context::default());
     app_context.run_backend_task(task, sender).await
+}
+
+/// Run a backend task with automatic retry on identity nonce conflicts.
+#[allow(dead_code)]
+///
+/// Retries up to 3 times with a 2s delay on `IdentityNonceOverflow` or
+/// `IdentityNonceNotFound`. All other errors are returned immediately.
+/// Since `BackendTask: Clone`, the task is cloned for each attempt.
+pub async fn run_task_with_nonce_retry(
+    app_context: &Arc<AppContext>,
+    task: BackendTask,
+) -> Result<BackendTaskSuccessResult, TaskError> {
+    const MAX_ATTEMPTS: u32 = 3;
+    const RETRY_DELAY: Duration = Duration::from_secs(2);
+
+    let mut last_err = None;
+    for attempt in 1..=MAX_ATTEMPTS {
+        match run_task(app_context, task.clone()).await {
+            Ok(result) => return Ok(result),
+            Err(e @ TaskError::IdentityNonceOverflow { .. })
+            | Err(e @ TaskError::IdentityNonceNotFound { .. }) => {
+                tracing::warn!(
+                    attempt,
+                    max_attempts = MAX_ATTEMPTS,
+                    error = %e,
+                    "Identity nonce conflict — retrying after {}s",
+                    RETRY_DELAY.as_secs(),
+                );
+                last_err = Some(e);
+                tokio::time::sleep(RETRY_DELAY).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
+    Err(last_err.expect("loop always sets last_err before exhausting attempts"))
 }

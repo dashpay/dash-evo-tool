@@ -64,6 +64,8 @@ pub struct Database {
 impl Database {
     pub fn new<P: AsRef<std::path::Path>>(path: P) -> rusqlite::Result<Self> {
         let conn = Connection::open(path)?;
+        // WAL mode allows concurrent reads during writes and reduces lock contention.
+        conn.execute_batch("PRAGMA journal_mode=WAL;")?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })

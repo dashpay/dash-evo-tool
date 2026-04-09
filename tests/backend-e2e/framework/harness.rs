@@ -37,6 +37,12 @@ use std::time::Duration;
 /// runtime context (via `block_on`) rather than spawning a nested one.
 static CTX: tokio::sync::OnceCell<BackendTestContext> = tokio::sync::OnceCell::const_new();
 
+/// Serializes the UTXO-critical section of `create_funded_test_wallet`.
+///
+/// Only the payment broadcast (UTXO selection → broadcast → UTXO removal) is
+/// serialized. The long waits (recipient balance, IS lock) run concurrently.
+static FUNDING_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Cancellation token for the task manager that owns SPV tasks.
 ///
 /// `tokio::sync::OnceCell` does not cache panicked inits — if `init()`
@@ -360,11 +366,17 @@ impl BackendTestContext {
             request,
         });
 
-        tracing::trace!(seed_hash = ?&seed_hash[..4], "create_funded_test_wallet: broadcasting funding tx...");
+        tracing::trace!(seed_hash = ?&seed_hash[..4], "create_funded_test_wallet: acquiring funding mutex...");
         let funding_start = std::time::Instant::now();
-        run_task(app_context, task)
-            .await
-            .expect("Failed to send funds to test wallet");
+        // Critical section — serialize UTXO selection/broadcast so concurrent
+        // callers don't double-spend the same outputs from the framework wallet.
+        {
+            let _guard = FUNDING_MUTEX.lock().await;
+            tracing::trace!(seed_hash = ?&seed_hash[..4], "create_funded_test_wallet: broadcasting funding tx...");
+            run_task(app_context, task)
+                .await
+                .expect("Failed to send funds to test wallet");
+        }
         tracing::trace!(
             seed_hash = ?&seed_hash[..4],
             elapsed_ms = funding_start.elapsed().as_millis(),

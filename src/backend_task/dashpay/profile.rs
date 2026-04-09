@@ -483,11 +483,33 @@ pub async fn search_profiles(
     let mut identity_usernames: Vec<(Identifier, String)> = Vec::new();
     for (_, doc) in dpns_results {
         if let Some(document) = doc {
-            let identity_id = document.owner_id();
+            // Extract identity ID from records.identity — the authoritative
+            // reference, which may differ from owner_id() after name transfers.
+            let identity_id = document
+                .get("records")
+                .and_then(|records| {
+                    if let Value::Map(map) = records {
+                        map.iter()
+                            .find(|(k, _)| matches!(k, Value::Text(key) if key == "identity"))
+                            .map(|(_, v)| v.clone())
+                    } else {
+                        None
+                    }
+                })
+                .and_then(|id_value| {
+                    if let Value::Identifier(id_bytes) = id_value {
+                        Some(Identifier::from(id_bytes))
+                    } else {
+                        None
+                    }
+                });
 
-            // Get the label (username) from the document
+            let Some(identity_id) = identity_id else {
+                continue;
+            };
+
             let username = document
-                .get("normalizedLabel")
+                .get("label")
                 .and_then(|v| v.as_text())
                 .map(|s| format!("{}.dash", s))
                 .unwrap_or_else(|| format!("{}.dash", identity_id.to_string(Encoding::Base58)));

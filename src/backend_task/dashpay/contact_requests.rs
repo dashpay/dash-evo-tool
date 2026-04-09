@@ -571,24 +571,7 @@ async fn resolve_username_to_identity(
 
     // Extract the identity ID from records.identity — this is the authoritative
     // identity reference, which may differ from owner_id() after name transfers.
-    let identity_id = document
-        .get("records")
-        .and_then(|records| {
-            if let Value::Map(map) = records {
-                map.iter()
-                    .find(|(k, _)| matches!(k, Value::Text(key) if key == "identity"))
-                    .map(|(_, v)| v.clone())
-            } else {
-                None
-            }
-        })
-        .and_then(|id_value| {
-            if let Value::Identifier(id_bytes) = id_value {
-                Some(Identifier::from(id_bytes))
-            } else {
-                None
-            }
-        })
+    let identity_id = crate::model::dpns::extract_identity_id_from_dpns_document(document)
         .ok_or_else(|| {
             TaskError::DashPay(DashPayError::InvalidDocument {
                 reason: format!(

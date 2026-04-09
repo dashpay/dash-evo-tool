@@ -485,24 +485,7 @@ pub async fn search_profiles(
         if let Some(document) = doc {
             // Extract identity ID from records.identity — the authoritative
             // reference, which may differ from owner_id() after name transfers.
-            let identity_id = document
-                .get("records")
-                .and_then(|records| {
-                    if let Value::Map(map) = records {
-                        map.iter()
-                            .find(|(k, _)| matches!(k, Value::Text(key) if key == "identity"))
-                            .map(|(_, v)| v.clone())
-                    } else {
-                        None
-                    }
-                })
-                .and_then(|id_value| {
-                    if let Value::Identifier(id_bytes) = id_value {
-                        Some(Identifier::from(id_bytes))
-                    } else {
-                        None
-                    }
-                });
+            let identity_id = crate::model::dpns::extract_identity_id_from_dpns_document(&document);
 
             let Some(identity_id) = identity_id else {
                 continue;

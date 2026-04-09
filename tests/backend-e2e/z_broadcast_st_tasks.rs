@@ -65,11 +65,14 @@ async fn step_broadcast_valid(
         .expect("failed to fetch identity nonce from Platform");
     tracing::info!("identity nonce = {}", nonce);
 
-    let master_key = si
-        .qualified_identity
-        .can_sign_with_master_key()
-        .expect("shared identity has no master key");
-    let master_key_id = master_key.identity_public_key.id();
+    let master_key_id = identity
+        .public_keys()
+        .values()
+        .find(|k| {
+            k.purpose() == Purpose::AUTHENTICATION && k.security_level() == SecurityLevel::MASTER
+        })
+        .expect("shared identity has no MASTER AUTHENTICATION key")
+        .id();
 
     let state_transition = IdentityUpdateTransition::try_from_identity_with_signer(
         identity,

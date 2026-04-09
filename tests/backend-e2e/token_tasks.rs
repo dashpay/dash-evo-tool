@@ -7,7 +7,7 @@
 use crate::framework::fixtures::{shared_identity, shared_token};
 use crate::framework::harness;
 use crate::framework::identity_helpers::build_identity_registration;
-use crate::framework::task_runner::run_task;
+use crate::framework::task_runner::{run_task, run_task_with_nonce_retry};
 use crate::framework::token_helpers;
 use dash_evo_tool::backend_task::tokens::TokenTask;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
@@ -368,7 +368,7 @@ async fn step_burn(
         group_info: None,
     }));
 
-    let result = run_task(&ctx.app_context, task)
+    let result = run_task_with_nonce_retry(&ctx.app_context, task)
         .await
         .expect("Step 2: BurnTokens failed");
 
@@ -398,7 +398,7 @@ async fn step_transfer(
         public_note: Some("E2E transfer test".to_string()),
     }));
 
-    let result = run_task(&ctx.app_context, task)
+    let result = run_task_with_nonce_retry(&ctx.app_context, task)
         .await
         .expect("Step 3: TransferTokens failed");
 
@@ -428,7 +428,7 @@ async fn step_freeze(
         group_info: None,
     }));
 
-    let result = run_task(&ctx.app_context, task)
+    let result = run_task_with_nonce_retry(&ctx.app_context, task)
         .await
         .expect("Step 4: FreezeTokens failed");
 
@@ -458,7 +458,7 @@ async fn step_unfreeze(
         group_info: None,
     }));
 
-    let result = run_task(&ctx.app_context, task)
+    let result = run_task_with_nonce_retry(&ctx.app_context, task)
         .await
         .expect("Step 5: UnfreezeTokens failed");
 
@@ -492,7 +492,7 @@ async fn step_destroy_frozen(
         freeze_identity: second.qualified_identity.identity.id(),
         group_info: None,
     }));
-    let freeze_result = run_task(&ctx.app_context, freeze_task)
+    let freeze_result = run_task_with_nonce_retry(&ctx.app_context, freeze_task)
         .await
         .expect("Step 6: re-freeze failed");
     assert!(
@@ -510,7 +510,7 @@ async fn step_destroy_frozen(
         group_info: None,
     }));
 
-    let result = run_task(&ctx.app_context, task)
+    let result = run_task_with_nonce_retry(&ctx.app_context, task)
         .await
         .expect("Step 6: DestroyFrozenFunds failed");
 
@@ -538,7 +538,7 @@ async fn step_pause(
         group_info: None,
     }));
 
-    let result = run_task(&ctx.app_context, task)
+    let result = run_task_with_nonce_retry(&ctx.app_context, task)
         .await
         .expect("Step 7: PauseTokens failed");
 
@@ -566,7 +566,7 @@ async fn step_resume(
         group_info: None,
     }));
 
-    let result = run_task(&ctx.app_context, task)
+    let result = run_task_with_nonce_retry(&ctx.app_context, task)
         .await
         .expect("Step 8: ResumeTokens failed");
 
@@ -597,7 +597,7 @@ async fn step_set_price(
         group_info: None,
     }));
 
-    let result = run_task(&ctx.app_context, task)
+    let result = run_task_with_nonce_retry(&ctx.app_context, task)
         .await
         .expect("Step 9: SetDirectPurchasePrice failed");
 
@@ -626,7 +626,7 @@ async fn step_purchase(
         total_agreed_price: 10_000,
     }));
 
-    let result = run_task(&ctx.app_context, task)
+    let result = run_task_with_nonce_retry(&ctx.app_context, task)
         .await
         .expect("Step 10: PurchaseTokens failed");
 
@@ -674,7 +674,7 @@ async fn step_update_config(
         group_info: None,
     }));
 
-    let result = run_task(&ctx.app_context, task)
+    let result = run_task_with_nonce_retry(&ctx.app_context, task)
         .await
         .expect("Step 11: UpdateTokenConfig failed");
 

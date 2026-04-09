@@ -3,7 +3,7 @@
 use crate::framework::fixtures::shared_identity;
 use crate::framework::harness::ctx;
 use crate::framework::identity_helpers::build_identity_registration;
-use crate::framework::task_runner::run_task;
+use crate::framework::task_runner::{run_task, run_task_with_nonce_retry};
 use dash_evo_tool::backend_task::identity::{
     IdentityInputToLoad, IdentityTask, IdentityTopUpInfo, TopUpIdentityFundingMethod,
 };
@@ -39,7 +39,7 @@ async fn step_top_up(
         ),
     };
 
-    let result = run_task(
+    let result = run_task_with_nonce_retry(
         &ctx.app_context,
         BackendTask::IdentityTask(IdentityTask::TopUpIdentity(top_up_info)),
     )
@@ -76,7 +76,7 @@ async fn step_top_up_from_platform_addresses(
     let platform_addr =
         PlatformAddress::try_from(receive_addr).expect("failed to convert to PlatformAddress");
 
-    let fund_result = run_task(
+    let fund_result = run_task_with_nonce_retry(
         &ctx.app_context,
         BackendTask::WalletTask(WalletTask::FundPlatformAddressFromWalletUtxos {
             seed_hash: si.wallet_seed_hash,
@@ -136,7 +136,7 @@ async fn step_top_up_from_platform_addresses(
     let mut inputs = std::collections::BTreeMap::new();
     inputs.insert(platform_addr, balance / 2);
 
-    let result = run_task(
+    let result = run_task_with_nonce_retry(
         &ctx.app_context,
         BackendTask::IdentityTask(IdentityTask::TopUpIdentityFromPlatformAddresses {
             identity: si.qualified_identity.clone(),
@@ -194,7 +194,7 @@ async fn step_add_key(
 
     let new_qualified_key = QualifiedIdentityPublicKey::from(new_ipk);
 
-    let result = run_task(
+    let result = run_task_with_nonce_retry(
         &ctx.app_context,
         BackendTask::IdentityTask(IdentityTask::AddKeyToIdentity(
             si.qualified_identity.clone(),
@@ -223,7 +223,7 @@ async fn step_transfer_credits(
     let (seed_hash_b, wallet_b) = ctx.create_funded_test_wallet(30_000_000).await;
     let (reg_info, _key_bytes_b) =
         build_identity_registration(&ctx.app_context, &wallet_b, seed_hash_b);
-    let reg_result = run_task(
+    let reg_result = run_task_with_nonce_retry(
         &ctx.app_context,
         BackendTask::IdentityTask(IdentityTask::RegisterIdentity(reg_info)),
     )
@@ -241,7 +241,7 @@ async fn step_transfer_credits(
         ),
     };
 
-    let result = run_task(
+    let result = run_task_with_nonce_retry(
         &ctx.app_context,
         BackendTask::IdentityTask(IdentityTask::Transfer(
             si.qualified_identity.clone(),
@@ -286,7 +286,7 @@ async fn step_transfer_to_addresses(
     let mut outputs = std::collections::BTreeMap::new();
     outputs.insert(platform_addr, 5_000_000u64);
 
-    let result = run_task(
+    let result = run_task_with_nonce_retry(
         &ctx.app_context,
         BackendTask::IdentityTask(IdentityTask::TransferToAddresses {
             identity: si.qualified_identity.clone(),

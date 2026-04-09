@@ -1,7 +1,7 @@
 // Tests implemented in Task 2 (WalletTask tests: TC-012 to TC-019)
 
 use crate::framework::harness;
-use crate::framework::task_runner::run_task;
+use crate::framework::task_runner::{run_task, run_task_with_nonce_retry};
 use dash_evo_tool::backend_task::core::CoreTask;
 use dash_evo_tool::backend_task::wallet::WalletTask;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
@@ -144,7 +144,7 @@ async fn step_fund_platform_address(
         fee_deduct_from_output: true,
     });
 
-    let result = run_task(&ctx.app_context, task)
+    let result = run_task_with_nonce_retry(&ctx.app_context, task)
         .await
         .expect("step_fund_platform_address: FundPlatformAddressFromWalletUtxos failed");
 
@@ -314,7 +314,7 @@ async fn step_transfer_credits(
         fee_payer_index: 0,
     });
 
-    let result = run_task(&ctx.app_context, task)
+    let result = run_task_with_nonce_retry(&ctx.app_context, task)
         .await
         .expect("step_transfer_credits: TransferPlatformCredits failed");
 
@@ -385,7 +385,7 @@ async fn step_withdraw(
         destination: fresh_addr,
         fee_deduct_from_output: true,
     });
-    run_task(&ctx.app_context, fund_task)
+    run_task_with_nonce_retry(&ctx.app_context, fund_task)
         .await
         .expect("step_withdraw: FundPlatformAddressFromWalletUtxos failed");
 
@@ -478,7 +478,7 @@ async fn step_withdraw(
         fee_payer_index: 0,
     });
 
-    let result = run_task(&ctx.app_context, task)
+    let result = run_task_with_nonce_retry(&ctx.app_context, task)
         .await
         .expect("step_withdraw: WithdrawFromPlatformAddress failed");
 

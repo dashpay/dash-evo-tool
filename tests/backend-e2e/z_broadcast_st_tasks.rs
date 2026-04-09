@@ -6,7 +6,7 @@
 
 use crate::framework::fixtures::shared_identity;
 use crate::framework::harness::ctx;
-use crate::framework::task_runner::run_task;
+use crate::framework::task_runner::{run_task, run_task_with_nonce_retry};
 use dash_evo_tool::backend_task::identity::IdentityTask;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_sdk::SdkBuilder;
@@ -156,7 +156,7 @@ async fn step_broadcast_valid(
 
     tracing::info!("state transition built and signed, broadcasting...");
 
-    let result = run_task(
+    let result = run_task_with_nonce_retry(
         &ctx.app_context,
         BackendTask::BroadcastStateTransition(state_transition),
     )

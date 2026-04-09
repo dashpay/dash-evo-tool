@@ -7,7 +7,7 @@
 use crate::framework::dashpay_helpers;
 use crate::framework::fixtures;
 use crate::framework::harness;
-use crate::framework::task_runner::run_task;
+use crate::framework::task_runner::{run_task, run_task_with_nonce_retry};
 use dash_evo_tool::backend_task::dashpay::DashPayTask;
 use dash_evo_tool::backend_task::identity::IdentityTask;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
@@ -288,7 +288,7 @@ async fn step_send_contact_request(
             account_label: None,
         }));
 
-        let result = run_task(&ctx.app_context, task).await;
+        let result = run_task_with_nonce_retry(&ctx.app_context, task).await;
 
         match result {
             Ok(BackendTaskSuccessResult::DashPayContactRequestSent(username)) => {
@@ -380,7 +380,7 @@ async fn step_accept_contact_request(
         request_id,
     }));
 
-    let result = run_task(&ctx.app_context, task)
+    let result = run_task_with_nonce_retry(&ctx.app_context, task)
         .await
         .expect("AcceptContactRequest should succeed");
 
@@ -405,7 +405,7 @@ async fn step_register_dashpay_addresses(
         identity: pair.identity_b.clone(),
     }));
 
-    let result = run_task(&ctx.app_context, task)
+    let result = run_task_with_nonce_retry(&ctx.app_context, task)
         .await
         .expect("RegisterDashPayAddresses should succeed");
 
@@ -476,7 +476,7 @@ async fn step_update_contact_info(
 
         let new_qualified_key = QualifiedIdentityPublicKey::from(new_ipk);
 
-        let add_result = run_task(
+        let add_result = run_task_with_nonce_retry(
             &ctx.app_context,
             BackendTask::IdentityTask(IdentityTask::AddKeyToIdentity(
                 identity_b.clone(),
@@ -537,7 +537,7 @@ async fn step_update_contact_info(
         accepted_accounts: vec![0],
     }));
 
-    let result = run_task(&ctx.app_context, task)
+    let result = run_task_with_nonce_retry(&ctx.app_context, task)
         .await
         .expect("Step 5: UpdateContactInfo should succeed");
 

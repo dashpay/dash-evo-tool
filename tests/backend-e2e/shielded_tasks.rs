@@ -12,7 +12,7 @@
 
 use crate::framework::harness::ctx;
 use crate::framework::shielded_helpers;
-use crate::framework::task_runner::run_task;
+use crate::framework::task_runner::{run_task, run_task_with_nonce_retry};
 use dash_evo_tool::backend_task::shielded::ShieldedTask;
 use dash_evo_tool::backend_task::wallet::WalletTask;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
@@ -177,7 +177,7 @@ async fn step_shield_from_asset_lock(
         amount_duffs,
         source_address: None,
     });
-    let result = run_task(app_context, task).await;
+    let result = run_task_with_nonce_retry(app_context, task).await;
 
     match result {
         Err(e) if shielded_helpers::is_platform_shielded_unsupported(&e) => {
@@ -244,7 +244,7 @@ async fn step_shielded_transfer(app_context: &Arc<AppContext>, seed_hash: Wallet
         amount: transfer_amount,
         recipient_address_bytes,
     });
-    let result = run_task(app_context, task).await;
+    let result = run_task_with_nonce_retry(app_context, task).await;
 
     match result {
         Err(e) if shielded_helpers::is_platform_shielded_unsupported(&e) => {
@@ -293,7 +293,7 @@ async fn step_unshield(app_context: &Arc<AppContext>, seed_hash: WalletSeedHash)
         amount: unshield_amount,
         to_platform_address: platform_addr,
     });
-    let result = run_task(app_context, task).await;
+    let result = run_task_with_nonce_retry(app_context, task).await;
 
     match result {
         Err(e) if shielded_helpers::is_platform_shielded_unsupported(&e) => {
@@ -357,7 +357,7 @@ async fn step_withdrawal(app_context: &Arc<AppContext>, seed_hash: WalletSeedHas
         amount: withdrawal_amount,
         to_core_address: core_addr.clone(),
     });
-    let result = run_task(app_context, task).await;
+    let result = run_task_with_nonce_retry(app_context, task).await;
 
     match result {
         Err(e) if shielded_helpers::is_platform_shielded_unsupported(&e) => {

@@ -110,10 +110,13 @@ async fn tc_033_search_profiles() {
     let ctx = harness::ctx().await;
     let pair = fixtures::shared_dashpay_pair().await;
 
-    // Retry search up to 30s — DPNS name may not be immediately queryable
+    // Give Platform extra time after fixture DPNS registration before querying.
+    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+
+    // Retry search — DPNS name may not be immediately queryable
     // after registration due to platform propagation delay.
     let poll_interval = std::time::Duration::from_secs(5);
-    let timeout = std::time::Duration::from_secs(90);
+    let timeout = std::time::Duration::from_secs(120);
     let start = std::time::Instant::now();
 
     loop {
@@ -252,10 +255,13 @@ async fn tc_037_send_contact_request() {
 
     let (signing_key, _signing_key_bytes) = &pair.signing_key_a;
 
+    // Give Platform extra time after fixture DPNS registration before resolving.
+    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+
     // SendContactRequest does username resolution internally. If the DPNS
     // name hasn't fully propagated yet, it fails with UsernameResolutionFailed.
-    // Retry with backoff for up to 60s.
-    let retry_timeout = std::time::Duration::from_secs(60);
+    // Retry with backoff for up to 120s.
+    let retry_timeout = std::time::Duration::from_secs(120);
     let retry_interval = std::time::Duration::from_secs(10);
     let start = std::time::Instant::now();
 
@@ -652,6 +658,9 @@ async fn tc_043_reject_contact_request() {
         tokio::time::sleep(poll_interval).await;
     }
 
+    // Give Platform extra time after DPNS propagation check before sending.
+    tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+
     // Send contact request from A to C, with retry on UsernameResolutionFailed
     let (signing_key_a, _) = &pair.signing_key_a;
     tracing::info!(
@@ -659,7 +668,7 @@ async fn tc_043_reject_contact_request() {
         username_c
     );
 
-    let retry_timeout = std::time::Duration::from_secs(60);
+    let retry_timeout = std::time::Duration::from_secs(120);
     let retry_interval = std::time::Duration::from_secs(10);
     let send_start = std::time::Instant::now();
 

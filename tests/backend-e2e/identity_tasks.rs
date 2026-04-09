@@ -111,7 +111,7 @@ async fn tc_021_top_up_identity_from_platform_addresses() {
 
     // Fetch the funded balance with retry — funding may not have propagated
     // to Platform yet.
-    let poll_timeout = std::time::Duration::from_secs(30);
+    let poll_timeout = std::time::Duration::from_secs(90);
     let poll_interval = std::time::Duration::from_secs(3);
     let start = std::time::Instant::now();
 

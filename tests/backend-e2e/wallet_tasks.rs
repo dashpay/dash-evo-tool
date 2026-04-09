@@ -249,24 +249,6 @@ async fn tc_016_transfer_platform_credits() {
         .expect("TC-016: FUNDED_PLATFORM not set — TC-014 must run first");
     let seed_hash = state.seed_hash;
 
-    // Fetch current platform address balances to refresh the wallet's address
-    // map and get a known funded source address.
-    let fetch_task =
-        BackendTask::WalletTask(WalletTask::FetchPlatformAddressBalances { seed_hash });
-    let fetch_result = run_task(&ctx.app_context, fetch_task)
-        .await
-        .expect("TC-016: pre-transfer FetchPlatformAddressBalances failed");
-
-    let (source_addr, current_source_balance) = match fetch_result {
-        BackendTaskSuccessResult::PlatformAddressBalances { balances, .. } => balances
-            .iter()
-            .find(|(_, (balance, _))| *balance > 0)
-            .map(|(addr, (balance, _))| (*addr, *balance))
-            .expect("TC-016: no funded platform address found"),
-        other => panic!("TC-016: expected PlatformAddressBalances, got: {:?}", other),
-    };
-
-    // Derive a second platform address as the destination
     let wallet_arc = {
         let wallets = ctx.app_context.wallets().read().expect("wallets lock");
         wallets
@@ -275,16 +257,61 @@ async fn tc_016_transfer_platform_credits() {
             .clone()
     };
 
-    let dest_addr = {
+    // Derive the first platform address (the one tc_014 funded) so it is
+    // guaranteed to be in watched_addresses. Then derive a fresh second one
+    // as the transfer destination.
+    let (source_candidate, dest_addr) = {
         let mut wallet = wallet_arc.write().expect("wallet write lock");
-        let addr = wallet
+        let src = wallet
             .platform_receive_address(
                 dash_sdk::dpp::dashcore::Network::Testnet,
-                true, // skip_known_addresses — derive a fresh one
+                false, // reuse existing — same address tc_014 funded
+                Some(&ctx.app_context),
+            )
+            .expect("TC-016: failed to derive source platform address");
+        let dst = wallet
+            .platform_receive_address(
+                dash_sdk::dpp::dashcore::Network::Testnet,
+                true, // skip_known — derive a fresh one
                 Some(&ctx.app_context),
             )
             .expect("TC-016: failed to derive second platform address");
-        PlatformAddress::try_from(addr).expect("TC-016: failed to convert to PlatformAddress")
+        (
+            PlatformAddress::try_from(src).expect("TC-016: src PlatformAddress"),
+            PlatformAddress::try_from(dst).expect("TC-016: dst PlatformAddress"),
+        )
+    };
+
+    // Fetch current platform address balances to get the funded amount.
+    let fetch_task =
+        BackendTask::WalletTask(WalletTask::FetchPlatformAddressBalances { seed_hash });
+    let fetch_result = run_task(&ctx.app_context, fetch_task)
+        .await
+        .expect("TC-016: pre-transfer FetchPlatformAddressBalances failed");
+
+    let (source_addr, current_source_balance) = match fetch_result {
+        BackendTaskSuccessResult::PlatformAddressBalances { balances, .. } => {
+            // Prefer the address we derived (guaranteed in watched_addresses).
+            // Fall back to any funded address if the derived one has no balance.
+            if let Some((bal, _)) = balances.get(&source_candidate) {
+                if *bal > 0 {
+                    (source_candidate, *bal)
+                } else {
+                    balances
+                        .iter()
+                        .find(|(_, (balance, _))| *balance > 0)
+                        .map(|(addr, (balance, _))| (*addr, *balance))
+                        .expect("TC-016: no funded platform address found")
+                }
+            } else {
+                balances
+                    .iter()
+                    .find(|(_, (balance, _))| *balance > 0)
+                    .map(|(addr, (balance, _))| (*addr, *balance))
+                    .expect("TC-016: no funded platform address found")
+            }
+        }
+        other => panic!("TC-016: expected PlatformAddressBalances, got: {:?}", other),
     };
 
     assert_ne!(
@@ -401,8 +428,9 @@ async fn tc_017_withdraw_from_platform_address() {
         .expect("TC-017: FundPlatformAddressFromWalletUtxos failed");
 
     // Fetch platform address balances with retry — funding may not have
-    // propagated to Platform yet.
-    let poll_timeout = Duration::from_secs(30);
+    // propagated to Platform yet. Prefer the freshly derived address
+    // (guaranteed in watched_addresses) to avoid "not found in wallet" errors.
+    let poll_timeout = Duration::from_secs(90);
     let poll_interval = Duration::from_secs(3);
     let start = std::time::Instant::now();
 
@@ -414,10 +442,18 @@ async fn tc_017_withdraw_from_platform_address() {
             .expect("TC-017: FetchPlatformAddressBalances failed");
 
         let found = match fetch_result {
-            BackendTaskSuccessResult::PlatformAddressBalances { balances, .. } => balances
-                .iter()
-                .find(|(_, (balance, _))| *balance > 0)
-                .map(|(addr, (balance, _))| (*addr, *balance)),
+            BackendTaskSuccessResult::PlatformAddressBalances { balances, .. } => {
+                // Prefer fresh_addr (derived above, guaranteed in watched_addresses)
+                if let Some((bal, _)) = balances.get(&fresh_addr) {
+                    if *bal > 0 {
+                        Some((fresh_addr, *bal))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
             other => panic!("TC-017: expected PlatformAddressBalances, got: {:?}", other),
         };
 
@@ -427,13 +463,13 @@ async fn tc_017_withdraw_from_platform_address() {
 
         if start.elapsed() > poll_timeout {
             panic!(
-                "TC-017: no funded platform address found for withdrawal within {:?}",
-                poll_timeout
+                "TC-017: funded platform address {:?} not found for withdrawal within {:?}",
+                fresh_addr, poll_timeout
             );
         }
 
         tracing::info!(
-            "TC-017: no funded platform address yet, retrying in {:?}...",
+            "TC-017: fresh address not yet funded on Platform, retrying in {:?}...",
             poll_interval
         );
         tokio::time::sleep(poll_interval).await;
@@ -551,7 +587,7 @@ async fn tc_018_fund_platform_address_from_asset_lock() {
 
     // Step 2: Wait for the asset lock proof to appear in unused_asset_locks
     tracing::info!("TC-018: waiting for asset lock IS proof in unused_asset_locks...");
-    let proof_timeout = Duration::from_secs(240);
+    let proof_timeout = Duration::from_secs(360);
     let (asset_lock_address, asset_lock_proof) = tokio::time::timeout(proof_timeout, async {
         loop {
             let maybe_lock = {

@@ -46,7 +46,7 @@ impl ContactInfoPrivateData {
     const MIN_PLAINTEXT_SIZE: usize = 16;
 
     // Serialize to bytes for encryption
-    pub fn serialize(&self) -> Vec<u8> {
+    pub fn serialize(&self) -> Result<Vec<u8>, DashPayError> {
         let mut bytes = Vec::new();
 
         // Version (4 bytes)
@@ -55,7 +55,13 @@ impl ContactInfoPrivateData {
         // Alias name (length + string)
         if let Some(alias) = &self.alias_name {
             let alias_bytes = alias.as_bytes();
-            bytes.push(alias_bytes.len() as u8);
+            let alias_len = alias_bytes.len();
+            if alias_len > u8::MAX as usize {
+                return Err(DashPayError::ContactInfoValidationFailed {
+                    errors: vec![format!("Nickname too long ({alias_len} bytes, max 255)")],
+                });
+            }
+            bytes.push(alias_len as u8);
             bytes.extend_from_slice(alias_bytes);
         } else {
             bytes.push(0u8);
@@ -64,7 +70,13 @@ impl ContactInfoPrivateData {
         // Note (length + string)
         if let Some(note) = &self.note {
             let note_bytes = note.as_bytes();
-            bytes.push(note_bytes.len() as u8);
+            let note_len = note_bytes.len();
+            if note_len > u8::MAX as usize {
+                return Err(DashPayError::ContactInfoValidationFailed {
+                    errors: vec![format!("Note too long ({note_len} bytes, max 255)")],
+                });
+            }
+            bytes.push(note_len as u8);
             bytes.extend_from_slice(note_bytes);
         } else {
             bytes.push(0u8);
@@ -74,7 +86,15 @@ impl ContactInfoPrivateData {
         bytes.push(if self.display_hidden { 1 } else { 0 });
 
         // Accepted accounts (length + array)
-        bytes.push(self.accepted_accounts.len() as u8);
+        let accounts_len = self.accepted_accounts.len();
+        if accounts_len > u8::MAX as usize {
+            return Err(DashPayError::ContactInfoValidationFailed {
+                errors: vec![format!(
+                    "Too many accepted accounts ({accounts_len}, max 255)"
+                )],
+            });
+        }
+        bytes.push(accounts_len as u8);
         for account in &self.accepted_accounts {
             bytes.extend_from_slice(&account.to_le_bytes());
         }
@@ -94,7 +114,7 @@ impl ContactInfoPrivateData {
             }
         }
 
-        bytes
+        Ok(bytes)
     }
 }
 
@@ -405,8 +425,9 @@ pub async fn create_or_update_contact_info(
     private_data.accepted_accounts = accepted_accounts;
 
     // Encrypt private data
-    let encrypted_private_data = encrypt_private_data(&private_data.serialize(), &private_data_key)
-        .map_err(|e| TaskError::EncryptionError { detail: e })?;
+    let encrypted_private_data =
+        encrypt_private_data(&private_data.serialize()?, &private_data_key)
+            .map_err(|e| TaskError::EncryptionError { detail: e })?;
 
     let validation = crate::backend_task::dashpay::validation::validate_contact_info_field_sizes(
         &encrypted_user_id,

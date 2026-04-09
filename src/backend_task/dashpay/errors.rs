@@ -234,6 +234,13 @@ impl DashPayError {
             DashPayError::MissingDecryptionKey => {
                 "Your identity is missing a decryption key required for contacts. Please add a compatible decryption key.".to_string()
             }
+            DashPayError::ContactInfoValidationFailed { .. } => {
+                "Contact info is too large to save. Try shortening your nickname or note."
+                    .to_string()
+            }
+            DashPayError::CannotContactSelf => {
+                "You cannot send a contact request to yourself.".to_string()
+            }
             _ => "An error occurred. Please try again.".to_string(),
         }
     }
@@ -263,6 +270,8 @@ impl DashPayError {
                 | DashPayError::MissingField { .. }
                 | DashPayError::MissingEncryptionKey
                 | DashPayError::MissingDecryptionKey
+                | DashPayError::ContactInfoValidationFailed { .. }
+                | DashPayError::CannotContactSelf
         )
     }
 }

@@ -21,10 +21,6 @@ use dash_sdk::dpp::data_contract::associated_token::token_configuration_item::To
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
 
-/// Module-level flag: whether minting (TC-053) has been performed.
-/// Tests that depend on minted balance check this before proceeding.
-static MINTED: tokio::sync::OnceCell<bool> = tokio::sync::OnceCell::const_new();
-
 /// Module-level storage for a second identity used across freeze/transfer/purchase tests.
 static SECOND_IDENTITY: tokio::sync::OnceCell<SecondIdentity> = tokio::sync::OnceCell::const_new();
 
@@ -70,37 +66,6 @@ async fn ensure_second_identity() -> &'static SecondIdentity {
             }
         })
         .await
-}
-
-/// Ensure minting has occurred (TC-053 equivalent).
-async fn ensure_minted() {
-    MINTED
-        .get_or_init(|| async {
-            let ctx = harness::ctx().await;
-            let si = shared_identity().await;
-            let st = shared_token().await;
-
-            tracing::info!("ensure_minted: minting 500_000 tokens...");
-            let result = token_helpers::mint_tokens(
-                &ctx.app_context,
-                &si.qualified_identity,
-                &st.data_contract,
-                st.token_position,
-                &si.signing_key,
-                500_000,
-            )
-            .await;
-
-            match result {
-                BackendTaskSuccessResult::MintedTokens(fee) => {
-                    tracing::info!("ensure_minted: done (fee: {:?})", fee);
-                    assert!(fee.actual_fee > 0, "Minting fee should be positive");
-                }
-                other => panic!("ensure_minted: expected MintedTokens, got: {:?}", other),
-            }
-            true
-        })
-        .await;
 }
 
 /// Find the first AUTHENTICATION public key from a QualifiedIdentity.
@@ -358,29 +323,41 @@ async fn tc_052_query_token_pricing() {
 }
 
 // ---------------------------------------------------------------------------
-// TC-053: MintTokens
+// TC-053: Token lifecycle (mint → burn → transfer → freeze → unfreeze →
+//          destroy_frozen → pause → resume → set_price → purchase → update_config)
 // ---------------------------------------------------------------------------
 
-#[ignore]
-#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
-async fn tc_053_mint_tokens() {
-    // ensure_minted handles the actual minting and asserts success
-    ensure_minted().await;
-    tracing::info!("TC-053: minting verified via ensure_minted()");
+async fn step_mint(
+    ctx: &crate::framework::harness::BackendTestContext,
+    si: &crate::framework::fixtures::SharedIdentity,
+    st: &crate::framework::fixtures::SharedToken,
+) {
+    tracing::info!("=== Step 1: Mint 500_000 tokens ===");
+    let result = token_helpers::mint_tokens(
+        &ctx.app_context,
+        &si.qualified_identity,
+        &st.data_contract,
+        st.token_position,
+        &si.signing_key,
+        500_000,
+    )
+    .await;
+
+    match result {
+        BackendTaskSuccessResult::MintedTokens(fee) => {
+            assert!(fee.actual_fee > 0, "Minting fee should be positive");
+            tracing::info!("Step 1: minted 500_000 tokens (fee: {:?})", fee);
+        }
+        other => panic!("Step 1: expected MintedTokens, got: {:?}", other),
+    }
 }
 
-// ---------------------------------------------------------------------------
-// TC-054: BurnTokens
-// ---------------------------------------------------------------------------
-
-#[ignore]
-#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
-async fn tc_054_burn_tokens() {
-    ensure_minted().await;
-    let ctx = harness::ctx().await;
-    let si = shared_identity().await;
-    let st = shared_token().await;
-
+async fn step_burn(
+    ctx: &crate::framework::harness::BackendTestContext,
+    si: &crate::framework::fixtures::SharedIdentity,
+    st: &crate::framework::fixtures::SharedToken,
+) {
+    tracing::info!("=== Step 2: Burn 100 tokens ===");
     let task = BackendTask::TokenTask(Box::new(TokenTask::BurnTokens {
         owner_identity: si.qualified_identity.clone(),
         data_contract: st.data_contract.clone(),
@@ -393,30 +370,24 @@ async fn tc_054_burn_tokens() {
 
     let result = run_task(&ctx.app_context, task)
         .await
-        .expect("TC-054: BurnTokens failed");
+        .expect("Step 2: BurnTokens failed");
 
     match result {
         BackendTaskSuccessResult::BurnedTokens(fee) => {
             assert!(fee.actual_fee > 0, "Burn fee should be positive");
-            tracing::info!("TC-054: burned 100 tokens (fee: {:?})", fee);
+            tracing::info!("Step 2: burned 100 tokens (fee: {:?})", fee);
         }
-        other => panic!("TC-054: expected BurnedTokens, got: {:?}", other),
+        other => panic!("Step 2: expected BurnedTokens, got: {:?}", other),
     }
 }
 
-// ---------------------------------------------------------------------------
-// TC-055: TransferTokens
-// ---------------------------------------------------------------------------
-
-#[ignore]
-#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
-async fn tc_055_transfer_tokens() {
-    ensure_minted().await;
-    let ctx = harness::ctx().await;
-    let si = shared_identity().await;
-    let st = shared_token().await;
-    let second = ensure_second_identity().await;
-
+async fn step_transfer(
+    ctx: &crate::framework::harness::BackendTestContext,
+    si: &crate::framework::fixtures::SharedIdentity,
+    st: &crate::framework::fixtures::SharedToken,
+    second: &SecondIdentity,
+) {
+    tracing::info!("=== Step 3: Transfer 100 tokens to second identity ===");
     let task = BackendTask::TokenTask(Box::new(TokenTask::TransferTokens {
         sending_identity: si.qualified_identity.clone(),
         recipient_id: second.qualified_identity.identity.id(),
@@ -429,30 +400,24 @@ async fn tc_055_transfer_tokens() {
 
     let result = run_task(&ctx.app_context, task)
         .await
-        .expect("TC-055: TransferTokens failed");
+        .expect("Step 3: TransferTokens failed");
 
     match result {
         BackendTaskSuccessResult::TransferredTokens(fee) => {
             assert!(fee.actual_fee > 0, "Transfer fee should be positive");
-            tracing::info!("TC-055: transferred 100 tokens (fee: {:?})", fee);
+            tracing::info!("Step 3: transferred 100 tokens (fee: {:?})", fee);
         }
-        other => panic!("TC-055: expected TransferredTokens, got: {:?}", other),
+        other => panic!("Step 3: expected TransferredTokens, got: {:?}", other),
     }
 }
 
-// ---------------------------------------------------------------------------
-// TC-056: FreezeTokens
-// ---------------------------------------------------------------------------
-
-#[ignore]
-#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
-async fn tc_056_freeze_tokens() {
-    ensure_minted().await;
-    let ctx = harness::ctx().await;
-    let si = shared_identity().await;
-    let st = shared_token().await;
-    let second = ensure_second_identity().await;
-
+async fn step_freeze(
+    ctx: &crate::framework::harness::BackendTestContext,
+    si: &crate::framework::fixtures::SharedIdentity,
+    st: &crate::framework::fixtures::SharedToken,
+    second: &SecondIdentity,
+) {
+    tracing::info!("=== Step 4: Freeze second identity ===");
     let task = BackendTask::TokenTask(Box::new(TokenTask::FreezeTokens {
         actor_identity: si.qualified_identity.clone(),
         data_contract: st.data_contract.clone(),
@@ -465,29 +430,24 @@ async fn tc_056_freeze_tokens() {
 
     let result = run_task(&ctx.app_context, task)
         .await
-        .expect("TC-056: FreezeTokens failed");
+        .expect("Step 4: FreezeTokens failed");
 
     match result {
         BackendTaskSuccessResult::FrozeTokens(fee) => {
             assert!(fee.actual_fee > 0, "Freeze fee should be positive");
-            tracing::info!("TC-056: froze tokens for second identity (fee: {:?})", fee);
+            tracing::info!("Step 4: froze tokens for second identity (fee: {:?})", fee);
         }
-        other => panic!("TC-056: expected FrozeTokens, got: {:?}", other),
+        other => panic!("Step 4: expected FrozeTokens, got: {:?}", other),
     }
 }
 
-// ---------------------------------------------------------------------------
-// TC-057: UnfreezeTokens
-// ---------------------------------------------------------------------------
-
-#[ignore]
-#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
-async fn tc_057_unfreeze_tokens() {
-    let ctx = harness::ctx().await;
-    let si = shared_identity().await;
-    let st = shared_token().await;
-    let second = ensure_second_identity().await;
-
+async fn step_unfreeze(
+    ctx: &crate::framework::harness::BackendTestContext,
+    si: &crate::framework::fixtures::SharedIdentity,
+    st: &crate::framework::fixtures::SharedToken,
+    second: &SecondIdentity,
+) {
+    tracing::info!("=== Step 5: Unfreeze second identity ===");
     let task = BackendTask::TokenTask(Box::new(TokenTask::UnfreezeTokens {
         actor_identity: si.qualified_identity.clone(),
         data_contract: st.data_contract.clone(),
@@ -500,33 +460,29 @@ async fn tc_057_unfreeze_tokens() {
 
     let result = run_task(&ctx.app_context, task)
         .await
-        .expect("TC-057: UnfreezeTokens failed");
+        .expect("Step 5: UnfreezeTokens failed");
 
     match result {
         BackendTaskSuccessResult::UnfrozeTokens(fee) => {
             assert!(fee.actual_fee > 0, "Unfreeze fee should be positive");
             tracing::info!(
-                "TC-057: unfroze tokens for second identity (fee: {:?})",
+                "Step 5: unfroze tokens for second identity (fee: {:?})",
                 fee
             );
         }
-        other => panic!("TC-057: expected UnfrozeTokens, got: {:?}", other),
+        other => panic!("Step 5: expected UnfrozeTokens, got: {:?}", other),
     }
 }
 
-// ---------------------------------------------------------------------------
-// TC-058: DestroyFrozenFunds
-// ---------------------------------------------------------------------------
+async fn step_destroy_frozen(
+    ctx: &crate::framework::harness::BackendTestContext,
+    si: &crate::framework::fixtures::SharedIdentity,
+    st: &crate::framework::fixtures::SharedToken,
+    second: &SecondIdentity,
+) {
+    tracing::info!("=== Step 6: Re-freeze then destroy frozen funds ===");
 
-#[ignore]
-#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
-async fn tc_058_destroy_frozen_funds() {
-    let ctx = harness::ctx().await;
-    let si = shared_identity().await;
-    let st = shared_token().await;
-    let second = ensure_second_identity().await;
-
-    // Re-freeze the second identity first (unfrozen by TC-057)
+    // Re-freeze the second identity first (unfrozen by step 5)
     let freeze_task = BackendTask::TokenTask(Box::new(TokenTask::FreezeTokens {
         actor_identity: si.qualified_identity.clone(),
         data_contract: st.data_contract.clone(),
@@ -538,13 +494,12 @@ async fn tc_058_destroy_frozen_funds() {
     }));
     let freeze_result = run_task(&ctx.app_context, freeze_task)
         .await
-        .expect("TC-058: re-freeze failed");
+        .expect("Step 6: re-freeze failed");
     assert!(
         matches!(freeze_result, BackendTaskSuccessResult::FrozeTokens(_)),
-        "TC-058: re-freeze should succeed"
+        "Step 6: re-freeze should succeed"
     );
 
-    // Now destroy the frozen funds
     let task = BackendTask::TokenTask(Box::new(TokenTask::DestroyFrozenFunds {
         actor_identity: si.qualified_identity.clone(),
         data_contract: st.data_contract.clone(),
@@ -557,28 +512,23 @@ async fn tc_058_destroy_frozen_funds() {
 
     let result = run_task(&ctx.app_context, task)
         .await
-        .expect("TC-058: DestroyFrozenFunds failed");
+        .expect("Step 6: DestroyFrozenFunds failed");
 
     match result {
         BackendTaskSuccessResult::DestroyedFrozenFunds(fee) => {
             assert!(fee.actual_fee > 0, "Destroy fee should be positive");
-            tracing::info!("TC-058: destroyed frozen funds (fee: {:?})", fee);
+            tracing::info!("Step 6: destroyed frozen funds (fee: {:?})", fee);
         }
-        other => panic!("TC-058: expected DestroyedFrozenFunds, got: {:?}", other),
+        other => panic!("Step 6: expected DestroyedFrozenFunds, got: {:?}", other),
     }
 }
 
-// ---------------------------------------------------------------------------
-// TC-059: PauseTokens
-// ---------------------------------------------------------------------------
-
-#[ignore]
-#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
-async fn tc_059_pause_tokens() {
-    let ctx = harness::ctx().await;
-    let si = shared_identity().await;
-    let st = shared_token().await;
-
+async fn step_pause(
+    ctx: &crate::framework::harness::BackendTestContext,
+    si: &crate::framework::fixtures::SharedIdentity,
+    st: &crate::framework::fixtures::SharedToken,
+) {
+    tracing::info!("=== Step 7: Pause token ===");
     let task = BackendTask::TokenTask(Box::new(TokenTask::PauseTokens {
         actor_identity: si.qualified_identity.clone(),
         data_contract: st.data_contract.clone(),
@@ -590,28 +540,23 @@ async fn tc_059_pause_tokens() {
 
     let result = run_task(&ctx.app_context, task)
         .await
-        .expect("TC-059: PauseTokens failed");
+        .expect("Step 7: PauseTokens failed");
 
     match result {
         BackendTaskSuccessResult::PausedTokens(fee) => {
             assert!(fee.actual_fee > 0, "Pause fee should be positive");
-            tracing::info!("TC-059: paused token (fee: {:?})", fee);
+            tracing::info!("Step 7: paused token (fee: {:?})", fee);
         }
-        other => panic!("TC-059: expected PausedTokens, got: {:?}", other),
+        other => panic!("Step 7: expected PausedTokens, got: {:?}", other),
     }
 }
 
-// ---------------------------------------------------------------------------
-// TC-060: ResumeTokens
-// ---------------------------------------------------------------------------
-
-#[ignore]
-#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
-async fn tc_060_resume_tokens() {
-    let ctx = harness::ctx().await;
-    let si = shared_identity().await;
-    let st = shared_token().await;
-
+async fn step_resume(
+    ctx: &crate::framework::harness::BackendTestContext,
+    si: &crate::framework::fixtures::SharedIdentity,
+    st: &crate::framework::fixtures::SharedToken,
+) {
+    tracing::info!("=== Step 8: Resume token ===");
     let task = BackendTask::TokenTask(Box::new(TokenTask::ResumeTokens {
         actor_identity: si.qualified_identity.clone(),
         data_contract: st.data_contract.clone(),
@@ -623,28 +568,23 @@ async fn tc_060_resume_tokens() {
 
     let result = run_task(&ctx.app_context, task)
         .await
-        .expect("TC-060: ResumeTokens failed");
+        .expect("Step 8: ResumeTokens failed");
 
     match result {
         BackendTaskSuccessResult::ResumedTokens(fee) => {
             assert!(fee.actual_fee > 0, "Resume fee should be positive");
-            tracing::info!("TC-060: resumed token (fee: {:?})", fee);
+            tracing::info!("Step 8: resumed token (fee: {:?})", fee);
         }
-        other => panic!("TC-060: expected ResumedTokens, got: {:?}", other),
+        other => panic!("Step 8: expected ResumedTokens, got: {:?}", other),
     }
 }
 
-// ---------------------------------------------------------------------------
-// TC-061: SetDirectPurchasePrice
-// ---------------------------------------------------------------------------
-
-#[ignore]
-#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
-async fn tc_061_set_direct_purchase_price() {
-    let ctx = harness::ctx().await;
-    let si = shared_identity().await;
-    let st = shared_token().await;
-
+async fn step_set_price(
+    ctx: &crate::framework::harness::BackendTestContext,
+    si: &crate::framework::fixtures::SharedIdentity,
+    st: &crate::framework::fixtures::SharedToken,
+) {
+    tracing::info!("=== Step 9: Set direct purchase price ===");
     let pricing = TokenPricingSchedule::SinglePrice(1_000);
 
     let task = BackendTask::TokenTask(Box::new(TokenTask::SetDirectPurchasePrice {
@@ -659,28 +599,23 @@ async fn tc_061_set_direct_purchase_price() {
 
     let result = run_task(&ctx.app_context, task)
         .await
-        .expect("TC-061: SetDirectPurchasePrice failed");
+        .expect("Step 9: SetDirectPurchasePrice failed");
 
     match result {
         BackendTaskSuccessResult::SetTokenPrice(fee) => {
             assert!(fee.actual_fee > 0, "Set price fee should be positive");
-            tracing::info!("TC-061: set token price (fee: {:?})", fee);
+            tracing::info!("Step 9: set token price (fee: {:?})", fee);
         }
-        other => panic!("TC-061: expected SetTokenPrice, got: {:?}", other),
+        other => panic!("Step 9: expected SetTokenPrice, got: {:?}", other),
     }
 }
 
-// ---------------------------------------------------------------------------
-// TC-062: PurchaseTokens
-// ---------------------------------------------------------------------------
-
-#[ignore]
-#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
-async fn tc_062_purchase_tokens() {
-    let ctx = harness::ctx().await;
-    let st = shared_token().await;
-    let second = ensure_second_identity().await;
-
+async fn step_purchase(
+    ctx: &crate::framework::harness::BackendTestContext,
+    st: &crate::framework::fixtures::SharedToken,
+    second: &SecondIdentity,
+) {
+    tracing::info!("=== Step 10: Purchase 10 tokens ===");
     // Purchase 10 tokens at 1_000 credits each = 10_000 total
     let task = BackendTask::TokenTask(Box::new(TokenTask::PurchaseTokens {
         identity: second.qualified_identity.clone(),
@@ -693,28 +628,23 @@ async fn tc_062_purchase_tokens() {
 
     let result = run_task(&ctx.app_context, task)
         .await
-        .expect("TC-062: PurchaseTokens failed");
+        .expect("Step 10: PurchaseTokens failed");
 
     match result {
         BackendTaskSuccessResult::PurchasedTokens(fee) => {
             assert!(fee.actual_fee > 0, "Purchase fee should be positive");
-            tracing::info!("TC-062: purchased 10 tokens (fee: {:?})", fee);
+            tracing::info!("Step 10: purchased 10 tokens (fee: {:?})", fee);
         }
-        other => panic!("TC-062: expected PurchasedTokens, got: {:?}", other),
+        other => panic!("Step 10: expected PurchasedTokens, got: {:?}", other),
     }
 }
 
-// ---------------------------------------------------------------------------
-// TC-063: UpdateTokenConfig
-// ---------------------------------------------------------------------------
-
-#[ignore]
-#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
-async fn tc_063_update_token_config() {
-    let ctx = harness::ctx().await;
-    let si = shared_identity().await;
-    let st = shared_token().await;
-
+async fn step_update_config(
+    ctx: &crate::framework::harness::BackendTestContext,
+    si: &crate::framework::fixtures::SharedIdentity,
+    st: &crate::framework::fixtures::SharedToken,
+) {
+    tracing::info!("=== Step 11: Update token config ===");
     let token_config = st
         .data_contract
         .tokens()
@@ -734,7 +664,6 @@ async fn tc_063_update_token_config() {
         token_position: st.token_position,
     };
 
-    // Change max_supply to a new value
     let change_item = TokenConfigurationChangeItem::MaxSupply(Some(2_000_000_000_000_000));
 
     let task = BackendTask::TokenTask(Box::new(TokenTask::UpdateTokenConfig {
@@ -747,19 +676,46 @@ async fn tc_063_update_token_config() {
 
     let result = run_task(&ctx.app_context, task)
         .await
-        .expect("TC-063: UpdateTokenConfig failed");
+        .expect("Step 11: UpdateTokenConfig failed");
 
     match result {
         BackendTaskSuccessResult::UpdatedTokenConfig(description, fee) => {
             assert!(fee.actual_fee > 0, "Config update fee should be positive");
             tracing::info!(
-                "TC-063: updated token config: {} (fee: {:?})",
+                "Step 11: updated token config: {} (fee: {:?})",
                 description,
                 fee
             );
         }
-        other => panic!("TC-063: expected UpdatedTokenConfig, got: {:?}", other),
+        other => panic!("Step 11: expected UpdatedTokenConfig, got: {:?}", other),
     }
+}
+
+/// TC-053: Full token lifecycle in a single sequential test.
+///
+/// Steps: mint → burn → transfer → freeze → unfreeze → destroy_frozen →
+///        pause → resume → set_price → purchase → update_config
+#[ignore]
+#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
+async fn tc_053_token_lifecycle() {
+    let ctx = harness::ctx().await;
+    let si = shared_identity().await;
+    let st = shared_token().await;
+    let second = ensure_second_identity().await;
+
+    step_mint(ctx, si, st).await;
+    step_burn(ctx, si, st).await;
+    step_transfer(ctx, si, st, second).await;
+    step_freeze(ctx, si, st, second).await;
+    step_unfreeze(ctx, si, st, second).await;
+    step_destroy_frozen(ctx, si, st, second).await;
+    step_pause(ctx, si, st).await;
+    step_resume(ctx, si, st).await;
+    step_set_price(ctx, si, st).await;
+    step_purchase(ctx, st, second).await;
+    step_update_config(ctx, si, st).await;
+
+    tracing::info!("TC-053: token lifecycle complete");
 }
 
 // ---------------------------------------------------------------------------

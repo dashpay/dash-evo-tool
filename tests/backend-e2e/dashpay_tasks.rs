@@ -1,8 +1,8 @@
 //! DashPayTask backend E2E tests (TC-031 to TC-044).
 //!
 //! Tests run serially via `--test-threads=1`. TC-037 through TC-042 form a
-//! sequential contact flow: send request -> load requests -> accept ->
-//! register addresses -> load contacts -> update info.
+//! sequential contact flow merged into a single lifecycle test:
+//! send request -> load requests -> accept -> register addresses -> update info.
 
 use crate::framework::dashpay_helpers;
 use crate::framework::fixtures;
@@ -16,9 +16,6 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
-
-/// Stores the incoming request ID captured during TC-038 for use in TC-039.
-static INCOMING_REQUEST_ID: tokio::sync::OnceCell<Identifier> = tokio::sync::OnceCell::const_new();
 
 /// TC-031: LoadProfile — identity with no profile
 #[ignore]
@@ -263,12 +260,13 @@ async fn tc_036_fetch_contact_profile() {
     }
 }
 
-/// TC-037: SendContactRequest (A -> B)
-#[ignore]
-#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
-async fn tc_037_send_contact_request() {
-    let ctx = harness::ctx().await;
-    let pair = fixtures::shared_dashpay_pair().await;
+// ─── TC-037 lifecycle steps ────────────────────────────────────────────────
+
+async fn step_send_contact_request(
+    ctx: &crate::framework::harness::BackendTestContext,
+    pair: &fixtures::SharedDashPayPair,
+) {
+    tracing::info!("=== Step 1: SendContactRequest (A -> B) ===");
 
     let (signing_key, _signing_key_bytes) = &pair.signing_key_a;
 
@@ -294,43 +292,44 @@ async fn tc_037_send_contact_request() {
 
         match result {
             Ok(BackendTaskSuccessResult::DashPayContactRequestSent(username)) => {
-                tracing::info!("TC-037: contact request sent to '{}'", username);
-                break;
+                tracing::info!("Step 1: contact request sent to '{}'", username);
+                return;
             }
             Ok(BackendTaskSuccessResult::DashPayContactAlreadyEstablished(id)) => {
                 tracing::info!(
-                    "TC-037: contact already established with {:?} (previous test run)",
+                    "Step 1: contact already established with {:?} (previous test run)",
                     id
                 );
-                break;
+                return;
             }
             Ok(other) => panic!(
-                "TC-037: expected DashPayContactRequestSent, got: {:?}",
+                "Step 1: expected DashPayContactRequestSent, got: {:?}",
                 other
             ),
             Err(e) => {
                 let is_resolution_failure = format!("{:?}", e).contains("UsernameResolution");
                 if is_resolution_failure && start.elapsed() < retry_timeout {
                     tracing::info!(
-                        "TC-037: username resolution failed, retrying in {:?}... ({:?} elapsed)",
+                        "Step 1: username resolution failed, retrying in {:?}... ({:?} elapsed)",
                         retry_interval,
                         start.elapsed()
                     );
                     tokio::time::sleep(retry_interval).await;
                     continue;
                 }
-                panic!("TC-037: SendContactRequest failed: {:?}", e);
+                panic!("Step 1: SendContactRequest failed: {:?}", e);
             }
         }
     }
 }
 
-/// TC-038: LoadContactRequests — after sending (check B's incoming)
-#[ignore]
-#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
-async fn tc_038_load_contact_requests_after_sending() {
-    let ctx = harness::ctx().await;
-    let pair = fixtures::shared_dashpay_pair().await;
+/// Returns the incoming request ID from B's contact requests, or `None` if the
+/// contact is already established from a previous run.
+async fn step_load_contact_requests(
+    ctx: &crate::framework::harness::BackendTestContext,
+    pair: &fixtures::SharedDashPayPair,
+) -> Option<Identifier> {
+    tracing::info!("=== Step 2: LoadContactRequests (check B's incoming) ===");
 
     let task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadContactRequests {
         identity: pair.identity_b.clone(),
@@ -343,50 +342,38 @@ async fn tc_038_load_contact_requests_after_sending() {
     match result {
         BackendTaskSuccessResult::DashPayContactRequests { incoming, outgoing } => {
             tracing::info!(
-                "TC-038: B has {} incoming, {} outgoing requests",
+                "Step 2: B has {} incoming, {} outgoing requests",
                 incoming.len(),
                 outgoing.len()
             );
 
-            // Find A's request among incoming
             let identity_a_id = pair.identity_a.identity.id();
-            if let Some((request_id, _doc)) = incoming.first() {
-                tracing::info!("TC-038: storing request_id={:?} for TC-039", request_id);
-                INCOMING_REQUEST_ID
-                    .set(*request_id)
-                    .expect("INCOMING_REQUEST_ID should only be set once");
-            } else {
-                tracing::warn!(
-                    "TC-038: no incoming requests found for B — contact may already be established from a previous run"
-                );
-            }
-
             tracing::info!(
-                "TC-038: identity_a_id={:?}, incoming_count={}",
+                "Step 2: identity_a_id={:?}, incoming_count={}",
                 identity_a_id,
                 incoming.len()
             );
+
+            if let Some((request_id, _doc)) = incoming.first() {
+                tracing::info!("Step 2: found request_id={:?}", request_id);
+                Some(*request_id)
+            } else {
+                tracing::warn!(
+                    "Step 2: no incoming requests found for B — contact may already be established from a previous run"
+                );
+                None
+            }
         }
-        other => panic!("TC-038: expected DashPayContactRequests, got: {:?}", other),
+        other => panic!("Step 2: expected DashPayContactRequests, got: {:?}", other),
     }
 }
 
-/// TC-039: AcceptContactRequest
-#[ignore]
-#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
-async fn tc_039_accept_contact_request() {
-    let ctx = harness::ctx().await;
-    let pair = fixtures::shared_dashpay_pair().await;
-
-    let request_id = match INCOMING_REQUEST_ID.get() {
-        Some(id) => *id,
-        None => {
-            tracing::warn!(
-                "TC-039: no request_id from TC-038 — contact may already be established. Skipping."
-            );
-            return;
-        }
-    };
+async fn step_accept_contact_request(
+    ctx: &crate::framework::harness::BackendTestContext,
+    pair: &fixtures::SharedDashPayPair,
+    request_id: Identifier,
+) {
+    tracing::info!("=== Step 3: AcceptContactRequest ===");
 
     let task = BackendTask::DashPayTask(Box::new(DashPayTask::AcceptContactRequest {
         identity: pair.identity_b.clone(),
@@ -399,21 +386,20 @@ async fn tc_039_accept_contact_request() {
 
     match result {
         BackendTaskSuccessResult::DashPayContactRequestAccepted(id) => {
-            tracing::info!("TC-039: accepted contact request {:?}", id);
+            tracing::info!("Step 3: accepted contact request {:?}", id);
         }
         other => panic!(
-            "TC-039: expected DashPayContactRequestAccepted, got: {:?}",
+            "Step 3: expected DashPayContactRequestAccepted, got: {:?}",
             other
         ),
     }
 }
 
-/// TC-040: RegisterDashPayAddresses
-#[ignore]
-#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
-async fn tc_040_register_dashpay_addresses() {
-    let ctx = harness::ctx().await;
-    let pair = fixtures::shared_dashpay_pair().await;
+async fn step_register_dashpay_addresses(
+    ctx: &crate::framework::harness::BackendTestContext,
+    pair: &fixtures::SharedDashPayPair,
+) {
+    tracing::info!("=== Step 4: RegisterDashPayAddresses ===");
 
     let task = BackendTask::DashPayTask(Box::new(DashPayTask::RegisterDashPayAddresses {
         identity: pair.identity_b.clone(),
@@ -425,17 +411,174 @@ async fn tc_040_register_dashpay_addresses() {
 
     match result {
         BackendTaskSuccessResult::Message(msg) => {
-            tracing::info!("TC-040: RegisterDashPayAddresses: {}", msg);
+            tracing::info!("Step 4: RegisterDashPayAddresses: {}", msg);
             assert!(
                 msg.contains("Registered"),
                 "Message should confirm address registration"
             );
         }
         other => panic!(
-            "TC-040: expected Message (address registration confirmation), got: {:?}",
+            "Step 4: expected Message (address registration confirmation), got: {:?}",
             other
         ),
     }
+}
+
+async fn step_update_contact_info(
+    ctx: &crate::framework::harness::BackendTestContext,
+    pair: &fixtures::SharedDashPayPair,
+) {
+    tracing::info!("=== Step 5: UpdateContactInfo ===");
+
+    let mut identity_b = pair.identity_b.clone();
+    let contact_id = pair.identity_a.identity.id();
+
+    // Check if identity B already has an ECDSA_SECP256K1 AUTHENTICATION key.
+    let has_secp_auth = identity_b
+        .identity
+        .get_first_public_key_matching(
+            Purpose::AUTHENTICATION,
+            [
+                SecurityLevel::CRITICAL,
+                SecurityLevel::HIGH,
+                SecurityLevel::MEDIUM,
+            ]
+            .into(),
+            [KeyType::ECDSA_SECP256K1].into(),
+            false,
+        )
+        .is_some();
+
+    if !has_secp_auth {
+        tracing::info!(
+            "Step 5: identity B lacks ECDSA_SECP256K1 AUTHENTICATION key, adding one..."
+        );
+        let private_key_bytes: [u8; 32] = rand::random();
+        let new_ipk = IdentityPublicKey::V0(IdentityPublicKeyV0 {
+            id: 0, // placeholder, AddKeyToIdentity reassigns
+            purpose: Purpose::AUTHENTICATION,
+            security_level: SecurityLevel::HIGH,
+            contract_bounds: None,
+            key_type: KeyType::ECDSA_SECP256K1,
+            read_only: false,
+            data: {
+                use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
+                use dash_sdk::dpp::dashcore::PrivateKey;
+                let secp = Secp256k1::new();
+                let secret_key =
+                    dash_sdk::dpp::dashcore::secp256k1::SecretKey::from_slice(&private_key_bytes)
+                        .expect("Step 5: invalid secret key");
+                let pk = PrivateKey::new(secret_key, dash_sdk::dpp::dashcore::Network::Testnet);
+                pk.public_key(&secp).to_bytes().into()
+            },
+            disabled_at: None,
+        });
+
+        let new_qualified_key = QualifiedIdentityPublicKey::from(new_ipk);
+
+        let add_result = run_task(
+            &ctx.app_context,
+            BackendTask::IdentityTask(IdentityTask::AddKeyToIdentity(
+                identity_b.clone(),
+                new_qualified_key,
+                private_key_bytes,
+            )),
+        )
+        .await
+        .expect("Step 5: AddKeyToIdentity should succeed");
+
+        assert!(
+            matches!(add_result, BackendTaskSuccessResult::AddedKeyToIdentity(_)),
+            "Step 5: expected AddedKeyToIdentity, got: {:?}",
+            add_result
+        );
+
+        // Refresh identity B from Platform to pick up the new key.
+        // Note: RefreshIdentity updates the local DB but returns the input QI
+        // (a known limitation), so we re-load from the local DB afterward.
+        let refresh_result = run_task(
+            &ctx.app_context,
+            BackendTask::IdentityTask(IdentityTask::RefreshIdentity(identity_b.clone())),
+        )
+        .await
+        .expect("Step 5: RefreshIdentity should succeed");
+
+        assert!(
+            matches!(
+                refresh_result,
+                BackendTaskSuccessResult::RefreshedIdentity(_)
+            ),
+            "Step 5: expected RefreshedIdentity, got: {:?}",
+            refresh_result
+        );
+
+        // Re-load from local DB to get the updated identity with the new key.
+        let identity_b_id = identity_b.identity.id();
+        identity_b = ctx
+            .app_context
+            .load_local_qualified_identities()
+            .expect("Step 5: load_local_qualified_identities should succeed")
+            .into_iter()
+            .find(|qi| qi.identity.id() == identity_b_id)
+            .expect("Step 5: identity B should be in local DB after refresh");
+
+        tracing::info!(
+            "Step 5: identity B refreshed from local DB, keys={}",
+            identity_b.identity.public_keys().len()
+        );
+    }
+
+    let task = BackendTask::DashPayTask(Box::new(DashPayTask::UpdateContactInfo {
+        identity: identity_b,
+        contact_id,
+        nickname: Some("Test Nickname".into()),
+        note: Some("E2E note".into()),
+        is_hidden: false,
+        accepted_accounts: vec![0],
+    }));
+
+    let result = run_task(&ctx.app_context, task)
+        .await
+        .expect("Step 5: UpdateContactInfo should succeed");
+
+    match result {
+        BackendTaskSuccessResult::DashPayContactInfoUpdated(id) => {
+            assert_eq!(
+                id, contact_id,
+                "Updated contact info ID should match contact A"
+            );
+            tracing::info!("Step 5: contact info updated for {:?}", id);
+        }
+        other => panic!(
+            "Step 5: expected DashPayContactInfoUpdated, got: {:?}",
+            other
+        ),
+    }
+}
+
+/// TC-037: Full DashPay contact lifecycle (A sends → B loads → B accepts →
+/// B registers addresses → B updates contact info).
+#[ignore]
+#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
+async fn tc_037_dashpay_contact_lifecycle() {
+    let ctx = harness::ctx().await;
+    let pair = fixtures::shared_dashpay_pair().await;
+
+    step_send_contact_request(&ctx, &pair).await;
+
+    let request_id = step_load_contact_requests(&ctx, &pair).await;
+
+    if let Some(id) = request_id {
+        step_accept_contact_request(&ctx, &pair, id).await;
+    } else {
+        tracing::warn!(
+            "TC-037: no pending request — skipping accept step (contact already established)"
+        );
+    }
+
+    step_register_dashpay_addresses(&ctx, &pair).await;
+
+    step_update_contact_info(&ctx, &pair).await;
 }
 
 /// TC-041: LoadPaymentHistory — empty
@@ -461,144 +604,6 @@ async fn tc_041_load_payment_history_empty() {
             );
         }
         other => panic!("TC-041: expected DashPayPaymentHistory, got: {:?}", other),
-    }
-}
-
-/// TC-042: UpdateContactInfo
-///
-/// UpdateContactInfo requires an ECDSA_SECP256K1 AUTHENTICATION key on the
-/// identity. The default key specs only create ECDSA_HASH160 for AUTHENTICATION,
-/// so we first add a secp256k1 authentication key via AddKeyToIdentity,
-/// then refresh the identity from Platform before calling UpdateContactInfo.
-#[ignore]
-#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
-async fn tc_042_update_contact_info() {
-    let ctx = harness::ctx().await;
-    let pair = fixtures::shared_dashpay_pair().await;
-
-    let mut identity_b = pair.identity_b.clone();
-    let contact_id = pair.identity_a.identity.id();
-
-    // Check if identity B already has an ECDSA_SECP256K1 AUTHENTICATION key.
-    let has_secp_auth = identity_b
-        .identity
-        .get_first_public_key_matching(
-            Purpose::AUTHENTICATION,
-            [
-                SecurityLevel::CRITICAL,
-                SecurityLevel::HIGH,
-                SecurityLevel::MEDIUM,
-            ]
-            .into(),
-            [KeyType::ECDSA_SECP256K1].into(),
-            false,
-        )
-        .is_some();
-
-    if !has_secp_auth {
-        tracing::info!(
-            "TC-042: identity B lacks ECDSA_SECP256K1 AUTHENTICATION key, adding one..."
-        );
-        let private_key_bytes: [u8; 32] = rand::random();
-        let new_ipk = IdentityPublicKey::V0(IdentityPublicKeyV0 {
-            id: 0, // placeholder, AddKeyToIdentity reassigns
-            purpose: Purpose::AUTHENTICATION,
-            security_level: SecurityLevel::HIGH,
-            contract_bounds: None,
-            key_type: KeyType::ECDSA_SECP256K1,
-            read_only: false,
-            data: {
-                use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
-                use dash_sdk::dpp::dashcore::PrivateKey;
-                let secp = Secp256k1::new();
-                let secret_key =
-                    dash_sdk::dpp::dashcore::secp256k1::SecretKey::from_slice(&private_key_bytes)
-                        .expect("TC-042: invalid secret key");
-                let pk = PrivateKey::new(secret_key, dash_sdk::dpp::dashcore::Network::Testnet);
-                pk.public_key(&secp).to_bytes().into()
-            },
-            disabled_at: None,
-        });
-
-        let new_qualified_key = QualifiedIdentityPublicKey::from(new_ipk);
-
-        let add_result = run_task(
-            &ctx.app_context,
-            BackendTask::IdentityTask(IdentityTask::AddKeyToIdentity(
-                identity_b.clone(),
-                new_qualified_key,
-                private_key_bytes,
-            )),
-        )
-        .await
-        .expect("TC-042: AddKeyToIdentity should succeed");
-
-        assert!(
-            matches!(add_result, BackendTaskSuccessResult::AddedKeyToIdentity(_)),
-            "TC-042: expected AddedKeyToIdentity, got: {:?}",
-            add_result
-        );
-
-        // Refresh identity B from Platform to pick up the new key.
-        // Note: RefreshIdentity updates the local DB but returns the input QI
-        // (a known limitation), so we re-load from the local DB afterward.
-        let refresh_result = run_task(
-            &ctx.app_context,
-            BackendTask::IdentityTask(IdentityTask::RefreshIdentity(identity_b.clone())),
-        )
-        .await
-        .expect("TC-042: RefreshIdentity should succeed");
-
-        assert!(
-            matches!(
-                refresh_result,
-                BackendTaskSuccessResult::RefreshedIdentity(_)
-            ),
-            "TC-042: expected RefreshedIdentity, got: {:?}",
-            refresh_result
-        );
-
-        // Re-load from local DB to get the updated identity with the new key.
-        let identity_b_id = identity_b.identity.id();
-        identity_b = ctx
-            .app_context
-            .load_local_qualified_identities()
-            .expect("TC-042: load_local_qualified_identities should succeed")
-            .into_iter()
-            .find(|qi| qi.identity.id() == identity_b_id)
-            .expect("TC-042: identity B should be in local DB after refresh");
-
-        tracing::info!(
-            "TC-042: identity B refreshed from local DB, keys={}",
-            identity_b.identity.public_keys().len()
-        );
-    }
-
-    let task = BackendTask::DashPayTask(Box::new(DashPayTask::UpdateContactInfo {
-        identity: identity_b,
-        contact_id,
-        nickname: Some("Test Nickname".into()),
-        note: Some("E2E note".into()),
-        is_hidden: false,
-        accepted_accounts: vec![0],
-    }));
-
-    let result = run_task(&ctx.app_context, task)
-        .await
-        .expect("TC-042: UpdateContactInfo should succeed");
-
-    match result {
-        BackendTaskSuccessResult::DashPayContactInfoUpdated(id) => {
-            assert_eq!(
-                id, contact_id,
-                "Updated contact info ID should match contact A"
-            );
-            tracing::info!("TC-042: contact info updated for {:?}", id);
-        }
-        other => panic!(
-            "TC-042: expected DashPayContactInfoUpdated, got: {:?}",
-            other
-        ),
     }
 }
 

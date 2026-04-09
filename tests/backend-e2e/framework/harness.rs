@@ -401,9 +401,8 @@ impl BackendTestContext {
 
         // Wait for the full funded amount to become spendable so callers can
         // immediately build transactions without racing confirmations/IS locks.
-        // Large amounts (>10M duffs) sometimes don't get IS-locked on testnet
-        // within a reasonable timeout, so we fall back gracefully if total
-        // balance is present — the IS lock will arrive eventually.
+        // Funds MUST be confirmed or IS-locked before proceeding — unconfirmed
+        // UTXOs cannot be used for asset-lock transactions.
         tracing::trace!(seed_hash = ?&seed_hash[..4], min = amount_duffs, "create_funded_test_wallet: waiting for spendable balance (IS lock)...");
         match wait::wait_for_spendable_balance(
             app_context,
@@ -420,26 +419,33 @@ impl BackendTestContext {
                     "create_funded_test_wallet: funds spendable (IS-locked)"
                 );
             }
-            Err(e) => {
-                // Check if total balance arrived even though IS lock didn't
-                let total = {
-                    let wallets = app_context.wallets().read().expect("wallets lock");
-                    wallets
-                        .get(&seed_hash)
-                        .map(|w| w.read().expect("wallet lock").total_balance_duffs())
-                        .unwrap_or(0)
-                };
-                if total >= amount_duffs {
-                    tracing::warn!(
-                        seed_hash = ?&seed_hash[..4],
-                        total,
-                        amount_duffs,
-                        "create_funded_test_wallet: IS lock timed out but total balance \
-                         is sufficient — continuing (lock will arrive eventually)"
-                    );
-                } else {
-                    panic!("Test wallet funds did not become spendable: {e}");
-                }
+            Err(_) => {
+                // IS lock timed out — fall back to waiting for block confirmation.
+                // A Core block (~2.5 min) will confirm the transaction, making
+                // the UTXOs spendable. Use a longer timeout (~2 blocks).
+                tracing::warn!(
+                    seed_hash = ?&seed_hash[..4],
+                    amount_duffs,
+                    "create_funded_test_wallet: IS lock timed out, waiting for block confirmation..."
+                );
+                wait::wait_for_spendable_balance(
+                    app_context,
+                    seed_hash,
+                    amount_duffs,
+                    Duration::from_secs(300),
+                )
+                .await
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "Test wallet funds not spendable after IS lock + block confirmation \
+                         timeouts (total ~480s): {e}"
+                    )
+                });
+                tracing::info!(
+                    seed_hash = ?&seed_hash[..4],
+                    elapsed_ms = funding_start.elapsed().as_millis(),
+                    "create_funded_test_wallet: funds spendable (block-confirmed)"
+                );
             }
         }
 

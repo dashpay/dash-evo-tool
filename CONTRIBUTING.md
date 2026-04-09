@@ -76,7 +76,7 @@ The default `cargo build` produces only the `dash-evo-tool` GUI binary. Optional
 
 ### Adding MCP tools
 
-To expose a `BackendTask` as a new MCP/CLI tool, follow the step-by-step checklist in [docs/EXPOSING_BACKEND_TASKS.md](docs/EXPOSING_BACKEND_TASKS.md). It covers architecture rules, the standard invocation pattern, registration, and common pitfalls.
+To expose a `BackendTask` as a new MCP/CLI tool, follow the step-by-step checklist in [docs/MCP_TOOL_DEVELOPMENT.md](docs/MCP_TOOL_DEVELOPMENT.md). It covers architecture rules, the standard invocation pattern, registration, and common pitfalls.
 
 ## Code quality
 

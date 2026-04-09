@@ -5,6 +5,7 @@ use crate::model::wallet::{
     WalletSeedHash,
 };
 use dash_sdk::RequestSettings;
+use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use dash_sdk::platform::address_sync::AddressSyncConfig;
@@ -169,7 +170,17 @@ impl AppContext {
             wallet
                 .platform_address_info
                 .iter()
-                .map(|(addr, info)| (addr.clone(), (info.balance, info.nonce)))
+                .filter_map(
+                    |(addr, info)| match PlatformAddress::try_from(addr.clone()) {
+                        Ok(pa) => Some((pa, (info.balance, info.nonce))),
+                        Err(e) => {
+                            tracing::warn!(
+                                "Skipping platform address that could not be re-encoded: {e}"
+                            );
+                            None
+                        }
+                    },
+                )
                 .collect()
         };
 
@@ -183,6 +194,7 @@ impl AppContext {
         Ok(BackendTaskSuccessResult::PlatformAddressBalances {
             seed_hash,
             balances,
+            network: self.network(),
         })
     }
 }

@@ -109,13 +109,13 @@ User-facing error messages (shown in `MessageBanner` via `Display`) must follow 
 - **CLI ≠ MCP**: `src/bin/det_cli/` is a separate client that talks to the MCP server — it must work over HTTP too, not just in-process. Never put tool logic in the CLI binary; tools live in `src/mcp/tools/` and the CLI discovers them dynamically via `tools/list`.
 - **Tool architecture**: each tool is a struct implementing `ToolBase` (metadata) + `AsyncTool<DashMcpService>` (invocation). Adding a tool requires only the struct + registering in `tool_router()` — zero CLI changes.
 - **Tool naming**: `{domain}_{object}_{action}` — e.g. `core_address_create`, `platform_withdrawals_get`, `tool_describe`. CLI converts underscores to hyphens.
-- **Context provider**: `ContextProvider::Shared(ArcSwap)` for HTTP mode (follows GUI network switches), `ContextProvider::Lazy(OnceCell)` for stdio (init on first tool call).
+- **Context provider**: `ContextHolder::Shared(ArcSwap)` for HTTP mode (follows GUI network switches), `ContextHolder::Standalone(ArcSwapOption)` for stdio (init on first tool call).
 - **Network safety**: tools accept optional `network` param — request fails if it doesn't match the active network. Exempt: `network_info`, `tool_describe`.
 - **SPV sync**: wallet tools call `resolve::ensure_spv_synced()` before operating — polls SPV status with 1s interval, 10min timeout.
 - **Backend dispatch**: tools reuse the app's `BackendTask` system via `dispatch::dispatch_task()` — creates a throwaway channel, calls `app_context.run_backend_task()`.
 - **Schema quirk**: `schemars` v1 derives bare `true` for `serde_json::Value` fields — some MCP clients reject this. Use `#[schemars(transform)]` to override.
 - **Error type**: `McpToolError` enum (InvalidParam, WalletNotFound, SpvSyncFailed, TaskFailed, Internal) converts to `rmcp::ErrorData` via `From`.
-- **Docs**: `docs/MCP.md` (server config, tool reference), `docs/CLI.md` (usage, examples), `docs/EXPOSING_BACKEND_TASKS.md` (checklist for adding new MCP tools).
+- **Docs**: `docs/MCP.md` (server config, tool reference), `docs/CLI.md` (usage, examples), `docs/MCP_TOOL_DEVELOPMENT.md` (checklist for adding new MCP tools).
 
 ### Key Dependencies
 

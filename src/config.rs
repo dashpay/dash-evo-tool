@@ -68,13 +68,13 @@ impl NetworkConfig {
     /// - Mainnet: 9998
     /// - Testnet: 19998
     /// - Devnet: 29998
-    /// - Regtest: 20302 (dashmate default, matches `.env.example`)
+    /// - Regtest: 19898
     pub fn default_rpc_port(network: Network) -> u16 {
         match network {
             Network::Mainnet => 9998,
             Network::Testnet => 19998,
             Network::Devnet => 29998,
-            Network::Regtest => 20302,
+            Network::Regtest => 19898,
             _ => 9998,
         }
     }
@@ -328,7 +328,7 @@ impl Config {
 
 impl NetworkConfig {
     /// List of DAPI addresses, if explicitly configured.
-    /// Returns `Ok(None)` when absent or empty (not configured; the user may trigger discovery from Network Settings).
+    /// Returns `Ok(None)` when absent or empty (dynamic discovery should be used).
     pub fn dapi_address_list(&self) -> Result<Option<AddressList>, String> {
         let addrs = match self.dapi_addresses.as_deref() {
             Some(a) => a.trim(),

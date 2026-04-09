@@ -9,8 +9,6 @@ use crate::framework::harness::ctx;
 use crate::framework::task_runner::{run_task, run_task_with_nonce_retry};
 use dash_evo_tool::backend_task::identity::IdentityTask;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
-use dash_sdk::SdkBuilder;
-use dash_sdk::dapi_client::AddressList;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::{
@@ -18,78 +16,10 @@ use dash_sdk::dpp::identity::identity_public_key::accessors::v0::{
 };
 use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
-use dash_sdk::dpp::prelude::{CoreBlockHeight, UserFeeIncrease};
+use dash_sdk::dpp::prelude::UserFeeIncrease;
 use dash_sdk::dpp::state_transition::identity_update_transition::IdentityUpdateTransition;
 use dash_sdk::dpp::state_transition::identity_update_transition::methods::IdentityUpdateTransitionMethodsV0;
-use dash_sdk::error::ContextProviderError;
-use dash_sdk::platform::{ContextProvider, Fetch, IdentityPublicKey};
-use std::sync::Arc;
-
-// --- No-op ContextProvider for the lightweight proof-less SDK ---
-
-/// Minimal context provider that returns empty/error for all queries.
-///
-/// Sufficient for proof-less SDK operations (nonce fetch, identity fetch)
-/// where quorum key verification is not performed.
-struct NoopContextProvider;
-
-impl ContextProvider for NoopContextProvider {
-    fn get_data_contract(
-        &self,
-        _id: &dash_sdk::platform::Identifier,
-        _pv: &dash_sdk::dpp::version::PlatformVersion,
-    ) -> Result<Option<Arc<dash_sdk::dpp::prelude::DataContract>>, ContextProviderError> {
-        Ok(None)
-    }
-
-    fn get_token_configuration(
-        &self,
-        _token_id: &dash_sdk::platform::Identifier,
-    ) -> Result<Option<dash_sdk::dpp::data_contract::TokenConfiguration>, ContextProviderError>
-    {
-        Ok(None)
-    }
-
-    fn get_quorum_public_key(
-        &self,
-        _quorum_type: u32,
-        _quorum_hash: [u8; 32],
-        _core_chain_locked_height: u32,
-    ) -> Result<[u8; 48], ContextProviderError> {
-        Err(ContextProviderError::Config(
-            "NoopContextProvider: quorum keys not available (proofs disabled)".into(),
-        ))
-    }
-
-    fn get_platform_activation_height(&self) -> Result<CoreBlockHeight, ContextProviderError> {
-        Err(ContextProviderError::Config(
-            "NoopContextProvider: activation height not available".into(),
-        ))
-    }
-}
-
-// --- Helper: build a proof-less test SDK from env-configured DAPI addresses ---
-
-/// Build an Sdk instance connected to the testnet DAPI nodes with proofs disabled.
-///
-/// Proofs are disabled so we don't need a full ContextProvider with quorum keys.
-/// This SDK is only used for lightweight queries (nonce fetch, identity fetch).
-fn build_test_sdk(
-    platform_version: &'static dash_sdk::dpp::version::PlatformVersion,
-) -> dash_sdk::Sdk {
-    let raw = std::env::var("TESTNET_dapi_addresses")
-        .expect("TESTNET_dapi_addresses env var not set — ensure .env is loaded");
-
-    let address_list: AddressList = raw.parse().expect("invalid TESTNET_dapi_addresses");
-
-    SdkBuilder::new(address_list)
-        .with_network(Network::Testnet)
-        .with_version(platform_version)
-        .with_context_provider(NoopContextProvider)
-        .with_proofs(false)
-        .build()
-        .expect("failed to build test SDK")
-}
+use dash_sdk::platform::{Fetch, IdentityPublicKey};
 
 // --- TC-066 step functions ---
 
@@ -128,8 +58,8 @@ async fn step_broadcast_valid(
     });
     new_ipk.set_id(identity.get_public_key_max_id() + 1);
 
-    let test_sdk = build_test_sdk(platform_version);
-    let nonce = test_sdk
+    let sdk = ctx.app_context.sdk();
+    let nonce = sdk
         .get_identity_nonce(identity_id, true, None)
         .await
         .expect("failed to fetch identity nonce from Platform");
@@ -170,7 +100,7 @@ async fn step_broadcast_valid(
     );
     tracing::info!("broadcast succeeded");
 
-    let fetched = dash_sdk::platform::Identity::fetch_by_identifier(&test_sdk, identity_id)
+    let fetched = dash_sdk::platform::Identity::fetch_by_identifier(&sdk, identity_id)
         .await
         .expect("failed to re-fetch identity")
         .expect("identity not found on Platform after broadcast");

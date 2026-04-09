@@ -131,7 +131,10 @@ pub async fn shared_token() -> &'static SharedToken {
             }
 
             // The registered contract is saved to the local DB by the registration
-            // task. Retrieve it by scanning the DB for token contracts.
+            // task. Retrieve it by scanning the DB for token contracts owned by
+            // the shared identity. We filter by owner_id to avoid picking up a
+            // stale contract from a previous run with a different wallet seed.
+            let owner_id = si.qualified_identity.identity.id();
             let qualified_contracts = ctx
                 .app_context
                 .db()
@@ -140,8 +143,8 @@ pub async fn shared_token() -> &'static SharedToken {
 
             let contract = qualified_contracts
                 .into_iter()
-                .find(|qc| !qc.contract.tokens().is_empty())
-                .expect("SharedToken: no token contract found in DB after registration")
+                .find(|qc| !qc.contract.tokens().is_empty() && qc.contract.owner_id() == owner_id)
+                .expect("SharedToken: no token contract owned by shared identity found in DB")
                 .contract;
 
             let token_position: TokenContractPosition = 0;

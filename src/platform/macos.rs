@@ -2,6 +2,43 @@ use objc2::MainThreadMarker;
 use objc2::msg_send;
 use objc2::runtime::{AnyClass, AnyObject};
 
+/// Orders all application windows out (hides them) so that AppKit can
+/// properly tear down display-related observations — in particular
+/// `_NSTouchBarFinderObservation` KVO observers — while the windows and
+/// their views are still alive.
+///
+/// Without this, winit's event handler teardown triggers a display cycle
+/// flush that finds KVO observers on inconsistent objects, causing a
+/// SIGILL crash via `_crashOnException:`.
+///
+/// Must be called from `on_exit()` before returning control to the
+/// eframe/winit shutdown path.
+pub fn order_out_all_windows(_mtm: MainThreadMarker) {
+    unsafe {
+        let Some(cls) = AnyClass::get(c"NSApplication") else {
+            return;
+        };
+        let app: *mut AnyObject = msg_send![cls, sharedApplication];
+        if app.is_null() {
+            return;
+        }
+
+        let windows: *mut AnyObject = msg_send![app, windows];
+        if windows.is_null() {
+            return;
+        }
+
+        let count: usize = msg_send![windows, count];
+        for i in 0..count {
+            let window: *mut AnyObject = msg_send![windows, objectAtIndex: i];
+            if !window.is_null() {
+                let _: () = msg_send![window, orderOut: std::ptr::null::<AnyObject>()];
+            }
+        }
+        tracing::debug!("Ordered out {count} windows for clean shutdown");
+    }
+}
+
 /// Queries `accessibilityChildren` on the key window's content view to force
 /// macOS to call the AccessKit adapter's subclassed method, which transitions
 /// the adapter from `Inactive` to `Active`. Without this, tools like Peekaboo

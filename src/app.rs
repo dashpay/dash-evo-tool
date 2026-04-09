@@ -1646,6 +1646,11 @@ impl App for AppState {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // On macOS, order windows out before winit tears down the event
+        // handler. This lets AppKit properly clean up display-related KVO
+        // observers (TouchBar, etc.) while views are still alive.
+        crate::platform::order_out_all_windows();
+
         // If shutdown_receiver is Some, the async shutdown was already initiated
         // in update(). Skip the blocking fallback to avoid double-shutdown.
         // The blocking path only runs when the window was force-closed without

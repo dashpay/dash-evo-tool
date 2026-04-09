@@ -390,9 +390,21 @@ async fn step_withdraw(
         .expect("step_withdraw: FundPlatformAddressFromWalletUtxos failed");
 
     // Poll until the fresh address has credits on Platform.
-    let poll_timeout = Duration::from_secs(90);
-    let poll_interval = Duration::from_secs(3);
+    // Platform needs time to process the funding tx in a block. On testnet,
+    // blocks are ~2.5 min so allow up to 180s.
+    let poll_timeout = Duration::from_secs(180);
+    let poll_interval = Duration::from_secs(5);
     let start = std::time::Instant::now();
+
+    // Reset platform sync state so incremental sync doesn't skip the newly
+    // funded address (the previous sync checkpoint may be past the funding tx).
+    if let Err(e) = ctx
+        .app_context
+        .db()
+        .set_platform_sync_info(&seed_hash, 0, 0)
+    {
+        tracing::warn!("Failed to reset platform sync info: {}", e);
+    }
 
     let (withdrawal_addr, withdrawal_balance) = loop {
         let fetch_task =

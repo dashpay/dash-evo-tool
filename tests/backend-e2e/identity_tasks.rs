@@ -96,9 +96,21 @@ async fn step_top_up_from_platform_addresses(
         fund_result
     );
 
-    let poll_timeout = std::time::Duration::from_secs(90);
-    let poll_interval = std::time::Duration::from_secs(3);
+    // Platform needs time to process the funding tx in a block. On testnet,
+    // blocks are ~2.5 min so allow up to 180s.
+    let poll_timeout = std::time::Duration::from_secs(180);
+    let poll_interval = std::time::Duration::from_secs(5);
     let start = std::time::Instant::now();
+
+    // Reset platform sync state so incremental sync doesn't skip the newly
+    // funded address (the previous sync checkpoint may be past the funding tx).
+    if let Err(e) = ctx
+        .app_context
+        .db()
+        .set_platform_sync_info(&si.wallet_seed_hash, 0, 0)
+    {
+        tracing::warn!("Failed to reset platform sync info: {}", e);
+    }
 
     let balance = loop {
         let balances_result = run_task(

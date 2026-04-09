@@ -10,78 +10,6 @@ use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::identity::core_script::CoreScript;
 use std::collections::BTreeMap;
 use std::time::Duration;
-use tokio::sync::OnceCell;
-
-// Module-level state for the TC-014 → TC-015 → TC-016 → TC-017 sequence.
-// Lazily initialized via `ensure_funded_platform()` so each test is self-contained.
-struct FundedPlatformState {
-    seed_hash: WalletSeedHash,
-}
-
-static FUNDED_PLATFORM: OnceCell<FundedPlatformState> = OnceCell::const_new();
-
-/// Ensure a platform address is funded, initializing on first call.
-///
-/// Uses `get_or_init` so any test can run independently — the first caller
-/// pays the init cost, subsequent callers reuse the result.
-async fn ensure_funded_platform() -> &'static FundedPlatformState {
-    FUNDED_PLATFORM
-        .get_or_init(|| async {
-            let ctx = harness::ctx().await;
-            let seed_hash = ctx.framework_wallet_hash;
-
-            let wallet_arc = {
-                let wallets = ctx.app_context.wallets().read().expect("wallets lock");
-                wallets
-                    .get(&seed_hash)
-                    .expect("framework wallet missing")
-                    .clone()
-            };
-
-            let platform_addr = {
-                let mut wallet = wallet_arc.write().expect("wallet write lock");
-                let addr = wallet
-                    .platform_receive_address(
-                        dash_sdk::dpp::dashcore::Network::Testnet,
-                        false,
-                        Some(&ctx.app_context),
-                    )
-                    .expect("ensure_funded_platform: failed to derive platform receive address");
-                PlatformAddress::try_from(addr)
-                    .expect("ensure_funded_platform: failed to convert to PlatformAddress")
-            };
-
-            tracing::info!(
-                "ensure_funded_platform: funding platform address {:?}",
-                platform_addr
-            );
-
-            let task = BackendTask::WalletTask(WalletTask::FundPlatformAddressFromWalletUtxos {
-                seed_hash,
-                amount: 1_000_000, // 0.01 DASH in duffs
-                destination: platform_addr,
-                fee_deduct_from_output: true,
-            });
-
-            let result = run_task(&ctx.app_context, task)
-                .await
-                .expect("ensure_funded_platform: FundPlatformAddressFromWalletUtxos failed");
-
-            match result {
-                BackendTaskSuccessResult::PlatformAddressFunded { seed_hash: sh } => {
-                    assert_eq!(sh, seed_hash, "ensure_funded_platform: seed_hash mismatch");
-                    tracing::info!("ensure_funded_platform: PlatformAddressFunded confirmed");
-                }
-                other => panic!(
-                    "ensure_funded_platform: expected PlatformAddressFunded, got: {:?}",
-                    other
-                ),
-            }
-
-            FundedPlatformState { seed_hash }
-        })
-        .await
-}
 
 // ─── TC-012 ───────────────────────────────────────────────────────────────────
 
@@ -174,93 +102,14 @@ async fn tc_013_fetch_platform_address_balances_empty() {
     }
 }
 
-// ─── TC-014 ───────────────────────────────────────────────────────────────────
+// ─── TC-014: wallet platform lifecycle (fund → fetch → transfer → withdraw) ──
 
-/// TC-014: FundPlatformAddressFromWalletUtxos — funds a platform address and verifies balance.
-#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
-#[ignore]
-async fn tc_014_fund_platform_address_from_wallet_utxos() {
-    let ctx = harness::ctx().await;
-
-    let state = ensure_funded_platform().await;
-    let seed_hash = state.seed_hash;
-
-    // Verify balance — fetch platform address balances and confirm > 0
-    let fetch_task =
-        BackendTask::WalletTask(WalletTask::FetchPlatformAddressBalances { seed_hash });
-    let fetch_result = run_task(&ctx.app_context, fetch_task)
-        .await
-        .expect("TC-014: FetchPlatformAddressBalances failed");
-
-    match fetch_result {
-        BackendTaskSuccessResult::PlatformAddressBalances { balances, .. } => {
-            let any_funded = balances.values().any(|(balance, _)| *balance > 0);
-            assert!(
-                any_funded,
-                "TC-014: expected at least one funded platform address"
-            );
-            tracing::info!(
-                "TC-014 passed: {} platform addresses, at least one funded",
-                balances.len()
-            );
-        }
-        other => panic!("TC-014: expected PlatformAddressBalances, got: {:?}", other),
-    }
-}
-
-// ─── TC-015 ───────────────────────────────────────────────────────────────────
-
-/// TC-015: FetchPlatformAddressBalances — after TC-014 funding, at least one address has credits.
-#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
-#[ignore]
-async fn tc_015_fetch_platform_address_balances_after_funding() {
-    let ctx = harness::ctx().await;
-
-    let state = ensure_funded_platform().await;
-    let seed_hash = state.seed_hash;
-
-    let task = BackendTask::WalletTask(WalletTask::FetchPlatformAddressBalances { seed_hash });
-    let result = run_task(&ctx.app_context, task)
-        .await
-        .expect("TC-015: FetchPlatformAddressBalances failed");
-
-    match result {
-        BackendTaskSuccessResult::PlatformAddressBalances {
-            seed_hash: sh,
-            balances,
-            network,
-        } => {
-            assert_eq!(sh, seed_hash, "TC-015: seed_hash mismatch");
-            assert_eq!(
-                network,
-                dash_sdk::dpp::dashcore::Network::Testnet,
-                "TC-015: expected testnet"
-            );
-            let any_funded = balances.values().any(|(balance, _)| *balance > 0);
-            assert!(
-                any_funded,
-                "TC-015: expected at least one funded platform address after TC-014, got: {:?}",
-                balances
-            );
-            tracing::info!(
-                "TC-015 passed: {} platform addresses, at least one with credits",
-                balances.len()
-            );
-        }
-        other => panic!("TC-015: expected PlatformAddressBalances, got: {:?}", other),
-    }
-}
-
-// ─── TC-016 ───────────────────────────────────────────────────────────────────
-
-/// TC-016: TransferPlatformCredits — transfer half the funded balance to a second platform address.
-#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
-#[ignore]
-async fn tc_016_transfer_platform_credits() {
-    let ctx = harness::ctx().await;
-
-    let state = ensure_funded_platform().await;
-    let seed_hash = state.seed_hash;
+/// Fund a platform address from wallet UTXOs and return the seed hash.
+async fn step_fund_platform_address(
+    ctx: &crate::framework::harness::TestContext,
+) -> WalletSeedHash {
+    tracing::info!("=== Step 1: Fund platform address from wallet UTXOs ===");
+    let seed_hash = ctx.framework_wallet_hash;
 
     let wallet_arc = {
         let wallets = ctx.app_context.wallets().read().expect("wallets lock");
@@ -270,7 +119,110 @@ async fn tc_016_transfer_platform_credits() {
             .clone()
     };
 
-    // Derive the first platform address (the one tc_014 funded) so it is
+    let platform_addr = {
+        let mut wallet = wallet_arc.write().expect("wallet write lock");
+        let addr = wallet
+            .platform_receive_address(
+                dash_sdk::dpp::dashcore::Network::Testnet,
+                false,
+                Some(&ctx.app_context),
+            )
+            .expect("step_fund_platform_address: failed to derive platform receive address");
+        PlatformAddress::try_from(addr)
+            .expect("step_fund_platform_address: failed to convert to PlatformAddress")
+    };
+
+    tracing::info!(
+        "step_fund_platform_address: funding platform address {:?}",
+        platform_addr
+    );
+
+    let task = BackendTask::WalletTask(WalletTask::FundPlatformAddressFromWalletUtxos {
+        seed_hash,
+        amount: 1_000_000, // 0.01 DASH in duffs
+        destination: platform_addr,
+        fee_deduct_from_output: true,
+    });
+
+    let result = run_task(&ctx.app_context, task)
+        .await
+        .expect("step_fund_platform_address: FundPlatformAddressFromWalletUtxos failed");
+
+    match result {
+        BackendTaskSuccessResult::PlatformAddressFunded { seed_hash: sh } => {
+            assert_eq!(
+                sh, seed_hash,
+                "step_fund_platform_address: seed_hash mismatch"
+            );
+            tracing::info!("step_fund_platform_address: PlatformAddressFunded confirmed");
+        }
+        other => panic!(
+            "step_fund_platform_address: expected PlatformAddressFunded, got: {:?}",
+            other
+        ),
+    }
+
+    seed_hash
+}
+
+/// Fetch platform address balances and assert at least one is funded.
+async fn step_fetch_balances(
+    ctx: &crate::framework::harness::TestContext,
+    seed_hash: WalletSeedHash,
+) {
+    tracing::info!("=== Step 2: Fetch platform address balances after funding ===");
+
+    let task = BackendTask::WalletTask(WalletTask::FetchPlatformAddressBalances { seed_hash });
+    let result = run_task(&ctx.app_context, task)
+        .await
+        .expect("step_fetch_balances: FetchPlatformAddressBalances failed");
+
+    match result {
+        BackendTaskSuccessResult::PlatformAddressBalances {
+            seed_hash: sh,
+            balances,
+            network,
+        } => {
+            assert_eq!(sh, seed_hash, "step_fetch_balances: seed_hash mismatch");
+            assert_eq!(
+                network,
+                dash_sdk::dpp::dashcore::Network::Testnet,
+                "step_fetch_balances: expected testnet"
+            );
+            let any_funded = balances.values().any(|(balance, _)| *balance > 0);
+            assert!(
+                any_funded,
+                "step_fetch_balances: expected at least one funded platform address after funding, got: {:?}",
+                balances
+            );
+            tracing::info!(
+                "step_fetch_balances passed: {} platform addresses, at least one with credits",
+                balances.len()
+            );
+        }
+        other => panic!(
+            "step_fetch_balances: expected PlatformAddressBalances, got: {:?}",
+            other
+        ),
+    }
+}
+
+/// Transfer half the funded balance to a second platform address.
+async fn step_transfer_credits(
+    ctx: &crate::framework::harness::TestContext,
+    seed_hash: WalletSeedHash,
+) {
+    tracing::info!("=== Step 3: Transfer platform credits to a second address ===");
+
+    let wallet_arc = {
+        let wallets = ctx.app_context.wallets().read().expect("wallets lock");
+        wallets
+            .get(&seed_hash)
+            .expect("framework wallet missing")
+            .clone()
+    };
+
+    // Derive the first platform address (the one step 1 funded) so it is
     // guaranteed to be in watched_addresses. Then derive a fresh second one
     // as the transfer destination.
     let (source_candidate, dest_addr) = {
@@ -278,20 +230,20 @@ async fn tc_016_transfer_platform_credits() {
         let src = wallet
             .platform_receive_address(
                 dash_sdk::dpp::dashcore::Network::Testnet,
-                false, // reuse existing — same address tc_014 funded
+                false, // reuse existing — same address step 1 funded
                 Some(&ctx.app_context),
             )
-            .expect("TC-016: failed to derive source platform address");
+            .expect("step_transfer_credits: failed to derive source platform address");
         let dst = wallet
             .platform_receive_address(
                 dash_sdk::dpp::dashcore::Network::Testnet,
                 true, // skip_known — derive a fresh one
                 Some(&ctx.app_context),
             )
-            .expect("TC-016: failed to derive second platform address");
+            .expect("step_transfer_credits: failed to derive second platform address");
         (
-            PlatformAddress::try_from(src).expect("TC-016: src PlatformAddress"),
-            PlatformAddress::try_from(dst).expect("TC-016: dst PlatformAddress"),
+            PlatformAddress::try_from(src).expect("step_transfer_credits: src PlatformAddress"),
+            PlatformAddress::try_from(dst).expect("step_transfer_credits: dst PlatformAddress"),
         )
     };
 
@@ -300,7 +252,7 @@ async fn tc_016_transfer_platform_credits() {
         BackendTask::WalletTask(WalletTask::FetchPlatformAddressBalances { seed_hash });
     let fetch_result = run_task(&ctx.app_context, fetch_task)
         .await
-        .expect("TC-016: pre-transfer FetchPlatformAddressBalances failed");
+        .expect("step_transfer_credits: pre-transfer FetchPlatformAddressBalances failed");
 
     let (source_addr, current_source_balance) = match fetch_result {
         BackendTaskSuccessResult::PlatformAddressBalances { balances, .. } => {
@@ -314,29 +266,32 @@ async fn tc_016_transfer_platform_credits() {
                         .iter()
                         .find(|(_, (balance, _))| *balance > 0)
                         .map(|(addr, (balance, _))| (*addr, *balance))
-                        .expect("TC-016: no funded platform address found")
+                        .expect("step_transfer_credits: no funded platform address found")
                 }
             } else {
                 balances
                     .iter()
                     .find(|(_, (balance, _))| *balance > 0)
                     .map(|(addr, (balance, _))| (*addr, *balance))
-                    .expect("TC-016: no funded platform address found")
+                    .expect("step_transfer_credits: no funded platform address found")
             }
         }
-        other => panic!("TC-016: expected PlatformAddressBalances, got: {:?}", other),
+        other => panic!(
+            "step_transfer_credits: expected PlatformAddressBalances, got: {:?}",
+            other
+        ),
     };
 
     assert_ne!(
         source_addr, dest_addr,
-        "TC-016: source and destination must differ"
+        "step_transfer_credits: source and destination must differ"
     );
 
     // Transfer half the balance
     let transfer_amount = current_source_balance / 2;
     assert!(
         transfer_amount > 0,
-        "TC-016: source balance too low to transfer"
+        "step_transfer_credits: source balance too low to transfer"
     );
 
     let mut inputs = BTreeMap::new();
@@ -346,7 +301,7 @@ async fn tc_016_transfer_platform_credits() {
     outputs.insert(dest_addr, transfer_amount);
 
     tracing::info!(
-        "TC-016: transferring {} credits from {:?} to {:?}",
+        "step_transfer_credits: transferring {} credits from {:?} to {:?}",
         transfer_amount,
         source_addr,
         dest_addr
@@ -361,53 +316,43 @@ async fn tc_016_transfer_platform_credits() {
 
     let result = run_task(&ctx.app_context, task)
         .await
-        .expect("TC-016: TransferPlatformCredits failed");
+        .expect("step_transfer_credits: TransferPlatformCredits failed");
 
     match result {
         BackendTaskSuccessResult::PlatformCreditsTransferred { seed_hash: sh } => {
-            assert_eq!(sh, seed_hash, "TC-016: seed_hash mismatch");
-            tracing::info!("TC-016: PlatformCreditsTransferred confirmed");
+            assert_eq!(sh, seed_hash, "step_transfer_credits: seed_hash mismatch");
+            tracing::info!("step_transfer_credits: PlatformCreditsTransferred confirmed");
         }
         other => panic!(
-            "TC-016: expected PlatformCreditsTransferred, got: {:?}",
+            "step_transfer_credits: expected PlatformCreditsTransferred, got: {:?}",
             other
         ),
     }
 
-    // Verify both addresses have credits after transfer
+    // Verify destination has credits after transfer
     let verify_task =
         BackendTask::WalletTask(WalletTask::FetchPlatformAddressBalances { seed_hash });
     let verify_result = run_task(&ctx.app_context, verify_task)
         .await
-        .expect("TC-016: post-transfer FetchPlatformAddressBalances failed");
+        .expect("step_transfer_credits: post-transfer FetchPlatformAddressBalances failed");
 
     if let BackendTaskSuccessResult::PlatformAddressBalances { balances, .. } = verify_result {
         let dest_credits = balances.get(&dest_addr).map(|(b, _)| *b).unwrap_or(0);
         assert!(
             dest_credits > 0,
-            "TC-016: destination address should have credits after transfer, got 0"
+            "step_transfer_credits: destination address should have credits after transfer, got 0"
         );
-        tracing::info!("TC-016 passed: dest credits = {}", dest_credits);
+        tracing::info!(
+            "step_transfer_credits passed: dest credits = {}",
+            dest_credits
+        );
     }
 }
 
-// ─── TC-017 ───────────────────────────────────────────────────────────────────
+/// Fund a fresh platform address and withdraw its balance back to Core.
+async fn step_withdraw(ctx: &crate::framework::harness::TestContext, seed_hash: WalletSeedHash) {
+    tracing::info!("=== Step 4: Withdraw from platform address back to Core ===");
 
-/// TC-017: WithdrawFromPlatformAddress — withdraw remaining balance back to Core.
-///
-/// TC-016 may have transferred credits away from the original funded address,
-/// so we first fund a fresh platform address to ensure there are credits to
-/// withdraw.
-#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
-#[ignore]
-async fn tc_017_withdraw_from_platform_address() {
-    let ctx = harness::ctx().await;
-
-    let state = ensure_funded_platform().await;
-    let seed_hash = state.seed_hash;
-
-    // Fund a fresh platform address so we have credits to withdraw,
-    // regardless of what tc_016 did to the original address.
     let wallet_arc = {
         let wallets = ctx.app_context.wallets().read().expect("wallets lock");
         wallets
@@ -416,6 +361,8 @@ async fn tc_017_withdraw_from_platform_address() {
             .clone()
     };
 
+    // Fund a fresh platform address so we have credits to withdraw,
+    // regardless of what step 3 did to the original address.
     let fresh_addr = {
         let mut wallet = wallet_arc.write().expect("wallet write lock");
         let addr = wallet
@@ -424,8 +371,9 @@ async fn tc_017_withdraw_from_platform_address() {
                 true,
                 Some(&ctx.app_context),
             )
-            .expect("TC-017: failed to derive platform address");
-        PlatformAddress::try_from(addr).expect("TC-017: failed to convert to PlatformAddress")
+            .expect("step_withdraw: failed to derive platform address");
+        PlatformAddress::try_from(addr)
+            .expect("step_withdraw: failed to convert to PlatformAddress")
     };
 
     let fund_task = BackendTask::WalletTask(WalletTask::FundPlatformAddressFromWalletUtxos {
@@ -436,11 +384,9 @@ async fn tc_017_withdraw_from_platform_address() {
     });
     run_task(&ctx.app_context, fund_task)
         .await
-        .expect("TC-017: FundPlatformAddressFromWalletUtxos failed");
+        .expect("step_withdraw: FundPlatformAddressFromWalletUtxos failed");
 
-    // Fetch platform address balances with retry — funding may not have
-    // propagated to Platform yet. Prefer the freshly derived address
-    // (guaranteed in watched_addresses) to avoid "not found in wallet" errors.
+    // Poll until the fresh address has credits on Platform.
     let poll_timeout = Duration::from_secs(90);
     let poll_interval = Duration::from_secs(3);
     let start = std::time::Instant::now();
@@ -450,11 +396,10 @@ async fn tc_017_withdraw_from_platform_address() {
             BackendTask::WalletTask(WalletTask::FetchPlatformAddressBalances { seed_hash });
         let fetch_result = run_task(&ctx.app_context, fetch_task)
             .await
-            .expect("TC-017: FetchPlatformAddressBalances failed");
+            .expect("step_withdraw: FetchPlatformAddressBalances failed");
 
         let found = match fetch_result {
             BackendTaskSuccessResult::PlatformAddressBalances { balances, .. } => {
-                // Prefer fresh_addr (derived above, guaranteed in watched_addresses)
                 if let Some((bal, _)) = balances.get(&fresh_addr) {
                     if *bal > 0 {
                         Some((fresh_addr, *bal))
@@ -465,7 +410,10 @@ async fn tc_017_withdraw_from_platform_address() {
                     None
                 }
             }
-            other => panic!("TC-017: expected PlatformAddressBalances, got: {:?}", other),
+            other => panic!(
+                "step_withdraw: expected PlatformAddressBalances, got: {:?}",
+                other
+            ),
         };
 
         if let Some(entry) = found {
@@ -474,20 +422,20 @@ async fn tc_017_withdraw_from_platform_address() {
 
         if start.elapsed() > poll_timeout {
             panic!(
-                "TC-017: funded platform address {:?} not found for withdrawal within {:?}",
+                "step_withdraw: funded platform address {:?} not found for withdrawal within {:?}",
                 fresh_addr, poll_timeout
             );
         }
 
         tracing::info!(
-            "TC-017: fresh address not yet funded on Platform, retrying in {:?}...",
+            "step_withdraw: fresh address not yet funded on Platform, retrying in {:?}...",
             poll_interval
         );
         tokio::time::sleep(poll_interval).await;
     };
 
     tracing::info!(
-        "TC-017: withdrawing {} credits from {:?}",
+        "step_withdraw: withdrawing {} credits from {:?}",
         withdrawal_balance,
         withdrawal_addr
     );
@@ -497,18 +445,21 @@ async fn tc_017_withdraw_from_platform_address() {
         BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { seed_hash });
     let receive_result = run_task(&ctx.app_context, receive_addr_task)
         .await
-        .expect("TC-017: GenerateReceiveAddress failed");
+        .expect("step_withdraw: GenerateReceiveAddress failed");
 
     let core_address_str = match receive_result {
         BackendTaskSuccessResult::GeneratedReceiveAddress { address, .. } => address,
-        other => panic!("TC-017: expected GeneratedReceiveAddress, got: {:?}", other),
+        other => panic!(
+            "step_withdraw: expected GeneratedReceiveAddress, got: {:?}",
+            other
+        ),
     };
 
     let core_address: dash_sdk::dpp::dashcore::Address = core_address_str
         .parse::<dash_sdk::dpp::dashcore::Address<
             dash_sdk::dpp::dashcore::address::NetworkUnchecked,
         >>()
-        .expect("TC-017: failed to parse core address")
+        .expect("step_withdraw: failed to parse core address")
         .assume_checked();
 
     let output_script = CoreScript::new(core_address.script_pubkey());
@@ -526,15 +477,15 @@ async fn tc_017_withdraw_from_platform_address() {
 
     let result = run_task(&ctx.app_context, task)
         .await
-        .expect("TC-017: WithdrawFromPlatformAddress failed");
+        .expect("step_withdraw: WithdrawFromPlatformAddress failed");
 
     match result {
         BackendTaskSuccessResult::PlatformAddressWithdrawal { seed_hash: sh } => {
-            assert_eq!(sh, seed_hash, "TC-017: seed_hash mismatch");
-            tracing::info!("TC-017: PlatformAddressWithdrawal confirmed");
+            assert_eq!(sh, seed_hash, "step_withdraw: seed_hash mismatch");
+            tracing::info!("step_withdraw: PlatformAddressWithdrawal confirmed");
         }
         other => panic!(
-            "TC-017: expected PlatformAddressWithdrawal, got: {:?}",
+            "step_withdraw: expected PlatformAddressWithdrawal, got: {:?}",
             other
         ),
     }
@@ -544,18 +495,35 @@ async fn tc_017_withdraw_from_platform_address() {
         BackendTask::WalletTask(WalletTask::FetchPlatformAddressBalances { seed_hash });
     let verify_result = run_task(&ctx.app_context, verify_task)
         .await
-        .expect("TC-017: post-withdrawal FetchPlatformAddressBalances failed");
+        .expect("step_withdraw: post-withdrawal FetchPlatformAddressBalances failed");
 
     if let BackendTaskSuccessResult::PlatformAddressBalances { balances, .. } = verify_result {
         let remaining = balances.get(&withdrawal_addr).map(|(b, _)| *b).unwrap_or(0);
         assert!(
             remaining < withdrawal_balance,
-            "TC-017: withdrawal address balance should decrease after withdrawal (was {}, now {})",
+            "step_withdraw: withdrawal address balance should decrease after withdrawal (was {}, now {})",
             withdrawal_balance,
             remaining
         );
-        tracing::info!("TC-017 passed: remaining credits = {}", remaining);
+        tracing::info!("step_withdraw passed: remaining credits = {}", remaining);
     }
+}
+
+/// TC-014: Wallet platform lifecycle — fund → fetch → transfer → withdraw.
+///
+/// Covers the full TC-014 → TC-015 → TC-016 → TC-017 dependency chain in a
+/// single sequenced test so shared state flows naturally between steps.
+#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
+#[ignore]
+async fn tc_014_wallet_platform_lifecycle() {
+    let ctx = harness::ctx().await;
+
+    let seed_hash = step_fund_platform_address(&ctx).await;
+    step_fetch_balances(&ctx, seed_hash).await;
+    step_transfer_credits(&ctx, seed_hash).await;
+    step_withdraw(&ctx, seed_hash).await;
+
+    tracing::info!("TC-014 wallet platform lifecycle passed");
 }
 
 // ─── TC-018 ───────────────────────────────────────────────────────────────────

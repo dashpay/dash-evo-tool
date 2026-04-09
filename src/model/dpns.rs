@@ -1,9 +1,13 @@
-//! DPNS name normalization helpers.
+//! DPNS name normalization and document helpers.
 //!
 //! Centralizes the "trim → strip `.dash` suffix → homograph-safe normalize"
-//! pipeline so every DPNS lookup uses the same logic.
+//! pipeline so every DPNS lookup uses the same logic, and provides shared
+//! extraction utilities for DPNS domain documents.
 
+use dash_sdk::dpp::document::DocumentV0Getters;
+use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::dpp::util::strings::convert_to_homograph_safe_chars;
+use dash_sdk::platform::{Document, Identifier};
 
 /// The `.dash` parent domain suffix (case-insensitive match target).
 const DASH_SUFFIX: &str = ".dash";
@@ -65,6 +69,33 @@ pub fn has_dash_suffix(input: &str) -> bool {
         && trimmed
             .get(suffix_start..)
             .is_some_and(|tail| tail.eq_ignore_ascii_case(DASH_SUFFIX))
+}
+
+/// Extract the identity ID from a DPNS domain document's `records.identity` field.
+///
+/// This is the authoritative identity reference for a DPNS name — unlike
+/// `document.owner_id()`, it correctly reflects ownership after name transfers.
+///
+/// Returns `None` if the document lacks the `records` map or the `identity` entry.
+pub fn extract_identity_id_from_dpns_document(document: &Document) -> Option<Identifier> {
+    document
+        .get("records")
+        .and_then(|records| {
+            if let Value::Map(map) = records {
+                map.iter()
+                    .find(|(k, _)| matches!(k, Value::Text(key) if key == "identity"))
+                    .map(|(_, v)| v.clone())
+            } else {
+                None
+            }
+        })
+        .and_then(|id_value| {
+            if let Value::Identifier(id_bytes) = id_value {
+                Some(Identifier::from(id_bytes))
+            } else {
+                None
+            }
+        })
 }
 
 #[cfg(test)]

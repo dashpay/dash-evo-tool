@@ -58,6 +58,9 @@ pub struct BackendTestContext {
     pub app_context: Arc<AppContext>,
     pub framework_wallet_hash: WalletSeedHash,
     pub _workdir: PathBuf,
+    /// Lock file held for the lifetime of the test process to prevent
+    /// concurrent test runs from using the same workdir.
+    _lock_file: std::fs::File,
 }
 
 impl BackendTestContext {
@@ -90,16 +93,11 @@ impl BackendTestContext {
             tracing::debug!(".env not loaded ({e}), relying on environment");
         }
 
-        // Persistent workdir keyed by git revision
-        let git_hash = std::process::Command::new("git")
-            .args(["rev-parse", "--short", "HEAD"])
-            .output()
-            .ok()
-            .and_then(|o| String::from_utf8(o.stdout).ok())
-            .map(|s| s.trim().to_string())
-            .unwrap_or_else(|| "unknown".to_string());
-
-        let workdir = std::env::temp_dir().join(format!("dash-evo-e2e-testnet-{}", git_hash));
+        // Deterministic workdir — always the same path so the database, wallets,
+        // and SPV data persist across runs. If the primary path is locked by
+        // another process, fall back to numbered alternatives (slot 1, 2, ...).
+        let base = std::env::temp_dir().join("dash-evo-e2e-testnet");
+        let (workdir, lock_file) = pick_available_workdir(&base);
         std::fs::create_dir_all(&workdir).expect("Failed to create workdir");
         tracing::info!("E2E workdir: {}", workdir.display());
 
@@ -279,6 +277,7 @@ impl BackendTestContext {
             app_context,
             framework_wallet_hash,
             _workdir: workdir,
+            _lock_file: lock_file,
         }
     }
 
@@ -449,4 +448,89 @@ impl BackendTestContext {
 
         (seed_hash, wallet_arc)
     }
+}
+
+/// Pick a deterministic workdir, acquiring an exclusive lock file.
+///
+/// Tries the primary path first (`base`), then falls back to `base-1`, `base-2`,
+/// etc. up to 10 slots. Each slot has a `.lock` file that is held for the
+/// lifetime of the returned `File` handle (via `flock` / `LockFile`).
+///
+/// This ensures:
+/// - The same workdir is reused across runs (wallets, SPV data, DB persist)
+/// - Concurrent test processes get separate workdirs automatically
+fn pick_available_workdir(base: &std::path::Path) -> (PathBuf, std::fs::File) {
+    use std::io::Write;
+
+    let max_slots = 10;
+
+    for slot in 0..max_slots {
+        let dir = if slot == 0 {
+            base.to_path_buf()
+        } else {
+            base.with_file_name(format!(
+                "{}-{}",
+                base.file_name().unwrap().to_str().unwrap(),
+                slot
+            ))
+        };
+
+        // Create the directory so the lock file can live inside it
+        std::fs::create_dir_all(&dir).ok();
+
+        let lock_path = dir.join(".lock");
+        let lock_file = match std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&lock_path)
+        {
+            Ok(f) => f,
+            Err(_) => continue,
+        };
+
+        // Try to acquire an exclusive non-blocking lock
+        if try_lock_exclusive(&lock_file) {
+            // Write PID for debugging
+            let mut f = lock_file;
+            let _ = f.set_len(0);
+            let _ = write!(f, "{}", std::process::id());
+            let _ = f.flush();
+
+            if slot > 0 {
+                tracing::info!(
+                    "Primary workdir locked by another process, using slot {slot}: {}",
+                    dir.display()
+                );
+            }
+            return (dir, f);
+        }
+
+        tracing::debug!(
+            "Workdir slot {} locked by another process, trying next...",
+            dir.display()
+        );
+    }
+
+    panic!(
+        "All {max_slots} E2E workdir slots are locked. \
+         Kill other test processes or remove lock files in {}*",
+        base.display()
+    );
+}
+
+/// Try to acquire an exclusive non-blocking file lock.
+/// Try to acquire an exclusive non-blocking file lock using POSIX `flock()`.
+#[cfg(unix)]
+fn try_lock_exclusive(file: &std::fs::File) -> bool {
+    use std::os::unix::io::AsRawFd;
+    // LOCK_EX (2) | LOCK_NB (4) = exclusive + non-blocking
+    // Safety: flock on a valid fd is safe; non-blocking so it won't deadlock.
+    unsafe { nix::libc::flock(file.as_raw_fd(), nix::libc::LOCK_EX | nix::libc::LOCK_NB) == 0 }
+}
+
+#[cfg(not(unix))]
+fn try_lock_exclusive(_file: &std::fs::File) -> bool {
+    // On non-Unix, always succeed (no concurrent protection)
+    true
 }

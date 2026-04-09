@@ -9,7 +9,7 @@ use dash_sdk::Sdk;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::drive::query::{WhereClause, WhereOperator};
-use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identifier, Identity};
+use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identity};
 
 impl AppContext {
     /// Load an identity by its DPNS name
@@ -54,30 +54,7 @@ impl AppContext {
             .ok_or(TaskError::IdentityNotFound)?;
 
         // Extract the identity ID from the records.identity field
-        let identity_id = domain_doc
-            .get("records")
-            .and_then(|records| {
-                if let Value::Map(map) = records {
-                    map.iter()
-                        .find(|(k, _)| {
-                            if let Value::Text(key) = k {
-                                key == "identity"
-                            } else {
-                                false
-                            }
-                        })
-                        .map(|(_, v)| v.clone())
-                } else {
-                    None
-                }
-            })
-            .and_then(|id_value| {
-                if let Value::Identifier(id_bytes) = id_value {
-                    Some(Identifier::from(id_bytes))
-                } else {
-                    None
-                }
-            })
+        let identity_id = crate::model::dpns::extract_identity_id_from_dpns_document(domain_doc)
             .ok_or(TaskError::IdentityNotFound)?;
 
         // Fetch the identity

@@ -103,11 +103,9 @@ impl AddContactScreen {
             }
 
             // Validate username format if it looks like a username
-            if self.username_or_id.contains('.') && !self.username_or_id.ends_with(".dash") {
-                let error = DashPayError::InvalidUsername {
-                    username: self.username_or_id.clone(),
-                };
-                self.status = ContactRequestStatus::Error(error);
+            if let Err(input) = crate::model::dpns::validate_dpns_input(&self.username_or_id) {
+                self.status =
+                    ContactRequestStatus::Error(DashPayError::InvalidUsername { username: input });
                 return AppAction::None;
             }
 

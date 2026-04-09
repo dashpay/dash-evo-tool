@@ -74,29 +74,47 @@ async fn tc_032_update_profile() {
         other => panic!("TC-032: expected DashPayProfileUpdated, got: {:?}", other),
     }
 
-    // Verify by loading the profile back
-    let verify_task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadProfile {
-        identity: identity_a,
-    }));
-    let verify_result = run_task(&ctx.app_context, verify_task)
-        .await
-        .expect("LoadProfile verification should succeed");
+    // Verify by loading the profile back. Platform may take a few seconds to
+    // propagate the update across nodes, so retry with a short delay.
+    let verify_timeout = std::time::Duration::from_secs(30);
+    let verify_interval = std::time::Duration::from_secs(3);
+    let verify_start = std::time::Instant::now();
 
-    match verify_result {
-        BackendTaskSuccessResult::DashPayProfile(Some((display_name, _bio, _url))) => {
-            assert_eq!(
-                display_name, "E2E Test User",
-                "Display name should match what was set"
-            );
-            tracing::info!("TC-032: verified display_name = '{}'", display_name);
+    loop {
+        let verify_task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadProfile {
+            identity: identity_a.clone(),
+        }));
+        let verify_result = run_task(&ctx.app_context, verify_task)
+            .await
+            .expect("LoadProfile verification should succeed");
+
+        match verify_result {
+            BackendTaskSuccessResult::DashPayProfile(Some((display_name, _bio, _url))) => {
+                assert_eq!(
+                    display_name, "E2E Test User",
+                    "Display name should match what was set"
+                );
+                tracing::info!("TC-032: verified display_name = '{}'", display_name);
+                break;
+            }
+            BackendTaskSuccessResult::DashPayProfile(None) => {
+                if verify_start.elapsed() > verify_timeout {
+                    panic!(
+                        "TC-032: profile should exist after update, got None (waited {:?})",
+                        verify_timeout
+                    );
+                }
+                tracing::info!(
+                    "TC-032: profile not yet visible, retrying in {:?}...",
+                    verify_interval
+                );
+                tokio::time::sleep(verify_interval).await;
+            }
+            other => panic!(
+                "TC-032: expected DashPayProfile for verification, got: {:?}",
+                other
+            ),
         }
-        BackendTaskSuccessResult::DashPayProfile(None) => {
-            panic!("TC-032: profile should exist after update, got None");
-        }
-        other => panic!(
-            "TC-032: expected DashPayProfile for verification, got: {:?}",
-            other
-        ),
     }
 }
 

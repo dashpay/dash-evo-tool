@@ -2,8 +2,7 @@
 //!
 //! TC-066: Build a valid IdentityUpdateTransition, sign it, and broadcast via
 //!         BackendTask::BroadcastStateTransition. Assert BroadcastedStateTransition.
-//!
-//! TC-067: Build an invalid state transition (wrong nonce) and assert Err(TaskError::...).
+//!         Then build an invalid state transition (wrong nonce) and assert Err(TaskError::...).
 
 use crate::framework::fixtures::shared_identity;
 use crate::framework::harness::ctx;
@@ -79,9 +78,9 @@ fn build_test_sdk(
     platform_version: &'static dash_sdk::dpp::version::PlatformVersion,
 ) -> dash_sdk::Sdk {
     let raw = std::env::var("TESTNET_dapi_addresses")
-        .expect("TC-066: TESTNET_dapi_addresses env var not set — ensure .env is loaded");
+        .expect("TESTNET_dapi_addresses env var not set — ensure .env is loaded");
 
-    let address_list: AddressList = raw.parse().expect("TC-066: invalid TESTNET_dapi_addresses");
+    let address_list: AddressList = raw.parse().expect("invalid TESTNET_dapi_addresses");
 
     SdkBuilder::new(address_list)
         .with_network(Network::Testnet)
@@ -89,25 +88,21 @@ fn build_test_sdk(
         .with_context_provider(NoopContextProvider)
         .with_proofs(false)
         .build()
-        .expect("TC-066: failed to build test SDK")
+        .expect("failed to build test SDK")
 }
 
-// --- TC-066: BroadcastStateTransition — identity update ---
+// --- TC-066 step functions ---
 
-/// Build a valid IdentityUpdateTransition adding a new key, sign it, and broadcast
-/// via BackendTask::BroadcastStateTransition. Verifies the result and confirms the
-/// new key is visible on Platform after broadcast.
-#[ignore]
-#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
-async fn tc_066_broadcast_valid_identity_update() {
-    let ctx = ctx().await;
-    let si = shared_identity().await;
+async fn step_broadcast_valid(
+    ctx: &crate::framework::harness::BackendTestContext,
+    si: &crate::framework::fixtures::SharedIdentity,
+) {
+    tracing::info!("=== Step 1: broadcast valid IdentityUpdateTransition ===");
 
     let platform_version = ctx.app_context.platform_version();
     let identity = &si.qualified_identity.identity;
     let identity_id = identity.id();
 
-    // Build a fresh ECDSA_SECP256K1 key to add to the identity.
     let new_private_key_bytes: [u8; 32] = rand::random();
 
     let new_public_key_data = {
@@ -116,12 +111,11 @@ async fn tc_066_broadcast_valid_identity_update() {
         let secp = Secp256k1::new();
         let secret_key =
             dash_sdk::dpp::dashcore::secp256k1::SecretKey::from_slice(&new_private_key_bytes)
-                .expect("TC-066: invalid secret key bytes");
+                .expect("invalid secret key bytes");
         let pk = PrivateKey::new(secret_key, Network::Testnet);
         pk.public_key(&secp).to_bytes()
     };
 
-    // ID 0 is a placeholder; set_id below assigns the correct next ID.
     let mut new_ipk = IdentityPublicKey::V0(IdentityPublicKeyV0 {
         id: 0,
         purpose: Purpose::AUTHENTICATION,
@@ -134,19 +128,17 @@ async fn tc_066_broadcast_valid_identity_update() {
     });
     new_ipk.set_id(identity.get_public_key_max_id() + 1);
 
-    // Fetch the current identity nonce from Platform using a proof-less test SDK.
     let test_sdk = build_test_sdk(platform_version);
     let nonce = test_sdk
         .get_identity_nonce(identity_id, true, None)
         .await
-        .expect("TC-066: failed to fetch identity nonce from Platform");
-    tracing::info!("TC-066: identity nonce = {}", nonce);
+        .expect("failed to fetch identity nonce from Platform");
+    tracing::info!("identity nonce = {}", nonce);
 
-    // Build and sign the state transition.
     let master_key = si
         .qualified_identity
         .can_sign_with_master_key()
-        .expect("TC-066: shared identity has no master key");
+        .expect("shared identity has no master key");
     let master_key_id = master_key.identity_public_key.id();
 
     let state_transition = IdentityUpdateTransition::try_from_identity_with_signer(
@@ -160,88 +152,71 @@ async fn tc_066_broadcast_valid_identity_update() {
         platform_version,
         None,
     )
-    .expect("TC-066: failed to build IdentityUpdateTransition");
+    .expect("failed to build IdentityUpdateTransition");
 
-    tracing::info!("TC-066: state transition built and signed, broadcasting...");
+    tracing::info!("state transition built and signed, broadcasting...");
 
-    // Dispatch via BroadcastStateTransition.
     let result = run_task(
         &ctx.app_context,
         BackendTask::BroadcastStateTransition(state_transition),
     )
     .await
-    .expect("TC-066: BroadcastStateTransition should succeed");
+    .expect("BroadcastStateTransition should succeed");
 
     assert!(
         matches!(result, BackendTaskSuccessResult::BroadcastedStateTransition),
-        "TC-066: expected BroadcastedStateTransition, got: {:?}",
+        "expected BroadcastedStateTransition, got: {:?}",
         result
     );
-    tracing::info!("TC-066: broadcast succeeded");
+    tracing::info!("broadcast succeeded");
 
-    // Verify: re-fetch identity from Platform and confirm the new key is present.
     let fetched = dash_sdk::platform::Identity::fetch_by_identifier(&test_sdk, identity_id)
         .await
-        .expect("TC-066: failed to re-fetch identity")
-        .expect("TC-066: identity not found on Platform after broadcast");
+        .expect("failed to re-fetch identity")
+        .expect("identity not found on Platform after broadcast");
 
     let has_new_key = fetched
         .public_keys()
         .values()
         .any(|k| k.data() == new_ipk.data());
-    assert!(
-        has_new_key,
-        "TC-066: new key not found on Platform after broadcast"
-    );
-    tracing::info!("TC-066: new key confirmed on Platform");
-
-    tracing::info!("TC-066: complete");
+    assert!(has_new_key, "new key not found on Platform after broadcast");
+    tracing::info!("new key confirmed on Platform");
 }
 
-// --- TC-067: BroadcastStateTransition error — invalid state transition ---
-
-/// Build a state transition with a deliberately wrong nonce (u64::MAX) and assert
-/// that BackendTask::BroadcastStateTransition returns a typed Err(TaskError::...).
-#[ignore]
-#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
-async fn tc_067_broadcast_invalid_state_transition() {
-    let ctx = ctx().await;
-    let si = shared_identity().await;
+async fn step_broadcast_invalid(
+    ctx: &crate::framework::harness::BackendTestContext,
+    si: &crate::framework::fixtures::SharedIdentity,
+) {
+    tracing::info!("=== Step 2: broadcast invalid IdentityUpdateTransition (bad nonce) ===");
 
     let platform_version = ctx.app_context.platform_version();
 
-    // Refresh identity from Platform to get the current key state.
-    // Other tests (tc_022, tc_066) may have added keys, making the cached
-    // SharedIdentity stale. We need accurate `get_public_key_max_id()`.
     let refresh_result = run_task(
         &ctx.app_context,
         BackendTask::IdentityTask(IdentityTask::RefreshIdentity(si.qualified_identity.clone())),
     )
     .await
-    .expect("TC-067: RefreshIdentity should succeed");
+    .expect("RefreshIdentity should succeed");
 
     assert!(
         matches!(
             refresh_result,
             BackendTaskSuccessResult::RefreshedIdentity(_)
         ),
-        "TC-067: expected RefreshedIdentity, got: {:?}",
+        "expected RefreshedIdentity, got: {:?}",
         refresh_result
     );
 
-    // RefreshIdentity updates the local DB but returns the stale input QI.
-    // Re-load from local DB to get the identity with all current keys.
     let identity_id = si.qualified_identity.identity.id();
     let refreshed_qi = ctx
         .app_context
         .load_local_qualified_identities()
-        .expect("TC-067: load_local_qualified_identities should succeed")
+        .expect("load_local_qualified_identities should succeed")
         .into_iter()
         .find(|qi| qi.identity.id() == identity_id)
-        .expect("TC-067: shared identity should be in local DB after refresh");
+        .expect("shared identity should be in local DB after refresh");
     let identity = &refreshed_qi.identity;
 
-    // Generate a fresh key to add (content doesn't matter — nonce makes it invalid).
     let new_private_key_bytes: [u8; 32] = rand::random();
     let new_public_key_data = {
         use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
@@ -249,7 +224,7 @@ async fn tc_067_broadcast_invalid_state_transition() {
         let secp = Secp256k1::new();
         let secret_key =
             dash_sdk::dpp::dashcore::secp256k1::SecretKey::from_slice(&new_private_key_bytes)
-                .expect("TC-067: invalid secret key bytes");
+                .expect("invalid secret key bytes");
         let pk = PrivateKey::new(secret_key, Network::Testnet);
         pk.public_key(&secp).to_bytes()
     };
@@ -266,19 +241,15 @@ async fn tc_067_broadcast_invalid_state_transition() {
     });
     new_ipk.set_id(identity.get_public_key_max_id() + 1);
 
-    // Use an intentionally invalid nonce (u64::MAX) to force a Platform rejection.
     let invalid_nonce: u64 = u64::MAX;
 
-    // Find the master AUTHENTICATION key directly from the identity's public keys.
-    // `can_sign_with_master_key()` searches `private_keys` which may reference key
-    // IDs that don't exist in the refreshed identity (e.g., keys added by tc_066).
     let master_key_id = identity
         .public_keys()
         .values()
         .find(|k| {
             k.purpose() == Purpose::AUTHENTICATION && k.security_level() == SecurityLevel::MASTER
         })
-        .expect("TC-067: refreshed identity has no MASTER AUTHENTICATION key")
+        .expect("refreshed identity has no MASTER AUTHENTICATION key")
         .id();
 
     let invalid_state_transition = IdentityUpdateTransition::try_from_identity_with_signer(
@@ -292,9 +263,9 @@ async fn tc_067_broadcast_invalid_state_transition() {
         platform_version,
         None,
     )
-    .expect("TC-067: failed to build (invalid-nonce) IdentityUpdateTransition");
+    .expect("failed to build (invalid-nonce) IdentityUpdateTransition");
 
-    tracing::info!("TC-067: broadcasting invalid state transition (nonce=u64::MAX)...");
+    tracing::info!("broadcasting invalid state transition (nonce=u64::MAX)...");
 
     let result = run_task(
         &ctx.app_context,
@@ -304,26 +275,34 @@ async fn tc_067_broadcast_invalid_state_transition() {
 
     assert!(
         result.is_err(),
-        "TC-067: expected Err(TaskError::...) for invalid state transition, got Ok({:?})",
+        "expected Err(TaskError::...) for invalid state transition, got Ok({:?})",
         result.ok()
     );
-    tracing::info!("TC-067: broadcast correctly rejected: {:?}", result.err());
+    tracing::info!("broadcast correctly rejected: {:?}", result.err());
 
-    // Also verify using the identity task path just to refresh the identity state
-    // (ensures the invalid broadcast did not corrupt Platform state).
     let refresh_result = run_task(
         &ctx.app_context,
         BackendTask::IdentityTask(IdentityTask::RefreshIdentity(si.qualified_identity.clone())),
     )
     .await
-    .expect("TC-067: RefreshIdentity should succeed after failed broadcast");
+    .expect("RefreshIdentity should succeed after failed broadcast");
     assert!(
         matches!(
             refresh_result,
             BackendTaskSuccessResult::RefreshedIdentity(_)
         ),
-        "TC-067: expected RefreshedIdentity after failed broadcast, got: {:?}",
+        "expected RefreshedIdentity after failed broadcast, got: {:?}",
         refresh_result
     );
-    tracing::info!("TC-067: complete");
+}
+
+/// Broadcast state transitions lifecycle: valid identity update then invalid (bad nonce) rejection.
+#[ignore]
+#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
+async fn tc_066_broadcast_state_transitions() {
+    let ctx = ctx().await;
+    let si = shared_identity().await;
+
+    step_broadcast_valid(ctx, si).await;
+    step_broadcast_invalid(ctx, si).await;
 }

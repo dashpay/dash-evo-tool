@@ -22,14 +22,13 @@ use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use rand::prelude::*;
 
-// --- TC-020: TopUpIdentity ---
+// --- TC-020: Identity mutation lifecycle ---
 
-/// Top up the shared identity from the framework wallet.
-#[ignore]
-#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
-async fn tc_020_top_up_identity() {
-    let ctx = ctx().await;
-    let si = shared_identity().await;
+async fn step_top_up(
+    ctx: &crate::framework::harness::BackendTestContext,
+    si: &crate::framework::fixtures::SharedIdentity,
+) {
+    tracing::info!("=== Step 1: TopUpIdentity from wallet ===");
 
     let top_up_info = IdentityTopUpInfo {
         qualified_identity: si.qualified_identity.clone(),
@@ -49,46 +48,34 @@ async fn tc_020_top_up_identity() {
 
     match result {
         BackendTaskSuccessResult::ToppedUpIdentity(qi, fee_result) => {
-            tracing::info!(
-                "TC-020: topped up {:?}, fee={:?}",
-                qi.identity.id(),
-                fee_result
-            );
+            tracing::info!("topped up {:?}, fee={:?}", qi.identity.id(), fee_result);
             assert_eq!(
                 qi.identity.id(),
                 si.qualified_identity.identity.id(),
-                "TC-020: wrong identity returned"
+                "wrong identity returned"
             );
-            assert!(fee_result.actual_fee > 0, "TC-020: fee should be > 0");
+            assert!(fee_result.actual_fee > 0, "fee should be > 0");
         }
-        other => panic!("TC-020: expected ToppedUpIdentity, got: {:?}", other),
+        other => panic!("expected ToppedUpIdentity, got: {:?}", other),
     }
 }
 
-// --- TC-021: TopUpIdentityFromPlatformAddresses ---
+async fn step_top_up_from_platform_addresses(
+    ctx: &crate::framework::harness::BackendTestContext,
+    si: &crate::framework::fixtures::SharedIdentity,
+) {
+    tracing::info!("=== Step 2: TopUpIdentity from platform addresses ===");
 
-/// Top up the shared identity from a funded platform address.
-#[ignore]
-#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
-async fn tc_021_top_up_identity_from_platform_addresses() {
-    let ctx = ctx().await;
-    let si = shared_identity().await;
-
-    // Derive a platform address from the test wallet's receive address.
     let receive_addr = {
         let mut wallet = si.wallet_arc.write().expect("wallet lock");
         wallet
             .receive_address(Network::Testnet, false, Some(&ctx.app_context))
-            .expect("TC-021: failed to derive receive address")
+            .expect("failed to derive receive address")
     };
 
-    let platform_addr = PlatformAddress::try_from(receive_addr)
-        .expect("TC-021: failed to convert to PlatformAddress");
+    let platform_addr =
+        PlatformAddress::try_from(receive_addr).expect("failed to convert to PlatformAddress");
 
-    // Fund the platform address from the wallet UTXOs (200K duffs).
-    // The SharedIdentity wallet starts with 10M but the identity registration
-    // itself consumes ~5M (asset lock), and tc_020 uses another 500K. Use a
-    // modest amount to avoid "not enough spendable funds" errors.
     let fund_result = run_task(
         &ctx.app_context,
         BackendTask::WalletTask(WalletTask::FundPlatformAddressFromWalletUtxos {
@@ -99,18 +86,16 @@ async fn tc_021_top_up_identity_from_platform_addresses() {
         }),
     )
     .await
-    .expect("TC-021: FundPlatformAddressFromWalletUtxos should succeed");
+    .expect("FundPlatformAddressFromWalletUtxos should succeed");
     assert!(
         matches!(
             fund_result,
             BackendTaskSuccessResult::PlatformAddressFunded { .. }
         ),
-        "TC-021: expected PlatformAddressFunded, got: {:?}",
+        "expected PlatformAddressFunded, got: {:?}",
         fund_result
     );
 
-    // Fetch the funded balance with retry — funding may not have propagated
-    // to Platform yet.
     let poll_timeout = std::time::Duration::from_secs(90);
     let poll_interval = std::time::Duration::from_secs(3);
     let start = std::time::Instant::now();
@@ -123,36 +108,32 @@ async fn tc_021_top_up_identity_from_platform_addresses() {
             }),
         )
         .await
-        .expect("TC-021: FetchPlatformAddressBalances should succeed");
+        .expect("FetchPlatformAddressBalances should succeed");
 
         let bal = match &balances_result {
             BackendTaskSuccessResult::PlatformAddressBalances { balances, .. } => {
                 balances.get(&platform_addr).map(|(b, _)| *b).unwrap_or(0)
             }
-            other => panic!("TC-021: expected PlatformAddressBalances, got: {:?}", other),
+            other => panic!("expected PlatformAddressBalances, got: {:?}", other),
         };
 
         if bal > 0 {
-            tracing::info!("TC-021: platform address balance = {} credits", bal);
+            tracing::info!("platform address balance = {} credits", bal);
             break bal;
         }
 
         if start.elapsed() > poll_timeout {
             panic!(
-                "TC-021: platform address should have credits (waited {:?})",
+                "platform address should have credits (waited {:?})",
                 poll_timeout
             );
         }
 
-        tracing::info!(
-            "TC-021: balance still 0, retrying in {:?}...",
-            poll_interval
-        );
+        tracing::info!("balance still 0, retrying in {:?}...", poll_interval);
         tokio::time::sleep(poll_interval).await;
     };
 
     let mut inputs = std::collections::BTreeMap::new();
-    // Use half the balance to top up the identity.
     inputs.insert(platform_addr, balance / 2);
 
     let result = run_task(
@@ -164,39 +145,33 @@ async fn tc_021_top_up_identity_from_platform_addresses() {
         }),
     )
     .await
-    .expect("TC-021: TopUpIdentityFromPlatformAddresses should succeed");
+    .expect("TopUpIdentityFromPlatformAddresses should succeed");
 
     match result {
         BackendTaskSuccessResult::ToppedUpIdentity(qi, fee_result) => {
             tracing::info!(
-                "TC-021: topped up {:?} from platform address, fee={:?}",
+                "topped up {:?} from platform address, fee={:?}",
                 qi.identity.id(),
                 fee_result
             );
             assert_eq!(
                 qi.identity.id(),
                 si.qualified_identity.identity.id(),
-                "TC-021: wrong identity returned"
+                "wrong identity returned"
             );
         }
-        other => panic!("TC-021: expected ToppedUpIdentity, got: {:?}", other),
+        other => panic!("expected ToppedUpIdentity, got: {:?}", other),
     }
 }
 
-// --- TC-022: AddKeyToIdentity ---
+async fn step_add_key(
+    ctx: &crate::framework::harness::BackendTestContext,
+    si: &crate::framework::fixtures::SharedIdentity,
+) {
+    tracing::info!("=== Step 3: AddKeyToIdentity ===");
 
-/// Add a new authentication key to the shared identity.
-#[ignore]
-#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
-async fn tc_022_add_key_to_identity() {
-    let ctx = ctx().await;
-    let si = shared_identity().await;
-
-    // Generate a fresh 32-byte private key.
     let private_key_bytes: [u8; 32] = rand::rng().random();
 
-    // Build a new ECDSA_SECP256K1 AUTHENTICATION HIGH public key.
-    // Key ID 0 is a placeholder — add_key_to_identity re-assigns the ID.
     let new_ipk = IdentityPublicKey::V0(IdentityPublicKeyV0 {
         id: 0,
         purpose: Purpose::AUTHENTICATION,
@@ -210,7 +185,7 @@ async fn tc_022_add_key_to_identity() {
             let secp = Secp256k1::new();
             let secret_key =
                 dash_sdk::dpp::dashcore::secp256k1::SecretKey::from_slice(&private_key_bytes)
-                    .expect("TC-022: invalid secret key");
+                    .expect("invalid secret key");
             let pk = PrivateKey::new(secret_key, Network::Testnet);
             pk.public_key(&secp).to_bytes().into()
         },
@@ -228,27 +203,23 @@ async fn tc_022_add_key_to_identity() {
         )),
     )
     .await
-    .expect("TC-022: AddKeyToIdentity should succeed");
+    .expect("AddKeyToIdentity should succeed");
 
     match result {
         BackendTaskSuccessResult::AddedKeyToIdentity(fee_result) => {
-            tracing::info!("TC-022: added key, fee={:?}", fee_result);
-            assert!(fee_result.actual_fee > 0, "TC-022: fee should be > 0");
+            tracing::info!("added key, fee={:?}", fee_result);
+            assert!(fee_result.actual_fee > 0, "fee should be > 0");
         }
-        other => panic!("TC-022: expected AddedKeyToIdentity, got: {:?}", other),
+        other => panic!("expected AddedKeyToIdentity, got: {:?}", other),
     }
 }
 
-// --- TC-023: Transfer credits to another identity ---
+async fn step_transfer_credits(
+    ctx: &crate::framework::harness::BackendTestContext,
+    si: &crate::framework::fixtures::SharedIdentity,
+) {
+    tracing::info!("=== Step 4: Transfer credits to another identity ===");
 
-/// Transfer credits from the shared identity to a freshly-registered second identity.
-#[ignore]
-#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
-async fn tc_023_transfer_credits() {
-    let ctx = ctx().await;
-    let si = shared_identity().await;
-
-    // Register a minimal second identity in-test.
     let (seed_hash_b, wallet_b) = ctx.create_funded_test_wallet(30_000_000).await;
     let (reg_info, _key_bytes_b) =
         build_identity_registration(&ctx.app_context, &wallet_b, seed_hash_b);
@@ -257,20 +228,19 @@ async fn tc_023_transfer_credits() {
         BackendTask::IdentityTask(IdentityTask::RegisterIdentity(reg_info)),
     )
     .await
-    .expect("TC-023: second identity registration should succeed");
+    .expect("second identity registration should succeed");
 
     let recipient_id = match reg_result {
         BackendTaskSuccessResult::RegisteredIdentity(qi, _) => {
-            tracing::info!("TC-023: registered recipient {:?}", qi.identity.id());
+            tracing::info!("registered recipient {:?}", qi.identity.id());
             qi.identity.id()
         }
         other => panic!(
-            "TC-023: expected RegisteredIdentity for recipient, got: {:?}",
+            "expected RegisteredIdentity for recipient, got: {:?}",
             other
         ),
     };
 
-    // Transfer 10M credits from shared identity to recipient.
     let result = run_task(
         &ctx.app_context,
         BackendTask::IdentityTask(IdentityTask::Transfer(
@@ -281,43 +251,37 @@ async fn tc_023_transfer_credits() {
         )),
     )
     .await
-    .expect("TC-023: Transfer should succeed");
+    .expect("Transfer should succeed");
 
     match result {
         BackendTaskSuccessResult::TransferredCredits(fee_result) => {
             tracing::info!(
-                "TC-023: transfer succeeded, estimated_fee={}, actual_fee={}",
+                "transfer succeeded, estimated_fee={}, actual_fee={}",
                 fee_result.estimated_fee,
                 fee_result.actual_fee
             );
-            // actual_fee may be 0 for credit transfers where fees are deducted
-            // from the transferred amount rather than reported separately.
         }
-        other => panic!("TC-023: expected TransferredCredits, got: {:?}", other),
+        other => panic!("expected TransferredCredits, got: {:?}", other),
     }
 
-    tracing::info!("TC-023: transfer verified via TransferredCredits result");
+    tracing::info!("transfer verified via TransferredCredits result");
 }
 
-// --- TC-024: TransferToAddresses ---
+async fn step_transfer_to_addresses(
+    ctx: &crate::framework::harness::BackendTestContext,
+    si: &crate::framework::fixtures::SharedIdentity,
+) {
+    tracing::info!("=== Step 5: TransferToAddresses ===");
 
-/// Transfer credits from the shared identity to a Platform address.
-#[ignore]
-#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
-async fn tc_024_transfer_to_addresses() {
-    let ctx = ctx().await;
-    let si = shared_identity().await;
-
-    // Derive a platform address from the test wallet.
     let receive_addr = {
         let mut wallet = si.wallet_arc.write().expect("wallet lock");
         wallet
             .receive_address(Network::Testnet, false, Some(&ctx.app_context))
-            .expect("TC-024: failed to derive receive address")
+            .expect("failed to derive receive address")
     };
 
-    let platform_addr = PlatformAddress::try_from(receive_addr)
-        .expect("TC-024: failed to convert to PlatformAddress");
+    let platform_addr =
+        PlatformAddress::try_from(receive_addr).expect("failed to convert to PlatformAddress");
 
     let mut outputs = std::collections::BTreeMap::new();
     outputs.insert(platform_addr, 5_000_000u64);
@@ -331,17 +295,29 @@ async fn tc_024_transfer_to_addresses() {
         }),
     )
     .await
-    .expect("TC-024: TransferToAddresses should succeed");
+    .expect("TransferToAddresses should succeed");
 
     match result {
         BackendTaskSuccessResult::TransferredCredits(fee_result) => {
-            tracing::info!(
-                "TC-024: transfer to address succeeded, fee={:?}",
-                fee_result
-            );
+            tracing::info!("transfer to address succeeded, fee={:?}", fee_result);
         }
-        other => panic!("TC-024: expected TransferredCredits, got: {:?}", other),
+        other => panic!("expected TransferredCredits, got: {:?}", other),
     }
+}
+
+/// Identity mutation lifecycle: top-up from wallet, top-up from platform addresses,
+/// add key, transfer credits, transfer to addresses.
+#[ignore]
+#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
+async fn tc_020_identity_mutation_lifecycle() {
+    let ctx = ctx().await;
+    let si = shared_identity().await;
+
+    step_top_up(ctx, si).await;
+    step_top_up_from_platform_addresses(ctx, si).await;
+    step_add_key(ctx, si).await;
+    step_transfer_credits(ctx, si).await;
+    step_transfer_to_addresses(ctx, si).await;
 }
 
 // --- TC-025: RefreshIdentity ---
@@ -476,8 +452,6 @@ async fn tc_028_search_identity_from_wallet() {
     .await
     .expect("TC-028: SearchIdentityFromWallet should not error");
 
-    // The task returns either a found identity or a message indicating none found.
-    // Either is acceptable — we just verify it didn't panic.
     match &result {
         BackendTaskSuccessResult::LoadedIdentity(qi) => {
             tracing::info!("TC-028: found identity {:?}", qi.identity.id());
@@ -503,9 +477,6 @@ async fn tc_029_search_identities_up_to_index() {
 
     let wallet_ref = WalletArcRef::from(si.wallet_arc.clone());
 
-    // SearchIdentitiesUpToIndex may produce multiple `Progress` messages via the
-    // sender channel and return a final `Message` or `LoadedIdentity`. We assert
-    // only that the final return is not an error.
     let result = run_task(
         &ctx.app_context,
         BackendTask::IdentityTask(IdentityTask::SearchIdentitiesUpToIndex(wallet_ref, 5)),
@@ -514,7 +485,6 @@ async fn tc_029_search_identities_up_to_index() {
     .expect("TC-029: SearchIdentitiesUpToIndex should not error");
 
     tracing::info!("TC-029: result = {:?}", result);
-    // Any non-error success result is valid.
 }
 
 // --- TC-030: LoadIdentity error — nonexistent identity ---

@@ -137,21 +137,17 @@ async fn tc_033_search_profiles() {
                 );
                 // Log actual returned usernames for debugging
                 for (id, _profile, username) in &results {
-                    tracing::info!(
-                        "TC-033: result entry: id={}, username='{}'",
-                        id, username
-                    );
+                    tracing::info!("TC-033: result entry: id={}, username='{}'", id, username);
                 }
                 // Production bug: search_profiles returns normalizedLabel (with
                 // homograph conversion, e.g. i→1) instead of the original label.
                 // Compare against both original and normalized forms until fixed.
-                let normalized_a = dash_evo_tool::model::dpns::normalize_dpns_label(&pair.username_a);
-                let found = results
-                    .iter()
-                    .any(|(_id, _profile, username)| {
-                        let u = username.trim_end_matches(".dash");
-                        u == pair.username_a || u == normalized_a
-                    });
+                let normalized_a =
+                    dash_evo_tool::model::dpns::normalize_dpns_label(&pair.username_a);
+                let found = results.iter().any(|(_id, _profile, username)| {
+                    let u = username.trim_end_matches(".dash");
+                    u == pair.username_a || u == normalized_a
+                });
                 if found {
                     tracing::info!("TC-033: found username '{}' in results", pair.username_a);
                     break;
@@ -160,8 +156,13 @@ async fn tc_033_search_profiles() {
                     panic!(
                         "TC-033: search for '{}' did not return expected result within {:?} \
                          (got {} results but none matched: {:?})",
-                        pair.username_a, timeout, results.len(),
-                        results.iter().map(|(_, _, u)| u.as_str()).collect::<Vec<_>>()
+                        pair.username_a,
+                        timeout,
+                        results.len(),
+                        results
+                            .iter()
+                            .map(|(_, _, u)| u.as_str())
+                            .collect::<Vec<_>>()
                     );
                 }
                 tracing::info!(

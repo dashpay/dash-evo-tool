@@ -19,10 +19,55 @@ use dash_sdk::dpp::identity::identity_public_key::accessors::v0::{
 };
 use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
-use dash_sdk::dpp::prelude::UserFeeIncrease;
+use dash_sdk::dpp::prelude::{CoreBlockHeight, UserFeeIncrease};
 use dash_sdk::dpp::state_transition::identity_update_transition::IdentityUpdateTransition;
 use dash_sdk::dpp::state_transition::identity_update_transition::methods::IdentityUpdateTransitionMethodsV0;
-use dash_sdk::platform::{Fetch, IdentityPublicKey};
+use dash_sdk::error::ContextProviderError;
+use dash_sdk::platform::{ContextProvider, Fetch, IdentityPublicKey};
+use std::sync::Arc;
+
+// --- No-op ContextProvider for the lightweight proof-less SDK ---
+
+/// Minimal context provider that returns empty/error for all queries.
+///
+/// Sufficient for proof-less SDK operations (nonce fetch, identity fetch)
+/// where quorum key verification is not performed.
+struct NoopContextProvider;
+
+impl ContextProvider for NoopContextProvider {
+    fn get_data_contract(
+        &self,
+        _id: &dash_sdk::platform::Identifier,
+        _pv: &dash_sdk::dpp::version::PlatformVersion,
+    ) -> Result<Option<Arc<dash_sdk::dpp::prelude::DataContract>>, ContextProviderError> {
+        Ok(None)
+    }
+
+    fn get_token_configuration(
+        &self,
+        _token_id: &dash_sdk::platform::Identifier,
+    ) -> Result<Option<dash_sdk::dpp::data_contract::TokenConfiguration>, ContextProviderError>
+    {
+        Ok(None)
+    }
+
+    fn get_quorum_public_key(
+        &self,
+        _quorum_type: u32,
+        _quorum_hash: [u8; 32],
+        _core_chain_locked_height: u32,
+    ) -> Result<[u8; 48], ContextProviderError> {
+        Err(ContextProviderError::Config(
+            "NoopContextProvider: quorum keys not available (proofs disabled)".into(),
+        ))
+    }
+
+    fn get_platform_activation_height(&self) -> Result<CoreBlockHeight, ContextProviderError> {
+        Err(ContextProviderError::Config(
+            "NoopContextProvider: activation height not available".into(),
+        ))
+    }
+}
 
 // --- Helper: build a proof-less test SDK from env-configured DAPI addresses ---
 
@@ -41,6 +86,7 @@ fn build_test_sdk(
     SdkBuilder::new(address_list)
         .with_network(Network::Testnet)
         .with_version(platform_version)
+        .with_context_provider(NoopContextProvider)
         .with_proofs(false)
         .build()
         .expect("TC-066: failed to build test SDK")
@@ -223,10 +269,17 @@ async fn tc_067_broadcast_invalid_state_transition() {
     // Use an intentionally invalid nonce (u64::MAX) to force a Platform rejection.
     let invalid_nonce: u64 = u64::MAX;
 
-    let master_key = refreshed_qi
-        .can_sign_with_master_key()
-        .expect("TC-067: refreshed identity has no master key");
-    let master_key_id = master_key.identity_public_key.id();
+    // Find the master AUTHENTICATION key directly from the identity's public keys.
+    // `can_sign_with_master_key()` searches `private_keys` which may reference key
+    // IDs that don't exist in the refreshed identity (e.g., keys added by tc_066).
+    let master_key_id = identity
+        .public_keys()
+        .values()
+        .find(|k| {
+            k.purpose() == Purpose::AUTHENTICATION && k.security_level() == SecurityLevel::MASTER
+        })
+        .expect("TC-067: refreshed identity has no MASTER AUTHENTICATION key")
+        .id();
 
     let invalid_state_transition = IdentityUpdateTransition::try_from_identity_with_signer(
         identity,

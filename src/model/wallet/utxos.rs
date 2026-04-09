@@ -45,6 +45,11 @@ impl Wallet {
                 if required <= 0 {
                     break;
                 }
+                // Skip unconfirmed/non-IS-locked UTXOs — they cannot be spent
+                // reliably (e.g. asset lock transactions require IS-locked inputs).
+                if self.unconfirmed_outpoints.contains(outpoint) {
+                    continue;
+                }
                 selected_utxos.insert(*outpoint, (tx_out.clone(), address.clone()));
                 required -= tx_out.value as i64;
             }
@@ -188,6 +193,10 @@ impl Wallet {
             new_outpoints.difference(&old_outpoints).cloned().collect();
 
         let changed = !removed_outpoints.is_empty() || !added_outpoints.is_empty();
+
+        // RPC list_unspent returns only confirmed UTXOs by default, so
+        // clear the unconfirmed set — all returned UTXOs are spendable.
+        self.unconfirmed_outpoints.clear();
 
         // Now update self.utxos by removing UTXOs not present in new_outpoints
         let current_utxos = &mut self.utxos;

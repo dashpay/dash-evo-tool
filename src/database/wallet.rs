@@ -20,7 +20,7 @@ use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, ExtendedPubKey};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::{AssetLockProof, CoreBlockHeight};
 use rusqlite::{Connection, params};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::str::FromStr;
 
 impl Database {
@@ -575,6 +575,7 @@ impl Database {
                     alias,
                     identities: HashMap::new(),
                     utxos: HashMap::new(),
+                    unconfirmed_outpoints: HashSet::new(),
                     transactions: Vec::new(),
                     is_main,
                     confirmed_balance: confirmed_balance as u64,

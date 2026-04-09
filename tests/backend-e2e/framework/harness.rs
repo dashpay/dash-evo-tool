@@ -90,17 +90,16 @@ impl BackendTestContext {
             tracing::debug!(".env not loaded ({e}), relying on environment");
         }
 
-        // Persistent workdir — stable across commits so SPV header/filter
-        // cache is reused. Wallet state (UTXOs, balances) is NOT persisted
-        // yet (apply() TODO), so each run must rescan filters from birth_height.
-        // We clear the SPV state directory to reset filter_committed_height,
-        // but keep headers/filters cached for fast re-download.
-        let workdir = std::env::temp_dir().join("dash-evo-e2e-testnet");
-        // TODO: Once apply() restores wallet state from persistence, remove
-        // this filter_committed_height reset. Currently wallet UTXOs/balances
-        // are lost on restart, so we must force a filter rescan from
-        // birth_height each run. We do NOT delete the SPV cache — headers
-        // and filters take ~90 min to re-download from scratch.
+        // Persistent workdir keyed by git revision
+        let git_hash = std::process::Command::new("git")
+            .args(["rev-parse", "--short", "HEAD"])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+
+        let workdir = std::env::temp_dir().join(format!("dash-evo-e2e-testnet-{}", git_hash));
         std::fs::create_dir_all(&workdir).expect("Failed to create workdir");
         tracing::info!("E2E workdir: {}", workdir.display());
 
@@ -129,82 +128,8 @@ impl BackendTestContext {
         )
         .expect("Failed to create AppContext for testnet");
 
-        // E2E_WALLET_MNEMONIC is required
-        let mnemonic_phrase = std::env::var("E2E_WALLET_MNEMONIC").unwrap_or_else(|_| {
-            panic!(
-                "E2E_WALLET_MNEMONIC is not set.\n\
-                 This environment variable is required for backend E2E tests.\n\
-                 Set it to a BIP-39 mnemonic of a pre-funded testnet wallet.\n\
-                 Example: E2E_WALLET_MNEMONIC=\"word1 word2 word3 ... word12\"\n\
-                 You can also add it to the project root .env file."
-            );
-        });
-
-        tracing::info!("Restoring framework wallet from E2E_WALLET_MNEMONIC");
-        let mnemonic = Mnemonic::parse_in(Language::English, &mnemonic_phrase)
-            .expect("Invalid E2E_WALLET_MNEMONIC");
-
-        let seed = mnemonic.to_seed("");
-        let wallet = dash_evo_tool::model::wallet::Wallet::new_from_seed(
-            seed,
-            Network::Testnet,
-            Some("E2E Framework Wallet".to_string()),
-            None,
-        )
-        .expect("Failed to create framework wallet");
-
-        let framework_wallet_hash = wallet.seed_hash();
-
-        // Register wallet BEFORE starting SPV so the wallet's addresses
-        // are in the bloom filter from the start. This is important because
-        // the SPV filter scan checks monitored_addresses() once at startup.
-        match app_context.register_wallet(wallet) {
-            Ok((hash, _)) => {
-                tracing::info!("Registered framework wallet (seed_hash: {:?})", &hash[..4]);
-            }
-            Err(TaskError::WalletAlreadyImported) => {
-                tracing::info!("Framework wallet already registered (reusing from persistent DB)");
-            }
-            Err(e) => panic!("Failed to register framework wallet: {}", e),
-        }
-
-        // Set birth_height on the framework wallet so SPV filter scanning
-        // starts from a recent block instead of genesis. Without this, a
-        // fresh testnet scan (~1.4M blocks) takes >90 minutes and exceeds
-        // the test timeout. E2E_WALLET_BIRTH_HEIGHT can override the default.
-        {
-            use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
-
-            let birth_height: u32 = std::env::var("E2E_WALLET_BIRTH_HEIGHT")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(1_400_000);
-
-            // Access the PlatformWallet through the old Wallet model.
-            let wallets = app_context.wallets().read().expect("wallets lock");
-            if let Some(wallet_arc) = wallets.get(&framework_wallet_hash) {
-                let wallet_guard = wallet_arc.read().expect("wallet lock");
-                if let Some(pw) = &wallet_guard.platform_wallet {
-                    if let Some(mut wi) = pw.try_state_mut() {
-                        if wi.managed_state.wallet_info().birth_height() == 0 {
-                            wi.managed_state.wallet_info_mut().set_birth_height(birth_height);
-                            tracing::info!("Set framework wallet birth_height to {}", birth_height);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Switch to SPV mode and start (wallet already registered above)
+        // Switch to SPV mode and start
         app_context.set_core_backend_mode(CoreBackendMode::Spv);
-        // Reset filter_committed_height so the filter scan restarts from
-        // birth_height. Without this, cached committed height from a previous
-        // run causes the scan to skip historical blocks, and since wallet
-        // state isn't persisted yet (apply() TODO), the balance stays 0.
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current()
-                .block_on(app_context.reset_spv_filter_committed_height());
-        });
         app_context.start_spv().expect("Failed to start SPV");
 
         // Stash the cancellation token so the panic hook can stop SPV if
@@ -243,25 +168,66 @@ impl BackendTestContext {
             .expect("SPV failed to connect to any peers within 60s");
         tracing::info!("SPV connected to peers");
 
+        // E2E_WALLET_MNEMONIC is required
+        let mnemonic_phrase = std::env::var("E2E_WALLET_MNEMONIC").unwrap_or_else(|_| {
+            panic!(
+                "E2E_WALLET_MNEMONIC is not set.\n\
+                 This environment variable is required for backend E2E tests.\n\
+                 Set it to a BIP-39 mnemonic of a pre-funded testnet wallet.\n\
+                 Example: E2E_WALLET_MNEMONIC=\"word1 word2 word3 ... word12\"\n\
+                 You can also add it to the project root .env file."
+            );
+        });
+
+        tracing::info!("Restoring framework wallet from E2E_WALLET_MNEMONIC");
+        let mnemonic = Mnemonic::parse_in(Language::English, &mnemonic_phrase)
+            .expect("Invalid E2E_WALLET_MNEMONIC");
+
+        let seed = mnemonic.to_seed("");
+        let wallet = dash_evo_tool::model::wallet::Wallet::new_from_seed(
+            seed,
+            Network::Testnet,
+            Some("E2E Framework Wallet".to_string()),
+            None,
+        )
+        .expect("Failed to create framework wallet");
+
+        let framework_wallet_hash = wallet.seed_hash();
+
+        // Try to register; if the wallet already exists (persistent DB), just look it up.
+        match app_context.register_wallet(wallet) {
+            Ok((hash, _)) => {
+                tracing::info!("Registered framework wallet (seed_hash: {:?})", &hash[..4]);
+            }
+            Err(TaskError::WalletAlreadyImported) => {
+                tracing::info!("Framework wallet already registered (reusing from persistent DB)");
+            }
+            Err(e) => panic!("Failed to register framework wallet: {}", e),
+        }
+
         // Wait for wallet to appear in SPV
         wait::wait_for_wallet_in_spv(&app_context, framework_wallet_hash, Duration::from_secs(30))
             .await
             .expect("Framework wallet not picked up by SPV");
 
-        // Wait for SPV to sync and funds to become spendable
-        // First run with a fresh SPV cache requires downloading ~54K filter
-        // headers + filters (from birth_height). This takes 2-5 minutes.
-        // Subsequent runs use cached data and complete in ~8 seconds.
-        let balance_timeout = std::env::var("E2E_BALANCE_TIMEOUT_SECS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(300);
-        tracing::info!("Waiting for SPV to sync framework wallet spendable balance (timeout: {}s)...", balance_timeout);
+        // Wait for SPV to fully sync (including masternodes) so MempoolManager
+        // is active and bloom filter is built before any test broadcasts.
+        // This must come BEFORE the spendable balance check — wallet balances
+        // are only available after compact filter sync completes.
+        tracing::info!("Waiting for SPV to complete full sync (masternodes + mempool)...");
+        wait::wait_for_spv_running(&app_context, Duration::from_secs(300))
+            .await
+            .expect("SPV did not reach Running state within 300s");
+        tracing::info!("SPV fully synced — mempool bloom filter active");
+
+        // Now check framework wallet balance — SPV has synced, so balances
+        // should be available immediately (no need for a long timeout).
+        tracing::info!("Waiting for SPV to sync framework wallet spendable balance...");
         match wait::wait_for_spendable_balance(
             &app_context,
             framework_wallet_hash,
             1, // at least 1 duff spendable
-            Duration::from_secs(balance_timeout),
+            Duration::from_secs(30),
         )
         .await
         {
@@ -302,16 +268,6 @@ impl BackendTestContext {
                 );
             }
         }
-
-        // Wait for SPV filters to sync so mempool bloom filter is active
-        // before any test broadcasts. We don't require masternodes to sync
-        // because testnet quorum rotation data can fail (QRInfo errors).
-        // The wallet is fully functional for transactions without masternodes.
-        tracing::info!("Waiting for SPV filters to sync...");
-        wait::wait_for_spv_syncing_or_running(&app_context, Duration::from_secs(120))
-            .await
-            .expect("SPV did not start syncing within 120s");
-        tracing::info!("SPV filters synced — ready for transactions");
 
         // Verify balance is above minimum threshold
         funding::verify_framework_funded(&app_context, framework_wallet_hash).await;

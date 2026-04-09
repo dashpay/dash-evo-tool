@@ -188,9 +188,17 @@ pub async fn send_contact_request_with_proof(
     qr_auto_accept: Option<AutoAcceptProofData>,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     // Step 1: Resolve the recipient identity
-    let to_identity = if to_username_or_id.ends_with(".dash") {
+    let to_username_or_id = to_username_or_id.trim().to_string();
+
+    if let Err(input) = crate::model::dpns::validate_dpns_input(&to_username_or_id) {
+        return Err(TaskError::DashPay(DashPayError::InvalidUsername {
+            username: input,
+        }));
+    }
+
+    let to_identity = if crate::model::dpns::has_dash_suffix(&to_username_or_id) {
         // It's a complete username, resolve via DPNS
-        resolve_username_to_identity(sdk, &to_username_or_id).await?
+        resolve_username_to_identity(app_context, sdk, &to_username_or_id).await?
     } else {
         // Try to parse as identity ID first
         match Identifier::from_string_try_encodings(
@@ -205,15 +213,19 @@ pub async fn send_contact_request_with_proof(
             }
             Err(_) => {
                 // Not a valid ID format, assume it's a username without .dash suffix
-                let username_with_suffix = format!("{}.dash", to_username_or_id);
-                resolve_username_to_identity(sdk, &username_with_suffix).await?
+                resolve_username_to_identity(app_context, sdk, &to_username_or_id).await?
             }
         }
     };
 
     let to_identity_id = to_identity.id();
 
-    // Step 2: Check if a contact request already exists
+    // Step 2: Reject self-contact (Platform would reject with code 40500 anyway)
+    if to_identity_id == identity.identity.id() {
+        return Err(TaskError::DashPay(DashPayError::CannotContactSelf));
+    }
+
+    // Step 3: Check if a contact request already exists
     let dashpay_contract = app_context.dashpay_contract.clone();
     let mut existing_query = DocumentQuery::new(dashpay_contract.clone(), "contactRequest")
         .map_err(|e| DashPayError::QueryCreation {
@@ -517,57 +529,74 @@ pub async fn send_contact_request_with_proof(
     ))
 }
 
-async fn resolve_username_to_identity(sdk: &Sdk, username: &str) -> Result<Identity, TaskError> {
-    // Parse username (e.g., "alice.dash" -> "alice")
-    let name = username.split('.').next().ok_or_else(|| {
-        TaskError::DashPay(DashPayError::InvalidUsername {
-            username: username.to_string(),
+async fn resolve_username_to_identity(
+    app_context: &Arc<AppContext>,
+    sdk: &Sdk,
+    username: &str,
+) -> Result<Identity, TaskError> {
+    let normalized = crate::model::dpns::normalize_dpns_label(username);
+
+    // Use the cached DPNS contract from AppContext instead of fetching from network
+    let domain_query = DocumentQuery {
+        data_contract: app_context.dpns_contract.clone(),
+        document_type_name: "domain".to_string(),
+        where_clauses: vec![
+            WhereClause {
+                field: "normalizedParentDomainName".to_string(),
+                operator: WhereOperator::Equal,
+                value: Value::Text("dash".to_string()),
+            },
+            WhereClause {
+                field: "normalizedLabel".to_string(),
+                operator: WhereOperator::Equal,
+                value: Value::Text(normalized),
+            },
+        ],
+        order_by_clauses: vec![],
+        limit: 1,
+        start: None,
+    };
+
+    let results = Document::fetch_many(sdk, domain_query).await?;
+
+    let document = results
+        .values()
+        .filter_map(|maybe_doc| maybe_doc.as_ref())
+        .next()
+        .ok_or_else(|| {
+            TaskError::DashPay(DashPayError::UsernameResolutionFailed {
+                username: username.to_string(),
+            })
+        })?;
+
+    // Extract the identity ID from records.identity — this is the authoritative
+    // identity reference, which may differ from owner_id() after name transfers.
+    let identity_id = document
+        .get("records")
+        .and_then(|records| {
+            if let Value::Map(map) = records {
+                map.iter()
+                    .find(|(k, _)| matches!(k, Value::Text(key) if key == "identity"))
+                    .map(|(_, v)| v.clone())
+            } else {
+                None
+            }
         })
-    })?;
-
-    // Query DPNS for the username
-    let dpns_contract_id = Identifier::from_string(
-        "GWRSAVFMjXx8HpQFaNJMqBV7MBgMK4br5UESsB4S31Ec",
-        Encoding::Base58,
-    )
-    .map_err(|e| TaskError::IdentifierParsingError {
-        input: format!("DPNS contract ID: {}", e),
-    })?;
-
-    let dpns_contract = dash_sdk::platform::DataContract::fetch(sdk, dpns_contract_id)
-        .await?
-        .ok_or(TaskError::DataContractNotFound)?;
-
-    let mut query = DocumentQuery::new(Arc::new(dpns_contract), "domain").map_err(|e| {
-        DashPayError::QueryCreation {
-            query_target: "DPNS domain",
-            source: Box::new(e),
-        }
-    })?;
-
-    query = query.with_where(WhereClause {
-        field: "normalizedLabel".to_string(),
-        operator: WhereOperator::Equal,
-        value: Value::Text(name.to_lowercase()),
-    });
-    query.limit = 1;
-
-    let results = Document::fetch_many(sdk, query).await?;
-
-    let (_, document) = results.into_iter().next().ok_or_else(|| {
-        TaskError::DashPay(DashPayError::UsernameResolutionFailed {
-            username: username.to_string(),
+        .and_then(|id_value| {
+            if let Value::Identifier(id_bytes) = id_value {
+                Some(Identifier::from(id_bytes))
+            } else {
+                None
+            }
         })
-    })?;
-
-    let document = document.ok_or_else(|| {
-        TaskError::DashPay(DashPayError::InvalidDocument {
-            reason: format!("Invalid DPNS document for '{}'", username),
-        })
-    })?;
-
-    // Get the identity ID from the DPNS document
-    let identity_id = document.owner_id();
+        .ok_or_else(|| {
+            TaskError::DashPay(DashPayError::InvalidDocument {
+                reason: format!(
+                    "DPNS document for '{}' is missing records.identity field",
+                    username
+                ),
+            })
+        })?;
 
     // Fetch the identity
     Identity::fetch(sdk, identity_id)

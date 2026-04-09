@@ -451,8 +451,7 @@ pub async fn search_profiles(
         ));
     }
 
-    // Normalize the search query (DPNS uses lowercase normalized labels)
-    let normalized_query = query_trimmed.to_lowercase();
+    let normalized_query = crate::model::dpns::normalize_dpns_label(query_trimmed);
 
     // Search DPNS for usernames starting with the query
     let mut dpns_query =

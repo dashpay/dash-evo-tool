@@ -598,7 +598,7 @@ impl AppContext {
             // Notify the wallet about the outgoing tx while still holding the
             // write lock. This marks spent UTXOs immediately so concurrent
             // callers don't select the same inputs (double-spend prevention).
-            let _ = wm.process_mempool_transaction(&signed, false).await;
+            let _ = wm.process_mempool_transaction(&signed, None).await;
             signed
         };
 

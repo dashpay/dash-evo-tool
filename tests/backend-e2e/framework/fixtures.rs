@@ -214,9 +214,11 @@ pub async fn shared_dashpay_pair() -> &'static SharedDashPayPair {
                 dashpay_helpers::create_dashpay_identity(&ctx.app_context, &wallet_b, seed_hash_b)
                     .await;
 
-            // Register DPNS names
-            let username_a = format!("e2epair-a-{}", hex::encode(&seed_hash_a[..4]));
-            let username_b = format!("e2epair-b-{}", hex::encode(&seed_hash_b[..4]));
+            // Register DPNS names — must be >= 20 chars to avoid the contest
+            // voting period. Contested names (< 20 chars) don't appear as regular
+            // domain documents, breaking SearchProfiles and username resolution.
+            let username_a = format!("e2epair-a-{}", hex::encode(&seed_hash_a[..8]));
+            let username_b = format!("e2epair-b-{}", hex::encode(&seed_hash_b[..8]));
 
             tracing::info!(
                 "SharedDashPayPair: registering DPNS name '{}' for identity A...",

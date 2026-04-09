@@ -599,7 +599,8 @@ async fn tc_043_reject_contact_request() {
         dashpay_helpers::create_dashpay_identity(&ctx.app_context, &wallet_c, seed_hash_c).await;
 
     // Register a DPNS name for C so A can send a contact request
-    let username_c = format!("e2erej-c-{}", hex::encode(&seed_hash_c[..4]));
+    // >= 20 chars to avoid DPNS contest voting period
+    let username_c = format!("e2erej-c-{}", hex::encode(&seed_hash_c[..8]));
     tracing::info!("TC-043: registering DPNS name '{}' for C...", username_c);
 
     let dpns_task = BackendTask::IdentityTask(

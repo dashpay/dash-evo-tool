@@ -31,9 +31,11 @@ async fn test_register_dpns_name() {
         other => panic!("Expected RegisteredIdentity, got: {:?}", other),
     };
 
-    // Generate a unique DPNS name (u64 hex = 16 chars + "e2e" = 19 chars)
+    // Generate a unique DPNS name >= 20 chars to avoid contest voting period.
+    // Contested names (< 20 chars) go through masternode voting and don't
+    // appear as regular domain documents immediately.
     let random_suffix: u64 = rand::rng().random();
-    let dpns_name = format!("e2e{:x}", random_suffix);
+    let dpns_name = format!("e2etest-{:016x}", random_suffix);
     tracing::info!("Registering DPNS name: {}", dpns_name);
 
     // Register DPNS name (with retry for identity propagation delay)

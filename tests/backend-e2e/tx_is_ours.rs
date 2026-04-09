@@ -32,6 +32,15 @@ async fn test_spv_transactions_is_ours_flag() {
     let send_amount: u64 = 500_000;
     let b_address = get_receive_address(app_context, &wallet_b);
 
+    // Capture B's balance BEFORE sending, so we know the exact target to
+    // wait for. Reading this after the send risks including the send amount
+    // (via reconciliation), which inflates the target and causes a timeout.
+    let initial_b = {
+        let w = wallet_b.read().expect("lock");
+        w.total_balance_duffs()
+    };
+    tracing::info!("initial_b balance = {} duffs", initial_b);
+
     // Wait for A to have spendable funds
     wait_for_spendable_balance(app_context, hash_a, send_amount, Duration::from_secs(120))
         .await
@@ -71,10 +80,6 @@ async fn test_spv_transactions_is_ours_flag() {
     };
 
     // Wait for B to receive the funds (ensures SPV has propagated the tx)
-    let initial_b = {
-        let w = wallet_b.read().expect("lock");
-        w.total_balance_duffs()
-    };
     wait_for_balance(
         app_context,
         hash_b,

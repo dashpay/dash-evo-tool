@@ -426,14 +426,9 @@ impl BackendTestContext {
 
         // Wait for test wallet to see the funds
         tracing::trace!(seed_hash = ?&seed_hash[..4], min = amount_duffs, "create_funded_test_wallet: waiting for total balance...");
-        wait::wait_for_balance(
-            app_context,
-            seed_hash,
-            amount_duffs,
-            MAX_TEST_TIMEOUT / 3,
-        )
-        .await
-        .expect("Test wallet did not receive expected funds");
+        wait::wait_for_balance(app_context, seed_hash, amount_duffs, MAX_TEST_TIMEOUT / 3)
+            .await
+            .expect("Test wallet did not receive expected funds");
         tracing::trace!(
             seed_hash = ?&seed_hash[..4],
             elapsed_ms = funding_start.elapsed().as_millis(),

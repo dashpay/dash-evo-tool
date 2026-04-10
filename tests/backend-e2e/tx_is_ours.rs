@@ -41,9 +41,14 @@ async fn test_spv_transactions_is_ours_flag() {
     tracing::info!("initial_b balance = {} duffs", initial_b);
 
     // Wait for A to have spendable funds
-    wait_for_spendable_balance(app_context, hash_a, send_amount, crate::framework::harness::MAX_TEST_TIMEOUT / 3)
-        .await
-        .expect("Wallet A should have spendable funds");
+    wait_for_spendable_balance(
+        app_context,
+        hash_a,
+        send_amount,
+        crate::framework::harness::MAX_TEST_TIMEOUT / 3,
+    )
+    .await
+    .expect("Wallet A should have spendable funds");
 
     // Allow bloom filter to propagate to peers so B's addresses are
     // monitored before we broadcast A→B. Without this, peers may not

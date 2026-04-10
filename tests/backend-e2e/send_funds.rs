@@ -28,9 +28,14 @@ async fn test_send_and_receive_funds() {
     let b_address = get_receive_address(app_context, &wallet_b);
 
     // Ensure wallet A has spendable balance before sending
-    wait_for_spendable_balance(app_context, hash_a, send_amount, crate::framework::harness::MAX_TEST_TIMEOUT / 3)
-        .await
-        .expect("Wallet A funds should be spendable");
+    wait_for_spendable_balance(
+        app_context,
+        hash_a,
+        send_amount,
+        crate::framework::harness::MAX_TEST_TIMEOUT / 3,
+    )
+    .await
+    .expect("Wallet A funds should be spendable");
 
     let request = WalletPaymentRequest {
         recipients: vec![PaymentRecipient {
@@ -77,9 +82,14 @@ async fn test_send_and_receive_funds() {
     );
 
     // Wait for B's funds to become spendable before sending back
-    wait_for_spendable_balance(app_context, hash_b, send_amount, crate::framework::harness::MAX_TEST_TIMEOUT / 3)
-        .await
-        .expect("Wallet B funds should become spendable");
+    wait_for_spendable_balance(
+        app_context,
+        hash_b,
+        send_amount,
+        crate::framework::harness::MAX_TEST_TIMEOUT / 3,
+    )
+    .await
+    .expect("Wallet B funds should become spendable");
 
     // Send funds back from B to A
     let a_address = get_receive_address(app_context, &wallet_a);

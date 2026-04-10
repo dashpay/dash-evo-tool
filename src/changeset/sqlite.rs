@@ -612,6 +612,11 @@ impl SqliteWalletPersister {
     }
 
     /// Write the token balances sub-changeset.
+    ///
+    /// Writes into the existing `identity_token_balances` table, whose
+    /// schema is `(token_id, identity_id, balance, network)` with a
+    /// composite primary key. Tombstones drop matching rows; balance
+    /// upserts use `INSERT OR REPLACE`.
     fn write_token_balances(
         tx: &rusqlite::Transaction,
         network: &str,
@@ -625,7 +630,7 @@ impl SqliteWalletPersister {
         } = tok_cs;
 
         let mut delete_stmt = tx.prepare_cached(
-            "DELETE FROM identity_token_balance
+            "DELETE FROM identity_token_balances
              WHERE identity_id = ?1 AND token_id = ?2 AND network = ?3",
         )?;
         for (identity_id, token_id) in removed_balances {
@@ -637,14 +642,14 @@ impl SqliteWalletPersister {
         }
 
         let mut insert_stmt = tx.prepare_cached(
-            "INSERT OR REPLACE INTO identity_token_balance
-                (identity_id, token_id, balance, network, updated_at)
-             VALUES (?1, ?2, ?3, ?4, unixepoch())",
+            "INSERT OR REPLACE INTO identity_token_balances
+                (token_id, identity_id, balance, network)
+             VALUES (?1, ?2, ?3, ?4)",
         )?;
         for ((identity_id, token_id), balance) in balances {
             insert_stmt.execute(rusqlite::params![
-                identity_id.as_bytes(),
                 token_id.as_bytes(),
+                identity_id.as_bytes(),
                 balance as i64,
                 network,
             ])?;
@@ -903,7 +908,7 @@ impl SqliteWalletPersister {
         network: &str,
     ) -> Result<Option<TokenBalanceChangeSet>, SqlitePersistError> {
         let mut stmt = conn.prepare(
-            "SELECT identity_id, token_id, balance FROM identity_token_balance
+            "SELECT identity_id, token_id, balance FROM identity_token_balances
              WHERE network = ?1",
         )?;
         let mut balances = BTreeMap::new();

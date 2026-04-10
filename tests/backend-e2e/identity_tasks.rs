@@ -66,15 +66,16 @@ async fn step_top_up_from_platform_addresses(
 ) {
     tracing::info!("=== Step 2: TopUpIdentity from platform addresses ===");
 
-    let receive_addr = {
+    // Must use a DIP-17 Platform payment address (m/9'/coin_type'/17'/...),
+    // NOT a BIP44 receive address. sync_address_balances only scans DIP-17
+    // addresses via WalletAddressProvider.
+    let platform_addr = {
         let mut wallet = si.wallet_arc.write().expect("wallet lock");
-        wallet
-            .receive_address(Network::Testnet, false, Some(&ctx.app_context))
-            .expect("failed to derive receive address")
+        let addr = wallet
+            .platform_receive_address(Network::Testnet, false, Some(&ctx.app_context))
+            .expect("failed to derive platform payment address");
+        PlatformAddress::try_from(addr).expect("failed to convert to PlatformAddress")
     };
-
-    let platform_addr =
-        PlatformAddress::try_from(receive_addr).expect("failed to convert to PlatformAddress");
 
     let fund_result = run_task_with_nonce_retry(
         &ctx.app_context,
@@ -96,13 +97,6 @@ async fn step_top_up_from_platform_addresses(
         fund_result
     );
 
-    // Platform needs time to process the funding tx in a block. On testnet,
-    // blocks are ~2.5 min so allow up to 360s (two full block intervals plus
-    // propagation/processing margin).
-    let poll_timeout = std::time::Duration::from_secs(360);
-    let poll_interval = std::time::Duration::from_secs(5);
-    let start = std::time::Instant::now();
-
     // Reset platform sync state so incremental sync doesn't skip the newly
     // funded address (the previous sync checkpoint may be past the funding tx).
     if let Err(e) = ctx
@@ -113,7 +107,17 @@ async fn step_top_up_from_platform_addresses(
         tracing::warn!("Failed to reset platform sync info: {}", e);
     }
 
+    // Two-phase poll: first wait for the direct query to show balance (proves
+    // Platform processed it), then give sync_address_balances 30s more to
+    // catch up. This cuts feedback time from 6 min to ~1 min.
+    let poll_interval = std::time::Duration::from_secs(5);
+    let direct_timeout = std::time::Duration::from_secs(360);
+    let sync_grace = std::time::Duration::from_secs(30);
+    let start = std::time::Instant::now();
+    let mut direct_balance_found_at: Option<std::time::Instant> = None;
+
     let balance = loop {
+        // Phase 1: sync-based check (production code path)
         let balances_result = run_task(
             &ctx.app_context,
             BackendTask::WalletTask(WalletTask::FetchPlatformAddressBalances {
@@ -123,22 +127,70 @@ async fn step_top_up_from_platform_addresses(
         .await
         .expect("FetchPlatformAddressBalances should succeed");
 
-        let bal = match &balances_result {
+        let sync_bal = match &balances_result {
             BackendTaskSuccessResult::PlatformAddressBalances { balances, .. } => {
                 balances.get(&platform_addr).map(|(b, _)| *b).unwrap_or(0)
             }
             other => panic!("expected PlatformAddressBalances, got: {:?}", other),
         };
 
-        if bal > 0 {
-            tracing::info!("platform address balance = {} credits", bal);
-            break bal;
+        if sync_bal > 0 {
+            tracing::info!("sync found platform address balance = {} credits", sync_bal);
+            break sync_bal;
         }
 
-        if start.elapsed() > poll_timeout {
+        // Phase 2: direct query (bypasses sync, proves Platform state)
+        let direct_bal = {
+            use dash_sdk::platform::Fetch;
+            let sdk = ctx.app_context.sdk();
+            match dash_sdk::query_types::AddressInfo::fetch(&sdk, platform_addr.clone()).await {
+                Ok(Some(info)) => {
+                    tracing::info!(
+                        "DIRECT query: address={} balance={} nonce={}",
+                        platform_addr.to_bech32m_string(dash_sdk::dpp::dashcore::Network::Testnet),
+                        info.balance,
+                        info.nonce,
+                    );
+                    info.balance
+                }
+                Ok(None) => {
+                    tracing::info!(
+                        "DIRECT query: address={} NOT FOUND on Platform",
+                        platform_addr.to_bech32m_string(dash_sdk::dpp::dashcore::Network::Testnet),
+                    );
+                    0
+                }
+                Err(e) => {
+                    tracing::warn!("DIRECT query failed: {}", e);
+                    0
+                }
+            }
+        };
+
+        // If direct query found balance but sync didn't, start grace timer
+        if direct_bal > 0 && direct_balance_found_at.is_none() {
+            tracing::info!(
+                "Direct query found {} credits but sync returned 0 — giving sync {}s grace period",
+                direct_bal,
+                sync_grace.as_secs(),
+            );
+            direct_balance_found_at = Some(std::time::Instant::now());
+        }
+
+        // Timeout: sync grace expired (SDK bug) or direct never found balance
+        if let Some(found_at) = direct_balance_found_at {
+            if found_at.elapsed() > sync_grace {
+                panic!(
+                    "SDK sync_address_balances bug: direct query shows {} credits \
+                     but sync returned 0 for {}s after direct confirmation",
+                    direct_bal,
+                    sync_grace.as_secs(),
+                );
+            }
+        } else if start.elapsed() > direct_timeout {
             panic!(
-                "platform address should have credits (waited {:?})",
-                poll_timeout
+                "platform address has no credits even via direct query (waited {:?})",
+                direct_timeout,
             );
         }
 
@@ -286,15 +338,16 @@ async fn step_transfer_to_addresses(
 ) {
     tracing::info!("=== Step 5: TransferToAddresses ===");
 
-    let receive_addr = {
+    // Must use a DIP-17 Platform payment address (m/9'/coin_type'/17'/...),
+    // NOT a BIP44 receive address. sync_address_balances only scans DIP-17
+    // addresses via WalletAddressProvider.
+    let platform_addr = {
         let mut wallet = si.wallet_arc.write().expect("wallet lock");
-        wallet
-            .receive_address(Network::Testnet, false, Some(&ctx.app_context))
-            .expect("failed to derive receive address")
+        let addr = wallet
+            .platform_receive_address(Network::Testnet, false, Some(&ctx.app_context))
+            .expect("failed to derive platform payment address");
+        PlatformAddress::try_from(addr).expect("failed to convert to PlatformAddress")
     };
-
-    let platform_addr =
-        PlatformAddress::try_from(receive_addr).expect("failed to convert to PlatformAddress");
 
     let mut outputs = std::collections::BTreeMap::new();
     outputs.insert(platform_addr, 5_000_000u64);

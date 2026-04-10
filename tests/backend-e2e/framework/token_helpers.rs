@@ -50,7 +50,7 @@ pub fn build_register_token_task(
         perpetual_distribution: None,
         perpetual_distribution_rules: owner_only.clone(),
         pre_programmed_distribution: None,
-        new_tokens_destination_identity: None,
+        new_tokens_destination_identity: Some(identity.identity.id()),
         new_tokens_destination_identity_rules: owner_only.clone(),
         minting_allow_choosing_destination: true,
         minting_allow_choosing_destination_rules: owner_only.clone(),

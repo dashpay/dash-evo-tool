@@ -1,7 +1,7 @@
 // Tests implemented in Task 2 (WalletTask tests: TC-012 to TC-019)
 
 use crate::framework::harness;
-use crate::framework::task_runner::{run_task, run_task_with_nonce_retry};
+use crate::framework::task_runner::{run_task, run_task_with_nonce_retry, run_task_with_retry};
 use dash_evo_tool::backend_task::core::CoreTask;
 use dash_evo_tool::backend_task::wallet::WalletTask;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
@@ -144,7 +144,7 @@ async fn step_fund_platform_address(
         fee_deduct_from_output: true,
     });
 
-    let result = run_task_with_nonce_retry(&ctx.app_context, task)
+    let result = run_task_with_retry(&ctx.app_context, task, 3)
         .await
         .expect("step_fund_platform_address: FundPlatformAddressFromWalletUtxos failed");
 
@@ -579,9 +579,12 @@ async fn tc_018_fund_platform_address_from_asset_lock() {
         create_result
     );
 
-    // Step 2: Wait for the asset lock proof to appear in unused_asset_locks
+    // Step 2: Wait for the asset lock proof to appear in unused_asset_locks.
+    // Filter by amount (>= 90M credits) to avoid picking up smaller asset
+    // locks created by other concurrent tests on the same wallet.
     tracing::info!("TC-018: waiting for asset lock IS proof in unused_asset_locks...");
     let proof_timeout = Duration::from_secs(360);
+    let min_credits: u64 = 90_000_000;
     let (asset_lock_address, asset_lock_proof) = tokio::time::timeout(proof_timeout, async {
         loop {
             let maybe_lock = {
@@ -589,8 +592,12 @@ async fn tc_018_fund_platform_address_from_asset_lock() {
                 wallet
                     .unused_asset_locks
                     .iter()
-                    .find_map(|(_tx, addr, _amount, _islock, proof)| {
-                        proof.as_ref().map(|proof| (addr.clone(), proof.clone()))
+                    .find_map(|(_tx, addr, amount, _islock, proof)| {
+                        if *amount >= min_credits {
+                            proof.as_ref().map(|proof| (addr.clone(), proof.clone()))
+                        } else {
+                            None
+                        }
                     })
             };
             if let Some(found) = maybe_lock {

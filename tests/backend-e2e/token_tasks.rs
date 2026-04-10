@@ -748,59 +748,47 @@ async fn tc_064_estimate_perpetual_rewards() {
 }
 
 // ---------------------------------------------------------------------------
-// TC-065: TokenTask error -- mint with unauthorized identity
+// TC-065: TokenTask error -- mint without destination identity configured
 // ---------------------------------------------------------------------------
+//
+// TODO: This test does NOT verify authorization (owner-only minting rules).
+// The token fixture sets `new_tokens_destination_identity: None`, so any
+// mint attempt without an explicit `recipient_id` fails with
+// DestinationIdentityForTokenMintingNotSetError before authorization is
+// checked. To test actual unauthorized minting, the fixture would need to
+// set `new_tokens_destination_identity` to the owner's identity, then have
+// the second identity attempt to mint → should get an authorization error.
 
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
-async fn tc_065_mint_unauthorized() {
+async fn tc_065_mint_without_destination() {
     let ctx = harness::ctx().await;
     let st = shared_token().await;
     let second = ensure_second_identity().await;
 
-    // Second identity is NOT the contract owner and not in any minting group
+    // Mint without recipient_id on a contract with no default destination.
     let task = BackendTask::TokenTask(Box::new(TokenTask::MintTokens {
         sending_identity: second.qualified_identity.clone(),
         data_contract: st.data_contract.clone(),
         token_position: st.token_position,
         signing_key: second.signing_key.clone(),
-        public_note: Some("E2E unauthorized mint attempt".to_string()),
+        public_note: Some("E2E mint without destination".to_string()),
         amount: 1_000,
         recipient_id: None,
         group_info: None,
     }));
 
     let result = run_task(&ctx.app_context, task).await;
-    let err = result.expect_err("TC-065: unauthorized minting should fail");
+    let err = result.expect_err("TC-065: minting without destination should fail");
 
-    // Platform rejects via consensus error in the proof. The specific variant
-    // depends on the token contract config:
-    // - PlatformRejected (StateTransitionBroadcastError): direct broadcast rejection
-    // - SdkError wrapping Protocol(ConsensusError(BasicError(
-    //     DestinationIdentityForTokenMintingNotSetError))): no mint destination
-    //     configured — returned via proof verification
-    // Both indicate the unauthorized mint was correctly rejected.
-    // TODO: add a dedicated TaskError variant for token authorization errors
-    // so this can use typed matching instead of Debug inspection.
-    use dash_evo_tool::backend_task::error::TaskError;
-    match &err {
-        TaskError::PlatformRejected { .. } => {
-            tracing::info!("TC-065: unauthorized mint rejected via broadcast");
-        }
-        TaskError::SdkError { source_error } => {
-            let detail = format!("{:?}", source_error);
-            assert!(
-                detail.contains("DestinationIdentityForTokenMintingNotSet")
-                    || detail.contains("ConsensusError"),
-                "TC-065: SdkError is not a consensus rejection: {}",
-                detail
-            );
-            tracing::info!("TC-065: unauthorized mint rejected via consensus error");
-        }
-        other => panic!(
-            "TC-065: expected platform rejection for unauthorized mint, got: {:?}",
-            other
-        ),
-    }
+    // Expected: DestinationIdentityForTokenMintingNotSetError via proof
+    // verification (Protocol(ConsensusError(BasicError(...)))), which
+    // becomes TaskError::SdkError since no typed variant exists for this.
+    let err_debug = format!("{:?}", err);
+    assert!(
+        err_debug.contains("DestinationIdentityForTokenMintingNotSet"),
+        "TC-065: expected DestinationIdentityForTokenMintingNotSetError, got: {}",
+        err_debug
+    );
     tracing::info!("TC-065: unauthorized mint correctly rejected: {:?}", err);
 }

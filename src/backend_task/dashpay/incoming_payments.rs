@@ -194,18 +194,17 @@ pub async fn register_dashpay_addresses_for_identity(
                     }
                 }
 
-                // Update the bloom_registered_count in database
-                if let Err(e) = app_context.db.update_bloom_registered_count(
+                // Update the bloom_registered_count via the platform
+                // wallet — the persister catches the changeset and
+                // writes to `dashpay_contact_address_indices` on
+                // flush (Phase 9b-3).
+                super::platform_wallet_cache::cache_contact_bloom_registered_count(
+                    app_context,
                     &our_identity_id,
                     &contact_id,
                     target_count,
-                ) {
-                    result.errors.push(format!(
-                        "Failed to update bloom count for contact {}: {}",
-                        contact_id.to_string(Encoding::Base58),
-                        e
-                    ));
-                }
+                )
+                .await;
 
                 result.contacts_processed += 1;
             }
@@ -278,10 +277,18 @@ pub async fn process_incoming_payment(
         .map_err(|e| format!("Failed to get address indices: {}", e))?;
 
     if address_index >= current_indices.highest_receive_index {
-        app_context
-            .db
-            .update_highest_receive_index(&owner_id, &contact_id, address_index + 1)
-            .map_err(|e| format!("Failed to update receive index: {}", e))?;
+        // Bump the highest_receive_index via the platform wallet —
+        // persister catches the changeset and writes to
+        // `dashpay_contact_address_indices` on flush (Phase 9b-3).
+        // Monotonic — if the in-memory value is already ≥ this
+        // index, the mutation emits an empty changeset.
+        super::platform_wallet_cache::cache_contact_highest_receive_index(
+            app_context,
+            &owner_id,
+            &contact_id,
+            address_index + 1,
+        )
+        .await;
     }
 
     // Record the received payment via the platform wallet so the

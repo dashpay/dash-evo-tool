@@ -46,16 +46,18 @@ impl AppContext {
                 if let Ok(Some((owner_id, contact_id, address_index))) =
                     self.db.get_dashpay_address_mapping(&address)
                 {
-                    // Update the highest receive index if needed
-                    if let Ok(indices) = self.db.get_contact_address_indices(&owner_id, &contact_id)
-                        && address_index >= indices.highest_receive_index
-                    {
-                        let _ = self.db.update_highest_receive_index(
-                            &owner_id,
-                            &contact_id,
-                            address_index + 1,
-                        );
-                    }
+                    // Bump the highest receive index via the platform
+                    // wallet — the persister catches the changeset and
+                    // writes to `dashpay_contact_address_indices` on
+                    // flush (Phase 9b-3). This is the sync SPV
+                    // transaction-processing path, so we use the
+                    // blocking helper.
+                    crate::backend_task::dashpay::platform_wallet_cache::cache_contact_highest_receive_index_blocking(
+                        self,
+                        &owner_id,
+                        &contact_id,
+                        address_index + 1,
+                    );
 
                     // Save the payment record
                     let _ = self.db.save_payment(

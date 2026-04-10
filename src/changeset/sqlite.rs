@@ -182,23 +182,23 @@ impl SqliteWalletPersister {
         } = cs;
 
         // Identities sub-changeset: the persister writes a SUBSET of
-        // each entry — currently just the DashPay profile (Phase 9b-1).
-        // Other identity fields (the QualifiedIdentity blob, label,
-        // top_ups, dpns_names, status) remain owned by backend tasks
-        // via direct `Database::*` helpers until later 9b sub-phases
-        // grow the persister to cover them. The full IdentityEntry
-        // shape lets new fields plug in without changing the changeset
-        // contract.
+        // each entry — currently the DashPay profile + payments
+        // (Phase 9b-1, 9b-2). Other identity fields (the
+        // QualifiedIdentity blob, label, top_ups, dpns_names, status)
+        // remain owned by backend tasks via direct `Database::*`
+        // helpers until later 9b sub-phases grow the persister to
+        // cover them. The full IdentityEntry shape lets new fields
+        // plug in without changing the changeset contract.
         let identities_for_dashpay = identities;
-        if contacts
-            .as_ref()
-            .map(|c| !<_ as Merge>::is_empty(c))
-            .unwrap_or(false)
-        {
-            tracing::debug!(
-                "persister: dropping ContactChangeSet (backend tasks own contact persistence)"
-            );
-        }
+        // Contacts sub-changeset: the persister writes the per-contact
+        // BIP44 derivation state (highest_receive_index, bloom count,
+        // next_send_index) that rides on each `EstablishedContact`
+        // (Phase 9b-3). The other ContactChangeSet fields
+        // (sent_requests, incoming_requests, removed_sent,
+        // removed_incoming) remain owned by backend tasks via
+        // direct `Database::save_contact_request` /
+        // `save_dashpay_contact`.
+        let contacts_for_derivation = contacts;
         if platform_addresses
             .as_ref()
             .map(|c| !<_ as Merge>::is_empty(c))
@@ -228,9 +228,10 @@ impl SqliteWalletPersister {
         }
 
         // Decide whether there's anything to write at all. We need a
-        // transaction iff `core` carries something OR the identities
+        // transaction iff `core` carries something, OR the identities
         // sub-changeset has at least one entry with a DashPay field
-        // (profile or payments).
+        // (profile or payments), OR the contacts sub-changeset has
+        // an `established` entry with non-default derivation state.
         let has_core_work = core
             .as_ref()
             .map(|c| !<_ as platform_wallet::changeset::Merge>::is_empty(c))
@@ -243,7 +244,20 @@ impl SqliteWalletPersister {
                 })
             })
             .unwrap_or(false);
-        if !has_core_work && !has_dashpay_identity_work {
+        // Any `established` entry with non-zero derivation state —
+        // zero is the `EstablishedContact::new` default, so we skip
+        // no-op bumps.
+        let has_contact_derivation_work = contacts_for_derivation
+            .as_ref()
+            .map(|contact_cs| {
+                contact_cs.established.values().any(|c| {
+                    c.highest_receive_index != 0
+                        || c.bloom_registered_count != 0
+                        || c.next_send_index != 0
+                })
+            })
+            .unwrap_or(false);
+        if !has_core_work && !has_dashpay_identity_work && !has_contact_derivation_work {
             return Ok(());
         }
 
@@ -259,8 +273,70 @@ impl SqliteWalletPersister {
         if let Some(id_cs) = identities_for_dashpay {
             Self::write_identity_dashpay_subset(&tx, &self.network, id_cs)?;
         }
+        if let Some(contact_cs) = contacts_for_derivation {
+            Self::write_contact_derivation_subset(&tx, contact_cs)?;
+        }
 
         tx.commit()?;
+        Ok(())
+    }
+
+    /// Write the contact-derivation-state subset of a
+    /// `ContactChangeSet` to the `dashpay_contact_address_indices`
+    /// table.
+    ///
+    /// This is a SUBSET write — only the per-contact
+    /// `highest_receive_index`, `bloom_registered_count`, and
+    /// `next_send_index` fields of each `EstablishedContact` in
+    /// `contacts.established` are consumed. The pending contact
+    /// request maps (sent / incoming / removed) are dropped —
+    /// backend tasks own those tables via
+    /// `save_contact_request` / `save_dashpay_contact`.
+    ///
+    /// `highest_receive_index` is written with a `MAX(old, new)`
+    /// merge so stale replay never regresses the value. The other
+    /// two columns use last-write-wins.
+    fn write_contact_derivation_subset(
+        tx: &rusqlite::Transaction,
+        contact_cs: platform_wallet::changeset::ContactChangeSet,
+    ) -> Result<(), SqlitePersistError> {
+        let mut upsert = tx.prepare_cached(
+            "INSERT INTO dashpay_contact_address_indices
+                (owner_identity_id, contact_identity_id, next_send_index,
+                 highest_receive_index, bloom_registered_count)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(owner_identity_id, contact_identity_id) DO UPDATE SET
+                next_send_index = excluded.next_send_index,
+                highest_receive_index = MAX(highest_receive_index, excluded.highest_receive_index),
+                bloom_registered_count = excluded.bloom_registered_count",
+        )?;
+
+        for ((owner, contact_id), established) in contact_cs.established {
+            // Skip no-op rows (all-zero defaults). The work-gate in
+            // `flush_inner` already filters these out, but keep the
+            // guard here in case the caller hands us a changeset
+            // directly.
+            if established.highest_receive_index == 0
+                && established.bloom_registered_count == 0
+                && established.next_send_index == 0
+            {
+                continue;
+            }
+            upsert.execute(rusqlite::params![
+                owner.to_buffer().to_vec(),
+                contact_id.to_buffer().to_vec(),
+                established.next_send_index as i64,
+                established.highest_receive_index as i64,
+                established.bloom_registered_count as i64,
+            ])?;
+        }
+
+        // The other ContactChangeSet fields are backend-task-owned
+        // for now — drop them silently.
+        let _ = contact_cs.sent_requests;
+        let _ = contact_cs.removed_sent;
+        let _ = contact_cs.incoming_requests;
+        let _ = contact_cs.removed_incoming;
         Ok(())
     }
 
@@ -645,5 +721,89 @@ mod tests {
         assert_eq!(payments.len(), 1, "status upsert must not duplicate row");
         assert_eq!(payments[0].status, "confirmed");
         assert!(payments[0].confirmed_at.is_some());
+    }
+
+    /// A ContactChangeSet carrying an `established` entry with non-zero
+    /// derivation state lands in the `dashpay_contact_address_indices`
+    /// table. A subsequent lower bump must not regress
+    /// `highest_receive_index` (MAX merge in the upsert).
+    #[test]
+    fn test_contact_derivation_round_trip_via_changeset() {
+        use dash_sdk::platform::Identifier;
+        use platform_wallet::changeset::ContactChangeSet;
+        use platform_wallet::wallet::dashpay::{ContactRequest, EstablishedContact};
+        use std::collections::BTreeMap;
+
+        let db = Arc::new(create_test_database().expect("create test db"));
+        let persister = make_persister(db.clone());
+
+        let owner_id = Identifier::from([1u8; 32]);
+        let contact_id = Identifier::from([2u8; 32]);
+        let contact_request = || {
+            ContactRequest::new(
+                owner_id,
+                contact_id,
+                0,
+                0,
+                0,
+                vec![0u8; 96],
+                100_000,
+                1_700_000_000,
+            )
+        };
+        let build = |highest: u32, bloom: u32, next_send: u32| {
+            let mut contact = EstablishedContact::new(
+                contact_id,
+                contact_request(),
+                contact_request(),
+            );
+            contact.highest_receive_index = highest;
+            contact.bloom_registered_count = bloom;
+            contact.next_send_index = next_send;
+            let mut map = BTreeMap::new();
+            map.insert((owner_id, contact_id), contact);
+            ContactChangeSet {
+                established: map,
+                ..Default::default()
+            }
+        };
+
+        // First flush: highest=5, bloom=10, next_send=3.
+        persister.store(
+            TEST_WALLET_ID,
+            PlatformWalletChangeSet {
+                contacts: Some(build(5, 10, 3)),
+                ..Default::default()
+            },
+        );
+        persister.flush(TEST_WALLET_ID).expect("flush first");
+
+        let indices = db
+            .get_contact_address_indices(&owner_id, &contact_id)
+            .expect("load indices");
+        assert_eq!(indices.highest_receive_index, 5);
+        assert_eq!(indices.bloom_registered_count, 10);
+        assert_eq!(indices.next_send_index, 3);
+
+        // Second flush: lower highest (2) must NOT regress — MAX merge.
+        // bloom_registered_count DOES get updated (last-write-wins).
+        persister.store(
+            TEST_WALLET_ID,
+            PlatformWalletChangeSet {
+                contacts: Some(build(2, 20, 5)),
+                ..Default::default()
+            },
+        );
+        persister.flush(TEST_WALLET_ID).expect("flush second");
+
+        let indices = db
+            .get_contact_address_indices(&owner_id, &contact_id)
+            .expect("load indices after regression");
+        assert_eq!(
+            indices.highest_receive_index, 5,
+            "highest_receive_index must not regress"
+        );
+        assert_eq!(indices.bloom_registered_count, 20);
+        assert_eq!(indices.next_send_index, 5);
     }
 }

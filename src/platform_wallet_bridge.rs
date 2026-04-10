@@ -31,7 +31,7 @@ pub use platform_wallet::IdentityManager;
 pub use platform_wallet::ManagedIdentity;
 pub use platform_wallet::PlatformWallet;
 pub use platform_wallet::PlatformWalletError;
-pub use platform_wallet::PlatformWalletEvent;
+pub use platform_wallet::PlatformEventHandler;
 pub use platform_wallet::PlatformWalletManager;
 
 // ── Sub-wallet types ───────────────────────────────────────────────────

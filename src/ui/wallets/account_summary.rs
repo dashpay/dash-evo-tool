@@ -264,7 +264,7 @@ pub fn collect_account_summaries(
     // Locked wallets (no PlatformWallet) show no account summaries.
     if let Some(pw) = wallet.platform_wallet.as_ref() {
         let info = pw.state_blocking();
-        for addr_info in crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(info.managed_state.wallet_info()) {
+        for addr_info in crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.core_wallet) {
             let (category, index) = categorize_account_path(
                 &addr_info.derivation_path,
                 network,

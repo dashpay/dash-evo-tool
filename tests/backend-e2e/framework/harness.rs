@@ -243,19 +243,7 @@ impl BackendTestContext {
                             let guard = w.read().expect("wallet lock");
                             let bal =
                                 (guard.confirmed_balance_duffs(), guard.total_balance_duffs());
-                            let addr = guard
-                                .platform_wallet
-                                .as_ref()
-                                .and_then(|pw| pw.try_state())
-                                .and_then(|info| {
-                                    info.managed_state.wallet_info().accounts.standard_bip44_accounts.get(&0)
-                                        .and_then(|a| {
-                                            let addrs = a.account_type.all_addresses();
-                                            addrs.into_iter().next()
-                                        })
-                                        .map(|a: dash_sdk::dpp::dashcore::Address| a.to_string())
-                                })
-                                .unwrap_or_else(|| "<unknown>".to_string());
+                            let addr = "<check .env E2E_WALLET_MNEMONIC>".to_string();
                             (bal.0, bal.1, addr)
                         })
                         .unwrap_or((0, 0, "<unknown>".to_string()))

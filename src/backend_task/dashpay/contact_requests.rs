@@ -290,23 +290,11 @@ pub async fn send_contact_request_with_proof(
             source: Box::new(e),
         })?;
 
-    // Step 5: Stage a PlatformWalletChangeSet capturing the sent contact request
-    //         and the new DashPay contact account, then persist so the delta is
-    //         durably stored.
-    //
-    //         `register_contact_account()` (called inside `send_contact_request`)
-    //         creates a DashpayReceivingFunds managed account in memory.  Record
-    //         its initial `last_revealed` index so the key-wallet changeset
-    //         reflects the full delta.
-    let kw_account_cs = dash_sdk::dpp::key_wallet::changeset::AccountChangeSet {
-        last_revealed: BTreeMap::from([(0u32, 0u32)]),
-        ..Default::default()
-    };
+    // Step 5: Stage a PlatformWalletChangeSet capturing the sent contact request.
+    // TODO: re-wire persistence after changeset migration
+    // key_wallet::changeset (AccountChangeSet, WalletChangeSet) was removed from dashcore.
+    // The `wallet` field no longer exists on PlatformWalletChangeSet.
     let changeset = PlatformWalletChangeSet {
-        wallet: Some(dash_sdk::dpp::key_wallet::changeset::WalletChangeSet {
-            accounts: Some(kw_account_cs),
-            ..Default::default()
-        }),
         contacts: Some(ContactChangeSet {
             sent_requests: BTreeMap::from([(
                 (sender_id, to_identity_id),
@@ -454,24 +442,14 @@ pub async fn accept_contact_request(
             source: Box::new(e),
         })?;
 
-    // Stage a PlatformWalletChangeSet capturing the reciprocal sent request,
-    // the newly established contact, and the new DashPay contact account.
-    //
-    // `register_contact_account()` (called inside `send_contact_request`) creates
-    // a DashpayReceivingFunds managed account in memory. Record its initial
-    // `last_revealed` index so the key-wallet changeset reflects the full delta.
+    // Stage a PlatformWalletChangeSet capturing the reciprocal sent request and the newly established contact.
+    // TODO: re-wire persistence after changeset migration
+    // key_wallet::changeset (AccountChangeSet, WalletChangeSet) was removed from dashcore.
+    // The `wallet` field no longer exists on PlatformWalletChangeSet.
     let mut established = BTreeSet::new();
     established.insert((our_identity_id, from_identity_id));
 
-    let kw_account_cs = dash_sdk::dpp::key_wallet::changeset::AccountChangeSet {
-        last_revealed: BTreeMap::from([(0u32, 0u32)]),
-        ..Default::default()
-    };
     let changeset = PlatformWalletChangeSet {
-        wallet: Some(dash_sdk::dpp::key_wallet::changeset::WalletChangeSet {
-            accounts: Some(kw_account_cs),
-            ..Default::default()
-        }),
         contacts: Some(ContactChangeSet {
             sent_requests: BTreeMap::from([(
                 (our_identity_id, from_identity_id),

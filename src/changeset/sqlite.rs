@@ -270,32 +270,14 @@ impl SqliteWalletPersister {
 
     /// Persist key-wallet account changeset (last revealed indices without path reference).
     ///
-    /// The key-wallet [`key_wallet::changeset::AccountChangeSet`] maps
-    /// `account_index -> last_revealed` without a `DerivationPathReference` dimension.
-    /// We store these with `path_reference = 0` (Unknown) as a sentinel.
+    /// TODO: re-wire persistence after changeset migration
+    #[allow(dead_code)]
     fn persist_key_wallet_accounts(
-        tx: &rusqlite::Transaction,
-        seed_hash: &[u8; 32],
-        network: &str,
-        accounts: &dash_sdk::dpp::key_wallet::changeset::AccountChangeSet,
+        _tx: &rusqlite::Transaction,
+        _seed_hash: &[u8; 32],
+        _network: &str,
     ) -> Result<(), rusqlite::Error> {
-        Self::ensure_account_state_table(tx)?;
-
-        let mut stmt = tx.prepare_cached(
-            "INSERT OR REPLACE INTO wallet_account_state
-                (seed_hash, account_index, path_reference, last_revealed, network)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-        )?;
-
-        for (&account_index, &last_revealed) in &accounts.last_revealed {
-            stmt.execute(rusqlite::params![
-                &seed_hash[..],
-                account_index as i64,
-                0i64, // Unknown path reference — key-wallet does not carry one
-                last_revealed as i64,
-                network,
-            ])?;
-        }
+        // TODO: re-wire persistence after changeset migration
         Ok(())
     }
 
@@ -556,8 +538,10 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
         };
 
         // -- Load balance -------------------------------------------------------
-        let balance = {
-            let row: Option<(i64, i64)> = guard
+        // TODO: re-wire persistence after changeset migration
+        // BalanceChangeSet removed from key_wallet::changeset — balance loading skipped.
+        {
+            let _row: Option<(i64, i64)> = guard
                 .query_row(
                     "SELECT confirmed_balance, unconfirmed_balance FROM wallet
                      WHERE seed_hash = ?1 AND network = ?2",
@@ -565,20 +549,7 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .ok();
-
-            row.and_then(|(confirmed, unconfirmed)| {
-                if confirmed == 0 && unconfirmed == 0 {
-                    None
-                } else {
-                    Some(dash_sdk::dpp::key_wallet::changeset::BalanceChangeSet {
-                        spendable_delta: confirmed,
-                        unconfirmed_delta: unconfirmed,
-                        immature_delta: 0,
-                        locked_delta: 0,
-                    })
-                }
-            })
-        };
+        }
 
         // -- Load accounts (last_revealed indices) ----------------------------
         let accounts = {
@@ -811,13 +782,8 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
             }
         };
 
-        // Build a key-wallet changeset if we have balance data.
-        let wallet = balance.map(
-            |bal| dash_sdk::dpp::key_wallet::changeset::WalletChangeSet {
-                balance: Some(bal),
-                ..Default::default()
-            },
-        );
+        // TODO: re-wire persistence after changeset migration
+        // WalletChangeSet removed from key_wallet::changeset; wallet field dropped from PlatformWalletChangeSet
 
         let cs = PlatformWalletChangeSet {
             chain,
@@ -827,7 +793,6 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
             identities,
             platform_addresses,
             asset_locks,
-            wallet,
             ..Default::default()
         };
 
@@ -904,114 +869,11 @@ impl SqliteWalletPersister {
         }
 
         // -- Key-wallet sub-changesets -----------------------------------------
-        if let Some(ref wallet_cs) = changeset.wallet {
-            // wallet.chain → update wallet height
-            if let Some(ref chain) = wallet_cs.chain
-                && let Some(height) = chain.height
-            {
-                tx.execute(
-                    "UPDATE wallet SET last_terminal_block = ?1
-                     WHERE seed_hash = ?2 AND network = ?3",
-                    rusqlite::params![height as i64, &seed_hash[..], &self.network],
-                )?;
-            }
-
-            // wallet.transactions → INSERT OR REPLACE transaction records
-            if let Some(ref kw_txs) = wallet_cs.transactions {
-                let mut stmt = tx.prepare_cached(
-                    "INSERT OR REPLACE INTO wallet_transactions (
-                        seed_hash, txid, network, timestamp, height, block_hash,
-                        net_amount, fee, label, is_ours, raw_transaction, status
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-                )?;
-
-                for (txid, entry) in &kw_txs.records {
-                    let raw = serialize(&entry.transaction);
-                    let block_hash_bytes: Option<Vec<u8>> =
-                        entry.block_hash.map(|bh| bh.as_byte_array().to_vec());
-
-                    let status: i32 = if entry.is_chain_locked {
-                        2
-                    } else if entry.is_instant_locked {
-                        1
-                    } else {
-                        0
-                    };
-
-                    stmt.execute(rusqlite::params![
-                        &seed_hash[..],
-                        txid.as_byte_array(),
-                        &self.network,
-                        entry.timestamp as i64,
-                        entry.block_height.map(|h| h as i64),
-                        block_hash_bytes,
-                        entry.net_amount,
-                        entry.fee.map(|f| f as i64),
-                        &entry.label,
-                        1i32,
-                        &raw,
-                        status,
-                    ])?;
-                }
-            }
-
-            // wallet.utxos → INSERT added, DELETE spent
-            if let Some(ref kw_utxos) = wallet_cs.utxos {
-                let mut insert_stmt = tx.prepare_cached(
-                    "INSERT OR IGNORE INTO utxos (txid, vout, address, value, script_pubkey, network)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                )?;
-                for (outpoint, entry) in &kw_utxos.added {
-                    insert_stmt.execute(rusqlite::params![
-                        outpoint.txid.as_byte_array(),
-                        outpoint.vout as i64,
-                        entry.address.to_string(),
-                        entry.value as i64,
-                        entry.script_pubkey.as_bytes(),
-                        &self.network,
-                    ])?;
-                }
-
-                let mut delete_stmt = tx.prepare_cached(
-                    "DELETE FROM utxos WHERE txid = ?1 AND vout = ?2 AND network = ?3",
-                )?;
-                for outpoint in &kw_utxos.spent {
-                    delete_stmt.execute(rusqlite::params![
-                        outpoint.txid.as_byte_array(),
-                        outpoint.vout as i64,
-                        &self.network,
-                    ])?;
-                }
-            }
-
-            // wallet.accounts → persist last_revealed indices (key-wallet type)
-            if let Some(ref kw_accounts) = wallet_cs.accounts {
-                Self::persist_key_wallet_accounts(
-                    &tx,
-                    &seed_hash,
-                    &self.network,
-                    kw_accounts,
-                )?;
-            }
-
-            // wallet.balance → UPDATE wallet balance fields
-            if let Some(ref bal) = wallet_cs.balance {
-                // Balance changeset carries deltas; apply them with SQL arithmetic.
-                tx.execute(
-                    "UPDATE wallet SET
-                         confirmed_balance = MAX(0, confirmed_balance + ?1),
-                         unconfirmed_balance = MAX(0, unconfirmed_balance + ?2),
-                         total_balance = MAX(0, total_balance + ?1 + ?2)
-                     WHERE seed_hash = ?3 AND network = ?4",
-                    rusqlite::params![
-                        bal.spendable_delta,
-                        bal.unconfirmed_delta,
-                        &seed_hash[..],
-                        &self.network,
-                    ],
-                )?;
-            }
-        }
+        // TODO: re-wire persistence after changeset migration
+        // WalletChangeSet (key_wallet::changeset) was removed from dashcore.
+        // The `wallet` field no longer exists on PlatformWalletChangeSet.
+        // Balance, transaction, UTXO, and account persistence from the key-wallet
+        // changeset path is stubbed out until the changeset API is re-established.
 
         // -- Accounts ----------------------------------------------------------
         if let Some(ref accounts) = changeset.accounts {

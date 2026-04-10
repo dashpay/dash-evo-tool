@@ -29,7 +29,7 @@ impl AppContext {
             // Exclude platform payment addresses since those are not tracked by Core.
             let addrs = if let Some(pw) = wallet_guard.platform_wallet.as_ref() {
                 let info = pw.state_blocking();
-                CoreAddressInfo::all_from_wallet_info(info.managed_state.wallet_info())
+                CoreAddressInfo::all_from_wallet_info(&info.core_wallet)
                     .into_iter()
                     .filter(|a| !a.derivation_path.is_platform_payment(self.network))
                     .map(|a| a.address)
@@ -283,17 +283,20 @@ impl AppContext {
         // current and can serve as the canonical read source.
         // Uses try_state_mut() because we are in a blocking context
         // (spawn_blocking) where awaiting is not possible.
-        if let Some(pw) = self.get_platform_wallet(&seed_hash)
-            && let Some(mut pw_info) = pw.try_state_mut()
-        {
-            pw_info.managed_state.wallet_info_mut().balance = WalletCoreBalance::new(
-                total_balance, // spendable
-                0,             // unconfirmed
-                0,             // immature
-                0,             // locked
-            );
-            // Wallet changes are auto-flushed via FlushStrategy::Immediate
-            // when queued by the platform wallet.
+        if let Some(pw) = self.get_platform_wallet(&seed_hash) {
+            if let Ok(mut wm_guard) = pw.wallet_manager().try_write() {
+                let wallet_id = pw.wallet_id();
+                if let Some(info) = wm_guard.get_wallet_info_mut(&wallet_id) {
+                    info.core_wallet.balance = WalletCoreBalance::new(
+                        total_balance, // spendable
+                        0,             // unconfirmed
+                        0,             // immature
+                        0,             // locked
+                    );
+                }
+                // Wallet changes are auto-flushed via FlushStrategy::Immediate
+                // when queued by the platform wallet.
+            }
         }
 
         let warning = if tx_truncated {

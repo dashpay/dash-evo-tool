@@ -157,7 +157,7 @@ impl AppContext {
 
         if let Some(pw) = platform_wallet {
             let info = pw.state().await;
-            let first_addr = crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(info.managed_state.wallet_info())
+            let first_addr = crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.core_wallet)
                 .into_iter()
                 .next()
                 .map(|a| a.address);
@@ -602,19 +602,14 @@ impl AppContext {
         let pw = self.require_platform_wallet(&seed_hash)?;
 
         let tx = {
-            let info_guard =
-                pw
-                    .try_state()
-                    .ok_or_else(|| TaskError::WalletPaymentFailed {
-                        detail: "Wallet info unavailable".to_string(),
-                    })?;
+            let info_guard = pw.state().await;
             let unsigned = self.build_spv_unsigned_transaction_multi_pw(
-                info_guard.managed_state.wallet_info(),
-                info_guard.managed_state.wallet(),
+                &info_guard.core_wallet,
+                info_guard.wallet(),
                 &parsed_recipients,
                 &request,
             )?;
-            self.sign_spv_transaction_pw(info_guard.managed_state.wallet_info(), info_guard.managed_state.wallet(), unsigned)?
+            self.sign_spv_transaction_pw(&info_guard.core_wallet, info_guard.wallet(), unsigned)?
         };
 
         self.wallet_manager
@@ -725,7 +720,7 @@ impl AppContext {
         // Get UTXOs and change address from the wallet account
         let (utxos, change_index) = {
             let account = managed_info
-                .accounts()
+                .accounts
                 .standard_bip44_accounts
                 .get(&DEFAULT_BIP44_ACCOUNT_INDEX)
                 .ok_or_else(|| TaskError::WalletPaymentFailed {
@@ -816,7 +811,7 @@ impl AppContext {
         account_index: u32,
         current_height: u32,
     ) -> Result<u64, TaskError> {
-        let collection = managed_info.accounts();
+        let collection = &managed_info.accounts;
         let account = collection
             .standard_bip44_accounts
             .get(&account_index)
@@ -854,7 +849,7 @@ impl AppContext {
         change_address: &Address,
     ) -> Result<Transaction, WalletError> {
         // Get spendable UTXOs from the managed wallet info
-        let collection = managed_info.accounts();
+        let collection = &managed_info.accounts;
         let account = collection
             .standard_bip44_accounts
             .get(&account_index)
@@ -900,7 +895,7 @@ impl AppContext {
         wallet: &dash_sdk::dpp::key_wallet::wallet::Wallet,
         tx: Transaction,
     ) -> Result<Transaction, TaskError> {
-        let accounts = managed_info.accounts();
+        let accounts = &managed_info.accounts;
         let account = accounts
             .standard_bip44_accounts
             .get(&DEFAULT_BIP44_ACCOUNT_INDEX)

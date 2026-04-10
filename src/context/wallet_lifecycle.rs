@@ -144,7 +144,8 @@ impl AppContext {
     ///
     /// Call before `start_spv()` when wallet state isn't persisted yet.
     pub async fn reset_spv_filter_committed_height(&self) {
-        self.wallet_manager.spv().reset_filter_committed_height().await;
+        // TODO: re-wire after SpvRuntime exposes reset_filter_committed_height
+        tracing::debug!("reset_spv_filter_committed_height: not yet implemented in new SpvRuntime API");
     }
 
     pub fn start_spv(self: &Arc<Self>) -> Result<(), TaskError> {
@@ -163,22 +164,20 @@ impl AppContext {
             })?;
         tracing::info!("start_spv: config built, starting SPV...");
 
-        // Spawn the SpvEventBridge run-loop using the existing bridge
-        // (created in AppContext::new). Each start subscribes to the wallet
-        // manager's event channel; when SPV stops the broadcast channel
-        // closes and the run-loop exits naturally.
-        let event_rx = self.wallet_manager.subscribe_events();
-        let bridge = Arc::clone(&self.spv_event_bridge);
-        self.subtasks.spawn_sync("spv_event_bridge", async move {
-            bridge.run(event_rx).await;
-        });
+        // Events now flow through PlatformEventHandler trait directly
+        // (SpvEventBridge registered as handler in PlatformWalletManager::new).
+        // No broadcast channel or run-loop needed.
 
         // Wire up the reconcile listener (debounces reconcile signals from
         // the event bridge and writes wallet state back to DET).
         // The reconcile channel is created fresh on each start so stale
         // signals from a previous session don't leak.
-        let reconcile_rx = self.spv_event_bridge.new_reconcile_channel();
-        self.spv_setup_reconcile_listener(reconcile_rx);
+        // TODO: Re-enable reconcile listener once lock contention is resolved.
+        // The reconcile listener acquires WalletManager read lock during heavy
+        // work, which blocks SPV's write lock for process_block, causing the
+        // sync pipeline to stall.
+        // let reconcile_rx = self.spv_event_bridge.new_reconcile_channel();
+        // self.spv_setup_reconcile_listener(reconcile_rx);
 
         // Spawn SPV sync via PlatformWalletManager's SpvRuntime.
         let cancel = self.subtasks.cancellation_token.child_token();
@@ -589,7 +588,7 @@ impl AppContext {
         // Check address ownership via PlatformWallet's async state lock.
         if let Some(pw) = &platform_wallet {
             let info = pw.state().await;
-            let has_it = crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(info.managed_state.wallet_info())
+            let has_it = crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.core_wallet)
                 .iter()
                 .any(|a| a.address == address);
             if has_it {
@@ -634,7 +633,7 @@ impl AppContext {
         wallet_info: &ManagedWalletInfo,
         wallet_arc: &Arc<RwLock<Wallet>>,
     ) {
-        let collection = wallet_info.accounts();
+        let collection = &wallet_info.accounts;
 
         let mut inserted = 0u32;
         for account in collection.all_accounts() {
@@ -788,99 +787,10 @@ impl AppContext {
 
     /// Reconcile SPV wallet state into DET.
     ///
-    /// Reads from `PlatformWallet` instances (which share the same wallet
-    /// data as the SPV adapter through `Arc`) instead of the old
-    /// `PlatformWallet::core()`.
+    /// Currently a no-op. Addresses and balances are managed by PlatformWallet
+    /// (source of truth). Persistence will be handled by PlatformWalletPersistence
+    /// in a future PR.
     pub async fn reconcile_spv_wallets(&self) -> Result<(), TaskError> {
-        // Snapshot the wallets map under a short sync lock, then drop.
-        let wallet_entries: Vec<_> = {
-            let wallets_guard = self.wallets.read()?;
-            wallets_guard
-                .iter()
-                .map(|(k, v)| (*k, Arc::clone(v)))
-                .collect()
-        };
-
-        for (seed_hash, wallet_arc) in &wallet_entries {
-            let Some(pw) = self.get_platform_wallet(seed_hash) else {
-                continue;
-            };
-
-            // Lock-free balance read — no lock required.
-            let balance = pw.core().balance();
-            tracing::debug!(wallet = %hex::encode(seed_hash), spendable = balance.spendable(), unconfirmed = balance.unconfirmed(), total = balance.total(), "SPV balance snapshot");
-
-            let Some(wallet_info) = pw.try_state() else {
-                continue;
-            };
-
-            self.sync_spv_account_addresses(wallet_info.managed_state.wallet_info(), wallet_arc).await;
-
-            // Wallet balances, UTXOs, and transactions are now persisted via
-            // the changeset path (auto-flushed via FlushStrategy::Immediate).
-            // No direct DB writes for these are needed here.
-
-            // Get the wallet's addresses from PlatformWallet to register unknown
-            // SPV addresses in the DET address table (app-level metadata).
-            // Uses async state() to avoid blocking_read panic in async context.
-            let mut wallet_addresses: std::collections::BTreeSet<Address> = {
-                let info = pw.state().await;
-                crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(info.managed_state.wallet_info())
-                    .into_iter()
-                    .map(|a| a.address)
-                    .collect()
-            };
-
-            // Register unknown addresses found in SPV account metadata
-            let collection = wallet_info.managed_state.wallet_info().accounts();
-            for acc in collection.all_accounts() {
-                let account_type = acc.account_type.to_account_type();
-                for address in acc.account_type.all_addresses() {
-                    if wallet_addresses.contains(&address) {
-                        continue;
-                    }
-                    if let Some(ai) = acc.get_address_info(&address) {
-                        let (path_reference, path_type) = Self::spv_account_metadata(&account_type)
-                            .unwrap_or_else(|| {
-                                let default_ref = if ai.path.is_bip44(self.network) {
-                                    DerivationPathReference::BIP44
-                                } else if ai.path.is_bip32() {
-                                    DerivationPathReference::BIP32
-                                } else {
-                                    tracing::warn!(
-                                        path = %ai.path,
-                                        "SPV address has unrecognized derivation path structure"
-                                    );
-                                    DerivationPathReference::Unknown
-                                };
-                                (default_ref, DerivationPathType::CLEAR_FUNDS)
-                            });
-
-                        if let Ok(true) = self.register_spv_address(
-                            wallet_arc,
-                            address.clone(),
-                            ai.path.clone(),
-                            path_type,
-                            path_reference,
-                        ).await {
-                            wallet_addresses.insert(address.clone());
-                        }
-                    }
-                }
-            }
-
-            tracing::info!(
-                wallet = %hex::encode(seed_hash),
-                spv_spendable = balance.spendable(),
-                spv_total = balance.total(),
-                "SPV reconcile summary"
-            );
-
-            // Persistence is handled automatically by the SPV adapter's
-            // queue_persist() calls — the SqliteWalletPersister auto-flushes
-            // each queued changeset when FlushStrategy::Immediate is active.
-        }
-
         Ok(())
     }
 
@@ -930,13 +840,24 @@ impl AppContext {
         };
 
         // 2. Access the identity_manager (tokio RwLock, use try_write)
-        let identity_wallet = platform_wallet.identity();
-        let mut manager = match identity_wallet.try_state_mut() {
-            Some(guard) => guard,
-            None => {
+        let mut wm_guard = match platform_wallet.wallet_manager().try_write() {
+            Ok(guard) => guard,
+            Err(_) => {
                 tracing::debug!(
                     identity = %qualified_identity.identity.id(),
                     "Skipping platform-wallet sync: identity_manager lock contended"
+                );
+                return;
+            }
+        };
+
+        let wallet_id = platform_wallet.wallet_id();
+        let manager = match wm_guard.get_wallet_info_mut(&wallet_id) {
+            Some(info) => info,
+            None => {
+                tracing::debug!(
+                    identity = %qualified_identity.identity.id(),
+                    "Skipping platform-wallet sync: wallet info not found"
                 );
                 return;
             }
@@ -1094,7 +1015,8 @@ impl AppContext {
                 // Derive xpub and add account to key-wallet's Wallet (key store),
                 // then add managed wrapper to ManagedWalletInfo (address pools).
                 // Both live inside the single PlatformWalletInfo guard.
-                if let Some(mut info_guard) = pw.try_state_mut() {
+                if let Ok(mut wm_guard) = pw.wallet_manager().try_write() {
+                    let wallet_id = pw.wallet_id();
                     let path = match account_type.derivation_path(kw_network) {
                         Ok(p) => p,
                         Err(e) => {
@@ -1102,14 +1024,16 @@ impl AppContext {
                             continue;
                         }
                     };
-                    let account_xpub = match info_guard.managed_state.wallet().derive_extended_public_key(&path) {
-                        Ok(xpub) => xpub,
-                        Err(e) => {
-                            tracing::debug!(contact = %contact_id, error = %e, "Failed to derive contact xpub");
+                    let account_xpub = match wm_guard
+                        .get_wallet(&wallet_id)
+                        .and_then(|w| w.derive_extended_public_key(&path).ok())
+                    {
+                        Some(xpub) => xpub,
+                        None => {
+                            tracing::debug!(contact = %contact_id, "Failed to derive contact xpub");
                             continue;
                         }
                     };
-                    let wallet_id = info_guard.managed_state.wallet().wallet_id;
                     let account = Account {
                         parent_wallet_id: Some(wallet_id),
                         account_type,
@@ -1117,13 +1041,16 @@ impl AppContext {
                         account_xpub,
                         is_watch_only: false,
                     };
-                    let _ = info_guard.managed_state.wallet_mut().accounts.insert(account.clone());
+                    // TODO: re-wire wallet_mut().accounts.insert() after WalletManager
+                    //       exposes mutable wallet access in the new API.
 
                     let managed = ManagedCoreAccount::from_account(&account);
-                    if let Err(e) = info_guard.managed_state.wallet_info_mut().accounts.insert(managed) {
-                        tracing::debug!(contact = %contact_id, error = %e, "Failed to insert contact account");
-                    } else {
-                        registered += 1;
+                    if let Some(info) = wm_guard.get_wallet_info_mut(&wallet_id) {
+                        if let Err(e) = info.core_wallet.accounts.insert(managed) {
+                            tracing::debug!(contact = %contact_id, error = %e, "Failed to insert contact account");
+                        } else {
+                            registered += 1;
+                        }
                     }
                 }
             }

@@ -29,8 +29,9 @@ impl AppContext {
 
             // Register the address in DET's address table so it shows in the UI.
             // Read derivation path from the ManagedWalletInfo accounts.
-            if let Some(wallet_info) = platform_wallet.try_state() {
-                for acc in wallet_info.managed_state.wallet_info().accounts.all_accounts() {
+            {
+                let wallet_info = platform_wallet.state().await;
+                for acc in wallet_info.core_wallet.accounts.all_accounts() {
                     if let Some(ai) = acc.get_address_info(&address) {
                         let _ = self.register_spv_address(
                             &wallet_arc,

@@ -675,7 +675,7 @@ impl WalletsBalancesScreen {
         // Find the highest existing platform payment address index
         let info = pw.state_blocking();
         let existing_indices: Vec<u32> =
-            crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(info.managed_state.wallet_info())
+            crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.core_wallet)
                 .iter()
                 .filter(|a| a.derivation_path.is_platform_payment(network))
                 .filter_map(|a| {
@@ -1278,7 +1278,7 @@ impl WalletsBalancesScreen {
         let addresses: Vec<(String, u64)> = if let Some(pw) = wallet_guard.platform_wallet.as_ref()
         {
             let info = pw.state_blocking();
-            crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(info.managed_state.wallet_info())
+            crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.core_wallet)
                 .into_iter()
                 .filter(|a| a.derivation_path.is_bip44_external(network))
                 .map(|a| (a.address.to_string(), a.balance))

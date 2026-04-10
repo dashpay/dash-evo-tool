@@ -398,7 +398,7 @@ impl AddressInput {
         // Read from PlatformWallet's CoreAddressInfo if available.
         if let Some(pw) = guard.platform_wallet.as_ref() {
             let info = pw.state_blocking();
-            for addr_info in crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(info.managed_state.wallet_info()) {
+            for addr_info in crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.core_wallet) {
                 if !addr_info.derivation_path.is_bip44(self.network) {
                     continue;
                 }
@@ -441,7 +441,7 @@ impl AddressInput {
         let mut seen_platform = std::collections::HashSet::new();
         if let Some(pw) = guard.platform_wallet.as_ref() {
             let info = pw.state_blocking();
-            for addr_info in crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(info.managed_state.wallet_info()) {
+            for addr_info in crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.core_wallet) {
                 if !addr_info.derivation_path.is_platform_payment(self.network) {
                     continue;
                 }

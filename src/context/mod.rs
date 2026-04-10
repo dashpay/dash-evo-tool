@@ -284,13 +284,25 @@ impl AppContext {
             }
         };
 
-        // Create the shared persister and PlatformWalletManager with the SDK
+        // Create the shared persister, event bridge, and PlatformWalletManager.
         let persister: Arc<dyn platform_wallet::changeset::PlatformWalletPersistence> = Arc::new(
             crate::changeset::SqliteWalletPersister::new(db.clone(), network.to_string()),
         );
+
+        // Create SpvEventBridge first — it's passed as the event handler
+        // to PlatformWalletManager. The reconcile channel starts with a
+        // dummy sender; start_spv() calls new_reconcile_channel() to wire
+        // up the real pipeline for each SPV session.
+        let (reconcile_tx, _) = tokio::sync::mpsc::channel(1);
+        let spv_event_bridge = Arc::new(SpvEventBridge::new(
+            Arc::clone(&connection_status),
+            reconcile_tx,
+        ));
+
         let wallet_manager = Arc::new(DebugWrapper(PlatformWalletManager::new(
             Arc::new(sdk.clone()),
             persister,
+            Arc::clone(&spv_event_bridge) as Arc<dyn platform_wallet::PlatformEventHandler>,
         )));
 
         let wallets: BTreeMap<_, _> = match db.get_wallets(&network) {
@@ -328,14 +340,7 @@ impl AppContext {
             false => AtomicBool::new(true), // Animations are enabled by default
         };
 
-        // Create the SpvEventBridge. The reconcile channel is created with a
-        // dummy sender; start_spv() calls new_reconcile_channel() to wire up
-        // the real pipeline for each SPV session.
-        let (reconcile_tx, _) = tokio::sync::mpsc::channel(1);
-        let spv_event_bridge = Arc::new(SpvEventBridge::new(
-            Arc::clone(&connection_status),
-            reconcile_tx,
-        ));
+        // SpvEventBridge already created above (passed to PlatformWalletManager).
 
         // Load the core backend mode from settings, defaulting to RPC if not set
         let saved_core_backend_mode = db

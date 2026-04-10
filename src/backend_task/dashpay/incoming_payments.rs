@@ -128,7 +128,7 @@ pub async fn register_dashpay_addresses_for_identity(
 
     // Acquire the key-wallet read guard for derivation
     let info_guard = platform_wallet_arc.state().await;
-    let key_wallet_guard = info_guard.managed_state.wallet();
+    let key_wallet_guard = info_guard.wallet();
 
     for contact in contacts {
         let contact_id = match Identifier::from_bytes(&contact.contact_identity_id) {

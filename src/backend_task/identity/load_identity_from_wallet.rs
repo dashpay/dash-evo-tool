@@ -81,7 +81,7 @@ impl AppContext {
         let identity_id = identity.id();
 
         // Read the enriched ManagedIdentity from the identity manager.
-        let manager = identity_wallet.state().await;
+        let manager = platform_wallet.state().await;
         let managed = manager.identity_manager.managed_identity(&identity_id).ok_or_else(|| {
             TaskError::WalletIdentityNotFound {
                 identity_index,
@@ -93,7 +93,7 @@ impl AppContext {
         let private_keys_map: BTreeMap<_, _> = managed
             .key_storage
             .iter()
-            .map(|(key_id, (pub_key, pk_data))| {
+            .map(|(key_id, (pub_key, pk_data)): (&dash_sdk::dpp::identity::KeyID, &(dash_sdk::dpp::identity::IdentityPublicKey, platform_wallet::PrivateKeyData))| {
                 let (evo_pk_data, wallet_path) = match pk_data {
                     platform_wallet::PrivateKeyData::AtWalletDerivationPath {
                         wallet_seed_hash,
@@ -109,8 +109,7 @@ impl AppContext {
                         )
                     }
                     platform_wallet::PrivateKeyData::Clear(key_bytes) => {
-                        let bytes: &[u8; 32] = key_bytes;
-                        (PrivateKeyData::Clear(*bytes), None)
+                        (PrivateKeyData::Clear(**key_bytes), None)
                     }
                 };
 

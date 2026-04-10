@@ -72,11 +72,12 @@ pub fn capture_qr_funding_utxo_if_available(
     let pw = guard.platform_wallet.as_ref()?;
     let info = pw.state_blocking();
 
+    use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
     let candidate_utxo = info
-        .managed_state.wallet_info().get_spendable_utxos()
+        .core_wallet.get_spendable_utxos()
         .iter()
         .filter(|utxo| utxo.address == address && utxo.value() > 0)
-        .max_by_key(|utxo| utxo.value())
+        .max_by_key(|utxo: &&&dash_sdk::dpp::key_wallet::Utxo| utxo.value())
         .map(|utxo| (utxo.outpoint, utxo.txout.clone()));
 
     if let Some((outpoint, tx_out)) = candidate_utxo {

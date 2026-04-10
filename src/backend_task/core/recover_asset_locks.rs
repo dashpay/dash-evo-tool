@@ -50,7 +50,7 @@ impl AppContext {
             // Locked wallets (no PlatformWallet) have no addresses — return empty.
             let addresses: Vec<Address> = if let Some(pw) = wallet_guard.platform_wallet.as_ref() {
                 let info = pw.state_blocking();
-                CoreAddressInfo::all_from_wallet_info(info.managed_state.wallet_info())
+                CoreAddressInfo::all_from_wallet_info(&info.core_wallet)
                     .into_iter()
                     .map(|a| a.address)
                     .collect()

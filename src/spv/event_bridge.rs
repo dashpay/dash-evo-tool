@@ -1,26 +1,23 @@
-//! Subscribes to [`PlatformWalletEvent`] and translates SPV events into
+//! Implements [`PlatformEventHandler`] to translate SPV events into
 //! evo-tool's app-level concerns: [`ConnectionStatus`] updates, sync progress
 //! snapshots, and reconcile signals.
-//!
-//! Replaces the old `SpvEventHandler` that was tightly coupled to the
-//! dash-spv `EventHandler` trait.
 
 use crate::context::connection_status::ConnectionStatus;
 use crate::spv::types::failed_manager_name;
 use crate::spv::types::{SpvStatus, SpvStatusSnapshot};
 use dash_sdk::dash_spv::network::NetworkEvent;
 use dash_sdk::dash_spv::sync::{SyncEvent, SyncProgress as SpvSyncProgress, SyncState};
-use platform_wallet::events::{PlatformWalletEvent, SpvEvent, WalletEvent};
+use dash_sdk::dash_spv::EventHandler;
+use platform_wallet::events::{PlatformEventHandler, WalletEvent};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::SystemTime;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::mpsc;
 
-/// Bridges [`PlatformWalletEvent`] into evo-tool's UI-facing state.
+/// Implements [`PlatformEventHandler`] to receive SPV events by reference
+/// and translate them into evo-tool's UI-facing state.
 ///
 /// Owns the shared [`SpvStatusSnapshot`] and pushes updates to
-/// [`ConnectionStatus`] and the reconcile channel exactly as the old
-/// `SpvEventHandler` did, but without requiring the dash-spv
-/// `EventHandler` trait.
+/// [`ConnectionStatus`] and the reconcile channel.
 pub struct SpvEventBridge {
     connection_status: Arc<ConnectionStatus>,
     status: Arc<RwLock<SpvStatusSnapshot>>,
@@ -57,34 +54,6 @@ impl SpvEventBridge {
     /// Read the current status snapshot (used by the tooltip and UI).
     pub fn status(&self) -> SpvStatusSnapshot {
         self.status.read().map(|g| g.clone()).unwrap_or_default()
-    }
-
-    /// Dispatch a single [`PlatformWalletEvent`] to the appropriate handler.
-    pub fn handle_event(&self, event: &PlatformWalletEvent) {
-        match event {
-            PlatformWalletEvent::Spv(spv) => match spv {
-                SpvEvent::Progress(progress) => self.handle_progress(progress),
-                SpvEvent::Sync(sync_event) => self.handle_sync_event(sync_event),
-                SpvEvent::Network(net_event) => self.handle_network_event(net_event),
-            },
-            PlatformWalletEvent::Wallet(wallet_event) => {
-                self.handle_wallet_event(wallet_event);
-            }
-        }
-    }
-
-    /// Run the event loop, consuming events from the broadcast channel
-    /// until the channel closes.
-    pub async fn run(self: Arc<Self>, mut rx: broadcast::Receiver<PlatformWalletEvent>) {
-        loop {
-            match rx.recv().await {
-                Ok(event) => self.handle_event(&event),
-                Err(broadcast::error::RecvError::Lagged(n)) => {
-                    tracing::warn!("SpvEventBridge lagged, skipped {n} events");
-                }
-                Err(broadcast::error::RecvError::Closed) => break,
-            }
-        }
     }
 
     // ------------------------------------------------------------------
@@ -216,8 +185,10 @@ impl SpvEventBridge {
     /// Mirrors the old `EventHandler::on_sync_event` implementation
     /// (minus the dead finality channel code).
     fn handle_sync_event(&self, event: &SyncEvent) {
+        eprintln!("[DEBUG handle_sync_event] t={:?} {:?}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() % 100000, event);
         // Transition to Running on SyncComplete.
         if matches!(event, SyncEvent::SyncComplete { .. }) {
+            eprintln!("[DEBUG handle_sync_event] SyncComplete! Setting Running status");
             if let Ok(mut snap) = self.status.write() {
                 snap.status = SpvStatus::Running;
             }
@@ -283,6 +254,30 @@ impl SpvEventBridge {
         }
     }
 }
+
+impl EventHandler for SpvEventBridge {
+    fn on_sync_event(&self, event: &SyncEvent) {
+        self.handle_sync_event(event);
+    }
+
+    fn on_network_event(&self, event: &NetworkEvent) {
+        self.handle_network_event(event);
+    }
+
+    fn on_progress(&self, progress: &SpvSyncProgress) {
+        self.handle_progress(progress);
+    }
+
+    fn on_wallet_event(&self, event: &WalletEvent) {
+        self.handle_wallet_event(event);
+    }
+
+    fn on_error(&self, error: &str) {
+        tracing::error!("SPV error: {}", error);
+    }
+}
+
+impl PlatformEventHandler for SpvEventBridge {}
 
 impl std::fmt::Debug for SpvEventBridge {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

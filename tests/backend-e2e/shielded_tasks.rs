@@ -41,9 +41,21 @@ async fn tc_074_shielded_lifecycle() {
     let app_context = &test_ctx.app_context;
     let seed_hash = test_ctx.framework_wallet_hash;
 
+    if !shielded_helpers::is_shielded_available(app_context) {
+        tracing::warn!(
+            "tc_074: platform does not support shielded ops (FeatureGate check) — skipping"
+        );
+        return;
+    }
+
     step_warm_up_proving_key(app_context).await;
     step_init_wallet(app_context, seed_hash).await;
-    step_sync_notes(app_context, seed_hash).await;
+    if !step_sync_notes(app_context, seed_hash).await {
+        tracing::warn!(
+            "tc_074_shielded_lifecycle: platform does not support shielded ops — stopping after TC-076"
+        );
+        return;
+    }
     step_check_nullifiers(app_context, seed_hash).await;
 
     if !step_shield_from_asset_lock(app_context, seed_hash).await {
@@ -111,7 +123,8 @@ async fn step_init_wallet(app_context: &Arc<AppContext>, seed_hash: WalletSeedHa
 /// Step 3 (TC-076): SyncNotes
 ///
 /// Trial-decrypts platform notes and updates the commitment tree.
-async fn step_sync_notes(app_context: &Arc<AppContext>, seed_hash: WalletSeedHash) {
+/// Returns `false` if the platform does not support shielded ops (caller should stop).
+async fn step_sync_notes(app_context: &Arc<AppContext>, seed_hash: WalletSeedHash) -> bool {
     tracing::info!("=== Step 3: SyncNotes ===");
 
     let task = BackendTask::ShieldedTask(ShieldedTask::SyncNotes { seed_hash });
@@ -120,6 +133,7 @@ async fn step_sync_notes(app_context: &Arc<AppContext>, seed_hash: WalletSeedHas
     match result {
         Err(e) if shielded_helpers::is_platform_shielded_unsupported(&e) => {
             tracing::warn!("Step 3: skipped — platform does not support shielded ops: {e}");
+            return false;
         }
         Err(e) => panic!("SyncNotes failed unexpectedly: {e:?}"),
         Ok(BackendTaskSuccessResult::ShieldedNotesSynced {
@@ -136,6 +150,8 @@ async fn step_sync_notes(app_context: &Arc<AppContext>, seed_hash: WalletSeedHas
         }
         Ok(other) => panic!("Expected ShieldedNotesSynced, got: {:?}", other),
     }
+
+    true
 }
 
 /// Step 4 (TC-077): CheckNullifiers
@@ -399,6 +415,13 @@ async fn tc_079_shield_credits() {
     let app_context = &test_ctx.app_context;
     let seed_hash = test_ctx.framework_wallet_hash;
 
+    if !shielded_helpers::is_shielded_available(app_context) {
+        tracing::warn!(
+            "tc_079: platform does not support shielded ops (FeatureGate check) — skipping"
+        );
+        return;
+    }
+
     shielded_helpers::warm_up_and_init(app_context, seed_hash).await;
 
     // Get a platform address from the wallet
@@ -499,13 +522,19 @@ async fn tc_083_error_uninitialized_wallet() {
     });
     let result = run_task(app_context, task).await;
 
+    let err = result.expect_err("SyncNotes on uninitialized wallet should fail");
+
+    // The wallet with this seed hash doesn't exist, so we expect WalletNotFound.
+    // If shielded is unsupported on this platform, that's also acceptable.
     assert!(
-        result.is_err(),
-        "SyncNotes on uninitialized wallet should fail, got: {:?}",
-        result
+        matches!(
+            err,
+            dash_evo_tool::backend_task::error::TaskError::WalletNotFound
+        ) || shielded_helpers::is_platform_shielded_unsupported(&err),
+        "TC-083: expected WalletNotFound or shielded-unsupported error, got: {:?}",
+        err
     );
 
-    let err = result.unwrap_err();
     tracing::info!(
         "Uninitialized wallet error (expected): {} (debug: {:?})",
         err,

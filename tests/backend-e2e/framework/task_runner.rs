@@ -23,8 +23,8 @@ pub async fn run_task(
     app_context.run_backend_task(task, sender).await
 }
 
-/// Run a backend task with automatic retry on identity nonce conflicts.
 #[allow(dead_code)]
+/// Run a backend task with automatic retry on identity nonce conflicts.
 ///
 /// Retries up to 3 times with a 2s delay on `IdentityNonceOverflow` or
 /// `IdentityNonceNotFound`. All other errors are returned immediately.

@@ -180,6 +180,21 @@ impl BackendTestContext {
                     stale.len()
                 );
                 for hash in stale {
+                    // Log the wallet's balance before removal for audit trail
+                    let balance = {
+                        let wallets = app_context.wallets().read().expect("wallets lock");
+                        wallets
+                            .get(&hash)
+                            .map(|w| w.read().expect("wallet lock").total_balance_duffs())
+                            .unwrap_or(0)
+                    };
+                    if balance > 0 {
+                        tracing::warn!(
+                            "Purging stale wallet {:?} with {} duffs (not swept!)",
+                            &hash[..4],
+                            balance
+                        );
+                    }
                     match app_context.remove_wallet(&hash) {
                         Ok(()) => tracing::debug!("Purged stale wallet {:?}", &hash[..4]),
                         Err(e) => {
@@ -474,7 +489,8 @@ impl BackendTestContext {
                 .unwrap_or_else(|e| {
                     panic!(
                         "Test wallet funds not spendable after IS lock + block confirmation \
-                         timeouts (total ~480s): {e}"
+                         timeouts (elapsed {:?}): {e}",
+                        funding_start.elapsed()
                     )
                 });
                 tracing::info!(
@@ -573,7 +589,6 @@ fn pick_available_workdir(base: &std::path::Path) -> (PathBuf, std::fs::File) {
     );
 }
 
-/// Try to acquire an exclusive non-blocking file lock.
 /// Try to acquire an exclusive non-blocking file lock using POSIX `flock()`.
 #[cfg(unix)]
 fn try_lock_exclusive(file: &std::fs::File) -> bool {
@@ -583,8 +598,11 @@ fn try_lock_exclusive(file: &std::fs::File) -> bool {
     unsafe { nix::libc::flock(file.as_raw_fd(), nix::libc::LOCK_EX | nix::libc::LOCK_NB) == 0 }
 }
 
+// INTENTIONAL(CMT-038): On non-Unix platforms, file locking is not
+// implemented — always returns true. This means concurrent test processes
+// on Windows will share the same workdir, which may cause conflicts.
+// Acceptable because CI runs on Linux and Windows E2E runs are rare.
 #[cfg(not(unix))]
 fn try_lock_exclusive(_file: &std::fs::File) -> bool {
-    // On non-Unix, always succeed (no concurrent protection)
     true
 }

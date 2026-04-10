@@ -65,7 +65,10 @@ pub fn build_register_token_task(
             "E2ETK".to_string(),
             "en".to_string(),
         )],
-        contract_keywords: vec![], // No keywords — each costs 10B credits (0.1 DASH)
+        // No keywords — each keyword costs ~10B credits (0.1 DASH) due to
+        // the keyword search contract registration fee, which would exceed
+        // the test wallet's budget and cause registration to fail.
+        contract_keywords: vec![],
         token_description: Some("Token created by backend E2E tests".to_string()),
         should_capitalize: false,
         decimals: 8,

@@ -94,9 +94,9 @@ async fn tc_032_update_profile() {
             tracing::info!("TC-032: verified display_name = '{}'", display_name);
         }
         BackendTaskSuccessResult::DashPayProfile(None) => {
-            tracing::warn!(
-                "TC-032: profile not visible immediately after update — \
-                 DAPI propagation delay"
+            panic!(
+                "TC-032: profile not visible after update — DAPI propagation delay. \
+                 The profile should be queryable shortly after UpdateProfile succeeds."
             );
         }
         other => panic!(
@@ -143,20 +143,19 @@ async fn tc_033_search_profiles() {
                 let u = username.trim_end_matches(".dash");
                 u == pair.username_a || u == normalized_a
             });
-            if found {
-                tracing::info!("TC-033: found username '{}' in results", pair.username_a);
-            } else {
-                tracing::warn!(
-                    "TC-033: username '{}' not found in search results — \
-                     DAPI propagation delay (got {} results: {:?})",
-                    pair.username_a,
-                    results.len(),
-                    results
-                        .iter()
-                        .map(|(_, _, u)| u.as_str())
-                        .collect::<Vec<_>>()
-                );
-            }
+            assert!(
+                found,
+                "TC-033: username '{}' not found in search results \
+                 (got {} results: {:?}). DAPI propagation delay — \
+                 the fixture waits for propagation, so this should not happen.",
+                pair.username_a,
+                results.len(),
+                results
+                    .iter()
+                    .map(|(_, _, u)| u.as_str())
+                    .collect::<Vec<_>>()
+            );
+            tracing::info!("TC-033: found username '{}' in results", pair.username_a);
         }
         other => panic!(
             "TC-033: expected DashPayProfileSearchResults, got: {:?}",
@@ -322,14 +321,30 @@ async fn step_load_contact_requests(
                 incoming.len()
             );
 
-            if let Some((request_id, _doc)) = incoming.first() {
-                tracing::info!("Step 2: found request_id={:?}", request_id);
+            // Filter by sender identity to avoid picking up requests from
+            // other tests running concurrently against the same identity.
+            if let Some((request_id, _doc)) = incoming
+                .iter()
+                .find(|(req_id, _doc)| *req_id == identity_a_id)
+            {
+                tracing::info!("Step 2: found request from A, request_id={:?}", request_id);
                 Some(*request_id)
-            } else {
-                tracing::warn!(
-                    "Step 2: no incoming requests found for B — contact may already be established from a previous run"
+            } else if incoming.is_empty() {
+                // No incoming requests — contact may already be established
+                // from a previous test run. Return None so the caller can
+                // verify the contact exists instead of accepting.
+                tracing::info!(
+                    "Step 2: no incoming requests for B — contact likely already established"
                 );
                 None
+            } else {
+                panic!(
+                    "Step 2: B has {} incoming request(s) but none from A ({:?}). \
+                     Incoming IDs: {:?}",
+                    incoming.len(),
+                    identity_a_id,
+                    incoming.iter().map(|(id, _)| id).collect::<Vec<_>>()
+                );
             }
         }
         other => panic!("Step 2: expected DashPayContactRequests, got: {:?}", other),
@@ -539,9 +554,38 @@ async fn tc_037_dashpay_contact_lifecycle() {
     if let Some(id) = request_id {
         step_accept_contact_request(ctx, pair, id).await;
     } else {
-        tracing::warn!(
-            "TC-037: no pending request — skipping accept step (contact already established)"
-        );
+        // Contact already established from a previous run — verify it
+        // exists by loading contacts for B.
+        tracing::info!("TC-037: no pending request — contact already established, verifying...");
+        let verify_task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadContacts {
+            identity: pair.identity_b.clone(),
+        }));
+        let verify_result = run_task(&ctx.app_context, verify_task)
+            .await
+            .expect("TC-037: LoadContacts verification failed");
+        match verify_result {
+            BackendTaskSuccessResult::DashPayContacts(contacts) => {
+                assert!(
+                    !contacts.is_empty(),
+                    "TC-037: no contacts found but no pending request either — test state inconsistent"
+                );
+                tracing::info!(
+                    "TC-037: contact already established (B has {} contacts)",
+                    contacts.len()
+                );
+            }
+            BackendTaskSuccessResult::DashPayContactsWithInfo(contacts) => {
+                assert!(
+                    !contacts.is_empty(),
+                    "TC-037: no contacts found but no pending request either — test state inconsistent"
+                );
+                tracing::info!(
+                    "TC-037: contact already established (B has {} contacts)",
+                    contacts.len()
+                );
+            }
+            other => panic!("TC-037: expected DashPayContacts*, got: {:?}", other),
+        }
     }
 
     step_register_dashpay_addresses(ctx, pair).await;
@@ -667,7 +711,7 @@ async fn tc_043_reject_contact_request() {
         account_label: None,
     }));
 
-    run_task(&ctx.app_context, send_task)
+    run_task_with_nonce_retry(&ctx.app_context, send_task)
         .await
         .expect("TC-043: SendContactRequest from A to C failed");
 
@@ -686,7 +730,21 @@ async fn tc_043_reject_contact_request() {
                 !incoming.is_empty(),
                 "TC-043: C should have at least one incoming request from A"
             );
-            let (req_id, _doc) = &incoming[0];
+            // Filter by sender (identity A) to avoid picking up requests from
+            // other concurrent tests targeting the same identity.
+            let identity_a_id = pair.identity_a.identity.id();
+            let (req_id, _doc) = incoming
+                .iter()
+                .find(|(req_id, _doc)| *req_id == identity_a_id)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "TC-043: no request from A ({:?}) in C's incoming. \
+                         Got {} request(s): {:?}",
+                        identity_a_id,
+                        incoming.len(),
+                        incoming.iter().map(|(id, _)| id).collect::<Vec<_>>()
+                    )
+                });
             tracing::info!("TC-043: C has incoming request_id={:?}", req_id);
             *req_id
         }

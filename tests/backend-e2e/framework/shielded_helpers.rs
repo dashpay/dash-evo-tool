@@ -10,8 +10,19 @@ use crate::framework::task_runner::run_task;
 use dash_evo_tool::backend_task::shielded::ShieldedTask;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_evo_tool::context::AppContext;
+use dash_evo_tool::model::feature_gate::FeatureGate;
 use dash_evo_tool::model::wallet::WalletSeedHash;
 use std::sync::Arc;
+
+/// Check whether the connected platform supports shielded operations
+/// via the `FeatureGate::Shielded` protocol version check.
+///
+/// Returns `true` if shielded state transitions are available. Call this
+/// early in shielded tests to skip proactively instead of waiting for an
+/// error from the backend task.
+pub fn is_shielded_available(app_context: &AppContext) -> bool {
+    FeatureGate::Shielded.is_available(app_context)
+}
 
 /// Check `E2E_SKIP_SHIELDED` env var and skip the calling test if set.
 ///
@@ -29,28 +40,46 @@ pub fn skip_if_shielded_disabled() -> bool {
 /// Check whether a task error indicates the platform does not support
 /// shielded operations (e.g., testnet without shielded support enabled).
 ///
-/// Returns `true` if the error matches any of these unsupported patterns:
-/// - "not implemented" / "not supported" — explicit platform rejection
-/// - "connection refused" / "CoreRpc" — Core RPC not available for shielded ops
-/// - "variant 15" / "variant 16" / "variant 17" / "variant 18" / "variant 19"
-///   — state transition types for shielded ops not recognized by testnet
-/// - "SerializedObjectParsingError" / "UnexpectedVariant" — deserialization
-///   failures for shielded-specific types
+/// Returns `true` for errors that indicate the platform lacks shielded support:
+/// - Connection-related errors (CoreRpc, DapiConnectionRefused) — Core RPC
+///   not available for shielded ops
+/// - Platform rejection errors — state transition types for shielded ops
+///   not recognized by testnet
+/// - SDK/protocol errors containing unsupported-operation signals
+///
+/// TODO: This still falls back to Debug-string inspection for some error
+/// variants (PlatformRejected, SdkError) because the SDK does not expose
+/// typed variants for "unsupported state transition type" or deserialization
+/// failures on unknown variants. Once the SDK adds typed errors for these
+/// cases, replace the string checks with proper pattern matching.
 pub fn is_platform_shielded_unsupported(
     err: &dash_evo_tool::backend_task::error::TaskError,
 ) -> bool {
-    let msg = format!("{:?}", err).to_lowercase();
-    msg.contains("not implemented")
-        || msg.contains("not supported")
-        || msg.contains("connection refused")
-        || msg.contains("corerpc")
-        || msg.contains("serializedobjectparsingerror")
-        || msg.contains("unexpectedvariant")
-        || msg.contains("variant 15")
-        || msg.contains("variant 16")
-        || msg.contains("variant 17")
-        || msg.contains("variant 18")
-        || msg.contains("variant 19")
+    use dash_evo_tool::backend_task::error::TaskError;
+
+    match err {
+        // Typed variants that clearly indicate infrastructure unavailability
+        TaskError::CoreRpc { .. }
+        | TaskError::CoreRpcConnectionFailed { .. }
+        | TaskError::DapiConnectionRefused { .. } => true,
+
+        // Platform rejected or unclassified SDK errors — inspect Debug output
+        // for shielded-specific signals until the SDK provides typed variants
+        TaskError::PlatformRejected { .. } | TaskError::SdkError { .. } => {
+            let msg = format!("{:?}", err).to_lowercase();
+            msg.contains("not implemented")
+                || msg.contains("not supported")
+                || msg.contains("serializedobjectparsingerror")
+                || msg.contains("unexpectedvariant")
+                || msg.contains("variant 15")
+                || msg.contains("variant 16")
+                || msg.contains("variant 17")
+                || msg.contains("variant 18")
+                || msg.contains("variant 19")
+        }
+
+        _ => false,
+    }
 }
 
 /// Run `WarmUpProvingKey` followed by `InitializeShieldedWallet` in sequence.

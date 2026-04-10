@@ -11,6 +11,7 @@ use crate::framework::task_runner::run_task;
 use crate::framework::token_helpers;
 use dash_evo_tool::backend_task::identity::{IdentityTask, RegisterDpnsNameInput};
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
+use dash_evo_tool::context::AppContext;
 use dash_evo_tool::model::qualified_identity::PrivateKeyTarget;
 use dash_evo_tool::model::wallet::{Wallet, WalletSeedHash};
 use dash_sdk::dpp::data_contract::TokenContractPosition;
@@ -49,7 +50,7 @@ pub async fn shared_identity() -> &'static SharedIdentity {
         .get_or_init(|| async {
             let ctx = harness::ctx().await;
 
-            tracing::info!("SharedIdentity: creating funded test wallet (10M duffs)...");
+            tracing::info!("SharedIdentity: creating funded test wallet (30M duffs)...");
             let (seed_hash, wallet_arc) = ctx.create_funded_test_wallet(30_000_000).await;
 
             let (reg_info, master_key_bytes) =
@@ -132,8 +133,9 @@ pub async fn shared_token() -> &'static SharedToken {
 
             // The registered contract is saved to the local DB by the registration
             // task. Retrieve it by scanning the DB for token contracts owned by
-            // the shared identity. We filter by owner_id to avoid picking up a
-            // stale contract from a previous run with a different wallet seed.
+            // the shared identity. The owner_id filter ensures we pick the
+            // contract from THIS run's identity, not a stale contract left by
+            // a previous run with a different wallet seed.
             let owner_id = si.qualified_identity.identity.id();
             let qualified_contracts = ctx
                 .app_context
@@ -201,21 +203,17 @@ pub async fn shared_dashpay_pair() -> &'static SharedDashPayPair {
             let ctx = harness::ctx().await;
 
             tracing::info!(
-                "SharedDashPayPair: creating two funded test wallets (10M duffs each)..."
+                "SharedDashPayPair: creating two funded test wallets (30M duffs each)..."
             );
-            let (seed_hash_a, wallet_a) = ctx.create_funded_test_wallet(30_000_000).await;
-            let (seed_hash_b, wallet_b) = ctx.create_funded_test_wallet(30_000_000).await;
-
-            // Register identities with DashPay keys
-            tracing::info!("SharedDashPayPair: registering identity A...");
-            let (qi_a, key_bytes_a) =
-                dashpay_helpers::create_dashpay_identity(&ctx.app_context, &wallet_a, seed_hash_a)
-                    .await;
-
-            tracing::info!("SharedDashPayPair: registering identity B...");
-            let (qi_b, key_bytes_b) =
-                dashpay_helpers::create_dashpay_identity(&ctx.app_context, &wallet_b, seed_hash_b)
-                    .await;
+            // Fund wallets and register identities in parallel (A and B
+            // are independent — no shared state between them).
+            let (
+                (seed_hash_a, wallet_a, qi_a, key_bytes_a),
+                (seed_hash_b, wallet_b, qi_b, key_bytes_b),
+            ) = tokio::join!(
+                create_dashpay_member(&ctx.app_context, ctx),
+                create_dashpay_member(&ctx.app_context, ctx),
+            );
 
             // Register DPNS names — must be >= 20 chars to avoid the contest
             // voting period. Contested names (< 20 chars) don't appear as regular
@@ -223,40 +221,10 @@ pub async fn shared_dashpay_pair() -> &'static SharedDashPayPair {
             let username_a = format!("e2epair-a-{}", hex::encode(&seed_hash_a[..8]));
             let username_b = format!("e2epair-b-{}", hex::encode(&seed_hash_b[..8]));
 
-            tracing::info!(
-                "SharedDashPayPair: registering DPNS name '{}' for identity A...",
-                username_a
-            );
-            let task_a =
-                BackendTask::IdentityTask(IdentityTask::RegisterDpnsName(RegisterDpnsNameInput {
-                    qualified_identity: qi_a.clone(),
-                    name_input: username_a.clone(),
-                }));
-            let result_a = run_task(&ctx.app_context, task_a)
-                .await
-                .expect("SharedDashPayPair: DPNS registration for A failed");
-            assert!(
-                matches!(result_a, BackendTaskSuccessResult::RegisteredDpnsName(_)),
-                "SharedDashPayPair: expected RegisteredDpnsName for A, got: {:?}",
-                result_a
-            );
-
-            tracing::info!(
-                "SharedDashPayPair: registering DPNS name '{}' for identity B...",
-                username_b
-            );
-            let task_b =
-                BackendTask::IdentityTask(IdentityTask::RegisterDpnsName(RegisterDpnsNameInput {
-                    qualified_identity: qi_b.clone(),
-                    name_input: username_b.clone(),
-                }));
-            let result_b = run_task(&ctx.app_context, task_b)
-                .await
-                .expect("SharedDashPayPair: DPNS registration for B failed");
-            assert!(
-                matches!(result_b, BackendTaskSuccessResult::RegisteredDpnsName(_)),
-                "SharedDashPayPair: expected RegisteredDpnsName for B, got: {:?}",
-                result_b
+            // Register both DPNS names in parallel
+            tokio::join!(
+                register_dpns_name(&ctx.app_context, qi_a.clone(), username_a.clone(), "A"),
+                register_dpns_name(&ctx.app_context, qi_b.clone(), username_b.clone(), "B"),
             );
 
             // Wait for both DPNS names to propagate before returning.
@@ -340,10 +308,10 @@ pub async fn shared_dashpay_pair() -> &'static SharedDashPayPair {
 
 /// Find the first AUTHENTICATION public key in a QualifiedIdentity.
 ///
-/// Tries CRITICAL first, then HIGH. CRITICAL can do everything HIGH can,
-/// and some operations (e.g. token minting) require CRITICAL specifically.
-/// MASTER is skipped because Platform rejects MASTER-level keys for most
-/// state transitions (tokens, data contracts, etc.).
+/// Tries CRITICAL first, then HIGH, then MASTER. CRITICAL can do everything
+/// HIGH can, and some operations (e.g. token minting) require CRITICAL
+/// specifically. MASTER is included as a last resort fallback but Platform
+/// rejects it for most state transitions (tokens, data contracts, etc.).
 pub fn find_authentication_public_key(
     qi: &dash_evo_tool::model::qualified_identity::QualifiedIdentity,
 ) -> IdentityPublicKey {
@@ -363,4 +331,50 @@ pub fn find_authentication_public_key(
         }
     }
     panic!("find_authentication_public_key: no AUTHENTICATION key found in QualifiedIdentity");
+}
+
+/// Create a funded test wallet and register a DashPay identity from it.
+async fn create_dashpay_member(
+    app_context: &Arc<AppContext>,
+    ctx: &harness::BackendTestContext,
+) -> (
+    WalletSeedHash,
+    Arc<RwLock<Wallet>>,
+    dash_evo_tool::model::qualified_identity::QualifiedIdentity,
+    Vec<u8>,
+) {
+    let (seed_hash, wallet) = ctx.create_funded_test_wallet(30_000_000).await;
+    let (qi, key_bytes) =
+        dashpay_helpers::create_dashpay_identity(app_context, &wallet, seed_hash).await;
+    (seed_hash, wallet, qi, key_bytes)
+}
+
+/// Register a DPNS name for a qualified identity.
+async fn register_dpns_name(
+    app_context: &Arc<AppContext>,
+    qi: dash_evo_tool::model::qualified_identity::QualifiedIdentity,
+    name: String,
+    label: &str,
+) {
+    tracing::info!(
+        "SharedDashPayPair: registering DPNS name '{}' for {}...",
+        name,
+        label
+    );
+    let task = BackendTask::IdentityTask(IdentityTask::RegisterDpnsName(RegisterDpnsNameInput {
+        qualified_identity: qi,
+        name_input: name.clone(),
+    }));
+    let result = run_task(app_context, task).await.unwrap_or_else(|e| {
+        panic!(
+            "SharedDashPayPair: DPNS registration for {} failed: {:?}",
+            label, e
+        )
+    });
+    assert!(
+        matches!(result, BackendTaskSuccessResult::RegisteredDpnsName(_)),
+        "SharedDashPayPair: expected RegisteredDpnsName for {}, got: {:?}",
+        label,
+        result
+    );
 }

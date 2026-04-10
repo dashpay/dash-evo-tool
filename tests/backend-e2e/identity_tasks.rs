@@ -361,9 +361,10 @@ async fn tc_025_refresh_identity() {
     match result {
         BackendTaskSuccessResult::RefreshedIdentity(qi) => {
             tracing::info!(
-                "TC-025: refreshed {:?}, balance={}",
+                "TC-025: refreshed {:?}, balance={}, revision={}",
                 qi.identity.id(),
-                qi.identity.balance()
+                qi.identity.balance(),
+                qi.identity.revision()
             );
             assert_eq!(
                 qi.identity.id(),
@@ -371,6 +372,16 @@ async fn tc_025_refresh_identity() {
                 "TC-025: wrong identity returned"
             );
             assert!(qi.identity.balance() > 0, "TC-025: balance should be > 0");
+            // Verify the refresh actually fetched from Platform by checking
+            // that the revision is at least as high as the fixture's version.
+            // After top-ups and key additions in tc_020, the revision should
+            // have increased from the initial registration.
+            assert!(
+                qi.identity.revision() >= si.qualified_identity.identity.revision(),
+                "TC-025: refreshed revision ({}) should be >= fixture revision ({})",
+                qi.identity.revision(),
+                si.qualified_identity.identity.revision()
+            );
         }
         other => panic!("TC-025: expected RefreshedIdentity, got: {:?}", other),
     }

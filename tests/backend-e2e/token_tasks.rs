@@ -36,7 +36,7 @@ async fn ensure_second_identity() -> &'static SecondIdentity {
     SECOND_IDENTITY
         .get_or_init(|| async {
             let ctx = harness::ctx().await;
-            tracing::info!("SecondIdentity: creating funded test wallet (10M duffs)...");
+            tracing::info!("SecondIdentity: creating funded test wallet (30M duffs)...");
             let (seed_hash, wallet_arc) = ctx.create_funded_test_wallet(30_000_000).await;
 
             let (reg_info, master_key_bytes) =
@@ -57,7 +57,7 @@ async fn ensure_second_identity() -> &'static SecondIdentity {
                 ),
             };
 
-            let signing_key = find_auth_public_key(&qi);
+            let signing_key = crate::framework::fixtures::find_authentication_public_key(&qi);
 
             SecondIdentity {
                 qualified_identity: qi,
@@ -66,35 +66,6 @@ async fn ensure_second_identity() -> &'static SecondIdentity {
             }
         })
         .await
-}
-
-/// Find the first AUTHENTICATION public key from a QualifiedIdentity.
-///
-/// Tries CRITICAL first — it can do everything HIGH can, and some
-/// operations (e.g. token minting) require CRITICAL specifically.
-fn find_auth_public_key(
-    qi: &dash_evo_tool::model::qualified_identity::QualifiedIdentity,
-) -> dash_sdk::platform::IdentityPublicKey {
-    use dash_evo_tool::model::qualified_identity::PrivateKeyTarget;
-    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-    use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
-
-    for target_level in [
-        SecurityLevel::CRITICAL,
-        SecurityLevel::HIGH,
-        SecurityLevel::MASTER,
-    ] {
-        for ((target, _key_id), (qualified_key, _)) in qi.private_keys.private_keys.iter() {
-            if *target != PrivateKeyTarget::PrivateKeyOnMainIdentity {
-                continue;
-            }
-            let ipk = &qualified_key.identity_public_key;
-            if ipk.purpose() == Purpose::AUTHENTICATION && ipk.security_level() == target_level {
-                return ipk.clone();
-            }
-        }
-    }
-    panic!("find_auth_public_key: no AUTHENTICATION key found");
 }
 
 // ---------------------------------------------------------------------------
@@ -742,30 +713,34 @@ async fn tc_064_estimate_perpetual_rewards() {
 
     let result = run_task(&ctx.app_context, task).await;
 
-    // No perpetual distribution configured, so this may return an error or zero amount
+    // No perpetual distribution configured on our test token, so Platform
+    // should reject the query. We expect an error, but also accept a
+    // successful zero-amount response (Platform may return 0 instead of error).
     match result {
+        Err(e) => {
+            tracing::info!(
+                "TC-064: got expected error (no perpetual distribution configured): {:?}",
+                e
+            );
+        }
         Ok(BackendTaskSuccessResult::TokenEstimatedNonClaimedPerpetualDistributionAmountWithExplanation(
             iti,
             amount,
             _explanation,
         )) => {
             assert_eq!(iti.token_id, st.token_id, "Token ID should match");
-            tracing::info!(
-                "TC-064: estimated perpetual rewards = {} for identity {:?}",
-                amount,
-                iti.identity_id
+            assert_eq!(
+                amount, 0,
+                "TC-064: no perpetual distribution configured, expected 0 rewards, got {}",
+                amount
             );
-        }
-        Err(e) => {
-            // Graceful error is acceptable when no perpetual distribution is configured
             tracing::info!(
-                "TC-064: got expected error (no perpetual distribution): {:?}",
-                e
+                "TC-064: estimated perpetual rewards = 0 (no distribution configured)"
             );
         }
         Ok(other) => {
             panic!(
-                "TC-064: expected TokenEstimatedNonClaimed... or error, got: {:?}",
+                "TC-064: expected error or zero-amount estimate, got: {:?}",
                 other
             );
         }
@@ -796,13 +771,18 @@ async fn tc_065_mint_unauthorized() {
     }));
 
     let result = run_task(&ctx.app_context, task).await;
+    let err = result.expect_err("TC-065: unauthorized minting should fail");
+
+    // Platform should reject with PlatformRejected (unauthorized action).
+    // DapiDeadlineExceeded or other transient errors are also possible but
+    // would indicate infrastructure issues, not a passing test.
     assert!(
-        result.is_err(),
-        "TC-065: unauthorized minting should fail, got Ok({:?})",
-        result.unwrap()
+        matches!(
+            err,
+            dash_evo_tool::backend_task::error::TaskError::PlatformRejected { .. }
+        ),
+        "TC-065: expected PlatformRejected for unauthorized mint, got: {:?}",
+        err
     );
-    tracing::info!(
-        "TC-065: unauthorized mint correctly rejected: {:?}",
-        result.unwrap_err()
-    );
+    tracing::info!("TC-065: unauthorized mint correctly rejected: {:?}", err);
 }

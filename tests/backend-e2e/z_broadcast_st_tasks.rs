@@ -143,16 +143,15 @@ async fn step_broadcast_valid(
         .values()
         .any(|k| k.data() == new_ipk.data());
 
-    if has_new_key {
-        tracing::info!("new key confirmed on Platform");
-    } else {
-        tracing::warn!(
-            "new key NOT found on Platform immediately after broadcast — \
-             DAPI propagation delay (fetched {} keys, expected new key with id {})",
-            fetched.public_keys().len(),
-            new_ipk.id(),
-        );
-    }
+    assert!(
+        has_new_key,
+        "New key NOT found on Platform after broadcast. \
+         Fetched {} keys, expected new key with id {}. \
+         The broadcast succeeded, so the key should be visible.",
+        fetched.public_keys().len(),
+        new_ipk.id(),
+    );
+    tracing::info!("new key confirmed on Platform");
 }
 
 async fn step_broadcast_invalid(

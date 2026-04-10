@@ -144,9 +144,10 @@ async fn step_fund_platform_address(
         fee_deduct_from_output: true,
     });
 
-    // TODO: ConfirmationTimeout workaround removed
-    // Expected: FundPlatformAddressFromWalletUtxos succeeds on first attempt
-    // Actual: occasionally times out waiting for IS lock relay (Core bug)
+    // Platform address funding (FundPlatformAddressFromWalletUtxos) is safe
+    // outside FUNDING_MUTEX because it uses DIP-17 derivation path UTXOs
+    // (m/9'/coin_type'/17'/...) which are disjoint from the BIP44 UTXOs
+    // used by create_funded_test_wallet. No double-spend risk.
     let result = run_task_with_nonce_retry(&ctx.app_context, task)
         .await
         .expect("step_fund_platform_address: FundPlatformAddressFromWalletUtxos failed");
@@ -168,12 +169,28 @@ async fn step_fund_platform_address(
     seed_hash
 }
 
-/// Fetch platform address balances and assert at least one is funded.
+/// Fetch platform address balances and assert the address funded in step 1 has credits.
 async fn step_fetch_balances(
     ctx: &crate::framework::harness::BackendTestContext,
     seed_hash: WalletSeedHash,
 ) {
     tracing::info!("=== Step 2: Fetch platform address balances after funding ===");
+
+    // Re-derive the same platform address that step 1 funded (reuse=false
+    // returns the same address as long as it hasn't been marked used).
+    let expected_addr = {
+        let wallets = ctx.app_context.wallets().read().expect("wallets lock");
+        let wallet_arc = wallets.get(&seed_hash).expect("framework wallet missing");
+        let mut wallet = wallet_arc.write().expect("wallet write lock");
+        let addr = wallet
+            .platform_receive_address(
+                dash_sdk::dpp::dashcore::Network::Testnet,
+                false,
+                Some(&ctx.app_context),
+            )
+            .expect("step_fetch_balances: failed to derive platform address");
+        PlatformAddress::try_from(addr).expect("step_fetch_balances: PlatformAddress conversion")
+    };
 
     let task = BackendTask::WalletTask(WalletTask::FetchPlatformAddressBalances { seed_hash });
     let result = run_task(&ctx.app_context, task)
@@ -192,15 +209,18 @@ async fn step_fetch_balances(
                 dash_sdk::dpp::dashcore::Network::Testnet,
                 "step_fetch_balances: expected testnet"
             );
-            let any_funded = balances.values().any(|(balance, _)| *balance > 0);
+            let specific_balance = balances.get(&expected_addr).map(|(b, _)| *b).unwrap_or(0);
             assert!(
-                any_funded,
-                "step_fetch_balances: expected at least one funded platform address after funding, got: {:?}",
+                specific_balance > 0,
+                "step_fetch_balances: expected address {:?} should have credits after funding, \
+                 got 0. All balances: {:?}",
+                expected_addr,
                 balances
             );
             tracing::info!(
-                "step_fetch_balances passed: {} platform addresses, at least one with credits",
-                balances.len()
+                "step_fetch_balances passed: address {:?} has {} credits",
+                expected_addr,
+                specific_balance
             );
         }
         other => panic!(

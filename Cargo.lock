@@ -6494,22 +6494,15 @@ dependencies = [
 name = "platform-wallet"
 version = "3.1.0-dev.1"
 dependencies = [
- "arc-swap",
  "async-trait",
  "dash-sdk",
- "dash-spv",
  "dashcore",
  "dpp 3.1.0-dev.1",
- "hex",
  "indexmap 2.13.0",
  "key-wallet",
  "key-wallet-manager",
  "platform-encryption",
  "thiserror 1.0.69",
- "tokio",
- "tokio-util",
- "tracing",
- "zeroize",
 ]
 
 [[package]]

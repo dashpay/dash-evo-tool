@@ -1268,18 +1268,6 @@ impl SpvManager {
                                         reconcile_tx.as_ref(),
                                     )
                                     .await;
-
-                                    // TODO(workaround): Remove once
-                                    // dashpay/rust-dashcore#487 is fixed.
-                                    // Re-request IS locks after a delay so peers
-                                    // dump INVs that include our broadcast tx's
-                                    // IS lock (created by quorum ~1-2s after
-                                    // broadcast).
-                                    tokio::spawn(re_request_is_locks_after_broadcast(
-                                        Arc::clone(&wallet),
-                                        Arc::clone(&network_manager),
-                                        tx.txid(),
-                                    ));
                                 }
 
                                 let _ = response_tx.send(result);
@@ -1517,103 +1505,6 @@ async fn notify_wallet_after_broadcast(
         let _ = ch.try_send(());
     }
     tracing::debug!("Notified wallet about broadcast tx {}", tx.txid());
-}
-
-/// Re-request IS locks from peers after a broadcast delay.
-///
-/// Because we connect with `relay: false`, peers don't spontaneously relay IS lock
-/// INVs for transactions we broadcast. The MempoolManager's initial bloom filter
-/// reload (triggered by `notify_wallet_after_broadcast`) races with IS lock
-/// creation by the quorum (~1-2s). This function waits for the quorum to create
-/// the lock, then re-sends `filterload` + `mempool` to all peers, causing them
-/// to dump current IS lock INVs -- the same mechanism that works during initial sync.
-///
-/// TODO(rust-dashcore-upgrade): Replace this workaround with upstream `dispatch_local()`
-/// once rust-dashcore PR #626 (commit 88e8a9a) is merged and pinned.
-/// The proper fix injects self-broadcast transactions into the local SPV message pipeline
-/// via `dispatch_local(NetworkMessage::Tx(tx))`, which makes the MempoolManager aware of
-/// the transaction and enables IS lock matching. With that fix:
-/// 1. Remove this function entirely
-/// 2. Use `DashSpvClient::broadcast_transaction()` instead of direct `PeerNetworkManager::broadcast()`
-/// 3. Remove the `notify_wallet_after_broadcast()` workaround
-///
-/// See: <https://github.com/dashpay/rust-dashcore/issues/487>
-/// See: <https://github.com/dashpay/rust-dashcore/pull/626>
-async fn re_request_is_locks_after_broadcast(
-    wallet: Arc<AsyncRwLock<WalletManager<ManagedWalletInfo>>>,
-    network_manager: Arc<AsyncRwLock<Option<PeerNetworkManager>>>,
-    txid: Txid,
-) {
-    use dash_sdk::dpp::dashcore::address::Payload;
-    use dash_sdk::dpp::dashcore::bloom::BloomFilter;
-    use dash_sdk::dpp::dashcore::consensus::Encodable;
-    use dash_sdk::dpp::dashcore::network::message::NetworkMessage;
-    use dash_sdk::dpp::dashcore::network::message_bloom::BloomFlags;
-    use rand::Rng;
-
-    const IS_LOCK_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
-    const BLOOM_FP_RATE: f64 = 0.0005;
-
-    tokio::time::sleep(IS_LOCK_DELAY).await;
-
-    let (addresses, outpoints) = {
-        let wm = wallet.read().await;
-        (wm.monitored_addresses(), wm.watched_outpoints())
-    };
-
-    let element_count = addresses.len() + outpoints.len();
-    if element_count == 0 {
-        tracing::debug!("No addresses/outpoints for IS lock re-request (tx {txid})");
-        return;
-    }
-
-    let tweak: u32 = rand::rng().random();
-    let Ok(mut filter) =
-        BloomFilter::new(element_count as u32, BLOOM_FP_RATE, tweak, BloomFlags::All)
-    else {
-        tracing::warn!("Failed to create bloom filter for IS lock re-request (tx {txid})");
-        return;
-    };
-
-    for addr in &addresses {
-        let payload = match addr.payload() {
-            Payload::PubkeyHash(hash) => <[u8; 20]>::from(*hash).to_vec(),
-            Payload::ScriptHash(hash) => <[u8; 20]>::from(*hash).to_vec(),
-            _ => continue,
-        };
-        filter.insert(&payload);
-    }
-
-    for outpoint in &outpoints {
-        let mut buf = Vec::new();
-        if outpoint.consensus_encode(&mut buf).is_ok() {
-            filter.insert(&buf);
-        }
-    }
-
-    let filter_load =
-        dash_sdk::dpp::dashcore::network::message_bloom::FilterLoad::from_bloom_filter(&filter);
-
-    let nm_guard = network_manager.read().await;
-    let Some(ref nm) = *nm_guard else {
-        tracing::debug!("Network manager gone before IS lock re-request (tx {txid})");
-        return;
-    };
-
-    let filter_results = nm.broadcast(NetworkMessage::FilterLoad(filter_load)).await;
-    let filter_ok = filter_results.iter().any(|r| r.is_ok());
-
-    if filter_ok {
-        let _ = nm.broadcast(NetworkMessage::MemPool).await;
-        tracing::info!(
-            "Re-requested IS locks from peers after broadcast (tx {txid}, \
-             {} addresses, {} outpoints)",
-            addresses.len(),
-            outpoints.len(),
-        );
-    } else {
-        tracing::warn!("Failed to re-send bloom filter for IS lock re-request (tx {txid})");
-    }
 }
 
 impl fmt::Debug for SpvManager {

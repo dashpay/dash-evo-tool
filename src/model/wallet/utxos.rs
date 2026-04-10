@@ -35,13 +35,6 @@ impl Wallet {
         let mut required: i64 = i64::try_from(target).ok()?;
         let mut selected_utxos = BTreeMap::new();
 
-        // When SPV reports all funds as confirmed/spendable, skip per-UTXO
-        // confirmation checks — the unconfirmed_outpoints set may be stale
-        // relative to the aggregate balance snapshot (updated independently).
-        let all_confirmed = self.spv_balance_known
-            && self.confirmed_balance > 0
-            && self.confirmed_balance >= self.total_balance;
-
         let iter: Box<dyn Iterator<Item = (&Address, &HashMap<OutPoint, TxOut>)>> =
             match source_address {
                 Some(addr) => Box::new(self.utxos.get(addr).into_iter().map(move |m| (addr, m))),
@@ -51,13 +44,6 @@ impl Wallet {
             for (outpoint, tx_out) in outpoints.iter() {
                 if required <= 0 {
                     break;
-                }
-                // Skip unconfirmed/non-IS-locked UTXOs — they cannot be spent
-                // reliably (e.g. asset lock transactions require IS-locked inputs).
-                // Exception: if SPV reports all funds confirmed, the per-UTXO set
-                // may be stale — trust the aggregate balance instead.
-                if !all_confirmed && self.unconfirmed_outpoints.contains(outpoint) {
-                    continue;
                 }
                 selected_utxos.insert(*outpoint, (tx_out.clone(), address.clone()));
                 required -= tx_out.value as i64;
@@ -202,10 +188,6 @@ impl Wallet {
             new_outpoints.difference(&old_outpoints).cloned().collect();
 
         let changed = !removed_outpoints.is_empty() || !added_outpoints.is_empty();
-
-        // RPC list_unspent returns only confirmed UTXOs by default, so
-        // clear the unconfirmed set — all returned UTXOs are spendable.
-        self.unconfirmed_outpoints.clear();
 
         // Now update self.utxos by removing UTXOs not present in new_outpoints
         let current_utxos = &mut self.utxos;

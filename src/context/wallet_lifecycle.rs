@@ -833,20 +833,10 @@ impl AppContext {
                     dash_sdk::dpp::dashcore::TxOut,
                 >,
             > = Default::default();
-            // Track unconfirmed/non-IS-locked outpoints so UTXO selection can
-            // skip them — spending unconfirmed UTXOs causes failures for
-            // asset-lock transactions that require IS-locked inputs.
-            let mut new_unconfirmed: std::collections::HashSet<dash_sdk::dpp::dashcore::OutPoint> =
-                Default::default();
 
             for u in utxos {
                 let outpoint = u.outpoint;
                 let tx_out = u.txout.clone();
-
-                // Track unconfirmed/non-IS-locked outpoints
-                if !u.is_confirmed && !u.is_instantlocked {
-                    new_unconfirmed.insert(outpoint);
-                }
 
                 // Derive address from script
                 let address = match Address::from_script(&tx_out.script_pubkey, self.network) {
@@ -931,9 +921,8 @@ impl AppContext {
             if let Some(wref) = wallets_guard.get(seed_hash)
                 && let Ok(mut w) = wref.write()
             {
-                // Update in-memory UTXOs map and unconfirmed outpoints
+                // Update in-memory UTXOs map
                 w.utxos = new_utxos;
-                w.unconfirmed_outpoints = new_unconfirmed;
 
                 // Zero out balances for known addresses that no longer have any UTXOs.
                 // Without this, spent addresses retain stale non-zero balances because

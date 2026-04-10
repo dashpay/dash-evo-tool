@@ -26,7 +26,7 @@ use dash_sdk::dpp::dashcore::{
 };
 use dash_sdk::dpp::platform_value::BinaryData;
 use std::cmp;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Debug;
 use std::ops::Range;
 use std::sync::{Arc, RwLock};
@@ -358,11 +358,6 @@ pub struct Wallet {
     pub alias: Option<String>,
     pub identities: HashMap<u32, Identity>,
     pub utxos: HashMap<Address, HashMap<OutPoint, TxOut>>,
-    /// Outpoints that are not yet confirmed or IS-locked.
-    /// `select_unspent_utxos_for()` skips these to prevent spending unconfirmed
-    /// funds, which would fail for asset-lock transactions that need IS-locked inputs.
-    /// Populated by `reconcile_spv_wallets()` from upstream UTXO confirmation flags.
-    pub unconfirmed_outpoints: HashSet<OutPoint>,
     pub transactions: Vec<WalletTransaction>,
     pub is_main: bool,
     pub confirmed_balance: u64,
@@ -446,7 +441,6 @@ impl Wallet {
             alias,
             identities: Default::default(),
             utxos: Default::default(),
-            unconfirmed_outpoints: Default::default(),
             transactions: Vec::new(),
             is_main: true,
             confirmed_balance: 0,
@@ -2779,7 +2773,6 @@ mod tests {
             alias: Some("Test Wallet".to_string()),
             identities: HashMap::new(),
             utxos: HashMap::new(),
-            unconfirmed_outpoints: HashSet::new(),
             transactions: Vec::new(),
             is_main: true,
             confirmed_balance: 0,
@@ -3109,67 +3102,6 @@ mod tests {
             .unwrap();
 
         assert!(!wallet.utxos.contains_key(&addr));
-    }
-
-    /// When SPV reports all funds as spendable (confirmed >= total > 0),
-    /// UTXOs that are still in `unconfirmed_outpoints` must be selected anyway —
-    /// the per-UTXO set may be stale relative to the aggregate balance snapshot.
-    #[test]
-    fn test_select_utxos_all_confirmed_skips_stale_unconfirmed_set() {
-        let mut wallet = test_wallet_with_utxo(100_000);
-        let outpoint = test_outpoint(1, 0);
-
-        // Mark the UTXO as unconfirmed (stale state)
-        wallet.unconfirmed_outpoints.insert(outpoint);
-
-        // Without SPV data: selection fails (UTXO is filtered out)
-        let result = wallet.select_unspent_utxos_for(90_000, 10_000, false, None);
-        assert!(
-            result.is_none(),
-            "should fail when UTXO is unconfirmed and no SPV override"
-        );
-
-        // SPV says everything is confirmed/spendable
-        wallet.update_spv_balances(100_000, 0, 100_000);
-
-        // Now selection must succeed — stale unconfirmed_outpoints is bypassed
-        let result = wallet.select_unspent_utxos_for(90_000, 10_000, false, None);
-        assert!(
-            result.is_some(),
-            "should succeed when SPV reports all funds confirmed, even if per-UTXO set is stale"
-        );
-        let (utxos, _) = result.unwrap();
-        assert_eq!(utxos.len(), 1);
-    }
-
-    /// Fast-path must NOT fire when there is still an unconfirmed portion —
-    /// i.e. `confirmed_balance < total_balance`. The per-UTXO filter must stay active.
-    #[test]
-    fn test_select_utxos_partial_confirmed_keeps_unconfirmed_filter() {
-        let mut wallet = test_wallet();
-        let addr = test_address(1);
-
-        // Two UTXOs: one confirmed, one not yet
-        add_utxo(&mut wallet, &addr, 1, 0, 60_000);
-        add_utxo(&mut wallet, &addr, 2, 0, 40_000);
-        let unconfirmed_outpoint = test_outpoint(2, 0);
-        wallet.unconfirmed_outpoints.insert(unconfirmed_outpoint);
-
-        // SPV: 60k confirmed, 40k unconfirmed — NOT all confirmed
-        wallet.update_spv_balances(60_000, 40_000, 100_000);
-
-        // Should only be able to select the confirmed 60k UTXO
-        let result = wallet.select_unspent_utxos_for(50_000, 10_000, false, None);
-        assert!(
-            result.is_some(),
-            "should succeed selecting from confirmed UTXO"
-        );
-        let (utxos, _) = result.unwrap();
-        // Must not include the unconfirmed outpoint
-        assert!(
-            !utxos.contains_key(&unconfirmed_outpoint),
-            "unconfirmed UTXO must remain filtered when partial confirmation"
-        );
     }
 
     // ========================================================================

@@ -26,7 +26,7 @@ use dash_sdk::dpp::dashcore::{
 };
 use dash_sdk::dpp::platform_value::BinaryData;
 use std::cmp;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Debug;
 use std::ops::Range;
 use std::sync::{Arc, RwLock};
@@ -358,6 +358,11 @@ pub struct Wallet {
     pub alias: Option<String>,
     pub identities: HashMap<u32, Identity>,
     pub utxos: HashMap<Address, HashMap<OutPoint, TxOut>>,
+    /// Outpoints that are not yet confirmed or IS-locked.
+    /// `select_unspent_utxos_for()` skips these to prevent spending unconfirmed
+    /// funds, which would fail for asset-lock transactions that need IS-locked inputs.
+    /// Populated by `reconcile_spv_wallets()` from upstream UTXO confirmation flags.
+    pub unconfirmed_outpoints: HashSet<OutPoint>,
     pub transactions: Vec<WalletTransaction>,
     pub is_main: bool,
     pub confirmed_balance: u64,
@@ -441,6 +446,7 @@ impl Wallet {
             alias,
             identities: Default::default(),
             utxos: Default::default(),
+            unconfirmed_outpoints: Default::default(),
             transactions: Vec::new(),
             is_main: true,
             confirmed_balance: 0,
@@ -2773,6 +2779,7 @@ mod tests {
             alias: Some("Test Wallet".to_string()),
             identities: HashMap::new(),
             utxos: HashMap::new(),
+            unconfirmed_outpoints: HashSet::new(),
             transactions: Vec::new(),
             is_main: true,
             confirmed_balance: 0,

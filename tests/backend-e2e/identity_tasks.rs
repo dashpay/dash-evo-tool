@@ -97,8 +97,9 @@ async fn step_top_up_from_platform_addresses(
     );
 
     // Platform needs time to process the funding tx in a block. On testnet,
-    // blocks are ~2.5 min so allow up to 180s.
-    let poll_timeout = std::time::Duration::from_secs(180);
+    // blocks are ~2.5 min so allow up to 360s (two full block intervals plus
+    // propagation/processing margin).
+    let poll_timeout = std::time::Duration::from_secs(360);
     let poll_interval = std::time::Duration::from_secs(5);
     let start = std::time::Instant::now();
 

@@ -107,17 +107,16 @@ async fn step_top_up_from_platform_addresses(
         tracing::warn!("Failed to reset platform sync info: {}", e);
     }
 
-    // Two-phase poll: first wait for the direct query to show balance (proves
-    // Platform processed it), then give sync_address_balances 30s more to
-    // catch up. This cuts feedback time from 6 min to ~1 min.
+    // TODO: sync_address_balances may not discover newly funded addresses
+    // Expected: FetchPlatformAddressBalances returns > 0 balance after funding
+    // Actual: SDK sync_address_balances sometimes fails to report the balance
+    //         even though a direct AddressInfo::fetch query shows credits.
+    //         Direct query fallback was removed — tc_031 tests that path.
     let poll_interval = std::time::Duration::from_secs(5);
-    let direct_timeout = std::time::Duration::from_secs(360);
-    let sync_grace = std::time::Duration::from_secs(30);
+    let poll_timeout = std::time::Duration::from_secs(360);
     let start = std::time::Instant::now();
-    let mut direct_balance_found_at: Option<std::time::Instant> = None;
 
     let balance = loop {
-        // Phase 1: sync-based check (production code path)
         let balances_result = run_task(
             &ctx.app_context,
             BackendTask::WalletTask(WalletTask::FetchPlatformAddressBalances {
@@ -139,62 +138,19 @@ async fn step_top_up_from_platform_addresses(
             break sync_bal;
         }
 
-        // Phase 2: direct query (bypasses sync, proves Platform state)
-        let direct_bal = {
-            use dash_sdk::platform::Fetch;
-            let sdk = ctx.app_context.sdk();
-            match dash_sdk::query_types::AddressInfo::fetch(&sdk, platform_addr.clone()).await {
-                Ok(Some(info)) => {
-                    tracing::info!(
-                        "DIRECT query: address={} balance={} nonce={}",
-                        platform_addr.to_bech32m_string(dash_sdk::dpp::dashcore::Network::Testnet),
-                        info.balance,
-                        info.nonce,
-                    );
-                    info.balance
-                }
-                Ok(None) => {
-                    tracing::info!(
-                        "DIRECT query: address={} NOT FOUND on Platform",
-                        platform_addr.to_bech32m_string(dash_sdk::dpp::dashcore::Network::Testnet),
-                    );
-                    0
-                }
-                Err(e) => {
-                    tracing::warn!("DIRECT query failed: {}", e);
-                    0
-                }
-            }
-        };
-
-        // If direct query found balance but sync didn't, start grace timer
-        if direct_bal > 0 && direct_balance_found_at.is_none() {
-            tracing::info!(
-                "Direct query found {} credits but sync returned 0 — giving sync {}s grace period",
-                direct_bal,
-                sync_grace.as_secs(),
-            );
-            direct_balance_found_at = Some(std::time::Instant::now());
-        }
-
-        // Timeout: sync grace expired (SDK bug) or direct never found balance
-        if let Some(found_at) = direct_balance_found_at {
-            if found_at.elapsed() > sync_grace {
-                panic!(
-                    "SDK sync_address_balances bug: direct query shows {} credits \
-                     but sync returned 0 for {}s after direct confirmation",
-                    direct_bal,
-                    sync_grace.as_secs(),
-                );
-            }
-        } else if start.elapsed() > direct_timeout {
+        if start.elapsed() > poll_timeout {
             panic!(
-                "platform address has no credits even via direct query (waited {:?})",
-                direct_timeout,
+                "FetchPlatformAddressBalances did not find credits for platform address \
+                 within {:?}. This may indicate a sync_address_balances bug in the SDK.",
+                poll_timeout,
             );
         }
 
-        tracing::info!("balance still 0, retrying in {:?}...", poll_interval);
+        tracing::info!(
+            "balance still 0 after {:?}, retrying in {:?}...",
+            start.elapsed(),
+            poll_interval,
+        );
         tokio::time::sleep(poll_interval).await;
     };
 
@@ -645,7 +601,7 @@ async fn tc_031_incremental_address_discovery() {
         BackendTask::WalletTask(WalletTask::FundPlatformAddressFromWalletUtxos {
             seed_hash: si.wallet_seed_hash,
             amount: 200_000,
-            destination: platform_addr.clone(),
+            destination: platform_addr,
             fee_deduct_from_output: true,
         }),
     )
@@ -669,7 +625,7 @@ async fn tc_031_incremental_address_discovery() {
     let direct_balance = loop {
         use dash_sdk::platform::Fetch;
         let sdk = ctx.app_context.sdk();
-        match dash_sdk::query_types::AddressInfo::fetch(&sdk, platform_addr.clone()).await {
+        match dash_sdk::query_types::AddressInfo::fetch(&sdk, platform_addr).await {
             Ok(Some(info)) if info.balance > 0 => {
                 tracing::info!(
                     "Direct query confirmed: balance={} nonce={}",

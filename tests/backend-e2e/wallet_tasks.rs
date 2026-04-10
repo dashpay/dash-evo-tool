@@ -1,7 +1,7 @@
 // Tests implemented in Task 2 (WalletTask tests: TC-012 to TC-019)
 
 use crate::framework::harness;
-use crate::framework::task_runner::{run_task, run_task_with_nonce_retry, run_task_with_retry};
+use crate::framework::task_runner::{run_task, run_task_with_nonce_retry};
 use dash_evo_tool::backend_task::core::CoreTask;
 use dash_evo_tool::backend_task::wallet::WalletTask;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
@@ -144,7 +144,10 @@ async fn step_fund_platform_address(
         fee_deduct_from_output: true,
     });
 
-    let result = run_task_with_retry(&ctx.app_context, task, 3)
+    // TODO: ConfirmationTimeout workaround removed
+    // Expected: FundPlatformAddressFromWalletUtxos succeeds on first attempt
+    // Actual: occasionally times out waiting for IS lock relay (Core bug)
+    let result = run_task_with_nonce_retry(&ctx.app_context, task)
         .await
         .expect("step_fund_platform_address: FundPlatformAddressFromWalletUtxos failed");
 

@@ -38,38 +38,17 @@ async fn test_register_dpns_name() {
     let dpns_name = format!("e2etest-{:016x}", random_suffix);
     tracing::info!("Registering DPNS name: {}", dpns_name);
 
-    // Register DPNS name (with retry for identity propagation delay)
-    let mut last_error = String::new();
-    let mut dpns_result = None;
-    for attempt in 1..=3 {
-        let task =
-            BackendTask::IdentityTask(IdentityTask::RegisterDpnsName(RegisterDpnsNameInput {
-                qualified_identity: qualified_identity.clone(),
-                name_input: dpns_name.clone(),
-            }));
-        match run_task(app_context, task).await {
-            Ok(r) => {
-                dpns_result = Some(r);
-                break;
-            }
-            Err(e) => {
-                let err_str = e.to_string();
-                if attempt < 3 && err_str.contains("not found") {
-                    tracing::info!(
-                        "DPNS registration attempt {}/3 failed ({}), retrying in 30s...",
-                        attempt,
-                        err_str
-                    );
-                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-                    last_error = err_str;
-                    continue;
-                }
-                panic!("DPNS registration should succeed: {}", e);
-            }
-        }
-    }
-    let result = dpns_result
-        .unwrap_or_else(|| panic!("DPNS registration failed after 3 attempts: {}", last_error));
+    // TODO: DAPI propagation delay on identity registration
+    // Expected: RegisterDpnsName succeeds immediately after RegisterIdentity
+    // Actual: occasionally fails with "not found" because the identity hasn't
+    //         propagated to the DAPI node that processes the DPNS registration
+    let task = BackendTask::IdentityTask(IdentityTask::RegisterDpnsName(RegisterDpnsNameInput {
+        qualified_identity: qualified_identity.clone(),
+        name_input: dpns_name.clone(),
+    }));
+    let result = run_task(app_context, task)
+        .await
+        .expect("DPNS registration should succeed");
 
     match result {
         BackendTaskSuccessResult::RegisteredDpnsName(fee_result) => {

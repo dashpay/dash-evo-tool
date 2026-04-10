@@ -442,12 +442,23 @@ pub async fn accept_contact_request(
             source: Box::new(e),
         })?;
 
-    // Stage a PlatformWalletChangeSet capturing the reciprocal sent request and the newly established contact.
-    // TODO: re-wire persistence after changeset migration
-    // key_wallet::changeset (AccountChangeSet, WalletChangeSet) was removed from dashcore.
-    // The `wallet` field no longer exists on PlatformWalletChangeSet.
-    let mut established = BTreeSet::new();
-    established.insert((our_identity_id, from_identity_id));
+    // Stage a PlatformWalletChangeSet capturing the reciprocal sent
+    // request and the newly established contact. Per the
+    // ContactChangeSet auto-establishment contract, populating
+    // `established` with the full `EstablishedContact` is enough — apply
+    // will drop any matching pending entries on both sides.
+    //
+    // TODO(Phase 9a-5d): rewire to call mutation methods on
+    // `platform_wallet.dashpay()` so the changeset is emitted by the
+    // mutation itself instead of constructed inline.
+    use platform_wallet::wallet::dashpay::EstablishedContact;
+    let established_contact = EstablishedContact::new(
+        from_identity_id,
+        contact_request.clone(),
+        contact_request.clone(),
+    );
+    let mut established = BTreeMap::new();
+    established.insert((our_identity_id, from_identity_id), established_contact);
 
     let changeset = PlatformWalletChangeSet {
         contacts: Some(ContactChangeSet {

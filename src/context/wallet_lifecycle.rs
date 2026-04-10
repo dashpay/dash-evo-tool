@@ -890,8 +890,10 @@ impl AppContext {
             );
         } else {
             // Add new identity
+            // TODO(Phase 9a-5d): forward the returned changeset to the persister
+            // instead of relying on the in-memory mutation alone.
             match manager.identity_manager.add_identity(qualified_identity.identity.clone(), identity_index) {
-                Ok(()) => {
+                Ok(_cs) => {
                     // Now set extra fields on the newly added managed identity
                     if let Some(managed) = manager.identity_manager.managed_identity_mut(&identity_id) {
                         managed.key_storage = mi_key_storage;

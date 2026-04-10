@@ -184,10 +184,19 @@ impl AppContext {
 
         // Stage an IdentityChangeSet capturing the updated identity balance
         // so the changeset reflects the Platform confirmation.
+        // TODO(Phase 9a-5d): duplicate write — see register_identity.rs
+        // for the same TODO. Eliminate when backend tasks call mutation
+        // methods on PlatformWallet exclusively.
         if let Some(ref pw) = maybe_platform_wallet {
             use platform_wallet::changeset::changeset::{
                 IdentityChangeSet, IdentityEntry, PlatformWalletChangeSet,
             };
+            use platform_wallet::wallet::identity::managed_identity::DpnsNameInfo;
+            let wallet_seed_hash = qualified_identity
+                .associated_wallets
+                .keys()
+                .next()
+                .copied();
             let changeset = PlatformWalletChangeSet {
                 identities: Some(IdentityChangeSet {
                     identities: BTreeMap::from([(
@@ -201,15 +210,24 @@ impl AppContext {
                             dpns_names: qualified_identity
                                 .dpns_names
                                 .iter()
-                                .map(|n| n.name.clone())
+                                .map(|n| DpnsNameInfo {
+                                    label: n.name.clone(),
+                                    acquired_at: None,
+                                })
                                 .collect(),
                             top_ups: if let Some((amount, idx)) = top_up_index {
                                 BTreeMap::from([(idx, amount)])
                             } else {
                                 Default::default()
                             },
+                            status: Default::default(),
+                            key_storage: Default::default(),
+                            wallet_seed_hash,
                         },
                     )]),
+                    removed: Default::default(),
+                    primary_identity: None,
+                    last_scanned_index: None,
                 }),
                 ..Default::default()
             };

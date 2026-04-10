@@ -266,6 +266,14 @@ impl AppContext {
 
         // Stage an IdentityChangeSet capturing the confirmed identity and its
         // balance so the changeset reflects the Platform confirmation.
+        //
+        // TODO(Phase 9a-5d): this is a duplicate write — the identity is
+        // already inserted via `insert_local_qualified_identity` above
+        // and via the platform-wallet's own identity manager. The plan
+        // calls for backend tasks to mutate the platform wallet
+        // exclusively and let the persister catch the emitted changeset
+        // automatically. Until that wiring lands, the explicit queue
+        // here is the source of truth for the persister round-trip.
         if let Some(pw) = self.get_platform_wallet(&wallet_id) {
             use platform_wallet::changeset::changeset::{
                 IdentityChangeSet, IdentityEntry, PlatformWalletChangeSet,
@@ -282,8 +290,14 @@ impl AppContext {
                             last_synced_keys_block_time: None,
                             dpns_names: vec![],
                             top_ups: Default::default(),
+                            status: Default::default(),
+                            key_storage: Default::default(),
+                            wallet_seed_hash: Some(wallet_id),
                         },
                     )]),
+                    removed: Default::default(),
+                    primary_identity: None,
+                    last_scanned_index: None,
                 }),
                 ..Default::default()
             };

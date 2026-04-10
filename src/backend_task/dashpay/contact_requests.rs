@@ -19,7 +19,7 @@ use dash_sdk::platform::{
 use platform_wallet::changeset::changeset::{
     ContactChangeSet, ContactRequestEntry, PlatformWalletChangeSet,
 };
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 pub async fn load_contact_requests(
@@ -442,38 +442,13 @@ pub async fn accept_contact_request(
             source: Box::new(e),
         })?;
 
-    // Stage a PlatformWalletChangeSet capturing the reciprocal sent
-    // request and the newly established contact. Per the
-    // ContactChangeSet auto-establishment contract, populating
-    // `established` with the full `EstablishedContact` is enough — apply
-    // will drop any matching pending entries on both sides.
-    //
-    // TODO(Phase 9a-5d): rewire to call mutation methods on
-    // `platform_wallet.dashpay()` so the changeset is emitted by the
-    // mutation itself instead of constructed inline.
-    use platform_wallet::wallet::dashpay::EstablishedContact;
-    let established_contact = EstablishedContact::new(
-        from_identity_id,
-        contact_request.clone(),
-        contact_request.clone(),
-    );
-    let mut established = BTreeMap::new();
-    established.insert((our_identity_id, from_identity_id), established_contact);
-
-    let changeset = PlatformWalletChangeSet {
-        contacts: Some(ContactChangeSet {
-            sent_requests: BTreeMap::from([(
-                (our_identity_id, from_identity_id),
-                ContactRequestEntry {
-                    request: contact_request,
-                },
-            )]),
-            established,
-            ..Default::default()
-        }),
-        ..Default::default()
-    };
-    platform_wallet.queue_persist(changeset);
+    // Contact persistence is owned by the `dashpay_contact_requests`
+    // and `dashpay_contacts` writes performed earlier in this flow via
+    // `Database::save_contact_request` / `Database::save_dashpay_contact`.
+    // The persister doesn't write contact tables (Phase 9a-5d shrunk its
+    // scope) — see `src/changeset/sqlite.rs` for the rationale and the
+    // Phase 9b plan to unify contact persistence under the persister.
+    let _ = (platform_wallet, contact_request);
 
     Ok(BackendTaskSuccessResult::DashPayContactRequestAccepted(
         request_id,

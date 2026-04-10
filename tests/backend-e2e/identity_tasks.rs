@@ -113,7 +113,7 @@ async fn step_top_up_from_platform_addresses(
     //         even though a direct AddressInfo::fetch query shows credits.
     //         Direct query fallback was removed — tc_031 tests that path.
     let poll_interval = std::time::Duration::from_secs(5);
-    let poll_timeout = std::time::Duration::from_secs(360);
+    let poll_timeout = crate::framework::harness::MAX_TEST_TIMEOUT;
     let start = std::time::Instant::now();
 
     let balance = loop {
@@ -618,7 +618,7 @@ async fn tc_031_incremental_address_discovery() {
 
     // Step 3: Verify via direct query that Platform has the balance
     tracing::info!("=== Step 3: verify balance via direct AddressInfo query ===");
-    let poll_timeout = std::time::Duration::from_secs(120);
+    let poll_timeout = crate::framework::harness::MAX_TEST_TIMEOUT / 3;
     let poll_interval = std::time::Duration::from_secs(5);
     let start = std::time::Instant::now();
 

@@ -262,7 +262,7 @@ pub async fn shared_dashpay_pair() -> &'static SharedDashPayPair {
             // Wait for both DPNS names to propagate before returning.
             // Platform needs time to make names queryable after registration.
             tracing::info!("SharedDashPayPair: waiting for DPNS names to propagate...");
-            let propagation_timeout = std::time::Duration::from_secs(120);
+            let propagation_timeout = crate::framework::harness::MAX_TEST_TIMEOUT / 3;
             let poll_interval = std::time::Duration::from_secs(5);
             let start = std::time::Instant::now();
             loop {

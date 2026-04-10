@@ -401,7 +401,7 @@ async fn step_withdraw(
         .expect("step_withdraw: FundPlatformAddressFromWalletUtxos failed");
 
     // Poll until the fresh address has credits on Platform.
-    let poll_timeout = Duration::from_secs(180);
+    let poll_timeout = harness::MAX_TEST_TIMEOUT;
     let poll_interval = Duration::from_secs(5);
     let start = std::time::Instant::now();
 
@@ -599,7 +599,7 @@ async fn tc_018_fund_platform_address_from_asset_lock() {
     // Filter by amount (>= 90M credits) to avoid picking up smaller asset
     // locks created by other concurrent tests on the same wallet.
     tracing::info!("TC-018: waiting for asset lock IS proof in unused_asset_locks...");
-    let proof_timeout = Duration::from_secs(360);
+    let proof_timeout = harness::MAX_TEST_TIMEOUT;
     let min_credits: u64 = 90_000_000;
     let (asset_lock_address, asset_lock_proof) = tokio::time::timeout(proof_timeout, async {
         loop {

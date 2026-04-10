@@ -132,7 +132,7 @@ async fn tc_046_query_my_token_balances() {
 
     let task = BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances));
     let result = tokio::time::timeout(
-        std::time::Duration::from_secs(300),
+        crate::framework::harness::MAX_TEST_TIMEOUT,
         run_task(&ctx.app_context, task),
     )
     .await

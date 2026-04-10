@@ -15,7 +15,6 @@ use crate::framework::task_runner::run_task;
 use crate::framework::wait::{wait_for_balance, wait_for_spendable_balance};
 use dash_evo_tool::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
-use std::time::Duration;
 
 /// After an SPV send, both sender and receiver wallets must have `is_ours: true`
 /// on the resulting transaction.
@@ -42,14 +41,14 @@ async fn test_spv_transactions_is_ours_flag() {
     tracing::info!("initial_b balance = {} duffs", initial_b);
 
     // Wait for A to have spendable funds
-    wait_for_spendable_balance(app_context, hash_a, send_amount, Duration::from_secs(120))
+    wait_for_spendable_balance(app_context, hash_a, send_amount, crate::framework::harness::MAX_TEST_TIMEOUT / 3)
         .await
         .expect("Wallet A should have spendable funds");
 
     // Allow bloom filter to propagate to peers so B's addresses are
     // monitored before we broadcast A→B. Without this, peers may not
     // relay the tx back through B's filter.
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
     // Send from A to B
     let request = WalletPaymentRequest {
@@ -84,7 +83,7 @@ async fn test_spv_transactions_is_ours_flag() {
         app_context,
         hash_b,
         initial_b + send_amount,
-        Duration::from_secs(120),
+        crate::framework::harness::MAX_TEST_TIMEOUT / 3,
     )
     .await
     .expect("B should receive funds");

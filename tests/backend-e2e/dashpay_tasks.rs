@@ -615,7 +615,7 @@ async fn tc_043_reject_contact_request() {
         "TC-043: waiting for DPNS name '{}' to propagate...",
         username_c
     );
-    let propagation_timeout = std::time::Duration::from_secs(120);
+    let propagation_timeout = crate::framework::harness::MAX_TEST_TIMEOUT / 3;
     let poll_interval = std::time::Duration::from_secs(5);
     let start = std::time::Instant::now();
     loop {

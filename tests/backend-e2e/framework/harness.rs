@@ -31,6 +31,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Maximum timeout for any single test operation (poll loop, broadcast wait,
+/// balance query, etc.). Only the initial SPV sync may exceed this.
+pub const MAX_TEST_TIMEOUT: Duration = Duration::from_secs(360);
+
 /// Shared test context, initialized once across all backend E2E tests.
 ///
 /// Uses `tokio::sync::OnceCell` so initialization runs inside the shared
@@ -426,7 +430,7 @@ impl BackendTestContext {
             app_context,
             seed_hash,
             amount_duffs,
-            Duration::from_secs(120),
+            MAX_TEST_TIMEOUT / 3,
         )
         .await
         .expect("Test wallet did not receive expected funds");
@@ -445,7 +449,7 @@ impl BackendTestContext {
             app_context,
             seed_hash,
             amount_duffs,
-            Duration::from_secs(180),
+            MAX_TEST_TIMEOUT / 2,
         )
         .await
         {
@@ -469,7 +473,7 @@ impl BackendTestContext {
                     app_context,
                     seed_hash,
                     amount_duffs,
-                    Duration::from_secs(300),
+                    MAX_TEST_TIMEOUT,
                 )
                 .await
                 .unwrap_or_else(|e| {

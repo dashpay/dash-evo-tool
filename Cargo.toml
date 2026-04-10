@@ -18,7 +18,7 @@ qrcode = "0.14.1"
 nix = { version = "0.31.1", features = ["signal"] }
 eframe = { version = "0.33.3", features = ["persistence", "wgpu"] }
 base64 = "0.22.1"
-dash-sdk = { git = "https://github.com/dashpay/platform", rev = "51346ccac7a955d1ea48f061ad2e12a42d3c8c37", features = [
+dash-sdk = { git = "https://github.com/dashpay/platform", rev = "b56bbc3ee60ce8925ffa63c58dea60a187ce7fe3", features = [
     "core_key_wallet",
     "core_key_wallet_manager",
     "core_bincode",
@@ -28,7 +28,7 @@ dash-sdk = { git = "https://github.com/dashpay/platform", rev = "51346ccac7a955d
     "core_spv",
     "shielded",
 ] }
-rs-sdk-trusted-context-provider = { git = "https://github.com/dashpay/platform", rev = "51346ccac7a955d1ea48f061ad2e12a42d3c8c37" }
+rs-sdk-trusted-context-provider = { git = "https://github.com/dashpay/platform", rev = "b56bbc3ee60ce8925ffa63c58dea60a187ce7fe3" }
 zip32 = "0.2.0"
 grovestark = { git = "https://www.github.com/dashpay/grovestark", rev = "5b9e289cca54c79b1305d5f4f40bf1148f1eb0e3" }
 rayon = "1.8"

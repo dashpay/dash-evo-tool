@@ -6,7 +6,6 @@ use crate::framework::task_runner::run_task;
 use crate::framework::wait::{wait_for_balance, wait_for_spendable_balance};
 use dash_evo_tool::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
-use std::time::Duration;
 
 /// Send DASH between two test wallets and verify balances.
 #[ignore]
@@ -29,9 +28,14 @@ async fn test_send_and_receive_funds() {
     let b_address = get_receive_address(app_context, &wallet_b);
 
     // Ensure wallet A has spendable balance before sending
-    wait_for_spendable_balance(app_context, hash_a, send_amount, Duration::from_secs(120))
-        .await
-        .expect("Wallet A funds should be spendable");
+    wait_for_spendable_balance(
+        app_context,
+        hash_a,
+        send_amount,
+        crate::framework::harness::MAX_TEST_TIMEOUT / 3,
+    )
+    .await
+    .expect("Wallet A funds should be spendable");
 
     let request = WalletPaymentRequest {
         recipients: vec![PaymentRecipient {
@@ -66,7 +70,7 @@ async fn test_send_and_receive_funds() {
         app_context,
         hash_b,
         initial_b_balance + send_amount,
-        Duration::from_secs(120),
+        crate::framework::harness::MAX_TEST_TIMEOUT / 3,
     )
     .await
     .expect("B should receive funds");
@@ -78,9 +82,14 @@ async fn test_send_and_receive_funds() {
     );
 
     // Wait for B's funds to become spendable before sending back
-    wait_for_spendable_balance(app_context, hash_b, send_amount, Duration::from_secs(120))
-        .await
-        .expect("Wallet B funds should become spendable");
+    wait_for_spendable_balance(
+        app_context,
+        hash_b,
+        send_amount,
+        crate::framework::harness::MAX_TEST_TIMEOUT / 3,
+    )
+    .await
+    .expect("Wallet B funds should become spendable");
 
     // Send funds back from B to A
     let a_address = get_receive_address(app_context, &wallet_a);
@@ -109,7 +118,7 @@ async fn test_send_and_receive_funds() {
         app_context,
         hash_a,
         send_amount, // A should have at least send_amount back (minus fee from B)
-        Duration::from_secs(120),
+        crate::framework::harness::MAX_TEST_TIMEOUT / 3,
     )
     .await
     .expect("A should receive return funds from B");

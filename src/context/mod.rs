@@ -828,6 +828,11 @@ impl AppContext {
 /// Test-only accessors for fields that are normally `pub(crate)`.
 #[cfg(any(test, feature = "testing"))]
 impl AppContext {
+    /// Returns a clone of the current SDK instance.
+    pub fn sdk(&self) -> Sdk {
+        self.sdk.load().as_ref().clone()
+    }
+
     /// Returns a reference to the database.
     pub fn db(&self) -> &Arc<Database> {
         &self.db

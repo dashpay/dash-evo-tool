@@ -129,10 +129,10 @@ async fn step_broadcast_valid(
     );
     tracing::info!("broadcast succeeded");
 
-    // TODO: DAPI propagation inconsistency
-    // Expected: identity fetched immediately after broadcast contains the new key
-    // Actual: broadcast() returns success but re-fetch may hit a different DAPI
-    //         node that hasn't processed the block yet, returning stale state
+    // Brief delay for DAPI propagation — broadcast confirms on one node but
+    // a different node may serve the re-fetch before processing the same block.
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
     let fetched = dash_sdk::platform::Identity::fetch_by_identifier(&sdk, identity_id)
         .await
         .expect("failed to re-fetch identity")

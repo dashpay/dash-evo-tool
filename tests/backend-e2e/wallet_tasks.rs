@@ -364,6 +364,14 @@ async fn step_withdraw(
             .clone()
     };
 
+    // TODO: This step fails because sync_address_balances returns a balance
+    // (~485M credits) that doesn't match what Platform's state transition
+    // processor sees (1 credit). The full tree scan proof says 485M but the
+    // withdrawal is rejected with AddressesNotEnoughFundsError. This is a
+    // Platform/SDK bug — the sync proof and the state transition processor
+    // disagree on the balance, possibly due to node height differences or
+    // proof verification issues. Needs investigation upstream.
+
     // Fund a fresh platform address so we have credits to withdraw,
     // regardless of what step 3 did to the original address.
     let fresh_addr = {
@@ -390,14 +398,11 @@ async fn step_withdraw(
         .expect("step_withdraw: FundPlatformAddressFromWalletUtxos failed");
 
     // Poll until the fresh address has credits on Platform.
-    // Platform needs time to process the funding tx in a block. On testnet,
-    // blocks are ~2.5 min so allow up to 180s.
     let poll_timeout = Duration::from_secs(180);
     let poll_interval = Duration::from_secs(5);
     let start = std::time::Instant::now();
 
-    // Reset platform sync state so incremental sync doesn't skip the newly
-    // funded address (the previous sync checkpoint may be past the funding tx).
+    // Reset again so the next sync picks up the new funding
     if let Err(e) = ctx
         .app_context
         .db()

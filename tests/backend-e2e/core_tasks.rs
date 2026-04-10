@@ -67,6 +67,10 @@ async fn test_tc002_refresh_wallet_info_core_and_platform() {
 }
 
 // TC-003: RefreshSingleKeyWalletInfo
+// TODO: Fails in SPV mode — RefreshSingleKeyWalletInfo uses Core RPC
+// (listunspent, getaddressbalance) which are not available when running with
+// SPV backend. Needs either an SPV-compatible implementation or should be
+// skipped in SPV-only test runs.
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn test_tc003_refresh_single_key_wallet_info() {
@@ -193,6 +197,8 @@ async fn test_tc005_create_top_up_asset_lock() {
 }
 
 // TC-006: RecoverAssetLocks
+// TODO: Fails in SPV mode — RecoverAssetLocks relies on Core RPC to scan
+// for asset lock transactions, which is not available in SPV backend.
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn test_tc006_recover_asset_locks() {
@@ -232,6 +238,9 @@ async fn test_tc006_recover_asset_locks() {
 // TC-008: GetBestChainLocks — REMOVED (Core RPC-specific, not available in SPV mode)
 
 // TC-009: SendSingleKeyWalletPayment
+// TODO: Fails in SPV mode — single-key wallets use Core RPC for UTXO queries
+// and transaction broadcasting. SPV mode only supports HD wallets registered
+// via the bloom filter.
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn test_tc009_send_single_key_wallet_payment() {

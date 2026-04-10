@@ -24,6 +24,7 @@ use crate::context::AppContext;
 use dash_sdk::platform::Identifier;
 use platform_wallet::PlatformWallet;
 use platform_wallet::changeset::PlatformWalletChangeSet;
+use platform_wallet::wallet::dashpay::PaymentEntry;
 use std::sync::Arc;
 
 /// Resolve the `PlatformWallet` for `owner_id` by looking it up
@@ -146,6 +147,40 @@ pub(crate) async fn cache_contact_bloom_registered_count(
     };
     let cs = PlatformWalletChangeSet {
         contacts: Some(contact_cs),
+        ..Default::default()
+    };
+    pw.queue_persist(cs);
+}
+
+/// Blocking variant of payment caching for sync callers (SPV
+/// transaction-processing frame loop). Records a DashPay payment
+/// entry on the owner's `ManagedIdentity` via
+/// `record_dashpay_payment` and queues the emitted changeset.
+///
+/// Uses `PlatformWallet::state_mut_blocking`, so it MUST NOT be
+/// called from within a tokio async context.
+pub(crate) fn cache_payment_via_platform_wallet_blocking(
+    app_context: &AppContext,
+    owner_id: &Identifier,
+    tx_id: String,
+    entry: PaymentEntry,
+) {
+    let Some(pw) = resolve_platform_wallet_by_owner(app_context, owner_id) else {
+        return;
+    };
+    let id_cs = {
+        let mut state = pw.state_mut_blocking();
+        let Some(managed) = state.identity_manager.managed_identity_mut(owner_id) else {
+            tracing::debug!(
+                identity = %owner_id,
+                "platform-wallet cache: identity not in IdentityManager"
+            );
+            return;
+        };
+        managed.record_dashpay_payment(tx_id, entry)
+    };
+    let cs = PlatformWalletChangeSet {
+        identities: Some(id_cs),
         ..Default::default()
     };
     pw.queue_persist(cs);

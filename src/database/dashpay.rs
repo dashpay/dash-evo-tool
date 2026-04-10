@@ -822,8 +822,22 @@ impl crate::database::Database {
     }
 
     // DashPay address mapping operations
+    //
+    // Phase 9b-4: these helpers are deprecated. Incoming DashPay
+    // payments now resolve via key-wallet's `DashpayReceivingFunds`
+    // accounts (registered at contact establishment via
+    // `DashPayWallet::register_contact_account`), so this SQLite
+    // mapping table is no longer written or read. The methods are
+    // kept for backward compatibility with databases that still have
+    // populated rows, but all callers have been migrated to
+    // `match_transaction_to_contact` →
+    // `DashPayWallet::match_incoming_dashpay_address_blocking`.
 
     /// Save a DashPay address mapping for incoming payment detection
+    #[deprecated(
+        note = "Phase 9b-4: DashPay addresses are now tracked by key-wallet's DashpayReceivingFunds accounts. Use DashPayWallet::match_incoming_dashpay_address instead."
+    )]
+    #[allow(dead_code)]
     pub fn save_dashpay_address_mapping(
         &self,
         owner_identity_id: &Identifier,
@@ -852,6 +866,10 @@ impl crate::database::Database {
 
     /// Look up a DashPay address mapping to find which contact relationship it belongs to
     /// Returns (owner_identity_id, contact_identity_id, address_index) if found
+    #[deprecated(
+        note = "Phase 9b-4: DashPay addresses are now tracked by key-wallet's DashpayReceivingFunds accounts. Use DashPayWallet::match_incoming_dashpay_address instead."
+    )]
+    #[allow(dead_code)]
     pub fn get_dashpay_address_mapping(
         &self,
         address: &dash_sdk::dpp::dashcore::Address,
@@ -884,6 +902,10 @@ impl crate::database::Database {
     }
 
     /// Get all DashPay address mappings for an identity
+    #[deprecated(
+        note = "Phase 9b-4: DashPay addresses are now tracked by key-wallet's DashpayReceivingFunds accounts. Use DashPayWallet::match_incoming_dashpay_address instead."
+    )]
+    #[allow(dead_code)]
     pub fn get_all_dashpay_address_mappings(
         &self,
         owner_identity_id: &Identifier,
@@ -916,6 +938,10 @@ impl crate::database::Database {
     }
 
     /// Delete all address mappings for a contact relationship
+    #[deprecated(
+        note = "Phase 9b-4: DashPay addresses are now tracked by key-wallet's DashpayReceivingFunds accounts. Address tracking is cleaned up by removing the contact's DashpayReceivingFunds account."
+    )]
+    #[allow(dead_code)]
     pub fn delete_dashpay_address_mappings_for_contact(
         &self,
         owner_identity_id: &Identifier,

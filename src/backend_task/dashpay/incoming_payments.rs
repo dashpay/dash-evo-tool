@@ -174,25 +174,14 @@ pub async fn register_dashpay_addresses_for_identity(
             count,
         ) {
             Ok(addresses) => {
-                // Register each address with the wallet
-                for addr_info in &addresses {
-                    if let Err(e) = register_dashpay_address(
-                        app_context,
-                        wallet,
-                        &addr_info.address,
-                        &our_identity_id,
-                        &contact_id,
-                        addr_info.address_index,
-                    ) {
-                        result.errors.push(format!(
-                            "Failed to register address for contact {}: {}",
-                            contact_id.to_string(Encoding::Base58),
-                            e
-                        ));
-                    } else {
-                        result.addresses_registered += 1;
-                    }
-                }
+                // Addresses are tracked by key-wallet's
+                // `DashpayReceivingFunds` account pool (registered at
+                // contact establishment time via
+                // `DashPayWallet::register_contact_account`), so there's
+                // no separate evo-tool mapping table to populate any
+                // more (Phase 9b-4). Just bump the result counter so
+                // the caller can log how many addresses were derived.
+                result.addresses_registered += addresses.len();
 
                 // Update the bloom_registered_count via the platform
                 // wallet — the persister catches the changeset and
@@ -222,36 +211,49 @@ pub async fn register_dashpay_addresses_for_identity(
 }
 
 /// Register a DashPay address mapping in the database.
+/// Match a received transaction output's address to a DashPay
+/// contact relationship by iterating every registered platform
+/// wallet and asking it whether the address belongs to one of its
+/// `DashpayReceivingFunds` accounts (Phase 9b-4).
 ///
-/// Stores the address → (owner_id, contact_id, index) mapping so incoming
-/// payments can be matched to the correct contact relationship.
-/// Address monitoring is handled by ManagedWalletInfo's DashpayReceivingFunds
-/// account pools — no additional address registration needed.
-fn register_dashpay_address(
-    app_context: &AppContext,
-    _wallet: &Arc<std::sync::RwLock<crate::model::wallet::Wallet>>,
-    address: &Address,
-    owner_id: &Identifier,
-    contact_id: &Identifier,
-    address_index: u32,
-) -> Result<(), String> {
-    app_context
-        .db
-        .save_dashpay_address_mapping(owner_id, contact_id, address, address_index)
-        .map_err(|e| format!("Failed to save address mapping: {}", e))
-}
-
-/// Match a received transaction to a DashPay contact
-/// Returns the contact ID and payment details if the address belongs to a contact relationship
+/// Returns `Some((owner_identity_id, contact_identity_id, address_index))`
+/// on match, or `None` if the address isn't a DashPay contact
+/// address for any wallet in this app context.
+///
+/// Uses `DashPayWallet::match_incoming_dashpay_address_blocking`
+/// under the hood — safe to call from sync contexts (egui frame
+/// loop, ZMQ listeners) as long as no tokio runtime is in scope.
 pub fn match_transaction_to_contact(
     app_context: &AppContext,
     address: &Address,
 ) -> Result<Option<(Identifier, Identifier, u32)>, String> {
-    // Look up the address in the DashPay address mapping
-    app_context
-        .db
-        .get_dashpay_address_mapping(address)
-        .map_err(|e| format!("Failed to lookup address: {}", e))
+    let wallets = app_context
+        .wallets
+        .read()
+        .map_err(|e| format!("Failed to read wallets: {}", e))?;
+    for wallet_arc in wallets.values() {
+        let pw = {
+            let guard = match wallet_arc.read() {
+                Ok(g) => g,
+                Err(_) => continue,
+            };
+            match guard.platform_wallet.clone() {
+                Some(pw) => pw,
+                None => continue,
+            }
+        };
+        if let Some(m) = pw
+            .dashpay()
+            .match_incoming_dashpay_address_blocking(address)
+        {
+            return Ok(Some((
+                m.user_identity_id,
+                m.friend_identity_id,
+                m.address_index,
+            )));
+        }
+    }
+    Ok(None)
 }
 
 /// Process an incoming transaction that was detected by SPV

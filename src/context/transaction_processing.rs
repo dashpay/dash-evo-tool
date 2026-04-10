@@ -42,9 +42,14 @@ impl AppContext {
                 let out_point = OutPoint::new(tx.txid(), vout as u32);
                 wallet_outpoints.push((out_point, tx_out.clone(), address.clone()));
 
-                // Check if this is a DashPay contact payment
+                // Check if this is a DashPay contact payment by asking
+                // every registered platform wallet whether the address
+                // belongs to one of its `DashpayReceivingFunds`
+                // accounts (Phase 9b-4).
                 if let Ok(Some((owner_id, contact_id, address_index))) =
-                    self.db.get_dashpay_address_mapping(&address)
+                    crate::backend_task::dashpay::incoming_payments::match_transaction_to_contact(
+                        self, &address,
+                    )
                 {
                     // Bump the highest receive index via the platform
                     // wallet — the persister catches the changeset and
@@ -59,14 +64,19 @@ impl AppContext {
                         address_index + 1,
                     );
 
-                    // Save the payment record
-                    let _ = self.db.save_payment(
-                        &tx.txid().to_string(),
-                        &contact_id, // from contact
-                        &owner_id,   // to us
-                        tx_out.value as i64,
-                        None, // memo not available for incoming
-                        "received",
+                    // Record the received payment via the platform
+                    // wallet — persister catches the changeset and
+                    // writes to `dashpay_payments` on flush
+                    // (Phase 9b-2).
+                    crate::backend_task::dashpay::platform_wallet_cache::cache_payment_via_platform_wallet_blocking(
+                        self,
+                        &owner_id,
+                        tx.txid().to_string(),
+                        platform_wallet::wallet::dashpay::PaymentEntry::new_received(
+                            contact_id,
+                            tx_out.value,
+                            None,
+                        ),
                     );
 
                     tracing::info!(

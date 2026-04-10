@@ -259,10 +259,10 @@ impl AppContext {
             // Core UTXO refresh is handled at startup in bootstrap_loaded_wallets.
 
             // Initialize shielded wallet state only when the network supports it
-            // (all shielded state transitions present in the platform version).
-            // On mainnet (which doesn't support shielded transactions yet), skip
-            // entirely to avoid unnecessary sync attempts and log noise.
-            if crate::model::feature_gate::FeatureGate::Shielded.is_available(self) {
+            // (all shielded state transitions present). On mainnet (which doesn't
+            // support shielded transactions yet), skip entirely to avoid
+            // unnecessary sync attempts and log noise.
+            if FeatureGate::Shielded.is_available(self) {
                 match self.initialize_shielded_wallet(seed_hash) {
                     Ok(_) => {
                         tracing::trace!(
@@ -363,6 +363,46 @@ impl AppContext {
 
         if let Ok(mut mapping) = self.wallet_id_mapping.lock() {
             mapping.remove_by_seed_hash(&seed_hash);
+        }
+    }
+
+    /// Initialize shielded state for unlocked wallets that were skipped
+    /// because the protocol version wasn't known at unlock time.
+    /// Called when the protocol version first crosses the shielded threshold.
+    pub(crate) fn init_missing_shielded_wallets(self: &Arc<Self>) {
+        // Collect candidate seed hashes while holding locks, then release
+        // before calling initialize_shielded_wallet (which re-acquires both).
+        let candidates: Vec<WalletSeedHash> = (|| {
+            let wallets = self.wallets.read().ok()?;
+            let existing = self.shielded_states.lock().ok()?;
+            Some(
+                wallets
+                    .iter()
+                    .filter(|(hash, wallet_arc)| {
+                        !existing.contains_key(*hash)
+                            && wallet_arc.read().ok().map(|w| w.is_open()).unwrap_or(false)
+                    })
+                    .map(|(hash, _)| *hash)
+                    .collect(),
+            )
+        })()
+        .unwrap_or_default();
+
+        for seed_hash in candidates {
+            match self.initialize_shielded_wallet(seed_hash) {
+                Ok(_) => {
+                    tracing::info!(
+                        seed = %hex::encode(seed_hash),
+                        "Shielded wallet initialized after protocol version update"
+                    );
+                    self.queue_shielded_sync(seed_hash);
+                }
+                Err(e) => tracing::debug!(
+                    seed = %hex::encode(seed_hash),
+                    error = %e,
+                    "Shielded wallet init failed after protocol version update"
+                ),
+            }
         }
     }
 

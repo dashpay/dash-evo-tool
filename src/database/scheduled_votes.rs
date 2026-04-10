@@ -79,13 +79,28 @@ impl Database {
             [],
         )?;
 
-        // Copy data from old to new table
-        conn.execute(
-            "INSERT INTO scheduled_votes (identity_id, contested_name, vote_choice, time, executed, network)
-         SELECT identity_id, contested_name, vote_choice, time, executed, network
-         FROM scheduled_votes_old",
+        // Copy data from old to new table. The v0.9.0 schema created
+        // scheduled_votes without a network column, so handle both cases.
+        let has_network: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('scheduled_votes_old') WHERE name='network'",
             [],
+            |row| row.get::<_, i32>(0).map(|count| count > 0),
         )?;
+        if has_network {
+            conn.execute(
+                "INSERT INTO scheduled_votes (identity_id, contested_name, vote_choice, time, executed, network)
+                 SELECT identity_id, contested_name, vote_choice, time, executed, network
+                 FROM scheduled_votes_old",
+                [],
+            )?;
+        } else {
+            conn.execute(
+                "INSERT INTO scheduled_votes (identity_id, contested_name, vote_choice, time, executed, network)
+                 SELECT identity_id, contested_name, vote_choice, time, executed, 'dash'
+                 FROM scheduled_votes_old",
+                [],
+            )?;
+        }
 
         // Drop the old table
         conn.execute("DROP TABLE scheduled_votes_old", [])?;

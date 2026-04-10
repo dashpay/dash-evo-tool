@@ -13,6 +13,10 @@ use std::sync::{Arc, RwLock};
 /// Build an `IdentityRegistrationInfo` for a wallet-funded identity.
 ///
 /// Derives master key + additional keys from the wallet at identity_index 0.
+/// Returns the registration info AND the raw master authentication private key
+/// bytes (32 bytes). The key bytes must be captured here because the wallet
+/// encrypts them after registration, making post-registration extraction
+/// impossible.
 ///
 /// # Panics
 ///
@@ -21,7 +25,7 @@ pub fn build_identity_registration(
     app_context: &Arc<AppContext>,
     wallet_arc: &Arc<RwLock<Wallet>>,
     wallet_seed_hash: WalletSeedHash,
-) -> IdentityRegistrationInfo {
+) -> (IdentityRegistrationInfo, Vec<u8>) {
     let dashpay_contract_id = app_context.dashpay_contract_id();
     let key_specs = default_identity_key_specs(dashpay_contract_id);
 
@@ -58,7 +62,9 @@ pub fn build_identity_registration(
 
     drop(wallet);
 
-    IdentityRegistrationInfo {
+    let master_key_bytes = master_private_key.inner.secret_bytes().to_vec();
+
+    let reg_info = IdentityRegistrationInfo {
         alias_input: format!("e2e-test-{}", hex::encode(&wallet_seed_hash[..4])),
         keys: IdentityKeys::new(
             Some((master_private_key, master_derivation_path)),
@@ -68,12 +74,17 @@ pub fn build_identity_registration(
         wallet: wallet_arc.clone(),
         wallet_identity_index: identity_index,
         identity_funding_method: RegisterIdentityFundingMethod::FundWithWallet(
-            // Asset lock amount in duffs. Platform registration fee is ~241k credits
-            // (~241k duffs). 1M duffs provides comfortable margin for fees + top-up.
-            1_000_000,
+            // Asset lock amount in duffs. Platform credits ≈ duffs × 1000 minus fees.
+            // 25M duffs → ~25B credits after fees.
+            // Token contract registration: ~20B credits (base 10B + token 10B).
+            // Identity registration: ~241M credits.
+            // Remaining: ~5B for subsequent operations (top-up, transfer, etc.).
+            25_000_000,
             identity_index,
         ),
-    }
+    };
+
+    (reg_info, master_key_bytes)
 }
 
 /// Get a receive address string from a wallet.

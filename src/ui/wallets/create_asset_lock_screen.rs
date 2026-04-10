@@ -34,7 +34,7 @@ enum AssetLockPurpose {
 
 pub struct CreateAssetLockScreen {
     pub wallet: Arc<RwLock<Wallet>>,
-    selected_wallet: Option<Arc<RwLock<Wallet>>>,
+    pub(crate) selected_wallet: Option<Arc<RwLock<Wallet>>>,
     pub app_context: Arc<AppContext>,
     password_input: PasswordInput,
     // Asset lock creation fields

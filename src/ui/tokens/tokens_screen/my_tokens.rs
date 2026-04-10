@@ -262,7 +262,7 @@ impl TokensScreen {
                     match self.tokens_subscreen {
                         TokensSubscreen::MyTokens => {
                             let button = egui::Button::new(
-                                RichText::new("Add Token")
+                                RichText::new("Import Token")
                                     .color(egui::Color32::WHITE)
                                     .strong(),
                             )

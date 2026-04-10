@@ -13,7 +13,7 @@ use crate::database::Database;
 use crate::logging::initialize_logger;
 use crate::model::settings::Settings;
 use crate::spv::CoreBackendMode;
-use crate::ui::components::{BannerHandle, MessageBanner};
+use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
 use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen, ProfileSearchScreen};
 use crate::ui::dpns::dpns_contested_names_screen::{
@@ -65,31 +65,86 @@ impl From<Result<BackendTaskSuccessResult, TaskError>> for TaskResult {
     }
 }
 
+struct ThemeState {
+    preference: ThemeMode,
+    resolved: ThemeMode,
+    last_applied: Option<ThemeMode>,
+    last_checked: Instant,
+}
+
+impl ThemeState {
+    fn new(preference: ThemeMode) -> Self {
+        Self {
+            resolved: crate::ui::theme::resolve_theme_mode(preference),
+            last_applied: None,
+            last_checked: Instant::now(),
+            preference,
+        }
+    }
+
+    /// Polls the OS for system theme changes (throttled to every 2s) and
+    /// applies the theme if it changed. Returns `true` if the theme was applied.
+    fn poll_and_apply(&mut self, ctx: &egui::Context) -> bool {
+        if self.preference == ThemeMode::System {
+            let now = Instant::now();
+            if now.duration_since(self.last_checked) >= Duration::from_secs(2) {
+                self.last_checked = now;
+                if let Some(detected) = crate::ui::theme::try_detect_system_theme()
+                    && detected != self.resolved
+                {
+                    self.resolved = detected;
+                }
+            }
+        }
+        if self.last_applied != Some(self.resolved) {
+            crate::ui::theme::apply_theme(ctx, self.resolved);
+            self.last_applied = Some(self.resolved);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn apply_new_preference(&mut self, ctx: &egui::Context, new_theme: ThemeMode) -> bool {
+        self.preference = new_theme;
+        let mut detection_failed = false;
+        self.resolved = if new_theme == ThemeMode::System {
+            match crate::ui::theme::try_detect_system_theme() {
+                Some(detected) => detected,
+                None => {
+                    detection_failed = true;
+                    self.resolved
+                }
+            }
+        } else {
+            new_theme
+        };
+        self.last_checked = Instant::now();
+        crate::ui::theme::apply_theme(ctx, self.resolved);
+        self.last_applied = Some(self.resolved);
+        detection_failed
+    }
+}
+
 pub struct AppState {
     pub main_screens: BTreeMap<RootScreenType, Screen>,
     pub selected_main_screen: RootScreenType,
     pub screen_stack: Vec<Screen>,
     pub chosen_network: Network,
     pub connection_status: Arc<ConnectionStatus>,
-    pub mainnet_app_context: Arc<AppContext>,
-    pub testnet_app_context: Option<Arc<AppContext>>,
-    pub devnet_app_context: Option<Arc<AppContext>>,
-    pub local_app_context: Option<Arc<AppContext>>,
+    pub network_contexts: BTreeMap<Network, Arc<AppContext>>,
+    /// Network whose context is being created asynchronously. While `Some`,
+    /// the UI shows a progress banner and ignores further switch requests.
+    network_switch_pending: Option<Network>,
+    /// Progress banner displayed while a network switch is in progress.
+    network_switch_banner: Option<BannerHandle>,
     #[allow(dead_code)] // Kept alive for the lifetime of the app
-    pub mainnet_core_zmq_listener: Option<CoreZMQListener>,
-    #[allow(dead_code)] // Kept alive for the lifetime of the app
-    pub testnet_core_zmq_listener: Option<CoreZMQListener>,
-    #[allow(dead_code)] // Kept alive for the lifetime of the app
-    pub devnet_core_zmq_listener: Option<CoreZMQListener>,
-    #[allow(dead_code)] // Kept alive for the lifetime of the app
-    pub local_core_zmq_listener: Option<CoreZMQListener>,
+    zmq_listeners: BTreeMap<Network, CoreZMQListener>,
+    core_message_sender: egui_mpsc::SenderSync<(ZMQMessage, Network)>,
     pub core_message_receiver: mpsc::Receiver<(ZMQMessage, Network)>,
     pub task_result_sender: egui_mpsc::SenderAsync<TaskResult>, // Channel sender for sending task results
     pub task_result_receiver: tokiompsc::Receiver<TaskResult>, // Channel receiver for receiving task results
-    pub theme_preference: ThemeMode,                           // Current theme preference
-    resolved_theme: ThemeMode, // Cached resolved theme (Light/Dark, never System)
-    last_applied_theme: Option<ThemeMode>, // Last theme passed to apply_theme; None = force on next frame
-    theme_last_checked: Instant,           // Last time we polled the OS for system theme
+    theme: ThemeState,
     last_scheduled_vote_check: Instant, // Last time we checked if there are scheduled masternode votes to cast
     last_repaint_request: Instant,      // Throttle periodic repaint scheduling to once per second
     pub subtasks: Arc<TaskManager>,     // Subtasks manager for graceful shutdown
@@ -255,6 +310,8 @@ impl AppState {
         let subtasks = Arc::new(TaskManager::new());
         let connection_status = Arc::new(ConnectionStatus::new());
 
+        let saved_network = settings.network;
+
         // Build a helper to create AppContext for a given network.
         let make_context = |network: Network| -> Option<Arc<AppContext>> {
             AppContext::new(
@@ -268,11 +325,47 @@ impl AppState {
             )
         };
 
-        let mainnet_app_context = make_context(Network::Mainnet)
-            .ok_or("Failed to create AppContext for mainnet. Check your Dash configuration.")?;
-        let testnet_app_context = make_context(Network::Testnet);
-        let devnet_app_context = make_context(Network::Devnet);
-        let local_app_context = make_context(Network::Regtest);
+        // Only create the saved/active network eagerly; defer ALL others
+        // (including mainnet) until the user switches to them. This avoids
+        // DAPI discovery + SDK init for networks the user may never use.
+        //
+        // If the saved network fails (e.g., no DAPI addresses configured),
+        // try other networks before giving up. The user can fix the config
+        // via the "Fetch Node List" button in Network Settings.
+        let mut network_contexts = BTreeMap::new();
+        let try_order = std::iter::once(saved_network).chain(
+            [
+                Network::Mainnet,
+                Network::Testnet,
+                Network::Devnet,
+                Network::Regtest,
+            ]
+            .into_iter()
+            .filter(|n| *n != saved_network),
+        );
+        for net in try_order {
+            if let Some(ctx) = make_context(net) {
+                network_contexts.insert(net, ctx);
+                break;
+            }
+            if net == saved_network {
+                tracing::warn!(
+                    "Could not create context for saved network {:?}. \
+                     Check your node addresses. Trying other networks...",
+                    saved_network
+                );
+            }
+        }
+        if network_contexts.is_empty() {
+            return Err(
+                "No network could be initialized. Check that at least one network has \
+                 DAPI node addresses configured in your settings file. You can use the \
+                 \"Fetch Node List\" button in Network Settings to get addresses."
+                    .into(),
+            );
+        }
+        let chosen_network = *network_contexts.keys().next().unwrap();
+        let active_context = network_contexts.get(&chosen_network).unwrap().clone();
 
         // load fonts
         ctx.set_fonts(crate::bundled::fonts().expect("failed to load fonts"));
@@ -289,199 +382,44 @@ impl AppState {
             ctx.enable_accesskit();
         }
 
-        // create screens
-        let mut identities_screen = IdentitiesScreen::new(&mainnet_app_context);
-        let mut dpns_active_contests_screen =
-            DPNSScreen::new(&mainnet_app_context, DPNSSubscreen::Active);
-        let mut dpns_past_contests_screen =
-            DPNSScreen::new(&mainnet_app_context, DPNSSubscreen::Past);
-        let mut dpns_my_usernames_screen =
-            DPNSScreen::new(&mainnet_app_context, DPNSSubscreen::Owned);
-        let mut dpns_scheduled_votes_screen =
-            DPNSScreen::new(&mainnet_app_context, DPNSSubscreen::ScheduledVotes);
-        let mut transition_visualizer_screen =
-            TransitionVisualizerScreen::new(&mainnet_app_context);
-        let mut proof_visualizer_screen = ProofVisualizerScreen::new(&mainnet_app_context);
-        let mut document_visualizer_screen = DocumentVisualizerScreen::new(&mainnet_app_context);
-        let mut contract_visualizer_screen = ContractVisualizerScreen::new(&mainnet_app_context);
-        let mut proof_log_screen = ProofLogScreen::new(&mainnet_app_context);
-        let mut platform_info_screen = PlatformInfoScreen::new(&mainnet_app_context);
-        let mut address_balance_screen = AddressBalanceScreen::new(&mainnet_app_context);
-        let mut grovestark_screen = GroveSTARKScreen::new(&mainnet_app_context);
-        let mut document_query_screen = DocumentQueryScreen::new(&mainnet_app_context);
-        let mut tokens_balances_screen =
-            TokensScreen::new(&mainnet_app_context, TokensSubscreen::MyTokens);
-        let mut token_search_screen =
-            TokensScreen::new(&mainnet_app_context, TokensSubscreen::SearchTokens);
-        let mut token_creator_screen =
-            TokensScreen::new(&mainnet_app_context, TokensSubscreen::TokenCreator);
-        let mut contracts_dashpay_screen =
-            DashPayScreen::new(&mainnet_app_context, DashPaySubscreen::Profile);
+        // All screens are initialized with the active context (chosen_network).
+        // They will get the right context via change_context() on network switch.
+        let identities_screen = IdentitiesScreen::new(&active_context);
+        let dpns_active_contests_screen = DPNSScreen::new(&active_context, DPNSSubscreen::Active);
+        let dpns_past_contests_screen = DPNSScreen::new(&active_context, DPNSSubscreen::Past);
+        let dpns_my_usernames_screen = DPNSScreen::new(&active_context, DPNSSubscreen::Owned);
+        let dpns_scheduled_votes_screen =
+            DPNSScreen::new(&active_context, DPNSSubscreen::ScheduledVotes);
+        let transition_visualizer_screen = TransitionVisualizerScreen::new(&active_context);
+        let proof_visualizer_screen = ProofVisualizerScreen::new(&active_context);
+        let document_visualizer_screen = DocumentVisualizerScreen::new(&active_context);
+        let contract_visualizer_screen = ContractVisualizerScreen::new(&active_context);
+        let proof_log_screen = ProofLogScreen::new(&active_context);
+        let platform_info_screen = PlatformInfoScreen::new(&active_context);
+        let address_balance_screen = AddressBalanceScreen::new(&active_context);
+        let grovestark_screen = GroveSTARKScreen::new(&active_context);
+        let document_query_screen = DocumentQueryScreen::new(&active_context);
+        let tokens_balances_screen = TokensScreen::new(&active_context, TokensSubscreen::MyTokens);
+        let token_search_screen = TokensScreen::new(&active_context, TokensSubscreen::SearchTokens);
+        let token_creator_screen =
+            TokensScreen::new(&active_context, TokensSubscreen::TokenCreator);
+        let contracts_dashpay_screen =
+            DashPayScreen::new(&active_context, DashPaySubscreen::Profile);
+        let dashpay_contacts_screen =
+            DashPayScreen::new(&active_context, DashPaySubscreen::Contacts);
+        let dashpay_profile_screen = DashPayScreen::new(&active_context, DashPaySubscreen::Profile);
+        let dashpay_payments_screen =
+            DashPayScreen::new(&active_context, DashPaySubscreen::Payments);
+        let dashpay_profile_search_screen = ProfileSearchScreen::new(active_context.clone());
 
-        // Create DashPay screens
-        let mut dashpay_contacts_screen =
-            DashPayScreen::new(&mainnet_app_context, DashPaySubscreen::Contacts);
-        let mut dashpay_profile_screen =
-            DashPayScreen::new(&mainnet_app_context, DashPaySubscreen::Profile);
-        let mut dashpay_payments_screen =
-            DashPayScreen::new(&mainnet_app_context, DashPaySubscreen::Payments);
-        let mut dashpay_profile_search_screen =
-            ProfileSearchScreen::new(mainnet_app_context.clone());
+        let network_chooser_screen =
+            NetworkChooserScreen::new(&network_contexts, chosen_network, overwrite_dash_conf);
 
-        let mut network_chooser_screen = NetworkChooserScreen::new(
-            &mainnet_app_context,
-            testnet_app_context.as_ref(),
-            devnet_app_context.as_ref(),
-            local_app_context.as_ref(),
-            Network::Mainnet,
-            overwrite_dash_conf,
-        );
+        let masternode_list_diff_screen = MasternodeListDiffScreen::new(&active_context);
 
-        let mut masternode_list_diff_screen = MasternodeListDiffScreen::new(&mainnet_app_context);
-
-        let mut wallets_balances_screen = WalletsBalancesScreen::new(&mainnet_app_context);
+        let wallets_balances_screen = WalletsBalancesScreen::new(&active_context);
 
         let selected_main_screen = settings.root_screen_type;
-        // Validate that the saved network has an available context.
-        // We fail fast instead of silently routing user actions to a different network.
-        let chosen_network = match settings.network {
-            Network::Mainnet => Network::Mainnet,
-            Network::Testnet => {
-                assert!(
-                    testnet_app_context.is_some(),
-                    "Saved network is Testnet but no Testnet AppContext is configured"
-                );
-                Network::Testnet
-            }
-            Network::Devnet => {
-                assert!(
-                    devnet_app_context.is_some(),
-                    "Saved network is Devnet but no Devnet AppContext is configured"
-                );
-                Network::Devnet
-            }
-            Network::Regtest => {
-                assert!(
-                    local_app_context.is_some(),
-                    "Saved network is Regtest but no Regtest AppContext is configured"
-                );
-                Network::Regtest
-            }
-            unsupported_network => {
-                panic!(
-                    "Saved network {:?} is unsupported. Refusing automatic fallback.",
-                    unsupported_network
-                );
-            }
-        };
-        network_chooser_screen.current_network = chosen_network;
-
-        if let (Network::Testnet, Some(testnet_app_context)) =
-            (chosen_network, testnet_app_context.as_ref())
-        {
-            identities_screen = IdentitiesScreen::new(testnet_app_context);
-            dpns_active_contests_screen =
-                DPNSScreen::new(testnet_app_context, DPNSSubscreen::Active);
-            dpns_past_contests_screen = DPNSScreen::new(testnet_app_context, DPNSSubscreen::Past);
-            dpns_my_usernames_screen = DPNSScreen::new(testnet_app_context, DPNSSubscreen::Owned);
-            dpns_scheduled_votes_screen =
-                DPNSScreen::new(testnet_app_context, DPNSSubscreen::ScheduledVotes);
-            transition_visualizer_screen = TransitionVisualizerScreen::new(testnet_app_context);
-            proof_visualizer_screen = ProofVisualizerScreen::new(testnet_app_context);
-            document_visualizer_screen = DocumentVisualizerScreen::new(testnet_app_context);
-            contract_visualizer_screen = ContractVisualizerScreen::new(testnet_app_context);
-            document_query_screen = DocumentQueryScreen::new(testnet_app_context);
-            grovestark_screen = GroveSTARKScreen::new(testnet_app_context);
-            wallets_balances_screen = WalletsBalancesScreen::new(testnet_app_context);
-            proof_log_screen = ProofLogScreen::new(testnet_app_context);
-            platform_info_screen = PlatformInfoScreen::new(testnet_app_context);
-            address_balance_screen = AddressBalanceScreen::new(testnet_app_context);
-            masternode_list_diff_screen = MasternodeListDiffScreen::new(testnet_app_context);
-            contracts_dashpay_screen =
-                DashPayScreen::new(testnet_app_context, DashPaySubscreen::Profile);
-            tokens_balances_screen =
-                TokensScreen::new(testnet_app_context, TokensSubscreen::MyTokens);
-            token_search_screen =
-                TokensScreen::new(testnet_app_context, TokensSubscreen::SearchTokens);
-            token_creator_screen =
-                TokensScreen::new(testnet_app_context, TokensSubscreen::TokenCreator);
-            dashpay_contacts_screen =
-                DashPayScreen::new(testnet_app_context, DashPaySubscreen::Contacts);
-            dashpay_profile_screen =
-                DashPayScreen::new(testnet_app_context, DashPaySubscreen::Profile);
-            dashpay_payments_screen =
-                DashPayScreen::new(testnet_app_context, DashPaySubscreen::Payments);
-            dashpay_profile_search_screen = ProfileSearchScreen::new(testnet_app_context.clone());
-        } else if let (Network::Devnet, Some(devnet_app_context)) =
-            (chosen_network, devnet_app_context.as_ref())
-        {
-            identities_screen = IdentitiesScreen::new(devnet_app_context);
-            dpns_active_contests_screen =
-                DPNSScreen::new(devnet_app_context, DPNSSubscreen::Active);
-            dpns_past_contests_screen = DPNSScreen::new(devnet_app_context, DPNSSubscreen::Past);
-            dpns_my_usernames_screen = DPNSScreen::new(devnet_app_context, DPNSSubscreen::Owned);
-            dpns_scheduled_votes_screen =
-                DPNSScreen::new(devnet_app_context, DPNSSubscreen::ScheduledVotes);
-            transition_visualizer_screen = TransitionVisualizerScreen::new(devnet_app_context);
-            proof_visualizer_screen = ProofVisualizerScreen::new(devnet_app_context);
-            document_visualizer_screen = DocumentVisualizerScreen::new(devnet_app_context);
-            document_query_screen = DocumentQueryScreen::new(devnet_app_context);
-            masternode_list_diff_screen = MasternodeListDiffScreen::new(devnet_app_context);
-            contract_visualizer_screen = ContractVisualizerScreen::new(devnet_app_context);
-            grovestark_screen = GroveSTARKScreen::new(devnet_app_context);
-            wallets_balances_screen = WalletsBalancesScreen::new(devnet_app_context);
-            proof_log_screen = ProofLogScreen::new(devnet_app_context);
-            platform_info_screen = PlatformInfoScreen::new(devnet_app_context);
-            address_balance_screen = AddressBalanceScreen::new(devnet_app_context);
-            tokens_balances_screen =
-                TokensScreen::new(devnet_app_context, TokensSubscreen::MyTokens);
-            token_search_screen =
-                TokensScreen::new(devnet_app_context, TokensSubscreen::SearchTokens);
-            token_creator_screen =
-                TokensScreen::new(devnet_app_context, TokensSubscreen::TokenCreator);
-            dashpay_contacts_screen =
-                DashPayScreen::new(devnet_app_context, DashPaySubscreen::Contacts);
-            dashpay_profile_screen =
-                DashPayScreen::new(devnet_app_context, DashPaySubscreen::Profile);
-            dashpay_payments_screen =
-                DashPayScreen::new(devnet_app_context, DashPaySubscreen::Payments);
-            dashpay_profile_search_screen = ProfileSearchScreen::new(devnet_app_context.clone());
-        } else if let (Network::Regtest, Some(local_app_context)) =
-            (chosen_network, local_app_context.as_ref())
-        {
-            identities_screen = IdentitiesScreen::new(local_app_context);
-            dpns_active_contests_screen = DPNSScreen::new(local_app_context, DPNSSubscreen::Active);
-            dpns_past_contests_screen = DPNSScreen::new(local_app_context, DPNSSubscreen::Past);
-            dpns_my_usernames_screen = DPNSScreen::new(local_app_context, DPNSSubscreen::Owned);
-            dpns_scheduled_votes_screen =
-                DPNSScreen::new(local_app_context, DPNSSubscreen::ScheduledVotes);
-            transition_visualizer_screen = TransitionVisualizerScreen::new(local_app_context);
-            proof_visualizer_screen = ProofVisualizerScreen::new(local_app_context);
-            document_visualizer_screen = DocumentVisualizerScreen::new(local_app_context);
-            contract_visualizer_screen = ContractVisualizerScreen::new(local_app_context);
-            document_query_screen = DocumentQueryScreen::new(local_app_context);
-            grovestark_screen = GroveSTARKScreen::new(local_app_context);
-            wallets_balances_screen = WalletsBalancesScreen::new(local_app_context);
-            masternode_list_diff_screen = MasternodeListDiffScreen::new(local_app_context);
-            proof_log_screen = ProofLogScreen::new(local_app_context);
-            platform_info_screen = PlatformInfoScreen::new(local_app_context);
-            address_balance_screen = AddressBalanceScreen::new(local_app_context);
-            contracts_dashpay_screen =
-                DashPayScreen::new(local_app_context, DashPaySubscreen::Profile);
-            tokens_balances_screen =
-                TokensScreen::new(local_app_context, TokensSubscreen::MyTokens);
-            token_search_screen =
-                TokensScreen::new(local_app_context, TokensSubscreen::SearchTokens);
-            token_creator_screen =
-                TokensScreen::new(local_app_context, TokensSubscreen::TokenCreator);
-            dashpay_contacts_screen =
-                DashPayScreen::new(local_app_context, DashPaySubscreen::Contacts);
-            dashpay_profile_screen =
-                DashPayScreen::new(local_app_context, DashPaySubscreen::Profile);
-            dashpay_payments_screen =
-                DashPayScreen::new(local_app_context, DashPaySubscreen::Payments);
-            dashpay_profile_search_screen = ProfileSearchScreen::new(local_app_context.clone());
-        }
 
         // // Create a channel with a buffer size of 32 (adjust as needed)
         let (task_result_sender, task_result_receiver) =
@@ -491,161 +429,19 @@ impl AppState {
         let (core_message_sender, core_message_receiver) =
             mpsc::channel().with_egui_ctx(ctx.clone());
 
-        let mainnet_core_zmq_endpoint = mainnet_app_context
-            .config
-            .read()
-            .unwrap()
-            .core_zmq_endpoint
-            .clone()
-            .unwrap_or_else(|| "tcp://127.0.0.1:23708".to_string());
-        let mainnet_disable_zmq = mainnet_app_context
-            .get_settings()
-            .ok()
-            .flatten()
-            .map(|s| s.disable_zmq)
-            .unwrap_or(false);
-        let mainnet_core_zmq_listener = if !mainnet_disable_zmq {
-            match CoreZMQListener::spawn_listener(
-                Network::Mainnet,
-                &mainnet_core_zmq_endpoint,
-                core_message_sender.clone(),
-                Some(mainnet_app_context.sx_zmq_status.clone()),
-            ) {
-                Ok(listener) => Some(listener),
-                Err(e) => {
-                    tracing::error!(
-                        "Failed to create mainnet ZMQ listener: {}. ZMQ features will be unavailable for mainnet.",
-                        e
-                    );
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
-        let testnet_tx_zmq_status_option = testnet_app_context
-            .as_ref()
-            .map(|context| context.sx_zmq_status.clone());
-
-        let testnet_core_zmq_endpoint = testnet_app_context
-            .as_ref()
-            .and_then(|ctx| ctx.config.read().unwrap().core_zmq_endpoint.clone())
-            .unwrap_or_else(|| "tcp://127.0.0.1:23709".to_string());
-        let testnet_disable_zmq = testnet_app_context
-            .as_ref()
-            .and_then(|ctx| ctx.get_settings().ok().flatten())
-            .map(|s| s.disable_zmq)
-            .unwrap_or(false);
-        let testnet_core_zmq_listener = if !testnet_disable_zmq {
-            match CoreZMQListener::spawn_listener(
-                Network::Testnet,
-                &testnet_core_zmq_endpoint,
-                core_message_sender.clone(),
-                testnet_tx_zmq_status_option,
-            ) {
-                Ok(listener) => Some(listener),
-                Err(e) => {
-                    tracing::error!(
-                        "Failed to create testnet ZMQ listener: {}. ZMQ features will be unavailable for testnet.",
-                        e
-                    );
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
-        let devnet_tx_zmq_status_option = devnet_app_context
-            .as_ref()
-            .map(|context| context.sx_zmq_status.clone());
-
-        let devnet_core_zmq_endpoint = devnet_app_context
-            .as_ref()
-            .and_then(|ctx| ctx.config.read().unwrap().core_zmq_endpoint.clone())
-            .unwrap_or_else(|| "tcp://127.0.0.1:23710".to_string());
-        let devnet_disable_zmq = devnet_app_context
-            .as_ref()
-            .and_then(|ctx| ctx.get_settings().ok().flatten())
-            .map(|s| s.disable_zmq)
-            .unwrap_or(false);
-        let devnet_core_zmq_listener = if !devnet_disable_zmq {
-            match CoreZMQListener::spawn_listener(
-                Network::Devnet,
-                &devnet_core_zmq_endpoint,
-                core_message_sender.clone(),
-                devnet_tx_zmq_status_option,
-            ) {
-                Ok(listener) => Some(listener),
-                Err(e) => {
-                    tracing::error!(
-                        "Failed to create devnet ZMQ listener: {}. ZMQ features will be unavailable for devnet.",
-                        e
-                    );
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
-        let local_tx_zmq_status_option = local_app_context
-            .as_ref()
-            .map(|context| context.sx_zmq_status.clone());
-
-        let local_core_zmq_endpoint = local_app_context
-            .as_ref()
-            .and_then(|ctx| ctx.config.read().unwrap().core_zmq_endpoint.clone())
-            .unwrap_or_else(|| "tcp://127.0.0.1:20302".to_string());
-        let local_disable_zmq = local_app_context
-            .as_ref()
-            .and_then(|ctx| ctx.get_settings().ok().flatten())
-            .map(|s| s.disable_zmq)
-            .unwrap_or(false);
-        let local_core_zmq_listener = if !local_disable_zmq {
-            match CoreZMQListener::spawn_listener(
-                Network::Regtest,
-                &local_core_zmq_endpoint,
-                core_message_sender,
-                local_tx_zmq_status_option,
-            ) {
-                Ok(listener) => Some(listener),
-                Err(e) => {
-                    tracing::error!(
-                        "Failed to create local ZMQ listener: {}. ZMQ features will be unavailable for local/regtest.",
-                        e
-                    );
-                    None
-                }
-            }
-        } else {
-            None
-        };
+        let zmq_listeners: BTreeMap<Network, CoreZMQListener> = network_contexts
+            .iter()
+            .filter_map(|(&network, ctx)| {
+                Self::spawn_zmq_listener(ctx, network, &core_message_sender)
+                    .map(|listener| (network, listener))
+            })
+            .collect();
 
         // MCP server (feature-gated, opt-in via MCP_API_KEY env var)
         #[cfg(feature = "mcp")]
         let mcp_app_context = {
             if let Some(mcp_config) = crate::mcp::McpConfig::from_env() {
-                let initial_ctx = match chosen_network {
-                    Network::Mainnet => mainnet_app_context.clone(),
-                    Network::Testnet => testnet_app_context
-                        .as_ref()
-                        .expect("MCP: chosen network is Testnet but no Testnet AppContext")
-                        .clone(),
-                    Network::Devnet => devnet_app_context
-                        .as_ref()
-                        .expect("MCP: chosen network is Devnet but no Devnet AppContext")
-                        .clone(),
-                    Network::Regtest => local_app_context
-                        .as_ref()
-                        .expect("MCP: chosen network is Regtest but no Regtest AppContext")
-                        .clone(),
-                    unsupported => panic!(
-                        "MCP: unsupported network {:?} for initial context",
-                        unsupported
-                    ),
-                };
+                let initial_ctx = active_context.clone();
                 let mcp_ctx = Arc::new(arc_swap::ArcSwap::new(initial_ctx));
                 let ctx_for_server = mcp_ctx.clone();
                 let cancel = subtasks.cancellation_token.clone();
@@ -776,21 +572,15 @@ impl AppState {
             screen_stack: vec![],
             chosen_network,
             connection_status,
-            mainnet_app_context,
-            testnet_app_context,
-            devnet_app_context,
-            local_app_context,
-            mainnet_core_zmq_listener,
-            testnet_core_zmq_listener,
-            devnet_core_zmq_listener,
-            local_core_zmq_listener,
+            network_contexts,
+            network_switch_pending: None,
+            network_switch_banner: None,
+            zmq_listeners,
+            core_message_sender,
             core_message_receiver,
             task_result_sender,
             task_result_receiver,
-            resolved_theme: crate::ui::theme::resolve_theme_mode(theme_preference),
-            last_applied_theme: None,
-            theme_last_checked: Instant::now(),
-            theme_preference,
+            theme: ThemeState::new(theme_preference),
             last_scheduled_vote_check: Instant::now(),
             last_repaint_request: Instant::now(),
             subtasks,
@@ -809,27 +599,12 @@ impl AppState {
             _temp_dir: None,
         };
 
-        // Initialize welcome screen if needed (after mainnet_app_context is owned by the struct)
+        // Initialize welcome screen if needed (uses whichever context is active)
         if app_state.show_welcome_screen {
             app_state.welcome_screen =
-                Some(WelcomeScreen::new(app_state.mainnet_app_context.clone()));
+                Some(WelcomeScreen::new(app_state.current_app_context().clone()));
         } else {
-            // Auto-start SPV sync if onboarding is completed, backend mode is SPV, auto-start is enabled,
-            // and developer mode is enabled.
-            // TODO: SPV auto-start is gated behind developer mode while SPV is in development.
-            // Remove the is_developer_mode() check once SPV is production-ready.
-            let current_context = app_state.current_app_context();
-            let auto_start_spv = db.get_auto_start_spv().unwrap_or(false);
-            if auto_start_spv
-                && current_context.is_developer_mode()
-                && current_context.core_backend_mode() == crate::spv::CoreBackendMode::Spv
-            {
-                if let Err(e) = current_context.start_spv() {
-                    tracing::warn!("Failed to auto-start SPV sync: {}", e);
-                } else {
-                    tracing::info!("SPV sync started automatically for {:?}", chosen_network);
-                }
-            }
+            app_state.try_auto_start_spv();
 
             // Refresh ALL main screens so they load data properly
             // This ensures screens like DashPay Profile have identities loaded
@@ -854,45 +629,21 @@ impl AppState {
     ///
     /// Default is enabled.
     pub fn with_animations(self, enabled: bool) -> Self {
-        self.mainnet_app_context.enable_animations(enabled);
-        if let Some(context) = self.devnet_app_context.as_ref() {
-            context.enable_animations(enabled)
+        for context in self.network_contexts.values() {
+            context.enable_animations(enabled);
         }
-        if let Some(context) = self.testnet_app_context.as_ref() {
-            context.enable_animations(enabled)
-        }
-        if let Some(context) = self.local_app_context.as_ref() {
-            context.enable_animations(enabled)
-        }
-
         self
     }
 
     pub fn current_app_context(&self) -> &Arc<AppContext> {
-        // Invariant: chosen_network must always have a corresponding context.
-        // Fail fast on violations to avoid silently routing operations to mainnet.
-        match self.chosen_network {
-            Network::Mainnet => &self.mainnet_app_context,
-            Network::Testnet => self.testnet_app_context.as_ref().unwrap_or_else(|| {
+        self.network_contexts
+            .get(&self.chosen_network)
+            .unwrap_or_else(|| {
                 panic!(
-                    "BUG: chosen network is Testnet but testnet_app_context is missing; refusing silent mainnet fallback"
+                    "BUG: chosen network is {:?} but its AppContext is missing",
+                    self.chosen_network
                 )
-            }),
-            Network::Devnet => self.devnet_app_context.as_ref().unwrap_or_else(|| {
-                panic!(
-                    "BUG: chosen network is Devnet but devnet_app_context is missing; refusing silent mainnet fallback"
-                )
-            }),
-            Network::Regtest => self.local_app_context.as_ref().unwrap_or_else(|| {
-                panic!(
-                    "BUG: chosen network is Regtest but local_app_context is missing; refusing silent mainnet fallback"
-                )
-            }),
-            unsupported_network => panic!(
-                "BUG: unsupported network variant {:?} in current_app_context; refusing silent mainnet fallback",
-                unsupported_network
-            ),
-        }
+            })
     }
 
     /// Flush all platform wallet persisters across every network context.
@@ -929,13 +680,7 @@ impl AppState {
     }
 
     fn context_available_for_network(&self, network: Network) -> bool {
-        match network {
-            Network::Mainnet => true, // Mainnet is always available
-            Network::Testnet => self.testnet_app_context.is_some(),
-            Network::Devnet => self.devnet_app_context.is_some(),
-            Network::Regtest => self.local_app_context.is_some(),
-            _ => false,
-        }
+        self.network_contexts.contains_key(&network)
     }
 
     fn enforce_network_context_invariant(&mut self) {
@@ -953,7 +698,7 @@ impl AppState {
     //
     // Uses spawn_blocking + block_on to avoid Send bound issues with platform
     // SDK types (DataContract/Sdk references across await points).
-    fn handle_backend_task(&self, task: BackendTask) {
+    fn handle_backend_task(&mut self, task: BackendTask) {
         let sender = self.task_result_sender.clone();
         let app_context = self.current_app_context().clone();
         let handle = tokio::runtime::Handle::current();
@@ -997,6 +742,44 @@ impl AppState {
         });
     }
 
+    fn spawn_zmq_listener(
+        ctx: &Arc<AppContext>,
+        network: Network,
+        sender: &egui_mpsc::SenderSync<(ZMQMessage, Network)>,
+    ) -> Option<CoreZMQListener> {
+        let default_endpoint = match network {
+            Network::Mainnet => "tcp://127.0.0.1:23708",
+            Network::Testnet => "tcp://127.0.0.1:23709",
+            Network::Devnet => "tcp://127.0.0.1:23710",
+            Network::Regtest => "tcp://127.0.0.1:20302",
+            _ => return None,
+        };
+        let endpoint = ctx
+            .config
+            .read()
+            .unwrap()
+            .core_zmq_endpoint
+            .clone()
+            .unwrap_or_else(|| default_endpoint.to_string());
+        let disable = ctx
+            .get_settings()
+            .ok()
+            .flatten()
+            .map(|s| s.disable_zmq)
+            .unwrap_or(false);
+        if disable {
+            return None;
+        }
+        CoreZMQListener::spawn_listener(
+            network,
+            &endpoint,
+            sender.clone(),
+            Some(ctx.sx_zmq_status.clone()),
+        )
+        .inspect_err(|e| tracing::error!("Failed to create {network:?} ZMQ listener: {e}"))
+        .ok()
+    }
+
     pub fn active_root_screen_mut(&mut self) -> &mut Screen {
         self.main_screens
             .get_mut(&self.selected_main_screen)
@@ -1004,32 +787,41 @@ impl AppState {
     }
 
     pub fn change_network(&mut self, network: Network) {
-        if !self.context_available_for_network(network) {
-            let network_name = match network {
-                Network::Mainnet => "Mainnet",
-                Network::Testnet => "Testnet",
-                Network::Devnet => "Devnet",
-                Network::Regtest => "Local",
-                _ => "Unknown",
-            };
-            tracing::error!(
-                "Cannot switch to {:?}: network context not available. Staying on current network.",
-                network
-            );
-            // Use the current (still active) network's context — egui_ctx is shared
-            // but this avoids a misleading mainnet_app_context reference when the
-            // user is on a different network.
-            let ctx = self.current_app_context();
-            MessageBanner::set_global(
-                ctx.egui_ctx(),
-                format!(
-                    "Could not connect to {network_name}. Check your network settings and retry."
-                ),
-                MessageType::Error,
+        // Block any new switch while one is already in progress.
+        if self.network_switch_pending.is_some() {
+            tracing::debug!(
+                "Ignoring network switch to {:?} — switch to {:?} already pending",
+                network,
+                self.network_switch_pending
             );
             return;
         }
 
+        // Fast path: context already exists — switch immediately.
+        if self.context_available_for_network(network) {
+            self.finalize_network_switch(network);
+            return;
+        }
+
+        // Slow path: dispatch SwitchNetwork as a backend task. The result
+        // (NetworkContextCreated) comes back through the task result channel
+        // and is handled in update(). Same path used by MCP tools.
+        self.network_switch_pending = Some(network);
+        self.network_switch_banner = Some(MessageBanner::set_global(
+            self.current_app_context().egui_ctx(),
+            format!("Connecting to {network:?}..."),
+            MessageType::Info,
+        ));
+        let start_spv = self
+            .current_app_context()
+            .db
+            .get_auto_start_spv()
+            .unwrap_or(false);
+        self.handle_backend_task(BackendTask::SwitchNetwork { network, start_spv });
+    }
+
+    /// Complete the network switch after the context is available.
+    fn finalize_network_switch(&mut self, network: Network) {
         self.chosen_network = network;
 
         let app_context = self.current_app_context().clone();
@@ -1059,6 +851,19 @@ impl AppState {
             handle.clear();
         }
         self.previous_connection_state = None;
+
+        // Spawn a ZMQ listener for the newly created network context.
+        if !self.zmq_listeners.contains_key(&network)
+            && let Some(listener) =
+                Self::spawn_zmq_listener(&app_context, network, &self.core_message_sender)
+        {
+            self.zmq_listeners.insert(network, listener);
+        }
+
+        // Persist the network choice.
+        app_context
+            .update_settings(RootScreenType::RootScreenNetworkChooser)
+            .ok();
     }
 
     /// Update the connection status banner when the overall connection state
@@ -1153,41 +958,31 @@ impl AppState {
             self.screen_stack.last_mut().unwrap()
         }
     }
-}
 
-impl AppState {
-    // /// This function continuously listens for asset locks and updates the wallets accordingly.
-    // fn start_listening_for_asset_locks(&mut self) {
-    //     let instant_send_receiver = self.instant_send_receiver.clone(); // Clone the receiver
-    //     let mainnet_app_context = self.mainnet_app_context.clone();
-    //     let testnet_app_context = self.testnet_app_context.clone();
-    //
-    //     // Spawn a new task to listen asynchronously for asset locks
-    //     task::spawn_blocking(move || {
-    //         while let Ok((tx, islock, network)) = instant_send_receiver.recv() {
-    //             let app_context = match network {
-    //                 Network::Mainnet => &mainnet_app_context,
-    //                 Network::Testnet => {
-    //                     if let Some(context) = testnet_app_context.as_ref() {
-    //                         context
-    //                     } else {
-    //                         // Handle the case when testnet_app_context is None
-    //                         eprintln!("No testnet app context available for Testnet");
-    //                         continue; // Skip this iteration or handle as needed
-    //                     }
-    //                 }
-    //                 _ => continue,
-    //             };
-    //             // Store the asset lock transaction in the database
-    //             if let Err(e) = app_context.store_asset_lock_in_db(&tx, islock) {
-    //                 eprintln!("Failed to store asset lock: {}", e);
-    //             }
-    //
-    //             // Sleep briefly to avoid busy-waiting
-    //             std::thread::sleep(Duration::from_millis(50));
-    //         }
-    //     });
-    // }
+    fn set_main_screen(&mut self, root_screen_type: RootScreenType) {
+        self.selected_main_screen = root_screen_type;
+        self.active_root_screen_mut().refresh_on_arrival();
+        self.current_app_context()
+            .update_settings(root_screen_type)
+            .ok();
+    }
+
+    /// Auto-start SPV sync if the conditions are met: auto-start enabled,
+    /// developer mode on, and backend mode is SPV.
+    // TODO: SPV auto-start is gated behind developer mode while SPV is in development.
+    // Remove the is_developer_mode() check once SPV is production-ready.
+    fn try_auto_start_spv(&self) {
+        let ctx = self.current_app_context();
+        let auto_start = ctx.db.get_auto_start_spv().unwrap_or(false);
+        if auto_start && ctx.is_developer_mode() && ctx.core_backend_mode() == CoreBackendMode::Spv
+        {
+            if let Err(e) = ctx.start_spv() {
+                tracing::warn!("Failed to auto-start SPV sync: {e}");
+            } else {
+                tracing::info!("SPV sync started automatically for {:?}", ctx.network);
+            }
+        }
+    }
 }
 
 impl App for AppState {
@@ -1232,10 +1027,7 @@ impl App for AppState {
                 ctx.request_repaint();
             }
             // Render a minimal UI that shows the shutdown banner.
-            if self.last_applied_theme != Some(self.resolved_theme) {
-                crate::ui::theme::apply_theme(ctx, self.resolved_theme);
-                self.last_applied_theme = Some(self.resolved_theme);
-            }
+            self.theme.poll_and_apply(ctx);
             crate::ui::components::styled::island_central_panel(ctx, |_ui| {});
             return;
         }
@@ -1279,23 +1071,7 @@ impl App for AppState {
             }
         }
 
-        // Throttle OS theme detection to every 2 s to prevent white flash from
-        // transient dark_light::detect() glitches during high-frequency repaints.
-        if self.theme_preference == ThemeMode::System {
-            let now = Instant::now();
-            if now.duration_since(self.theme_last_checked) >= Duration::from_secs(2) {
-                self.theme_last_checked = now;
-                if let Some(detected) = crate::ui::theme::try_detect_system_theme()
-                    && detected != self.resolved_theme
-                {
-                    self.resolved_theme = detected;
-                }
-            }
-        }
-        if self.last_applied_theme != Some(self.resolved_theme) {
-            crate::ui::theme::apply_theme(ctx, self.resolved_theme);
-            self.last_applied_theme = Some(self.resolved_theme);
-        }
+        self.theme.poll_and_apply(ctx);
 
         self.enforce_network_context_invariant();
         let active_context = self.current_app_context().clone();
@@ -1336,22 +1112,7 @@ impl App for AppState {
                                 .display_task_result(unboxed_message);
                         }
                         BackendTaskSuccessResult::UpdatedThemePreference(new_theme) => {
-                            self.theme_preference = new_theme;
-                            let mut detection_failed = false;
-                            self.resolved_theme = if new_theme == ThemeMode::System {
-                                match crate::ui::theme::try_detect_system_theme() {
-                                    Some(detected) => detected,
-                                    None => {
-                                        detection_failed = true;
-                                        self.resolved_theme
-                                    }
-                                }
-                            } else {
-                                new_theme
-                            };
-                            self.theme_last_checked = Instant::now();
-                            crate::ui::theme::apply_theme(ctx, self.resolved_theme);
-                            self.last_applied_theme = Some(self.resolved_theme);
+                            let detection_failed = self.theme.apply_new_preference(ctx, new_theme);
                             if detection_failed {
                                 MessageBanner::set_global(
                                     ctx,
@@ -1386,6 +1147,16 @@ impl App for AppState {
                             );
                             self.visible_screen_mut().refresh();
                         }
+                        BackendTaskSuccessResult::NetworkContextCreated {
+                            network,
+                            context,
+                            ..
+                        } => {
+                            self.network_contexts.insert(network, context);
+                            self.network_switch_pending = None;
+                            self.network_switch_banner.take_and_clear();
+                            self.finalize_network_switch(network);
+                        }
                         _ => {
                             // For all other success results, let the screen decide how to display
                             // the outcome without showing a generic global success banner.
@@ -1400,6 +1171,11 @@ impl App for AppState {
                         .display_message(&msg, MessageType::Success);
                     self.visible_screen_mut().refresh();
                 }
+                TaskResult::Error(err @ TaskError::NetworkContextCreationFailed { .. }) => {
+                    self.network_switch_pending = None;
+                    self.network_switch_banner.take_and_clear();
+                    MessageBanner::set_global(ctx, err.to_string(), MessageType::Error);
+                }
                 TaskResult::Error(err) => {
                     // Let the screen handle specific error types first.
                     // If handled, skip the generic error banner.
@@ -1408,15 +1184,9 @@ impl App for AppState {
                     if !handled {
                         let msg = err.to_string();
                         let handle = MessageBanner::set_global(ctx, &msg, MessageType::Error);
-                        // Show technical details only in developer mode.
-                        // All user-facing information is in the Display string.
-                        if self.current_app_context().is_developer_mode() {
-                            // INTENTIONAL(SEC-003): TaskError Debug output is shown to users
-                            // in developer mode. This is a local UI app —
-                            // no third parties see this output. Ensure inner error types
-                            // don't expose secrets (see #667).
-                            handle.with_details(&err);
-                        }
+                        // INTENTIONAL(SEC-003): TaskError Debug output is shown to users.
+                        // Ensure inner error types don't expose secrets.
+                        handle.with_details(&err);
                         self.visible_screen_mut()
                             .display_message(&msg, MessageType::Error);
                     }
@@ -1437,33 +1207,9 @@ impl App for AppState {
 
         // **Poll the instant_send_receiver for any new InstantSend messages**
         while let Ok((message, network)) = self.core_message_receiver.try_recv() {
-            let app_context = match network {
-                Network::Mainnet => &self.mainnet_app_context,
-                Network::Testnet => {
-                    if let Some(context) = self.testnet_app_context.as_ref() {
-                        context
-                    } else {
-                        tracing::error!("No testnet app context available for Testnet");
-                        continue;
-                    }
-                }
-                Network::Devnet => {
-                    if let Some(context) = self.devnet_app_context.as_ref() {
-                        context
-                    } else {
-                        tracing::error!("No devnet app context available");
-                        continue;
-                    }
-                }
-                Network::Regtest => {
-                    if let Some(context) = self.local_app_context.as_ref() {
-                        context
-                    } else {
-                        tracing::error!("No local app context available");
-                        continue;
-                    }
-                }
-                _ => continue,
+            let Some(app_context) = self.network_contexts.get(&network) else {
+                tracing::error!("No app context available for {:?}", network);
+                continue;
             };
             match message {
                 ZMQMessage::ISLockedTransaction(tx, is_lock) => {
@@ -1622,43 +1368,24 @@ impl App for AppState {
                     self.handle_backend_tasks(tasks, mode);
                 }
                 AppAction::SetMainScreen(root_screen_type) => {
-                    self.selected_main_screen = root_screen_type;
-                    self.active_root_screen_mut().refresh_on_arrival();
-                    self.current_app_context()
-                        .update_settings(root_screen_type)
-                        .ok();
+                    self.set_main_screen(root_screen_type);
                 }
                 AppAction::SetMainScreenThenGoToMainScreen(root_screen_type) => {
-                    self.selected_main_screen = root_screen_type;
-                    self.active_root_screen_mut().refresh_on_arrival();
-                    self.current_app_context()
-                        .update_settings(root_screen_type)
-                        .ok();
+                    self.set_main_screen(root_screen_type);
                     self.screen_stack = vec![];
                 }
                 AppAction::SetMainScreenThenPopScreen(root_screen_type) => {
-                    self.selected_main_screen = root_screen_type;
-                    self.active_root_screen_mut().refresh_on_arrival();
-                    self.current_app_context()
-                        .update_settings(root_screen_type)
-                        .ok();
+                    self.set_main_screen(root_screen_type);
                     if !self.screen_stack.is_empty() {
                         self.screen_stack.pop();
                     }
                 }
                 AppAction::SwitchNetwork(network) => {
                     self.change_network(network);
-                    self.current_app_context()
-                        .update_settings(RootScreenType::RootScreenNetworkChooser)
-                        .ok();
                 }
                 AppAction::PopThenAddScreenToMainScreen(root_screen_type, screen) => {
                     self.screen_stack = vec![screen];
-                    self.selected_main_screen = root_screen_type;
-                    self.active_root_screen_mut().refresh_on_arrival();
-                    self.current_app_context()
-                        .update_settings(root_screen_type)
-                        .ok();
+                    self.set_main_screen(root_screen_type);
                 }
                 AppAction::Custom(_) => {}
                 AppAction::OnboardingComplete {
@@ -1667,29 +1394,12 @@ impl App for AppState {
                 } => {
                     self.show_welcome_screen = false;
                     self.welcome_screen = None;
-                    self.selected_main_screen = main_screen;
-                    self.active_root_screen_mut().refresh_on_arrival();
-                    self.current_app_context().update_settings(main_screen).ok();
-                    // If there's an additional screen to push, create and push it
+                    self.set_main_screen(main_screen);
                     if let Some(screen_type) = add_screen {
                         let screen = screen_type.create_screen(self.current_app_context());
                         self.screen_stack.push(screen);
                     }
-                    // Start SPV sync after onboarding completes (if auto-start is enabled and developer mode is on)
-                    // TODO: SPV auto-start is gated behind developer mode while SPV is in development.
-                    // Remove the is_developer_mode() check once SPV is production-ready.
-                    let current_context = self.current_app_context();
-                    let auto_start_spv = current_context.db.get_auto_start_spv().unwrap_or(false);
-                    if auto_start_spv
-                        && current_context.is_developer_mode()
-                        && current_context.core_backend_mode() == crate::spv::CoreBackendMode::Spv
-                    {
-                        if let Err(e) = current_context.start_spv() {
-                            tracing::warn!("Failed to start SPV sync after onboarding: {}", e);
-                        } else {
-                            tracing::info!("SPV sync started after onboarding");
-                        }
-                    }
+                    self.try_auto_start_spv();
                 }
             }
         }

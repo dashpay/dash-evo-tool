@@ -773,20 +773,34 @@ async fn tc_065_mint_unauthorized() {
     let result = run_task(&ctx.app_context, task).await;
     let err = result.expect_err("TC-065: unauthorized minting should fail");
 
-    // Platform should reject the unauthorized mint. The specific error variant
+    // Platform rejects via consensus error in the proof. The specific variant
     // depends on the token contract config:
-    // - PlatformRejected: general authorization rejection
-    // - SdkError wrapping DestinationIdentityForTokenMintingNotSetError: no
-    //   mint destination configured on the contract
+    // - PlatformRejected (StateTransitionBroadcastError): direct broadcast rejection
+    // - SdkError wrapping Protocol(ConsensusError(BasicError(
+    //     DestinationIdentityForTokenMintingNotSetError))): no mint destination
+    //     configured — returned via proof verification
+    // Both indicate the unauthorized mint was correctly rejected.
+    // TODO: add a dedicated TaskError variant for token authorization errors
+    // so this can use typed matching instead of Debug inspection.
     use dash_evo_tool::backend_task::error::TaskError;
-    let is_rejection = matches!(
-        &err,
-        TaskError::PlatformRejected { .. } | TaskError::SdkError { .. }
-    );
-    assert!(
-        is_rejection,
-        "TC-065: expected platform rejection for unauthorized mint, got: {:?}",
-        err
-    );
+    match &err {
+        TaskError::PlatformRejected { .. } => {
+            tracing::info!("TC-065: unauthorized mint rejected via broadcast");
+        }
+        TaskError::SdkError { source_error } => {
+            let detail = format!("{:?}", source_error);
+            assert!(
+                detail.contains("DestinationIdentityForTokenMintingNotSet")
+                    || detail.contains("ConsensusError"),
+                "TC-065: SdkError is not a consensus rejection: {}",
+                detail
+            );
+            tracing::info!("TC-065: unauthorized mint rejected via consensus error");
+        }
+        other => panic!(
+            "TC-065: expected platform rejection for unauthorized mint, got: {:?}",
+            other
+        ),
+    }
     tracing::info!("TC-065: unauthorized mint correctly rejected: {:?}", err);
 }

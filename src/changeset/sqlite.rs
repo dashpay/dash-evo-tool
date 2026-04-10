@@ -229,21 +229,21 @@ impl SqliteWalletPersister {
 
         // Decide whether there's anything to write at all. We need a
         // transaction iff `core` carries something OR the identities
-        // sub-changeset has at least one entry with a `dashpay_profile`.
+        // sub-changeset has at least one entry with a DashPay field
+        // (profile or payments).
         let has_core_work = core
             .as_ref()
             .map(|c| !<_ as platform_wallet::changeset::Merge>::is_empty(c))
             .unwrap_or(false);
-        let has_dashpay_profile_work = identities_for_dashpay
+        let has_dashpay_identity_work = identities_for_dashpay
             .as_ref()
             .map(|id_cs| {
-                id_cs
-                    .identities
-                    .values()
-                    .any(|e| e.dashpay_profile.is_some())
+                id_cs.identities.values().any(|e| {
+                    e.dashpay_profile.is_some() || !e.dashpay_payments.is_empty()
+                })
             })
             .unwrap_or(false);
-        if !has_core_work && !has_dashpay_profile_work {
+        if !has_core_work && !has_dashpay_identity_work {
             return Ok(());
         }
 
@@ -257,28 +257,34 @@ impl SqliteWalletPersister {
             }
         }
         if let Some(id_cs) = identities_for_dashpay {
-            Self::write_dashpay_profiles_subset(&tx, &self.network, id_cs)?;
+            Self::write_identity_dashpay_subset(&tx, &self.network, id_cs)?;
         }
 
         tx.commit()?;
         Ok(())
     }
 
-    /// Write the DashPay profile portion of an `IdentityChangeSet`
-    /// to the `dashpay_profiles` table.
+    /// Write the DashPay-related subset of an `IdentityChangeSet`
+    /// to the `dashpay_profiles` and `dashpay_payments` tables.
     ///
-    /// This is a SUBSET write — only the `dashpay_profile` field of
-    /// each entry is consumed; the rest of the entry (the
-    /// QualifiedIdentity blob, label, top_ups, dpns_names, status)
-    /// is dropped because backend tasks own those tables until
-    /// later 9b sub-phases. Entries whose profile is `None` are
+    /// This is a SUBSET write — only the `dashpay_profile` and
+    /// `dashpay_payments` fields of each entry are consumed; the
+    /// rest of the entry (the QualifiedIdentity blob, label,
+    /// top_ups, dpns_names, status) is dropped because backend
+    /// tasks own those tables until later 9b sub-phases. Entries
+    /// whose profile is `None` and whose payments are empty are
     /// silently skipped.
-    fn write_dashpay_profiles_subset(
+    ///
+    /// Phase 9b-1 added the profile write path.
+    /// Phase 9b-2 added the payment write path.
+    fn write_identity_dashpay_subset(
         tx: &rusqlite::Transaction,
         network: &str,
         id_cs: IdentityChangeSet,
     ) -> Result<(), SqlitePersistError> {
-        let mut upsert = tx.prepare_cached(
+        use platform_wallet::wallet::dashpay::{PaymentDirection, PaymentStatus};
+
+        let mut upsert_profile = tx.prepare_cached(
             "INSERT INTO dashpay_profiles
                 (identity_id, network, display_name, bio, avatar_url, public_message, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, unixepoch())
@@ -294,24 +300,69 @@ impl SqliteWalletPersister {
              SET avatar_bytes = ?1, updated_at = unixepoch()
              WHERE identity_id = ?2 AND network = ?3",
         )?;
+        // `dashpay_payments` has `tx_id TEXT UNIQUE NOT NULL`. Upsert
+        // on `tx_id` so status updates (Pending → Confirmed) land on
+        // the same row without creating duplicates. `confirmed_at`
+        // is stamped only when the status transition actually
+        // reaches `confirmed`.
+        let mut upsert_payment = tx.prepare_cached(
+            "INSERT INTO dashpay_payments
+                (tx_id, from_identity_id, to_identity_id, amount, memo, payment_type, status)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(tx_id) DO UPDATE SET
+                amount = excluded.amount,
+                memo = excluded.memo,
+                payment_type = excluded.payment_type,
+                status = excluded.status,
+                confirmed_at = CASE WHEN excluded.status = 'confirmed'
+                                    THEN unixepoch()
+                                    ELSE confirmed_at END",
+        )?;
 
         for (id, entry) in id_cs.identities {
-            let Some(profile) = entry.dashpay_profile else {
-                continue;
-            };
-            upsert.execute(rusqlite::params![
-                id.to_buffer().to_vec(),
-                network,
-                profile.display_name,
-                profile.bio,
-                profile.avatar_url,
-                profile.public_message,
-            ])?;
-            if let Some(avatar_bytes) = profile.avatar_bytes {
-                update_avatar.execute(rusqlite::params![
-                    avatar_bytes,
+            // Profile upsert.
+            if let Some(profile) = entry.dashpay_profile {
+                upsert_profile.execute(rusqlite::params![
                     id.to_buffer().to_vec(),
                     network,
+                    profile.display_name,
+                    profile.bio,
+                    profile.avatar_url,
+                    profile.public_message,
+                ])?;
+                if let Some(avatar_bytes) = profile.avatar_bytes {
+                    update_avatar.execute(rusqlite::params![
+                        avatar_bytes,
+                        id.to_buffer().to_vec(),
+                        network,
+                    ])?;
+                }
+            }
+
+            // Payment upserts. `direction` / `status` enums translate
+            // to the string values the SQL schema expects.
+            for (tx_id, payment) in entry.dashpay_payments {
+                let (from_id, to_id) = match payment.direction {
+                    PaymentDirection::Sent => (id, payment.counterparty_id),
+                    PaymentDirection::Received => (payment.counterparty_id, id),
+                };
+                let payment_type = match payment.direction {
+                    PaymentDirection::Sent => "sent",
+                    PaymentDirection::Received => "received",
+                };
+                let status_str = match payment.status {
+                    PaymentStatus::Pending => "pending",
+                    PaymentStatus::Confirmed => "confirmed",
+                    PaymentStatus::Failed => "failed",
+                };
+                upsert_payment.execute(rusqlite::params![
+                    tx_id,
+                    from_id.to_buffer().to_vec(),
+                    to_id.to_buffer().to_vec(),
+                    payment.amount_duffs as i64,
+                    payment.memo,
+                    payment_type,
+                    status_str,
                 ])?;
             }
         }
@@ -478,6 +529,7 @@ mod tests {
                 key_storage: BTreeMap::new(),
                 wallet_seed_hash: Some(TEST_WALLET_ID),
                 dashpay_profile: Some(profile.clone()),
+                dashpay_payments: BTreeMap::new(),
             },
         );
         let cs = PlatformWalletChangeSet {
@@ -501,5 +553,97 @@ mod tests {
         );
         assert_eq!(stored.public_message.as_deref(), Some("hello world"));
         assert_eq!(stored.avatar_bytes, Some(vec![1, 2, 3, 4]));
+    }
+
+    /// An IdentityChangeSet carrying a `dashpay_payments` entry lands
+    /// in the `dashpay_payments` table; status updates on the same
+    /// tx_id upsert in place (confirmed_at is stamped).
+    #[test]
+    fn test_dashpay_payment_round_trip_via_changeset() {
+        use dash_sdk::dpp::identity::Identity;
+        use dash_sdk::dpp::identity::v0::IdentityV0;
+        use dash_sdk::platform::Identifier;
+        use platform_wallet::changeset::IdentityEntry;
+        use platform_wallet::wallet::dashpay::{PaymentEntry, PaymentStatus};
+        use std::collections::BTreeMap;
+
+        let db = Arc::new(create_test_database().expect("create test db"));
+        let persister = make_persister(db.clone());
+
+        let owner_id = Identifier::from([7u8; 32]);
+        let contact_id = Identifier::from([8u8; 32]);
+        let owner_identity = Identity::V0(IdentityV0 {
+            id: owner_id,
+            public_keys: BTreeMap::new(),
+            balance: 0,
+            revision: 0,
+        });
+        let tx_id = "a".repeat(64);
+
+        // Build an IdentityEntry with one pending payment.
+        let build_entry = |status: PaymentStatus| {
+            let mut pay = PaymentEntry::new_sent(contact_id, 12_000, Some("lunch".into()));
+            pay.status = status;
+            let mut payments = BTreeMap::new();
+            payments.insert(tx_id.clone(), pay);
+            IdentityEntry {
+                identity: owner_identity.clone(),
+                identity_index: 0,
+                label: None,
+                last_updated_balance_block_time: None,
+                last_synced_keys_block_time: None,
+                dpns_names: Vec::new(),
+                top_ups: BTreeMap::new(),
+                status: Default::default(),
+                key_storage: BTreeMap::new(),
+                wallet_seed_hash: Some(TEST_WALLET_ID),
+                dashpay_profile: None,
+                dashpay_payments: payments,
+            }
+        };
+
+        // First flush: pending payment.
+        let mut id_cs = platform_wallet::changeset::IdentityChangeSet::default();
+        id_cs.identities.insert(owner_id, build_entry(PaymentStatus::Pending));
+        persister.store(
+            TEST_WALLET_ID,
+            PlatformWalletChangeSet {
+                identities: Some(id_cs),
+                ..Default::default()
+            },
+        );
+        persister.flush(TEST_WALLET_ID).expect("flush pending");
+
+        // Read back via the existing evo-tool helper.
+        let payments = db
+            .load_payment_history(&owner_id, 10)
+            .expect("load payments");
+        assert_eq!(payments.len(), 1);
+        assert_eq!(payments[0].tx_id, tx_id);
+        assert_eq!(payments[0].amount, 12_000);
+        assert_eq!(payments[0].memo.as_deref(), Some("lunch"));
+        assert_eq!(payments[0].payment_type, "sent");
+        assert_eq!(payments[0].status, "pending");
+        assert!(payments[0].confirmed_at.is_none());
+
+        // Second flush: same tx_id, status confirmed. Upsert should
+        // land on the same row and stamp confirmed_at.
+        let mut id_cs = platform_wallet::changeset::IdentityChangeSet::default();
+        id_cs.identities.insert(owner_id, build_entry(PaymentStatus::Confirmed));
+        persister.store(
+            TEST_WALLET_ID,
+            PlatformWalletChangeSet {
+                identities: Some(id_cs),
+                ..Default::default()
+            },
+        );
+        persister.flush(TEST_WALLET_ID).expect("flush confirmed");
+
+        let payments = db
+            .load_payment_history(&owner_id, 10)
+            .expect("load payments after confirm");
+        assert_eq!(payments.len(), 1, "status upsert must not duplicate row");
+        assert_eq!(payments[0].status, "confirmed");
+        assert!(payments[0].confirmed_at.is_some());
     }
 }

@@ -284,18 +284,57 @@ pub async fn process_incoming_payment(
             .map_err(|e| format!("Failed to update receive index: {}", e))?;
     }
 
-    // Save the payment record
-    app_context
+    // Record the received payment via the platform wallet so the
+    // persister writes it to `dashpay_payments` on flush (Phase 9b-2).
+    // We have the owner's `Identifier` but not its `QualifiedIdentity`
+    // — load it by id so `platform_wallet_for_identity` can resolve
+    // the wallet seed hash.
+    let wallets_snapshot: std::collections::BTreeMap<
+        crate::model::wallet::WalletSeedHash,
+        Arc<std::sync::RwLock<crate::model::wallet::Wallet>>,
+    > = if let Ok(wallets) = app_context.wallets.read() {
+        wallets.clone()
+    } else {
+        tracing::warn!("Failed to snapshot wallets for platform-wallet payment cache");
+        return Ok(Some(IncomingPaymentInfo {
+            tx_id: tx_id.to_string(),
+            from_contact_id: contact_id,
+            to_identity_id: owner_id,
+            address: address.clone(),
+            amount_duffs,
+            address_index,
+        }));
+    };
+    match app_context
         .db
-        .save_payment(
-            tx_id,
-            &contact_id, // from contact
-            &owner_id,   // to us
-            amount_duffs as i64,
-            None, // memo - not available for incoming
-            "received",
-        )
-        .map_err(|e| format!("Failed to save payment: {}", e))?;
+        .get_identity_by_id(&owner_id, app_context, &wallets_snapshot)
+    {
+        Ok(Some(owner_qi)) => {
+            crate::backend_task::dashpay::payments::cache_payment_via_platform_wallet(
+                app_context,
+                &owner_qi,
+                tx_id.to_string(),
+                platform_wallet::wallet::dashpay::PaymentEntry::new_received(
+                    contact_id,
+                    amount_duffs,
+                    None,
+                ),
+            )
+            .await;
+        }
+        Ok(None) => {
+            tracing::warn!(
+                identity = %owner_id,
+                "skipping platform-wallet payment cache: owner identity not found"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "skipping platform-wallet payment cache: identity lookup failed"
+            );
+        }
+    }
 
     Ok(Some(IncomingPaymentInfo {
         tx_id: tx_id.to_string(),

@@ -10,7 +10,57 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::{Value, string_encoding::Encoding};
 use dash_sdk::drive::query::{WhereClause, WhereOperator};
 use dash_sdk::platform::{Document, DocumentQuery, FetchMany, Identifier};
+use platform_wallet::changeset::PlatformWalletChangeSet;
+use platform_wallet::wallet::dashpay::PaymentEntry;
 use std::sync::Arc;
+
+/// Record a DashPay payment on the owner's `ManagedIdentity` and
+/// queue the resulting changeset for the persister.
+///
+/// Phase 9b-2 entry point that replaces the previous
+/// `db.save_payment` direct write. The persister catches the
+/// queued `IdentityChangeSet`, picks out the
+/// `dashpay_payments[tx_id]` entry, and writes it to the
+/// `dashpay_payments` table on flush.
+///
+/// If the owner identity isn't present in the platform-wallet's
+/// `IdentityManager`, this is a silent no-op (logged at `debug`) —
+/// there's no in-memory state to mutate, so the persister has
+/// nothing to write.
+pub(crate) async fn cache_payment_via_platform_wallet(
+    app_context: &AppContext,
+    owner_identity: &QualifiedIdentity,
+    tx_id: String,
+    entry: PaymentEntry,
+) {
+    let pw = match app_context.platform_wallet_for_identity(owner_identity) {
+        Ok(pw) => pw,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "skipping platform-wallet payment cache: no platform wallet for identity"
+            );
+            return;
+        }
+    };
+    let owner_id = owner_identity.identity.id();
+    let id_cs = {
+        let mut state = pw.state_mut().await;
+        let Some(managed) = state.identity_manager.managed_identity_mut(&owner_id) else {
+            tracing::debug!(
+                identity = %owner_id,
+                "skipping platform-wallet payment cache: identity not in IdentityManager"
+            );
+            return;
+        };
+        managed.record_dashpay_payment(tx_id, entry)
+    };
+    let cs = PlatformWalletChangeSet {
+        identities: Some(id_cs),
+        ..Default::default()
+    };
+    pw.queue_persist(cs);
+}
 
 /// Payment record for local storage
 #[derive(Debug, Clone)]
@@ -326,15 +376,19 @@ pub async fn send_payment_to_contact_impl(
         payment.amount
     );
 
-    // Save to database using the db interface - propagate errors
-    app_context.db.save_payment(
-        &txid,
-        &from_identity.identity.id(),
-        &to_contact_id,
-        amount_duffs as i64,
-        memo.as_deref(),
-        "sent",
-    )?;
+    // Record the sent payment via the platform wallet so the
+    // persister writes it to `dashpay_payments` on flush (Phase 9b-2).
+    cache_payment_via_platform_wallet(
+        app_context,
+        &from_identity,
+        txid.clone(),
+        platform_wallet::wallet::dashpay::PaymentEntry::new_sent(
+            to_contact_id,
+            amount_duffs,
+            memo.clone(),
+        ),
+    )
+    .await;
 
     // Convert to Dash for display
     let amount_dash = amount_duffs as f64 / 100_000_000.0;

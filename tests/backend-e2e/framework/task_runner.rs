@@ -58,3 +58,41 @@ pub async fn run_task_with_nonce_retry(
 
     Err(last_err.expect("loop always sets last_err before exhausting attempts"))
 }
+
+/// Run a backend task with retry on transient errors.
+///
+/// Retries up to `max_attempts` on `ConfirmationTimeout` or nonce conflicts
+/// with exponential back-off (5s base). Useful for operations that depend on
+/// asset lock proof arrival, which can be slow on testnet.
+#[allow(dead_code)]
+pub async fn run_task_with_retry(
+    app_context: &Arc<AppContext>,
+    task: BackendTask,
+    max_attempts: u32,
+) -> Result<BackendTaskSuccessResult, TaskError> {
+    let mut last_err = None;
+    for attempt in 1..=max_attempts {
+        match run_task(app_context, task.clone()).await {
+            Ok(result) => return Ok(result),
+            Err(
+                e @ TaskError::ConfirmationTimeout
+                | e @ TaskError::IdentityNonceOverflow { .. }
+                | e @ TaskError::IdentityNonceNotFound { .. },
+            ) => {
+                let delay = Duration::from_secs(5 * u64::from(attempt));
+                tracing::warn!(
+                    attempt,
+                    max_attempts,
+                    error = %e,
+                    "Transient error — retrying after {}s",
+                    delay.as_secs(),
+                );
+                last_err = Some(e);
+                tokio::time::sleep(delay).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
+    Err(last_err.expect("loop always sets last_err before exhausting attempts"))
+}

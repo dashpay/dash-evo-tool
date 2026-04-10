@@ -9,8 +9,10 @@ use crate::framework::harness::ctx;
 use crate::framework::task_runner::{run_task, run_task_with_nonce_retry};
 use dash_evo_tool::backend_task::identity::IdentityTask;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
+use dash_evo_tool::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity;
+use dash_evo_tool::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use dash_sdk::dpp::dashcore::Network;
-use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::{
     IdentityPublicKeyGettersV0, IdentityPublicKeySettersV0,
 };
@@ -30,8 +32,15 @@ async fn step_broadcast_valid(
     tracing::info!("=== Step 1: broadcast valid IdentityUpdateTransition ===");
 
     let platform_version = ctx.app_context.platform_version();
-    let identity = &si.qualified_identity.identity;
-    let identity_id = identity.id();
+    let identity_id = si.qualified_identity.identity.id();
+
+    // Fetch the current identity from Platform so we have the latest public
+    // keys and revision (other tests may have added keys since registration).
+    let sdk = ctx.app_context.sdk();
+    let mut identity = dash_sdk::platform::Identity::fetch_by_identifier(&sdk, identity_id)
+        .await
+        .expect("failed to fetch identity from Platform")
+        .expect("identity not found on Platform");
 
     let new_private_key_bytes: [u8; 32] = rand::random();
 
@@ -58,7 +67,9 @@ async fn step_broadcast_valid(
     });
     new_ipk.set_id(identity.get_public_key_max_id() + 1);
 
-    let sdk = ctx.app_context.sdk();
+    // Bump revision to match what Platform expects after the update.
+    identity.bump_revision();
+
     let nonce = sdk
         .get_identity_nonce(identity_id, true, None)
         .await
@@ -74,14 +85,29 @@ async fn step_broadcast_valid(
         .expect("shared identity has no MASTER AUTHENTICATION key")
         .id();
 
+    // Build a mutable copy of the qualified identity with the fresh Platform
+    // state and the new key's private key registered in the key storage.
+    // The signer implementation looks up private keys from `private_keys` when
+    // signing the new key, so it must be present before calling
+    // `try_from_identity_with_signer`.
+    let mut qi = si.qualified_identity.clone();
+    qi.identity = identity.clone();
+    qi.private_keys.insert_non_encrypted(
+        (PrivateKeyOnMainIdentity, new_ipk.id()),
+        (
+            QualifiedIdentityPublicKey::from(new_ipk.clone()),
+            new_private_key_bytes,
+        ),
+    );
+
     let state_transition = IdentityUpdateTransition::try_from_identity_with_signer(
-        identity,
+        &identity,
         &master_key_id,
         vec![new_ipk.clone()],
         vec![],
         nonce,
         UserFeeIncrease::default(),
-        &si.qualified_identity,
+        &qi,
         platform_version,
         None,
     )
@@ -141,13 +167,14 @@ async fn step_broadcast_invalid(
     );
 
     let identity_id = si.qualified_identity.identity.id();
-    let refreshed_qi = ctx
+    let mut refreshed_qi = ctx
         .app_context
         .load_local_qualified_identities()
         .expect("load_local_qualified_identities should succeed")
         .into_iter()
         .find(|qi| qi.identity.id() == identity_id)
         .expect("shared identity should be in local DB after refresh");
+    refreshed_qi.identity.bump_revision();
     let identity = &refreshed_qi.identity;
 
     let new_private_key_bytes: [u8; 32] = rand::random();
@@ -185,6 +212,17 @@ async fn step_broadcast_invalid(
         .expect("refreshed identity has no MASTER AUTHENTICATION key")
         .id();
 
+    // Register the new key's private key in the signer so
+    // try_from_identity_with_signer can sign it.
+    let mut signer_qi = refreshed_qi.clone();
+    signer_qi.private_keys.insert_non_encrypted(
+        (PrivateKeyOnMainIdentity, new_ipk.id()),
+        (
+            QualifiedIdentityPublicKey::from(new_ipk.clone()),
+            new_private_key_bytes,
+        ),
+    );
+
     let invalid_state_transition = IdentityUpdateTransition::try_from_identity_with_signer(
         identity,
         &master_key_id,
@@ -192,7 +230,7 @@ async fn step_broadcast_invalid(
         vec![],
         invalid_nonce,
         UserFeeIncrease::default(),
-        &refreshed_qi,
+        &signer_qi,
         platform_version,
         None,
     )

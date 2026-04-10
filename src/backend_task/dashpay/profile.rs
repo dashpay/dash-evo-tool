@@ -15,9 +15,60 @@ use dash_sdk::platform::documents::transitions::{
     DocumentCreateTransitionBuilder, DocumentReplaceTransitionBuilder,
 };
 use dash_sdk::platform::{Document, DocumentQuery, FetchMany, Identifier};
+use platform_wallet::changeset::PlatformWalletChangeSet;
+use platform_wallet::wallet::dashpay::DashPayProfile;
 use rand::RngCore;
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
+
+/// Mutate the platform-wallet's `ManagedIdentity.dashpay_profile`
+/// for the given identity and queue the resulting changeset for the
+/// persister.
+///
+/// This is the Phase 9b-1 entry point that replaces the previous
+/// `db.save_dashpay_profile` direct write. The persister catches
+/// the queued `IdentityChangeSet`, picks out the
+/// `dashpay_profile` field, and writes it to the
+/// `dashpay_profiles` table on flush.
+///
+/// If the identity isn't present in the platform-wallet's
+/// `IdentityManager` (e.g. it's an external identity, or
+/// `wallet_lifecycle` hasn't mirrored it yet), this is a silent
+/// no-op — there's no in-memory state to mutate, so the persister
+/// has nothing to write.
+async fn cache_profile_via_platform_wallet(
+    app_context: &AppContext,
+    identity: &QualifiedIdentity,
+    profile: Option<DashPayProfile>,
+) {
+    let pw = match app_context.platform_wallet_for_identity(identity) {
+        Ok(pw) => pw,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "skipping platform-wallet profile cache: no platform wallet for identity"
+            );
+            return;
+        }
+    };
+    let identity_id = identity.identity.id();
+    let id_cs = {
+        let mut state = pw.state_mut().await;
+        let Some(managed) = state.identity_manager.managed_identity_mut(&identity_id) else {
+            tracing::debug!(
+                identity = %identity_id,
+                "skipping platform-wallet profile cache: identity not in IdentityManager"
+            );
+            return;
+        };
+        managed.set_dashpay_profile(profile)
+    };
+    let cs = PlatformWalletChangeSet {
+        identities: Some(id_cs),
+        ..Default::default()
+    };
+    pw.queue_persist(cs);
+}
 
 pub async fn load_profile(
     app_context: &Arc<AppContext>,
@@ -60,31 +111,34 @@ pub async fn load_profile(
             .and_then(|v| v.as_text())
             .unwrap_or_default();
 
-        // Save to local database for caching
-        let network_str = app_context.network.to_string();
-        if let Err(e) = app_context.db.save_dashpay_profile(
-            &identity_id,
-            &network_str,
-            if display_name.is_empty() {
-                None
-            } else {
-                Some(display_name)
-            },
-            if bio.is_empty() { None } else { Some(bio) },
-            if avatar_url.is_empty() {
-                None
-            } else {
-                Some(avatar_url)
-            },
-            None,
-        ) {
-            tracing::error!("Failed to cache loaded profile in database: {}", e);
-        } else {
-            tracing::info!(
-                "Loaded profile cached in database for identity {}",
-                identity_id
-            );
-        }
+        // Cache the loaded profile via the platform-wallet so the
+        // persister catches it on the next flush. The
+        // `dashpay_profiles` row gets written by the persister, not
+        // by a direct `db.save_dashpay_profile` call (Phase 9b-1).
+        cache_profile_via_platform_wallet(
+            app_context,
+            &identity,
+            Some(DashPayProfile {
+                display_name: if display_name.is_empty() {
+                    None
+                } else {
+                    Some(display_name.to_string())
+                },
+                bio: if bio.is_empty() {
+                    None
+                } else {
+                    Some(bio.to_string())
+                },
+                avatar_url: if avatar_url.is_empty() {
+                    None
+                } else {
+                    Some(avatar_url.to_string())
+                },
+                avatar_bytes: None,
+                public_message: None,
+            }),
+        )
+        .await;
 
         Ok(BackendTaskSuccessResult::DashPayProfile(Some((
             display_name.to_string(),
@@ -92,15 +146,14 @@ pub async fn load_profile(
             avatar_url.to_string(),
         ))))
     } else {
-        // No profile found - cache this fact to avoid repeated network queries
-        let network_str = app_context.network.to_string();
-        if let Err(e) =
-            app_context
-                .db
-                .save_dashpay_profile(&identity_id, &network_str, None, None, None, None)
-        {
-            tracing::error!("Failed to cache 'no profile' state in database: {}", e);
-        }
+        // No profile found — cache the empty state via the platform
+        // wallet to avoid repeated network queries.
+        cache_profile_via_platform_wallet(
+            app_context,
+            &identity,
+            Some(DashPayProfile::default()),
+        )
+        .await;
 
         Ok(BackendTaskSuccessResult::DashPayProfile(None))
     }
@@ -243,20 +296,19 @@ pub async fn update_profile(
             }
         }
 
-        // Save to local database for caching
-        let network_str = app_context.network.to_string();
-        if let Err(e) = app_context.db.save_dashpay_profile(
-            &identity_id,
-            &network_str,
-            display_name_for_db.as_deref(),
-            bio_for_db.as_deref(),
-            avatar_url_for_db.as_deref(),
-            None,
-        ) {
-            tracing::error!("Failed to cache updated profile in database: {}", e);
-        } else {
-            tracing::info!("Profile cached in database for identity {}", identity_id);
-        }
+        // Cache the updated profile via the platform-wallet (Phase 9b-1).
+        cache_profile_via_platform_wallet(
+            app_context,
+            &identity,
+            Some(DashPayProfile {
+                display_name: display_name_for_db.clone(),
+                bio: bio_for_db.clone(),
+                avatar_url: avatar_url_for_db.clone(),
+                avatar_bytes: None,
+                public_message: None,
+            }),
+        )
+        .await;
 
         Ok(BackendTaskSuccessResult::DashPayProfileUpdated(
             identity.identity.id(),
@@ -319,23 +371,20 @@ pub async fn update_profile(
             }
         }
 
-        // Save to local database for caching
-        let network_str = app_context.network.to_string();
-        if let Err(e) = app_context.db.save_dashpay_profile(
-            &identity_id,
-            &network_str,
-            display_name_for_db.as_deref(),
-            bio_for_db.as_deref(),
-            avatar_url_for_db.as_deref(),
-            None,
-        ) {
-            tracing::error!("Failed to cache new profile in database: {}", e);
-        } else {
-            tracing::info!(
-                "New profile cached in database for identity {}",
-                identity_id
-            );
-        }
+        // Cache the newly created profile via the platform-wallet
+        // (Phase 9b-1).
+        cache_profile_via_platform_wallet(
+            app_context,
+            &identity,
+            Some(DashPayProfile {
+                display_name: display_name_for_db.clone(),
+                bio: bio_for_db.clone(),
+                avatar_url: avatar_url_for_db.clone(),
+                avatar_bytes: None,
+                public_message: None,
+            }),
+        )
+        .await;
 
         Ok(BackendTaskSuccessResult::DashPayProfileUpdated(
             identity.identity.id(),

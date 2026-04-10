@@ -42,7 +42,9 @@
 //! regardless of outcome.
 
 use crate::database::Database;
-use platform_wallet::changeset::{Merge, PlatformWalletChangeSet, PlatformWalletPersistence};
+use platform_wallet::changeset::{
+    IdentityChangeSet, Merge, PlatformWalletChangeSet, PlatformWalletPersistence,
+};
 use platform_wallet::wallet::WalletId;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -179,17 +181,15 @@ impl SqliteWalletPersister {
             token_balances,
         } = cs;
 
-        // Log what we're dropping so cross-checks against backend-task
-        // direct writes can confirm nothing was meant to land here.
-        if identities
-            .as_ref()
-            .map(|c| !<_ as Merge>::is_empty(c))
-            .unwrap_or(false)
-        {
-            tracing::debug!(
-                "persister: dropping IdentityChangeSet (backend tasks own identity persistence)"
-            );
-        }
+        // Identities sub-changeset: the persister writes a SUBSET of
+        // each entry — currently just the DashPay profile (Phase 9b-1).
+        // Other identity fields (the QualifiedIdentity blob, label,
+        // top_ups, dpns_names, status) remain owned by backend tasks
+        // via direct `Database::*` helpers until later 9b sub-phases
+        // grow the persister to cover them. The full IdentityEntry
+        // shape lets new fields plug in without changing the changeset
+        // contract.
+        let identities_for_dashpay = identities;
         if contacts
             .as_ref()
             .map(|c| !<_ as Merge>::is_empty(c))
@@ -227,18 +227,101 @@ impl SqliteWalletPersister {
             );
         }
 
-        let core = match core {
-            Some(core) if !<_ as platform_wallet::changeset::Merge>::is_empty(&core) => core,
-            _ => return Ok(()),
-        };
+        // Decide whether there's anything to write at all. We need a
+        // transaction iff `core` carries something OR the identities
+        // sub-changeset has at least one entry with a `dashpay_profile`.
+        let has_core_work = core
+            .as_ref()
+            .map(|c| !<_ as platform_wallet::changeset::Merge>::is_empty(c))
+            .unwrap_or(false);
+        let has_dashpay_profile_work = identities_for_dashpay
+            .as_ref()
+            .map(|id_cs| {
+                id_cs
+                    .identities
+                    .values()
+                    .any(|e| e.dashpay_profile.is_some())
+            })
+            .unwrap_or(false);
+        if !has_core_work && !has_dashpay_profile_work {
+            return Ok(());
+        }
 
         let conn = self.db.shared_connection();
         let mut guard = conn.lock().unwrap();
         let tx = guard.transaction()?;
 
-        Self::write_core(&tx, &wallet_id, &self.network, core)?;
+        if let Some(core) = core {
+            if has_core_work {
+                Self::write_core(&tx, &wallet_id, &self.network, core)?;
+            }
+        }
+        if let Some(id_cs) = identities_for_dashpay {
+            Self::write_dashpay_profiles_subset(&tx, &self.network, id_cs)?;
+        }
 
         tx.commit()?;
+        Ok(())
+    }
+
+    /// Write the DashPay profile portion of an `IdentityChangeSet`
+    /// to the `dashpay_profiles` table.
+    ///
+    /// This is a SUBSET write — only the `dashpay_profile` field of
+    /// each entry is consumed; the rest of the entry (the
+    /// QualifiedIdentity blob, label, top_ups, dpns_names, status)
+    /// is dropped because backend tasks own those tables until
+    /// later 9b sub-phases. Entries whose profile is `None` are
+    /// silently skipped.
+    fn write_dashpay_profiles_subset(
+        tx: &rusqlite::Transaction,
+        network: &str,
+        id_cs: IdentityChangeSet,
+    ) -> Result<(), SqlitePersistError> {
+        let mut upsert = tx.prepare_cached(
+            "INSERT INTO dashpay_profiles
+                (identity_id, network, display_name, bio, avatar_url, public_message, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, unixepoch())
+             ON CONFLICT(identity_id, network) DO UPDATE SET
+                display_name = excluded.display_name,
+                bio = excluded.bio,
+                avatar_url = excluded.avatar_url,
+                public_message = excluded.public_message,
+                updated_at = unixepoch()",
+        )?;
+        let mut update_avatar = tx.prepare_cached(
+            "UPDATE dashpay_profiles
+             SET avatar_bytes = ?1, updated_at = unixepoch()
+             WHERE identity_id = ?2 AND network = ?3",
+        )?;
+
+        for (id, entry) in id_cs.identities {
+            let Some(profile) = entry.dashpay_profile else {
+                continue;
+            };
+            upsert.execute(rusqlite::params![
+                id.to_buffer().to_vec(),
+                network,
+                profile.display_name,
+                profile.bio,
+                profile.avatar_url,
+                profile.public_message,
+            ])?;
+            if let Some(avatar_bytes) = profile.avatar_bytes {
+                update_avatar.execute(rusqlite::params![
+                    avatar_bytes,
+                    id.to_buffer().to_vec(),
+                    network,
+                ])?;
+            }
+        }
+        // identities.removed and the wallet-level metadata
+        // (`primary_identity`, `last_scanned_index`) are dropped here
+        // — backend tasks own identity removal via
+        // `delete_local_qualified_identity`. Phase 9b will reconcile.
+        let _ = id_cs.removed;
+        let _ = id_cs.primary_identity;
+        let _ = id_cs.last_scanned_index;
         Ok(())
     }
 
@@ -349,5 +432,74 @@ mod tests {
         persister
             .flush(TEST_WALLET_ID)
             .expect("flush empty changeset");
+    }
+
+    /// An IdentityChangeSet with a `dashpay_profile` lands in the
+    /// `dashpay_profiles` table; the rest of the IdentityEntry is
+    /// silently ignored (Phase 9b-1 scope).
+    #[test]
+    fn test_dashpay_profile_round_trip_via_changeset() {
+        use dash_sdk::dpp::identity::Identity;
+        use dash_sdk::dpp::identity::v0::IdentityV0;
+        use dash_sdk::platform::Identifier;
+        use platform_wallet::changeset::IdentityEntry;
+        use platform_wallet::wallet::dashpay::DashPayProfile;
+        use std::collections::BTreeMap;
+
+        let db = Arc::new(create_test_database().expect("create test db"));
+        let persister = make_persister(db.clone());
+
+        let identity_id = Identifier::from([7u8; 32]);
+        let identity = Identity::V0(IdentityV0 {
+            id: identity_id,
+            public_keys: BTreeMap::new(),
+            balance: 0,
+            revision: 0,
+        });
+        let profile = DashPayProfile {
+            display_name: Some("alice".into()),
+            bio: Some("test bio".into()),
+            avatar_url: Some("https://example.com/avatar.png".into()),
+            avatar_bytes: Some(vec![1, 2, 3, 4]),
+            public_message: Some("hello world".into()),
+        };
+        let mut id_cs = platform_wallet::changeset::IdentityChangeSet::default();
+        id_cs.identities.insert(
+            identity_id,
+            IdentityEntry {
+                identity,
+                identity_index: 0,
+                label: None,
+                last_updated_balance_block_time: None,
+                last_synced_keys_block_time: None,
+                dpns_names: Vec::new(),
+                top_ups: BTreeMap::new(),
+                status: Default::default(),
+                key_storage: BTreeMap::new(),
+                wallet_seed_hash: Some(TEST_WALLET_ID),
+                dashpay_profile: Some(profile.clone()),
+            },
+        );
+        let cs = PlatformWalletChangeSet {
+            identities: Some(id_cs),
+            ..Default::default()
+        };
+        persister.store(TEST_WALLET_ID, cs);
+        persister.flush(TEST_WALLET_ID).expect("flush");
+
+        // Read back via the existing evo-tool helper to confirm the
+        // persister wrote the right shape.
+        let stored = db
+            .load_dashpay_profile(&identity_id, "testnet")
+            .expect("load dashpay profile")
+            .expect("profile present");
+        assert_eq!(stored.display_name.as_deref(), Some("alice"));
+        assert_eq!(stored.bio.as_deref(), Some("test bio"));
+        assert_eq!(
+            stored.avatar_url.as_deref(),
+            Some("https://example.com/avatar.png")
+        );
+        assert_eq!(stored.public_message.as_deref(), Some("hello world"));
+        assert_eq!(stored.avatar_bytes, Some(vec![1, 2, 3, 4]));
     }
 }

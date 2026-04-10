@@ -590,3 +590,194 @@ async fn tc_030_load_nonexistent_identity() {
     );
     tracing::info!("TC-030: got expected error: {:?}", result.unwrap_err());
 }
+
+/// TC-031-identity: Verify incremental address sync re-discovers seeded balances.
+///
+/// **Test Case Specification:**
+/// - **ID:** TC-031-identity
+/// - **Description:** PR #3468 fixes a bug where `on_address_found` is not
+///   called for seeded balances during incremental-only sync. This test
+///   exercises that path: fund a platform address, do a full sync that
+///   discovers it (populates seeded balances), then do an incremental-only
+///   sync and verify the address is still reported (proving `on_address_found`
+///   fires for seeded balances on the incremental path).
+/// - **Preconditions:** Registered identity with funded wallet.
+/// - **Steps:**
+///   1. Derive a DIP-17 platform payment address.
+///   2. Fund it via FundPlatformAddressFromWalletUtxos.
+///   3. Verify via direct AddressInfo::fetch that Platform has the balance.
+///   4. Reset sync checkpoint, do a full scan that discovers the funded address.
+///   5. Assert the address appears in balances (full scan works).
+///   6. Do another sync (incremental-only, checkpoint already set).
+///   7. Assert the address still appears (proves on_address_found fires for
+///      seeded balances in incremental mode — the PR #3468 fix).
+/// - **Expected outcome:** Both full and incremental sync report the balance.
+/// - **Requirement traceability:** Platform SDK PR #3468.
+#[ignore]
+#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
+async fn tc_031_incremental_address_discovery() {
+    let ctx = ctx().await;
+    let si = shared_identity().await;
+
+    // Step 1: Derive a platform payment address
+    tracing::info!("=== Step 1: derive platform payment address ===");
+    let platform_addr = {
+        let mut wallet = si.wallet_arc.write().expect("wallet lock");
+        let addr = wallet
+            .platform_receive_address(
+                dash_sdk::dpp::dashcore::Network::Testnet,
+                false,
+                Some(&ctx.app_context),
+            )
+            .expect("failed to derive platform payment address");
+        dash_sdk::dpp::address_funds::PlatformAddress::try_from(addr)
+            .expect("failed to convert to PlatformAddress")
+    };
+    tracing::info!(
+        "Platform address: {}",
+        platform_addr.to_bech32m_string(dash_sdk::dpp::dashcore::Network::Testnet)
+    );
+
+    // Step 2: Fund it
+    tracing::info!("=== Step 2: fund platform address ===");
+    let fund_result = run_task_with_nonce_retry(
+        &ctx.app_context,
+        BackendTask::WalletTask(WalletTask::FundPlatformAddressFromWalletUtxos {
+            seed_hash: si.wallet_seed_hash,
+            amount: 200_000,
+            destination: platform_addr.clone(),
+            fee_deduct_from_output: true,
+        }),
+    )
+    .await
+    .expect("FundPlatformAddressFromWalletUtxos should succeed");
+    assert!(
+        matches!(
+            fund_result,
+            BackendTaskSuccessResult::PlatformAddressFunded { .. }
+        ),
+        "expected PlatformAddressFunded, got: {:?}",
+        fund_result
+    );
+
+    // Step 3: Verify via direct query that Platform has the balance
+    tracing::info!("=== Step 3: verify balance via direct AddressInfo query ===");
+    let poll_timeout = std::time::Duration::from_secs(120);
+    let poll_interval = std::time::Duration::from_secs(5);
+    let start = std::time::Instant::now();
+
+    let direct_balance = loop {
+        use dash_sdk::platform::Fetch;
+        let sdk = ctx.app_context.sdk();
+        match dash_sdk::query_types::AddressInfo::fetch(&sdk, platform_addr.clone()).await {
+            Ok(Some(info)) if info.balance > 0 => {
+                tracing::info!(
+                    "Direct query confirmed: balance={} nonce={}",
+                    info.balance,
+                    info.nonce,
+                );
+                break info.balance;
+            }
+            Ok(Some(info)) => {
+                tracing::info!(
+                    "Direct query: address exists but balance=0 (nonce={})",
+                    info.nonce
+                );
+            }
+            Ok(None) => {
+                tracing::info!("Direct query: address not yet on Platform");
+            }
+            Err(e) => {
+                tracing::warn!("Direct query failed: {}", e);
+            }
+        }
+        if start.elapsed() > poll_timeout {
+            panic!(
+                "platform address has no credits via direct query (waited {:?})",
+                poll_timeout,
+            );
+        }
+        tokio::time::sleep(poll_interval).await;
+    };
+
+    // Step 4: Full sync — reset checkpoint and discover the funded address
+    tracing::info!("=== Step 4: full sync (reset checkpoint, discover funded address) ===");
+    if let Err(e) = ctx
+        .app_context
+        .db()
+        .set_platform_sync_info(&si.wallet_seed_hash, 0, 0)
+    {
+        tracing::warn!("Failed to reset platform sync info: {}", e);
+    }
+
+    let full_sync_result = run_task(
+        &ctx.app_context,
+        BackendTask::WalletTask(WalletTask::FetchPlatformAddressBalances {
+            seed_hash: si.wallet_seed_hash,
+        }),
+    )
+    .await
+    .expect("full sync FetchPlatformAddressBalances should succeed");
+
+    // Step 5: Assert the address was found by full sync
+    let full_sync_bal = match &full_sync_result {
+        BackendTaskSuccessResult::PlatformAddressBalances { balances, .. } => {
+            balances.get(&platform_addr).map(|(b, _)| *b).unwrap_or(0)
+        }
+        other => panic!("expected PlatformAddressBalances, got: {:?}", other),
+    };
+    assert!(
+        full_sync_bal > 0,
+        "Full sync should discover the funded address (direct query: {} credits)",
+        direct_balance,
+    );
+    tracing::info!(
+        "Full sync found {} credits (direct: {})",
+        full_sync_bal,
+        direct_balance
+    );
+
+    // Verify checkpoint is now set
+    let (ts, _) = ctx
+        .app_context
+        .db()
+        .get_platform_sync_info(&si.wallet_seed_hash)
+        .unwrap_or((0, 0));
+    assert!(ts > 0, "checkpoint should be set after full sync");
+
+    // Step 6: Incremental-only sync (checkpoint set, seeded balances present)
+    // This exercises the PR #3468 fix: on_address_found must fire for seeded
+    // balances so the address remains visible and gap limit extends correctly.
+    tracing::info!("=== Step 6: incremental sync (seeded balance path) ===");
+    let incr_result = run_task(
+        &ctx.app_context,
+        BackendTask::WalletTask(WalletTask::FetchPlatformAddressBalances {
+            seed_hash: si.wallet_seed_hash,
+        }),
+    )
+    .await
+    .expect("incremental FetchPlatformAddressBalances should succeed");
+
+    let incr_bal = match &incr_result {
+        BackendTaskSuccessResult::PlatformAddressBalances { balances, .. } => {
+            balances.get(&platform_addr).map(|(b, _)| *b).unwrap_or(0)
+        }
+        other => panic!("expected PlatformAddressBalances, got: {:?}", other),
+    };
+
+    // Step 7: Assert incremental sync still reports the balance
+    assert!(
+        incr_bal > 0,
+        "Incremental sync should report seeded balance (full sync: {}, direct: {}). \
+         If this fails, on_address_found is not being called for seeded balances \
+         in incremental-only mode (see Platform PR #3468).",
+        full_sync_bal,
+        direct_balance,
+    );
+    tracing::info!(
+        "TC-031 PASSED: full_sync={} incremental={} direct={}",
+        full_sync_bal,
+        incr_bal,
+        direct_balance
+    );
+}

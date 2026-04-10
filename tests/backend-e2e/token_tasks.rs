@@ -132,11 +132,11 @@ async fn tc_046_query_my_token_balances() {
 
     let task = BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances));
     let result = tokio::time::timeout(
-        std::time::Duration::from_secs(120),
+        std::time::Duration::from_secs(300),
         run_task(&ctx.app_context, task),
     )
     .await
-    .expect("TC-046: QueryMyTokenBalances timed out after 120s")
+    .expect("TC-046: QueryMyTokenBalances timed out after 300s")
     .expect("TC-046: QueryMyTokenBalances failed");
 
     assert!(

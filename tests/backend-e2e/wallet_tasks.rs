@@ -545,6 +545,14 @@ async fn tc_014_wallet_platform_lifecycle() {
 
 /// TC-018: FundPlatformAddressFromAssetLock — create an asset lock via CoreTask and then
 /// fund a platform address directly from it.
+///
+/// TODO(#799): This test fails because CreateRegistrationAssetLock generates a
+/// one-time key address for the credit output that is NOT registered in
+/// `known_addresses`. When the IS lock arrives, `received_asset_lock_finality`
+/// skips the wallet (address not recognized), so `unused_asset_locks` is never
+/// populated and the test times out waiting for the proof. Fix is tracked in
+/// issue #799 (unify asset lock paths). The workaround would be to register
+/// the one-time key address in known_addresses during asset lock creation.
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 #[ignore]
 async fn tc_018_fund_platform_address_from_asset_lock() {

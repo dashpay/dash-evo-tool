@@ -87,40 +87,6 @@ fn resolve_platform_wallet_by_owner(
     }
 }
 
-/// Route a `ManagedIdentity::bump_contact_highest_receive_index`
-/// mutation through the platform-wallet changeset flow.
-///
-/// Replaces the direct `db.update_highest_receive_index` call.
-/// Monotonic — if `index` is not greater than the current value in
-/// the platform-wallet's in-memory state, the mutation emits an
-/// empty changeset and the persister has nothing to write.
-pub(crate) async fn cache_contact_highest_receive_index(
-    app_context: &AppContext,
-    owner_id: &Identifier,
-    contact_id: &Identifier,
-    index: u32,
-) {
-    let Some(pw) = resolve_platform_wallet_by_owner(app_context, owner_id) else {
-        return;
-    };
-    let contact_cs = {
-        let mut state = pw.state_mut().await;
-        let Some(managed) = state.identity_manager.managed_identity_mut(owner_id) else {
-            tracing::debug!(
-                identity = %owner_id,
-                "platform-wallet cache: identity not in IdentityManager"
-            );
-            return;
-        };
-        managed.bump_contact_highest_receive_index(contact_id, index)
-    };
-    let cs = PlatformWalletChangeSet {
-        contacts: Some(contact_cs),
-        ..Default::default()
-    };
-    pw.queue_persist(cs);
-}
-
 /// Route a `ManagedIdentity::set_contact_bloom_registered_count`
 /// mutation through the platform-wallet changeset flow.
 ///
@@ -152,22 +118,32 @@ pub(crate) async fn cache_contact_bloom_registered_count(
     pw.queue_persist(cs);
 }
 
-/// Blocking variant of payment caching for sync callers (SPV
-/// transaction-processing frame loop). Records a DashPay payment
-/// entry on the owner's `ManagedIdentity` via
-/// `record_dashpay_payment` and queues the emitted changeset.
-///
-/// Uses `PlatformWallet::state_mut_blocking`, so it MUST NOT be
-/// called from within a tokio async context.
-pub(crate) fn cache_payment_via_platform_wallet_blocking(
-    app_context: &AppContext,
+// --- Blocking variants (SPV transaction-processing frame loop) ---
+//
+// These helpers take an already-resolved `&PlatformWallet` rather
+// than looking one up through `AppContext`. The SPV frame loop in
+// `context::transaction_processing` holds a write guard on the
+// owning evo-tool `Wallet` (`wallet_arc.write()`) while matching
+// transactions against wallet addresses. `resolve_platform_wallet_by_owner`
+// would try to re-acquire a read guard on that same wallet via
+// `AppContext::platform_wallet_for_identity`, which deadlocks
+// deterministically on `std::sync::RwLock` (read-while-write on
+// the same thread). The caller must have `wallet.platform_wallet`
+// already in hand before entering the helper.
+//
+// All three use `PlatformWallet::state_mut_blocking`, so they MUST
+// NOT be called from within a tokio async context.
+
+/// Blocking payment-cache helper for the SPV frame loop. Records a
+/// DashPay payment entry on the owner's `ManagedIdentity` and queues
+/// the emitted changeset. See the module header for the deadlock
+/// rationale behind the `&PlatformWallet` parameter.
+pub(crate) fn cache_payment_with_pw_blocking(
+    pw: &PlatformWallet,
     owner_id: &Identifier,
     tx_id: String,
     entry: PaymentEntry,
 ) {
-    let Some(pw) = resolve_platform_wallet_by_owner(app_context, owner_id) else {
-        return;
-    };
     let id_cs = {
         let mut state = pw.state_mut_blocking();
         let Some(managed) = state.identity_manager.managed_identity_mut(owner_id) else {
@@ -186,19 +162,20 @@ pub(crate) fn cache_payment_via_platform_wallet_blocking(
     pw.queue_persist(cs);
 }
 
-/// Blocking variant of [`cache_contact_highest_receive_index`] for
-/// sync callers (SPV transaction-processing frame loop). Uses
-/// `PlatformWallet::state_mut_blocking`, so it MUST NOT be called
-/// from within a tokio async context.
-pub(crate) fn cache_contact_highest_receive_index_blocking(
-    app_context: &AppContext,
+/// Blocking contact-derivation bump helper for the SPV frame loop.
+/// Routes a `ManagedIdentity::bump_contact_highest_receive_index`
+/// mutation through the platform-wallet changeset flow. Monotonic —
+/// if `index` is not greater than the current value in the
+/// platform-wallet's in-memory state, the mutation emits an empty
+/// changeset and the persister has nothing to write. See the module
+/// header for the deadlock rationale behind the `&PlatformWallet`
+/// parameter.
+pub(crate) fn cache_contact_highest_receive_index_with_pw_blocking(
+    pw: &PlatformWallet,
     owner_id: &Identifier,
     contact_id: &Identifier,
     index: u32,
 ) {
-    let Some(pw) = resolve_platform_wallet_by_owner(app_context, owner_id) else {
-        return;
-    };
     let contact_cs = {
         let mut state = pw.state_mut_blocking();
         let Some(managed) = state.identity_manager.managed_identity_mut(owner_id) else {

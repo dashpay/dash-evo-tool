@@ -218,7 +218,10 @@ impl SqliteWalletPersister {
         } = cs;
 
         // Sub-changesets owned by backend tasks (or fully deferred)
-        // — drop with a `tracing::debug!` for cross-checks.
+        // — drop with a `tracing::debug!` for cross-checks. These
+        // logs run regardless of whether we open a transaction, so
+        // that "changeset carries only dropped fields" cases are
+        // still visible in logs.
         if contacts
             .as_ref()
             .map(|c| !<_ as Merge>::is_empty(c))
@@ -256,6 +259,32 @@ impl SqliteWalletPersister {
             );
         }
 
+        // S3: log any IdentityChangeSet top-level fields
+        // (`removed` / `primary_identity` / `last_scanned_index`)
+        // that we silently drop. Previously this lived inside
+        // `write_identity_dashpay_subset` which only runs when
+        // `has_dashpay_identity_work` is true — so a changeset
+        // carrying ONLY these fields would be silently dropped
+        // without even the log firing. Moved out here so it
+        // always runs when the fields are present.
+        let has_identity_top_level_drops = identities
+            .as_ref()
+            .map(|id_cs| {
+                !id_cs.removed.is_empty()
+                    || id_cs.primary_identity.is_some()
+                    || id_cs.last_scanned_index.is_some()
+            })
+            .unwrap_or(false);
+        if has_identity_top_level_drops {
+            let id_cs = identities.as_ref().unwrap();
+            tracing::debug!(
+                removed = id_cs.removed.len(),
+                has_primary = id_cs.primary_identity.is_some(),
+                has_last_scanned_index = id_cs.last_scanned_index.is_some(),
+                "persister: dropping IdentityChangeSet top-level fields (backend tasks own identity removal / primary tracking)"
+            );
+        }
+
         // Decide whether there's anything to write at all. We need a
         // transaction iff `core` carries something OR the identities
         // sub-changeset has at least one entry with a DashPay field
@@ -273,6 +302,25 @@ impl SqliteWalletPersister {
             })
             .unwrap_or(false);
         if !has_core_work && !has_dashpay_identity_work {
+            // S3 contract check: if the only "work" in the changeset
+            // was in the backend-task-owned identity top-level
+            // fields, we're about to return without opening a
+            // transaction — i.e. those fields are silently dropped.
+            // Today no mutation emits ONLY those fields without
+            // also touching a DashPay field or core, so this
+            // assertion should never fire. If it does, a new
+            // mutation has been added that needs either (a) the
+            // persister to grow ownership of these fields, or (b)
+            // a companion backend-task direct-write.
+            debug_assert!(
+                !has_identity_top_level_drops,
+                "persister: IdentityChangeSet emitted with only top-level \
+                 fields (removed/primary_identity/last_scanned_index) — \
+                 these are backend-task-owned and would be silently dropped. \
+                 Either have the emitting mutation also route through a \
+                 direct-write helper, or extend the persister's ownership. \
+                 See S3 from the holistic-review follow-up."
+            );
             return Ok(());
         }
 
@@ -408,20 +456,10 @@ impl SqliteWalletPersister {
                 ])?;
             }
         }
-        // Identity removal and the wallet-level metadata
-        // (`primary_identity`, `last_scanned_index`) are
-        // backend-task-owned for now — log the drop for cross-checks.
-        if !id_cs.removed.is_empty()
-            || id_cs.primary_identity.is_some()
-            || id_cs.last_scanned_index.is_some()
-        {
-            tracing::debug!(
-                removed = id_cs.removed.len(),
-                has_primary = id_cs.primary_identity.is_some(),
-                has_last_scanned_index = id_cs.last_scanned_index.is_some(),
-                "persister: dropping IdentityChangeSet wallet-level subsets (backend tasks own identity removal / primary tracking)"
-            );
-        }
+        // Identity top-level fields (`removed`, `primary_identity`,
+        // `last_scanned_index`) are logged at the flush_inner
+        // level so the drop is visible even when this function
+        // doesn't run (S3 fix in the holistic-review follow-up).
         Ok(())
     }
 
@@ -430,10 +468,18 @@ impl SqliteWalletPersister {
     /// Today this covers chain height (`wallet.last_terminal_block`)
     /// and per-account UTXO inserts/deletes (`utxos`). The other
     /// per-account fields (`addresses_used`, `highest_used`,
-    /// `utxos_instant_locked`, `transactions`) are deferred to
-    /// Phase 9b — SPV is the authoritative writer for the
-    /// `wallet_transactions` table on this branch, and address-pool
-    /// state is rebuilt on load via gap-limit scanning.
+    /// `highest_generated`, `utxos_instant_locked`, `transactions`)
+    /// are deferred to Phase 10. On restart, address-pool state is
+    /// currently NOT reconstructed and SPV replays forward from
+    /// `last_terminal_block` without re-establishing `highest_used`
+    /// — the data-integrity review flagged this as cross-restart
+    /// state loss for all account types. Phase 10 will persist
+    /// these uniformly via `cs.core.per_account` and add a load
+    /// path that rebuilds pool state from SQL.
+    ///
+    /// Until then, each deferred field that arrives non-empty
+    /// triggers a `tracing::warn!` on flush so Phase 10 contributors
+    /// and silent-regression hunters can see what's being dropped.
     fn write_core(
         tx: &rusqlite::Transaction,
         wallet_id: &WalletId,
@@ -467,7 +513,7 @@ impl SqliteWalletPersister {
         let mut delete_utxo =
             tx.prepare_cached("DELETE FROM utxos WHERE txid = ?1 AND vout = ?2 AND network = ?3")?;
 
-        for (_account_type, bucket) in core.per_account {
+        for (account_type, bucket) in core.per_account {
             for (outpoint, utxo) in bucket.utxos_added {
                 insert_utxo.execute(rusqlite::params![
                     outpoint.txid.as_byte_array(),
@@ -485,18 +531,48 @@ impl SqliteWalletPersister {
                     network,
                 ])?;
             }
-            // `addresses_used`, `highest_used`, `utxos_instant_locked`,
-            // and `transactions` are deferred — see module-level scope
-            // note. Phase 9b will reconcile.
-            let _ = bucket.addresses_used;
-            let _ = bucket.highest_used;
-            let _ = bucket.utxos_instant_locked;
-            let _ = bucket.transactions;
+
+            // S5: each deferred per-account field warn!s on non-empty
+            // so Phase 10 contributors can see what needs to land.
+            // The `let _ = ...` silent discards were a classic
+            // latent-hole shape — nothing broke today but the next
+            // contributor who wires a mutation through these fields
+            // would silently lose writes.
+            if !bucket.addresses_used.is_empty() {
+                tracing::warn!(
+                    account = ?account_type,
+                    count = bucket.addresses_used.len(),
+                    "persister: dropping per_account.addresses_used (deferred to Phase 10 — uniform key-wallet account state persistence)"
+                );
+            }
+            if !bucket.highest_used.is_empty() {
+                tracing::warn!(
+                    account = ?account_type,
+                    pools = bucket.highest_used.len(),
+                    "persister: dropping per_account.highest_used (deferred to Phase 10)"
+                );
+            }
+            if !bucket.utxos_instant_locked.is_empty() {
+                tracing::warn!(
+                    account = ?account_type,
+                    count = bucket.utxos_instant_locked.len(),
+                    "persister: dropping per_account.utxos_instant_locked (deferred to Phase 10)"
+                );
+            }
+            if !bucket.transactions.is_empty() {
+                tracing::warn!(
+                    account = ?account_type,
+                    count = bucket.transactions.len(),
+                    "persister: dropping per_account.transactions (SPV is the authoritative writer for wallet_transactions on this branch)"
+                );
+            }
         }
 
         // `account_keys` and `balance` are intentionally not persisted:
         // account_keys is re-derived from the seed on load, and balance
         // is recomputed from the restored UTXO set via update_balance().
+        // These are by-design drops, not deferred fields, so they stay
+        // silent.
         let _ = core.account_keys;
         let _ = core.balance;
 

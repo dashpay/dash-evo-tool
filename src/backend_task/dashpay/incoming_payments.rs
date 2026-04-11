@@ -189,7 +189,7 @@ pub async fn register_dashpay_addresses_for_identity(
                 // flush (Phase 9b-3).
                 super::platform_wallet_cache::cache_contact_bloom_registered_count(
                     app_context,
-                    &our_identity_id,
+                    identity,
                     &contact_id,
                     target_count,
                 )

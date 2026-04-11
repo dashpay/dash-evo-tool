@@ -15,60 +15,12 @@ use dash_sdk::platform::documents::transitions::{
     DocumentCreateTransitionBuilder, DocumentReplaceTransitionBuilder,
 };
 use dash_sdk::platform::{Document, DocumentQuery, FetchMany, Identifier};
-use platform_wallet::changeset::PlatformWalletChangeSet;
 use platform_wallet::wallet::dashpay::DashPayProfile;
 use rand::RngCore;
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
-/// Mutate the platform-wallet's `ManagedIdentity.dashpay_profile`
-/// for the given identity and queue the resulting changeset for the
-/// persister.
-///
-/// This is the Phase 9b-1 entry point that replaces the previous
-/// `db.save_dashpay_profile` direct write. The persister catches
-/// the queued `IdentityChangeSet`, picks out the
-/// `dashpay_profile` field, and writes it to the
-/// `dashpay_profiles` table on flush.
-///
-/// If the identity isn't present in the platform-wallet's
-/// `IdentityManager` (e.g. it's an external identity, or
-/// `wallet_lifecycle` hasn't mirrored it yet), this is a silent
-/// no-op — there's no in-memory state to mutate, so the persister
-/// has nothing to write.
-async fn cache_profile_via_platform_wallet(
-    app_context: &AppContext,
-    identity: &QualifiedIdentity,
-    profile: Option<DashPayProfile>,
-) {
-    let pw = match app_context.platform_wallet_for_identity(identity) {
-        Ok(pw) => pw,
-        Err(e) => {
-            tracing::warn!(
-                error = %e,
-                "skipping platform-wallet profile cache: no platform wallet for identity"
-            );
-            return;
-        }
-    };
-    let identity_id = identity.identity.id();
-    let id_cs = {
-        let mut state = pw.state_mut().await;
-        let Some(managed) = state.identity_manager.managed_identity_mut(&identity_id) else {
-            tracing::debug!(
-                identity = %identity_id,
-                "skipping platform-wallet profile cache: identity not in IdentityManager"
-            );
-            return;
-        };
-        managed.set_dashpay_profile(profile)
-    };
-    let cs = PlatformWalletChangeSet {
-        identities: Some(id_cs),
-        ..Default::default()
-    };
-    pw.queue_persist(cs);
-}
+use super::platform_wallet_cache::cache_profile;
 
 pub async fn load_profile(
     app_context: &Arc<AppContext>,
@@ -115,7 +67,7 @@ pub async fn load_profile(
         // persister catches it on the next flush. The
         // `dashpay_profiles` row gets written by the persister, not
         // by a direct `db.save_dashpay_profile` call (Phase 9b-1).
-        cache_profile_via_platform_wallet(
+        cache_profile(
             app_context,
             &identity,
             Some(DashPayProfile {
@@ -148,7 +100,7 @@ pub async fn load_profile(
     } else {
         // No profile found — cache the empty state via the platform
         // wallet to avoid repeated network queries.
-        cache_profile_via_platform_wallet(
+        cache_profile(
             app_context,
             &identity,
             Some(DashPayProfile::default()),
@@ -297,7 +249,7 @@ pub async fn update_profile(
         }
 
         // Cache the updated profile via the platform-wallet (Phase 9b-1).
-        cache_profile_via_platform_wallet(
+        cache_profile(
             app_context,
             &identity,
             Some(DashPayProfile {
@@ -373,7 +325,7 @@ pub async fn update_profile(
 
         // Cache the newly created profile via the platform-wallet
         // (Phase 9b-1).
-        cache_profile_via_platform_wallet(
+        cache_profile(
             app_context,
             &identity,
             Some(DashPayProfile {

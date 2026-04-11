@@ -1,39 +1,38 @@
 //! SQLite-backed implementation of [`PlatformWalletPersistence`].
 //!
-//! # Scope (Phase 9a-5d)
+//! # Scope (Phase 9b)
 //!
-//! Today the persister handles only the wallet state that has no
-//! backend-task owner: chain sync height (`wallet.last_terminal_block`)
-//! and SPV-driven UTXO updates (`utxos`). Everything else —
-//! identities, contacts, asset locks, platform addresses, token
-//! balances — is owned by backend tasks via direct
-//! `Database::*` writers (`insert_local_qualified_identity`,
-//! `save_dashpay_contact`, `store_asset_lock_transaction`,
-//! `set_platform_address_info`, `insert_identity_token_balance`).
+//! The persister handles wallet state with no backend-task owner,
+//! plus the DashPay subsets that Phase 9b migrated to the changeset
+//! flow:
+//!
+//! - `core.chain` → `wallet.last_terminal_block` and SPV UTXO state
+//!   (Phase 9a-5d).
+//! - `identities.dashpay_profile` → `dashpay_profiles` table (9b-1).
+//! - `identities.dashpay_payments` → `dashpay_payments` table (9b-2).
+//! - `contacts.established[*].{highest_receive_index,
+//!   bloom_registered_count, next_send_index}` →
+//!   `dashpay_contact_address_indices` table (9b-3).
+//!
+//! Everything else — platform addresses, asset locks, token balances,
+//! the QualifiedIdentity blob on `identity`, label, top_ups,
+//! dpns_names, status, and the per-contact pending-request maps — is
+//! still owned by backend tasks via direct `Database::*` writers.
+//! Sub-changesets that arrive in the buffered `staged` map for those
+//! tables are silently dropped on flush with a `tracing::debug!`
+//! recording what was discarded.
 //!
 //! Earlier revisions of this file (the Phase 9a-5a rewrite) tried to
-//! be the sole writer for every sub-changeset, but the
-//! `identity` table actually stores serialized `QualifiedIdentity`
-//! blobs (an evo-tool wrapper around `dpp::Identity` that the
-//! platform-wallet doesn't know about). The persister was writing
-//! raw `Identity` bytes into the same column, latently corrupting
-//! the blob on every flush. Same shape mismatch existed for the
-//! other sub-changesets to varying degrees.
-//!
-//! The pragmatic resolution is for the persister to stop writing
-//! state that backend tasks already own. Phase 9b will revisit and
-//! either:
-//!
-//! - Move `QualifiedIdentity` (and similar evo-tool wrappers) into
-//!   platform-wallet (or a shared crate) so the persister can be the
-//!   sole writer end-to-end, OR
-//! - Introduce a serializer abstraction so the persister can write
-//!   evo-tool's wrapper format without depending on its types.
-//!
-//! Until then, platform-side sub-changesets that arrive in the
-//! buffered `staged` map are silently dropped on flush — the
-//! `tracing::debug!` log records what was discarded so cross-checks
-//! against backend-task DB writes can verify nothing was lost.
+//! be the sole writer for every sub-changeset, but the `identity`
+//! table stores serialized `QualifiedIdentity` blobs (an evo-tool
+//! wrapper around `dpp::Identity` that the platform-wallet doesn't
+//! know about) and the persister was latently corrupting them on
+//! every flush. The pragmatic resolution is for the persister to
+//! stop writing state that backend tasks already own. Phase 9c will
+//! revisit and either move `QualifiedIdentity` (and similar evo-tool
+//! wrappers) into a shared crate, or introduce a serializer
+//! abstraction so the persister can round-trip evo-tool's wrapper
+//! format without depending on its types.
 //!
 //! # Atomicity
 //!
@@ -181,24 +180,8 @@ impl SqliteWalletPersister {
             token_balances,
         } = cs;
 
-        // Identities sub-changeset: the persister writes a SUBSET of
-        // each entry — currently the DashPay profile + payments
-        // (Phase 9b-1, 9b-2). Other identity fields (the
-        // QualifiedIdentity blob, label, top_ups, dpns_names, status)
-        // remain owned by backend tasks via direct `Database::*`
-        // helpers until later 9b sub-phases grow the persister to
-        // cover them. The full IdentityEntry shape lets new fields
-        // plug in without changing the changeset contract.
-        let identities_for_dashpay = identities;
-        // Contacts sub-changeset: the persister writes the per-contact
-        // BIP44 derivation state (highest_receive_index, bloom count,
-        // next_send_index) that rides on each `EstablishedContact`
-        // (Phase 9b-3). The other ContactChangeSet fields
-        // (sent_requests, incoming_requests, removed_sent,
-        // removed_incoming) remain owned by backend tasks via
-        // direct `Database::save_contact_request` /
-        // `save_dashpay_contact`.
-        let contacts_for_derivation = contacts;
+        // Sub-changesets owned by backend tasks — drop with a
+        // `tracing::debug!` for cross-checks.
         if platform_addresses
             .as_ref()
             .map(|c| !<_ as Merge>::is_empty(c))
@@ -232,11 +215,21 @@ impl SqliteWalletPersister {
         // sub-changeset has at least one entry with a DashPay field
         // (profile or payments), OR the contacts sub-changeset has
         // an `established` entry with non-default derivation state.
+        //
+        // For `contacts`, we skip rows where all three derivation
+        // fields are zero because Phase 9a auto-establishment paths
+        // emit pristine-default `EstablishedContact` snapshots as a
+        // side effect of contact establishment. The derivation
+        // mutations (`bump_*` / `set_*`) never emit all-zero by
+        // construction and by contract — see
+        // `bump_contact_highest_receive_index` and
+        // `set_contact_bloom_registered_count` docs in
+        // rs-platform-wallet for the persister-contract rationale.
         let has_core_work = core
             .as_ref()
             .map(|c| !<_ as platform_wallet::changeset::Merge>::is_empty(c))
             .unwrap_or(false);
-        let has_dashpay_identity_work = identities_for_dashpay
+        let has_dashpay_identity_work = identities
             .as_ref()
             .map(|id_cs| {
                 id_cs.identities.values().any(|e| {
@@ -244,10 +237,7 @@ impl SqliteWalletPersister {
                 })
             })
             .unwrap_or(false);
-        // Any `established` entry with non-zero derivation state —
-        // zero is the `EstablishedContact::new` default, so we skip
-        // no-op bumps.
-        let has_contact_derivation_work = contacts_for_derivation
+        let has_contact_derivation_work = contacts
             .as_ref()
             .map(|contact_cs| {
                 contact_cs.established.values().any(|c| {
@@ -265,15 +255,15 @@ impl SqliteWalletPersister {
         let mut guard = conn.lock().unwrap();
         let tx = guard.transaction()?;
 
-        if let Some(core) = core {
-            if has_core_work {
-                Self::write_core(&tx, &wallet_id, &self.network, core)?;
-            }
+        if let Some(core) = core
+            && has_core_work
+        {
+            Self::write_core(&tx, &wallet_id, &self.network, core)?;
         }
-        if let Some(id_cs) = identities_for_dashpay {
+        if let Some(id_cs) = identities {
             Self::write_identity_dashpay_subset(&tx, &self.network, id_cs)?;
         }
-        if let Some(contact_cs) = contacts_for_derivation {
+        if let Some(contact_cs) = contacts {
             Self::write_contact_derivation_subset(&tx, contact_cs)?;
         }
 
@@ -313,9 +303,9 @@ impl SqliteWalletPersister {
 
         for ((owner, contact_id), established) in contact_cs.established {
             // Skip no-op rows (all-zero defaults). The work-gate in
-            // `flush_inner` already filters these out, but keep the
-            // guard here in case the caller hands us a changeset
-            // directly.
+            // `flush_inner` already filters these out at the
+            // changeset level; this is belt-and-suspenders in case a
+            // caller hands us a changeset directly.
             if established.highest_receive_index == 0
                 && established.bloom_registered_count == 0
                 && established.next_send_index == 0
@@ -331,12 +321,22 @@ impl SqliteWalletPersister {
             ])?;
         }
 
-        // The other ContactChangeSet fields are backend-task-owned
-        // for now — drop them silently.
-        let _ = contact_cs.sent_requests;
-        let _ = contact_cs.removed_sent;
-        let _ = contact_cs.incoming_requests;
-        let _ = contact_cs.removed_incoming;
+        // Pending contact-request maps are backend-task-owned — log
+        // the drop for cross-checks against direct
+        // `save_contact_request` / `save_dashpay_contact` writes.
+        if !contact_cs.sent_requests.is_empty()
+            || !contact_cs.removed_sent.is_empty()
+            || !contact_cs.incoming_requests.is_empty()
+            || !contact_cs.removed_incoming.is_empty()
+        {
+            tracing::debug!(
+                sent = contact_cs.sent_requests.len(),
+                incoming = contact_cs.incoming_requests.len(),
+                removed_sent = contact_cs.removed_sent.len(),
+                removed_incoming = contact_cs.removed_incoming.len(),
+                "persister: dropping ContactChangeSet pending/removed subsets (backend tasks own contact request persistence)"
+            );
+        }
         Ok(())
     }
 
@@ -442,13 +442,20 @@ impl SqliteWalletPersister {
                 ])?;
             }
         }
-        // identities.removed and the wallet-level metadata
-        // (`primary_identity`, `last_scanned_index`) are dropped here
-        // — backend tasks own identity removal via
-        // `delete_local_qualified_identity`. Phase 9b will reconcile.
-        let _ = id_cs.removed;
-        let _ = id_cs.primary_identity;
-        let _ = id_cs.last_scanned_index;
+        // Identity removal and the wallet-level metadata
+        // (`primary_identity`, `last_scanned_index`) are
+        // backend-task-owned for now — log the drop for cross-checks.
+        if !id_cs.removed.is_empty()
+            || id_cs.primary_identity.is_some()
+            || id_cs.last_scanned_index.is_some()
+        {
+            tracing::debug!(
+                removed = id_cs.removed.len(),
+                has_primary = id_cs.primary_identity.is_some(),
+                has_last_scanned_index = id_cs.last_scanned_index.is_some(),
+                "persister: dropping IdentityChangeSet wallet-level subsets (backend tasks own identity removal / primary tracking)"
+            );
+        }
         Ok(())
     }
 

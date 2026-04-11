@@ -83,6 +83,10 @@ pub struct SqliteWalletPersister {
 pub enum SqlitePersistError {
     #[error("SQLite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
+    /// Bincode encode/decode failure for persisted typed blobs
+    /// (`TransactionRecord`, `AccountType` key, etc.).
+    #[error("encode/decode error: {0}")]
+    Encode(String),
 }
 
 impl SqliteWalletPersister {
@@ -329,6 +333,77 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                     })
                     .or_default()
                     .utxos_instant_locked = locked_outpoints;
+            }
+        }
+
+        // --- Load per-account transaction records (Phase 10 6c) ---
+        //
+        // Each row decodes directly into a `TransactionRecord` via
+        // bincode's serde bridge. The `account_type` BLOB decodes
+        // via `AccountType::from_db_key`, so we route each record
+        // into its owning account's bucket. `apply_changeset` on
+        // the managed account side runs `self.transactions.insert(
+        // txid, record)` for each entry (see key-wallet
+        // `ManagedCoreAccount::apply_changeset`).
+        {
+            use dash_sdk::dpp::key_wallet::managed_account::transaction_record::TransactionRecord;
+
+            let mut stmt = guard
+                .prepare(
+                    "SELECT account_type, txid, record
+                     FROM wallet_transactions
+                     WHERE seed_hash = ?1 AND network = ?2",
+                )
+                .map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+            let rows = stmt
+                .query_map(
+                    rusqlite::params![&wallet_id[..], &self.network],
+                    |row| {
+                        let account_key: Vec<u8> = row.get(0)?;
+                        let txid_bytes: Vec<u8> = row.get(1)?;
+                        let record_bytes: Vec<u8> = row.get(2)?;
+                        Ok((account_key, txid_bytes, record_bytes))
+                    },
+                )
+                .map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+
+            for row_result in rows {
+                let (account_key, txid_bytes, record_bytes) = row_result
+                    .map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+
+                let Ok(account_type) = AccountType::from_db_key(&account_key) else {
+                    tracing::warn!(
+                        "persister load: unrecognized account_type bincode in \
+                         wallet_transactions — skipping row"
+                    );
+                    continue;
+                };
+                let Ok(txid) = Txid::from_slice(&txid_bytes) else {
+                    tracing::warn!(
+                        "persister load: invalid txid in wallet_transactions — skipping row"
+                    );
+                    continue;
+                };
+                let record: TransactionRecord =
+                    match bincode::serde::decode_from_slice(
+                        &record_bytes,
+                        bincode::config::standard(),
+                    ) {
+                        Ok((record, _)) => record,
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                "persister load: TransactionRecord bincode decode failed — \
+                                 skipping row (DB written by incompatible crate version?)"
+                            );
+                            continue;
+                        }
+                    };
+                per_account
+                    .entry(account_type)
+                    .or_default()
+                    .transactions
+                    .insert(txid, record);
             }
         }
 
@@ -695,6 +770,18 @@ impl SqliteWalletPersister {
              ON CONFLICT(seed_hash, account_type, pool_type) DO UPDATE SET
                 highest_used = MAX(COALESCE(highest_used, 0), excluded.highest_used)",
         )?;
+        // Phase 10 6c: upsert of per-(account, txid) `TransactionRecord`
+        // rows. The record is bincode serde-encoded — it carries every
+        // field on the struct (context, direction, input/output
+        // details, net_amount, fee, label, first_seen). INSERT OR
+        // REPLACE is last-write-wins per (seed_hash, account_type,
+        // txid, network), which matches
+        // `AccountChangeSet::transactions`'s BTreeMap semantics.
+        let mut upsert_tx_record = tx.prepare_cached(
+            "INSERT OR REPLACE INTO wallet_transactions
+                (seed_hash, account_type, txid, network, record)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+        )?;
 
         for (account_type, bucket) in core.per_account {
             for (outpoint, utxo) in bucket.utxos_added {
@@ -738,22 +825,42 @@ impl SqliteWalletPersister {
                 }
             }
 
-            // `addresses_used` and `transactions` remain deferred.
+            // Phase 10 6c: write per-account transaction records.
+            // Encoded as a single bincode serde blob per row; the
+            // decode path in `load()` reconstructs the full
+            // `TransactionRecord` with its embedded `Transaction`,
+            // `TransactionContext`, classification enums, and
+            // input/output details.
+            if !bucket.transactions.is_empty() {
+                let account_key = account_type.to_db_key();
+                for (txid, record) in &bucket.transactions {
+                    let record_bytes = bincode::serde::encode_to_vec(
+                        record,
+                        bincode::config::standard(),
+                    )
+                    .map_err(|e| {
+                        SqlitePersistError::Encode(format!(
+                            "TransactionRecord bincode encode failed: {e}"
+                        ))
+                    })?;
+                    upsert_tx_record.execute(rusqlite::params![
+                        &wallet_id[..],
+                        &account_key,
+                        txid.as_byte_array(),
+                        network,
+                        record_bytes,
+                    ])?;
+                }
+            }
+
             // `addresses_used` is derived from `highest_used` at
-            // load time (see the write_core doc comment). Transactions
-            // stay owned by SPV's `wallet_transactions` path.
+            // load time (see the write_core doc comment). No
+            // storage needed.
             if !bucket.addresses_used.is_empty() {
                 tracing::debug!(
                     account = ?account_type,
                     count = bucket.addresses_used.len(),
                     "persister: dropping per_account.addresses_used (derived from highest_used on load)"
-                );
-            }
-            if !bucket.transactions.is_empty() {
-                tracing::debug!(
-                    account = ?account_type,
-                    count = bucket.transactions.len(),
-                    "persister: dropping per_account.transactions (SPV owns wallet_transactions on this branch)"
                 );
             }
         }
@@ -1669,5 +1776,135 @@ mod tests {
             std_bucket.utxos_instant_locked.contains(&outpoint),
             "locked outpoint must appear in standard bucket utxos_instant_locked set"
         );
+    }
+
+    /// Phase 10 6c: full load round-trip for per-account transaction
+    /// records. Writes a `TransactionRecord` into the Standard
+    /// bucket, flushes, loads the wallet from SQL, verifies the
+    /// decoded record matches the original field-for-field.
+    #[test]
+    fn test_write_core_transaction_round_trip() {
+        use dash_sdk::dpp::dashcore::hashes::Hash;
+        use dash_sdk::dpp::dashcore::{
+            OutPoint, Transaction, TxIn, TxOut, Txid,
+        };
+        use dash_sdk::dpp::key_wallet::account::account_type::{
+            AccountType, StandardAccountType,
+        };
+        use dash_sdk::dpp::key_wallet::changeset::{AccountChangeSet, WalletChangeSet};
+        use dash_sdk::dpp::key_wallet::managed_account::transaction_record::{
+            TransactionDirection, TransactionRecord,
+        };
+        use dash_sdk::dpp::key_wallet::transaction_checking::TransactionContext;
+        use dash_sdk::dpp::key_wallet::transaction_checking::transaction_router::TransactionType;
+
+        let db = Arc::new(create_test_database().expect("create test db"));
+        let persister = make_persister(db.clone());
+
+        // Wallet row for FK.
+        db.execute(
+            "INSERT INTO wallet
+                (seed_hash, encrypted_seed, salt, nonce,
+                 master_ecdsa_bip44_account_0_epk, uses_password, network)
+             VALUES (?1, ?2, ?3, ?4, ?5, 0, 'testnet')",
+            rusqlite::params![
+                &TEST_WALLET_ID[..],
+                vec![0u8; 32],
+                vec![0u8; 16],
+                vec![0u8; 12],
+                vec![0u8; 33],
+            ],
+        )
+        .expect("insert wallet row");
+
+        let standard = AccountType::Standard {
+            index: 0,
+            standard_account_type: StandardAccountType::BIP44Account,
+        };
+
+        // Build a simple Transaction and wrap it in a TransactionRecord.
+        let pubkey_bytes = [0x02u8; 33];
+        let pubkey =
+            dash_sdk::dpp::dashcore::PublicKey::from_slice(&pubkey_bytes).unwrap();
+        let test_addr = dash_sdk::dpp::dashcore::Address::p2pkh(
+            &pubkey,
+            dash_sdk::dpp::dashcore::Network::Testnet,
+        );
+        let txn = Transaction {
+            version: 2,
+            lock_time: 0,
+            input: vec![TxIn {
+                previous_output: OutPoint {
+                    txid: Txid::from_slice(&[0x01u8; 32]).unwrap(),
+                    vout: 0,
+                },
+                script_sig: Default::default(),
+                sequence: 0xffffffff,
+                witness: Default::default(),
+            }],
+            output: vec![TxOut {
+                value: 25_000_000,
+                script_pubkey: test_addr.script_pubkey(),
+            }],
+            special_transaction_payload: None,
+        };
+        let txid = txn.txid();
+
+        let record = TransactionRecord::new(
+            txn.clone(),
+            TransactionContext::Mempool,
+            TransactionType::Standard,
+            TransactionDirection::Incoming,
+            Vec::new(),
+            Vec::new(),
+            25_000_000,
+        );
+
+        // Write phase.
+        let mut bucket = AccountChangeSet::default();
+        bucket.transactions.insert(txid, record.clone());
+        let mut wcs = WalletChangeSet::default();
+        wcs.per_account.insert(standard, bucket);
+
+        persister.store(
+            TEST_WALLET_ID,
+            PlatformWalletChangeSet {
+                core: Some(wcs),
+                ..Default::default()
+            },
+        );
+        persister.flush(TEST_WALLET_ID).expect("flush");
+
+        // Verify the row landed in SQL.
+        let row_count: i64 = db
+            .shared_connection()
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM wallet_transactions
+                 WHERE seed_hash = ?1 AND network = 'testnet'",
+                rusqlite::params![&TEST_WALLET_ID[..]],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(row_count, 1);
+
+        // Load phase: decode the row back via persister.load().
+        let loaded = persister
+            .load(TEST_WALLET_ID)
+            .expect("load returns changeset");
+        let core = loaded.core.expect("core populated");
+        let std_bucket = core
+            .per_account
+            .get(&standard)
+            .expect("standard bucket present in loaded changeset");
+        let loaded_record = std_bucket
+            .transactions
+            .get(&txid)
+            .expect("transaction record present in loaded bucket");
+
+        // Field-for-field equality via the derived PartialEq on
+        // TransactionRecord.
+        assert_eq!(loaded_record, &record, "TransactionRecord round-trip");
     }
 }

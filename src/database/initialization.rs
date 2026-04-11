@@ -4,7 +4,7 @@ use rusqlite::{Connection, params};
 use std::fs;
 use std::path::Path;
 
-pub const DEFAULT_DB_VERSION: u16 = 36;
+pub const DEFAULT_DB_VERSION: u16 = 37;
 
 pub const DEFAULT_NETWORK: &str = "mainnet";
 
@@ -51,6 +51,9 @@ impl Database {
 
     fn apply_version_changes(&self, version: u16, tx: &Connection) -> rusqlite::Result<()> {
         match version {
+            37 => {
+                self.recreate_wallet_transactions_with_account_attribution(tx)?;
+            }
             36 => {
                 self.add_wallet_account_pool_state_and_utxo_instant_lock(tx)?;
             }
@@ -1082,6 +1085,50 @@ impl Database {
         Ok(())
     }
 
+    /// Migration 37: Recreate `wallet_transactions` with per-account
+    /// attribution (Phase 10 6c).
+    ///
+    /// The previous `wallet_transactions` table was effectively dead
+    /// code: the `replace_wallet_transactions` writer was never called
+    /// anywhere, and no SELECTs read it. It was a schema-only table
+    /// with per-wallet keying `(seed_hash, txid, network)` that
+    /// couldn't represent `cs.core.per_account[AccountType].transactions`
+    /// (the same txid can live in two account buckets).
+    ///
+    /// This migration drops the old dead rows and recreates the
+    /// table with:
+    /// - A per-account primary key `(seed_hash, account_type, txid, network)`
+    /// - A single `record BLOB NOT NULL` column holding a bincode
+    ///   serde-encoded `TransactionRecord` (simpler than mapping ~10
+    ///   individual fields — reuses the type's own serde derive)
+    ///
+    /// Dropping existing rows is safe: they were never read by
+    /// anyone, so there's no data to lose in any functional sense.
+    fn recreate_wallet_transactions_with_account_attribution(
+        &self,
+        conn: &Connection,
+    ) -> rusqlite::Result<()> {
+        conn.execute("DROP TABLE IF EXISTS wallet_transactions", [])?;
+        conn.execute(
+            "CREATE TABLE wallet_transactions (
+                seed_hash BLOB NOT NULL,
+                account_type BLOB NOT NULL,
+                txid BLOB NOT NULL,
+                network TEXT NOT NULL,
+                record BLOB NOT NULL,
+                PRIMARY KEY (seed_hash, account_type, txid, network),
+                FOREIGN KEY (seed_hash) REFERENCES wallet(seed_hash) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_wallet_transactions_seed_network
+             ON wallet_transactions (seed_hash, network)",
+            [],
+        )?;
+        Ok(())
+    }
+
     /// Migration 36: Add `wallet_account_pool_state` table and
     /// `utxos.is_instant_locked` column for Phase 10 uniform
     /// key-wallet account state persistence.
@@ -1211,8 +1258,10 @@ mod test {
             "last_nullifier_sync_timestamp",
         );
 
-        // wallet_transactions.status (v30)
-        assert_column_exists(conn, "wallet_transactions", "status");
+        // `wallet_transactions.status` was introduced in v30 and
+        // removed in v37 when the whole table was recreated with
+        // per-account attribution (Phase 10 6c). The v37 assertions
+        // below cover the new shape.
 
         // contact_private_info table (v29)
         assert_table_exists(conn, "contact_private_info");
@@ -1237,6 +1286,45 @@ mod test {
         }
         // utxos.is_instant_locked added in v36.
         assert_column_exists(conn, "utxos", "is_instant_locked");
+
+        // wallet_transactions recreated with per-account attribution
+        // in v37 (Phase 10 6c). Previously keyed on (seed_hash, txid,
+        // network); now (seed_hash, account_type, txid, network) with
+        // a single `record BLOB` column holding a bincode
+        // serde-encoded `TransactionRecord`.
+        assert_table_exists(conn, "wallet_transactions");
+        for col in ["seed_hash", "account_type", "txid", "network", "record"] {
+            assert_column_exists(conn, "wallet_transactions", col);
+        }
+        // The old columns (timestamp/height/block_hash/net_amount/fee/
+        // label/is_ours/raw_transaction/status) must be gone.
+        for old_col in [
+            "timestamp",
+            "height",
+            "block_hash",
+            "net_amount",
+            "fee",
+            "label",
+            "is_ours",
+            "raw_transaction",
+            "status",
+        ] {
+            assert_column_not_exists(conn, "wallet_transactions", old_col);
+        }
+    }
+
+    fn assert_column_not_exists(conn: &Connection, table: &str, column: &str) {
+        let exists: bool = conn
+            .query_row(
+                &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name='{column}'"),
+                [],
+                |row| row.get::<_, i32>(0).map(|c| c > 0),
+            )
+            .unwrap();
+        assert!(
+            !exists,
+            "column `{column}` should NOT exist in table `{table}`"
+        );
     }
 
     fn assert_table_not_exists(conn: &Connection, table: &str) {
@@ -1350,7 +1438,7 @@ mod test {
             )
             .unwrap();
         assert_eq!(version, DEFAULT_DB_VERSION);
-        assert_eq!(version, 36);
+        assert_eq!(version, 37);
 
         assert_v33_schema(&conn);
     }
@@ -1467,7 +1555,7 @@ mod test {
         );
 
         // Verify final version
-        assert_eq!(db.db_schema_version().unwrap(), 36);
+        assert_eq!(db.db_schema_version().unwrap(), 37);
 
         // Verify full v33 schema
         let conn = db.conn.lock().unwrap();

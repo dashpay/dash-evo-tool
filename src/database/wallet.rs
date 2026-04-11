@@ -2,12 +2,9 @@ use crate::database::{CorruptedBlobError, Database};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::{
     ClosedKeyItem, DerivationPathReference, DerivationPathType, OpenWalletSeed, Wallet, WalletSeed,
-    WalletTransaction,
 };
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dpp::dashcore::address::{NetworkChecked, NetworkUnchecked};
-use dash_sdk::dpp::dashcore::consensus::serialize;
-use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{self, Network};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, ExtendedPubKey};
@@ -367,105 +364,33 @@ impl Database {
         Ok(())
     }
 
+    /// Phase 10 6c: `wallet_transactions` table with per-account
+    /// attribution. One row per `(seed_hash, account_type, txid,
+    /// network)` — same txid can appear in multiple accounts'
+    /// buckets because `cs.core.per_account[AccountType].transactions`
+    /// is per-account. `record` is a bincode serde-encoded
+    /// `TransactionRecord`.
     pub fn initialize_wallet_transactions_table(&self, conn: &Connection) -> rusqlite::Result<()> {
         conn.execute(
             "CREATE TABLE IF NOT EXISTS wallet_transactions (
                 seed_hash BLOB NOT NULL,
+                account_type BLOB NOT NULL,
                 txid BLOB NOT NULL,
                 network TEXT NOT NULL,
-                timestamp INTEGER NOT NULL,
-                height INTEGER,
-                block_hash BLOB,
-                net_amount INTEGER NOT NULL,
-                fee INTEGER,
-                label TEXT,
-                is_ours INTEGER NOT NULL,
-                raw_transaction BLOB NOT NULL,
-                status INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY (seed_hash, txid, network),
+                record BLOB NOT NULL,
+                PRIMARY KEY (seed_hash, account_type, txid, network),
                 FOREIGN KEY (seed_hash) REFERENCES wallet(seed_hash) ON DELETE CASCADE
             )",
             [],
         )?;
 
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_wallet_transactions_network_ts
-             ON wallet_transactions (network, timestamp DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_wallet_transactions_seed_network
+             ON wallet_transactions (seed_hash, network)",
             [],
         )?;
 
         Ok(())
-    }
-
-    /// Replace all persisted transactions for a wallet+network with the provided set.
-    ///
-    /// Uses `INSERT OR REPLACE` so that when upstream returns the same txid
-    /// twice (e.g. as mempool + confirmed), the last-written version wins.
-    /// Callers should sort confirmed entries after unconfirmed to ensure the
-    /// confirmed version takes precedence.
-    pub fn replace_wallet_transactions(
-        &self,
-        seed_hash: &[u8; 32],
-        network: &Network,
-        transactions: &[WalletTransaction],
-    ) -> rusqlite::Result<()> {
-        let mut conn = self.conn.lock().unwrap();
-        let tx = conn.transaction()?;
-        let network_str = network.to_string();
-
-        tx.execute(
-            "DELETE FROM wallet_transactions WHERE seed_hash = ?1 AND network = ?2",
-            params![seed_hash, &network_str],
-        )?;
-
-        if transactions.is_empty() {
-            tx.commit()?;
-            return Ok(());
-        }
-
-        {
-            let mut insert_stmt = tx.prepare(
-                "INSERT OR REPLACE INTO wallet_transactions (
-                    seed_hash,
-                    txid,
-                    network,
-                    timestamp,
-                    height,
-                    block_hash,
-                    net_amount,
-                    fee,
-                    label,
-                    is_ours,
-                    raw_transaction,
-                    status
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-            )?;
-
-            for transaction in transactions {
-                let tx_bytes = serialize(&transaction.transaction);
-                let block_hash_bytes: Option<Vec<u8>> = transaction
-                    .block_hash
-                    .as_ref()
-                    .map(|hash| hash.as_raw_hash().as_byte_array().to_vec());
-                let fee = transaction.fee.map(|f| f as i64);
-                insert_stmt.execute(params![
-                    seed_hash,
-                    <dash_sdk::dpp::dashcore::Txid as AsRef<[u8]>>::as_ref(&transaction.txid),
-                    &network_str,
-                    transaction.timestamp as i64,
-                    transaction.height.map(|h| h as i64),
-                    block_hash_bytes.as_deref(),
-                    transaction.net_amount,
-                    fee,
-                    transaction.label.as_deref(),
-                    transaction.is_ours,
-                    tx_bytes,
-                    transaction.status as u8,
-                ])?;
-            }
-        }
-
-        tx.commit()
     }
 
     /// Retrieve all wallets for a specific network, including their addresses, balances, and known addresses.

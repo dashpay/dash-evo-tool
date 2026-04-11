@@ -4,7 +4,7 @@ use rusqlite::{Connection, params};
 use std::fs;
 use std::path::Path;
 
-pub const DEFAULT_DB_VERSION: u16 = 37;
+pub const DEFAULT_DB_VERSION: u16 = 38;
 
 pub const DEFAULT_NETWORK: &str = "mainnet";
 
@@ -51,6 +51,9 @@ impl Database {
 
     fn apply_version_changes(&self, version: u16, tx: &Connection) -> rusqlite::Result<()> {
         match version {
+            38 => {
+                self.add_dip15_crypto_columns_to_contact_requests(tx)?;
+            }
             37 => {
                 self.recreate_wallet_transactions_with_account_attribution(tx)?;
             }
@@ -1085,6 +1088,80 @@ impl Database {
         Ok(())
     }
 
+    /// Migration 38: Add DIP-15 cryptographic columns to
+    /// `dashpay_contact_requests` (Item 7).
+    ///
+    /// The `ContactRequest` struct in key-wallet carries six fields
+    /// that were NOT previously persisted to evo-tool's SQL — the
+    /// DIP-15 crypto material is needed for `EstablishedContact`
+    /// reconstruction on startup and for re-encrypting payments to
+    /// contacts:
+    ///
+    /// - `sender_key_index INTEGER` — index of the sender's identity
+    ///   public key used for ECDH
+    /// - `recipient_key_index INTEGER` — index of the recipient's
+    ///   identity public key used for ECDH
+    /// - `account_reference INTEGER` — encrypted account reference
+    /// - `encrypted_public_key BLOB` — encrypted xpub for payment
+    ///   address derivation
+    /// - `encrypted_account_label_bytes BLOB` (nullable) —
+    ///   ciphertext of the optional account label (the existing
+    ///   `account_label TEXT` column stays separate; it's a
+    ///   plaintext display field, not the ciphertext)
+    /// - `auto_accept_proof BLOB` (nullable) — DIP-15 auto-accept
+    ///   proof
+    /// - `core_height_created_at INTEGER` — Core chain height at
+    ///   creation time
+    ///
+    /// All new columns are nullable so the migration can run
+    /// without a backfill — existing rows keep their NULL values
+    /// and the load path skips them until the next background
+    /// contact-request sync cycle repopulates them from platform.
+    ///
+    /// Idempotent: probes `pragma_table_info` before each
+    /// `ALTER TABLE`.
+    fn add_dip15_crypto_columns_to_contact_requests(
+        &self,
+        conn: &Connection,
+    ) -> rusqlite::Result<()> {
+        let add_column_if_missing =
+            |col_name: &str, col_def: &str| -> rusqlite::Result<()> {
+                let has_col: bool = conn.query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM pragma_table_info('dashpay_contact_requests')
+                         WHERE name='{col_name}'"
+                    ),
+                    [],
+                    |row| row.get::<_, i32>(0).map(|c| c > 0),
+                )?;
+                if !has_col {
+                    conn.execute(
+                        &format!(
+                            "ALTER TABLE dashpay_contact_requests ADD COLUMN {col_def}"
+                        ),
+                        [],
+                    )?;
+                }
+                Ok(())
+            };
+
+        add_column_if_missing("sender_key_index", "sender_key_index INTEGER")?;
+        add_column_if_missing("recipient_key_index", "recipient_key_index INTEGER")?;
+        add_column_if_missing("account_reference", "account_reference INTEGER")?;
+        add_column_if_missing("encrypted_public_key", "encrypted_public_key BLOB")?;
+        add_column_if_missing(
+            "encrypted_account_label_bytes",
+            "encrypted_account_label_bytes BLOB",
+        )?;
+        add_column_if_missing("auto_accept_proof", "auto_accept_proof BLOB")?;
+        add_column_if_missing(
+            "core_height_created_at",
+            "core_height_created_at INTEGER",
+        )?;
+
+        Ok(())
+    }
+
     /// Migration 37: Recreate `wallet_transactions` with per-account
     /// attribution (Phase 10 6c).
     ///
@@ -1311,6 +1388,20 @@ mod test {
         ] {
             assert_column_not_exists(conn, "wallet_transactions", old_col);
         }
+
+        // DIP-15 crypto columns added to `dashpay_contact_requests`
+        // in v38 (Item 7).
+        for col in [
+            "sender_key_index",
+            "recipient_key_index",
+            "account_reference",
+            "encrypted_public_key",
+            "encrypted_account_label_bytes",
+            "auto_accept_proof",
+            "core_height_created_at",
+        ] {
+            assert_column_exists(conn, "dashpay_contact_requests", col);
+        }
     }
 
     fn assert_column_not_exists(conn: &Connection, table: &str, column: &str) {
@@ -1438,7 +1529,7 @@ mod test {
             )
             .unwrap();
         assert_eq!(version, DEFAULT_DB_VERSION);
-        assert_eq!(version, 37);
+        assert_eq!(version, 38);
 
         assert_v33_schema(&conn);
     }
@@ -1555,7 +1646,7 @@ mod test {
         );
 
         // Verify final version
-        assert_eq!(db.db_schema_version().unwrap(), 37);
+        assert_eq!(db.db_schema_version().unwrap(), 38);
 
         // Verify full v33 schema
         let conn = db.conn.lock().unwrap();

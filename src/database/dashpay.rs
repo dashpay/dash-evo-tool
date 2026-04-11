@@ -103,7 +103,15 @@ impl crate::database::Database {
             [],
         )?;
 
-        // Contact requests table
+        // Contact requests table. DIP-15 crypto columns
+        // (sender_key_index, recipient_key_index, account_reference,
+        // encrypted_public_key, encrypted_account_label_bytes,
+        // auto_accept_proof, core_height_created_at) were added in v38
+        // to support full `ContactRequest` reconstruction on wallet
+        // open without re-fetching from platform (Item 7). They're
+        // nullable so the migration runs without backfill — existing
+        // rows stay NULL until the next background contact-request
+        // sync repopulates them.
         tx.execute(
             "CREATE TABLE IF NOT EXISTS dashpay_contact_requests (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -116,7 +124,14 @@ impl crate::database::Database {
                 status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'rejected', 'expired')),
                 created_at INTEGER DEFAULT (unixepoch()),
                 responded_at INTEGER,
-                expires_at INTEGER
+                expires_at INTEGER,
+                sender_key_index INTEGER,
+                recipient_key_index INTEGER,
+                account_reference INTEGER,
+                encrypted_public_key BLOB,
+                encrypted_account_label_bytes BLOB,
+                auto_accept_proof BLOB,
+                core_height_created_at INTEGER
             )",
             [],
         )?;

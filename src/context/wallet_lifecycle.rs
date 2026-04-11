@@ -585,12 +585,18 @@ impl AppContext {
             (guard.platform_wallet.clone(), guard.seed_hash())
         };
 
-        // Check address ownership via PlatformWallet's async state lock.
+        // Check address ownership via PlatformWallet's async state
+        // lock. Uses the per-pool O(1) `contains_address` (PC1 from
+        // the performance review) rather than rebuilding the full
+        // address catalog via `all_from_wallet_info`.
         if let Some(pw) = &platform_wallet {
             let info = pw.state().await;
-            let has_it = crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.core_wallet)
+            let has_it = info
+                .core_wallet
+                .accounts
+                .all_accounts()
                 .iter()
-                .any(|a| a.address == address);
+                .any(|a| a.contains_address(&address));
             if has_it {
                 return Ok(false);
             }

@@ -872,6 +872,18 @@ impl AppContext {
         let mi_dpns_names = Self::convert_dpns_names(&qualified_identity.dpns_names);
         let mi_status = Self::convert_identity_status(qualified_identity.status);
 
+        // 3b. Hydrate DashPay state (profile + payment history) from
+        // SQL. The persister writes `dashpay_profiles` and
+        // `dashpay_payments` on flush (Phase 9b-1, 9b-2), but
+        // `SqliteWalletPersister::load()` is a no-op because it
+        // can't construct a full `IdentityEntry` without access to
+        // the identity blob. Instead, we rehydrate the DashPay
+        // subset here, where we already have the identity and are
+        // about to write it into the ManagedIdentity. This closes
+        // the write-only persistence gap (data-integrity C1).
+        let (mi_dashpay_profile, mi_dashpay_payments) =
+            self.load_dashpay_state_for_identity(&identity_id);
+
         // 4. Add or update the identity in the manager
         if let Some(managed) = manager.identity_manager.managed_identity_mut(&identity_id) {
             // Update existing managed identity
@@ -881,6 +893,8 @@ impl AppContext {
             managed.status = mi_status;
             managed.wallet_seed_hash = Some(seed_hash);
             managed.top_ups = qualified_identity.top_ups.clone();
+            managed.dashpay_profile = mi_dashpay_profile;
+            managed.dashpay_payments = mi_dashpay_payments;
             if let Some(alias) = &qualified_identity.alias {
                 managed.label = Some(alias.clone());
             }
@@ -901,6 +915,8 @@ impl AppContext {
                         managed.status = mi_status;
                         managed.wallet_seed_hash = Some(seed_hash);
                         managed.top_ups = qualified_identity.top_ups.clone();
+                        managed.dashpay_profile = mi_dashpay_profile;
+                        managed.dashpay_payments = mi_dashpay_payments;
                         if let Some(alias) = &qualified_identity.alias {
                             managed.label = Some(alias.clone());
                         }
@@ -920,6 +936,106 @@ impl AppContext {
                 }
             }
         }
+    }
+
+    /// Hydrate the DashPay subset (`dashpay_profile` +
+    /// `dashpay_payments`) for an identity from SQL. Called by
+    /// `sync_identity_to_platform_wallet` to rebuild the state that
+    /// the persister wrote on the previous run. Returns
+    /// `(None, empty map)` if no rows exist or the SQL read fails.
+    ///
+    /// The persister writes these fields via `write_identity_dashpay_subset`
+    /// on flush. `SqliteWalletPersister::load()` intentionally does
+    /// NOT read them — the persister layer doesn't have access to
+    /// the full `Identity` blob needed to construct an `IdentityEntry`,
+    /// so the read happens here where the `QualifiedIdentity` is
+    /// already in scope.
+    fn load_dashpay_state_for_identity(
+        &self,
+        identity_id: &dash_sdk::platform::Identifier,
+    ) -> (
+        Option<platform_wallet::wallet::dashpay::DashPayProfile>,
+        std::collections::BTreeMap<String, platform_wallet::wallet::dashpay::PaymentEntry>,
+    ) {
+        use platform_wallet::wallet::dashpay::{
+            DashPayProfile, PaymentDirection, PaymentEntry, PaymentStatus,
+        };
+
+        let network_str = self.network.to_string();
+
+        // Profile: straightforward map from StoredProfile to DashPayProfile.
+        let profile = match self.db.load_dashpay_profile(identity_id, &network_str) {
+            Ok(Some(stored)) => Some(DashPayProfile {
+                display_name: stored.display_name,
+                bio: stored.bio,
+                avatar_url: stored.avatar_url,
+                avatar_bytes: stored.avatar_bytes,
+                public_message: stored.public_message,
+            }),
+            Ok(None) => None,
+            Err(e) => {
+                tracing::debug!(
+                    identity = %identity_id,
+                    error = %e,
+                    "load_dashpay_state: profile read failed — leaving empty"
+                );
+                None
+            }
+        };
+
+        // Payment history: convert StoredPayment rows to a
+        // BTreeMap<tx_id, PaymentEntry>. `from_identity_id` vs
+        // `to_identity_id` determines direction from the owner's
+        // perspective.
+        let mut payments = std::collections::BTreeMap::new();
+        const LOAD_LIMIT: u32 = 10_000;
+        let identity_bytes = identity_id.to_buffer();
+        match self.db.load_payment_history(identity_id, LOAD_LIMIT) {
+            Ok(stored_payments) => {
+                for sp in stored_payments {
+                    let (direction, counterparty_bytes) =
+                        if sp.from_identity_id == identity_bytes {
+                            (PaymentDirection::Sent, &sp.to_identity_id)
+                        } else {
+                            (PaymentDirection::Received, &sp.from_identity_id)
+                        };
+                    let Ok(counterparty_id) =
+                        dash_sdk::platform::Identifier::from_bytes(counterparty_bytes)
+                    else {
+                        tracing::debug!(
+                            identity = %identity_id,
+                            tx_id = %sp.tx_id,
+                            "load_dashpay_state: invalid counterparty id — skipping payment"
+                        );
+                        continue;
+                    };
+                    let status = match sp.status.as_str() {
+                        "confirmed" => PaymentStatus::Confirmed,
+                        "failed" => PaymentStatus::Failed,
+                        _ => PaymentStatus::Pending,
+                    };
+                    payments.insert(
+                        sp.tx_id,
+                        PaymentEntry {
+                            counterparty_id,
+                            amount_duffs: sp.amount as u64,
+                            memo: sp.memo,
+                            direction,
+                            status,
+                        },
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::debug!(
+                    identity = %identity_id,
+                    error = %e,
+                    "load_dashpay_state: payment history read failed — leaving empty"
+                );
+            }
+        }
+
+        (profile, payments)
     }
 
     /// Sync all locally stored identities to platform-wallet IdentityManagers.

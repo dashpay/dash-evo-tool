@@ -32,6 +32,22 @@ pub struct StoredContact {
     pub last_seen: Option<i64>,
 }
 
+/// DIP-15 cryptographic material for a persisted contact request
+/// (Item 7a/7b). Every field is `Option` so legacy call sites can
+/// pass `Default::default()` and let the background contact sync
+/// repopulate them later — the load path skips `EstablishedContact`
+/// reconstruction for rows where any required field is `None`.
+#[derive(Debug, Clone, Default)]
+pub struct ContactRequestCryptoFields {
+    pub sender_key_index: Option<u32>,
+    pub recipient_key_index: Option<u32>,
+    pub account_reference: Option<u32>,
+    pub encrypted_public_key: Option<Vec<u8>>,
+    pub encrypted_account_label_bytes: Option<Vec<u8>>,
+    pub auto_accept_proof: Option<Vec<u8>>,
+    pub core_height_created_at: Option<u32>,
+}
+
 /// DashPay contact request stored locally
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredContactRequest {
@@ -418,6 +434,7 @@ impl crate::database::Database {
 
     // Contact request operations
 
+    #[allow(clippy::too_many_arguments)]
     pub fn save_contact_request(
         &self,
         from_identity_id: &Identifier,
@@ -426,11 +443,15 @@ impl crate::database::Database {
         to_username: Option<&str>,
         account_label: Option<&str>,
         request_type: &str,
+        crypto: ContactRequestCryptoFields,
     ) -> rusqlite::Result<i64> {
         let sql = "
             INSERT INTO dashpay_contact_requests
-            (from_identity_id, to_identity_id, network, to_username, account_label, request_type)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            (from_identity_id, to_identity_id, network, to_username, account_label,
+             request_type, sender_key_index, recipient_key_index, account_reference,
+             encrypted_public_key, encrypted_account_label_bytes, auto_accept_proof,
+             core_height_created_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
         ";
 
         let conn = self.conn.lock().unwrap();
@@ -443,6 +464,13 @@ impl crate::database::Database {
                 to_username,
                 account_label,
                 request_type,
+                crypto.sender_key_index,
+                crypto.recipient_key_index,
+                crypto.account_reference,
+                crypto.encrypted_public_key,
+                crypto.encrypted_account_label_bytes,
+                crypto.auto_accept_proof,
+                crypto.core_height_created_at,
             ],
         )?;
 

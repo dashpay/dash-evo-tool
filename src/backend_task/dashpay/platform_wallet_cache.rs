@@ -15,14 +15,18 @@
 //! outer operation.
 //!
 //! The `_with_pw_blocking` variants take an already-resolved
-//! `&PlatformWallet` and are only for the SPV frame loop in
+//! `&PlatformWallet` and are called from
 //! `context::transaction_processing`, which holds a write guard on
-//! the owning evo-tool `Wallet`. Going through `AppContext` there
-//! would re-acquire a read guard on that same wallet and deadlock
-//! deterministically on `std::sync::RwLock` (read-while-write on
-//! the same thread). Both blocking helpers use
-//! `PlatformWallet::state_mut_blocking`, so they MUST NOT be called
-//! from a tokio async context.
+//! the owning evo-tool `Wallet` on the egui main thread (ZMQ tx
+//! finality path). Going through `AppContext` there would re-acquire
+//! a read guard on that same wallet and deadlock deterministically on
+//! `std::sync::RwLock`. They cannot use `state_mut_blocking()`
+//! either, because the main thread is inside the tokio runtime and
+//! `tokio::sync::RwLock::blocking_write` panics in that context.
+//! Instead they dispatch the mutation to a `tokio::spawn`ed task that
+//! runs on a worker thread and uses the async `state_mut().await`
+//! path. Mutations are fire-and-forget — the persister catches the
+//! changeset on the next flush.
 
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -112,32 +116,53 @@ pub(crate) async fn cache_payment(
     });
 }
 
-// --- Blocking variants (SPV transaction-processing frame loop) ---
+// --- Deferred variants (called from main-thread ZMQ tx finality) ---
+//
+// Take an already-resolved `&PlatformWallet` so they can be called from
+// `context::transaction_processing`, which holds a write guard on the
+// owning evo-tool `Wallet` on the egui main thread. Going through
+// `AppContext` there would re-acquire a read guard on the same wallet
+// and deadlock. Cannot use `state_mut_blocking()` either, because the
+// main thread is inside the tokio runtime and
+// `tokio::sync::RwLock::blocking_write` panics in that context. Instead
+// they dispatch the mutation to a `tokio::spawn`ed task that runs on a
+// worker thread and uses the async `state_mut().await` path.
+// Fire-and-forget — the persister catches the changeset on the next
+// flush.
 
-/// Blocking payment-cache helper for the SPV frame loop. Records a
-/// DashPay payment entry on the owner's `ManagedIdentity` and queues
-/// the emitted changeset. Takes an already-resolved `&PlatformWallet`
-/// to avoid deadlocking against a held write guard on the owning
-/// `Wallet` — see the module header for the rationale.
+/// Payment-cache helper called from the main thread on ZMQ tx
+/// finality. Records a DashPay payment entry on the owner's
+/// `ManagedIdentity` and queues the emitted changeset. Takes an
+/// already-resolved `&PlatformWallet` to avoid deadlocking against a
+/// held write guard on the owning evo-tool `Wallet`.
+///
+/// Mutation runs in a `tokio::spawn`ed task — the main thread cannot
+/// take the wallet-manager write lock directly (tokio's
+/// `blocking_write` panics inside the runtime context). Fire-and-
+/// forget: the persister catches the changeset on the next flush.
 pub(crate) fn cache_payment_with_pw_blocking(
     pw: &PlatformWallet,
     owner_id: &Identifier,
     tx_id: String,
     entry: PaymentEntry,
 ) {
-    let id_cs = {
-        let mut state = pw.state_mut_blocking();
-        let Some(managed) = state.identity_manager.managed_identity_mut(owner_id) else {
-            tracing::debug!(
-                identity = %owner_id,
-                "platform-wallet cache: identity not in IdentityManager"
-            );
-            return;
+    let pw = pw.clone();
+    let owner_id = *owner_id;
+    tokio::spawn(async move {
+        let id_cs = {
+            let mut state = pw.state_mut().await;
+            let Some(managed) = state.identity_manager.managed_identity_mut(&owner_id) else {
+                tracing::debug!(
+                    identity = %owner_id,
+                    "platform-wallet cache: identity not in IdentityManager"
+                );
+                return;
+            };
+            managed.record_dashpay_payment(tx_id, entry)
         };
-        managed.record_dashpay_payment(tx_id, entry)
-    };
-    pw.queue_persist(PlatformWalletChangeSet {
-        identities: Some(id_cs),
-        ..Default::default()
+        pw.queue_persist(PlatformWalletChangeSet {
+            identities: Some(id_cs),
+            ..Default::default()
+        });
     });
 }

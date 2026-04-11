@@ -1288,8 +1288,9 @@ impl WalletsBalancesScreen {
         };
         let network = self.app_context.network;
 
-        if let Some(pw) = wallet.platform_wallet.as_ref() {
-            let info = pw.state_blocking();
+        if let Some(pw) = wallet.platform_wallet.as_ref()
+            && let Some(info) = pw.try_state()
+        {
             for addr_info in crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.core_wallet) {
                 let (cat, _) = crate::ui::wallets::account_summary::categorize_account_path(
                     &addr_info.derivation_path,
@@ -2913,7 +2914,7 @@ impl ScreenLike for WalletsBalancesScreen {
                         .map(|addr| addr.assume_checked())
                         .and_then(|addr| {
                             let pw = wallet.platform_wallet.as_ref()?;
-                            let info = pw.state_blocking();
+                            let info = pw.try_state()?;
                             crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.core_wallet)
                                 .into_iter()
                                 .find(|a| a.address == addr)

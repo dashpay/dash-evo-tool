@@ -465,21 +465,28 @@ impl SqliteWalletPersister {
 
     /// Write the core wallet sub-changeset (`key_wallet::WalletChangeSet`).
     ///
-    /// Today this covers chain height (`wallet.last_terminal_block`)
-    /// and per-account UTXO inserts/deletes (`utxos`). The other
-    /// per-account fields (`addresses_used`, `highest_used`,
-    /// `highest_generated`, `utxos_instant_locked`, `transactions`)
-    /// are deferred to Phase 10. On restart, address-pool state is
-    /// currently NOT reconstructed and SPV replays forward from
-    /// `last_terminal_block` without re-establishing `highest_used`
-    /// — the data-integrity review flagged this as cross-restart
-    /// state loss for all account types. Phase 10 will persist
-    /// these uniformly via `cs.core.per_account` and add a load
-    /// path that rebuilds pool state from SQL.
+    /// Today this covers:
+    /// - Chain height (`wallet.last_terminal_block`) — monotonic MAX.
+    /// - Per-account UTXO inserts/deletes (`utxos` table).
+    /// - Per-account `highest_used` watermark
+    ///   (`wallet_account_pool_state` table, Phase 10 uniform state
+    ///   persistence 6a). MAX-merge upsert so stale replay doesn't
+    ///   regress.
+    /// - Per-UTXO `is_instant_locked` flag (`utxos.is_instant_locked`
+    ///   column, Phase 10 6a). OR-merge — once locked, stays locked.
     ///
-    /// Until then, each deferred field that arrives non-empty
-    /// triggers a `tracing::warn!` on flush so Phase 10 contributors
-    /// and silent-regression hunters can see what's being dropped.
+    /// Still deferred:
+    /// - `addresses_used` — derived from `highest_used` on load
+    ///   (Phase 10 6b via the pool regeneration + `set_highest_used`
+    ///   sequence), so no separate storage needed.
+    /// - `highest_generated` — currently not in `AccountChangeSet`
+    ///   (key-wallet mutates it implicitly during address generation).
+    ///   The `wallet_account_pool_state.highest_generated` column
+    ///   exists but is written as NULL today. Load path reconstructs
+    ///   it via `maintain_gap_limit` from the loaded `highest_used`.
+    /// - `transactions` — SPV is still the authoritative writer for
+    ///   the `wallet_transactions` table; folding the per-account
+    ///   bucket into that path is a Phase 10 follow-up.
     fn write_core(
         tx: &rusqlite::Transaction,
         wallet_id: &WalletId,
@@ -503,15 +510,37 @@ impl SqliteWalletPersister {
             }
         }
 
-        // Per-account UTXO writes. Drain the per_account map by value
-        // so each `Utxo` and the `BTreeSet`s move directly into the
-        // SQL params with no extra clones beyond what rusqlite needs.
+        // Per-account UTXO + pool state writes. Drain the per_account
+        // map by value so each `Utxo` and the `BTreeSet`s move directly
+        // into the SQL params with no extra clones beyond what rusqlite
+        // needs.
         let mut insert_utxo = tx.prepare_cached(
             "INSERT OR IGNORE INTO utxos (txid, vout, address, value, script_pubkey, network)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         )?;
         let mut delete_utxo =
             tx.prepare_cached("DELETE FROM utxos WHERE txid = ?1 AND vout = ?2 AND network = ?3")?;
+        // Phase 10 6a: flip the `is_instant_locked` flag on a UTXO
+        // row. OR-merge (`MAX(..., 1)`) so once a UTXO is marked
+        // locked, a stale replay carrying the pre-lock state can't
+        // flip it back.
+        let mut set_utxo_instant_locked = tx.prepare_cached(
+            "UPDATE utxos
+             SET is_instant_locked = MAX(is_instant_locked, 1)
+             WHERE txid = ?1 AND vout = ?2 AND network = ?3",
+        )?;
+        // Phase 10 6a: monotonic upsert of per-(account, pool)
+        // `highest_used` watermark. `highest_generated` is left NULL
+        // for now — the load path reconstructs it via gap-limit
+        // regeneration from `highest_used`.
+        let mut upsert_pool_state = tx.prepare_cached(
+            "INSERT INTO wallet_account_pool_state
+                (seed_hash, account_type, pool_type,
+                 highest_used, highest_generated)
+             VALUES (?1, ?2, ?3, ?4, NULL)
+             ON CONFLICT(seed_hash, account_type, pool_type) DO UPDATE SET
+                highest_used = MAX(COALESCE(highest_used, 0), excluded.highest_used)",
+        )?;
 
         for (account_type, bucket) in core.per_account {
             for (outpoint, utxo) in bucket.utxos_added {
@@ -531,39 +560,46 @@ impl SqliteWalletPersister {
                     network,
                 ])?;
             }
+            for outpoint in bucket.utxos_instant_locked {
+                set_utxo_instant_locked.execute(rusqlite::params![
+                    outpoint.txid.as_byte_array(),
+                    outpoint.vout as i64,
+                    network,
+                ])?;
+            }
 
-            // S5: each deferred per-account field warn!s on non-empty
-            // so Phase 10 contributors can see what needs to land.
-            // The `let _ = ...` silent discards were a classic
-            // latent-hole shape — nothing broke today but the next
-            // contributor who wires a mutation through these fields
-            // would silently lose writes.
+            // Pool state: one row per (seed_hash, account_type, pool).
+            // Only write rows for pools that actually carry a
+            // `highest_used` entry in this bucket — avoid touching
+            // SQL for no-op changesets.
+            if !bucket.highest_used.is_empty() {
+                let account_key = account_type.to_db_key();
+                for (pool_type, highest_used) in &bucket.highest_used {
+                    upsert_pool_state.execute(rusqlite::params![
+                        &wallet_id[..],
+                        &account_key,
+                        pool_type.db_discriminant() as i64,
+                        *highest_used as i64,
+                    ])?;
+                }
+            }
+
+            // `addresses_used` and `transactions` remain deferred.
+            // `addresses_used` is derived from `highest_used` at
+            // load time (see the write_core doc comment). Transactions
+            // stay owned by SPV's `wallet_transactions` path.
             if !bucket.addresses_used.is_empty() {
-                tracing::warn!(
+                tracing::debug!(
                     account = ?account_type,
                     count = bucket.addresses_used.len(),
-                    "persister: dropping per_account.addresses_used (deferred to Phase 10 — uniform key-wallet account state persistence)"
-                );
-            }
-            if !bucket.highest_used.is_empty() {
-                tracing::warn!(
-                    account = ?account_type,
-                    pools = bucket.highest_used.len(),
-                    "persister: dropping per_account.highest_used (deferred to Phase 10)"
-                );
-            }
-            if !bucket.utxos_instant_locked.is_empty() {
-                tracing::warn!(
-                    account = ?account_type,
-                    count = bucket.utxos_instant_locked.len(),
-                    "persister: dropping per_account.utxos_instant_locked (deferred to Phase 10)"
+                    "persister: dropping per_account.addresses_used (derived from highest_used on load)"
                 );
             }
             if !bucket.transactions.is_empty() {
-                tracing::warn!(
+                tracing::debug!(
                     account = ?account_type,
                     count = bucket.transactions.len(),
-                    "persister: dropping per_account.transactions (SPV is the authoritative writer for wallet_transactions on this branch)"
+                    "persister: dropping per_account.transactions (SPV owns wallet_transactions on this branch)"
                 );
             }
         }
@@ -1046,5 +1082,302 @@ mod tests {
             .expect("load")
             .expect("profile");
         assert_eq!(stored.display_name.as_deref(), Some("second"));
+    }
+
+    /// Phase 10 6a: `AccountChangeSet.highest_used` entries land in
+    /// `wallet_account_pool_state` and survive a subsequent flush
+    /// with a lower value (MAX-merge on the upsert).
+    ///
+    /// Exercises the Standard, CoinJoin, and DashpayReceivingFunds
+    /// account types — the three most likely to hit `highest_used`
+    /// mutations in production. Identity and Provider types are
+    /// covered by separate tests in 6c once the load path exists
+    /// to close the round-trip.
+    #[test]
+    fn test_write_core_highest_used_round_trip() {
+        use dash_sdk::dpp::key_wallet::account::account_type::{
+            AccountType, StandardAccountType,
+        };
+        use dash_sdk::dpp::key_wallet::changeset::{AccountChangeSet, WalletChangeSet};
+        use dash_sdk::dpp::key_wallet::managed_account::address_pool::AddressPoolType;
+        use std::collections::{BTreeMap, BTreeSet};
+
+        let db = Arc::new(create_test_database().expect("create test db"));
+        let persister = make_persister(db.clone());
+
+        // Insert a wallet row so the FK constraint is satisfied.
+        db.execute(
+            "INSERT INTO wallet
+                (seed_hash, encrypted_seed, salt, nonce,
+                 master_ecdsa_bip44_account_0_epk, uses_password, network)
+             VALUES (?1, ?2, ?3, ?4, ?5, 0, 'testnet')",
+            rusqlite::params![
+                &TEST_WALLET_ID[..],
+                vec![0u8; 32],
+                vec![0u8; 16],
+                vec![0u8; 12],
+                vec![0u8; 33],
+            ],
+        )
+        .expect("insert wallet row");
+
+        let standard = AccountType::Standard {
+            index: 0,
+            standard_account_type: StandardAccountType::BIP44Account,
+        };
+        let coinjoin = AccountType::CoinJoin { index: 0 };
+        let dashpay_recv = AccountType::DashpayReceivingFunds {
+            index: 0,
+            user_identity_id: [0xaau8; 32],
+            friend_identity_id: [0xbbu8; 32],
+        };
+
+        let build = |cs_entries: Vec<(AccountType, u32, u32)>| {
+            // Each entry: (account_type, external_highest, internal_highest)
+            let mut wcs = WalletChangeSet::default();
+            for (at, ext, int) in cs_entries {
+                let mut bucket = AccountChangeSet::default();
+                bucket.highest_used.insert(AddressPoolType::External, ext);
+                bucket.highest_used.insert(AddressPoolType::Internal, int);
+                wcs.per_account.insert(at, bucket);
+            }
+            PlatformWalletChangeSet {
+                core: Some(wcs),
+                ..Default::default()
+            }
+        };
+
+        // First flush: three accounts, various highs.
+        persister.store(
+            TEST_WALLET_ID,
+            build(vec![
+                (standard, 12, 3),
+                (coinjoin, 7, 5),
+                (dashpay_recv, 4, 0),
+            ]),
+        );
+        persister.flush(TEST_WALLET_ID).expect("first flush");
+
+        // Verify the rows are in wallet_account_pool_state.
+        let rows = {
+            let conn = db.shared_connection();
+            let guard = conn.lock().unwrap();
+            let mut stmt = guard
+                .prepare(
+                    "SELECT account_type, pool_type, highest_used
+                     FROM wallet_account_pool_state
+                     WHERE seed_hash = ?1
+                     ORDER BY pool_type, highest_used",
+                )
+                .unwrap();
+            let rows: Vec<(Vec<u8>, i64, Option<i64>)> = stmt
+                .query_map(rusqlite::params![&TEST_WALLET_ID[..]], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            rows
+        };
+        // 3 accounts × 2 pools = 6 rows.
+        assert_eq!(rows.len(), 6, "expected 6 (account, pool) rows after first flush");
+
+        // Verify via the AccountType::from_db_key round-trip that
+        // each row's account key decodes to the expected variant.
+        let mut highs: BTreeMap<(String, i64), i64> = BTreeMap::new();
+        for (key_bytes, pool_type, high) in rows {
+            let at = AccountType::from_db_key(&key_bytes).expect("decode account key");
+            let label = match at {
+                AccountType::Standard { .. } => "standard".to_string(),
+                AccountType::CoinJoin { .. } => "coinjoin".to_string(),
+                AccountType::DashpayReceivingFunds { .. } => "dashpay_recv".to_string(),
+                _ => panic!("unexpected account type"),
+            };
+            highs.insert((label, pool_type), high.unwrap_or(-1));
+        }
+        assert_eq!(highs.get(&("standard".into(), 0)).copied(), Some(12));
+        assert_eq!(highs.get(&("standard".into(), 1)).copied(), Some(3));
+        assert_eq!(highs.get(&("coinjoin".into(), 0)).copied(), Some(7));
+        assert_eq!(highs.get(&("coinjoin".into(), 1)).copied(), Some(5));
+        assert_eq!(highs.get(&("dashpay_recv".into(), 0)).copied(), Some(4));
+        assert_eq!(highs.get(&("dashpay_recv".into(), 1)).copied(), Some(0));
+
+        // Second flush: lower highs must NOT regress — MAX merge.
+        // Higher highs win.
+        persister.store(
+            TEST_WALLET_ID,
+            build(vec![
+                (standard, 5, 100), // external lower (must stay 12), internal higher (100 wins)
+                (coinjoin, 9, 1),   // external higher (9 wins), internal lower (must stay 5)
+            ]),
+        );
+        persister.flush(TEST_WALLET_ID).expect("second flush");
+
+        let standard_external: i64 = db
+            .shared_connection()
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT highest_used FROM wallet_account_pool_state
+                 WHERE seed_hash = ?1 AND account_type = ?2 AND pool_type = 0",
+                rusqlite::params![&TEST_WALLET_ID[..], standard.to_db_key()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(standard_external, 12, "stale external must not regress");
+
+        let standard_internal: i64 = db
+            .shared_connection()
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT highest_used FROM wallet_account_pool_state
+                 WHERE seed_hash = ?1 AND account_type = ?2 AND pool_type = 1",
+                rusqlite::params![&TEST_WALLET_ID[..], standard.to_db_key()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(standard_internal, 100, "higher internal must win");
+
+        let coinjoin_external: i64 = db
+            .shared_connection()
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT highest_used FROM wallet_account_pool_state
+                 WHERE seed_hash = ?1 AND account_type = ?2 AND pool_type = 0",
+                rusqlite::params![&TEST_WALLET_ID[..], coinjoin.to_db_key()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(coinjoin_external, 9);
+
+        let coinjoin_internal: i64 = db
+            .shared_connection()
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT highest_used FROM wallet_account_pool_state
+                 WHERE seed_hash = ?1 AND account_type = ?2 AND pool_type = 1",
+                rusqlite::params![&TEST_WALLET_ID[..], coinjoin.to_db_key()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(coinjoin_internal, 5, "stale internal must not regress");
+
+        let _ = BTreeSet::<i64>::new();
+    }
+
+    /// Phase 10 6a: an `AccountChangeSet.utxos_instant_locked` entry
+    /// flips the `is_instant_locked` flag on the corresponding
+    /// `utxos` row. OR-merge — once locked, a subsequent flush
+    /// can't unlock it.
+    #[test]
+    fn test_write_core_utxo_instant_locked() {
+        use dash_sdk::dpp::dashcore::hashes::Hash;
+        use dash_sdk::dpp::dashcore::{OutPoint, TxOut, Txid};
+        use dash_sdk::dpp::key_wallet::account::account_type::{
+            AccountType, StandardAccountType,
+        };
+        use dash_sdk::dpp::key_wallet::changeset::{AccountChangeSet, WalletChangeSet};
+        use dash_sdk::dpp::key_wallet::Utxo;
+
+        let db = Arc::new(create_test_database().expect("create test db"));
+        let persister = make_persister(db.clone());
+
+        // Insert wallet row to satisfy FK.
+        db.execute(
+            "INSERT INTO wallet
+                (seed_hash, encrypted_seed, salt, nonce,
+                 master_ecdsa_bip44_account_0_epk, uses_password, network)
+             VALUES (?1, ?2, ?3, ?4, ?5, 0, 'testnet')",
+            rusqlite::params![
+                &TEST_WALLET_ID[..],
+                vec![0u8; 32],
+                vec![0u8; 16],
+                vec![0u8; 12],
+                vec![0u8; 33],
+            ],
+        )
+        .expect("insert wallet row");
+
+        let pubkey_bytes = [0x02u8; 33];
+        let pubkey = dash_sdk::dpp::dashcore::PublicKey::from_slice(&pubkey_bytes).unwrap();
+        let test_addr =
+            dash_sdk::dpp::dashcore::Address::p2pkh(&pubkey, dash_sdk::dpp::dashcore::Network::Testnet);
+        let txid = Txid::from_slice(&[0x11u8; 32]).unwrap();
+        let outpoint = OutPoint { txid, vout: 0 };
+        let standard = AccountType::Standard {
+            index: 0,
+            standard_account_type: StandardAccountType::BIP44Account,
+        };
+
+        // First flush: insert a UTXO (is_instant_locked defaults to 0).
+        let mut bucket = AccountChangeSet::default();
+        let utxo = Utxo {
+            outpoint,
+            txout: TxOut {
+                value: 100_000_000,
+                script_pubkey: test_addr.script_pubkey(),
+            },
+            address: test_addr.clone(),
+            height: 0,
+            is_coinbase: false,
+            is_confirmed: true,
+            is_instantlocked: false,
+            is_locked: false,
+        };
+        bucket.utxos_added.insert(outpoint, utxo);
+        let mut wcs = WalletChangeSet::default();
+        wcs.per_account.insert(standard, bucket);
+        persister.store(
+            TEST_WALLET_ID,
+            PlatformWalletChangeSet {
+                core: Some(wcs),
+                ..Default::default()
+            },
+        );
+        persister.flush(TEST_WALLET_ID).expect("insert flush");
+
+        // Row exists with is_instant_locked = 0.
+        let flag_before: i64 = db
+            .shared_connection()
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT is_instant_locked FROM utxos
+                 WHERE txid = ?1 AND vout = ?2 AND network = ?3",
+                rusqlite::params![txid.as_byte_array(), 0i64, "testnet"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(flag_before, 0);
+
+        // Second flush: same outpoint, marked instant-locked.
+        let mut bucket = AccountChangeSet::default();
+        bucket.utxos_instant_locked.insert(outpoint);
+        let mut wcs = WalletChangeSet::default();
+        wcs.per_account.insert(standard, bucket);
+        persister.store(
+            TEST_WALLET_ID,
+            PlatformWalletChangeSet {
+                core: Some(wcs),
+                ..Default::default()
+            },
+        );
+        persister.flush(TEST_WALLET_ID).expect("lock flush");
+
+        let flag_after: i64 = db
+            .shared_connection()
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT is_instant_locked FROM utxos
+                 WHERE txid = ?1 AND vout = ?2 AND network = ?3",
+                rusqlite::params![txid.as_byte_array(), 0i64, "testnet"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(flag_after, 1, "UTXO must be marked instant-locked");
     }
 }

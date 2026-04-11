@@ -21,6 +21,7 @@ base64 = "0.22.1"
 dash-sdk = { path = "../platform/packages/rs-sdk", features = [
     "core_key_wallet",
     "core_key_wallet_manager",
+    "core_key_wallet_bincode",
     "core_bincode",
     "core_quorum-validation",
     "core_verification",

@@ -4,7 +4,7 @@ use rusqlite::{Connection, params};
 use std::fs;
 use std::path::Path;
 
-pub const DEFAULT_DB_VERSION: u16 = 35;
+pub const DEFAULT_DB_VERSION: u16 = 36;
 
 pub const DEFAULT_NETWORK: &str = "mainnet";
 
@@ -51,6 +51,9 @@ impl Database {
 
     fn apply_version_changes(&self, version: u16, tx: &Connection) -> rusqlite::Result<()> {
         match version {
+            36 => {
+                self.add_wallet_account_pool_state_and_utxo_instant_lock(tx)?;
+            }
             35 => {
                 self.drop_dashpay_address_mappings_table(tx)?;
             }
@@ -395,8 +398,25 @@ impl Database {
                         value INTEGER NOT NULL,
                         script_pubkey BLOB NOT NULL,
                         network TEXT NOT NULL,
+                        is_instant_locked INTEGER NOT NULL DEFAULT 0,
                         PRIMARY KEY (txid, vout, network)
                     );",
+            [],
+        )?;
+
+        // Per-account address pool state (Phase 10 uniform key-wallet
+        // state persistence). See the v36 migration for the shape
+        // rationale.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS wallet_account_pool_state (
+                seed_hash BLOB NOT NULL,
+                account_type BLOB NOT NULL,
+                pool_type INTEGER NOT NULL,
+                highest_used INTEGER,
+                highest_generated INTEGER,
+                PRIMARY KEY (seed_hash, account_type, pool_type),
+                FOREIGN KEY (seed_hash) REFERENCES wallet(seed_hash) ON DELETE CASCADE
+            )",
             [],
         )?;
 
@@ -1062,6 +1082,56 @@ impl Database {
         Ok(())
     }
 
+    /// Migration 36: Add `wallet_account_pool_state` table and
+    /// `utxos.is_instant_locked` column for Phase 10 uniform
+    /// key-wallet account state persistence.
+    ///
+    /// `wallet_account_pool_state` stores per-(account, pool) monotonic
+    /// watermarks that let the load path reconstruct key-wallet's
+    /// `highest_used` / `highest_generated` without rescanning the
+    /// blockchain. Addresses derived up to `highest_generated` are
+    /// regenerated from the seed at wallet open, and `highest_used`
+    /// marks which ones have been observed used.
+    ///
+    /// `utxos.is_instant_locked` captures the IS-lock flag on UTXOs
+    /// so the balance split (confirmed vs instant-locked-unconfirmed)
+    /// survives restart.
+    ///
+    /// Idempotent: uses `IF NOT EXISTS` on the table and probes
+    /// `pragma_table_info` before the `ALTER TABLE`.
+    fn add_wallet_account_pool_state_and_utxo_instant_lock(
+        &self,
+        conn: &Connection,
+    ) -> rusqlite::Result<()> {
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS wallet_account_pool_state (
+                seed_hash BLOB NOT NULL,
+                account_type BLOB NOT NULL,
+                pool_type INTEGER NOT NULL,
+                highest_used INTEGER,
+                highest_generated INTEGER,
+                PRIMARY KEY (seed_hash, account_type, pool_type),
+                FOREIGN KEY (seed_hash) REFERENCES wallet(seed_hash) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+
+        // Add `is_instant_locked` column to `utxos` if missing.
+        let has_col: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('utxos') WHERE name='is_instant_locked'",
+            [],
+            |row| row.get::<_, i32>(0).map(|c| c > 0),
+        )?;
+        if !has_col {
+            conn.execute(
+                "ALTER TABLE utxos ADD COLUMN is_instant_locked INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
+
+        Ok(())
+    }
+
     /// Migration 35: Drop `dashpay_address_mappings` table.
     ///
     /// DashPay receiving addresses are now tracked by key-wallet's
@@ -1152,6 +1222,21 @@ mod test {
 
         // dashpay_address_mappings dropped in v35 (Phase 9b-4 cleanup).
         assert_table_not_exists(conn, "dashpay_address_mappings");
+
+        // wallet_account_pool_state introduced in v36 (Phase 10
+        // uniform key-wallet state persistence).
+        assert_table_exists(conn, "wallet_account_pool_state");
+        for col in [
+            "seed_hash",
+            "account_type",
+            "pool_type",
+            "highest_used",
+            "highest_generated",
+        ] {
+            assert_column_exists(conn, "wallet_account_pool_state", col);
+        }
+        // utxos.is_instant_locked added in v36.
+        assert_column_exists(conn, "utxos", "is_instant_locked");
     }
 
     fn assert_table_not_exists(conn: &Connection, table: &str) {
@@ -1265,7 +1350,7 @@ mod test {
             )
             .unwrap();
         assert_eq!(version, DEFAULT_DB_VERSION);
-        assert_eq!(version, 35);
+        assert_eq!(version, 36);
 
         assert_v33_schema(&conn);
     }
@@ -1382,7 +1467,7 @@ mod test {
         );
 
         // Verify final version
-        assert_eq!(db.db_schema_version().unwrap(), 35);
+        assert_eq!(db.db_schema_version().unwrap(), 36);
 
         // Verify full v33 schema
         let conn = db.conn.lock().unwrap();

@@ -4984,6 +4984,8 @@ version = "0.42.0"
 dependencies = [
  "async-trait",
  "base58ck",
+ "bincode 2.0.1",
+ "bincode_derive",
  "bip39",
  "bitflags 2.11.0",
  "dashcore",

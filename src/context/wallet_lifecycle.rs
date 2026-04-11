@@ -474,6 +474,17 @@ impl AppContext {
         // monitors incoming payment addresses for established contacts.
         self.bootstrap_dashpay_contact_accounts();
 
+        // Phase 10 6b: replay persisted account state
+        // (`wallet_account_pool_state` rows + `utxos.is_instant_locked`)
+        // now that DashPay contact accounts exist. The initial
+        // `load_persisted` that runs during `PlatformWallet` creation
+        // only hydrates state for accounts that existed at construction
+        // time — DashPay contact accounts didn't exist yet. Re-applying
+        // after bootstrap is idempotent (monotonic MAX on highest_used,
+        // set-union on utxos_instant_locked) so standard accounts
+        // already hydrated in pass 1 don't regress.
+        self.replay_persisted_state_after_bootstrap();
+
         // Auto-refresh UTXOs from Core on startup so balances are current
         // without requiring the user to manually click Refresh (fixes GH#522).
         // Only in RPC mode — SPV mode handles UTXO loading via reconciliation.
@@ -1182,6 +1193,51 @@ impl AppContext {
 
         if registered > 0 {
             tracing::info!(count = registered, "Registered DashPay contact accounts");
+        }
+    }
+
+    /// Phase 10 6b: replay persisted account state for every
+    /// registered platform wallet after DashPay contact accounts
+    /// have been bootstrapped.
+    ///
+    /// Reason: `PlatformWallet` construction calls `load_persisted`
+    /// + `apply_changeset` once, but at that point only the base
+    /// HD accounts derived from the seed exist. DashPay contact
+    /// accounts (`DashpayReceivingFunds { user_id, friend_id }`)
+    /// are registered later by `bootstrap_dashpay_contact_accounts`,
+    /// so any persisted `wallet_account_pool_state` rows keyed on
+    /// those account types are dropped with a warning during the
+    /// initial apply (the bucket has no owning account to route
+    /// into). Re-applying after bootstrap picks them up.
+    ///
+    /// The apply path is idempotent — monotonic MAX on
+    /// `highest_used`, set-union on `utxos_instant_locked` — so
+    /// standard accounts whose state was already applied in pass 1
+    /// don't regress.
+    fn replay_persisted_state_after_bootstrap(&self) {
+        let platform_wallets: Vec<_> = {
+            let Ok(wallets) = self.wallets.read() else {
+                return;
+            };
+            wallets
+                .values()
+                .filter_map(|w| w.read().ok().and_then(|g| g.platform_wallet.clone()))
+                .collect()
+        };
+
+        for pw in platform_wallets {
+            let pw_clone = Arc::clone(&pw);
+            self.subtasks
+                .spawn_sync("replay_persisted_state", async move {
+                    if let Err(e) = pw_clone.load_and_apply_persisted().await {
+                        tracing::warn!(
+                            error = %e,
+                            "Phase 10 6b replay failed — persisted pool state not \
+                             hydrated for this wallet; SPV replay will re-establish \
+                             state from blocks forward"
+                        );
+                    }
+                });
         }
     }
 

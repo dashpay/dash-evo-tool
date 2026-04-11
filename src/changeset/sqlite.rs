@@ -168,28 +168,182 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
 
     fn load(
         &self,
-        _wallet_id: WalletId,
+        wallet_id: WalletId,
     ) -> Result<PlatformWalletChangeSet, Box<dyn std::error::Error + Send + Sync>> {
-        // Load is intentionally a no-op at the persister layer.
+        // What the persister DOES load (Phase 10 6b):
         //
-        // The persister can't construct a full `IdentityEntry`
-        // (it lacks the `Identity` blob and `identity_index`), so it
-        // can't return `IdentityChangeSet` entries that `apply_changeset`
-        // would accept.
+        // - `cs.core.per_account[*].highest_used` — read from
+        //   `wallet_account_pool_state`. Reconstructs the per-pool
+        //   watermark so `apply_changeset` can invoke
+        //   `AddressPool::set_highest_used` on each pool.
+        // - `cs.core.per_account[*].utxos_instant_locked` — read
+        //   from `utxos.is_instant_locked`. Reconstructs the IS-lock
+        //   flag for UTXOs at wallet open so the confirmed-vs-locked
+        //   balance split survives restart.
         //
-        // Instead, DashPay hydration (profile + payment history)
-        // happens in `AppContext::sync_identity_to_platform_wallet`
-        // → `load_dashpay_state_for_identity`, which has the full
-        // `QualifiedIdentity` in scope and writes the DashPay subset
-        // directly onto the `ManagedIdentity` it's building. This
-        // closes the write-only persistence gap that the data-integrity
-        // reviewer flagged as C1.
+        // What the persister still does NOT load:
         //
-        // Chain height is read directly from `wallet.last_terminal_block`
-        // by the SPV layer on startup. Identities, contacts, asset
-        // locks, platform addresses, and token balances are all
-        // loaded by their respective evo-tool domain helpers.
-        Ok(PlatformWalletChangeSet::default())
+        // - `IdentityChangeSet` entries. DashPay hydration (profile +
+        //   payment history) happens in
+        //   `AppContext::sync_identity_to_platform_wallet` →
+        //   `load_dashpay_state_for_identity`, because the persister
+        //   can't construct a full `IdentityEntry` without access to
+        //   the `Identity` blob and `identity_index`. The full identity
+        //   load path is already wired through the wallet-lifecycle
+        //   helper; the persister just provides the DashPay subset.
+        // - `cs.core.chain.synced_height` — SPV reads
+        //   `wallet.last_terminal_block` directly on startup.
+        // - `cs.core.per_account[*].{utxos_added, transactions,
+        //   addresses_used}` — UTXOs are read from the `utxos` table
+        //   by the lifecycle helpers, transactions are SPV-owned,
+        //   and `addresses_used` is derived from `highest_used` at
+        //   apply time via key-wallet's `AddressPool::set_highest_used`.
+        //
+        // The returned changeset is fed to
+        // `PlatformWallet::apply(cs)` → `apply_changeset`, which
+        // thunks through key-wallet's `WalletManager::apply_changeset`
+        // to land on the per-pool `set_highest_used` and per-UTXO
+        // `set_instant_locked` calls.
+        use dash_sdk::dpp::dashcore::{OutPoint, Txid};
+        use dash_sdk::dpp::key_wallet::account::account_type::AccountType;
+        use dash_sdk::dpp::key_wallet::changeset::{AccountChangeSet, WalletChangeSet};
+        use dash_sdk::dpp::key_wallet::managed_account::address_pool::AddressPoolType;
+        use dash_sdk::dpp::dashcore::hashes::Hash;
+        use std::collections::BTreeMap;
+
+        let conn = self.db.shared_connection();
+        let guard = conn.lock().unwrap();
+
+        let mut per_account: BTreeMap<AccountType, AccountChangeSet> = BTreeMap::new();
+
+        // --- Load per-pool highest_used from wallet_account_pool_state ---
+        {
+            let mut stmt = guard
+                .prepare(
+                    "SELECT account_type, pool_type, highest_used
+                     FROM wallet_account_pool_state
+                     WHERE seed_hash = ?1",
+                )
+                .map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+            let rows = stmt
+                .query_map(rusqlite::params![&wallet_id[..]], |row| {
+                    let account_key: Vec<u8> = row.get(0)?;
+                    let pool_disc: i64 = row.get(1)?;
+                    let highest_used: Option<i64> = row.get(2)?;
+                    Ok((account_key, pool_disc, highest_used))
+                })
+                .map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+
+            for row_result in rows {
+                let (account_key, pool_disc, highest_used) = row_result
+                    .map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+
+                let Ok(account_type) = AccountType::from_db_key(&account_key) else {
+                    tracing::warn!(
+                        "persister load: unrecognized account_type bincode in \
+                         wallet_account_pool_state — skipping row (DB written \
+                         by newer crate version?)"
+                    );
+                    continue;
+                };
+                let Some(pool_type) = AddressPoolType::from_db_discriminant(pool_disc as u8)
+                else {
+                    tracing::warn!(
+                        pool_disc,
+                        "persister load: unrecognized AddressPoolType discriminant — \
+                         skipping row"
+                    );
+                    continue;
+                };
+                let Some(highest_used) = highest_used else {
+                    // NULL highest_used means "never observed used".
+                    // Nothing to apply for this pool; skip.
+                    continue;
+                };
+                per_account
+                    .entry(account_type)
+                    .or_default()
+                    .highest_used
+                    .insert(pool_type, highest_used as u32);
+            }
+        }
+
+        // --- Load IS-locked UTXO outpoints from `utxos` ---
+        //
+        // The UTXO rows themselves are rebuilt by the lifecycle
+        // helper that iterates the `utxos` table into the wallet's
+        // in-memory state. We only need to surface the IS-lock flag
+        // here so `apply_changeset` can flip the corresponding
+        // managed-wallet UTXOs.
+        //
+        // We don't know which account type each outpoint belongs to
+        // at this layer — the UTXO row doesn't carry that. So we
+        // dump every locked outpoint into a single
+        // `AccountType::Standard{0, BIP44}` bucket; `apply_changeset`
+        // on the wallet-manager side iterates every account and
+        // applies the lock flag to whichever one actually owns the
+        // outpoint. That's the shape `AccountChangeSet::utxos_instant_locked`
+        // already assumes on the apply side.
+        //
+        // TODO(Phase 10 6c): if key-wallet gains per-account UTXO
+        // attribution on load, route locked outpoints into the
+        // correct bucket directly.
+        {
+            let mut stmt = guard
+                .prepare(
+                    "SELECT txid, vout FROM utxos
+                     WHERE network = ?1 AND is_instant_locked = 1",
+                )
+                .map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+            let rows = stmt
+                .query_map(rusqlite::params![&self.network], |row| {
+                    let txid_bytes: Vec<u8> = row.get(0)?;
+                    let vout: i64 = row.get(1)?;
+                    Ok((txid_bytes, vout))
+                })
+                .map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+
+            let mut locked_outpoints: std::collections::BTreeSet<OutPoint> =
+                std::collections::BTreeSet::new();
+            for row_result in rows {
+                let (txid_bytes, vout) = row_result
+                    .map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+                let Ok(txid) = Txid::from_slice(&txid_bytes) else {
+                    tracing::warn!(
+                        "persister load: invalid txid in utxos table — skipping row"
+                    );
+                    continue;
+                };
+                locked_outpoints.insert(OutPoint {
+                    txid,
+                    vout: vout as u32,
+                });
+            }
+
+            if !locked_outpoints.is_empty() {
+                use dash_sdk::dpp::key_wallet::account::account_type::StandardAccountType;
+                per_account
+                    .entry(AccountType::Standard {
+                        index: 0,
+                        standard_account_type: StandardAccountType::BIP44Account,
+                    })
+                    .or_default()
+                    .utxos_instant_locked = locked_outpoints;
+            }
+        }
+
+        if per_account.is_empty() {
+            return Ok(PlatformWalletChangeSet::default());
+        }
+
+        let core = WalletChangeSet {
+            per_account,
+            ..Default::default()
+        };
+        Ok(PlatformWalletChangeSet {
+            core: Some(core),
+            ..Default::default()
+        })
     }
 }
 
@@ -1379,5 +1533,141 @@ mod tests {
             )
             .unwrap();
         assert_eq!(flag_after, 1, "UTXO must be marked instant-locked");
+    }
+
+    /// Phase 10 6b: full load round-trip. Write per-account
+    /// `highest_used` via a changeset, then `load()` it back and
+    /// verify the returned `PlatformWalletChangeSet` contains the
+    /// same buckets with the same values. Covers both pool state
+    /// and `is_instant_locked` reconstruction.
+    #[test]
+    fn test_load_round_trips_pool_state_and_instant_lock() {
+        use dash_sdk::dpp::dashcore::hashes::Hash;
+        use dash_sdk::dpp::dashcore::{OutPoint, TxOut, Txid};
+        use dash_sdk::dpp::key_wallet::Utxo;
+        use dash_sdk::dpp::key_wallet::account::account_type::{
+            AccountType, StandardAccountType,
+        };
+        use dash_sdk::dpp::key_wallet::changeset::{AccountChangeSet, WalletChangeSet};
+        use dash_sdk::dpp::key_wallet::managed_account::address_pool::AddressPoolType;
+
+        let db = Arc::new(create_test_database().expect("create test db"));
+        let persister = make_persister(db.clone());
+
+        // Wallet row for FK.
+        db.execute(
+            "INSERT INTO wallet
+                (seed_hash, encrypted_seed, salt, nonce,
+                 master_ecdsa_bip44_account_0_epk, uses_password, network)
+             VALUES (?1, ?2, ?3, ?4, ?5, 0, 'testnet')",
+            rusqlite::params![
+                &TEST_WALLET_ID[..],
+                vec![0u8; 32],
+                vec![0u8; 16],
+                vec![0u8; 12],
+                vec![0u8; 33],
+            ],
+        )
+        .expect("insert wallet row");
+
+        // Write phase: pool state for two account types + one locked UTXO.
+        let standard = AccountType::Standard {
+            index: 0,
+            standard_account_type: StandardAccountType::BIP44Account,
+        };
+        let dashpay_recv = AccountType::DashpayReceivingFunds {
+            index: 0,
+            user_identity_id: [0x77u8; 32],
+            friend_identity_id: [0x88u8; 32],
+        };
+
+        let mut bucket_std = AccountChangeSet::default();
+        bucket_std.highest_used.insert(AddressPoolType::External, 42);
+        bucket_std.highest_used.insert(AddressPoolType::Internal, 11);
+        let pubkey_bytes = [0x02u8; 33];
+        let pubkey =
+            dash_sdk::dpp::dashcore::PublicKey::from_slice(&pubkey_bytes).unwrap();
+        let test_addr = dash_sdk::dpp::dashcore::Address::p2pkh(
+            &pubkey,
+            dash_sdk::dpp::dashcore::Network::Testnet,
+        );
+        let txid = Txid::from_slice(&[0x55u8; 32]).unwrap();
+        let outpoint = OutPoint { txid, vout: 3 };
+        bucket_std.utxos_added.insert(
+            outpoint,
+            Utxo {
+                outpoint,
+                txout: TxOut {
+                    value: 50_000_000,
+                    script_pubkey: test_addr.script_pubkey(),
+                },
+                address: test_addr,
+                height: 0,
+                is_coinbase: false,
+                is_confirmed: true,
+                is_instantlocked: false,
+                is_locked: false,
+            },
+        );
+        bucket_std.utxos_instant_locked.insert(outpoint);
+
+        let mut bucket_dp = AccountChangeSet::default();
+        bucket_dp.highest_used.insert(AddressPoolType::External, 7);
+
+        let mut wcs = WalletChangeSet::default();
+        wcs.per_account.insert(standard, bucket_std);
+        wcs.per_account.insert(dashpay_recv, bucket_dp);
+
+        persister.store(
+            TEST_WALLET_ID,
+            PlatformWalletChangeSet {
+                core: Some(wcs),
+                ..Default::default()
+            },
+        );
+        persister
+            .flush(TEST_WALLET_ID)
+            .expect("flush after write phase");
+
+        // Load phase: persister.load() rebuilds a changeset from SQL.
+        let loaded = persister
+            .load(TEST_WALLET_ID)
+            .expect("load returns changeset");
+        let core = loaded.core.expect("core must be populated");
+
+        // Verify pool state for both account types round-tripped.
+        let std_bucket = core
+            .per_account
+            .get(&standard)
+            .expect("standard bucket present");
+        assert_eq!(
+            std_bucket.highest_used.get(&AddressPoolType::External).copied(),
+            Some(42),
+            "standard external highest_used"
+        );
+        assert_eq!(
+            std_bucket.highest_used.get(&AddressPoolType::Internal).copied(),
+            Some(11),
+            "standard internal highest_used"
+        );
+
+        let dp_bucket = core
+            .per_account
+            .get(&dashpay_recv)
+            .expect("dashpay_recv bucket present");
+        assert_eq!(
+            dp_bucket.highest_used.get(&AddressPoolType::External).copied(),
+            Some(7),
+            "dashpay_recv external highest_used"
+        );
+
+        // Locked outpoints are stuffed into the Standard-BIP44-0
+        // bucket on load (see the load() doc for the rationale).
+        // This means the standard bucket has the locked outpoint in
+        // its `utxos_instant_locked` set.
+        assert!(
+            std_bucket.utxos_instant_locked.contains(&outpoint),
+            "locked outpoint must appear in standard bucket utxos_instant_locked set"
+        );
     }
 }

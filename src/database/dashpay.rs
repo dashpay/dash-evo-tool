@@ -492,6 +492,90 @@ impl crate::database::Database {
         Ok(())
     }
 
+    /// Item 7c: Load full `ContactRequest` rows (metadata +
+    /// DIP-15 crypto) for an identity, keyed by `(from, to)` pair.
+    ///
+    /// Returns rows where ALL required DIP-15 columns are non-NULL —
+    /// rows with partial crypto (e.g. legacy rows written before
+    /// v38, or in-flight saves that haven't been fully populated)
+    /// are skipped. The caller joins outgoing+incoming pairs to
+    /// reconstruct `EstablishedContact` objects.
+    ///
+    /// Covers both directions: requests where the identity is the
+    /// sender (outgoing) and where it's the recipient (incoming).
+    #[allow(clippy::type_complexity)]
+    pub fn load_contact_request_crypto_rows(
+        &self,
+        identity_id: &Identifier,
+        network: &str,
+    ) -> rusqlite::Result<
+        Vec<(
+            Identifier,   // from_identity_id
+            Identifier,   // to_identity_id
+            u32,          // sender_key_index
+            u32,          // recipient_key_index
+            u32,          // account_reference
+            Vec<u8>,      // encrypted_public_key
+            Option<Vec<u8>>, // encrypted_account_label_bytes
+            Option<Vec<u8>>, // auto_accept_proof
+            u32,          // core_height_created_at
+            i64,          // created_at (timestamp seconds)
+        )>,
+    > {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT from_identity_id, to_identity_id,
+                    sender_key_index, recipient_key_index, account_reference,
+                    encrypted_public_key, encrypted_account_label_bytes,
+                    auto_accept_proof, core_height_created_at, created_at
+             FROM dashpay_contact_requests
+             WHERE (from_identity_id = ?1 OR to_identity_id = ?1)
+               AND network = ?2
+               AND status = 'accepted'
+               AND sender_key_index IS NOT NULL
+               AND recipient_key_index IS NOT NULL
+               AND account_reference IS NOT NULL
+               AND encrypted_public_key IS NOT NULL
+               AND core_height_created_at IS NOT NULL",
+        )?;
+
+        let id_bytes = identity_id.to_buffer().to_vec();
+        let rows = stmt
+            .query_map(params![id_bytes, network], |row| {
+                let from_bytes: Vec<u8> = row.get(0)?;
+                let to_bytes: Vec<u8> = row.get(1)?;
+                let sender_key_index: u32 = row.get(2)?;
+                let recipient_key_index: u32 = row.get(3)?;
+                let account_reference: u32 = row.get(4)?;
+                let encrypted_public_key: Vec<u8> = row.get(5)?;
+                let encrypted_account_label_bytes: Option<Vec<u8>> = row.get(6)?;
+                let auto_accept_proof: Option<Vec<u8>> = row.get(7)?;
+                let core_height_created_at: u32 = row.get(8)?;
+                let created_at: i64 = row.get(9)?;
+
+                let from_id = Identifier::from_bytes(&from_bytes)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                let to_id = Identifier::from_bytes(&to_bytes)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+
+                Ok((
+                    from_id,
+                    to_id,
+                    sender_key_index,
+                    recipient_key_index,
+                    account_reference,
+                    encrypted_public_key,
+                    encrypted_account_label_bytes,
+                    auto_accept_proof,
+                    core_height_created_at,
+                    created_at,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(rows)
+    }
+
     pub fn load_pending_contact_requests(
         &self,
         identity_id: &Identifier,
@@ -705,4 +789,155 @@ impl crate::database::Database {
         )
     }
 
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database::test_helpers::create_test_database;
+
+    /// Item 7c: full DIP-15 crypto round-trip for contact requests.
+    /// Saves one outgoing + one incoming request with full crypto,
+    /// then loads both back and verifies all 7 cryptographic fields
+    /// match byte-for-byte.
+    #[test]
+    fn test_contact_request_dip15_crypto_round_trip() {
+        let db = create_test_database().expect("create test db");
+
+        let owner = Identifier::from([0x11u8; 32]);
+        let contact = Identifier::from([0x22u8; 32]);
+        let network = "testnet";
+
+        // Update status to 'accepted' after insert so the load path
+        // filter picks them up.
+        let accept = |req_id: i64| {
+            db.execute(
+                "UPDATE dashpay_contact_requests SET status = 'accepted' WHERE id = ?1",
+                params![req_id],
+            )
+            .unwrap();
+        };
+
+        // Outgoing: owner → contact
+        let outgoing_crypto = ContactRequestCryptoFields {
+            sender_key_index: Some(1),
+            recipient_key_index: Some(2),
+            account_reference: Some(42),
+            encrypted_public_key: Some(vec![0xa0u8; 96]),
+            encrypted_account_label_bytes: Some(vec![0xb0u8, 0xb1, 0xb2]),
+            auto_accept_proof: None,
+            core_height_created_at: Some(100_000),
+        };
+        let outgoing_id = db
+            .save_contact_request(
+                &owner,
+                &contact,
+                network,
+                None,
+                None,
+                "sent",
+                outgoing_crypto.clone(),
+            )
+            .expect("save outgoing");
+        accept(outgoing_id);
+
+        // Incoming: contact → owner
+        let incoming_crypto = ContactRequestCryptoFields {
+            sender_key_index: Some(3),
+            recipient_key_index: Some(4),
+            account_reference: Some(7),
+            encrypted_public_key: Some(vec![0xc0u8; 96]),
+            encrypted_account_label_bytes: None,
+            auto_accept_proof: Some(vec![0xd0u8; 32]),
+            core_height_created_at: Some(100_005),
+        };
+        let incoming_id = db
+            .save_contact_request(
+                &contact,
+                &owner,
+                network,
+                None,
+                None,
+                "received",
+                incoming_crypto.clone(),
+            )
+            .expect("save incoming");
+        accept(incoming_id);
+
+        // Load — should return both rows (outgoing + incoming) for
+        // the owner, since the query's WHERE clause picks up either
+        // direction keyed on the identity.
+        let rows = db
+            .load_contact_request_crypto_rows(&owner, network)
+            .expect("load rows");
+        assert_eq!(rows.len(), 2, "both directions must load");
+
+        // Split by direction from the owner's perspective.
+        let (loaded_outgoing, loaded_incoming) = if rows[0].0 == owner {
+            (&rows[0], &rows[1])
+        } else {
+            (&rows[1], &rows[0])
+        };
+
+        // Outgoing assertions (owner → contact)
+        assert_eq!(loaded_outgoing.0, owner);
+        assert_eq!(loaded_outgoing.1, contact);
+        assert_eq!(loaded_outgoing.2, 1); // sender_key_index
+        assert_eq!(loaded_outgoing.3, 2); // recipient_key_index
+        assert_eq!(loaded_outgoing.4, 42); // account_reference
+        assert_eq!(loaded_outgoing.5, vec![0xa0u8; 96]); // encrypted_public_key
+        assert_eq!(loaded_outgoing.6, Some(vec![0xb0u8, 0xb1, 0xb2]));
+        assert_eq!(loaded_outgoing.7, None); // auto_accept_proof
+        assert_eq!(loaded_outgoing.8, 100_000);
+
+        // Incoming assertions (contact → owner)
+        assert_eq!(loaded_incoming.0, contact);
+        assert_eq!(loaded_incoming.1, owner);
+        assert_eq!(loaded_incoming.2, 3);
+        assert_eq!(loaded_incoming.3, 4);
+        assert_eq!(loaded_incoming.4, 7);
+        assert_eq!(loaded_incoming.5, vec![0xc0u8; 96]);
+        assert_eq!(loaded_incoming.6, None);
+        assert_eq!(loaded_incoming.7, Some(vec![0xd0u8; 32]));
+        assert_eq!(loaded_incoming.8, 100_005);
+    }
+
+    /// Item 7c: legacy rows (all-None crypto) must be filtered out
+    /// by `load_contact_request_crypto_rows`. The load path in
+    /// `sync_identity_to_platform_wallet` relies on this filter so
+    /// incomplete rows don't cause `ContactRequest::new` panics.
+    #[test]
+    fn test_contact_request_legacy_rows_filtered() {
+        let db = create_test_database().expect("create test db");
+
+        let owner = Identifier::from([0x33u8; 32]);
+        let contact = Identifier::from([0x44u8; 32]);
+        let network = "testnet";
+
+        // Save a legacy-style row with no crypto fields.
+        let id = db
+            .save_contact_request(
+                &owner,
+                &contact,
+                network,
+                None,
+                None,
+                "sent",
+                ContactRequestCryptoFields::default(),
+            )
+            .expect("save legacy");
+        db.execute(
+            "UPDATE dashpay_contact_requests SET status = 'accepted' WHERE id = ?1",
+            params![id],
+        )
+        .unwrap();
+
+        let rows = db
+            .load_contact_request_crypto_rows(&owner, network)
+            .expect("load rows");
+        assert!(
+            rows.is_empty(),
+            "legacy rows with NULL crypto must be filtered out"
+        );
+    }
 }

@@ -901,6 +901,16 @@ impl AppContext {
         let (mi_dashpay_profile, mi_dashpay_payments) =
             self.load_dashpay_state_for_identity(&identity_id);
 
+        // 3c. Hydrate established contacts (Item 7c). Reads
+        // `dashpay_contact_requests` rows with full DIP-15 crypto,
+        // joins outgoing+incoming pairs, builds full
+        // `ContactRequest` + `EstablishedContact` instances. Rows
+        // with NULL crypto are skipped — those are either legacy
+        // (pre-v38) or in-flight; the next background
+        // `DashPayContactRequests` sync will repopulate them.
+        let mi_established_contacts =
+            self.load_established_contacts_for_identity(&identity_id);
+
         // 4. Add or update the identity in the manager
         if let Some(managed) = manager.identity_manager.managed_identity_mut(&identity_id) {
             // Update existing managed identity
@@ -912,6 +922,15 @@ impl AppContext {
             managed.top_ups = qualified_identity.top_ups.clone();
             managed.dashpay_profile = mi_dashpay_profile;
             managed.dashpay_payments = mi_dashpay_payments;
+            // Established contacts: extend rather than replace so
+            // live-mutation entries (auto-established during this
+            // session) aren't clobbered by a mid-session resync.
+            for (contact_id, contact) in mi_established_contacts.clone() {
+                managed
+                    .established_contacts
+                    .entry(contact_id)
+                    .or_insert(contact);
+            }
             if let Some(alias) = &qualified_identity.alias {
                 managed.label = Some(alias.clone());
             }
@@ -934,6 +953,7 @@ impl AppContext {
                         managed.top_ups = qualified_identity.top_ups.clone();
                         managed.dashpay_profile = mi_dashpay_profile;
                         managed.dashpay_payments = mi_dashpay_payments;
+                        managed.established_contacts = mi_established_contacts;
                         if let Some(alias) = &qualified_identity.alias {
                             managed.label = Some(alias.clone());
                         }
@@ -1053,6 +1073,127 @@ impl AppContext {
         }
 
         (profile, payments)
+    }
+
+    /// Item 7c: Hydrate `managed.established_contacts` from SQL.
+    ///
+    /// Loads every `dashpay_contact_requests` row for this identity
+    /// where the DIP-15 crypto columns are populated (status =
+    /// 'accepted'), groups them by `(from, to)` pair, and for each
+    /// pair where BOTH directions exist builds a full
+    /// `EstablishedContact` with real `ContactRequest` crypto. Rows
+    /// with NULL crypto (legacy or mid-sync) are silently excluded
+    /// by the SQL WHERE clause — the next background
+    /// `DashPayContactRequests` sync repopulates them.
+    ///
+    /// Returns `BTreeMap<contact_identity_id, EstablishedContact>`
+    /// ready to be assigned to `ManagedIdentity.established_contacts`.
+    ///
+    /// Does NOT touch key-wallet's receival-account state — that's
+    /// separately bootstrapped by `bootstrap_dashpay_contact_accounts`.
+    fn load_established_contacts_for_identity(
+        &self,
+        identity_id: &dash_sdk::platform::Identifier,
+    ) -> std::collections::BTreeMap<
+        dash_sdk::platform::Identifier,
+        platform_wallet::wallet::dashpay::EstablishedContact,
+    > {
+        use platform_wallet::wallet::dashpay::{ContactRequest, EstablishedContact};
+
+        let network_str = self.network.to_string();
+        let rows = match self
+            .db
+            .load_contact_request_crypto_rows(identity_id, &network_str)
+        {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::debug!(
+                    identity = %identity_id,
+                    error = %e,
+                    "load_established_contacts: SQL read failed — returning empty map"
+                );
+                return std::collections::BTreeMap::new();
+            }
+        };
+
+        // Group rows by `(from, to)` pair so we can find matching
+        // outgoing + incoming for each contact.
+        let mut by_pair: std::collections::BTreeMap<
+            (
+                dash_sdk::platform::Identifier,
+                dash_sdk::platform::Identifier,
+            ),
+            ContactRequest,
+        > = std::collections::BTreeMap::new();
+
+        for (
+            from_id,
+            to_id,
+            sender_key_index,
+            recipient_key_index,
+            account_reference,
+            encrypted_public_key,
+            encrypted_account_label_bytes,
+            auto_accept_proof,
+            core_height_created_at,
+            created_at,
+        ) in rows
+        {
+            let mut request = ContactRequest::new(
+                from_id,
+                to_id,
+                sender_key_index,
+                recipient_key_index,
+                account_reference,
+                encrypted_public_key,
+                core_height_created_at,
+                // SQL stores seconds; `ContactRequest.created_at` is
+                // TimestampMillis. Multiply into ms.
+                (created_at.max(0) as u64).saturating_mul(1_000),
+            );
+            request.encrypted_account_label = encrypted_account_label_bytes;
+            request.auto_accept_proof = auto_accept_proof;
+
+            by_pair.insert((from_id, to_id), request);
+        }
+
+        // Join outgoing (owner → contact) with incoming (contact → owner).
+        let mut result = std::collections::BTreeMap::new();
+        for ((from_id, to_id), outgoing) in &by_pair {
+            // Only process pairs where `from_id == identity_id`
+            // (outgoing). The sibling incoming entry will be keyed
+            // `(contact_id, identity_id)`.
+            if *from_id != *identity_id {
+                continue;
+            }
+            let contact_id = *to_id;
+            let Some(incoming) = by_pair.get(&(contact_id, *identity_id)) else {
+                tracing::debug!(
+                    identity = %identity_id,
+                    contact = %contact_id,
+                    "load_established_contacts: outgoing without matching incoming — skipping"
+                );
+                continue;
+            };
+            result.insert(
+                contact_id,
+                EstablishedContact::new(
+                    contact_id,
+                    outgoing.clone(),
+                    incoming.clone(),
+                ),
+            );
+        }
+
+        if !result.is_empty() {
+            tracing::debug!(
+                identity = %identity_id,
+                count = result.len(),
+                "load_established_contacts: reconstructed from SQL"
+            );
+        }
+
+        result
     }
 
     /// Sync all locally stored identities to platform-wallet IdentityManagers.

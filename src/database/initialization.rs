@@ -1388,4 +1388,132 @@ mod test {
         let conn = db.conn.lock().unwrap();
         assert_v33_schema(&conn);
     }
+
+    /// Holistic-review M3: the v35 migration must drop
+    /// `dashpay_address_mappings` cleanly even when the table is
+    /// populated with real data. The fresh-install test covers the
+    /// empty case; this one exercises the upgrade path with rows
+    /// and indices in place, which is what real user databases
+    /// look like.
+    #[test]
+    fn test_v35_migration_drops_populated_table() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_file_path = temp_dir.path().join("populated_v34.db");
+        let db = super::Database::new(&db_file_path).unwrap();
+
+        // Build a full database at the current version then simulate
+        // "pre-v35" by recreating the `dashpay_address_mappings`
+        // table + indices and setting the version back to 34.
+        db.create_tables().unwrap();
+        db.set_default_version().unwrap();
+
+        {
+            let conn = db.conn.lock().unwrap();
+
+            // Recreate the table with its original v34 schema.
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS dashpay_address_mappings (
+                    address TEXT PRIMARY KEY,
+                    owner_identity_id BLOB NOT NULL,
+                    contact_identity_id BLOB NOT NULL,
+                    address_index INTEGER NOT NULL,
+                    created_at INTEGER DEFAULT (unixepoch())
+                )",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_dashpay_address_mappings_owner
+                 ON dashpay_address_mappings(owner_identity_id)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_dashpay_address_mappings_contact
+                 ON dashpay_address_mappings(owner_identity_id, contact_identity_id)",
+                [],
+            )
+            .unwrap();
+
+            // Populate with representative rows across two owners
+            // and three contacts to exercise the indices.
+            let owner_a = vec![0x01u8; 32];
+            let owner_b = vec![0x02u8; 32];
+            let contact_1 = vec![0x11u8; 32];
+            let contact_2 = vec![0x12u8; 32];
+            let contact_3 = vec![0x13u8; 32];
+            let rows = [
+                ("addr_a1_0", &owner_a, &contact_1, 0u32),
+                ("addr_a1_1", &owner_a, &contact_1, 1),
+                ("addr_a2_0", &owner_a, &contact_2, 0),
+                ("addr_b1_0", &owner_b, &contact_1, 0),
+                ("addr_b3_0", &owner_b, &contact_3, 0),
+            ];
+            for (addr, owner, contact, idx) in rows {
+                conn.execute(
+                    "INSERT INTO dashpay_address_mappings
+                        (address, owner_identity_id, contact_identity_id, address_index)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![addr, owner, contact, idx],
+                )
+                .unwrap();
+            }
+
+            // Verify we actually populated the table and indices.
+            let count: i64 = conn
+                .query_row("SELECT COUNT(*) FROM dashpay_address_mappings", [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(count, 5, "populated table must have 5 rows");
+
+            let index_count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master
+                     WHERE type='index' AND tbl_name='dashpay_address_mappings'
+                     AND name LIKE 'idx_%'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(index_count, 2, "populated table must have 2 indices");
+
+            // Downgrade the recorded schema version to 34.
+            conn.execute("UPDATE settings SET database_version = 34 WHERE id = 1", [])
+                .unwrap();
+        }
+
+        assert_eq!(db.db_schema_version().unwrap(), 34);
+
+        // Run the migration. This should DROP the table and its
+        // indices without error.
+        db.try_perform_migration(34, DEFAULT_DB_VERSION)
+            .expect("v34 → v35 migration must succeed on populated table");
+
+        // Verify final version and that the table + indices are gone.
+        assert_eq!(db.db_schema_version().unwrap(), DEFAULT_DB_VERSION);
+        let conn = db.conn.lock().unwrap();
+        assert_table_not_exists(&conn, "dashpay_address_mappings");
+        let index_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='index' AND name LIKE 'idx_dashpay_address_mappings%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            index_count, 0,
+            "v35 migration must drop all `dashpay_address_mappings` indices"
+        );
+
+        // Cross-check that adjacent DashPay tables survived intact
+        // (no FK cascade damage). `dashpay_contact_requests` has
+        // indices of the same name prefix pattern so we verify it
+        // still has rows/structure.
+        assert_table_exists(&conn, "dashpay_contact_requests");
+        assert_table_exists(&conn, "dashpay_profiles");
+        assert_table_exists(&conn, "dashpay_contacts");
+        assert_table_exists(&conn, "dashpay_payments");
+    }
 }

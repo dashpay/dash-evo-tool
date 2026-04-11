@@ -440,11 +440,17 @@ impl SqliteWalletPersister {
         network: &str,
         core: dash_sdk::dpp::key_wallet::changeset::WalletChangeSet,
     ) -> Result<(), SqlitePersistError> {
-        // Chain height — UPDATE wallet.last_terminal_block.
+        // Chain height — monotonic UPDATE. `MAX(existing, new)`
+        // ensures stale or out-of-order flushes can't regress
+        // `last_terminal_block` (holistic review M4). An older
+        // snapshot arriving after a newer one would otherwise roll
+        // the SPV sync height backward, triggering an unnecessary
+        // rescan on the next app start.
         if let Some(chain) = core.chain {
             if let Some(height) = chain.synced_height {
                 tx.execute(
-                    "UPDATE wallet SET last_terminal_block = ?1
+                    "UPDATE wallet
+                     SET last_terminal_block = MAX(last_terminal_block, ?1)
                      WHERE seed_hash = ?2 AND network = ?3",
                     rusqlite::params![height as i64, &wallet_id[..], network],
                 )?;

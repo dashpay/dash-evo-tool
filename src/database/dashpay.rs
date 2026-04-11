@@ -147,7 +147,8 @@ impl crate::database::Database {
                 encrypted_public_key BLOB,
                 encrypted_account_label_bytes BLOB,
                 auto_accept_proof BLOB,
-                core_height_created_at INTEGER
+                core_height_created_at INTEGER,
+                platform_created_at_ms INTEGER
             )",
             [],
         )?;
@@ -444,22 +445,41 @@ impl crate::database::Database {
         account_label: Option<&str>,
         request_type: &str,
         crypto: ContactRequestCryptoFields,
+        platform_created_at_ms: Option<i64>,
     ) -> rusqlite::Result<i64> {
-        let sql = "
-            INSERT INTO dashpay_contact_requests
-            (from_identity_id, to_identity_id, network, to_username, account_label,
-             request_type, sender_key_index, recipient_key_index, account_reference,
-             encrypted_public_key, encrypted_account_label_bytes, auto_accept_proof,
-             core_height_created_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
-        ";
+        // Review S2: `dashpay_contact_requests` has an auto-increment
+        // `id` PK and no UNIQUE constraint on `(from, to, network)`.
+        // Every contact-request sync used to INSERT a fresh row, so
+        // after N syncs the table held N duplicates per pair. Item 7c
+        // then picked an arbitrary row via last-write-wins in its
+        // HashMap insert. Fix: DELETE any existing row for the same
+        // `(from, to, network)` before INSERT, wrapped in a
+        // transaction so concurrent readers never see the gap.
+        // This bounds the table size at one row per pair, matches
+        // the intent of a "sync fresh state from platform" call,
+        // and doesn't require a schema migration or dedupe of
+        // existing rows (any pre-existing duplicates get collapsed
+        // on the next save).
+        let from_bytes = from_identity_id.to_buffer().to_vec();
+        let to_bytes = to_identity_id.to_buffer().to_vec();
 
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            sql,
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        tx.execute(
+            "DELETE FROM dashpay_contact_requests
+             WHERE from_identity_id = ?1 AND to_identity_id = ?2 AND network = ?3",
+            params![&from_bytes, &to_bytes, network],
+        )?;
+        tx.execute(
+            "INSERT INTO dashpay_contact_requests
+                (from_identity_id, to_identity_id, network, to_username, account_label,
+                 request_type, sender_key_index, recipient_key_index, account_reference,
+                 encrypted_public_key, encrypted_account_label_bytes, auto_accept_proof,
+                 core_height_created_at, platform_created_at_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
-                from_identity_id.to_buffer().to_vec(),
-                to_identity_id.to_buffer().to_vec(),
+                &from_bytes,
+                &to_bytes,
                 network,
                 to_username,
                 account_label,
@@ -471,10 +491,12 @@ impl crate::database::Database {
                 crypto.encrypted_account_label_bytes,
                 crypto.auto_accept_proof,
                 crypto.core_height_created_at,
+                platform_created_at_ms,
             ],
         )?;
-
-        Ok(conn.last_insert_rowid())
+        let row_id = tx.last_insert_rowid();
+        tx.commit()?;
+        Ok(row_id)
     }
 
     pub fn update_contact_request_status(
@@ -495,14 +517,19 @@ impl crate::database::Database {
     /// Item 7c: Load full `ContactRequest` rows (metadata +
     /// DIP-15 crypto) for an identity, keyed by `(from, to)` pair.
     ///
-    /// Returns rows where ALL required DIP-15 columns are non-NULL —
-    /// rows with partial crypto (e.g. legacy rows written before
-    /// v38, or in-flight saves that haven't been fully populated)
-    /// are skipped. The caller joins outgoing+incoming pairs to
-    /// reconstruct `EstablishedContact` objects.
+    /// Returns rows where ALL required DIP-15 columns AND the
+    /// `platform_created_at_ms` timestamp are non-NULL — rows with
+    /// partial crypto (legacy rows or in-flight saves) are skipped.
+    /// The caller joins outgoing+incoming pairs to reconstruct
+    /// `EstablishedContact` objects.
     ///
     /// Covers both directions: requests where the identity is the
     /// sender (outgoing) and where it's the recipient (incoming).
+    ///
+    /// The returned `platform_created_at_ms` is in milliseconds
+    /// (matching `ContactRequest.created_at: TimestampMillis`) —
+    /// NOT the local-save `created_at` column, which is in seconds.
+    /// See M2 in the Item 7 review for why these are separate.
     #[allow(clippy::type_complexity)]
     pub fn load_contact_request_crypto_rows(
         &self,
@@ -510,16 +537,16 @@ impl crate::database::Database {
         network: &str,
     ) -> rusqlite::Result<
         Vec<(
-            Identifier,   // from_identity_id
-            Identifier,   // to_identity_id
-            u32,          // sender_key_index
-            u32,          // recipient_key_index
-            u32,          // account_reference
-            Vec<u8>,      // encrypted_public_key
+            Identifier,      // from_identity_id
+            Identifier,      // to_identity_id
+            u32,             // sender_key_index
+            u32,             // recipient_key_index
+            u32,             // account_reference
+            Vec<u8>,         // encrypted_public_key
             Option<Vec<u8>>, // encrypted_account_label_bytes
             Option<Vec<u8>>, // auto_accept_proof
-            u32,          // core_height_created_at
-            i64,          // created_at (timestamp seconds)
+            u32,             // core_height_created_at
+            u64,             // platform_created_at_ms (TimestampMillis)
         )>,
     > {
         let conn = self.conn.lock().unwrap();
@@ -527,7 +554,7 @@ impl crate::database::Database {
             "SELECT from_identity_id, to_identity_id,
                     sender_key_index, recipient_key_index, account_reference,
                     encrypted_public_key, encrypted_account_label_bytes,
-                    auto_accept_proof, core_height_created_at, created_at
+                    auto_accept_proof, core_height_created_at, platform_created_at_ms
              FROM dashpay_contact_requests
              WHERE (from_identity_id = ?1 OR to_identity_id = ?1)
                AND network = ?2
@@ -536,7 +563,8 @@ impl crate::database::Database {
                AND recipient_key_index IS NOT NULL
                AND account_reference IS NOT NULL
                AND encrypted_public_key IS NOT NULL
-               AND core_height_created_at IS NOT NULL",
+               AND core_height_created_at IS NOT NULL
+               AND platform_created_at_ms IS NOT NULL",
         )?;
 
         let id_bytes = identity_id.to_buffer().to_vec();
@@ -551,7 +579,7 @@ impl crate::database::Database {
                 let encrypted_account_label_bytes: Option<Vec<u8>> = row.get(6)?;
                 let auto_accept_proof: Option<Vec<u8>> = row.get(7)?;
                 let core_height_created_at: u32 = row.get(8)?;
-                let created_at: i64 = row.get(9)?;
+                let platform_created_at_ms: i64 = row.get(9)?;
 
                 let from_id = Identifier::from_bytes(&from_bytes)
                     .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
@@ -568,7 +596,7 @@ impl crate::database::Database {
                     encrypted_account_label_bytes,
                     auto_accept_proof,
                     core_height_created_at,
-                    created_at,
+                    platform_created_at_ms.max(0) as u64,
                 ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -837,6 +865,7 @@ mod tests {
                 None,
                 "sent",
                 outgoing_crypto.clone(),
+                Some(1_700_000_000_000),
             )
             .expect("save outgoing");
         accept(outgoing_id);
@@ -860,6 +889,7 @@ mod tests {
                 None,
                 "received",
                 incoming_crypto.clone(),
+                Some(1_700_000_001_000),
             )
             .expect("save incoming");
         accept(incoming_id);
@@ -888,7 +918,8 @@ mod tests {
         assert_eq!(loaded_outgoing.5, vec![0xa0u8; 96]); // encrypted_public_key
         assert_eq!(loaded_outgoing.6, Some(vec![0xb0u8, 0xb1, 0xb2]));
         assert_eq!(loaded_outgoing.7, None); // auto_accept_proof
-        assert_eq!(loaded_outgoing.8, 100_000);
+        assert_eq!(loaded_outgoing.8, 100_000); // core_height_created_at
+        assert_eq!(loaded_outgoing.9, 1_700_000_000_000); // platform_created_at_ms
 
         // Incoming assertions (contact → owner)
         assert_eq!(loaded_incoming.0, contact);
@@ -900,6 +931,7 @@ mod tests {
         assert_eq!(loaded_incoming.6, None);
         assert_eq!(loaded_incoming.7, Some(vec![0xd0u8; 32]));
         assert_eq!(loaded_incoming.8, 100_005);
+        assert_eq!(loaded_incoming.9, 1_700_000_001_000);
     }
 
     /// Item 7c: legacy rows (all-None crypto) must be filtered out
@@ -924,6 +956,7 @@ mod tests {
                 None,
                 "sent",
                 ContactRequestCryptoFields::default(),
+                None,
             )
             .expect("save legacy");
         db.execute(

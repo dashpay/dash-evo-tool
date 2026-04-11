@@ -4,7 +4,7 @@ use rusqlite::{Connection, params};
 use std::fs;
 use std::path::Path;
 
-pub const DEFAULT_DB_VERSION: u16 = 38;
+pub const DEFAULT_DB_VERSION: u16 = 39;
 
 pub const DEFAULT_NETWORK: &str = "mainnet";
 
@@ -51,6 +51,9 @@ impl Database {
 
     fn apply_version_changes(&self, version: u16, tx: &Connection) -> rusqlite::Result<()> {
         match version {
+            39 => {
+                self.add_platform_created_at_ms_to_contact_requests(tx)?;
+            }
             38 => {
                 self.add_dip15_crypto_columns_to_contact_requests(tx)?;
             }
@@ -1088,6 +1091,48 @@ impl Database {
         Ok(())
     }
 
+    /// Migration 39: Add `platform_created_at_ms` column to
+    /// `dashpay_contact_requests` (Item 7, review M2 fix).
+    ///
+    /// The existing `created_at` column is `INTEGER DEFAULT
+    /// (unixepoch())` — it captures **when the row was saved to
+    /// local SQL**, in seconds. That's a different concept from
+    /// **when the contact request was created on platform**, which
+    /// is carried by the document's `created_at` field in
+    /// milliseconds.
+    ///
+    /// Item 7b was writing `unixepoch()` into `created_at` (local
+    /// save time) and Item 7c was reading it back and multiplying
+    /// by 1000 to fake "ms". The reviewer caught this as M2 — the
+    /// arithmetic was right for what was stored but the stored
+    /// value was the wrong timestamp.
+    ///
+    /// This migration adds a new nullable column specifically for
+    /// the platform-side ms timestamp. `created_at` keeps its
+    /// original "local save time" semantics so nothing else is
+    /// disturbed.
+    ///
+    /// Idempotent: probes `pragma_table_info` before the ALTER.
+    fn add_platform_created_at_ms_to_contact_requests(
+        &self,
+        conn: &Connection,
+    ) -> rusqlite::Result<()> {
+        let has_col: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('dashpay_contact_requests')
+             WHERE name='platform_created_at_ms'",
+            [],
+            |row| row.get::<_, i32>(0).map(|c| c > 0),
+        )?;
+        if !has_col {
+            conn.execute(
+                "ALTER TABLE dashpay_contact_requests
+                 ADD COLUMN platform_created_at_ms INTEGER",
+                [],
+            )?;
+        }
+        Ok(())
+    }
+
     /// Migration 38: Add DIP-15 cryptographic columns to
     /// `dashpay_contact_requests` (Item 7).
     ///
@@ -1390,7 +1435,8 @@ mod test {
         }
 
         // DIP-15 crypto columns added to `dashpay_contact_requests`
-        // in v38 (Item 7).
+        // in v38 (Item 7), plus platform timestamp column in v39
+        // (review M2).
         for col in [
             "sender_key_index",
             "recipient_key_index",
@@ -1399,6 +1445,7 @@ mod test {
             "encrypted_account_label_bytes",
             "auto_accept_proof",
             "core_height_created_at",
+            "platform_created_at_ms",
         ] {
             assert_column_exists(conn, "dashpay_contact_requests", col);
         }
@@ -1529,7 +1576,7 @@ mod test {
             )
             .unwrap();
         assert_eq!(version, DEFAULT_DB_VERSION);
-        assert_eq!(version, 38);
+        assert_eq!(version, 39);
 
         assert_v33_schema(&conn);
     }
@@ -1646,7 +1693,7 @@ mod test {
         );
 
         // Verify final version
-        assert_eq!(db.db_schema_version().unwrap(), 38);
+        assert_eq!(db.db_schema_version().unwrap(), 39);
 
         // Verify full v33 schema
         let conn = db.conn.lock().unwrap();

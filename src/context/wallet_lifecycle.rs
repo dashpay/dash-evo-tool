@@ -1136,7 +1136,7 @@ impl AppContext {
             encrypted_account_label_bytes,
             auto_accept_proof,
             core_height_created_at,
-            created_at,
+            platform_created_at_ms,
         ) in rows
         {
             let mut request = ContactRequest::new(
@@ -1147,9 +1147,10 @@ impl AppContext {
                 account_reference,
                 encrypted_public_key,
                 core_height_created_at,
-                // SQL stores seconds; `ContactRequest.created_at` is
-                // TimestampMillis. Multiply into ms.
-                (created_at.max(0) as u64).saturating_mul(1_000),
+                // The `platform_created_at_ms` column is already in
+                // milliseconds (matching `ContactRequest.created_at:
+                // TimestampMillis`). No conversion. See Item 7 review M2.
+                platform_created_at_ms,
             );
             request.encrypted_account_label = encrypted_account_label_bytes;
             request.auto_accept_proof = auto_accept_proof;
@@ -1164,6 +1165,18 @@ impl AppContext {
             // (outgoing). The sibling incoming entry will be keyed
             // `(contact_id, identity_id)`.
             if *from_id != *identity_id {
+                continue;
+            }
+            // S1: self-contact edge case. A malformed platform
+            // contact request with `from == to == identity` would
+            // otherwise build `EstablishedContact::new(owner, req,
+            // req)` — semantically wrong (you can't be your own
+            // contact). Skip.
+            if *from_id == *to_id {
+                tracing::debug!(
+                    identity = %identity_id,
+                    "load_established_contacts: self-contact row — skipping"
+                );
                 continue;
             }
             let contact_id = *to_id;

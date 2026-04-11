@@ -87,6 +87,11 @@ pub enum SqlitePersistError {
     /// (`TransactionRecord`, `AccountType` key, etc.).
     #[error("encode/decode error: {0}")]
     Encode(String),
+    /// The shared database connection mutex was poisoned — another
+    /// thread panicked while holding the lock. Recoverable if the
+    /// caller is willing to retry, but never the normal case.
+    #[error("database mutex poisoned: {0}")]
+    MutexPoisoned(String),
 }
 
 impl SqliteWalletPersister {
@@ -216,7 +221,13 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
         use std::collections::BTreeMap;
 
         let conn = self.db.shared_connection();
-        let guard = conn.lock().unwrap();
+        // Propagate mutex poisoning as a real error instead of
+        // panicking — the rest of this function uses `?` for error
+        // propagation, so consistency matters (review M1).
+        let guard = conn.lock().map_err(|e| {
+            Box::new(SqlitePersistError::MutexPoisoned(e.to_string()))
+                as Box<dyn std::error::Error + Send + Sync>
+        })?;
 
         let mut per_account: BTreeMap<AccountType, AccountChangeSet> = BTreeMap::new();
 
@@ -1526,7 +1537,6 @@ mod tests {
             .unwrap();
         assert_eq!(coinjoin_internal, 5, "stale internal must not regress");
 
-        let _ = BTreeSet::<i64>::new();
     }
 
     /// Phase 10 6a: an `AccountChangeSet.utxos_instant_locked` entry
@@ -1793,7 +1803,7 @@ mod tests {
         };
         use dash_sdk::dpp::key_wallet::changeset::{AccountChangeSet, WalletChangeSet};
         use dash_sdk::dpp::key_wallet::managed_account::transaction_record::{
-            TransactionDirection, TransactionRecord,
+            InputDetail, OutputDetail, OutputRole, TransactionDirection, TransactionRecord,
         };
         use dash_sdk::dpp::key_wallet::transaction_checking::TransactionContext;
         use dash_sdk::dpp::key_wallet::transaction_checking::transaction_router::TransactionType;
@@ -1823,10 +1833,19 @@ mod tests {
         };
 
         // Build a simple Transaction and wrap it in a TransactionRecord.
+        //
+        // Critical: populate `input_details` with a real testnet
+        // `Address` to exercise the serde round-trip that review
+        // C1 flagged as broken. Before the dashcore serde fix,
+        // `Address<NetworkChecked>::deserialize` hardcoded
+        // `require_network(Mainnet)` and any testnet address would
+        // silently corrupt the `TransactionRecord` decode, causing
+        // `load()` to log-and-skip the row. The v1 of this test
+        // used `Vec::new()` for input_details and missed the bug.
         let pubkey_bytes = [0x02u8; 33];
         let pubkey =
             dash_sdk::dpp::dashcore::PublicKey::from_slice(&pubkey_bytes).unwrap();
-        let test_addr = dash_sdk::dpp::dashcore::Address::p2pkh(
+        let testnet_addr = dash_sdk::dpp::dashcore::Address::p2pkh(
             &pubkey,
             dash_sdk::dpp::dashcore::Network::Testnet,
         );
@@ -1844,19 +1863,28 @@ mod tests {
             }],
             output: vec![TxOut {
                 value: 25_000_000,
-                script_pubkey: test_addr.script_pubkey(),
+                script_pubkey: testnet_addr.script_pubkey(),
             }],
             special_transaction_payload: None,
         };
         let txid = txn.txid();
 
+        let input_details = vec![InputDetail {
+            index: 0,
+            value: 30_000_000,
+            address: testnet_addr.clone(),
+        }];
+        let output_details = vec![OutputDetail {
+            index: 0,
+            role: OutputRole::Received,
+        }];
         let record = TransactionRecord::new(
             txn.clone(),
             TransactionContext::Mempool,
             TransactionType::Standard,
             TransactionDirection::Incoming,
-            Vec::new(),
-            Vec::new(),
+            input_details,
+            output_details,
             25_000_000,
         );
 

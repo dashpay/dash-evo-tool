@@ -4,7 +4,7 @@ use rusqlite::{Connection, params};
 use std::fs;
 use std::path::Path;
 
-pub const DEFAULT_DB_VERSION: u16 = 34;
+pub const DEFAULT_DB_VERSION: u16 = 35;
 
 pub const DEFAULT_NETWORK: &str = "mainnet";
 
@@ -51,6 +51,9 @@ impl Database {
 
     fn apply_version_changes(&self, version: u16, tx: &Connection) -> rusqlite::Result<()> {
         match version {
+            35 => {
+                self.drop_dashpay_address_mappings_table(tx)?;
+            }
             34 => {
                 self.add_asset_lock_tracking_columns(tx)?;
             }
@@ -1058,6 +1061,26 @@ impl Database {
 
         Ok(())
     }
+
+    /// Migration 35: Drop `dashpay_address_mappings` table.
+    ///
+    /// DashPay receiving addresses are now tracked by key-wallet's
+    /// `DashpayReceivingFunds` accounts (registered at contact
+    /// establishment via `DashPayWallet::register_contact_account`), so
+    /// the separate evo-tool mapping table is redundant. Phase 9b-4
+    /// migrated all callers to `DashPayWallet::match_incoming_dashpay_address`.
+    fn drop_dashpay_address_mappings_table(&self, conn: &Connection) -> rusqlite::Result<()> {
+        conn.execute(
+            "DROP INDEX IF EXISTS idx_dashpay_address_mappings_contact",
+            [],
+        )?;
+        conn.execute(
+            "DROP INDEX IF EXISTS idx_dashpay_address_mappings_owner",
+            [],
+        )?;
+        conn.execute("DROP TABLE IF EXISTS dashpay_address_mappings", [])?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -1126,6 +1149,20 @@ mod test {
 
         // dashpay_contact_requests table (pre-existing, but checked for completeness)
         assert_table_exists(conn, "dashpay_contact_requests");
+
+        // dashpay_address_mappings dropped in v35 (Phase 9b-4 cleanup).
+        assert_table_not_exists(conn, "dashpay_address_mappings");
+    }
+
+    fn assert_table_not_exists(conn: &Connection, table: &str) {
+        let exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                params![table],
+                |row| row.get::<_, i32>(0).map(|c| c > 0),
+            )
+            .unwrap();
+        assert!(!exists, "table `{table}` should not exist");
     }
 
     #[test]
@@ -1228,7 +1265,7 @@ mod test {
             )
             .unwrap();
         assert_eq!(version, DEFAULT_DB_VERSION);
-        assert_eq!(version, 34);
+        assert_eq!(version, 35);
 
         assert_v33_schema(&conn);
     }
@@ -1345,7 +1382,7 @@ mod test {
         );
 
         // Verify final version
-        assert_eq!(db.db_schema_version().unwrap(), 34);
+        assert_eq!(db.db_schema_version().unwrap(), 35);
 
         // Verify full v33 schema
         let conn = db.conn.lock().unwrap();

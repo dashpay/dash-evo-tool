@@ -733,7 +733,7 @@ impl Wallet {
                     block_hash: block_info.map(|bi| bi.block_hash()),
                     net_amount: record.net_amount,
                     fee: record.fee,
-                    label: record.label.clone(),
+                    label: Some(record.label.clone()).filter(|s| !s.is_empty()),
                     is_ours: true,
                     status,
                 }

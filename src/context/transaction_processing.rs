@@ -50,6 +50,12 @@ impl AppContext {
                 // through `app_context.wallets` here would deadlock
                 // trying to re-acquire a read guard on the wallet we
                 // already hold the writer on.
+                //
+                // key-wallet's block processing already advances the
+                // `DashpayReceivingFunds` account's address pool
+                // `highest_used` when the tx output matches — no
+                // separate "bump contact highest receive index" call
+                // is needed (Phase 9b-3 rollback).
                 if let Some(pw) = wallet.platform_wallet.as_ref() {
                     if let Some(m) = pw
                         .dashpay()
@@ -58,21 +64,6 @@ impl AppContext {
                         let owner_id = m.user_identity_id;
                         let contact_id = m.friend_identity_id;
                         let address_index = m.address_index;
-
-                        // Bump the highest receive index via the
-                        // platform wallet — the persister catches the
-                        // changeset and writes to
-                        // `dashpay_contact_address_indices` on flush
-                        // (Phase 9b-3). The `_with_pw_blocking` variant
-                        // takes the already-resolved `&PlatformWallet`
-                        // to avoid re-locking the wallet we're sitting
-                        // inside.
-                        crate::backend_task::dashpay::platform_wallet_cache::cache_contact_highest_receive_index_with_pw_blocking(
-                            pw,
-                            &owner_id,
-                            &contact_id,
-                            address_index + 1,
-                        );
 
                         // Record the received payment via the platform
                         // wallet — persister catches the changeset and

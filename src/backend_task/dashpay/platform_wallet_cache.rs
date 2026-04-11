@@ -112,42 +112,13 @@ pub(crate) async fn cache_payment(
     });
 }
 
-/// Route a `ManagedIdentity::set_contact_bloom_registered_count`
-/// mutation through the platform-wallet changeset flow. Replaces the
-/// direct `db.update_bloom_registered_count` call.
-pub(crate) async fn cache_contact_bloom_registered_count(
-    app_context: &AppContext,
-    identity: &QualifiedIdentity,
-    contact_id: &Identifier,
-    count: u32,
-) {
-    let Some(pw) = resolve_platform_wallet(app_context, identity) else {
-        return;
-    };
-    let owner_id = identity.identity.id();
-    let contact_cs = {
-        let mut state = pw.state_mut().await;
-        let Some(managed) = state.identity_manager.managed_identity_mut(&owner_id) else {
-            tracing::debug!(
-                identity = %owner_id,
-                "platform-wallet cache: identity not in IdentityManager"
-            );
-            return;
-        };
-        managed.set_contact_bloom_registered_count(contact_id, count)
-    };
-    pw.queue_persist(PlatformWalletChangeSet {
-        contacts: Some(contact_cs),
-        ..Default::default()
-    });
-}
-
 // --- Blocking variants (SPV transaction-processing frame loop) ---
 
 /// Blocking payment-cache helper for the SPV frame loop. Records a
 /// DashPay payment entry on the owner's `ManagedIdentity` and queues
-/// the emitted changeset. See the module header for the deadlock
-/// rationale behind the `&PlatformWallet` parameter.
+/// the emitted changeset. Takes an already-resolved `&PlatformWallet`
+/// to avoid deadlocking against a held write guard on the owning
+/// `Wallet` — see the module header for the rationale.
 pub(crate) fn cache_payment_with_pw_blocking(
     pw: &PlatformWallet,
     owner_id: &Identifier,
@@ -167,33 +138,6 @@ pub(crate) fn cache_payment_with_pw_blocking(
     };
     pw.queue_persist(PlatformWalletChangeSet {
         identities: Some(id_cs),
-        ..Default::default()
-    });
-}
-
-/// Blocking contact-index bump helper for the SPV frame loop.
-/// Monotonic — if `index` is not greater than the current value, the
-/// mutation emits an empty changeset and the persister has nothing
-/// to write.
-pub(crate) fn cache_contact_highest_receive_index_with_pw_blocking(
-    pw: &PlatformWallet,
-    owner_id: &Identifier,
-    contact_id: &Identifier,
-    index: u32,
-) {
-    let contact_cs = {
-        let mut state = pw.state_mut_blocking();
-        let Some(managed) = state.identity_manager.managed_identity_mut(owner_id) else {
-            tracing::debug!(
-                identity = %owner_id,
-                "platform-wallet cache: identity not in IdentityManager"
-            );
-            return;
-        };
-        managed.bump_contact_highest_receive_index(contact_id, index)
-    };
-    pw.queue_persist(PlatformWalletChangeSet {
-        contacts: Some(contact_cs),
         ..Default::default()
     });
 }

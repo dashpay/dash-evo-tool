@@ -4,7 +4,6 @@ use dash_sdk::dpp::dashcore::{Address, Network};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// Default gap limit for DashPay address derivation
@@ -112,21 +111,14 @@ pub async fn register_dashpay_addresses_for_identity(
         return Ok(result);
     }
 
-    // Load address indices for all contacts
-    let address_indices = app_context
-        .db
-        .get_all_contact_address_indices(&our_identity_id)
-        .map_err(|e| format!("Failed to load address indices: {}", e))?;
-
-    // Create a map for quick lookup
-    let indices_map: BTreeMap<Vec<u8>, _> = address_indices
-        .into_iter()
-        .map(|idx| (idx.contact_identity_id.clone(), idx))
-        .collect();
-
     let network = app_context.network;
 
-    // Acquire the key-wallet read guard for derivation
+    // Acquire the key-wallet read guard for derivation. Note: this
+    // function derives addresses via the standalone DIP-14 helpers
+    // without touching the key-wallet account pool. Phase 10 will
+    // consolidate this with `bootstrap_dashpay_contact_accounts` and
+    // the pool's `maintain_gap_limit` mechanism so all DashPay
+    // address generation flows through one code path.
     let info_guard = platform_wallet_arc.state().await;
     let key_wallet_guard = info_guard.wallet();
 
@@ -139,62 +131,21 @@ pub async fn register_dashpay_addresses_for_identity(
             }
         };
 
-        // Get the current highest receive index for this contact
-        let highest_receive_index = indices_map
-            .get(&contact.contact_identity_id)
-            .map(|idx| idx.highest_receive_index)
-            .unwrap_or(0);
-
-        // Get how many addresses are already registered with bloom filter
-        let bloom_registered = indices_map
-            .get(&contact.contact_identity_id)
-            .map(|idx| idx.bloom_registered_count)
-            .unwrap_or(0);
-
-        // Calculate how many new addresses we need to derive
-        // We want addresses from 0 to (highest_receive_index + GAP_LIMIT)
-        let target_count = highest_receive_index.saturating_add(DASHPAY_GAP_LIMIT);
-
-        // Only derive new addresses if we need more than what's registered
-        if target_count <= bloom_registered {
-            result.contacts_processed += 1;
-            continue;
-        }
-
-        let start_index = bloom_registered;
-        let count = target_count - bloom_registered;
-
-        // Derive the receiving addresses
+        // Always derive the first `DASHPAY_GAP_LIMIT` addresses for
+        // each contact. DIP-14 derivation is deterministic so
+        // repeated calls produce the same addresses — callers can
+        // invoke this idempotently without duplicating work on the
+        // key-wallet side.
         match derive_receiving_addresses_for_contact(
             key_wallet_guard,
             network,
             &our_identity_id,
             &contact_id,
-            start_index,
-            count,
+            0,
+            DASHPAY_GAP_LIMIT,
         ) {
             Ok(addresses) => {
-                // Addresses are tracked by key-wallet's
-                // `DashpayReceivingFunds` account pool (registered at
-                // contact establishment time via
-                // `DashPayWallet::register_contact_account`), so there's
-                // no separate evo-tool mapping table to populate any
-                // more (Phase 9b-4). Just bump the result counter so
-                // the caller can log how many addresses were derived.
                 result.addresses_registered += addresses.len();
-
-                // Update the bloom_registered_count via the platform
-                // wallet — the persister catches the changeset and
-                // writes to `dashpay_contact_address_indices` on
-                // flush (Phase 9b-3).
-                super::platform_wallet_cache::cache_contact_bloom_registered_count(
-                    app_context,
-                    identity,
-                    &contact_id,
-                    target_count,
-                )
-                .await;
-
                 result.contacts_processed += 1;
             }
             Err(e) => {

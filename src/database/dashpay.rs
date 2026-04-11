@@ -62,20 +62,6 @@ pub struct StoredPayment {
     pub confirmed_at: Option<i64>,
 }
 
-/// DashPay contact address index tracking per DIP-0015
-/// Tracks address indices used for sending/receiving payments per contact relationship
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ContactAddressIndex {
-    pub owner_identity_id: Vec<u8>,
-    pub contact_identity_id: Vec<u8>,
-    /// Next address index to use when sending TO this contact
-    pub next_send_index: u32,
-    /// Highest address index seen when receiving FROM this contact (for bloom filter)
-    pub highest_receive_index: u32,
-    /// Number of addresses registered in bloom filter for this contact
-    pub bloom_registered_count: u32,
-}
-
 impl crate::database::Database {
     /// Initialize all DashPay-related database tables using a transaction
     pub fn init_dashpay_tables_in_tx(&self, tx: &rusqlite::Connection) -> rusqlite::Result<()> {
@@ -178,8 +164,20 @@ impl crate::database::Database {
             [],
         )?;
 
-        // Contact address index tracking table (DIP-0015)
-        // Tracks address indices per contact for payment derivation
+        // Contact address index tracking table.
+        //
+        // Phase 9b-3 rollback (current scope): this table now stores
+        // only `next_send_index` — the send-side counter used by
+        // `get_and_increment_send_index` when handing out unique
+        // payment addresses to send to a contact. The receive-side
+        // `highest_receive_index` and `bloom_registered_count`
+        // columns are dead; they're still declared here so existing
+        // databases keep working, but no code reads them anymore.
+        // Phase 10 will migrate `next_send_index` to live on the
+        // key-wallet's `DashpayExternalAccount` address pool
+        // (`highest_generated + 1`) and drop this table entirely.
+        //
+        // Note: `dashpay_address_mappings` was dropped in v35.
         tx.execute(
             "CREATE TABLE IF NOT EXISTS dashpay_contact_address_indices (
                 owner_identity_id BLOB NOT NULL,
@@ -191,11 +189,6 @@ impl crate::database::Database {
             )",
             [],
         )?;
-
-        // Note: `dashpay_address_mappings` was dropped in v35. DashPay
-        // receiving addresses are now tracked by key-wallet's
-        // `DashpayReceivingFunds` accounts, so the separate mapping
-        // table is no longer needed. See Phase 9b-4.
 
         Ok(())
     }
@@ -626,55 +619,6 @@ impl crate::database::Database {
 
     // Contact address index operations (DIP-0015)
 
-    /// Get or create contact address index entry
-    /// Returns (next_send_index, highest_receive_index, bloom_registered_count)
-    pub fn get_contact_address_indices(
-        &self,
-        owner_identity_id: &Identifier,
-        contact_identity_id: &Identifier,
-    ) -> rusqlite::Result<ContactAddressIndex> {
-        let conn = self.conn.lock().unwrap();
-
-        // Try to get existing entry
-        let mut stmt = conn.prepare(
-            "SELECT owner_identity_id, contact_identity_id, next_send_index,
-                    highest_receive_index, bloom_registered_count
-             FROM dashpay_contact_address_indices
-             WHERE owner_identity_id = ?1 AND contact_identity_id = ?2",
-        )?;
-
-        let result = stmt.query_row(
-            params![
-                owner_identity_id.to_buffer().to_vec(),
-                contact_identity_id.to_buffer().to_vec()
-            ],
-            |row| {
-                Ok(ContactAddressIndex {
-                    owner_identity_id: row.get(0)?,
-                    contact_identity_id: row.get(1)?,
-                    next_send_index: row.get(2)?,
-                    highest_receive_index: row.get(3)?,
-                    bloom_registered_count: row.get(4)?,
-                })
-            },
-        );
-
-        match result {
-            Ok(indices) => Ok(indices),
-            Err(rusqlite::Error::QueryReturnedNoRows) => {
-                // Create new entry with defaults
-                Ok(ContactAddressIndex {
-                    owner_identity_id: owner_identity_id.to_buffer().to_vec(),
-                    contact_identity_id: contact_identity_id.to_buffer().to_vec(),
-                    next_send_index: 0,
-                    highest_receive_index: 0,
-                    bloom_registered_count: 0,
-                })
-            }
-            Err(e) => Err(e),
-        }
-    }
-
     /// Get the next send address index for a contact and increment it atomically.
     /// This is used when sending a payment to ensure unique addresses.
     /// Uses an atomic INSERT/UPDATE with RETURNING to prevent race conditions.
@@ -716,91 +660,6 @@ impl crate::database::Database {
             ],
             |row| row.get(0),
         )
-    }
-
-    /// Update the highest receive index seen for a contact
-    /// Called when we detect an incoming payment at a higher index
-    pub fn update_highest_receive_index(
-        &self,
-        owner_identity_id: &Identifier,
-        contact_identity_id: &Identifier,
-        index: u32,
-    ) -> rusqlite::Result<()> {
-        let sql = "
-            INSERT INTO dashpay_contact_address_indices
-            (owner_identity_id, contact_identity_id, highest_receive_index)
-            VALUES (?1, ?2, ?3)
-            ON CONFLICT(owner_identity_id, contact_identity_id)
-            DO UPDATE SET highest_receive_index = MAX(highest_receive_index, ?3)
-        ";
-
-        self.execute(
-            sql,
-            params![
-                owner_identity_id.to_buffer().to_vec(),
-                contact_identity_id.to_buffer().to_vec(),
-                index,
-            ],
-        )?;
-
-        Ok(())
-    }
-
-    /// Update the bloom registered count for a contact
-    /// Called after registering addresses in bloom filter
-    pub fn update_bloom_registered_count(
-        &self,
-        owner_identity_id: &Identifier,
-        contact_identity_id: &Identifier,
-        count: u32,
-    ) -> rusqlite::Result<()> {
-        let sql = "
-            INSERT INTO dashpay_contact_address_indices
-            (owner_identity_id, contact_identity_id, bloom_registered_count)
-            VALUES (?1, ?2, ?3)
-            ON CONFLICT(owner_identity_id, contact_identity_id)
-            DO UPDATE SET bloom_registered_count = ?3
-        ";
-
-        self.execute(
-            sql,
-            params![
-                owner_identity_id.to_buffer().to_vec(),
-                contact_identity_id.to_buffer().to_vec(),
-                count,
-            ],
-        )?;
-
-        Ok(())
-    }
-
-    /// Get all contact address indices for an identity
-    /// Useful for registering bloom filters on startup
-    pub fn get_all_contact_address_indices(
-        &self,
-        owner_identity_id: &Identifier,
-    ) -> rusqlite::Result<Vec<ContactAddressIndex>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT owner_identity_id, contact_identity_id, next_send_index,
-                    highest_receive_index, bloom_registered_count
-             FROM dashpay_contact_address_indices
-             WHERE owner_identity_id = ?1",
-        )?;
-
-        let indices = stmt
-            .query_map(params![owner_identity_id.to_buffer().to_vec()], |row| {
-                Ok(ContactAddressIndex {
-                    owner_identity_id: row.get(0)?,
-                    contact_identity_id: row.get(1)?,
-                    next_send_index: row.get(2)?,
-                    highest_receive_index: row.get(3)?,
-                    bloom_registered_count: row.get(4)?,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-
-        Ok(indices)
     }
 
 }

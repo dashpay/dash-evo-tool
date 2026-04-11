@@ -618,25 +618,23 @@ impl Wallet {
     }
 
     /// All addresses from PlatformWallet's CoreAddressInfo.
-    /// Returns empty if the wallet is locked (no PlatformWallet).
+    /// Returns empty if the wallet is locked (no PlatformWallet) or
+    /// the wallet manager lock is contended.
     pub fn all_addresses_info(&self) -> Vec<crate::platform_wallet_bridge::CoreAddressInfo> {
         self.platform_wallet
             .as_ref()
-            .map(|pw| {
-                let info = pw.state_blocking();
+            .and_then(|pw| pw.try_state())
+            .map(|info| {
                 crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.core_wallet)
             })
             .unwrap_or_default()
     }
 
     /// Look up the derivation path for an address via PlatformWallet.
-    /// Returns `None` if the wallet is locked (no PlatformWallet).
+    /// Returns `None` if the wallet is locked or the lock is contended.
     pub fn derivation_path_for_address(&self, address: &Address) -> Option<DerivationPath> {
         let pw = self.platform_wallet.as_ref()?;
-        // Use try_state() to avoid panic when called from async context
-        // (state_blocking panics inside tokio runtime).
-        // Returns None if the lock is held, which is safe — the caller retries next cycle.
-        let info = pw.state_blocking();
+        let info = pw.try_state()?;
         crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.core_wallet)
             .into_iter()
             .find(|a| &a.address == address)
@@ -665,11 +663,12 @@ impl Wallet {
     }
 
     /// Per-address balance from PlatformWallet's CoreAddressInfo.
+    /// Returns 0 if the wallet is locked or the lock is contended.
     pub fn address_balance(&self, address: &Address) -> u64 {
         self.platform_wallet
             .as_ref()
-            .map(|pw| {
-                let info = pw.state_blocking();
+            .and_then(|pw| pw.try_state())
+            .map(|info| {
                 crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.core_wallet)
                     .into_iter()
                     .find(|a| &a.address == address)
@@ -711,12 +710,15 @@ impl Wallet {
 
     /// Read transaction history from the PlatformWallet's ManagedWalletInfo.
     ///
-    /// Returns an empty vec when the wallet is locked (no PlatformWallet).
+    /// Returns an empty vec when the wallet is locked or the wallet
+    /// manager lock is contended.
     pub fn get_transactions(&self) -> Vec<WalletTransaction> {
         let Some(pw) = self.platform_wallet.as_ref() else {
             return Vec::new();
         };
-        let info = pw.state_blocking();
+        let Some(info) = pw.try_state() else {
+            return Vec::new();
+        };
         info.core_wallet.transaction_history()
             .into_iter()
             .map(|record| {

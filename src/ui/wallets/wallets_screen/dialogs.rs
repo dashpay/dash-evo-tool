@@ -673,7 +673,9 @@ impl WalletsBalancesScreen {
         let network = self.app_context.network;
 
         // Find the highest existing platform payment address index
-        let info = pw.state_blocking();
+        let info = pw
+            .try_state()
+            .ok_or_else(|| "Wallet is busy, please try again".to_string())?;
         let existing_indices: Vec<u32> =
             crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.core_wallet)
                 .iter()
@@ -1275,17 +1277,18 @@ impl WalletsBalancesScreen {
         let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
         let network = self.app_context.network;
 
-        let addresses: Vec<(String, u64)> = if let Some(pw) = wallet_guard.platform_wallet.as_ref()
-        {
-            let info = pw.state_blocking();
-            crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.core_wallet)
-                .into_iter()
-                .filter(|a| a.derivation_path.is_bip44_external(network))
-                .map(|a| (a.address.to_string(), a.balance))
-                .collect()
-        } else {
-            Vec::new()
-        };
+        let addresses: Vec<(String, u64)> = wallet_guard
+            .platform_wallet
+            .as_ref()
+            .and_then(|pw| pw.try_state())
+            .map(|info| {
+                crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.core_wallet)
+                    .into_iter()
+                    .filter(|a| a.derivation_path.is_bip44_external(network))
+                    .map(|a| (a.address.to_string(), a.balance))
+                    .collect()
+            })
+            .unwrap_or_default();
         Ok(addresses)
     }
 

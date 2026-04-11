@@ -9,8 +9,22 @@ use dash_sdk::dpp::dashcore::{Address, OutPoint};
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
 use dash_sdk::dpp::prelude::AssetLockProof;
 use crate::platform_wallet_bridge::CoreAddressInfo;
+use platform_wallet::wallet::platform_wallet::{PlatformWallet, WalletStateReadGuard};
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
+
+/// See `refresh_wallet_info::retry_try_state` for rationale. Brief retry
+/// loop because spawn_blocking worker threads still hold a tokio
+/// runtime context, so `state_blocking()` would panic.
+fn retry_try_state(pw: &PlatformWallet) -> Option<WalletStateReadGuard<'_>> {
+    for _ in 0..50 {
+        if let Some(guard) = pw.try_state() {
+            return Some(guard);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    None
+}
 
 /// Register a recovered asset lock with the PlatformWallet's AssetLockManager.
 ///
@@ -49,7 +63,7 @@ impl AppContext {
             // Read addresses from PlatformWallet (canonical source).
             // Locked wallets (no PlatformWallet) have no addresses — return empty.
             let addresses: Vec<Address> = if let Some(pw) = wallet_guard.platform_wallet.as_ref() {
-                let info = pw.state_blocking();
+                let info = retry_try_state(pw).ok_or(TaskError::WalletBusy)?;
                 CoreAddressInfo::all_from_wallet_info(&info.core_wallet)
                     .into_iter()
                     .map(|a| a.address)

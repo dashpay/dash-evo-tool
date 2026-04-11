@@ -51,10 +51,21 @@ impl AppContext {
                 // trying to re-acquire a read guard on the wallet we
                 // already hold the writer on.
                 if let Some(pw) = wallet.platform_wallet.as_ref() {
-                    if let Some(m) = pw
+                    let dashpay_match = match pw
                         .dashpay()
-                        .match_incoming_dashpay_address_blocking(&address)
+                        .try_match_incoming_dashpay_address(&address)
                     {
+                        Ok(m) => m,
+                        Err(()) => {
+                            tracing::debug!(
+                                %address,
+                                "DashPay address match skipped: wallet busy. \
+                                 Will be picked up on a future tx or refresh."
+                            );
+                            None
+                        }
+                    };
+                    if let Some(m) = dashpay_match {
                         let owner_id = m.user_identity_id;
                         let contact_id = m.friend_identity_id;
                         let address_index = m.address_index;

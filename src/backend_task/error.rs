@@ -100,6 +100,11 @@ pub enum TaskError {
     #[error("Wallet is locked. Please unlock your wallet and try again.")]
     WalletLocked,
 
+    /// The wallet manager lock is currently held by another operation
+    /// (typically SPV block processing). Retry shortly.
+    #[error("Wallet is busy syncing. Please try again in a moment.")]
+    WalletBusy,
+
     /// Refreshing wallet UTXOs from Dash Core failed.
     #[error("Could not refresh wallet balance. Please try again.")]
     WalletUtxoReloadFailed { detail: String },

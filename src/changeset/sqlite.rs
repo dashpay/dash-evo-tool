@@ -413,16 +413,166 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
             }
         }
 
-        if per_account.is_empty() {
+        // --- Load asset locks from asset_lock_transaction ---
+        let mut asset_lock_cs = platform_wallet::changeset::AssetLockChangeSet::default();
+        {
+            use dash_sdk::dpp::dashcore::consensus::deserialize;
+            use platform_wallet::wallet::asset_lock::tracked::AssetLockStatus;
+
+            let mut stmt = guard
+                .prepare(
+                    "SELECT tx_id, output_index, transaction_data, amount,
+                            instant_lock_data, chain_locked_height,
+                            account_index, funding_type, identity_index, proof_data
+                     FROM asset_lock_transaction
+                     WHERE wallet = ?1 AND network = ?2",
+                )
+                .map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+            let rows = stmt
+                .query_map(rusqlite::params![&wallet_id[..], &self.network], |row| {
+                    let txid_bytes: Vec<u8> = row.get(0)?;
+                    let output_index: i64 = row.get(1)?;
+                    let tx_data: Vec<u8> = row.get(2)?;
+                    let amount: i64 = row.get(3)?;
+                    let islock_data: Option<Vec<u8>> = row.get(4)?;
+                    let chain_height: Option<i64> = row.get(5)?;
+                    let account_index: i64 = row.get(6)?;
+                    let funding_type_disc: i64 = row.get(7)?;
+                    let identity_index: i64 = row.get(8)?;
+                    let proof_data: Option<Vec<u8>> = row.get(9)?;
+                    Ok((
+                        txid_bytes,
+                        output_index,
+                        tx_data,
+                        amount,
+                        islock_data,
+                        chain_height,
+                        account_index,
+                        funding_type_disc,
+                        identity_index,
+                        proof_data,
+                    ))
+                })
+                .map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+
+            for row in rows {
+                let (
+                    txid_bytes,
+                    output_index,
+                    tx_data,
+                    amount,
+                    islock_data,
+                    chain_height,
+                    account_index,
+                    funding_type_disc,
+                    identity_index,
+                    proof_data,
+                ) = row.map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+
+                // Decode txid.
+                let txid = match txid_bytes.as_slice().try_into() {
+                    Ok(arr) => Txid::from_byte_array(arr),
+                    Err(_) => {
+                        tracing::warn!("persister load: invalid txid in asset_lock_transaction — skipping row");
+                        continue;
+                    }
+                };
+                let outpoint = OutPoint::new(txid, output_index as u32);
+
+                // Decode transaction.
+                let transaction: dash_sdk::dpp::dashcore::Transaction = match deserialize(&tx_data) {
+                    Ok(tx) => tx,
+                    Err(_) => {
+                        tracing::warn!(%txid, "persister load: cannot decode asset lock transaction — skipping row");
+                        continue;
+                    }
+                };
+
+                // Decode funding type.
+                let funding_type = match funding_type_disc {
+                    0 => platform_wallet::AssetLockFundingType::IdentityRegistration,
+                    1 => platform_wallet::AssetLockFundingType::IdentityTopUp,
+                    2 => platform_wallet::AssetLockFundingType::IdentityTopUpNotBound,
+                    3 => platform_wallet::AssetLockFundingType::IdentityInvitation,
+                    4 => platform_wallet::AssetLockFundingType::AssetLockAddressTopUp,
+                    5 => platform_wallet::AssetLockFundingType::AssetLockShieldedAddressTopUp,
+                    d => {
+                        tracing::warn!(%txid, disc = d, "persister load: unknown funding_type discriminant — skipping row");
+                        continue;
+                    }
+                };
+
+                // Decode proof from bincode serde blob (if present).
+                let proof: Option<dash_sdk::dpp::prelude::AssetLockProof> =
+                    proof_data.and_then(|blob| {
+                        bincode::serde::decode_from_slice(&blob, bincode::config::standard())
+                            .map(|(p, _)| p)
+                            .map_err(|e| {
+                                tracing::warn!(%txid, error = %e, "persister load: cannot decode asset lock proof — treating as None");
+                                e
+                            })
+                            .ok()
+                    });
+
+                // Derive status from proof + legacy columns.
+                let status = if proof.is_some() {
+                    match &proof {
+                        Some(dash_sdk::dpp::prelude::AssetLockProof::Instant(_)) => {
+                            AssetLockStatus::InstantSendLocked
+                        }
+                        Some(dash_sdk::dpp::prelude::AssetLockProof::Chain(_)) => {
+                            AssetLockStatus::ChainLocked
+                        }
+                        None => unreachable!(),
+                    }
+                } else if islock_data.is_some() {
+                    AssetLockStatus::InstantSendLocked
+                } else if chain_height.is_some() {
+                    AssetLockStatus::ChainLocked
+                } else {
+                    AssetLockStatus::Broadcast
+                };
+
+                asset_lock_cs.asset_locks.insert(
+                    outpoint,
+                    platform_wallet::changeset::AssetLockEntry {
+                        out_point: outpoint,
+                        transaction,
+                        account_index: account_index as u32,
+                        funding_type,
+                        identity_index: identity_index as u32,
+                        amount_duffs: amount as u64,
+                        status,
+                        proof,
+                    },
+                );
+            }
+        }
+
+        let has_core = !per_account.is_empty();
+        let has_asset_locks = !asset_lock_cs.asset_locks.is_empty();
+
+        if !has_core && !has_asset_locks {
             return Ok(PlatformWalletChangeSet::default());
         }
 
-        let core = WalletChangeSet {
-            per_account,
-            ..Default::default()
+        let core = if has_core {
+            Some(WalletChangeSet {
+                per_account,
+                ..Default::default()
+            })
+        } else {
+            None
         };
+        let asset_locks = if has_asset_locks {
+            Some(asset_lock_cs)
+        } else {
+            None
+        };
+
         Ok(PlatformWalletChangeSet {
-            core: Some(core),
+            core,
+            asset_locks,
             ..Default::default()
         })
     }

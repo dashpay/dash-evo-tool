@@ -67,8 +67,8 @@ pub enum FlushStrategy {
 ///
 /// See the module docs for the current scope. The persister is
 /// shared across all wallets managed by a `PlatformWalletManager`;
-/// each wallet is identified by its `WalletId` (which equals the
-/// evo-tool `seed_hash`).
+/// each wallet is identified by its `WalletId` (SHA256 of root
+/// public key + chain code, from `key-wallet`).
 pub struct SqliteWalletPersister {
     db: Arc<Database>,
     network: String,
@@ -237,7 +237,7 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                 .prepare(
                     "SELECT account_type, pool_type, highest_used
                      FROM wallet_account_pool_state
-                     WHERE seed_hash = ?1",
+                     WHERE wallet_id = ?1",
                 )
                 .map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
             let rows = stmt
@@ -363,7 +363,7 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                 .prepare(
                     "SELECT account_type, txid, record
                      FROM wallet_transactions
-                     WHERE seed_hash = ?1 AND network = ?2",
+                     WHERE wallet_id = ?1 AND network = ?2",
                 )
                 .map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
             let rows = stmt
@@ -775,22 +775,22 @@ impl SqliteWalletPersister {
         // regeneration from `highest_used`.
         let mut upsert_pool_state = tx.prepare_cached(
             "INSERT INTO wallet_account_pool_state
-                (seed_hash, account_type, pool_type,
+                (wallet_id, account_type, pool_type,
                  highest_used, highest_generated)
              VALUES (?1, ?2, ?3, ?4, NULL)
-             ON CONFLICT(seed_hash, account_type, pool_type) DO UPDATE SET
+             ON CONFLICT(wallet_id, account_type, pool_type) DO UPDATE SET
                 highest_used = MAX(COALESCE(highest_used, 0), excluded.highest_used)",
         )?;
         // Phase 10 6c: upsert of per-(account, txid) `TransactionRecord`
         // rows. The record is bincode serde-encoded — it carries every
         // field on the struct (context, direction, input/output
         // details, net_amount, fee, label, first_seen). INSERT OR
-        // REPLACE is last-write-wins per (seed_hash, account_type,
+        // REPLACE is last-write-wins per (wallet_id, account_type,
         // txid, network), which matches
         // `AccountChangeSet::transactions`'s BTreeMap semantics.
         let mut upsert_tx_record = tx.prepare_cached(
             "INSERT OR REPLACE INTO wallet_transactions
-                (seed_hash, account_type, txid, network, record)
+                (wallet_id, account_type, txid, network, record)
              VALUES (?1, ?2, ?3, ?4, ?5)",
         )?;
 
@@ -820,7 +820,7 @@ impl SqliteWalletPersister {
                 ])?;
             }
 
-            // Pool state: one row per (seed_hash, account_type, pool).
+            // Pool state: one row per (wallet_id, account_type, pool).
             // Only write rows for pools that actually carry a
             // `highest_used` entry in this bucket — avoid touching
             // SQL for no-op changesets.
@@ -1438,7 +1438,7 @@ mod tests {
                 .prepare(
                     "SELECT account_type, pool_type, highest_used
                      FROM wallet_account_pool_state
-                     WHERE seed_hash = ?1
+                     WHERE wallet_id = ?1
                      ORDER BY pool_type, highest_used",
                 )
                 .unwrap();
@@ -1491,7 +1491,7 @@ mod tests {
             .unwrap()
             .query_row(
                 "SELECT highest_used FROM wallet_account_pool_state
-                 WHERE seed_hash = ?1 AND account_type = ?2 AND pool_type = 0",
+                 WHERE wallet_id = ?1 AND account_type = ?2 AND pool_type = 0",
                 rusqlite::params![&TEST_WALLET_ID[..], standard.to_db_key()],
                 |row| row.get(0),
             )
@@ -1504,7 +1504,7 @@ mod tests {
             .unwrap()
             .query_row(
                 "SELECT highest_used FROM wallet_account_pool_state
-                 WHERE seed_hash = ?1 AND account_type = ?2 AND pool_type = 1",
+                 WHERE wallet_id = ?1 AND account_type = ?2 AND pool_type = 1",
                 rusqlite::params![&TEST_WALLET_ID[..], standard.to_db_key()],
                 |row| row.get(0),
             )
@@ -1517,7 +1517,7 @@ mod tests {
             .unwrap()
             .query_row(
                 "SELECT highest_used FROM wallet_account_pool_state
-                 WHERE seed_hash = ?1 AND account_type = ?2 AND pool_type = 0",
+                 WHERE wallet_id = ?1 AND account_type = ?2 AND pool_type = 0",
                 rusqlite::params![&TEST_WALLET_ID[..], coinjoin.to_db_key()],
                 |row| row.get(0),
             )
@@ -1530,7 +1530,7 @@ mod tests {
             .unwrap()
             .query_row(
                 "SELECT highest_used FROM wallet_account_pool_state
-                 WHERE seed_hash = ?1 AND account_type = ?2 AND pool_type = 1",
+                 WHERE wallet_id = ?1 AND account_type = ?2 AND pool_type = 1",
                 rusqlite::params![&TEST_WALLET_ID[..], coinjoin.to_db_key()],
                 |row| row.get(0),
             )
@@ -1910,7 +1910,7 @@ mod tests {
             .unwrap()
             .query_row(
                 "SELECT COUNT(*) FROM wallet_transactions
-                 WHERE seed_hash = ?1 AND network = 'testnet'",
+                 WHERE wallet_id = ?1 AND network = 'testnet'",
                 rusqlite::params![&TEST_WALLET_ID[..]],
                 |row| row.get(0),
             )

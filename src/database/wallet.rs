@@ -371,22 +371,23 @@ impl Database {
     /// is per-account. `record` is a bincode serde-encoded
     /// `TransactionRecord`.
     pub fn initialize_wallet_transactions_table(&self, conn: &Connection) -> rusqlite::Result<()> {
+        // Column named `wallet_id` (was `seed_hash` pre-v40) to match
+        // the platform-wallet WalletId that the changeset persister writes.
         conn.execute(
             "CREATE TABLE IF NOT EXISTS wallet_transactions (
-                seed_hash BLOB NOT NULL,
+                wallet_id BLOB NOT NULL,
                 account_type BLOB NOT NULL,
                 txid BLOB NOT NULL,
                 network TEXT NOT NULL,
                 record BLOB NOT NULL,
-                PRIMARY KEY (seed_hash, account_type, txid, network),
-                FOREIGN KEY (seed_hash) REFERENCES wallet(seed_hash) ON DELETE CASCADE
+                PRIMARY KEY (wallet_id, account_type, txid, network)
             )",
             [],
         )?;
 
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_wallet_transactions_seed_network
-             ON wallet_transactions (seed_hash, network)",
+            "CREATE INDEX IF NOT EXISTS idx_wallet_transactions_wallet_network
+             ON wallet_transactions (wallet_id, network)",
             [],
         )?;
 

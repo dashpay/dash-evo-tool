@@ -1,10 +1,14 @@
 use crate::database::Database;
 use chrono::Utc;
+use dash_sdk::dpp::dashcore::hashes::{Hash, sha256};
+use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
+use dash_sdk::dpp::key_wallet::bip32::{ExtendedPrivKey, ExtendedPubKey};
 use rusqlite::{Connection, params};
 use std::fs;
 use std::path::Path;
 
-pub const DEFAULT_DB_VERSION: u16 = 39;
+pub const DEFAULT_DB_VERSION: u16 = 40;
 
 pub const DEFAULT_NETWORK: &str = "mainnet";
 
@@ -51,6 +55,9 @@ impl Database {
 
     fn apply_version_changes(&self, version: u16, tx: &Connection) -> rusqlite::Result<()> {
         match version {
+            40 => {
+                self.migrate_to_wallet_id_keying(tx)?;
+            }
             39 => {
                 self.add_platform_created_at_ms_to_contact_requests(tx)?;
             }
@@ -337,6 +344,7 @@ impl Database {
         conn.execute(
             "CREATE TABLE IF NOT EXISTS wallet (
                 seed_hash BLOB NOT NULL PRIMARY KEY,
+                wallet_id BLOB,
                 encrypted_seed BLOB NOT NULL,
                 salt BLOB NOT NULL,
                 nonce BLOB NOT NULL,
@@ -415,16 +423,17 @@ impl Database {
 
         // Per-account address pool state (Phase 10 uniform key-wallet
         // state persistence). See the v36 migration for the shape
-        // rationale.
+        // rationale. Column named `wallet_id` (was `seed_hash` pre-v40)
+        // to match the platform-wallet WalletId that the changeset
+        // persister writes.
         conn.execute(
             "CREATE TABLE IF NOT EXISTS wallet_account_pool_state (
-                seed_hash BLOB NOT NULL,
+                wallet_id BLOB NOT NULL,
                 account_type BLOB NOT NULL,
                 pool_type INTEGER NOT NULL,
                 highest_used INTEGER,
                 highest_generated INTEGER,
-                PRIMARY KEY (seed_hash, account_type, pool_type),
-                FOREIGN KEY (seed_hash) REFERENCES wallet(seed_hash) ON DELETE CASCADE
+                PRIMARY KEY (wallet_id, account_type, pool_type)
             )",
             [],
         )?;
@@ -1091,6 +1100,148 @@ impl Database {
         Ok(())
     }
 
+    /// Migration 40: Add `wallet_id` column to `wallet` table, nuke
+    /// all cache tables, and recreate persister-owned tables with the
+    /// correct `wallet_id` column name.
+    ///
+    /// `wallet_id = SHA256(root_pub_key.serialize() || root_chain_code)`.
+    /// For `uses_password = 0` wallets, the raw seed is stored in
+    /// `encrypted_seed` and we can derive the root key to compute
+    /// `wallet_id` eagerly. For password-protected wallets, `wallet_id`
+    /// stays NULL until the user unlocks the wallet.
+    ///
+    /// All cache tables (identities, contacts, addresses, UTXOs, asset
+    /// locks, etc.) are deleted. They will be re-populated from chain
+    /// and platform sync on first launch after upgrade. Only the
+    /// `wallet` row (encrypted seed credentials) is preserved.
+    fn migrate_to_wallet_id_keying(&self, conn: &Connection) -> rusqlite::Result<()> {
+        // 1. Add wallet_id column to wallet table (if missing).
+        let has_wallet_id: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('wallet') WHERE name='wallet_id'",
+            [],
+            |row| row.get::<_, i32>(0).map(|c| c > 0),
+        )?;
+        if !has_wallet_id {
+            conn.execute("ALTER TABLE wallet ADD COLUMN wallet_id BLOB", [])?;
+        }
+
+        // 2. Eagerly compute wallet_id for no-password wallets.
+        //    encrypted_seed stores raw 64-byte seed when uses_password = 0.
+        let mut stmt = conn.prepare(
+            "SELECT seed_hash, encrypted_seed, network
+             FROM wallet
+             WHERE uses_password = 0 AND wallet_id IS NULL",
+        )?;
+        let rows: Vec<(Vec<u8>, Vec<u8>, String)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .collect::<Result<_, _>>()?;
+
+        let secp = Secp256k1::new();
+        for (seed_hash_bytes, raw_seed, network_str) in &rows {
+            if raw_seed.len() != 64 {
+                tracing::warn!(
+                    seed = %hex::encode(seed_hash_bytes),
+                    len = raw_seed.len(),
+                    "v40 migration: skipping wallet with unexpected seed length"
+                );
+                continue;
+            }
+            let seed: [u8; 64] = raw_seed.as_slice().try_into().unwrap();
+            let network = network_str.parse::<Network>().unwrap_or(Network::Testnet);
+            let Ok(master_priv) = ExtendedPrivKey::new_master(network, &seed) else {
+                tracing::warn!(
+                    seed = %hex::encode(seed_hash_bytes),
+                    "v40 migration: failed to derive master key — skipping"
+                );
+                continue;
+            };
+            let root_pub = ExtendedPubKey::from_priv(&secp, &master_priv);
+            // WalletId = SHA256(root_pub_key.serialize() || root_chain_code)
+            let mut data = Vec::with_capacity(33 + 32);
+            data.extend_from_slice(&root_pub.public_key.serialize());
+            data.extend_from_slice(&root_pub.chain_code[..]);
+            let wallet_id = sha256::Hash::hash(&data).to_byte_array();
+
+            conn.execute(
+                "UPDATE wallet SET wallet_id = ?1 WHERE seed_hash = ?2",
+                params![&wallet_id[..], seed_hash_bytes],
+            )?;
+        }
+
+        // 3. Nuke all cache tables. These will be repopulated by chain
+        //    and platform sync on first launch after upgrade.
+        for table in [
+            "identity",
+            "wallet_addresses",
+            "platform_address_balances",
+            "asset_lock_transaction",
+            "utxos",
+            "dashpay_contacts",
+            "dashpay_contact_requests",
+            "dashpay_profiles",
+            "dashpay_payments",
+            "dashpay_address_mappings",
+            "dashpay_contact_address_indices",
+            "contested_name",
+            "contestant",
+            "contract",
+            "shielded_notes",
+            "contact_private_info",
+            "scheduled_votes",
+        ] {
+            // Some tables may not exist on all upgrade paths; ignore
+            // "no such table" errors.
+            let _ = conn.execute(&format!("DELETE FROM {table}"), []);
+        }
+
+        // Also clear token-related tables if they exist.
+        let _ = conn.execute("DELETE FROM token", []);
+        let _ = conn.execute("DELETE FROM identity_token_balances", []);
+
+        // 4. Recreate persister-owned tables with correct column name
+        //    (was `seed_hash`, now `wallet_id`). DROP + CREATE is safe
+        //    because step 3 already cleared any data in flight.
+        conn.execute("DROP TABLE IF EXISTS wallet_account_pool_state", [])?;
+        conn.execute(
+            "CREATE TABLE wallet_account_pool_state (
+                wallet_id BLOB NOT NULL,
+                account_type BLOB NOT NULL,
+                pool_type INTEGER NOT NULL,
+                highest_used INTEGER,
+                highest_generated INTEGER,
+                PRIMARY KEY (wallet_id, account_type, pool_type)
+            )",
+            [],
+        )?;
+
+        conn.execute("DROP TABLE IF EXISTS wallet_transactions", [])?;
+        conn.execute(
+            "CREATE TABLE wallet_transactions (
+                wallet_id BLOB NOT NULL,
+                account_type BLOB NOT NULL,
+                txid BLOB NOT NULL,
+                network TEXT NOT NULL,
+                record BLOB NOT NULL,
+                PRIMARY KEY (wallet_id, account_type, txid, network)
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_wallet_transactions_wallet_network
+             ON wallet_transactions (wallet_id, network)",
+            [],
+        )?;
+
+        // 5. Clear the selected wallet hash in settings — the old
+        //    seed_hash value won't match the new wallet_id key.
+        let _ = conn.execute(
+            "UPDATE settings SET selected_wallet_hash = NULL WHERE 1=1",
+            [],
+        );
+
+        Ok(())
+    }
+
     /// Migration 39: Add `platform_created_at_ms` column to
     /// `dashpay_contact_requests` (Item 7, review M2 fix).
     ///
@@ -1355,6 +1506,8 @@ mod test {
     fn assert_v33_schema(conn: &Connection) {
         // wallet.core_wallet_name (v28)
         assert_column_exists(conn, "wallet", "core_wallet_name");
+        // wallet.wallet_id (v40)
+        assert_column_exists(conn, "wallet", "wallet_id");
 
         // shielded_notes table (v29)
         assert_table_exists(conn, "shielded_notes");
@@ -1394,11 +1547,11 @@ mod test {
         // dashpay_address_mappings dropped in v35 (Phase 9b-4 cleanup).
         assert_table_not_exists(conn, "dashpay_address_mappings");
 
-        // wallet_account_pool_state introduced in v36 (Phase 10
-        // uniform key-wallet state persistence).
+        // wallet_account_pool_state introduced in v36, recreated in
+        // v40 with `wallet_id` column (was `seed_hash`).
         assert_table_exists(conn, "wallet_account_pool_state");
         for col in [
-            "seed_hash",
+            "wallet_id",
             "account_type",
             "pool_type",
             "highest_used",
@@ -1409,13 +1562,10 @@ mod test {
         // utxos.is_instant_locked added in v36.
         assert_column_exists(conn, "utxos", "is_instant_locked");
 
-        // wallet_transactions recreated with per-account attribution
-        // in v37 (Phase 10 6c). Previously keyed on (seed_hash, txid,
-        // network); now (seed_hash, account_type, txid, network) with
-        // a single `record BLOB` column holding a bincode
-        // serde-encoded `TransactionRecord`.
+        // wallet_transactions recreated in v37 (Phase 10 6c), then
+        // again in v40 with `wallet_id` column (was `seed_hash`).
         assert_table_exists(conn, "wallet_transactions");
-        for col in ["seed_hash", "account_type", "txid", "network", "record"] {
+        for col in ["wallet_id", "account_type", "txid", "network", "record"] {
             assert_column_exists(conn, "wallet_transactions", col);
         }
         // The old columns (timestamp/height/block_hash/net_amount/fee/
@@ -1576,7 +1726,7 @@ mod test {
             )
             .unwrap();
         assert_eq!(version, DEFAULT_DB_VERSION);
-        assert_eq!(version, 39);
+        assert_eq!(version, 40);
 
         assert_v33_schema(&conn);
     }
@@ -1693,7 +1843,7 @@ mod test {
         );
 
         // Verify final version
-        assert_eq!(db.db_schema_version().unwrap(), 39);
+        assert_eq!(db.db_schema_version().unwrap(), 40);
 
         // Verify full v33 schema
         let conn = db.conn.lock().unwrap();

@@ -607,15 +607,10 @@ impl SqliteWalletPersister {
         // logs run regardless of whether we open a transaction, so
         // that "changeset carries only dropped fields" cases are
         // still visible in logs.
-        if contacts
+        let has_contact_work = contacts
             .as_ref()
             .map(|c| !<_ as Merge>::is_empty(c))
-            .unwrap_or(false)
-        {
-            tracing::debug!(
-                "persister: dropping ContactChangeSet (contact request persistence is backend-task-owned; DIP-15 crypto is re-hydrated from platform)"
-            );
-        }
+            .unwrap_or(false);
         if platform_addresses
             .as_ref()
             .map(|c| !<_ as Merge>::is_empty(c))
@@ -682,7 +677,7 @@ impl SqliteWalletPersister {
                     .any(|e| e.dashpay_profile.is_some() || !e.dashpay_payments.is_empty())
             })
             .unwrap_or(false);
-        if !has_core_work && !has_dashpay_identity_work && !has_asset_lock_work {
+        if !has_core_work && !has_dashpay_identity_work && !has_asset_lock_work && !has_contact_work {
             // S3 contract check: if the only "work" in the changeset
             // was in the backend-task-owned identity top-level
             // fields, we're about to return without opening a
@@ -721,6 +716,11 @@ impl SqliteWalletPersister {
             && has_asset_lock_work
         {
             Self::write_asset_locks(&tx, &wallet_id, &self.network, al_cs)?;
+        }
+        if let Some(ct_cs) = contacts
+            && has_contact_work
+        {
+            Self::write_contact_requests(&tx, &self.network, ct_cs)?;
         }
 
         tx.commit()?;
@@ -1152,6 +1152,96 @@ impl SqliteWalletPersister {
                     outpoint.vout as i64,
                 ])?;
             }
+        }
+
+        Ok(())
+    }
+
+    /// Write a [`ContactChangeSet`] to the `dashpay_contact_requests`
+    /// table. Uses DELETE+INSERT per request (matching the existing
+    /// `save_contact_request` pattern) and DELETEs tombstones.
+    ///
+    /// The `established` field is NOT written here — established
+    /// contacts are handled by Item 8.3 via the `dashpay_contacts`
+    /// table.
+    ///
+    /// UI-specific display fields (`to_username`, `account_label`) are
+    /// set to NULL in changeset-written rows — these can be
+    /// re-populated on the next platform sync. The critical data is
+    /// the DIP-15 crypto (sender_key_index, recipient_key_index,
+    /// account_reference, encrypted_public_key, etc.).
+    fn write_contact_requests(
+        tx: &rusqlite::Transaction,
+        network: &str,
+        cs: platform_wallet::changeset::ContactChangeSet,
+    ) -> Result<(), SqlitePersistError> {
+        let mut delete_existing = tx.prepare_cached(
+            "DELETE FROM dashpay_contact_requests
+             WHERE from_identity_id = ?1 AND to_identity_id = ?2 AND network = ?3",
+        )?;
+        let mut insert = tx.prepare_cached(
+            "INSERT INTO dashpay_contact_requests
+                (from_identity_id, to_identity_id, network, request_type, status,
+                 sender_key_index, recipient_key_index, account_reference,
+                 encrypted_public_key, encrypted_account_label_bytes,
+                 auto_accept_proof, core_height_created_at, platform_created_at_ms)
+             VALUES (?1, ?2, ?3, ?4, 'accepted', ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        )?;
+
+        // Upsert sent requests.
+        for ((owner, recipient), entry) in cs.sent_requests {
+            let r = &entry.request;
+            let from_bytes = owner.to_buffer();
+            let to_bytes = recipient.to_buffer();
+            delete_existing.execute(rusqlite::params![&from_bytes, &to_bytes, network])?;
+            insert.execute(rusqlite::params![
+                &from_bytes,
+                &to_bytes,
+                network,
+                "sent",
+                r.sender_key_index,
+                r.recipient_key_index,
+                r.account_reference,
+                &r.encrypted_public_key,
+                &r.encrypted_account_label,
+                &r.auto_accept_proof,
+                r.core_height_created_at,
+                r.created_at as i64,
+            ])?;
+        }
+
+        // Upsert incoming requests.
+        for ((owner, sender), entry) in cs.incoming_requests {
+            let r = &entry.request;
+            let from_bytes = sender.to_buffer();
+            let to_bytes = owner.to_buffer();
+            delete_existing.execute(rusqlite::params![&from_bytes, &to_bytes, network])?;
+            insert.execute(rusqlite::params![
+                &from_bytes,
+                &to_bytes,
+                network,
+                "received",
+                r.sender_key_index,
+                r.recipient_key_index,
+                r.account_reference,
+                &r.encrypted_public_key,
+                &r.encrypted_account_label,
+                &r.auto_accept_proof,
+                r.core_height_created_at,
+                r.created_at as i64,
+            ])?;
+        }
+
+        // Delete tombstones.
+        for (owner, recipient) in cs.removed_sent {
+            let from_bytes = owner.to_buffer();
+            let to_bytes = recipient.to_buffer();
+            delete_existing.execute(rusqlite::params![&from_bytes, &to_bytes, network])?;
+        }
+        for (owner, sender) in cs.removed_incoming {
+            let from_bytes = sender.to_buffer();
+            let to_bytes = owner.to_buffer();
+            delete_existing.execute(rusqlite::params![&from_bytes, &to_bytes, network])?;
         }
 
         Ok(())

@@ -966,7 +966,7 @@ mod tests {
                 top_ups: BTreeMap::new(),
                 status: Default::default(),
                 key_storage: BTreeMap::new(),
-                wallet_seed_hash: Some(TEST_WALLET_ID),
+                wallet_id: Some(TEST_WALLET_ID),
                 dashpay_profile: Some(profile.clone()),
                 dashpay_payments: BTreeMap::new(),
             },
@@ -1035,7 +1035,7 @@ mod tests {
                 top_ups: BTreeMap::new(),
                 status: Default::default(),
                 key_storage: BTreeMap::new(),
-                wallet_seed_hash: Some(TEST_WALLET_ID),
+                wallet_id: Some(TEST_WALLET_ID),
                 dashpay_profile: None,
                 dashpay_payments: payments,
             }
@@ -1121,7 +1121,7 @@ mod tests {
             top_ups: BTreeMap::new(),
             status: Default::default(),
             key_storage: BTreeMap::new(),
-            wallet_seed_hash: Some(TEST_WALLET_ID),
+            wallet_id: Some(TEST_WALLET_ID),
             dashpay_profile: profile,
             dashpay_payments: BTreeMap::new(),
         };
@@ -1218,7 +1218,7 @@ mod tests {
             top_ups: BTreeMap::new(),
             status: Default::default(),
             key_storage: BTreeMap::new(),
-            wallet_seed_hash: Some(TEST_WALLET_ID),
+            wallet_id: Some(TEST_WALLET_ID),
             dashpay_profile: Some(DashPayProfile {
                 display_name: Some("carol".into()),
                 bio: None,
@@ -1310,7 +1310,7 @@ mod tests {
             top_ups: BTreeMap::new(),
             status: Default::default(),
             key_storage: BTreeMap::new(),
-            wallet_seed_hash: Some(TEST_WALLET_ID),
+            wallet_id: Some(TEST_WALLET_ID),
             dashpay_profile: Some(DashPayProfile {
                 display_name: Some(name.into()),
                 bio: None,

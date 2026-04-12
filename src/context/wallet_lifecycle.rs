@@ -918,7 +918,11 @@ impl AppContext {
             managed.key_storage = mi_key_storage;
             managed.dpns_names = mi_dpns_names;
             managed.status = mi_status;
-            managed.wallet_seed_hash = Some(seed_hash);
+            // Note: `managed.wallet_id` receives `seed_hash` bytes during
+            // the M2 transition period. Evo-tool's wallet maps are still
+            // keyed by seed_hash; the M2 refactor commits 4-7 will switch
+            // the value to the real wallet_id and re-key the maps.
+            managed.wallet_id = Some(seed_hash);
             managed.top_ups = qualified_identity.top_ups.clone();
             managed.dashpay_profile = mi_dashpay_profile;
             managed.dashpay_payments = mi_dashpay_payments;
@@ -949,7 +953,7 @@ impl AppContext {
                         managed.key_storage = mi_key_storage;
                         managed.dpns_names = mi_dpns_names;
                         managed.status = mi_status;
-                        managed.wallet_seed_hash = Some(seed_hash);
+                        managed.wallet_id = Some(seed_hash); // M2: seed_hash bytes during transition
                         managed.top_ups = qualified_identity.top_ups.clone();
                         managed.dashpay_profile = mi_dashpay_profile;
                         managed.dashpay_payments = mi_dashpay_payments;
@@ -1420,7 +1424,7 @@ impl AppContext {
                     wallet_seed_hash,
                     derivation_path,
                 }) => ManagedPrivateKeyData::AtWalletDerivationPath {
-                    wallet_seed_hash: *wallet_seed_hash,
+                    wallet_id: *wallet_seed_hash,
                     derivation_path: derivation_path.clone(),
                 },
                 QIPrivateKeyData::Encrypted(_) => {

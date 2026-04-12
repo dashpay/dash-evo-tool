@@ -310,6 +310,11 @@ pub struct Wallet {
     pub is_main: bool,
     /// Dash Core wallet name for multi-wallet RPC calls
     pub core_wallet_name: Option<String>,
+    /// Platform-wallet `WalletId` (`SHA256(root_pub_key || chain_code)`).
+    /// Populated eagerly at creation for open wallets, or lazily at
+    /// unlock time for password-protected wallets. `None` only for
+    /// wallets that have never been unlocked since the v40 migration.
+    pub wallet_id: Option<crate::platform_wallet_bridge::WalletId>,
 }
 
 impl Wallet {
@@ -355,7 +360,11 @@ impl Wallet {
         let master_bip44_ecdsa_extended_public_key =
             ExtendedPubKey::from_priv(&secp, &account_priv);
 
-        // Addresses are managed by PlatformWallet (created in register_wallet).
+        // Compute WalletId = SHA256(root_pub_key || chain_code) eagerly.
+        // master_priv is at derivation path m (root), so its pubkey is
+        // the root extended public key.
+        let root_pub = ExtendedPubKey::from_priv(&secp, &master_priv);
+        let wallet_id = Self::compute_wallet_id_from_root_pub(&root_pub);
 
         Ok(Wallet {
             platform_wallet: None,
@@ -374,6 +383,7 @@ impl Wallet {
             alias,
             is_main: true,
             core_wallet_name: None,
+            wallet_id: Some(wallet_id),
         })
     }
 
@@ -383,6 +393,28 @@ impl Wallet {
             Network::Mainnet => DerivationPath::from(DASH_BIP44_ACCOUNT_0_PATH_MAINNET.as_slice()),
             _ => DerivationPath::from(DASH_BIP44_ACCOUNT_0_PATH_TESTNET.as_slice()),
         }
+    }
+
+    /// Compute `WalletId = SHA256(root_pub_key.serialize() || chain_code)`
+    /// from a root-level extended public key. This matches
+    /// `key_wallet::Wallet::compute_wallet_id`.
+    pub fn compute_wallet_id_from_root_pub(
+        root_pub: &ExtendedPubKey,
+    ) -> crate::platform_wallet_bridge::WalletId {
+        use dash_sdk::dpp::dashcore::hashes::{Hash, sha256};
+        let mut data = Vec::with_capacity(33 + 32);
+        data.extend_from_slice(&root_pub.public_key.serialize());
+        data.extend_from_slice(&root_pub.chain_code[..]);
+        sha256::Hash::hash(&data).to_byte_array()
+    }
+
+    /// The platform-wallet `WalletId`, if known.
+    ///
+    /// `Some` for wallets that have been opened (seed available at
+    /// creation or since last unlock). `None` only for password-
+    /// protected wallets that have never been unlocked since v40.
+    pub fn wallet_id(&self) -> Option<crate::platform_wallet_bridge::WalletId> {
+        self.wallet_id
     }
 }
 
@@ -1575,6 +1607,8 @@ mod tests {
             ExtendedPubKey::from_priv(&secp, &bip44_account_private);
 
         let seed_hash = ClosedKeyItem::compute_seed_hash(&seed);
+        let root_pub = ExtendedPubKey::from_priv(&secp, &master_private_key);
+        let wallet_id = Wallet::compute_wallet_id_from_root_pub(&root_pub);
 
         Wallet {
             platform_wallet: None,
@@ -1593,6 +1627,7 @@ mod tests {
             alias: Some("Test Wallet".to_string()),
             is_main: true,
             core_wallet_name: None,
+            wallet_id: Some(wallet_id),
         }
     }
 

@@ -322,11 +322,21 @@ impl AppContext {
                     mapping.insert(seed_hash, wallet_id);
                 }
 
+                // Persist wallet_id to DB (no-op if already set).
+                if let Err(e) = self.db.set_wallet_id(&seed_hash, &wallet_id) {
+                    tracing::warn!(
+                        error = %e,
+                        seed = %hex::encode(seed_hash),
+                        "Failed to persist wallet_id to database"
+                    );
+                }
+
                 // Store on the Wallet struct itself
                 if let Ok(wallets) = self.wallets.read() {
                     if let Some(wallet_arc) = wallets.get(&seed_hash) {
                         if let Ok(mut wallet) = wallet_arc.write() {
                             wallet.platform_wallet = Some(Arc::clone(&platform_wallet));
+                            wallet.wallet_id = Some(wallet_id);
                         }
                     }
                 }

@@ -11,10 +11,12 @@
 //! - `identities.dashpay_profile` → `dashpay_profiles` table (9b-1).
 //! - `identities.dashpay_payments` → `dashpay_payments` table (9b-2).
 //!
-//! Everything else — contacts, platform addresses, asset locks,
-//! token balances, the QualifiedIdentity blob on `identity`, label,
-//! top_ups, dpns_names, status — is still owned by backend tasks via
-//! direct `Database::*` writers.
+//! - `asset_locks` → `asset_lock_transaction` table (Item 8.1b).
+//!
+//! Everything else — contacts, platform addresses, token balances,
+//! the QualifiedIdentity blob on `identity`, label, top_ups,
+//! dpns_names, status — is still owned by backend tasks via direct
+//! `Database::*` writers.
 //!
 //! Phase 9b-3 (per-contact DashPay derivation indices) was rolled
 //! back: `highest_receive_index` / `bloom_registered_count` were
@@ -473,15 +475,10 @@ impl SqliteWalletPersister {
                 "persister: dropping PlatformAddressChangeSet (backend tasks own platform address persistence)"
             );
         }
-        if asset_locks
+        let has_asset_lock_work = asset_locks
             .as_ref()
             .map(|c| !<_ as Merge>::is_empty(c))
-            .unwrap_or(false)
-        {
-            tracing::debug!(
-                "persister: dropping AssetLockChangeSet (backend tasks own asset lock persistence)"
-            );
-        }
+            .unwrap_or(false);
         if token_balances
             .as_ref()
             .map(|c| !<_ as Merge>::is_empty(c))
@@ -535,7 +532,7 @@ impl SqliteWalletPersister {
                     .any(|e| e.dashpay_profile.is_some() || !e.dashpay_payments.is_empty())
             })
             .unwrap_or(false);
-        if !has_core_work && !has_dashpay_identity_work {
+        if !has_core_work && !has_dashpay_identity_work && !has_asset_lock_work {
             // S3 contract check: if the only "work" in the changeset
             // was in the backend-task-owned identity top-level
             // fields, we're about to return without opening a
@@ -569,6 +566,11 @@ impl SqliteWalletPersister {
         }
         if let Some(id_cs) = identities {
             Self::write_identity_dashpay_subset(&tx, &self.network, id_cs)?;
+        }
+        if let Some(al_cs) = asset_locks
+            && has_asset_lock_work
+        {
+            Self::write_asset_locks(&tx, &wallet_id, &self.network, al_cs)?;
         }
 
         tx.commit()?;
@@ -872,6 +874,128 @@ impl SqliteWalletPersister {
         // silent.
         let _ = core.account_keys;
         let _ = core.balance;
+
+        Ok(())
+    }
+    /// Write an [`AssetLockChangeSet`] to the `asset_lock_transaction`
+    /// table. UPSERTs entries and DELETEs tombstones, all within the
+    /// caller's transaction.
+    ///
+    /// Column mapping:
+    ///
+    /// | `AssetLockEntry` field | SQL column | Encoding |
+    /// |---|---|---|
+    /// | `out_point` | `tx_id` + `output_index` | txid bytes, vout |
+    /// | `transaction` | `transaction_data` | `consensus::serialize` |
+    /// | `account_index` | `account_index` | u32 → i64 |
+    /// | `funding_type` | `funding_type` | enum discriminant 0-5 |
+    /// | `identity_index` | `identity_index` | u32 → i64 |
+    /// | `amount_duffs` | `amount` | u64 → i64 |
+    /// | `status` | derived from `proof_data`/`instant_lock_data`/`chain_locked_height` | see load path |
+    /// | `proof` | `proof_data` | bincode serde |
+    ///
+    /// `identity_id` and `identity_id_potentially_in_creation` are NOT
+    /// touched — those columns are managed by the identity registration
+    /// flow (`set_asset_lock_identity_id`) which is external to the
+    /// changeset system. The UPSERT preserves their existing values.
+    fn write_asset_locks(
+        tx: &rusqlite::Transaction,
+        wallet_id: &WalletId,
+        network: &str,
+        cs: platform_wallet::changeset::AssetLockChangeSet,
+    ) -> Result<(), SqlitePersistError> {
+        use dash_sdk::dpp::dashcore::consensus::serialize;
+        use platform_wallet::wallet::asset_lock::tracked::AssetLockStatus;
+
+        // UPSERT entries — preserve identity_id columns.
+        let mut upsert = tx.prepare_cached(
+            "INSERT INTO asset_lock_transaction
+                (tx_id, output_index, transaction_data, amount,
+                 instant_lock_data, chain_locked_height,
+                 wallet, network,
+                 account_index, funding_type, identity_index, proof_data)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+             ON CONFLICT(tx_id, output_index) DO UPDATE SET
+                transaction_data = excluded.transaction_data,
+                amount = excluded.amount,
+                instant_lock_data = COALESCE(excluded.instant_lock_data, asset_lock_transaction.instant_lock_data),
+                chain_locked_height = COALESCE(excluded.chain_locked_height, asset_lock_transaction.chain_locked_height),
+                account_index = excluded.account_index,
+                funding_type = excluded.funding_type,
+                identity_index = excluded.identity_index,
+                proof_data = COALESCE(excluded.proof_data, asset_lock_transaction.proof_data)",
+        )?;
+
+        for (outpoint, entry) in cs.asset_locks {
+            let tx_bytes = serialize(&entry.transaction);
+            let txid = outpoint.txid.to_byte_array();
+
+            // Encode instant_lock_data and chain_locked_height from
+            // status + proof. These columns are also read by legacy
+            // code, so we keep them populated for backward compat.
+            let (islock_data, chain_height): (Option<Vec<u8>>, Option<u32>) = match &entry.status {
+                AssetLockStatus::InstantSendLocked => {
+                    // Extract InstantLock from proof if available.
+                    if let Some(dash_sdk::dpp::prelude::AssetLockProof::Instant(is_proof)) = &entry.proof {
+                        (Some(serialize(&is_proof.instant_lock)), None)
+                    } else {
+                        (None, None)
+                    }
+                }
+                AssetLockStatus::ChainLocked => {
+                    if let Some(dash_sdk::dpp::prelude::AssetLockProof::Chain(chain_proof)) = &entry.proof {
+                        (None, Some(chain_proof.core_chain_locked_height))
+                    } else {
+                        (None, None)
+                    }
+                }
+                _ => (None, None),
+            };
+
+            // Encode proof as bincode serde blob.
+            let proof_data: Option<Vec<u8>> = entry.proof.as_ref().map(|p| {
+                bincode::serde::encode_to_vec(p, bincode::config::standard())
+                    .unwrap_or_default()
+            });
+
+            let funding_type_disc: i64 = match entry.funding_type {
+                platform_wallet::AssetLockFundingType::IdentityRegistration => 0,
+                platform_wallet::AssetLockFundingType::IdentityTopUp => 1,
+                platform_wallet::AssetLockFundingType::IdentityTopUpNotBound => 2,
+                platform_wallet::AssetLockFundingType::IdentityInvitation => 3,
+                platform_wallet::AssetLockFundingType::AssetLockAddressTopUp => 4,
+                platform_wallet::AssetLockFundingType::AssetLockShieldedAddressTopUp => 5,
+            };
+
+            upsert.execute(rusqlite::params![
+                &txid,
+                outpoint.vout as i64,
+                &tx_bytes,
+                entry.amount_duffs as i64,
+                &islock_data,
+                chain_height.map(|h| h as i64),
+                &wallet_id[..],
+                network,
+                entry.account_index as i64,
+                funding_type_disc,
+                entry.identity_index as i64,
+                &proof_data,
+            ])?;
+        }
+
+        // DELETE tombstones.
+        if !cs.removed.is_empty() {
+            let mut delete = tx.prepare_cached(
+                "DELETE FROM asset_lock_transaction
+                 WHERE tx_id = ?1 AND output_index = ?2",
+            )?;
+            for outpoint in &cs.removed {
+                delete.execute(rusqlite::params![
+                    outpoint.txid.to_byte_array(),
+                    outpoint.vout as i64,
+                ])?;
+            }
+        }
 
         Ok(())
     }

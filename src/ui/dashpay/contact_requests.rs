@@ -1147,27 +1147,12 @@ impl ScreenLike for ContactRequests {
                         network_str
                     );
                     let crypto = extract_dip15_crypto_from_document(doc);
-                    // Platform document `created_at` is TimestampMillis.
-                    // Persist explicitly so the load path hydrates the
-                    // real platform-side timestamp, not the row-save
-                    // local time. Review M2.
-                    let platform_created_at_ms = doc
-                        .created_at()
-                        .or_else(|| doc.updated_at())
-                        .map(|v| v as i64);
-                    match self.app_context.db.save_contact_request(
-                        &from_identity,
-                        &current_identity_id,
-                        &network_str,
-                        None, // to_username
-                        request.account_label.as_deref(),
-                        "received",
-                        crypto,
-                        platform_created_at_ms,
-                    ) {
-                        Ok(id) => tracing::debug!("Saved incoming contact request with id {}", id),
-                        Err(e) => tracing::error!("Failed to save incoming contact request: {}", e),
-                    }
+                    // DB persistence is now handled by the changeset
+                    // flush path (Item 8.2): platform-wallet's
+                    // ManagedIdentity.add_incoming_contact_request
+                    // emits a ContactChangeSet that the persister
+                    // writes atomically via write_contact_requests.
+                    let _ = crypto; // consumed by changeset path
                 }
 
                 // Process outgoing requests
@@ -1210,26 +1195,7 @@ impl ScreenLike for ContactRequests {
                         to_identity,
                         network_str
                     );
-                    let crypto = extract_dip15_crypto_from_document(doc);
-                    // See the matching "Saving incoming" block above
-                    // for the M2 rationale.
-                    let platform_created_at_ms = doc
-                        .created_at()
-                        .or_else(|| doc.updated_at())
-                        .map(|v| v as i64);
-                    match self.app_context.db.save_contact_request(
-                        &current_identity_id,
-                        &to_identity,
-                        &network_str,
-                        None, // to_username
-                        request.account_label.as_deref(),
-                        "sent",
-                        crypto,
-                        platform_created_at_ms,
-                    ) {
-                        Ok(id) => tracing::debug!("Saved outgoing contact request with id {}", id),
-                        Err(e) => tracing::error!("Failed to save outgoing contact request: {}", e),
-                    }
+                    // DB persistence handled by changeset flush (Item 8.2).
                 }
 
                 // Resolve names from local cache and trigger Platform fetches for unknowns

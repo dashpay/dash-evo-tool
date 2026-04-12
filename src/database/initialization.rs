@@ -87,7 +87,8 @@ impl Database {
     fn apply_version_changes(&self, version: u16, tx: &Connection) -> Result<(), MigrationError> {
         match version {
             40 => {
-                self.migrate_to_wallet_id_keying(tx)?;
+                self.migrate_to_wallet_id_keying(tx)
+                    .migration_err("wallet", "migrate to wallet_id keying")?;
             }
             39 => {
                 self.add_platform_created_at_ms_to_contact_requests(tx)

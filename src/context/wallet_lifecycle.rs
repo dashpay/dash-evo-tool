@@ -403,7 +403,7 @@ impl AppContext {
     pub(crate) fn init_missing_shielded_wallets(self: &Arc<Self>) {
         // Collect candidate seed hashes while holding locks, then release
         // before calling initialize_shielded_wallet (which re-acquires both).
-        let candidates: Vec<WalletSeedHash> = (|| {
+        let candidates: Vec<crate::model::wallet::WalletId> = (|| {
             let wallets = self.wallets.read().ok()?;
             let existing = self.shielded_states.lock().ok()?;
             Some(
@@ -436,11 +436,6 @@ impl AppContext {
             }
         }
 
-        // Note: we do NOT remove the wallet from the AppContext.wallets
-        // map here — locking a wallet keeps it visible in the UI, just
-        // without platform_wallet access. The map entry stays at its
-        // current key (wallet_id or seed_hash fallback).
-        let _ = map_key; // suppress unused warning
     }
 
     /// Queue async SyncNotes -> CheckNullifiers for an already-initialized

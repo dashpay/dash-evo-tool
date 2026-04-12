@@ -433,7 +433,7 @@ impl AddressInput {
         // their derived platform addresses.
         let platform_balances: std::collections::HashMap<_, _> = db
             .and_then(|d| {
-                d.get_all_platform_address_info(&guard.seed_hash(), &self.network)
+                d.get_all_platform_address_info(&guard.wallet_id(), &self.network)
                     .ok()
             })
             .unwrap_or_default()

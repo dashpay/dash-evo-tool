@@ -151,7 +151,7 @@ impl WalletsBalancesScreen {
                                         if ui.small_button("View").clickable_tooltip("View full asset lock details").clicked() {
                                             app_action = AppAction::AddScreen(
                                                 ScreenType::AssetLockDetail(
-                                                    wallet.seed_hash(),
+                                                    wallet.wallet_id(),
                                                     txid_bytes,
                                                 ).create_screen(&self.app_context)
                                             );

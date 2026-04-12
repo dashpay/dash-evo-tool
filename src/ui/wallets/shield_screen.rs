@@ -67,7 +67,7 @@ enum Status {
 
 pub struct ShieldScreen {
     pub app_context: Arc<AppContext>,
-    pub seed_hash: WalletId,
+    pub wallet_id: WalletId,
     address_input: Option<AddressInput>,
     validated_source: Option<ValidatedAddress>,
     amount_input: Option<AmountInput>,
@@ -99,10 +99,10 @@ pub struct ShieldScreen {
 }
 
 impl ShieldScreen {
-    pub fn new(seed_hash: WalletId, app_context: &Arc<AppContext>) -> Self {
+    pub fn new(wallet_id: WalletId, app_context: &Arc<AppContext>) -> Self {
         let mut screen = Self {
             app_context: app_context.clone(),
-            seed_hash,
+            wallet_id,
             address_input: None,
             validated_source: None,
             amount_input: None,
@@ -165,7 +165,7 @@ impl ShieldScreen {
             .wallets
             .read()
             .ok()
-            .and_then(|w| w.get(&self.seed_hash).cloned());
+            .and_then(|w| w.get(&self.wallet_id).cloned());
         let Some(wallet_arc) = wallet_arc else {
             return;
         };
@@ -179,7 +179,7 @@ impl ShieldScreen {
                     .app_context
                     .db
                     .get_platform_address_info(
-                        &wallet.seed_hash(),
+                        &wallet.wallet_id(),
                         &core_addr,
                         &self.app_context.network,
                     )
@@ -246,7 +246,7 @@ impl ShieldScreen {
         nonce_override: Option<u32>,
     ) -> BackendTask {
         BackendTask::ShieldedTask(ShieldedTask::ShieldCredits {
-            seed_hash: self.seed_hash,
+            wallet_id: self.wallet_id,
             amount,
             from_address: addr,
             nonce_override,
@@ -305,7 +305,7 @@ impl ShieldScreen {
                 return;
             }
         };
-        let default_address = match self.app_context.shielded_default_address(&self.seed_hash) {
+        let default_address = match self.app_context.shielded_default_address(&self.wallet_id) {
             Some(a) => a,
             None => {
                 MessageBanner::set_global(
@@ -329,7 +329,7 @@ impl ShieldScreen {
         self.batch_stages = Some(stages.clone());
 
         let app_ctx = self.app_context.clone();
-        let seed_hash = self.seed_hash;
+        let wallet_id = self.wallet_id;
 
         tokio::spawn(async move {
             use crate::backend_task::shielded::bundle;
@@ -349,7 +349,7 @@ impl ShieldScreen {
                         let result = tokio::task::spawn_blocking(move || {
                             bundle::build_shield_credit(
                                 &app_ctx,
-                                &seed_hash,
+                                &wallet_id,
                                 &default_address,
                                 amount,
                                 addr,
@@ -431,7 +431,7 @@ impl ShieldScreen {
                                 }
 
                                 if confirmed {
-                                    app_ctx.bump_platform_address_nonce(&seed_hash, &addr);
+                                    app_ctx.bump_platform_address_nonce(&wallet_id, &addr);
                                     if let Ok(mut guard) = stage.lock() {
                                         *guard = ShieldStage::Complete;
                                     }
@@ -734,7 +734,7 @@ impl ScreenLike for ShieldScreen {
                             .with_exclude_change(true);
 
                         if let Ok(wallets) = self.app_context.wallets.read()
-                            && let Some(wallet) = wallets.get(&self.seed_hash)
+                            && let Some(wallet) = wallets.get(&self.wallet_id)
                         {
                             builder = builder.with_wallets(
                                 std::slice::from_ref(wallet),
@@ -979,7 +979,7 @@ impl ScreenLike for ShieldScreen {
                                 self.status = Status::WaitingForResult;
                                 action = AppAction::BackendTask(BackendTask::ShieldedTask(
                                     ShieldedTask::ShieldFromAssetLock {
-                                        seed_hash: self.seed_hash,
+                                        wallet_id: self.wallet_id,
                                         amount_duffs,
                                         source_address,
                                     },
@@ -1033,8 +1033,8 @@ impl ScreenLike for ShieldScreen {
         self.refresh_cached_balances();
         let ctx = self.app_context.egui_ctx().clone();
         match result {
-            BackendTaskSuccessResult::ShieldedCreditsShielded { seed_hash, amount }
-                if seed_hash == self.seed_hash =>
+            BackendTaskSuccessResult::ShieldedCreditsShielded { wallet_id, amount }
+                if wallet_id == self.wallet_id =>
             {
                 if self.status == Status::BatchInProgress {
                     self.batch_succeeded += 1;
@@ -1044,7 +1044,7 @@ impl ScreenLike for ShieldScreen {
                     } else {
                         self.pending_refresh_task =
                             Some(BackendTask::ShieldedTask(ShieldedTask::SyncNotes {
-                                seed_hash: self.seed_hash,
+                                wallet_id: self.wallet_id,
                             }));
                     }
                 } else {
@@ -1057,12 +1057,12 @@ impl ScreenLike for ShieldScreen {
                     );
                     self.pending_refresh_task =
                         Some(BackendTask::ShieldedTask(ShieldedTask::SyncNotes {
-                            seed_hash: self.seed_hash,
+                            wallet_id: self.wallet_id,
                         }));
                 }
             }
-            BackendTaskSuccessResult::ShieldedFromAssetLock { seed_hash, amount }
-                if seed_hash == self.seed_hash =>
+            BackendTaskSuccessResult::ShieldedFromAssetLock { wallet_id, amount }
+                if wallet_id == self.wallet_id =>
             {
                 self.status = Status::Complete;
                 let dash = amount as f64 / CREDITS_PER_DUFF as f64 / 1e8;
@@ -1073,7 +1073,7 @@ impl ScreenLike for ShieldScreen {
                 );
                 self.pending_refresh_task =
                     Some(BackendTask::ShieldedTask(ShieldedTask::SyncNotes {
-                        seed_hash: self.seed_hash,
+                        wallet_id: self.wallet_id,
                     }));
             }
             _ => {}

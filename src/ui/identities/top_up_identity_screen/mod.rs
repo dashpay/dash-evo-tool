@@ -235,7 +235,7 @@ impl TopUpIdentityScreen {
                 let total_platform_balance: u64 = self
                     .app_context
                     .db
-                    .get_all_platform_address_info(&wallet.seed_hash(), &self.app_context.network)
+                    .get_all_platform_address_info(&wallet.wallet_id(), &self.app_context.network)
                     .unwrap_or_default()
                     .iter()
                     .map(|(_addr, balance, _nonce)| balance)

@@ -38,7 +38,7 @@ impl AppContext {
         wallet: Arc<RwLock<Wallet>>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         // Step 1: Collect data from wallet with brief read lock
-        let (addresses, asset_lock_txs, seed_hash, core_wallet_name) = {
+        let (addresses, asset_lock_txs, wallet_id, core_wallet_name) = {
             let wallet_guard = wallet.read()?;
 
             // Read addresses from PlatformWallet (canonical source).
@@ -68,7 +68,7 @@ impl AppContext {
                         .collect()
                 })
                 .unwrap_or_default();
-            let seed = wallet_guard.seed_hash();
+            let seed = wallet_guard.wallet_id();
             let cwn = wallet_guard.core_wallet_name.clone();
             (addrs, asset_locks, seed, cwn)
         };
@@ -302,7 +302,7 @@ impl AppContext {
         // current and can serve as the canonical read source.
         // Uses try_state_mut() because we are in a blocking context
         // (spawn_blocking) where awaiting is not possible.
-        if let Some(pw) = self.get_platform_wallet(&seed_hash) {
+        if let Some(pw) = self.get_platform_wallet(&wallet_id) {
             if let Ok(mut wm_guard) = pw.wallet_manager().try_write() {
                 let wallet_id = pw.wallet_id();
                 if let Some(info) = wm_guard.get_wallet_info_mut(&wallet_id) {

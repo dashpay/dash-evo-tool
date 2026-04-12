@@ -860,10 +860,10 @@ impl AddExistingIdentityScreen {
             self.refresh_banner = Some(handle);
 
             // Get the selected wallet seed hash for key derivation
-            let selected_wallet_seed_hash = if self.identity_associated_with_wallet {
+            let selected_wallet_id = if self.identity_associated_with_wallet {
                 self.selected_wallet
                     .as_ref()
-                    .map(|wallet| wallet.read().unwrap().seed_hash())
+                    .map(|wallet| wallet.read().unwrap().wallet_id())
             } else {
                 None
             };
@@ -871,7 +871,7 @@ impl AddExistingIdentityScreen {
             action = AppAction::BackendTask(BackendTask::IdentityTask(
                 IdentityTask::SearchIdentityByDpnsName(
                     name_trimmed.to_string(),
-                    selected_wallet_seed_hash,
+                    selected_wallet_id,
                 ),
             ));
         }
@@ -885,10 +885,10 @@ impl AddExistingIdentityScreen {
     }
 
     fn load_identity_clicked(&mut self) -> AppAction {
-        let selected_wallet_seed_hash = if self.identity_associated_with_wallet {
+        let selected_wallet_id = if self.identity_associated_with_wallet {
             self.selected_wallet
                 .as_ref()
-                .map(|wallet| wallet.read().unwrap().seed_hash())
+                .map(|wallet| wallet.read().unwrap().wallet_id())
         } else {
             None
         };
@@ -906,7 +906,7 @@ impl AddExistingIdentityScreen {
                 .map(|k| k.take_secret())
                 .collect(),
             derive_keys_from_wallets: self.identity_associated_with_wallet,
-            selected_wallet_seed_hash,
+            selected_wallet_id,
         };
 
         AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::LoadIdentity(

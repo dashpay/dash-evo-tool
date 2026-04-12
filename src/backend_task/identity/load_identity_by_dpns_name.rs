@@ -21,7 +21,7 @@ impl AppContext {
         &self,
         sdk: &Sdk,
         dpns_name: String,
-        selected_wallet_seed_hash: Option<WalletId>,
+        selected_wallet_id: Option<WalletId>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let normalized_name = crate::model::dpns::normalize_dpns_label(&dpns_name);
 
@@ -138,7 +138,7 @@ impl AppContext {
         if let Some((_, _, wallet_private_keys)) = self.match_user_identity_keys_with_wallet(
             &identity,
             &wallets,
-            selected_wallet_seed_hash,
+            selected_wallet_id,
         )? {
             encrypted_private_keys.extend(wallet_private_keys);
         }
@@ -156,7 +156,7 @@ impl AppContext {
                 .values()
                 .map(|wallet| {
                     let w = wallet.read()?;
-                    Ok::<_, TaskError>((w.seed_hash(), wallet.clone()))
+                    Ok::<_, TaskError>((w.wallet_id(), wallet.clone()))
                 })
                 .collect::<Result<_, _>>()?,
             wallet_index: None,

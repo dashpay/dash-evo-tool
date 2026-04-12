@@ -8,19 +8,19 @@ use std::sync::Arc;
 impl AppContext {
     pub(crate) async fn generate_receive_address(
         self: &Arc<Self>,
-        seed_hash: WalletId,
+        wallet_id: WalletId,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let wallet_arc = {
             let wallets = self.wallets.read()?;
             wallets
-                .get(&seed_hash)
+                .get(&wallet_id)
                 .cloned()
                 .ok_or(TaskError::WalletNotFound)?
         };
 
         let address_string = if self.core_backend_mode() == CoreBackendMode::Spv {
             // Use PlatformWallet's CoreWallet for address derivation in SPV mode.
-            let platform_wallet = self.require_platform_wallet(&seed_hash)?;
+            let platform_wallet = self.require_platform_wallet(&wallet_id)?;
             let address = platform_wallet
                 .core()
                 .next_receive_address()
@@ -57,7 +57,7 @@ impl AppContext {
         };
 
         Ok(BackendTaskSuccessResult::GeneratedReceiveAddress {
-            seed_hash,
+            wallet_id,
             address: address_string,
         })
     }

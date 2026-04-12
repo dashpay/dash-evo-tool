@@ -15,7 +15,7 @@ use std::sync::Arc;
 impl AppContext {
     pub(crate) async fn fetch_platform_address_balances(
         self: &Arc<Self>,
-        seed_hash: WalletId,
+        wallet_id: WalletId,
     ) -> Result<BackendTaskSuccessResult, crate::backend_task::error::TaskError> {
         tracing::info!("Platform address sync start");
         let start_time = std::time::Instant::now();
@@ -24,24 +24,24 @@ impl AppContext {
         // The platform wallet is not yet used for address derivation — the old
         // Wallet model's WalletAddressProvider handles that. This will be migrated
         // once PlatformAddressWallet provides equivalent functionality.
-        let _platform_wallet = self.get_platform_wallet(&seed_hash);
+        let _platform_wallet = self.get_platform_wallet(&wallet_id);
 
         let wallet_arc = {
             let wallets = self.wallets.read()?;
             wallets
-                .get(&seed_hash)
+                .get(&wallet_id)
                 .cloned()
                 .ok_or(crate::backend_task::error::TaskError::WalletNotFound)?
         };
 
         // Get last sync timestamp from database
         let (last_sync_timestamp, last_sync_height) =
-            self.db.get_platform_sync_info(&seed_hash).unwrap_or((0, 0));
+            self.db.get_platform_sync_info(&wallet_id).unwrap_or((0, 0));
 
         // Load stored platform address info from DB for incremental sync
         let stored_info = self
             .db
-            .get_all_platform_address_info(&seed_hash, &self.network)
+            .get_all_platform_address_info(&wallet_id, &self.network)
             .unwrap_or_default();
 
         // Create provider (requires wallet to be open for address derivation)
@@ -128,7 +128,7 @@ impl AppContext {
 
         // Persist sync state
         if let Err(e) = self.db.set_platform_sync_info(
-            &seed_hash,
+            &wallet_id,
             result.new_sync_timestamp,
             result.new_sync_height,
         ) {
@@ -145,7 +145,7 @@ impl AppContext {
                 index,
             );
             if let Err(e) = self.db.add_address_if_not_exists(
-                &seed_hash,
+                &wallet_id,
                 address,
                 &self.network,
                 &derivation_path,
@@ -158,7 +158,7 @@ impl AppContext {
 
             // Persist balance to platform_address_balances table
             if let Err(e) = self.db.set_platform_address_info(
-                &seed_hash,
+                &wallet_id,
                 address,
                 funds.balance,
                 funds.nonce,
@@ -176,7 +176,7 @@ impl AppContext {
         // values for stable-balance addresses (issue #652).
         let balances = self
             .db
-            .get_all_platform_address_info(&seed_hash, &self.network)
+            .get_all_platform_address_info(&wallet_id, &self.network)
             .unwrap_or_default()
             .into_iter()
             .filter_map(|(addr, balance, nonce)| {
@@ -194,7 +194,7 @@ impl AppContext {
         );
 
         Ok(BackendTaskSuccessResult::PlatformAddressBalances {
-            seed_hash,
+            wallet_id,
             balances,
             network: self.network(),
         })

@@ -80,7 +80,7 @@ impl AsyncTool<DashMcpService> for ShieldedShieldFromCore {
         resolve::require_network(&ctx, Some(&param.network))?;
         resolve::validate_amount(param.amount_duffs)?;
 
-        let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
+        let wallet_id = resolve::wallet(&ctx, &param.wallet_id)?;
         resolve::ensure_spv_synced(&ctx).await?;
 
         let source_address = param
@@ -103,7 +103,7 @@ impl AsyncTool<DashMcpService> for ShieldedShieldFromCore {
             .transpose()?;
 
         let task = BackendTask::ShieldedTask(ShieldedTask::ShieldFromAssetLock {
-            seed_hash,
+            wallet_id,
             amount_duffs: param.amount_duffs,
             source_address,
         });
@@ -191,15 +191,15 @@ impl AsyncTool<DashMcpService> for ShieldedShieldFromPlatform {
 
         // INTENTIONAL: no SPV sync needed — this tool only dispatches Platform state transitions,
         // not Core UTXO spends
-        let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
+        let wallet_id = resolve::wallet(&ctx, &param.wallet_id)?;
 
         // Auto-select highest-balance platform address and verify sufficient balance
         let from_address = {
-            let wallet_arc = resolve::wallet_arc(&ctx, seed_hash)?;
+            let wallet_arc = resolve::wallet_arc(&ctx, wallet_id)?;
             let wallet = wallet_arc.read().unwrap_or_else(|e| e.into_inner());
             let db_info = ctx
                 .db
-                .get_all_platform_address_info(&wallet.seed_hash(), &ctx.network)
+                .get_all_platform_address_info(&wallet.wallet_id(), &ctx.network)
                 .unwrap_or_default();
             let best = db_info
                 .into_iter()
@@ -230,7 +230,7 @@ impl AsyncTool<DashMcpService> for ShieldedShieldFromPlatform {
         };
 
         let task = BackendTask::ShieldedTask(ShieldedTask::ShieldCredits {
-            seed_hash,
+            wallet_id,
             amount: param.amount_credits,
             from_address,
             nonce_override: None,
@@ -318,7 +318,7 @@ impl AsyncTool<DashMcpService> for ShieldedTransferTool {
         resolve::validate_credits(param.amount_credits)?;
         // INTENTIONAL: no SPV sync needed — this tool only dispatches Platform state transitions,
         // not Core UTXO spends
-        let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
+        let wallet_id = resolve::wallet(&ctx, &param.wallet_id)?;
 
         let recipient_bytes =
             dash_sdk::dpp::address_funds::OrchardAddress::from_bech32m_string(&param.to_address)
@@ -328,7 +328,7 @@ impl AsyncTool<DashMcpService> for ShieldedTransferTool {
                 })?;
 
         let task = BackendTask::ShieldedTask(ShieldedTask::ShieldedTransfer {
-            seed_hash,
+            wallet_id,
             amount: param.amount_credits,
             recipient_address_bytes: recipient_bytes,
         });
@@ -416,7 +416,7 @@ impl AsyncTool<DashMcpService> for ShieldedUnshield {
         resolve::validate_credits(param.amount_credits)?;
         // INTENTIONAL: no SPV sync needed — this tool only dispatches Platform state transitions,
         // not Core UTXO spends
-        let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
+        let wallet_id = resolve::wallet(&ctx, &param.wallet_id)?;
 
         let (platform_addr, _network) =
             dash_sdk::dpp::address_funds::PlatformAddress::from_bech32m_string(&param.to_address)
@@ -425,7 +425,7 @@ impl AsyncTool<DashMcpService> for ShieldedUnshield {
             })?;
 
         let task = BackendTask::ShieldedTask(ShieldedTask::UnshieldCredits {
-            seed_hash,
+            wallet_id,
             amount: param.amount_credits,
             to_platform_address: platform_addr,
         });
@@ -516,7 +516,7 @@ impl AsyncTool<DashMcpService> for ShieldedWithdrawTool {
         resolve::validate_address(&param.to_address)?;
         // INTENTIONAL: no SPV sync needed — this tool dispatches a Platform state transition
         // (withdrawal is queued on Platform and settles after confirmation)
-        let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
+        let wallet_id = resolve::wallet(&ctx, &param.wallet_id)?;
 
         let core_address = param
             .to_address
@@ -532,7 +532,7 @@ impl AsyncTool<DashMcpService> for ShieldedWithdrawTool {
             })?;
 
         let task = BackendTask::ShieldedTask(ShieldedTask::ShieldedWithdrawal {
-            seed_hash,
+            wallet_id,
             amount: param.amount_credits,
             to_core_address: core_address,
         });

@@ -13,7 +13,7 @@ use std::sync::Arc;
 /// on the provided `last_sync_height` and `last_sync_timestamp`.
 pub async fn check_nullifiers(
     app_context: &Arc<AppContext>,
-    seed_hash: &WalletId,
+    wallet_id: &WalletId,
     shielded_state: &mut ShieldedWalletState,
     network: Network,
 ) -> Result<u32, TaskError> {
@@ -61,7 +61,7 @@ pub async fn check_nullifiers(
                 spent_count += 1;
                 let _ = app_context
                     .db
-                    .mark_shielded_note_spent(seed_hash, nf_bytes, &network_str);
+                    .mark_shielded_note_spent(wallet_id, nf_bytes, &network_str);
             }
         }
     }
@@ -70,7 +70,7 @@ pub async fn check_nullifiers(
     shielded_state.last_nullifier_sync_height = result.new_sync_height;
     shielded_state.last_nullifier_sync_timestamp = result.new_sync_timestamp;
     let _ = app_context.db.set_nullifier_sync_info(
-        seed_hash,
+        wallet_id,
         &network_str,
         result.new_sync_height,
         result.new_sync_timestamp,

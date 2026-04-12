@@ -15,7 +15,7 @@ use std::sync::Arc;
 /// View component for the Shielded tab within the Wallets screen.
 pub struct ShieldedTabView {
     app_context: Arc<AppContext>,
-    seed_hash: WalletId,
+    wallet_id: WalletId,
     initializing: bool,
     syncing: bool,
     error_message: Option<String>,
@@ -31,10 +31,10 @@ pub struct ShieldedTabView {
 }
 
 impl ShieldedTabView {
-    pub fn new(app_context: &Arc<AppContext>, seed_hash: WalletId) -> Self {
+    pub fn new(app_context: &Arc<AppContext>, wallet_id: WalletId) -> Self {
         Self {
             app_context: app_context.clone(),
-            seed_hash,
+            wallet_id,
             initializing: false,
             syncing: false,
             error_message: None,
@@ -51,9 +51,9 @@ impl ShieldedTabView {
         self.syncing
     }
 
-    pub fn update_seed_hash(&mut self, seed_hash: WalletId) {
-        if self.seed_hash != seed_hash {
-            self.seed_hash = seed_hash;
+    pub fn update_wallet_id(&mut self, wallet_id: WalletId) {
+        if self.wallet_id != wallet_id {
+            self.wallet_id = wallet_id;
             self.is_initialized = false;
             self.tree_synced = false;
             self.shielded_balance = 0;
@@ -85,7 +85,7 @@ impl ShieldedTabView {
     /// Sync local display state from `AppContext::shielded_states`.
     fn refresh_from_backend_state(&mut self) {
         if let Ok(states) = self.app_context.shielded_states.lock()
-            && let Some(state) = states.get(&self.seed_hash)
+            && let Some(state) = states.get(&self.wallet_id)
         {
             self.is_initialized = true;
             self.shielded_balance = state.shielded_balance;
@@ -136,7 +136,7 @@ impl ShieldedTabView {
                     );
                     return;
                 };
-                if let Some(state) = states.get(&self.seed_hash) {
+                if let Some(state) = states.get(&self.wallet_id) {
                     (0..self.address_count)
                         .filter_map(|idx| {
                             use dash_sdk::dpp::address_funds::OrchardAddress;
@@ -218,8 +218,8 @@ impl ShieldedTabView {
     ) -> bool {
         use crate::backend_task::BackendTaskSuccessResult;
         match result {
-            BackendTaskSuccessResult::ShieldedInitialized { seed_hash, balance }
-                if *seed_hash == self.seed_hash =>
+            BackendTaskSuccessResult::ShieldedInitialized { wallet_id, balance }
+                if *wallet_id == self.wallet_id =>
             {
                 self.initializing = false;
                 self.is_initialized = true;
@@ -231,16 +231,16 @@ impl ShieldedTabView {
                 } else {
                     self.syncing = true;
                     self.pending_task = Some(BackendTask::ShieldedTask(ShieldedTask::SyncNotes {
-                        seed_hash: self.seed_hash,
+                        wallet_id: self.wallet_id,
                     }));
                 }
                 true
             }
             BackendTaskSuccessResult::ShieldedNotesSynced {
-                seed_hash,
+                wallet_id,
                 new_notes,
                 balance,
-            } if *seed_hash == self.seed_hash => {
+            } if *wallet_id == self.wallet_id => {
                 self.tree_synced = true;
                 self.shielded_balance = *balance;
                 if *new_notes > 0 {
@@ -249,32 +249,32 @@ impl ShieldedTabView {
                 // Auto-check nullifiers after sync to detect spent notes
                 self.pending_task =
                     Some(BackendTask::ShieldedTask(ShieldedTask::CheckNullifiers {
-                        seed_hash: self.seed_hash,
+                        wallet_id: self.wallet_id,
                     }));
                 true
             }
-            BackendTaskSuccessResult::ShieldedCreditsShielded { seed_hash, amount }
-                if *seed_hash == self.seed_hash =>
+            BackendTaskSuccessResult::ShieldedCreditsShielded { wallet_id, amount }
+                if *wallet_id == self.wallet_id =>
             {
                 self.success_message =
                     Some(format!("Shielded {} successfully", format_credits(*amount)));
                 true
             }
-            BackendTaskSuccessResult::ShieldedTransferComplete { seed_hash, amount }
-                if *seed_hash == self.seed_hash =>
+            BackendTaskSuccessResult::ShieldedTransferComplete { wallet_id, amount }
+                if *wallet_id == self.wallet_id =>
             {
                 self.success_message =
                     Some(format!("Transferred {} privately", format_credits(*amount)));
                 true
             }
-            BackendTaskSuccessResult::ShieldedCreditsUnshielded { seed_hash, amount }
-                if *seed_hash == self.seed_hash =>
+            BackendTaskSuccessResult::ShieldedCreditsUnshielded { wallet_id, amount }
+                if *wallet_id == self.wallet_id =>
             {
                 self.success_message = Some(format!("Unshielded {}", format_credits(*amount)));
                 true
             }
-            BackendTaskSuccessResult::ShieldedFromAssetLock { seed_hash, amount }
-                if *seed_hash == self.seed_hash =>
+            BackendTaskSuccessResult::ShieldedFromAssetLock { wallet_id, amount }
+                if *wallet_id == self.wallet_id =>
             {
                 self.success_message = Some(format!(
                     "Shielded {} from core wallet",
@@ -283,13 +283,13 @@ impl ShieldedTabView {
                 true
             }
             BackendTaskSuccessResult::ShieldedNullifiersChecked {
-                seed_hash,
+                wallet_id,
                 spent_count,
-            } if *seed_hash == self.seed_hash => {
+            } if *wallet_id == self.wallet_id => {
                 self.syncing = false;
                 // Update balance from state after nullifier check
                 if let Ok(states) = self.app_context.shielded_states.lock()
-                    && let Some(state) = states.get(&self.seed_hash)
+                    && let Some(state) = states.get(&self.wallet_id)
                 {
                     self.shielded_balance = state.shielded_balance;
                 }
@@ -370,7 +370,7 @@ impl ShieldedTabView {
                         return action;
                     };
                     wallets
-                        .get(&self.seed_hash)
+                        .get(&self.wallet_id)
                         .is_some_and(wallet_needs_unlock)
                 };
                 ui.add_space(20.0);
@@ -434,7 +434,7 @@ impl ShieldedTabView {
                 .clicked()
             {
                 action |= AppAction::AddScreen(
-                    ScreenType::ShieldScreen(self.seed_hash).create_screen(&self.app_context),
+                    ScreenType::ShieldScreen(self.wallet_id).create_screen(&self.app_context),
                 );
             }
 
@@ -456,7 +456,7 @@ impl ShieldedTabView {
                 .clicked()
             {
                 action |= AppAction::AddScreen(
-                    ScreenType::ShieldedSendScreen(self.seed_hash).create_screen(&self.app_context),
+                    ScreenType::ShieldedSendScreen(self.wallet_id).create_screen(&self.app_context),
                 );
             }
 
@@ -473,7 +473,7 @@ impl ShieldedTabView {
                 .clicked()
             {
                 action |= AppAction::AddScreen(
-                    ScreenType::UnshieldCreditsScreen(self.seed_hash)
+                    ScreenType::UnshieldCreditsScreen(self.wallet_id)
                         .create_screen(&self.app_context),
                 );
             }
@@ -488,7 +488,7 @@ impl ShieldedTabView {
                 .lock()
                 .ok()
                 .and_then(|states| {
-                    states.get(&self.seed_hash).map(|state| {
+                    states.get(&self.wallet_id).map(|state| {
                         let notes = state
                             .notes
                             .iter()
@@ -543,7 +543,7 @@ impl ShieldedTabView {
                         self.error_message = None;
                         action |= AppAction::BackendTask(BackendTask::ShieldedTask(
                             ShieldedTask::SyncNotes {
-                                seed_hash: self.seed_hash,
+                                wallet_id: self.wallet_id,
                             },
                         ));
                     }
@@ -552,13 +552,13 @@ impl ShieldedTabView {
                         && ui.small_button("Resync Notes").clicked()
                     {
                         if let Ok(mut states) = self.app_context.shielded_states.lock() {
-                            states.remove(&self.seed_hash);
+                            states.remove(&self.wallet_id);
                         }
                         let network_str = self.app_context.network.to_string();
                         let _ = self
                             .app_context
                             .db
-                            .delete_shielded_notes(&self.seed_hash, &network_str);
+                            .delete_shielded_notes(&self.wallet_id, &network_str);
                         let _ = self.app_context.db.clear_commitment_tree_tables();
 
                         self.shielded_balance = 0;
@@ -570,7 +570,7 @@ impl ShieldedTabView {
                         self.error_message = None;
                         action |= AppAction::BackendTask(BackendTask::ShieldedTask(
                             ShieldedTask::InitializeShieldedWallet {
-                                seed_hash: self.seed_hash,
+                                wallet_id: self.wallet_id,
                             },
                         ));
                     }

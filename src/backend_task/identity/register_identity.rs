@@ -38,7 +38,7 @@ impl AppContext {
             RegisterIdentityFundingMethod::UseAssetLock(out_point) => {
                 let platform_wallet = {
                     let guard = wallet.read().map_err(TaskError::from)?;
-                    wallet_id = guard.seed_hash();
+                    wallet_id = guard.wallet_id();
                     guard
                         .platform_wallet
                         .clone()
@@ -59,7 +59,7 @@ impl AppContext {
             RegisterIdentityFundingMethod::FundWithWallet(amount, identity_index) => {
                 let platform_wallet = {
                     let guard = wallet.read().map_err(TaskError::from)?;
-                    wallet_id = guard.seed_hash();
+                    wallet_id = guard.wallet_id();
                     guard
                         .platform_wallet
                         .clone()
@@ -85,7 +85,7 @@ impl AppContext {
             }
             RegisterIdentityFundingMethod::FundWithPlatformAddresses {
                 inputs,
-                wallet_seed_hash,
+                wallet_id,
             } => {
                 // Fetch fresh nonces from platform to ensure we have current values
                 let addresses_to_fetch: std::collections::BTreeSet<PlatformAddress> =
@@ -123,7 +123,7 @@ impl AppContext {
                         wallet,
                         wallet_identity_index,
                         inputs_with_nonces,
-                        wallet_seed_hash,
+                        wallet_id,
                     )
                     .await;
             }
@@ -170,7 +170,7 @@ impl AppContext {
                 })?,
         };
 
-        let wallet_seed_hash = { wallet.read().map_err(TaskError::from)?.seed_hash() };
+        let wallet_id = { wallet.read().map_err(TaskError::from)?.wallet_id() };
         let mut qualified_identity = QualifiedIdentity {
             identity: identity.clone(),
             associated_voter_identity: None,
@@ -178,10 +178,10 @@ impl AppContext {
             associated_owner_key_id: None,
             identity_type: IdentityType::User,
             alias: None,
-            private_keys: keys.to_key_storage(wallet_seed_hash),
+            private_keys: keys.to_key_storage(wallet_id),
             dpns_names: vec![],
             associated_wallets: BTreeMap::from([(
-                wallet.read().map_err(TaskError::from)?.seed_hash(),
+                wallet.read().map_err(TaskError::from)?.wallet_id(),
                 wallet.clone(),
             )]),
             wallet_index: Some(wallet_identity_index),
@@ -284,11 +284,11 @@ impl AppContext {
         funding: IdentityFunding,
         identity_index: u32,
         qualified_identity: QualifiedIdentity,
-        wallet_seed_hash: &[u8; 32],
+        wallet_id: &[u8; 32],
     ) -> Result<Identity, TaskError> {
         // Use the one-call API which handles IS→CL fallback internally.
         let platform_wallet = self
-            .get_platform_wallet(wallet_seed_hash)
+            .get_platform_wallet(wallet_id)
             .ok_or(TaskError::WalletNotFound)?;
 
         let result = platform_wallet
@@ -351,7 +351,7 @@ impl AppContext {
             dash_sdk::dpp::address_funds::PlatformAddress,
             (AddressNonce, dash_sdk::dpp::fee::Credits),
         >,
-        wallet_seed_hash: super::WalletId,
+        wallet_id: super::WalletId,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         use dash_sdk::platform::transition::put_identity::PutIdentity;
 
@@ -389,7 +389,7 @@ impl AppContext {
             source: Box::new(e),
         })?;
 
-        let wallet_seed_hash_actual = { wallet.read().map_err(TaskError::from)?.seed_hash() };
+        let wallet_id_actual = { wallet.read().map_err(TaskError::from)?.wallet_id() };
         let mut qualified_identity = QualifiedIdentity {
             identity: identity.clone(),
             associated_voter_identity: None,
@@ -397,9 +397,9 @@ impl AppContext {
             associated_owner_key_id: None,
             identity_type: IdentityType::User,
             alias: None,
-            private_keys: keys.to_key_storage(wallet_seed_hash_actual),
+            private_keys: keys.to_key_storage(wallet_id_actual),
             dpns_names: vec![],
-            associated_wallets: BTreeMap::from([(wallet_seed_hash_actual, wallet.clone())]),
+            associated_wallets: BTreeMap::from([(wallet_id_actual, wallet.clone())]),
             wallet_index: Some(wallet_identity_index),
             top_ups: Default::default(),
             status: IdentityStatus::PendingCreation,
@@ -428,14 +428,14 @@ impl AppContext {
 
                 // Update source address balances using proof-verified data from SDK response
                 if let Err(e) = self
-                    .update_wallet_platform_address_info_from_sdk(wallet_seed_hash, &address_infos)
+                    .update_wallet_platform_address_info_from_sdk(wallet_id, &address_infos)
                 {
                     tracing::warn!("Failed to update wallet platform address info: {}", e);
                 }
 
                 self.insert_local_qualified_identity(
                     &qualified_identity,
-                    &Some((wallet_seed_hash, wallet_identity_index)),
+                    &Some((wallet_id, wallet_identity_index)),
                 )?;
 
                 let fee_result = FeeResult::new(estimated_fee, estimated_fee);
@@ -455,7 +455,7 @@ impl AppContext {
 
                 self.insert_local_qualified_identity(
                     &qualified_identity,
-                    &Some((wallet_seed_hash, wallet_identity_index)),
+                    &Some((wallet_id, wallet_identity_index)),
                 )?;
 
                 Err(task_error)
@@ -483,7 +483,7 @@ impl AppContext {
             let wallet_guard = wallet.read().ok()?;
             if let Ok(Some((balance, nonce))) =
                 self.db
-                    .get_platform_address_info(&wallet_guard.seed_hash(), &core_addr, &network)
+                    .get_platform_address_info(&wallet_guard.wallet_id(), &core_addr, &network)
             {
                 if recent_info
                     .as_ref()

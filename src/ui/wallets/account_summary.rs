@@ -254,7 +254,7 @@ pub fn collect_account_summaries(
 
     // Build a lookup map of platform address balances from DB
     let platform_balances: std::collections::HashMap<_, _> = db
-        .get_all_platform_address_info(&wallet.seed_hash(), &network)
+        .get_all_platform_address_info(&wallet.wallet_id(), &network)
         .unwrap_or_default()
         .into_iter()
         .map(|(addr, balance, _nonce)| (addr, balance))

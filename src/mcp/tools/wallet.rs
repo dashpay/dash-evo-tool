@@ -66,18 +66,18 @@ impl AsyncTool<DashMcpService> for GenerateReceiveAddress {
             .await
             .map_err(|e| McpToolError::Internal(e.to_string()))?;
         resolve::verify_network(&ctx, param.network.as_deref())?;
-        let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
+        let wallet_id = resolve::wallet(&ctx, &param.wallet_id)?;
 
         resolve::ensure_spv_synced(&ctx).await?;
 
         // Verify the wallet has a PlatformWallet (required for SPV operations)
-        if ctx.get_platform_wallet(&seed_hash).is_none() {
+        if ctx.get_platform_wallet(&wallet_id).is_none() {
             return Err(McpToolError::Internal(
                 "Wallet is not loaded into SPV. Please retry in a moment.".to_string(),
             ));
         }
 
-        let task = BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { seed_hash });
+        let task = BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { wallet_id });
         let result = dispatch_task(&ctx, task)
             .await
             .map_err(McpToolError::TaskFailed)?;
@@ -140,18 +140,18 @@ impl AsyncTool<DashMcpService> for WalletBalancesQuery {
             .await
             .map_err(|e| McpToolError::Internal(e.to_string()))?;
         resolve::verify_network(&ctx, param.network.as_deref())?;
-        let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
+        let wallet_id = resolve::wallet(&ctx, &param.wallet_id)?;
 
         resolve::ensure_spv_synced(&ctx).await?;
 
         // Read alias from evo-tool Wallet (still the owner of metadata).
-        let alias = resolve::wallet_arc(&ctx, seed_hash)
+        let alias = resolve::wallet_arc(&ctx, wallet_id)
             .ok()
             .and_then(|arc| arc.read().ok().and_then(|w| w.alias.clone()));
 
         // Read balances from PlatformWallet's lock-free atomics — no RwLock
         // needed, instant read.
-        let pw = resolve::platform_wallet(&ctx, seed_hash)?;
+        let pw = resolve::platform_wallet(&ctx, wallet_id)?;
         let bal = pw.core().balance();
 
         Ok(WalletBalancesOutput {
@@ -249,11 +249,11 @@ impl AsyncTool<DashMcpService> for SendCoreFunds {
         resolve::validate_amount(param.amount_duffs)?;
         resolve::validate_address(&param.address)?;
 
-        let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
+        let wallet_id = resolve::wallet(&ctx, &param.wallet_id)?;
 
         resolve::ensure_spv_synced(&ctx).await?;
 
-        let wallet_arc = resolve::wallet_arc(&ctx, seed_hash)?;
+        let wallet_arc = resolve::wallet_arc(&ctx, wallet_id)?;
 
         let request = WalletPaymentRequest {
             recipients: vec![PaymentRecipient {
@@ -348,14 +348,14 @@ impl AsyncTool<DashMcpService> for FetchPlatformBalances {
             .await
             .map_err(|e| McpToolError::Internal(e.to_string()))?;
         resolve::verify_network(&ctx, param.network.as_deref())?;
-        let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
+        let wallet_id = resolve::wallet(&ctx, &param.wallet_id)?;
 
         // SPV is required: DAPI proof verification needs quorum/masternode list
         // data from the synced chain.  When a second client is running, SPV falls
         // back to a tempdir and must sync before platform queries can succeed.
         resolve::ensure_spv_synced(&ctx).await?;
 
-        let task = BackendTask::WalletTask(WalletTask::FetchPlatformAddressBalances { seed_hash });
+        let task = BackendTask::WalletTask(WalletTask::FetchPlatformAddressBalances { wallet_id });
         let result = dispatch_task(&ctx, task)
             .await
             .map_err(McpToolError::TaskFailed)?;
@@ -389,7 +389,7 @@ pub struct ListWalletsTool;
 
 #[derive(Serialize, schemars::JsonSchema)]
 pub struct WalletEntry {
-    seed_hash: String,
+    wallet_id: String,
     alias: Option<String>,
 }
 
@@ -432,7 +432,7 @@ impl AsyncTool<DashMcpService> for ListWalletsTool {
             .map(|(hash, wallet_arc)| {
                 let wallet = wallet_arc.read().unwrap_or_else(|e| e.into_inner());
                 WalletEntry {
-                    seed_hash: hex::encode(hash),
+                    wallet_id: hex::encode(hash),
                     alias: wallet.alias.clone(),
                 }
             })

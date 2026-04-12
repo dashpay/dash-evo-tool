@@ -87,7 +87,7 @@ impl ShieldStage {
 /// Returns the built `StateTransition` so the caller can broadcast in nonce order.
 pub fn build_shield_credit(
     app_context: &Arc<AppContext>,
-    seed_hash: &WalletId,
+    wallet_id: &WalletId,
     recipient_payment_address: &PaymentAddress,
     amount: u64,
     from_address: PlatformAddress,
@@ -103,7 +103,7 @@ pub fn build_shield_credit(
     let wallet_arc = {
         let wallets = app_context.wallets.read()?;
         wallets
-            .get(seed_hash)
+            .get(wallet_id)
             .cloned()
             .ok_or(TaskError::WalletNotFound)?
     };
@@ -140,7 +140,7 @@ pub fn build_shield_credit(
 /// (including Halo 2 proof generation and RedPallas signature application).
 pub async fn shield_credits(
     app_context: &Arc<AppContext>,
-    seed_hash: &WalletId,
+    wallet_id: &WalletId,
     recipient_payment_address: &PaymentAddress,
     amount: u64,
     from_address: PlatformAddress,
@@ -158,7 +158,7 @@ pub async fn shield_credits(
     let wallet_arc = {
         let wallets = app_context.wallets.read()?;
         wallets
-            .get(seed_hash)
+            .get(wallet_id)
             .cloned()
             .ok_or(TaskError::WalletNotFound)?
     };
@@ -170,7 +170,7 @@ pub async fn shield_credits(
         let core_addr = from_address.to_address_with_network(app_context.network);
         let (_balance, db_nonce) = app_context
             .db
-            .get_platform_address_info(&wallet.seed_hash(), &core_addr, &app_context.network)
+            .get_platform_address_info(&wallet.wallet_id(), &core_addr, &app_context.network)
             .map_err(|_| TaskError::PlatformAddressNotFound)?
             .ok_or(TaskError::PlatformAddressNotFound)?;
         db_nonce + 1
@@ -246,7 +246,7 @@ pub async fn shield_credits(
 /// Returns the nullifiers of the notes that were spent.
 pub async fn shielded_transfer(
     app_context: &Arc<AppContext>,
-    _seed_hash: &WalletId,
+    _wallet_id: &WalletId,
     shielded_state: &ShieldedWalletState,
     amount: u64,
     recipient_address_bytes: &[u8],
@@ -338,7 +338,7 @@ pub async fn shielded_transfer(
 /// Returns the nullifiers of the notes that were spent.
 pub async fn unshield_credits(
     app_context: &Arc<AppContext>,
-    _seed_hash: &WalletId,
+    _wallet_id: &WalletId,
     shielded_state: &ShieldedWalletState,
     amount: u64,
     to_platform_address: PlatformAddress,
@@ -427,7 +427,7 @@ pub async fn unshield_credits(
 /// shielded pool.
 pub async fn shield_from_asset_lock(
     app_context: &Arc<AppContext>,
-    seed_hash: &WalletId,
+    wallet_id: &WalletId,
     shielded_state: &ShieldedWalletState,
     amount_duffs: u64,
     source_address: Option<&Address>,
@@ -448,7 +448,7 @@ pub async fn shield_from_asset_lock(
         let wallet_arc = {
             let wallets = app_context.wallets.read()?;
             wallets
-                .get(seed_hash)
+                .get(wallet_id)
                 .cloned()
                 .ok_or(TaskError::WalletNotFound)?
         };
@@ -558,7 +558,7 @@ pub async fn shield_from_asset_lock(
 /// Returns the nullifiers of the notes that were spent.
 pub async fn shielded_withdrawal(
     app_context: &Arc<AppContext>,
-    _seed_hash: &WalletId,
+    _wallet_id: &WalletId,
     shielded_state: &ShieldedWalletState,
     amount: u64,
     to_core_address: Address,

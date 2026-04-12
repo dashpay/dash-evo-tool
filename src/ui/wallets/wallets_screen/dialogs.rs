@@ -712,7 +712,7 @@ impl WalletsBalancesScreen {
         self.app_context
             .db
             .add_address_if_not_exists(
-                &wallet_guard.seed_hash(),
+                &wallet_guard.wallet_id(),
                 &canonical,
                 &network,
                 &derivation_path,
@@ -1057,7 +1057,7 @@ impl WalletsBalancesScreen {
         };
 
         // Get the asset lock proof and address from the database
-        let (seed_hash, asset_lock_proof, asset_lock_address, platform_addr) = {
+        let (wallet_id, asset_lock_proof, asset_lock_address, platform_addr) = {
             let wallet = match wallet_arc.read() {
                 Ok(guard) => guard,
                 Err(e) => {
@@ -1162,7 +1162,7 @@ impl WalletsBalancesScreen {
             };
 
             (
-                wallet.seed_hash(),
+                wallet.wallet_id(),
                 Box::new(proof.clone()),
                 addr.clone(),
                 platform_addr,
@@ -1179,7 +1179,7 @@ impl WalletsBalancesScreen {
 
         AppAction::BackendTask(BackendTask::WalletTask(
             WalletTask::FundPlatformAddressFromAssetLock {
-                seed_hash,
+                wallet_id,
                 asset_lock_proof,
                 asset_lock_address,
                 outputs,
@@ -1334,7 +1334,7 @@ impl WalletsBalancesScreen {
         let db_info = self
             .app_context
             .db
-            .get_all_platform_address_info(&wallet_guard.seed_hash(), &network)
+            .get_all_platform_address_info(&wallet_guard.wallet_id(), &network)
             .unwrap_or_default();
         let platform_addresses: Vec<(String, u64)> = db_info
             .into_iter()

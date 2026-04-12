@@ -49,7 +49,7 @@ impl AppContext {
             payout_address_private_key_input,
             keys_input,
             derive_keys_from_wallets,
-            selected_wallet_seed_hash,
+            selected_wallet_id,
         } = input;
 
         // Verify the voting private key
@@ -104,7 +104,7 @@ impl AppContext {
             && let Some((_, _, wallet_private_keys)) = self.match_user_identity_keys_with_wallet(
                 &identity,
                 &wallets,
-                selected_wallet_seed_hash,
+                selected_wallet_id,
             )?
         {
             encrypted_private_keys.extend(wallet_private_keys);
@@ -219,7 +219,7 @@ impl AppContext {
             None
         };
 
-        // let mut wallet_seed_hash: Option<(WalletId, u32)> = None;
+        // let mut wallet_id: Option<(WalletId, u32)> = None;
 
         if identity_type == IdentityType::User {
             let input_private_keys = keys_input
@@ -350,7 +350,7 @@ impl AppContext {
                 .values()
                 .map(|wallet| {
                     let w = wallet.read()?;
-                    Ok::<_, TaskError>((w.seed_hash(), wallet.clone()))
+                    Ok::<_, TaskError>((w.wallet_id(), wallet.clone()))
                 })
                 .collect::<Result<_, _>>()?,
             wallet_index: None, //todo
@@ -377,8 +377,8 @@ impl AppContext {
         let highest_identity_key_id = identity.public_keys().keys().copied().max().unwrap_or(0);
         let top_bound = highest_identity_key_id.saturating_add(6).max(1);
 
-        for (&wallet_seed_hash, wallet_arc) in wallets.iter() {
-            if wallet_filter.is_some_and(|filter| filter != wallet_seed_hash) {
+        for (&wallet_id, wallet_arc) in wallets.iter() {
+            if wallet_filter.is_some_and(|filter| filter != wallet_id) {
                 continue;
             }
             let mut wallet = match wallet_arc.write() {
@@ -393,13 +393,13 @@ impl AppContext {
                 .attempt_match_identity_with_wallet(
                     identity,
                     &mut wallet,
-                    wallet_seed_hash,
+                    wallet_id,
                     top_bound,
                 )?
             {
                 drop(wallet);
                 return Ok(Some((
-                    wallet_seed_hash,
+                    wallet_id,
                     identity_index,
                     wallet_private_keys,
                 )));
@@ -413,7 +413,7 @@ impl AppContext {
         &self,
         identity: &Identity,
         wallet: &mut Wallet,
-        wallet_seed_hash: WalletId,
+        wallet_id: WalletId,
         top_bound: u32,
     ) -> Result<Option<(u32, WalletKeyMap)>, TaskError> {
         for candidate_index in 0..MAX_IDENTITY_INDEX {
@@ -447,7 +447,7 @@ impl AppContext {
 
             let wallet_private_keys = self.build_wallet_private_key_map(
                 identity,
-                wallet_seed_hash,
+                wallet_id,
                 candidate_index,
                 &public_key_map,
                 &public_key_hash_map,
@@ -495,7 +495,7 @@ impl AppContext {
     fn build_wallet_private_key_map(
         &self,
         identity: &Identity,
-        wallet_seed_hash: WalletId,
+        wallet_id: WalletId,
         identity_index: u32,
         public_key_map: &BTreeMap<Vec<u8>, u32>,
         public_key_hash_map: &BTreeMap<[u8; 20], u32>,
@@ -531,7 +531,7 @@ impl AppContext {
                 );
 
                 let wallet_derivation_path = WalletDerivationPath {
-                    wallet_seed_hash,
+                    wallet_id,
                     derivation_path,
                 };
 

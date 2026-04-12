@@ -128,14 +128,14 @@ impl AppContext {
         &self,
         identity: &crate::model::qualified_identity::QualifiedIdentity,
     ) -> Result<Arc<PlatformWallet>, TaskError> {
-        let (seed_hash, _) = identity
+        let (wallet_id, _) = identity
             .determine_wallet_info()
             .map_err(|e| {
                 tracing::error!("Failed to determine wallet info: {}", e);
                 TaskError::WalletNotFound
             })?
             .ok_or(TaskError::WalletNotFound)?;
-        self.require_platform_wallet(&seed_hash)
+        self.require_platform_wallet(&wallet_id)
     }
 
     /// Reset SPV filter_committed_height to force a rescan from birth_height.
@@ -245,19 +245,19 @@ impl AppContext {
     }
 
     pub fn handle_wallet_unlocked(self: &Arc<Self>, wallet: &Arc<RwLock<Wallet>>) {
-        if let Some((seed_hash, seed_bytes)) = Self::wallet_seed_snapshot(wallet) {
+        if let Some((wallet_id, seed_bytes)) = Self::wallet_seed_snapshot(wallet) {
             // Register with the PlatformWalletManager (creates PlatformWallet
             // and wires SPV event channel). NOTE: this may re-key the wallets
-            // map entry from seed_hash to wallet_id.
-            self.register_with_platform_wallet_manager(seed_hash, seed_bytes);
+            // map entry from wallet_id to wallet_id.
+            self.register_with_platform_wallet_manager(wallet_id, seed_bytes);
 
             // After registration, use wallet_id for all subsequent lookups —
-            // the map entry was re-keyed from seed_hash to wallet_id.
+            // the map entry was re-keyed from wallet_id to wallet_id.
             let wallet_id = wallet
                 .read()
                 .ok()
                 .map(|g| g.wallet_id())
-                .unwrap_or(seed_hash);
+                .unwrap_or(wallet_id);
 
             if FeatureGate::Shielded.is_available(self) {
                 match self.initialize_shielded_wallet(wallet_id) {
@@ -282,11 +282,11 @@ impl AppContext {
     ///
     /// Creates a `PlatformWallet`, persists the computed `wallet_id` to
     /// the DB, and re-keys the `AppContext.wallets` map entry from
-    /// `seed_hash` to `wallet_id`. If the wallet is already registered (e.g. from a
+    /// `wallet_id` to `wallet_id`. If the wallet is already registered (e.g. from a
     /// previous unlock), this is a no-op.
     pub(crate) fn register_with_platform_wallet_manager(
         self: &Arc<Self>,
-        seed_hash: WalletId,
+        wallet_id: WalletId,
         seed_bytes: [u8; 64],
     ) {
         // Check if already registered by looking at whether the wallet
@@ -295,7 +295,7 @@ impl AppContext {
             let already_registered = wallets.values().any(|w| {
                 w.read()
                     .ok()
-                    .map(|g| g.seed_hash() == seed_hash && g.platform_wallet.is_some())
+                    .map(|g| g.wallet_id() == wallet_id && g.platform_wallet.is_some())
                     .unwrap_or(false)
             });
             if already_registered {
@@ -322,10 +322,10 @@ impl AppContext {
                 let wallet_id = platform_wallet.wallet_id();
 
                 // Persist wallet_id to DB (no-op if already set).
-                if let Err(e) = self.db.set_wallet_id(&seed_hash, &wallet_id) {
+                if let Err(e) = self.db.set_wallet_id(&wallet_id, &wallet_id) {
                     tracing::warn!(
                         error = %e,
-                        seed = %hex::encode(seed_hash),
+                        seed = %hex::encode(wallet_id),
                         "Failed to persist wallet_id to database"
                     );
                 }
@@ -342,14 +342,14 @@ impl AppContext {
                 }
 
                 tracing::info!(
-                    seed = %hex::encode(seed_hash),
+                    seed = %hex::encode(wallet_id),
                     wallet_id = %hex::encode(wallet_id),
                     "Registered wallet with PlatformWallet bridge"
                 );
             }
             Err(e) => {
                 tracing::warn!(
-                    seed = %hex::encode(seed_hash),
+                    seed = %hex::encode(wallet_id),
                     error = %e,
                     "Failed to create PlatformWallet from seed bytes for bridge"
                 );
@@ -374,7 +374,7 @@ impl AppContext {
         // Note: we do NOT remove the wallet from the AppContext.wallets
         // map here — locking a wallet keeps it visible in the UI, just
         // without platform_wallet access. The map entry stays at its
-        // current key (wallet_id or seed_hash fallback).
+        // current key (wallet_id or wallet_id fallback).
     }
 
     /// Initialize shielded state for unlocked wallets that were skipped
@@ -399,17 +399,17 @@ impl AppContext {
         })()
         .unwrap_or_default();
 
-        for seed_hash in candidates {
-            match self.initialize_shielded_wallet(seed_hash) {
+        for wallet_id in candidates {
+            match self.initialize_shielded_wallet(wallet_id) {
                 Ok(_) => {
                     tracing::info!(
-                        seed = %hex::encode(seed_hash),
+                        seed = %hex::encode(wallet_id),
                         "Shielded wallet initialized after protocol version update"
                     );
-                    self.queue_shielded_sync(seed_hash);
+                    self.queue_shielded_sync(wallet_id);
                 }
                 Err(e) => tracing::debug!(
-                    seed = %hex::encode(seed_hash),
+                    seed = %hex::encode(wallet_id),
                     error = %e,
                     "Shielded wallet init failed after protocol version update"
                 ),
@@ -427,24 +427,24 @@ impl AppContext {
     /// cannot prove are `'static` (rust-lang/rust#100013). The trampoline
     /// resolves the futures synchronously on a blocking thread, satisfying
     /// the `'static` bound required by `spawn_sync`.
-    fn queue_shielded_sync(self: &Arc<Self>, seed_hash: WalletId) {
+    fn queue_shielded_sync(self: &Arc<Self>, wallet_id: WalletId) {
         let ctx = Arc::clone(self);
         self.subtasks.spawn_sync("shielded_sync", async move {
             let handle = tokio::runtime::Handle::current();
             let result = tokio::task::spawn_blocking(move || {
                 handle.block_on(async {
-                    match ctx.sync_shielded_notes(seed_hash).await {
+                    match ctx.sync_shielded_notes(wallet_id).await {
                         Ok(_) => {
-                            if let Err(e) = ctx.check_nullifiers_task(seed_hash).await {
+                            if let Err(e) = ctx.check_nullifiers_task(wallet_id).await {
                                 tracing::debug!(
-                                    seed = %hex::encode(seed_hash),
+                                    seed = %hex::encode(wallet_id),
                                     error = %e,
                                     "Shielded nullifier check after init failed"
                                 );
                             }
                         }
                         Err(e) => tracing::debug!(
-                            seed = %hex::encode(seed_hash),
+                            seed = %hex::encode(wallet_id),
                             error = %e,
                             "Shielded note sync after init failed"
                         ),
@@ -454,7 +454,7 @@ impl AppContext {
             .await;
             if let Err(e) = result {
                 tracing::debug!(
-                    seed = %hex::encode(seed_hash),
+                    seed = %hex::encode(wallet_id),
                     error = %e,
                     "Shielded sync task panicked"
                 );
@@ -470,11 +470,11 @@ impl AppContext {
         let seed_bytes = match guard.seed_bytes() {
             Ok(bytes) => *bytes,
             Err(err) => {
-                tracing::warn!(error = %err, wallet = %hex::encode(guard.seed_hash()), "Unable to snapshot wallet seed for SPV load");
+                tracing::warn!(error = %err, wallet = %hex::encode(guard.wallet_id()), "Unable to snapshot wallet seed for SPV load");
                 return None;
             }
         };
-        Some((guard.seed_hash(), seed_bytes))
+        Some((guard.wallet_id(), seed_bytes))
     }
 
     // queue_spv_wallet_load and queue_spv_wallet_unload removed —
@@ -594,13 +594,13 @@ impl AppContext {
     /// This uses the proof-verified data from SDK operations rather than fetching.
     pub(crate) fn update_wallet_platform_address_info_from_sdk(
         &self,
-        seed_hash: WalletId,
+        wallet_id: WalletId,
         address_infos: &dash_sdk::query_types::AddressInfos,
     ) -> Result<(), TaskError> {
         // Verify the wallet exists
         {
             let wallets = self.wallets.read()?;
-            if !wallets.contains_key(&seed_hash) {
+            if !wallets.contains_key(&wallet_id) {
                 return Err(TaskError::WalletNotFound);
             }
         }
@@ -612,7 +612,7 @@ impl AppContext {
 
                 // Update database
                 if let Err(e) = self.db.set_platform_address_info(
-                    &seed_hash,
+                    &wallet_id,
                     &core_addr,
                     info.balance,
                     info.nonce,
@@ -643,9 +643,9 @@ impl AppContext {
     ) -> Result<bool, TaskError> {
         // Extract what we need from the wallet under a short-lived sync lock,
         // then drop the guard before any async work.
-        let (platform_wallet, seed_hash) = {
+        let (platform_wallet, wallet_id) = {
             let guard = wallet.read()?;
-            (guard.platform_wallet.clone(), guard.seed_hash())
+            (guard.platform_wallet.clone(), guard.wallet_id())
         };
 
         // Check address ownership via PlatformWallet's async state
@@ -669,7 +669,7 @@ impl AppContext {
             self.classify_derivation_metadata(&derivation_path, path_reference, path_type);
 
         self.db.add_address_if_not_exists(
-            &seed_hash,
+            &wallet_id,
             &address,
             &self.network,
             &derivation_path,
@@ -878,7 +878,7 @@ impl AppContext {
     /// is not affected.
     pub(crate) fn sync_identity_to_platform_wallet(&self, qualified_identity: &QualifiedIdentity) {
         // 1. Resolve the platform wallet for this identity
-        let (seed_hash, _wallet_index) = match qualified_identity.determine_wallet_info() {
+        let (wallet_id, _wallet_index) = match qualified_identity.determine_wallet_info() {
             Ok(Some(info)) => info,
             Ok(None) => {
                 // No wallet association — external import or no derivation path
@@ -898,12 +898,12 @@ impl AppContext {
             }
         };
 
-        let platform_wallet = match self.get_platform_wallet(&seed_hash) {
+        let platform_wallet = match self.get_platform_wallet(&wallet_id) {
             Some(pw) => pw,
             None => {
                 tracing::trace!(
                     identity = %qualified_identity.identity.id(),
-                    seed = %hex::encode(seed_hash),
+                    seed = %hex::encode(wallet_id),
                     "Skipping platform-wallet sync: platform wallet not registered"
                 );
                 return;
@@ -939,7 +939,7 @@ impl AppContext {
 
         // 3. Convert QualifiedIdentity data for the ManagedIdentity
         let mi_key_storage =
-            Self::convert_key_storage(&qualified_identity.private_keys, &seed_hash);
+            Self::convert_key_storage(&qualified_identity.private_keys, &wallet_id);
         let mi_dpns_names = Self::convert_dpns_names(&qualified_identity.dpns_names);
         let mi_status = Self::convert_identity_status(qualified_identity.status);
 
@@ -1319,11 +1319,11 @@ impl AppContext {
             };
 
             // Find the PlatformWallet for this identity's wallet
-            let (seed_hash, _) = match identity.determine_wallet_info() {
+            let (wallet_id, _) = match identity.determine_wallet_info() {
                 Ok(Some(info)) => info,
                 _ => continue,
             };
-            let pw = match self.get_platform_wallet(&seed_hash) {
+            let pw = match self.get_platform_wallet(&wallet_id) {
                 Some(pw) => pw,
                 None => continue,
             };
@@ -1454,7 +1454,7 @@ impl AppContext {
     /// Voter/operator keys and encrypted keys are skipped.
     fn convert_key_storage(
         qi_keys: &crate::model::qualified_identity::encrypted_key_storage::KeyStorage,
-        _seed_hash: &WalletId,
+        _wallet_id: &WalletId,
     ) -> ManagedKeyStorage {
         let mut result = ManagedKeyStorage::new();
 
@@ -1470,10 +1470,10 @@ impl AppContext {
                     ManagedPrivateKeyData::Clear(Zeroizing::new(*bytes))
                 }
                 QIPrivateKeyData::AtWalletDerivationPath(WalletDerivationPath {
-                    wallet_seed_hash,
+                    wallet_id,
                     derivation_path,
                 }) => ManagedPrivateKeyData::AtWalletDerivationPath {
-                    wallet_id: *wallet_seed_hash,
+                    wallet_id: *wallet_id,
                     derivation_path: derivation_path.clone(),
                 },
                 QIPrivateKeyData::Encrypted(_) => {

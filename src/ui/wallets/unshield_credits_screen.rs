@@ -28,7 +28,7 @@ enum Status {
 
 pub struct UnshieldCreditsScreen {
     pub app_context: Arc<AppContext>,
-    pub seed_hash: WalletId,
+    pub wallet_id: WalletId,
     amount_input: Option<AmountInput>,
     amount: Option<Amount>,
     address_input: Option<AddressInput>,
@@ -50,17 +50,17 @@ impl UnshieldCreditsScreen {
         self.validated_destination = None;
     }
 
-    pub fn new(seed_hash: WalletId, app_context: &Arc<AppContext>) -> Self {
+    pub fn new(wallet_id: WalletId, app_context: &Arc<AppContext>) -> Self {
         let max_balance = app_context
             .shielded_states
             .lock()
             .ok()
-            .and_then(|states| states.get(&seed_hash).map(|s| s.shielded_balance))
+            .and_then(|states| states.get(&wallet_id).map(|s| s.shielded_balance))
             .unwrap_or(0);
 
         Self {
             app_context: app_context.clone(),
-            seed_hash,
+            wallet_id,
             amount_input: None,
             amount: None,
             address_input: None,
@@ -78,7 +78,7 @@ impl UnshieldCreditsScreen {
 impl ScreenLike for UnshieldCreditsScreen {
     fn refresh_on_arrival(&mut self) {
         if let Ok(states) = self.app_context.shielded_states.lock()
-            && let Some(state) = states.get(&self.seed_hash)
+            && let Some(state) = states.get(&self.wallet_id)
         {
             self.max_balance = state.shielded_balance;
         }
@@ -227,7 +227,7 @@ impl ScreenLike for UnshieldCreditsScreen {
                                 self.error_message = None;
                                 action = AppAction::BackendTask(BackendTask::ShieldedTask(
                                     ShieldedTask::UnshieldCredits {
-                                        seed_hash: self.seed_hash,
+                                        wallet_id: self.wallet_id,
                                         amount,
                                         to_platform_address: *addr,
                                     },
@@ -238,7 +238,7 @@ impl ScreenLike for UnshieldCreditsScreen {
                                 self.error_message = None;
                                 action = AppAction::BackendTask(BackendTask::ShieldedTask(
                                     ShieldedTask::ShieldedWithdrawal {
-                                        seed_hash: self.seed_hash,
+                                        wallet_id: self.wallet_id,
                                         amount,
                                         to_core_address: addr.clone(),
                                     },
@@ -261,8 +261,8 @@ impl ScreenLike for UnshieldCreditsScreen {
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
         match result {
-            BackendTaskSuccessResult::ShieldedCreditsUnshielded { seed_hash, amount }
-                if seed_hash == self.seed_hash =>
+            BackendTaskSuccessResult::ShieldedCreditsUnshielded { wallet_id, amount }
+                if wallet_id == self.wallet_id =>
             {
                 self.status = Status::Complete;
                 let dash = amount as f64 / CREDITS_PER_DUFF as f64 / 1e8;
@@ -272,12 +272,12 @@ impl ScreenLike for UnshieldCreditsScreen {
                 ));
                 self.pending_refresh_task =
                     Some(BackendTask::ShieldedTask(ShieldedTask::SyncNotes {
-                        seed_hash: self.seed_hash,
+                        wallet_id: self.wallet_id,
                     }));
                 self.balance_update_pending = true;
             }
-            BackendTaskSuccessResult::ShieldedWithdrawalComplete { seed_hash, amount }
-                if seed_hash == self.seed_hash =>
+            BackendTaskSuccessResult::ShieldedWithdrawalComplete { wallet_id, amount }
+                if wallet_id == self.wallet_id =>
             {
                 self.status = Status::Complete;
                 let dash = amount as f64 / CREDITS_PER_DUFF as f64 / 1e8;
@@ -287,7 +287,7 @@ impl ScreenLike for UnshieldCreditsScreen {
                 ));
                 self.pending_refresh_task =
                     Some(BackendTask::ShieldedTask(ShieldedTask::SyncNotes {
-                        seed_hash: self.seed_hash,
+                        wallet_id: self.wallet_id,
                     }));
                 self.balance_update_pending = true;
             }

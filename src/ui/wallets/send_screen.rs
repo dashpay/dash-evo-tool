@@ -276,7 +276,7 @@ pub enum SourceSelection {
     PlatformAddresses(Vec<(PlatformAddress, Address, u64)>),
     /// Use an identity's credit balance
     Identity(Box<QualifiedIdentity>),
-    /// Use shielded pool balance (stores seed_hash and balance in credits)
+    /// Use shielded pool balance (stores wallet_id and balance in credits)
     Shielded(WalletId, u64),
 }
 
@@ -367,7 +367,7 @@ pub struct WalletSendScreen {
     pub app_context: Arc<AppContext>,
     pub selected_wallet: Option<Arc<RwLock<Wallet>>>,
     #[allow(dead_code)]
-    selected_wallet_seed_hash: Option<WalletId>,
+    selected_wallet_id: Option<WalletId>,
 
     // Unified send fields (simple mode)
     selected_source: Option<SourceSelection>,
@@ -406,11 +406,11 @@ pub struct WalletSendScreen {
 
 impl WalletSendScreen {
     pub fn new(app_context: &Arc<AppContext>, wallet: Arc<RwLock<Wallet>>) -> Self {
-        let seed_hash = wallet.read().ok().map(|w| w.seed_hash());
+        let wallet_id = wallet.read().ok().map(|w| w.wallet_id());
         Self {
             app_context: app_context.clone(),
             selected_wallet: Some(wallet),
-            selected_wallet_seed_hash: seed_hash,
+            selected_wallet_id: wallet_id,
             selected_source: Some(SourceSelection::CoreWallet),
             address_input: None,
             validated_destination: None,
@@ -580,7 +580,7 @@ impl WalletSendScreen {
         let db_info = self
             .app_context
             .db
-            .get_all_platform_address_info(&wallet.seed_hash(), &network)
+            .get_all_platform_address_info(&wallet.wallet_id(), &network)
             .unwrap_or_default();
 
         let mut result: Vec<_> = db_info
@@ -608,15 +608,15 @@ impl WalletSendScreen {
 
     /// Get shielded pool balance for the selected wallet (if initialized).
     fn get_shielded_balance(&self) -> Option<(WalletId, u64)> {
-        let seed_hash = self.selected_wallet_seed_hash?;
+        let wallet_id = self.selected_wallet_id?;
         // Try in-memory state first (most accurate, reflects optimistic spend marks)
         let Ok(states) = self.app_context.shielded_states.lock() else {
             return None;
         };
-        if let Some(state) = states.get(&seed_hash) {
+        if let Some(state) = states.get(&wallet_id) {
             let balance = state.shielded_balance;
             return if balance > 0 {
-                Some((seed_hash, balance))
+                Some((wallet_id, balance))
             } else {
                 None
             };
@@ -628,10 +628,10 @@ impl WalletSendScreen {
         let balance = self
             .app_context
             .db
-            .get_shielded_balance(&seed_hash, &network_str)
+            .get_shielded_balance(&wallet_id, &network_str)
             .ok()?;
         if balance > 0 {
-            Some((seed_hash, balance))
+            Some((wallet_id, balance))
         } else {
             None
         }
@@ -658,7 +658,7 @@ impl WalletSendScreen {
         let Ok(wallet) = wallet_arc.read() else {
             return vec![];
         };
-        let seed_hash = wallet.seed_hash();
+        let wallet_id = wallet.wallet_id();
 
         let Ok(all_identities) = self.app_context.load_local_qualified_identities() else {
             return vec![];
@@ -666,7 +666,7 @@ impl WalletSendScreen {
 
         all_identities
             .into_iter()
-            .filter(|qi| qi.associated_wallets.contains_key(&seed_hash))
+            .filter(|qi| qi.associated_wallets.contains_key(&wallet_id))
             .collect()
     }
 
@@ -769,7 +769,7 @@ impl WalletSendScreen {
             return Err("Wallet must be unlocked first".to_string());
         }
 
-        let seed_hash = wallet_guard.seed_hash();
+        let wallet_id = wallet_guard.wallet_id();
 
         // Validate source
         let source = self
@@ -802,13 +802,13 @@ impl WalletSendScreen {
             // === Existing 6 combinations ===
             (SourceSelection::CoreWallet, Some(AddressKind::Core)) => self.send_core_to_core(),
             (SourceSelection::CoreWallet, Some(AddressKind::Platform)) => {
-                self.send_core_to_platform(seed_hash)
+                self.send_core_to_platform(wallet_id)
             }
             (SourceSelection::PlatformAddresses(addresses), Some(AddressKind::Platform)) => {
-                self.send_platform_to_platform(seed_hash, addresses)
+                self.send_platform_to_platform(wallet_id, addresses)
             }
             (SourceSelection::PlatformAddresses(addresses), Some(AddressKind::Core)) => {
-                self.send_platform_to_core(seed_hash, addresses)
+                self.send_platform_to_core(wallet_id, addresses)
             }
             (SourceSelection::Shielded(sh, _), Some(AddressKind::Shielded)) => {
                 self.send_shielded_to_shielded(sh)
@@ -818,16 +818,16 @@ impl WalletSendScreen {
             }
             // === New 8 combinations ===
             (SourceSelection::CoreWallet, Some(AddressKind::Shielded)) => {
-                self.send_core_to_shielded(seed_hash)
+                self.send_core_to_shielded(wallet_id)
             }
             (SourceSelection::CoreWallet, Some(AddressKind::Identity)) => {
-                self.send_core_to_identity(seed_hash)
+                self.send_core_to_identity(wallet_id)
             }
             (SourceSelection::PlatformAddresses(addresses), Some(AddressKind::Shielded)) => {
-                self.send_platform_to_shielded(seed_hash, addresses)
+                self.send_platform_to_shielded(wallet_id, addresses)
             }
             (SourceSelection::PlatformAddresses(addresses), Some(AddressKind::Identity)) => {
-                self.send_platform_to_identity(seed_hash, addresses)
+                self.send_platform_to_identity(wallet_id, addresses)
             }
             (SourceSelection::Shielded(sh, _), Some(AddressKind::Core)) => {
                 self.send_shielded_to_core(sh)
@@ -902,7 +902,7 @@ impl WalletSendScreen {
         )))
     }
 
-    fn send_core_to_platform(&mut self, seed_hash: WalletId) -> Result<AppAction, String> {
+    fn send_core_to_platform(&mut self, wallet_id: WalletId) -> Result<AppAction, String> {
         let amount_duffs = self
             .amount
             .as_ref()
@@ -934,7 +934,7 @@ impl WalletSendScreen {
 
         Ok(AppAction::BackendTask(BackendTask::WalletTask(
             WalletTask::FundPlatformAddressFromWalletUtxos {
-                seed_hash,
+                wallet_id,
                 amount: amount_duffs,
                 destination,
                 // In simple mode, default to deducting fees from output (current behavior)
@@ -945,7 +945,7 @@ impl WalletSendScreen {
 
     fn send_platform_to_platform(
         &mut self,
-        seed_hash: WalletId,
+        wallet_id: WalletId,
         addresses: Vec<(PlatformAddress, Address, u64)>,
     ) -> Result<AppAction, String> {
         // Amount in credits (Amount stores in credits for DASH with 11 decimal places)
@@ -1064,7 +1064,7 @@ impl WalletSendScreen {
 
         Ok(AppAction::BackendTask(BackendTask::WalletTask(
             WalletTask::TransferPlatformCredits {
-                seed_hash,
+                wallet_id,
                 inputs: allocation.inputs,
                 outputs,
                 fee_payer_index: allocation.fee_payer_index,
@@ -1074,7 +1074,7 @@ impl WalletSendScreen {
 
     fn send_platform_to_core(
         &mut self,
-        seed_hash: WalletId,
+        wallet_id: WalletId,
         addresses: Vec<(PlatformAddress, Address, u64)>,
     ) -> Result<AppAction, String> {
         // Amount in credits
@@ -1178,7 +1178,7 @@ impl WalletSendScreen {
 
         Ok(AppAction::BackendTask(BackendTask::WalletTask(
             WalletTask::WithdrawFromPlatformAddress {
-                seed_hash,
+                wallet_id,
                 inputs: allocation.inputs,
                 output_script,
                 core_fee_per_byte: 1,
@@ -1349,7 +1349,7 @@ impl WalletSendScreen {
     /// Send from shielded pool to another shielded address (private transfer).
     fn send_shielded_to_shielded(
         &mut self,
-        seed_hash: WalletId,
+        wallet_id: WalletId,
     ) -> Result<AppAction, String> {
         let amount_credits = self
             .amount
@@ -1370,7 +1370,7 @@ impl WalletSendScreen {
         Ok(AppAction::BackendTask(
             crate::backend_task::BackendTask::ShieldedTask(
                 crate::backend_task::shielded::ShieldedTask::ShieldedTransfer {
-                    seed_hash,
+                    wallet_id,
                     amount: amount_credits,
                     recipient_address_bytes: recipient_bytes,
                 },
@@ -1381,7 +1381,7 @@ impl WalletSendScreen {
     /// Send from shielded pool to a platform address (unshield).
     fn send_shielded_to_platform(
         &mut self,
-        seed_hash: WalletId,
+        wallet_id: WalletId,
     ) -> Result<AppAction, String> {
         let amount_credits = self
             .amount
@@ -1399,7 +1399,7 @@ impl WalletSendScreen {
         Ok(AppAction::BackendTask(
             crate::backend_task::BackendTask::ShieldedTask(
                 crate::backend_task::shielded::ShieldedTask::UnshieldCredits {
-                    seed_hash,
+                    wallet_id,
                     amount: amount_credits,
                     to_platform_address: platform_addr,
                 },
@@ -1410,7 +1410,7 @@ impl WalletSendScreen {
     // === New send handler methods (8 combinations) ===
 
     /// Shield DASH from Core wallet via asset lock (Core -> Shielded).
-    fn send_core_to_shielded(&mut self, seed_hash: WalletId) -> Result<AppAction, String> {
+    fn send_core_to_shielded(&mut self, wallet_id: WalletId) -> Result<AppAction, String> {
         // Shielding from Core always deposits into the wallet's own shielded pool.
         // Validate the destination is a shielded address (the address input already constrains this).
         if !matches!(
@@ -1441,7 +1441,7 @@ impl WalletSendScreen {
         self.mark_sending();
         Ok(AppAction::BackendTask(BackendTask::ShieldedTask(
             crate::backend_task::shielded::ShieldedTask::ShieldFromAssetLock {
-                seed_hash,
+                wallet_id,
                 amount_duffs,
                 source_address: None,
             },
@@ -1449,7 +1449,7 @@ impl WalletSendScreen {
     }
 
     /// Top up an identity from Core wallet via asset lock (Core -> Identity).
-    fn send_core_to_identity(&mut self, _seed_hash: WalletId) -> Result<AppAction, String> {
+    fn send_core_to_identity(&mut self, _wallet_id: WalletId) -> Result<AppAction, String> {
         let amount_duffs = self
             .amount
             .as_ref()
@@ -1513,7 +1513,7 @@ impl WalletSendScreen {
     /// sequentially.
     fn send_platform_to_shielded(
         &mut self,
-        seed_hash: WalletId,
+        wallet_id: WalletId,
         addresses: Vec<(PlatformAddress, Address, u64)>,
     ) -> Result<AppAction, String> {
         if !matches!(
@@ -1567,7 +1567,7 @@ impl WalletSendScreen {
             let spend = remaining.min(available);
             tasks.push(BackendTask::ShieldedTask(
                 crate::backend_task::shielded::ShieldedTask::ShieldCredits {
-                    seed_hash,
+                    wallet_id,
                     amount: spend,
                     from_address: *platform_addr,
                     nonce_override: None,
@@ -1606,7 +1606,7 @@ impl WalletSendScreen {
     /// Top up an identity from Platform addresses (Platform -> Identity).
     fn send_platform_to_identity(
         &mut self,
-        seed_hash: WalletId,
+        wallet_id: WalletId,
         addresses: Vec<(PlatformAddress, Address, u64)>,
     ) -> Result<AppAction, String> {
         let amount_credits = self
@@ -1649,13 +1649,13 @@ impl WalletSendScreen {
             IdentityTask::TopUpIdentityFromPlatformAddresses {
                 identity: qualified_identity,
                 inputs: allocation.inputs,
-                wallet_seed_hash: seed_hash,
+                wallet_id: wallet_id,
             },
         )))
     }
 
     /// Withdraw from shielded pool to Core address (Shielded -> Core).
-    fn send_shielded_to_core(&mut self, seed_hash: WalletId) -> Result<AppAction, String> {
+    fn send_shielded_to_core(&mut self, wallet_id: WalletId) -> Result<AppAction, String> {
         let amount_credits = self
             .amount
             .as_ref()
@@ -1674,7 +1674,7 @@ impl WalletSendScreen {
         self.mark_sending();
         Ok(AppAction::BackendTask(BackendTask::ShieldedTask(
             crate::backend_task::shielded::ShieldedTask::ShieldedWithdrawal {
-                seed_hash,
+                wallet_id,
                 amount: amount_credits,
                 to_core_address: core_address,
             },
@@ -2064,7 +2064,7 @@ impl WalletSendScreen {
         // Shielded balance option (developer mode only)
         let shielded_balance = self.get_shielded_balance();
         if self.app_context.is_developer_mode()
-            && let Some((seed_hash, balance)) = shielded_balance
+            && let Some((wallet_id, balance)) = shielded_balance
             && balance > 0
         {
             ui.add_space(5.0);
@@ -2090,7 +2090,7 @@ impl WalletSendScreen {
                         let mut selected = is_shielded_selected;
                         if ui.radio_value(&mut selected, true, "").changed() && selected {
                             self.selected_source =
-                                Some(SourceSelection::Shielded(seed_hash, balance));
+                                Some(SourceSelection::Shielded(wallet_id, balance));
                             self.address_input = None;
                             self.validated_destination = None;
                         }
@@ -2132,7 +2132,7 @@ impl WalletSendScreen {
                 .filter(|qi| Some(qi.identity.id()) != source_identity_id)
                 .collect();
             let shielded_info: Option<(String, u64)> =
-                self.selected_wallet_seed_hash.and_then(|sh| {
+                self.selected_wallet_id.and_then(|sh| {
                     let states = self.app_context.shielded_states.lock().ok()?;
                     let state = states.get(&sh)?;
                     use dash_sdk::dpp::address_funds::OrchardAddress;
@@ -3153,7 +3153,7 @@ impl WalletSendScreen {
             return Err("Wallet must be unlocked first".to_string());
         }
 
-        let seed_hash = wallet_guard.seed_hash();
+        let wallet_id = wallet_guard.wallet_id();
         let network = self.app_context.network;
 
         // Validate outputs
@@ -3190,7 +3190,7 @@ impl WalletSendScreen {
                 if has_core_output {
                     self.send_advanced_core_to_core()
                 } else if has_platform_output {
-                    self.send_advanced_core_to_platform(seed_hash)
+                    self.send_advanced_core_to_platform(wallet_id)
                 } else {
                     Err("Invalid output address".to_string())
                 }
@@ -3201,9 +3201,9 @@ impl WalletSendScreen {
                 }
 
                 if has_platform_output {
-                    self.send_advanced_platform_to_platform(seed_hash)
+                    self.send_advanced_platform_to_platform(wallet_id)
                 } else if has_core_output {
-                    self.send_advanced_platform_to_core(seed_hash, network)
+                    self.send_advanced_platform_to_core(wallet_id, network)
                 } else {
                     Err("Invalid output address".to_string())
                 }
@@ -3277,7 +3277,7 @@ impl WalletSendScreen {
     /// Advanced Core to Platform send
     fn send_advanced_core_to_platform(
         &mut self,
-        seed_hash: WalletId,
+        wallet_id: WalletId,
     ) -> Result<AppAction, String> {
         // For now, only support single output for Core to Platform
         // The SDK's FundPlatformAddressFromWalletUtxos only supports a single destination
@@ -3326,7 +3326,7 @@ impl WalletSendScreen {
 
         Ok(AppAction::BackendTask(BackendTask::WalletTask(
             WalletTask::FundPlatformAddressFromWalletUtxos {
-                seed_hash,
+                wallet_id,
                 amount: amount_duffs,
                 destination,
                 fee_deduct_from_output,
@@ -3337,7 +3337,7 @@ impl WalletSendScreen {
     /// Advanced Platform to Platform send
     fn send_advanced_platform_to_platform(
         &mut self,
-        seed_hash: WalletId,
+        wallet_id: WalletId,
     ) -> Result<AppAction, String> {
         // Build inputs map from platform_inputs
         let mut inputs: BTreeMap<PlatformAddress, Credits> = BTreeMap::new();
@@ -3382,7 +3382,7 @@ impl WalletSendScreen {
 
         Ok(AppAction::BackendTask(BackendTask::WalletTask(
             WalletTask::TransferPlatformCredits {
-                seed_hash,
+                wallet_id,
                 inputs,
                 outputs,
                 fee_payer_index,
@@ -3393,7 +3393,7 @@ impl WalletSendScreen {
     /// Advanced Platform to Core send (withdrawal)
     fn send_advanced_platform_to_core(
         &mut self,
-        seed_hash: WalletId,
+        wallet_id: WalletId,
         network: dash_sdk::dpp::dashcore::Network,
     ) -> Result<AppAction, String> {
         // For withdrawal, we only support a single Core output
@@ -3440,7 +3440,7 @@ impl WalletSendScreen {
 
         Ok(AppAction::BackendTask(BackendTask::WalletTask(
             WalletTask::WithdrawFromPlatformAddress {
-                seed_hash,
+                wallet_id,
                 inputs,
                 output_script,
                 core_fee_per_byte: 1,
@@ -3585,7 +3585,7 @@ impl ScreenLike for WalletSendScreen {
                     SendStatus::Complete("Platform credits transferred successfully!".to_string());
             }
             crate::backend_task::BackendTaskSuccessResult::ShieldedTransferComplete {
-                seed_hash,
+                wallet_id,
                 amount,
             } => {
                 self.send_status = SendStatus::Complete(format!(
@@ -3595,11 +3595,11 @@ impl ScreenLike for WalletSendScreen {
                     format_credits_as_dash(amount)
                 ));
                 self.pending_refresh_task = Some(crate::backend_task::BackendTask::ShieldedTask(
-                    crate::backend_task::shielded::ShieldedTask::SyncNotes { seed_hash },
+                    crate::backend_task::shielded::ShieldedTask::SyncNotes { wallet_id },
                 ));
             }
             crate::backend_task::BackendTaskSuccessResult::ShieldedCreditsUnshielded {
-                seed_hash,
+                wallet_id,
                 amount,
             } => {
                 self.send_status = SendStatus::Complete(format!(
@@ -3608,7 +3608,7 @@ impl ScreenLike for WalletSendScreen {
                     format_credits_as_dash(amount)
                 ));
                 self.pending_refresh_task = Some(crate::backend_task::BackendTask::ShieldedTask(
-                    crate::backend_task::shielded::ShieldedTask::SyncNotes { seed_hash },
+                    crate::backend_task::shielded::ShieldedTask::SyncNotes { wallet_id },
                 ));
             }
             // Core->Identity or Platform->Identity top-up result
@@ -3638,7 +3638,7 @@ impl ScreenLike for WalletSendScreen {
             }
             // Core->Shielded or Platform->Shielded shield result
             crate::backend_task::BackendTaskSuccessResult::ShieldedCreditsShielded {
-                seed_hash,
+                wallet_id,
                 amount,
             } => {
                 self.send_status = SendStatus::Complete(format!(
@@ -3647,12 +3647,12 @@ impl ScreenLike for WalletSendScreen {
                     format_credits_as_dash(amount)
                 ));
                 self.pending_refresh_task = Some(crate::backend_task::BackendTask::ShieldedTask(
-                    crate::backend_task::shielded::ShieldedTask::SyncNotes { seed_hash },
+                    crate::backend_task::shielded::ShieldedTask::SyncNotes { wallet_id },
                 ));
             }
             // Core->Shielded via asset lock result
             crate::backend_task::BackendTaskSuccessResult::ShieldedFromAssetLock {
-                seed_hash,
+                wallet_id,
                 amount,
             } => {
                 self.send_status = SendStatus::Complete(format!(
@@ -3661,12 +3661,12 @@ impl ScreenLike for WalletSendScreen {
                     format_credits_as_dash(amount)
                 ));
                 self.pending_refresh_task = Some(crate::backend_task::BackendTask::ShieldedTask(
-                    crate::backend_task::shielded::ShieldedTask::SyncNotes { seed_hash },
+                    crate::backend_task::shielded::ShieldedTask::SyncNotes { wallet_id },
                 ));
             }
             // Shielded->Core withdrawal result
             crate::backend_task::BackendTaskSuccessResult::ShieldedWithdrawalComplete {
-                seed_hash,
+                wallet_id,
                 amount,
             } => {
                 self.send_status = SendStatus::Complete(format!(
@@ -3675,7 +3675,7 @@ impl ScreenLike for WalletSendScreen {
                     format_credits_as_dash(amount)
                 ));
                 self.pending_refresh_task = Some(crate::backend_task::BackendTask::ShieldedTask(
-                    crate::backend_task::shielded::ShieldedTask::SyncNotes { seed_hash },
+                    crate::backend_task::shielded::ShieldedTask::SyncNotes { wallet_id },
                 ));
             }
             _ => {

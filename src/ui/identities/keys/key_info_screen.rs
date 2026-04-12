@@ -602,7 +602,7 @@ impl KeyInfoScreen {
             if let Some((_, Some(wallet_derivation_path))) = private_key_data.as_ref() {
                 let wallets = app_context.wallets.read().unwrap();
                 wallets
-                    .get(&wallet_derivation_path.wallet_seed_hash)
+                    .get(&wallet_derivation_path.wallet_id)
                     .cloned()
             } else {
                 None

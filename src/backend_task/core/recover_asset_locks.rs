@@ -57,7 +57,7 @@ impl AppContext {
         &self,
         wallet: Arc<RwLock<Wallet>>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        let (wallet_addresses, seed_hash, already_tracked_txids, core_wallet_name) = {
+        let (wallet_addresses, wallet_id, already_tracked_txids, core_wallet_name) = {
             let wallet_guard = wallet.read()?;
 
             // Read addresses from PlatformWallet (canonical source).
@@ -85,7 +85,7 @@ impl AppContext {
                 .unwrap_or_default();
             (
                 addresses,
-                wallet_guard.seed_hash(),
+                wallet_guard.wallet_id(),
                 tracked,
                 wallet_guard.core_wallet_name.clone(),
             )

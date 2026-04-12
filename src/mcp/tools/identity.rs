@@ -84,12 +84,12 @@ impl AsyncTool<DashMcpService> for IdentityCreditsTopup {
         resolve::require_network(&ctx, Some(&param.network))?;
         resolve::validate_amount(param.amount_duffs)?;
 
-        let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
+        let wallet_id = resolve::wallet(&ctx, &param.wallet_id)?;
         let qi = resolve::qualified_identity(&ctx, &param.identity_id)?;
 
         resolve::ensure_spv_synced(&ctx).await?;
 
-        let wallet_arc = resolve::wallet_arc(&ctx, seed_hash)?;
+        let wallet_arc = resolve::wallet_arc(&ctx, wallet_id)?;
 
         let identity_index = qi.wallet_index.unwrap_or(0);
         let top_up_index = qi.top_ups.len() as u32;
@@ -198,7 +198,7 @@ impl AsyncTool<DashMcpService> for IdentityCreditsTopupFromPlatform {
 
         // INTENTIONAL: no SPV sync needed — this tool only dispatches Platform state transitions,
         // not Core UTXO spends
-        let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
+        let wallet_id = resolve::wallet(&ctx, &param.wallet_id)?;
         let qi = resolve::qualified_identity(&ctx, &param.identity_id)?;
         let identity_id_str = qi
             .identity
@@ -207,11 +207,11 @@ impl AsyncTool<DashMcpService> for IdentityCreditsTopupFromPlatform {
 
         // Read platform addresses from DB and allocate inputs (scoped to avoid Send issues)
         let platform_balances = {
-            let wallet_arc = resolve::wallet_arc(&ctx, seed_hash)?;
+            let wallet_arc = resolve::wallet_arc(&ctx, wallet_id)?;
             let wallet = wallet_arc.read().unwrap_or_else(|e| e.into_inner());
             let db_info = ctx
                 .db
-                .get_all_platform_address_info(&wallet.seed_hash(), &ctx.network)
+                .get_all_platform_address_info(&wallet.wallet_id(), &ctx.network)
                 .unwrap_or_default();
             let mut balances: Vec<_> = db_info
                 .into_iter()
@@ -252,7 +252,7 @@ impl AsyncTool<DashMcpService> for IdentityCreditsTopupFromPlatform {
         let task = BackendTask::IdentityTask(IdentityTask::TopUpIdentityFromPlatformAddresses {
             identity: qi,
             inputs,
-            wallet_seed_hash: seed_hash,
+            wallet_id: wallet_id,
         });
 
         let result = dispatch_task(&ctx, task)
@@ -347,7 +347,7 @@ impl AsyncTool<DashMcpService> for IdentityCreditsTransfer {
         resolve::validate_credits(param.amount_credits)?;
         // INTENTIONAL: no SPV sync needed — this tool only dispatches Platform state transitions,
         // not Core UTXO spends
-        let _seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
+        let _wallet_id = resolve::wallet(&ctx, &param.wallet_id)?;
 
         let from_qi = resolve::qualified_identity(&ctx, &param.from_identity_id)?;
         let to_identifier = dash_sdk::dpp::prelude::Identifier::from_string(
@@ -459,7 +459,7 @@ impl AsyncTool<DashMcpService> for IdentityCreditsWithdraw {
         resolve::validate_address(&param.to_address)?;
         // INTENTIONAL: no SPV sync needed — this tool only dispatches Platform state transitions,
         // not Core UTXO spends
-        let _seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
+        let _wallet_id = resolve::wallet(&ctx, &param.wallet_id)?;
 
         let qi = resolve::qualified_identity(&ctx, &param.identity_id)?;
 
@@ -575,7 +575,7 @@ impl AsyncTool<DashMcpService> for IdentityCreditsToAddress {
         resolve::validate_credits(param.amount_credits)?;
         // INTENTIONAL: no SPV sync needed — this tool only dispatches Platform state transitions,
         // not Core UTXO spends
-        let _seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
+        let _wallet_id = resolve::wallet(&ctx, &param.wallet_id)?;
 
         let qi = resolve::qualified_identity(&ctx, &param.identity_id)?;
 

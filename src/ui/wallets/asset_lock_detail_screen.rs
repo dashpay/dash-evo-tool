@@ -20,7 +20,7 @@ use egui::{Color32, Frame, Margin, RichText};
 use std::sync::{Arc, RwLock};
 
 pub struct AssetLockDetailScreen {
-    pub wallet_seed_hash: [u8; 32],
+    pub wallet_id: [u8; 32],
     pub asset_lock_txid: [u8; 32],
     pub app_context: Arc<AppContext>,
     wallet: Option<Arc<RwLock<Wallet>>>,
@@ -31,7 +31,7 @@ pub struct AssetLockDetailScreen {
 
 impl AssetLockDetailScreen {
     pub fn new(
-        wallet_seed_hash: [u8; 32],
+        wallet_id: [u8; 32],
         asset_lock_txid: [u8; 32],
         app_context: &Arc<AppContext>,
     ) -> Self {
@@ -41,11 +41,11 @@ impl AssetLockDetailScreen {
             .read()
             .unwrap()
             .values()
-            .find(|w| w.read().unwrap().seed_hash() == wallet_seed_hash)
+            .find(|w| w.read().unwrap().wallet_id() == wallet_id)
             .cloned();
 
         Self {
-            wallet_seed_hash,
+            wallet_id,
             asset_lock_txid,
             app_context: app_context.clone(),
             wallet,

@@ -48,7 +48,7 @@ pub struct IdentityInputToLoad {
     pub payout_address_private_key_input: Secret,
     pub keys_input: Vec<Secret>,
     pub derive_keys_from_wallets: bool,
-    pub selected_wallet_seed_hash: Option<WalletId>,
+    pub selected_wallet_id: Option<WalletId>,
 }
 
 /// A key input tuple containing the private key with derivation path, key type, purpose,
@@ -81,7 +81,7 @@ impl IdentityKeys {
         }
     }
 
-    pub fn to_key_storage(&self, wallet_seed_hash: WalletId) -> KeyStorage {
+    pub fn to_key_storage(&self, wallet_id: WalletId) -> KeyStorage {
         let Self {
             master_private_key,
             master_private_key_type,
@@ -112,7 +112,7 @@ impl IdentityKeys {
             });
 
             let wallet_derivation_path = WalletDerivationPath {
-                wallet_seed_hash,
+                wallet_id,
                 derivation_path: master_private_key_derivation_path.clone(),
             };
             let qualified_identity_public_key =
@@ -159,7 +159,7 @@ impl IdentityKeys {
                 });
 
                 let wallet_derivation_path = WalletDerivationPath {
-                    wallet_seed_hash,
+                    wallet_id,
                     derivation_path: derivation_path.clone(),
                 };
 
@@ -295,7 +295,7 @@ pub enum RegisterIdentityFundingMethod {
         /// Platform addresses and credits to use
         inputs: BTreeMap<dash_sdk::dpp::address_funds::PlatformAddress, Credits>,
         /// Wallet seed hash for signing
-        wallet_seed_hash: WalletId,
+        wallet_id: WalletId,
     },
 }
 
@@ -359,7 +359,7 @@ pub enum IdentityTask {
         /// Platform addresses and amounts to use for top-up
         inputs: BTreeMap<dash_sdk::dpp::address_funds::PlatformAddress, Credits>,
         /// Wallet seed hash for signing
-        wallet_seed_hash: WalletId,
+        wallet_id: WalletId,
     },
     AddKeyToIdentity(QualifiedIdentity, QualifiedIdentityPublicKey, [u8; 32]),
     WithdrawFromIdentity(QualifiedIdentity, Option<Address>, Credits, Option<KeyID>),
@@ -721,8 +721,8 @@ impl AppContext {
             IdentityTask::SearchIdentitiesUpToIndex(wallet, max_identity_index) => Ok(self
                 .load_user_identities_up_to_index(sdk, wallet, max_identity_index, sender)
                 .await?),
-            IdentityTask::SearchIdentityByDpnsName(dpns_name, wallet_seed_hash) => Ok(self
-                .load_identity_by_dpns_name(sdk, dpns_name, wallet_seed_hash)
+            IdentityTask::SearchIdentityByDpnsName(dpns_name, wallet_id) => Ok(self
+                .load_identity_by_dpns_name(sdk, dpns_name, wallet_id)
                 .await?),
             IdentityTask::TopUpIdentity(top_up_info) => {
                 Ok(self.top_up_identity(top_up_info).await?)
@@ -730,13 +730,13 @@ impl AppContext {
             IdentityTask::TopUpIdentityFromPlatformAddresses {
                 identity,
                 inputs,
-                wallet_seed_hash,
+                wallet_id,
             } => {
                 self.top_up_identity_from_platform_addresses(
                     sdk,
                     identity,
                     inputs,
-                    wallet_seed_hash,
+                    wallet_id,
                 )
                 .await
             }
@@ -760,7 +760,7 @@ impl AppContext {
         sdk: &Sdk,
         qualified_identity: QualifiedIdentity,
         inputs: BTreeMap<dash_sdk::dpp::address_funds::PlatformAddress, Credits>,
-        wallet_seed_hash: WalletId,
+        wallet_id: WalletId,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         use crate::model::fee_estimation::PlatformFeeEstimator;
         use dash_sdk::platform::transition::top_up_identity_from_addresses::TopUpIdentityFromAddresses;
@@ -775,7 +775,7 @@ impl AppContext {
         );
 
         // Get the platform wallet for signing (PlatformAddressWallet implements Signer<PlatformAddress>)
-        let platform_wallet = self.require_platform_wallet(&wallet_seed_hash)?;
+        let platform_wallet = self.require_platform_wallet(&wallet_id)?;
 
         tracing::info!("Wallet loaded and open, calling top_up_from_addresses...");
 
@@ -794,7 +794,7 @@ impl AppContext {
 
         // Update source address balances using proof-verified data from SDK response
         if let Err(e) =
-            self.update_wallet_platform_address_info_from_sdk(wallet_seed_hash, &address_infos)
+            self.update_wallet_platform_address_info_from_sdk(wallet_id, &address_infos)
         {
             tracing::warn!("Failed to update wallet platform address info: {}", e);
         }
@@ -850,15 +850,15 @@ impl AppContext {
         // Update destination address balances in any wallets that contain them
         // (using proof-verified data from the SDK response).
         {
-            let seed_hashes: Vec<WalletId> = self
+            let wallet_ides: Vec<WalletId> = self
                 .wallets
                 .read()
                 .map(|w| w.keys().copied().collect())
                 .unwrap_or_default();
 
-            for seed_hash in seed_hashes {
+            for wallet_id in wallet_ides {
                 if let Err(e) =
-                    self.update_wallet_platform_address_info_from_sdk(seed_hash, &address_infos)
+                    self.update_wallet_platform_address_info_from_sdk(wallet_id, &address_infos)
                 {
                     tracing::warn!("Failed to update wallet platform address info: {}", e);
                 }

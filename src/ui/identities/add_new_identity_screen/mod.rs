@@ -112,15 +112,15 @@ impl AddNewIdentityScreen {
 
     pub fn new_with_wallet(
         app_context: &Arc<AppContext>,
-        wallet_seed_hash: Option<[u8; 32]>,
+        wallet_id: Option<[u8; 32]>,
     ) -> Self {
         let mut selected_wallet = None;
 
         if app_context.has_wallet.load(Ordering::Relaxed) {
             let wallets = &app_context.wallets.read().unwrap();
             // If a specific wallet seed hash is provided, use that wallet
-            if let Some(seed_hash) = wallet_seed_hash
-                && let Some(wallet) = wallets.get(&seed_hash)
+            if let Some(wallet_id) = wallet_id
+                && let Some(wallet) = wallets.get(&wallet_id)
             {
                 selected_wallet = Some(wallet.clone());
             }
@@ -199,7 +199,7 @@ impl AddNewIdentityScreen {
                         wallet
                             .alias
                             .as_ref()
-                            .unwrap_or(&wallet.seed_hash().to_lower_hex_string())
+                            .unwrap_or(&wallet.wallet_id().to_lower_hex_string())
                     ));
                 }
             }
@@ -267,7 +267,7 @@ impl AddNewIdentityScreen {
                 let used_indices: std::collections::HashSet<u32> = self
                     .app_context
                     .db
-                    .get_wallet_identity_indices(&wallet.seed_hash(), self.app_context.network);
+                    .get_wallet_identity_indices(&wallet.wallet_id(), self.app_context.network);
 
                 // Modify the selected text to include "(used)" if the current index is used
                 let selected_text = {
@@ -413,7 +413,7 @@ impl AddNewIdentityScreen {
         let used = self
             .app_context
             .db
-            .get_wallet_identity_indices(&wallet.seed_hash(), self.app_context.network);
+            .get_wallet_identity_indices(&wallet.wallet_id(), self.app_context.network);
         used.iter()
             .copied()
             .max()
@@ -505,7 +505,7 @@ impl AddNewIdentityScreen {
                     self.app_context
                         .db
                         .get_all_platform_address_info(
-                            &wallet.seed_hash(),
+                            &wallet.wallet_id(),
                             &self.app_context.network,
                         )
                         .unwrap_or_default()
@@ -893,7 +893,7 @@ impl AddNewIdentityScreen {
                     return AppAction::None;
                 }
 
-                let wallet_seed_hash = selected_wallet.read().unwrap().seed_hash();
+                let wallet_id = selected_wallet.read().unwrap().wallet_id();
 
                 let mut inputs = std::collections::BTreeMap::new();
                 inputs.insert(platform_addr, amount);
@@ -906,7 +906,7 @@ impl AddNewIdentityScreen {
                     identity_funding_method:
                         RegisterIdentityFundingMethod::FundWithPlatformAddresses {
                             inputs,
-                            wallet_seed_hash,
+                            wallet_id,
                         },
                 };
 

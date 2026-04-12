@@ -14,7 +14,7 @@ impl AppContext {
     /// If `fee_deduct_from_output` is false, fees are paid from extra wallet balance (recipient receives exact amount).
     pub(crate) async fn fund_platform_address_from_wallet_utxos(
         self: &Arc<Self>,
-        seed_hash: WalletId,
+        wallet_id: WalletId,
         amount: u64,
         destination: PlatformAddress,
         fee_deduct_from_output: bool,
@@ -41,7 +41,7 @@ impl AppContext {
         // Build, broadcast, and wait for finality proof in a single call.
         // AssetLockManager handles the full lifecycle: UTXO selection, TX
         // construction, broadcast, and IS-lock / ChainLock proof wait.
-        let platform_wallet = self.require_platform_wallet(&seed_hash)?;
+        let platform_wallet = self.require_platform_wallet(&wallet_id)?;
 
         let (asset_lock_proof, asset_lock_private_key, _out_point) = platform_wallet
             .asset_locks()
@@ -61,7 +61,7 @@ impl AppContext {
             let wallet_arc = {
                 let wallets = self.wallets.read()?;
                 wallets
-                    .get(&seed_hash)
+                    .get(&wallet_id)
                     .cloned()
                     .ok_or(TaskError::WalletNotFound)?
             };
@@ -148,8 +148,8 @@ impl AppContext {
             .map_err(TaskError::from)?;
 
         // Step 9: Refresh platform address balances
-        self.fetch_platform_address_balances(seed_hash).await?;
+        self.fetch_platform_address_balances(wallet_id).await?;
 
-        Ok(BackendTaskSuccessResult::PlatformAddressFunded { seed_hash })
+        Ok(BackendTaskSuccessResult::PlatformAddressFunded { wallet_id })
     }
 }

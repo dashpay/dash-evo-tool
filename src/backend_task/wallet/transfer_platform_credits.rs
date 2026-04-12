@@ -10,7 +10,7 @@ impl AppContext {
     /// Transfer credits between Platform addresses
     pub(crate) async fn transfer_platform_credits(
         self: &Arc<Self>,
-        seed_hash: WalletId,
+        wallet_id: WalletId,
         inputs: BTreeMap<PlatformAddress, Credits>,
         outputs: BTreeMap<PlatformAddress, Credits>,
         fee_payer_index: u16,
@@ -19,7 +19,7 @@ impl AppContext {
         use dash_sdk::platform::transition::transfer_address_funds::TransferAddressFunds;
 
         // Get the platform wallet for signing (PlatformAddressWallet implements Signer<PlatformAddress>)
-        let platform_wallet = self.require_platform_wallet(&seed_hash)?;
+        let platform_wallet = self.require_platform_wallet(&wallet_id)?;
         let sdk = self.sdk.load().as_ref().clone();
 
         // Deduct fee from the specified input address (should be the one with highest balance).
@@ -50,8 +50,8 @@ impl AppContext {
             .map_err(crate::backend_task::error::TaskError::from)?;
 
         // Update wallet balances from the proof-verified response (no extra fetch needed)
-        self.update_wallet_platform_address_info_from_sdk(seed_hash, &address_infos)?;
+        self.update_wallet_platform_address_info_from_sdk(wallet_id, &address_infos)?;
 
-        Ok(BackendTaskSuccessResult::PlatformCreditsTransferred { seed_hash })
+        Ok(BackendTaskSuccessResult::PlatformCreditsTransferred { wallet_id })
     }
 }

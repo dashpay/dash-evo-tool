@@ -25,7 +25,7 @@ enum Status {
 
 pub struct ShieldedSendScreen {
     pub app_context: Arc<AppContext>,
-    pub seed_hash: WalletId,
+    pub wallet_id: WalletId,
     amount_input: Option<AmountInput>,
     amount: Option<Amount>,
     recipient_address_input: String,
@@ -40,17 +40,17 @@ pub struct ShieldedSendScreen {
 }
 
 impl ShieldedSendScreen {
-    pub fn new(seed_hash: WalletId, app_context: &Arc<AppContext>) -> Self {
+    pub fn new(wallet_id: WalletId, app_context: &Arc<AppContext>) -> Self {
         let max_balance = app_context
             .shielded_states
             .lock()
             .ok()
-            .and_then(|states| states.get(&seed_hash).map(|s| s.shielded_balance))
+            .and_then(|states| states.get(&wallet_id).map(|s| s.shielded_balance))
             .unwrap_or(0);
 
         Self {
             app_context: app_context.clone(),
-            seed_hash,
+            wallet_id,
             amount_input: None,
             amount: None,
             recipient_address_input: String::new(),
@@ -90,7 +90,7 @@ impl ShieldedSendScreen {
 impl ScreenLike for ShieldedSendScreen {
     fn refresh_on_arrival(&mut self) {
         if let Ok(states) = self.app_context.shielded_states.lock()
-            && let Some(state) = states.get(&self.seed_hash)
+            && let Some(state) = states.get(&self.wallet_id)
         {
             self.max_balance = state.shielded_balance;
         }
@@ -207,7 +207,7 @@ impl ScreenLike for ShieldedSendScreen {
                         self.error_message = None;
                         action = AppAction::BackendTask(BackendTask::ShieldedTask(
                             ShieldedTask::ShieldedTransfer {
-                                seed_hash: self.seed_hash,
+                                wallet_id: self.wallet_id,
                                 amount,
                                 recipient_address_bytes: recipient_bytes,
                             },
@@ -227,8 +227,8 @@ impl ScreenLike for ShieldedSendScreen {
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
         match result {
-            BackendTaskSuccessResult::ShieldedTransferComplete { seed_hash, amount }
-                if seed_hash == self.seed_hash =>
+            BackendTaskSuccessResult::ShieldedTransferComplete { wallet_id, amount }
+                if wallet_id == self.wallet_id =>
             {
                 tracing::info!(
                     "ShieldedSendScreen: transfer complete, amount={} credits, queueing post-transfer note sync",
@@ -240,15 +240,15 @@ impl ScreenLike for ShieldedSendScreen {
                     Some(format!("Successfully sent {:.8} DASH privately", dash));
                 self.pending_refresh_task =
                     Some(BackendTask::ShieldedTask(ShieldedTask::SyncNotes {
-                        seed_hash: self.seed_hash,
+                        wallet_id: self.wallet_id,
                     }));
                 self.balance_update_pending = true;
             }
             BackendTaskSuccessResult::ShieldedNotesSynced {
-                seed_hash,
+                wallet_id,
                 new_notes,
                 balance,
-            } if seed_hash == self.seed_hash => {
+            } if wallet_id == self.wallet_id => {
                 tracing::debug!(
                     "ShieldedSendScreen: post-transfer sync complete, new_notes={}, balance={} credits",
                     new_notes,

@@ -1673,7 +1673,7 @@ mod tests {
     /// re-merged back into `staged` so the data isn't silently lost.
     /// We simulate a failure by feeding the persister a changeset
     /// that references an identity pointing at a wallet whose
-    /// `seed_hash` row doesn't exist — the chain UPDATE is a no-op
+    /// `wallet_id` row doesn't exist — the chain UPDATE is a no-op
     /// (0 rows affected, no error), so to force a real failure we
     /// close the DB connection mid-flush. That's hard to do in a
     /// unit test, so instead we verify the happy-path re-merge
@@ -1776,9 +1776,9 @@ mod tests {
         // Insert a wallet row so the FK constraint is satisfied.
         db.execute(
             "INSERT INTO wallet
-                (seed_hash, encrypted_seed, salt, nonce,
+                (seed_hash, wallet_id, encrypted_seed, salt, nonce,
                  master_ecdsa_bip44_account_0_epk, uses_password, network)
-             VALUES (?1, ?2, ?3, ?4, ?5, 0, 'testnet')",
+             VALUES (?1, ?1, ?2, ?3, ?4, ?5, 0, 'testnet')",
             rusqlite::params![
                 &TEST_WALLET_ID[..],
                 vec![0u8; 32],
@@ -1956,9 +1956,9 @@ mod tests {
         // Insert wallet row to satisfy FK.
         db.execute(
             "INSERT INTO wallet
-                (seed_hash, encrypted_seed, salt, nonce,
+                (seed_hash, wallet_id, encrypted_seed, salt, nonce,
                  master_ecdsa_bip44_account_0_epk, uses_password, network)
-             VALUES (?1, ?2, ?3, ?4, ?5, 0, 'testnet')",
+             VALUES (?1, ?1, ?2, ?3, ?4, ?5, 0, 'testnet')",
             rusqlite::params![
                 &TEST_WALLET_ID[..],
                 vec![0u8; 32],
@@ -2071,9 +2071,9 @@ mod tests {
         // Wallet row for FK.
         db.execute(
             "INSERT INTO wallet
-                (seed_hash, encrypted_seed, salt, nonce,
+                (seed_hash, wallet_id, encrypted_seed, salt, nonce,
                  master_ecdsa_bip44_account_0_epk, uses_password, network)
-             VALUES (?1, ?2, ?3, ?4, ?5, 0, 'testnet')",
+             VALUES (?1, ?1, ?2, ?3, ?4, ?5, 0, 'testnet')",
             rusqlite::params![
                 &TEST_WALLET_ID[..],
                 vec![0u8; 32],
@@ -2219,9 +2219,9 @@ mod tests {
         // Wallet row for FK.
         db.execute(
             "INSERT INTO wallet
-                (seed_hash, encrypted_seed, salt, nonce,
+                (seed_hash, wallet_id, encrypted_seed, salt, nonce,
                  master_ecdsa_bip44_account_0_epk, uses_password, network)
-             VALUES (?1, ?2, ?3, ?4, ?5, 0, 'testnet')",
+             VALUES (?1, ?1, ?2, ?3, ?4, ?5, 0, 'testnet')",
             rusqlite::params![
                 &TEST_WALLET_ID[..],
                 vec![0u8; 32],

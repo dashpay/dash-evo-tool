@@ -18,17 +18,17 @@ impl AppContext {
         wallet: &Arc<RwLock<Wallet>>,
         max_identity_index: u32,
     ) -> Result<(), String> {
-        let seed_hash = wallet.read().map_err(|e| e.to_string())?.seed_hash();
+        let wallet_id = wallet.read().map_err(|e| e.to_string())?.wallet_id();
 
         // Try to delegate to platform-wallet's sync() when available.
-        if let Some(platform_wallet) = self.get_platform_wallet(&seed_hash) {
+        if let Some(platform_wallet) = self.get_platform_wallet(&wallet_id) {
             return self
-                .discover_identities_via_platform_wallet(wallet, &platform_wallet, &seed_hash)
+                .discover_identities_via_platform_wallet(wallet, &platform_wallet, &wallet_id)
                 .await;
         }
 
         // Fallback: legacy scan when platform-wallet is not available.
-        self.discover_identities_legacy(wallet, max_identity_index, &seed_hash)
+        self.discover_identities_legacy(wallet, max_identity_index, &wallet_id)
             .await
     }
 
@@ -41,7 +41,7 @@ impl AppContext {
         self: &Arc<Self>,
         wallet: &Arc<RwLock<Wallet>>,
         platform_wallet: &crate::platform_wallet_bridge::PlatformWallet,
-        seed_hash: &[u8; 32],
+        wallet_id: &[u8; 32],
     ) -> Result<(), String> {
         use crate::model::qualified_identity::encrypted_key_storage::{
             PrivateKeyData, WalletDerivationPath,
@@ -52,7 +52,7 @@ impl AppContext {
         };
 
         tracing::info!(
-            seed = %hex::encode(seed_hash),
+            seed = %hex::encode(wallet_id),
             "Starting identity discovery via platform-wallet sync"
         );
 
@@ -66,14 +66,14 @@ impl AppContext {
 
         if discovered.is_empty() {
             tracing::info!(
-                seed = %hex::encode(seed_hash),
+                seed = %hex::encode(wallet_id),
                 "Platform-wallet sync found no new identities"
             );
             return Ok(());
         }
 
         tracing::info!(
-            seed = %hex::encode(seed_hash),
+            seed = %hex::encode(wallet_id),
             count = discovered.len(),
             "Platform-wallet sync discovered identities, converting to QualifiedIdentity"
         );
@@ -131,7 +131,7 @@ impl AppContext {
                                 derivation_path,
                             } => {
                                 let wallet_derivation_path = WalletDerivationPath {
-                                    wallet_seed_hash: *wallet_id,
+                                    wallet_id: *wallet_id,
                                     derivation_path: derivation_path.clone(),
                                 };
                                 (
@@ -172,7 +172,7 @@ impl AppContext {
 
             // Build QualifiedIdentity.
             let mut associated_wallets = std::collections::BTreeMap::new();
-            associated_wallets.insert(*seed_hash, Arc::clone(wallet));
+            associated_wallets.insert(*wallet_id, Arc::clone(wallet));
 
             let qualified_identity = QualifiedIdentity {
                 identity: identity.clone(),
@@ -193,7 +193,7 @@ impl AppContext {
             // Store the identity in the evo-tool DB.
             if let Err(e) = self.insert_local_qualified_identity(
                 &qualified_identity,
-                &Some((*seed_hash, identity_index)),
+                &Some((*wallet_id, identity_index)),
             ) {
                 tracing::warn!(
                     identity_id = %identity_id,
@@ -210,7 +210,7 @@ impl AppContext {
         }
 
         tracing::info!(
-            seed = %hex::encode(seed_hash),
+            seed = %hex::encode(wallet_id),
             found_count,
             "Identity discovery via platform-wallet complete"
         );
@@ -225,7 +225,7 @@ impl AppContext {
         self: &Arc<Self>,
         wallet: &Arc<RwLock<Wallet>>,
         max_identity_index: u32,
-        seed_hash: &[u8; 32],
+        wallet_id: &[u8; 32],
     ) -> Result<(), String> {
         use dash_sdk::platform::Fetch;
         use dash_sdk::platform::types::identity::NonUniquePublicKeyHashQuery;
@@ -235,7 +235,7 @@ impl AppContext {
         let sdk = self.sdk.load().as_ref().clone();
 
         tracing::info!(
-            seed = %hex::encode(seed_hash),
+            seed = %hex::encode(wallet_id),
             "Starting legacy identity discovery for wallet (checking indices 0..{})",
             max_identity_index
         );
@@ -327,7 +327,7 @@ impl AppContext {
                         // Store the identity
                         if let Err(e) = self.insert_local_qualified_identity(
                             &qualified_identity,
-                            &Some((*seed_hash, identity_index)),
+                            &Some((*wallet_id, identity_index)),
                         ) {
                             tracing::warn!(
                                 identity_id = %identity_id,
@@ -354,7 +354,7 @@ impl AppContext {
         }
 
         tracing::info!(
-            seed = %hex::encode(seed_hash),
+            seed = %hex::encode(wallet_id),
             found_count,
             "Legacy identity discovery complete"
         );
@@ -383,7 +383,7 @@ impl AppContext {
         use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
         use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, KeyDerivationType};
 
-        let seed_hash = wallet.read().map_err(|e| e.to_string())?.seed_hash();
+        let wallet_id = wallet.read().map_err(|e| e.to_string())?.wallet_id();
 
         // Get the highest key ID in the identity to know how many keys to derive
         let highest_key_id = identity.public_keys().keys().max().copied().unwrap_or(0);
@@ -434,7 +434,7 @@ impl AppContext {
                 );
 
                 let wallet_derivation_path = WalletDerivationPath {
-                    wallet_seed_hash: seed_hash,
+                    wallet_id: wallet_id,
                     derivation_path,
                 };
 
@@ -471,7 +471,7 @@ impl AppContext {
 
         // Build the qualified identity
         let mut associated_wallets = std::collections::BTreeMap::new();
-        associated_wallets.insert(seed_hash, Arc::clone(wallet));
+        associated_wallets.insert(wallet_id, Arc::clone(wallet));
 
         Ok(QualifiedIdentity {
             identity,

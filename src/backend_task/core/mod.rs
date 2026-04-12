@@ -150,9 +150,9 @@ impl AppContext {
     async fn core_wallet_first_address(
         wallet: &Arc<RwLock<Wallet>>,
     ) -> Result<([u8; 32], Option<Address>), TaskError> {
-        let (seed_hash, platform_wallet) = {
+        let (wallet_id, platform_wallet) = {
             let g = wallet.read()?;
-            (g.seed_hash(), g.platform_wallet.clone())
+            (g.wallet_id(), g.platform_wallet.clone())
         };
 
         if let Some(pw) = platform_wallet {
@@ -163,10 +163,10 @@ impl AppContext {
             .into_iter()
             .next()
             .map(|a| a.address);
-            Ok((seed_hash, first_addr))
+            Ok((wallet_id, first_addr))
         } else {
             // Locked wallet — no addresses available
-            Ok((seed_hash, None))
+            Ok((wallet_id, None))
         }
     }
 
@@ -244,7 +244,7 @@ impl AppContext {
                 )))
             }
             CoreTask::RefreshWalletInfo(wallet, sync_platform) => {
-                let (seed_hash, first_addr) = Self::core_wallet_first_address(&wallet).await?;
+                let (wallet_id, first_addr) = Self::core_wallet_first_address(&wallet).await?;
 
                 if self.core_backend_mode() == crate::spv::CoreBackendMode::Spv {
                     self.reconcile_spv_wallets().await?;
@@ -254,7 +254,7 @@ impl AppContext {
                     let result =
                         tokio::task::spawn_blocking(move || ctx.refresh_wallet_info(wallet))
                             .await?;
-                    match self.with_wallet_recovery(&seed_hash, first_addr.as_ref(), false, result)
+                    match self.with_wallet_recovery(&wallet_id, first_addr.as_ref(), false, result)
                     {
                         Err(TaskError::MustRetry(_)) => {
                             // Wallet was auto-configured; retry the refresh.
@@ -271,7 +271,7 @@ impl AppContext {
                 }
 
                 let warning = if sync_platform {
-                    match self.fetch_platform_address_balances(seed_hash).await {
+                    match self.fetch_platform_address_balances(wallet_id).await {
                         Ok(_) => None,
                         Err(e) => {
                             tracing::warn!("Failed to fetch Platform address balances: {}", e);
@@ -313,23 +313,23 @@ impl AppContext {
                 .map_err(|e| TaskError::DashCoreStartError { source: e })
                 .map(|_| BackendTaskSuccessResult::None),
             CoreTask::CreateRegistrationAssetLock(wallet, amount, identity_index) => {
-                let (seed_hash, first_addr) = Self::core_wallet_first_address(&wallet).await?;
+                let (wallet_id, first_addr) = Self::core_wallet_first_address(&wallet).await?;
                 let result = self
                     .create_registration_asset_lock(wallet, amount, true, identity_index)
                     .await;
-                self.with_wallet_recovery(&seed_hash, first_addr.as_ref(), false, result)
+                self.with_wallet_recovery(&wallet_id, first_addr.as_ref(), false, result)
             }
             CoreTask::CreateTopUpAssetLock(wallet, amount, identity_index, top_up_index) => {
-                let (seed_hash, first_addr) = Self::core_wallet_first_address(&wallet).await?;
+                let (wallet_id, first_addr) = Self::core_wallet_first_address(&wallet).await?;
                 let result = self
                     .create_top_up_asset_lock(wallet, amount, true, identity_index, top_up_index)
                     .await;
-                self.with_wallet_recovery(&seed_hash, first_addr.as_ref(), false, result)
+                self.with_wallet_recovery(&wallet_id, first_addr.as_ref(), false, result)
             }
             CoreTask::SendWalletPayment { wallet, request } => {
-                let (seed_hash, first_addr) = Self::core_wallet_first_address(&wallet).await?;
+                let (wallet_id, first_addr) = Self::core_wallet_first_address(&wallet).await?;
                 let result = self.send_wallet_payment(wallet, request).await;
-                self.with_wallet_recovery(&seed_hash, first_addr.as_ref(), false, result)
+                self.with_wallet_recovery(&wallet_id, first_addr.as_ref(), false, result)
             }
             CoreTask::SendSingleKeyWalletPayment { wallet, request } => {
                 let (key_hash, address) = {
@@ -340,11 +340,11 @@ impl AppContext {
                 self.with_wallet_recovery(&key_hash, Some(&address), true, result)
             }
             CoreTask::RecoverAssetLocks(wallet) => {
-                let (seed_hash, first_addr) = Self::core_wallet_first_address(&wallet).await?;
+                let (wallet_id, first_addr) = Self::core_wallet_first_address(&wallet).await?;
                 let ctx = self.clone();
                 let result =
                     tokio::task::spawn_blocking(move || ctx.recover_asset_locks(wallet)).await?;
-                self.with_wallet_recovery(&seed_hash, first_addr.as_ref(), false, result)
+                self.with_wallet_recovery(&wallet_id, first_addr.as_ref(), false, result)
             }
             CoreTask::MineBlocks {
                 block_count,
@@ -541,7 +541,7 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let parsed_recipients = self.parse_recipients(&request)?;
 
-        let (platform_wallet, _seed_hash) = {
+        let (platform_wallet, _wallet_id) = {
             let guard = wallet.read()?;
             if !guard.is_open() {
                 return Err(TaskError::WalletLocked);
@@ -550,7 +550,7 @@ impl AppContext {
                 .platform_wallet
                 .clone()
                 .ok_or(TaskError::WalletNotFound)?;
-            (pw, guard.seed_hash())
+            (pw, guard.wallet_id())
         };
 
         // Build and sign via PlatformWallet's CoreWallet
@@ -593,15 +593,15 @@ impl AppContext {
         self.reconcile_spv_wallets().await?;
 
         let parsed_recipients = self.parse_recipients(&request)?;
-        let seed_hash = {
+        let wallet_id = {
             let guard = wallet.read()?;
             if !guard.is_open() {
                 return Err(TaskError::WalletLocked);
             }
-            guard.seed_hash()
+            guard.wallet_id()
         };
 
-        let pw = self.require_platform_wallet(&seed_hash)?;
+        let pw = self.require_platform_wallet(&wallet_id)?;
 
         let tx = {
             let info_guard = pw.state().await;

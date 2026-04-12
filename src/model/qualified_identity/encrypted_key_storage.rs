@@ -16,14 +16,14 @@ use std::sync::{Arc, RwLock};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct WalletDerivationPath {
-    pub(crate) wallet_seed_hash: WalletId,
+    pub(crate) wallet_id: WalletId,
     pub(crate) derivation_path: DerivationPath,
 }
 
 impl Encode for WalletDerivationPath {
     fn encode<E: Encoder>(&self, encoder: &mut E) -> Result<(), EncodeError> {
-        // Encode `wallet_seed_hash`
-        self.wallet_seed_hash.encode(encoder)?;
+        // Encode `wallet_id`
+        self.wallet_id.encode(encoder)?;
 
         // Encode the length of the `DerivationPath`
         self.derivation_path.len().encode(encoder)?;
@@ -56,8 +56,8 @@ impl Encode for WalletDerivationPath {
 
 impl<C> Decode<C> for WalletDerivationPath {
     fn decode<D: Decoder<Context = C>>(decoder: &mut D) -> Result<Self, DecodeError> {
-        // Decode `wallet_seed_hash`
-        let wallet_seed_hash = WalletId::decode(decoder)?;
+        // Decode `wallet_id`
+        let wallet_id = WalletId::decode(decoder)?;
 
         // Decode the length of the `DerivationPath`
         let path_len = usize::decode(decoder)?;
@@ -86,7 +86,7 @@ impl<C> Decode<C> for WalletDerivationPath {
 
         let derivation_path = DerivationPath::from(path);
         Ok(Self {
-            wallet_seed_hash,
+            wallet_id,
             derivation_path,
         })
     }
@@ -96,8 +96,8 @@ impl<'de, C> BorrowDecode<'de, C> for WalletDerivationPath {
     fn borrow_decode<D: BorrowDecoder<'de, Context = C>>(
         decoder: &mut D,
     ) -> Result<Self, DecodeError> {
-        // Decode `wallet_seed_hash`
-        let wallet_seed_hash = WalletId::decode(decoder)?;
+        // Decode `wallet_id`
+        let wallet_id = WalletId::decode(decoder)?;
 
         // Decode the length of the `DerivationPath`
         let path_len = usize::decode(decoder)?;
@@ -126,7 +126,7 @@ impl<'de, C> BorrowDecode<'de, C> for WalletDerivationPath {
 
         let derivation_path = DerivationPath::from(path);
         Ok(Self {
-            wallet_seed_hash,
+            wallet_id,
             derivation_path,
         })
     }
@@ -153,7 +153,7 @@ impl fmt::Display for PrivateKeyData {
                 write!(f, "Clear({})", hex::encode(data))
             }
             PrivateKeyData::AtWalletDerivationPath(WalletDerivationPath {
-                wallet_seed_hash: wallet_seed,
+                wallet_id: wallet_seed,
                 derivation_path,
             }) => {
                 write!(
@@ -293,11 +293,11 @@ impl KeyStorage {
                         Err("Key is encrypted, please enter password".to_string())
                     }
                     PrivateKeyData::AtWalletDerivationPath(WalletDerivationPath {
-                        wallet_seed_hash,
+                        wallet_id,
                         derivation_path,
                     }) => {
                         tracing::debug!(
-                            stored_wallet_seed_hash = %hex::encode(wallet_seed_hash),
+                            stored_wallet_id = %hex::encode(wallet_id),
                             derivation_path = %derivation_path,
                             num_wallets = wallets.len(),
                             "Looking up wallet for key derivation"
@@ -307,8 +307,8 @@ impl KeyStorage {
                         for wallet in wallets {
                             if let Ok(wallet_ref) = wallet.read() {
                                 tracing::debug!(
-                                    wallet_seed_hash = %hex::encode(wallet_ref.seed_hash()),
-                                    matches = (wallet_ref.seed_hash() == *wallet_seed_hash),
+                                    wallet_id = %hex::encode(wallet_ref.wallet_id()),
+                                    matches = (wallet_ref.wallet_id() == *wallet_id),
                                     "Available wallet"
                                 );
                             }
@@ -316,7 +316,7 @@ impl KeyStorage {
 
                         let derived_key = Wallet::derive_private_key_in_arc_rw_lock_slice(
                             wallets,
-                            *wallet_seed_hash,
+                            *wallet_id,
                             derivation_path,
                             network,
                         )?

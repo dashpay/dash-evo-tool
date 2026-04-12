@@ -98,7 +98,7 @@ pub fn get_selected_wallet(
         // If found, return the associated wallet (cloned to preserve Arc).
         Ok(qualified_identity
             .associated_wallets
-            .get(&wallet_derivation_path.wallet_seed_hash)
+            .get(&wallet_derivation_path.wallet_id)
             .cloned())
     } else {
         Ok(None)

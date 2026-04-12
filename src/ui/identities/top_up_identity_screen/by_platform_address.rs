@@ -221,7 +221,7 @@ impl TopUpIdentityScreen {
 
         self.app_context
             .db
-            .get_all_platform_address_info(&wallet.seed_hash(), &self.app_context.network)
+            .get_all_platform_address_info(&wallet.wallet_id(), &self.app_context.network)
             .unwrap_or_default()
             .into_iter()
             .filter_map(|(core_addr, balance, _nonce)| {
@@ -268,13 +268,13 @@ impl TopUpIdentityScreen {
         }
 
         // Get wallet seed hash
-        let wallet_seed_hash: WalletId = {
+        let wallet_id: WalletId = {
             let wallet = self
                 .wallet
                 .as_ref()
                 .ok_or_else(|| "No wallet selected".to_string())?;
             let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
-            wallet_guard.seed_hash()
+            wallet_guard.wallet_id()
         };
 
         // Build inputs
@@ -291,7 +291,7 @@ impl TopUpIdentityScreen {
             IdentityTask::TopUpIdentityFromPlatformAddresses {
                 identity: self.identity.clone(),
                 inputs,
-                wallet_seed_hash,
+                wallet_id,
             },
         )))
     }

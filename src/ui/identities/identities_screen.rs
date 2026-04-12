@@ -57,7 +57,7 @@ pub struct IdentitiesScreen {
     pub app_context: Arc<AppContext>,
     pub identity_to_remove: Option<QualifiedIdentity>,
     remove_confirmation_dialog: Option<ConfirmationDialog>,
-    pub wallet_seed_hash_cache: HashMap<WalletId, String>,
+    pub wallet_id_cache: HashMap<WalletId, String>,
     sort_column: IdentitiesSortColumn,
     sort_order: IdentitiesSortOrder,
     use_custom_order: bool,
@@ -86,7 +86,7 @@ impl IdentitiesScreen {
             app_context: app_context.clone(),
             identity_to_remove: None,
             remove_confirmation_dialog: None,
-            wallet_seed_hash_cache: Default::default(),
+            wallet_id_cache: Default::default(),
             sort_column: IdentitiesSortColumn::Alias,
             sort_order: IdentitiesSortOrder::Ascending,
             use_custom_order: true,
@@ -210,8 +210,8 @@ impl IdentitiesScreen {
             && let Some(wallet_derivation_path) =
                 &master_identity_public_key.in_wallet_at_derivation_path
             && let Some(alias) = self
-                .wallet_seed_hash_cache
-                .get(&wallet_derivation_path.wallet_seed_hash)
+                .wallet_id_cache
+                .get(&wallet_derivation_path.wallet_id)
         {
             return alias.clone();
         }
@@ -307,24 +307,24 @@ impl IdentitiesScreen {
         }
     }
 
-    fn find_wallet(&mut self, wallet_seed_hash: &WalletId) -> Option<String> {
-        if let Some(in_wallet_text) = self.wallet_seed_hash_cache.get(wallet_seed_hash) {
+    fn find_wallet(&mut self, wallet_id: &WalletId) -> Option<String> {
+        if let Some(in_wallet_text) = self.wallet_id_cache.get(wallet_id) {
             return Some(in_wallet_text.clone());
         }
         let wallets = self.app_context.wallets.read().unwrap();
         for wallet in wallets.values() {
             let wallet_guard = wallet.read().unwrap();
-            if &wallet_guard.seed_hash() == wallet_seed_hash {
+            if &wallet_guard.wallet_id() == wallet_id {
                 let in_wallet_text = if let Some(alias) = wallet_guard.alias.as_ref() {
                     alias.clone()
                 } else {
-                    hex::encode(wallet_guard.seed_hash())
+                    hex::encode(wallet_guard.wallet_id())
                         .split_at(5)
                         .0
                         .to_string()
                 };
-                self.wallet_seed_hash_cache
-                    .insert(*wallet_seed_hash, in_wallet_text.clone());
+                self.wallet_id_cache
+                    .insert(*wallet_id, in_wallet_text.clone());
                 return Some(in_wallet_text);
             }
         }
@@ -343,7 +343,7 @@ impl IdentitiesScreen {
                 {
                     None => "".to_string(),
                     Some(wallet_derivation_path) => self
-                        .find_wallet(&wallet_derivation_path.wallet_seed_hash)
+                        .find_wallet(&wallet_derivation_path.wallet_id)
                         .unwrap_or_default(),
                 }
             }

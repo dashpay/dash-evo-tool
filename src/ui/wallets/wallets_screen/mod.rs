@@ -146,7 +146,7 @@ pub struct WalletsBalancesScreen {
     /// Core wallet selection dialog (shown when auto-detection fails)
     core_wallet_dialog: Option<SelectionDialog>,
     /// Seed/key hash of the wallet pending Core wallet selection
-    pending_core_wallet_seed_hash: Option<[u8; 32]>,
+    pending_core_wallet_id: Option<[u8; 32]>,
     /// Core wallet options for the pending selection
     pending_core_wallet_options: Option<Vec<String>>,
     /// Whether the pending Core wallet selection is for a single-key wallet
@@ -224,15 +224,15 @@ impl WalletsBalancesScreen {
         selected_wallet: Option<Arc<RwLock<Wallet>>>,
         selected_single_key_wallet: Option<Arc<RwLock<SingleKeyWallet>>>,
     ) -> Self {
-        let seed_hash = selected_wallet
+        let wallet_id = selected_wallet
             .as_ref()
-            .and_then(|w| w.read().ok().map(|g| g.seed_hash()));
+            .and_then(|w| w.read().ok().map(|g| g.wallet_id()));
 
-        let platform_sync_info = seed_hash
+        let platform_sync_info = wallet_id
             .and_then(|hash| app_context.db.get_platform_sync_info(&hash).ok())
             .filter(|(ts, _)| *ts > 0);
 
-        let shielded_tab_view = seed_hash.map(|hash| ShieldedTabView::new(app_context, hash));
+        let shielded_tab_view = wallet_id.map(|hash| ShieldedTabView::new(app_context, hash));
 
         Self {
             selected_wallet,
@@ -265,7 +265,7 @@ impl WalletsBalancesScreen {
             refresh_mode: RefreshMode::default(),
             platform_sync_info,
             core_wallet_dialog: None,
-            pending_core_wallet_seed_hash: None,
+            pending_core_wallet_id: None,
             pending_core_wallet_options: None,
             pending_core_wallet_is_single_key: false,
             pending_list_core_wallets: false,
@@ -355,11 +355,11 @@ impl WalletsBalancesScreen {
     }
 
     /// Refresh the cached platform sync info from the database.
-    fn refresh_platform_sync_info_cache(&mut self, seed_hash: &WalletId) {
+    fn refresh_platform_sync_info_cache(&mut self, wallet_id: &WalletId) {
         self.platform_sync_info = self
             .app_context
             .db
-            .get_platform_sync_info(seed_hash)
+            .get_platform_sync_info(wallet_id)
             .ok()
             .filter(|(ts, _)| *ts > 0);
     }
@@ -369,9 +369,9 @@ impl WalletsBalancesScreen {
     /// `selected_wallet` should go through this helper to keep the sync
     /// status panel consistent.
     fn set_selected_hd_wallet(&mut self, wallet: Option<Arc<RwLock<Wallet>>>) {
-        let seed_hash = wallet
+        let wallet_id = wallet
             .as_ref()
-            .and_then(|w| w.read().ok().map(|g| g.seed_hash()));
+            .and_then(|w| w.read().ok().map(|g| g.wallet_id()));
         self.selected_wallet = wallet;
         self.selected_single_key_wallet = None;
         self.selected_account = None;
@@ -381,9 +381,9 @@ impl WalletsBalancesScreen {
         self.cached_tx_source_len = None;
 
         self.shielded_tab_view =
-            seed_hash.map(|hash| ShieldedTabView::new(&self.app_context, hash));
+            wallet_id.map(|hash| ShieldedTabView::new(&self.app_context, hash));
 
-        if let Some(hash) = seed_hash {
+        if let Some(hash) = wallet_id {
             self.persist_selected_wallet_hash(Some(hash));
             self.refresh_platform_sync_info_cache(&hash);
             // Trigger a refresh on the next frame for the newly selected wallet
@@ -418,8 +418,8 @@ impl WalletsBalancesScreen {
     pub(crate) fn update_selected_wallet_for_network(&mut self) {
         // Check if HD wallet selection is still valid
         if let Some(wallet_arc) = &self.selected_wallet {
-            let seed_hash = wallet_arc.read().ok().map(|w| w.seed_hash());
-            if let Some(hash) = seed_hash
+            let wallet_id = wallet_arc.read().ok().map(|w| w.wallet_id());
+            if let Some(hash) = wallet_id
                 && let Ok(wallets) = self.app_context.wallets.read()
                 && wallets.contains_key(&hash)
             {
@@ -483,7 +483,7 @@ impl WalletsBalancesScreen {
         self.pending_refresh_after_unlock = false;
         self.pending_asset_lock_search_after_unlock = false;
         self.pending_wallet_refresh_on_switch = false;
-        self.pending_core_wallet_seed_hash = None;
+        self.pending_core_wallet_id = None;
         self.pending_core_wallet_options = None;
         self.core_wallet_dialog = None;
         self.refreshing = false;
@@ -543,7 +543,7 @@ impl WalletsBalancesScreen {
         if let Ok(wallets_guard) = self.app_context.wallets.read() {
             for wallet in wallets_guard.values() {
                 let guard = wallet.read().unwrap();
-                let seed_hash = guard.seed_hash();
+                let wallet_id = guard.wallet_id();
                 let core_balance = guard
                     .platform_wallet
                     .as_ref()
@@ -554,7 +554,7 @@ impl WalletsBalancesScreen {
                     &self.app_context.db,
                     &self.app_context.network,
                 );
-                let shielded_balance = self.shielded_balance_duffs(&seed_hash);
+                let shielded_balance = self.shielded_balance_duffs(&wallet_id);
                 let balance_dash =
                     (core_balance + platform_balance + shielded_balance) as f64 * 1e-8;
                 let label = format!(
@@ -624,7 +624,7 @@ impl WalletsBalancesScreen {
                         &self.app_context.db,
                         &self.app_context.network,
                     );
-                    let shielded = self.shielded_balance_duffs(&g.seed_hash());
+                    let shielded = self.shielded_balance_duffs(&g.wallet_id());
                     core + platform + shielded
                 })
                 .unwrap_or(0)
@@ -841,10 +841,10 @@ impl WalletsBalancesScreen {
                     .alias
                     .clone()
                     .unwrap_or_else(|| "Unnamed Wallet".to_string());
-                let seed_hash = wallet.seed_hash();
+                let wallet_id = wallet.wallet_id();
                 drop(wallet);
 
-                self.pending_wallet_removal = Some(seed_hash);
+                self.pending_wallet_removal = Some(wallet_id);
                 self.pending_wallet_removal_alias = Some(alias.clone());
 
                 let message = format!(
@@ -867,12 +867,12 @@ impl WalletsBalancesScreen {
                 match status {
                     ConfirmationStatus::Confirmed => {
                         self.remove_wallet_dialog = None;
-                        if let Some(seed_hash) = self.pending_wallet_removal.take() {
+                        if let Some(wallet_id) = self.pending_wallet_removal.take() {
                             let alias = self
                                 .pending_wallet_removal_alias
                                 .take()
                                 .unwrap_or_else(|| "Unnamed Wallet".to_string());
-                            self.handle_wallet_removal(seed_hash, alias);
+                            self.handle_wallet_removal(wallet_id, alias);
                         } else {
                             self.pending_wallet_removal_alias = None;
                         }
@@ -887,8 +887,8 @@ impl WalletsBalancesScreen {
         }
     }
 
-    fn handle_wallet_removal(&mut self, seed_hash: WalletId, alias: String) {
-        match self.app_context.remove_wallet(&seed_hash) {
+    fn handle_wallet_removal(&mut self, wallet_id: WalletId, alias: String) {
+        match self.app_context.remove_wallet(&wallet_id) {
             Ok(()) => {
                 let next_wallet = self
                     .app_context
@@ -1079,19 +1079,19 @@ impl WalletsBalancesScreen {
     ) -> u64 {
         // Only sum Platform address balances from DB
         // Identity balances are shown separately on the Identities screen
-        db.get_all_platform_address_info(&wallet.seed_hash(), network)
+        db.get_all_platform_address_info(&wallet.wallet_id(), network)
             .unwrap_or_default()
             .iter()
             .map(|(_addr, balance, _nonce)| balance / CREDITS_PER_DUFF)
             .sum()
     }
 
-    fn shielded_balance_duffs(&self, seed_hash: &WalletId) -> u64 {
+    fn shielded_balance_duffs(&self, wallet_id: &WalletId) -> u64 {
         self.app_context
             .shielded_states
             .lock()
             .ok()
-            .and_then(|states| states.get(seed_hash).map(|s| s.shielded_balance))
+            .and_then(|states| states.get(wallet_id).map(|s| s.shielded_balance))
             .unwrap_or(0)
             / CREDITS_PER_DUFF
     }
@@ -1368,7 +1368,7 @@ impl WalletsBalancesScreen {
                             .selected_wallet
                             .as_ref()
                             .and_then(|w| w.read().ok())
-                            .map(|g| self.shielded_balance_duffs(&g.seed_hash()))
+                            .map(|g| self.shielded_balance_duffs(&g.wallet_id()))
                             .unwrap_or(0);
                         ("Shielded".to_string(), balance)
                     }
@@ -1418,15 +1418,15 @@ impl WalletsBalancesScreen {
         };
         match (&self.selected_account_tab, tab_category) {
             (AccountTab::Shielded, _) => {
-                let seed_hash = self
+                let wallet_id = self
                     .selected_wallet
                     .as_ref()
-                    .and_then(|w| w.read().ok().map(|g| g.seed_hash()));
-                if let Some(seed_hash) = seed_hash {
+                    .and_then(|w| w.read().ok().map(|g| g.wallet_id()));
+                if let Some(wallet_id) = wallet_id {
                     let shielded_view = self
                         .shielded_tab_view
-                        .get_or_insert_with(|| ShieldedTabView::new(&self.app_context, seed_hash));
-                    shielded_view.update_seed_hash(seed_hash);
+                        .get_or_insert_with(|| ShieldedTabView::new(&self.app_context, wallet_id));
+                    shielded_view.update_wallet_id(wallet_id);
                     shielded_view.update_app_context(&self.app_context);
                     action |= shielded_view.ui(ui);
                 }
@@ -1583,13 +1583,13 @@ impl WalletsBalancesScreen {
         // app_context.wallets. If they diverge (stale reference), skip rendering
         // to avoid showing another wallet's data.
         let wallet_guard = wallet_arc.read().unwrap();
-        let selected_seed_hash = wallet_guard.seed_hash();
+        let selected_wallet_id = wallet_guard.wallet_id();
         let arc_matches = self
             .app_context
             .wallets
             .read()
             .ok()
-            .and_then(|wallets| wallets.get(&selected_seed_hash).cloned())
+            .and_then(|wallets| wallets.get(&selected_wallet_id).cloned())
             .is_some_and(|canonical| Arc::ptr_eq(wallet_arc, &canonical));
         if !arc_matches {
             tracing::warn!(
@@ -1871,7 +1871,7 @@ impl WalletsBalancesScreen {
                         self.app_context
                             .db
                             .get_all_platform_address_info(
-                                &w.seed_hash(),
+                                &w.wallet_id(),
                                 &self.app_context.network,
                             )
                             .unwrap_or_default()
@@ -1902,11 +1902,11 @@ impl WalletsBalancesScreen {
                 });
 
                 // -- Shielded: Notes + Nullifiers --
-                let seed_hash = self
+                let wallet_id = self
                     .selected_wallet
                     .as_ref()
-                    .and_then(|w| w.read().ok().map(|g| g.seed_hash()));
-                let shielded_info = seed_hash.and_then(|hash| {
+                    .and_then(|w| w.read().ok().map(|g| g.wallet_id()));
+                let shielded_info = wallet_id.and_then(|hash| {
                     let states = self.app_context.shielded_states.lock().ok()?;
                     let state = states.get(&hash)?;
                     Some((
@@ -1991,7 +1991,7 @@ impl WalletsBalancesScreen {
         let core_balance = self.core_balance_duffs();
         let platform_balance =
             Self::platform_balance_duffs(wallet, &self.app_context.db, &self.app_context.network);
-        let shielded_balance = self.shielded_balance_duffs(&wallet.seed_hash());
+        let shielded_balance = self.shielded_balance_duffs(&wallet.wallet_id());
         let total = core_balance + platform_balance + shielded_balance;
 
         ui.label(
@@ -2008,7 +2008,7 @@ impl WalletsBalancesScreen {
         let core_balance = self.core_balance_duffs();
         let platform_balance =
             Self::platform_balance_duffs(wallet, &self.app_context.db, &self.app_context.network);
-        let shielded_balance = self.shielded_balance_duffs(&wallet.seed_hash());
+        let shielded_balance = self.shielded_balance_duffs(&wallet.wallet_id());
 
         let header = egui::CollapsingHeader::new(
             RichText::new("Balance breakdown")
@@ -2035,14 +2035,14 @@ impl WalletsBalancesScreen {
             return AppAction::None;
         };
 
-        let (alias, _seed_hash, _wallet_is_main) = {
+        let (alias, _wallet_id, _wallet_is_main) = {
             let wallet = wallet_arc.read().unwrap();
             (
                 wallet
                     .alias
                     .clone()
                     .unwrap_or_else(|| "Unnamed Wallet".to_string()),
-                wallet.seed_hash(),
+                wallet.wallet_id(),
                 wallet.is_main,
             )
         };
@@ -2186,11 +2186,11 @@ impl WalletsBalancesScreen {
 
     /// Returns a SyncNotes backend task if the shielded wallet has been initialized
     /// for the given seed hash.
-    fn shielded_sync_task(&self, seed_hash: &WalletId) -> Option<BackendTask> {
+    fn shielded_sync_task(&self, wallet_id: &WalletId) -> Option<BackendTask> {
         let states = self.app_context.shielded_states.lock().ok()?;
-        if states.contains_key(seed_hash) {
+        if states.contains_key(wallet_id) {
             Some(BackendTask::ShieldedTask(ShieldedTask::SyncNotes {
-                seed_hash: *seed_hash,
+                wallet_id: *wallet_id,
             }))
         } else {
             None
@@ -2212,10 +2212,10 @@ impl WalletsBalancesScreen {
         wallet_arc: &Arc<RwLock<Wallet>>,
         mode: RefreshMode,
     ) -> AppAction {
-        let seed_hash = wallet_arc
+        let wallet_id = wallet_arc
             .read()
             .ok()
-            .map(|w| w.seed_hash())
+            .map(|w| w.wallet_id())
             .unwrap_or_default();
 
         let core_task = match mode {
@@ -2231,14 +2231,14 @@ impl WalletsBalancesScreen {
                 // Platform only
                 BackendTask::WalletTask(
                     crate::backend_task::wallet::WalletTask::FetchPlatformAddressBalances {
-                        seed_hash,
+                        wallet_id,
                     },
                 )
             }
         };
 
         // Also trigger shielded note sync if initialized
-        if let Some(shielded_task) = self.shielded_sync_task(&seed_hash) {
+        if let Some(shielded_task) = self.shielded_sync_task(&wallet_id) {
             AppAction::BackendTasks(
                 vec![core_task, shielded_task],
                 BackendTasksExecutionMode::Concurrent,
@@ -2253,9 +2253,9 @@ impl ScreenLike for WalletsBalancesScreen {
     fn ui(&mut self, ctx: &Context) -> AppAction {
         // Check for pending platform balance refresh (triggered after transfers)
         let pending_refresh_action =
-            if let Some(seed_hash) = self.pending_platform_balance_refresh.take() {
+            if let Some(wallet_id) = self.pending_platform_balance_refresh.take() {
                 AppAction::BackendTask(BackendTask::WalletTask(
-                    WalletTask::FetchPlatformAddressBalances { seed_hash },
+                    WalletTask::FetchPlatformAddressBalances { wallet_id },
                 ))
             } else {
                 AppAction::None
@@ -2268,13 +2268,13 @@ impl ScreenLike for WalletsBalancesScreen {
                 .and_then(|w| {
                     w.read()
                         .ok()
-                        .map(|g| (g.seed_hash(), g.platform_wallet.is_some()))
+                        .map(|g| (g.wallet_id(), g.platform_wallet.is_some()))
                 })
-                .and_then(|(seed_hash, has_pw)| {
+                .and_then(|(wallet_id, has_pw)| {
                     // Only dispatch if the platform wallet is available
                     if has_pw {
                         Some(AppAction::BackendTask(BackendTask::WalletTask(
-                            WalletTask::LoadAddressInfo { seed_hash },
+                            WalletTask::LoadAddressInfo { wallet_id },
                         )))
                     } else {
                         None
@@ -2452,11 +2452,11 @@ impl ScreenLike for WalletsBalancesScreen {
                                     wallet.alias = Some(self.rename_input.clone());
 
                                     // Update the alias in the database
-                                    let seed_hash = wallet.seed_hash();
+                                    let wallet_id = wallet.wallet_id();
                                     self.app_context
                                         .db
                                         .set_wallet_alias(
-                                            &seed_hash,
+                                            &wallet_id,
                                             Some(self.rename_input.clone()),
                                         )
                                         .ok();
@@ -2736,7 +2736,7 @@ impl ScreenLike for WalletsBalancesScreen {
             self.core_wallet_dialog = None;
             match status {
                 SelectionStatus::Selected(idx) => {
-                    if let Some(wallet_hash) = self.pending_core_wallet_seed_hash.take()
+                    if let Some(wallet_hash) = self.pending_core_wallet_id.take()
                         && let Some(wallets) = self.pending_core_wallet_options.take()
                         && let Some(wallet_name) = wallets.get(idx).cloned()
                     {
@@ -2769,7 +2769,7 @@ impl ScreenLike for WalletsBalancesScreen {
                     }
                 }
                 SelectionStatus::Canceled => {
-                    self.pending_core_wallet_seed_hash = None;
+                    self.pending_core_wallet_id = None;
                     self.pending_core_wallet_options = None;
                     self.pending_core_wallet_is_single_key = false;
                     MessageBanner::set_global(
@@ -2822,7 +2822,7 @@ impl ScreenLike for WalletsBalancesScreen {
             let (wallet_hash, is_single_key) = if let Some(hash) = self
                 .selected_wallet
                 .as_ref()
-                .and_then(|w| w.read().ok().map(|g| g.seed_hash()))
+                .and_then(|w| w.read().ok().map(|g| g.wallet_id()))
             {
                 (Some(hash), false)
             } else if let Some(hash) = self
@@ -2857,11 +2857,11 @@ impl ScreenLike for WalletsBalancesScreen {
                 self.cached_tx_source_len = None;
                 // Refresh the cached platform sync info so the panel shows
                 // updated timestamps and block heights after a wallet sync.
-                let seed_hash = self
+                let wallet_id = self
                     .selected_wallet
                     .as_ref()
-                    .and_then(|w| w.read().ok().map(|g| g.seed_hash()));
-                if let Some(hash) = seed_hash {
+                    .and_then(|w| w.read().ok().map(|g| g.wallet_id()));
+                if let Some(hash) = wallet_id {
                     self.refresh_platform_sync_info_cache(&hash);
                 }
                 if let Some(warn_msg) = warning {
@@ -2917,10 +2917,10 @@ impl ScreenLike for WalletsBalancesScreen {
                 };
                 MessageBanner::set_global(self.app_context.egui_ctx(), &msg, MessageType::Success);
             }
-            crate::ui::BackendTaskSuccessResult::GeneratedReceiveAddress { seed_hash, address } => {
+            crate::ui::BackendTaskSuccessResult::GeneratedReceiveAddress { wallet_id, address } => {
                 if let Some(selected) = &self.selected_wallet
                     && let Ok(wallet) = selected.read()
-                    && wallet.seed_hash() == seed_hash
+                    && wallet.wallet_id() == wallet_id
                 {
                     // Parse address and get balance from PlatformWallet
                     let balance = address
@@ -2965,24 +2965,24 @@ impl ScreenLike for WalletsBalancesScreen {
                     MessageType::Success,
                 );
             }
-            crate::ui::BackendTaskSuccessResult::PlatformCreditsTransferred { seed_hash } => {
+            crate::ui::BackendTaskSuccessResult::PlatformCreditsTransferred { wallet_id } => {
                 MessageBanner::set_global(
                     self.app_context.egui_ctx(),
                     "Platform credits transferred successfully",
                     MessageType::Success,
                 );
                 // Schedule a refresh of platform address balances to update the UI
-                self.pending_platform_balance_refresh = Some(seed_hash);
+                self.pending_platform_balance_refresh = Some(wallet_id);
             }
             crate::ui::BackendTaskSuccessResult::PlatformAddressBalances {
-                seed_hash,
+                wallet_id,
                 balances: _,
                 network: _,
             } => {
                 self.refreshing = false;
                 // Platform address balances are persisted to DB by the backend task.
                 // No in-memory wallet update needed.
-                self.refresh_platform_sync_info_cache(&seed_hash);
+                self.refresh_platform_sync_info_cache(&wallet_id);
                 MessageBanner::set_global(
                     self.app_context.egui_ctx(),
                     "Successfully synced Platform balances",
@@ -3051,7 +3051,7 @@ impl ScreenLike for WalletsBalancesScreen {
                         wallets.clone(),
                     );
                     self.core_wallet_dialog = Some(dialog);
-                    self.pending_core_wallet_seed_hash = wallet_hash;
+                    self.pending_core_wallet_id = wallet_hash;
                     self.pending_core_wallet_options = Some(wallets);
                     self.pending_core_wallet_is_single_key = is_single_key;
                 } else {
@@ -3073,24 +3073,24 @@ impl ScreenLike for WalletsBalancesScreen {
         self.refreshing = false;
 
         // Check if there's a pending wallet selection (e.g., from wallet creation/import)
-        let pending_seed_hash = self
+        let pending_wallet_id = self
             .app_context
             .pending_wallet_selection
             .lock()
             .ok()
             .and_then(|mut pending| pending.take());
 
-        if let Some(seed_hash) = pending_seed_hash {
+        if let Some(wallet_id) = pending_wallet_id {
             let selected_wallet = self
                 .app_context
                 .wallets
                 .read()
                 .ok()
-                .and_then(|wallets| wallets.get(&seed_hash).cloned());
+                .and_then(|wallets| wallets.get(&wallet_id).cloned());
 
             if let Some(wallet) = selected_wallet {
                 self.select_hd_wallet(wallet);
-                self.persist_selected_wallet_hash(Some(seed_hash));
+                self.persist_selected_wallet_hash(Some(wallet_id));
                 return;
             }
         }

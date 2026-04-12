@@ -68,7 +68,7 @@ pub struct AddNewWalletScreen {
     use_password_for_app: bool,
     wallet_created: bool,
     // Success screen state
-    created_wallet_seed_hash: Option<[u8; 32]>,
+    created_wallet_id: Option<[u8; 32]>,
     receive_address: Option<Address>,
     receive_address_string: Option<String>,
     receive_qr_texture: Option<TextureHandle>,
@@ -98,7 +98,7 @@ impl AddNewWalletScreen {
             app_context: app_context.clone(),
             use_password_for_app: true,
             wallet_created: false,
-            created_wallet_seed_hash: None,
+            created_wallet_id: None,
             receive_address: None,
             receive_address_string: None,
             receive_qr_texture: None,
@@ -172,7 +172,7 @@ impl AddNewWalletScreen {
                 .as_ref()
                 .and_then(|ws| ws.get(self.selected_core_wallet_index).cloned());
 
-            let (new_wallet_seed_hash, wallet_arc) = self
+            let (new_wallet_id, wallet_arc) = self
                 .app_context
                 .register_wallet(wallet)
                 .map_err(|e| e.to_string())?;
@@ -187,7 +187,7 @@ impl AddNewWalletScreen {
 
             // Set pending wallet selection so the wallet screen auto-selects this wallet
             if let Ok(mut pending) = self.app_context.pending_wallet_selection.lock() {
-                *pending = Some(new_wallet_seed_hash);
+                *pending = Some(new_wallet_id);
             }
 
             // Register with PlatformWallet bridge (always, regardless of backend mode).
@@ -196,10 +196,10 @@ impl AddNewWalletScreen {
                 && let Ok(seed_bytes) = guard.seed_bytes()
             {
                 self.app_context
-                    .register_with_platform_wallet_manager(new_wallet_seed_hash, *seed_bytes);
+                    .register_with_platform_wallet_manager(new_wallet_id, *seed_bytes);
             }
 
-            self.created_wallet_seed_hash = Some(new_wallet_seed_hash);
+            self.created_wallet_id = Some(new_wallet_id);
             self.wallet_created = true;
             Ok(AppAction::None) // Show success screen instead of navigating away
         } else {
@@ -213,9 +213,9 @@ impl AddNewWalletScreen {
 
         // Check for incoming funds by looking at wallet balance (lock-free via WalletBalance)
         if !self.funds_received {
-            if let Some(seed_hash) = &self.created_wallet_seed_hash
+            if let Some(wallet_id) = &self.created_wallet_id
                 && let Ok(wallets) = self.app_context.wallets.read()
-                && let Some(wallet) = wallets.get(seed_hash)
+                && let Some(wallet) = wallets.get(wallet_id)
                 && let Ok(guard) = wallet.read()
                 && let Some(pw) = guard.platform_wallet.as_ref()
                 && pw.core().balance().total() > 0
@@ -313,7 +313,7 @@ impl AddNewWalletScreen {
                     RootScreenType::RootScreenIdentities,
                     Screen::AddNewIdentityScreen(AddNewIdentityScreen::new_with_wallet(
                         &self.app_context,
-                        self.created_wallet_seed_hash,
+                        self.created_wallet_id,
                     )),
                 );
             }

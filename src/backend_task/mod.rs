@@ -228,14 +228,14 @@ pub enum BackendTaskSuccessResult {
     GeneratedZKProof(ProofDataOutput),
     VerifiedZKProof(bool, ProofDataOutput),
     GeneratedReceiveAddress {
-        seed_hash: WalletId,
+        wallet_id: WalletId,
         address: String,
     },
     /// Per-address info loaded from the CoreWallet bridge
     AddressInfo(Vec<crate::platform_wallet_bridge::CoreAddressInfo>),
     /// Platform address balances fetched from Platform
     PlatformAddressBalances {
-        seed_hash: WalletId,
+        wallet_id: WalletId,
         /// Map of platform address to (balance, nonce)
         balances: BTreeMap<PlatformAddress, (u64, u32)>,
         /// Network the balances were fetched from
@@ -243,15 +243,15 @@ pub enum BackendTaskSuccessResult {
     },
     /// Platform credits transferred between addresses
     PlatformCreditsTransferred {
-        seed_hash: WalletId,
+        wallet_id: WalletId,
     },
     /// Platform address funded from asset lock
     PlatformAddressFunded {
-        seed_hash: WalletId,
+        wallet_id: WalletId,
     },
     /// Withdrawal from Platform address to Core initiated
     PlatformAddressWithdrawal {
-        seed_hash: WalletId,
+        wallet_id: WalletId,
     },
 
     // MNList-specific results
@@ -342,36 +342,36 @@ pub enum BackendTaskSuccessResult {
 
     // Shielded pool results
     ShieldedInitialized {
-        seed_hash: WalletId,
+        wallet_id: WalletId,
         balance: u64,
     },
     ShieldedNotesSynced {
-        seed_hash: WalletId,
+        wallet_id: WalletId,
         new_notes: u32,
         balance: u64,
     },
     ShieldedCreditsShielded {
-        seed_hash: WalletId,
+        wallet_id: WalletId,
         amount: u64,
     },
     ShieldedTransferComplete {
-        seed_hash: WalletId,
+        wallet_id: WalletId,
         amount: u64,
     },
     ShieldedCreditsUnshielded {
-        seed_hash: WalletId,
+        wallet_id: WalletId,
         amount: u64,
     },
     ShieldedNullifiersChecked {
-        seed_hash: WalletId,
+        wallet_id: WalletId,
         spent_count: u32,
     },
     ShieldedFromAssetLock {
-        seed_hash: WalletId,
+        wallet_id: WalletId,
         amount: u64,
     },
     ShieldedWithdrawalComplete {
-        seed_hash: WalletId,
+        wallet_id: WalletId,
         amount: u64,
     },
     ProvingKeyReady,
@@ -569,29 +569,29 @@ impl AppContext {
         task: WalletTask,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         match task {
-            WalletTask::GenerateReceiveAddress { seed_hash } => {
-                self.generate_receive_address(seed_hash).await
+            WalletTask::GenerateReceiveAddress { wallet_id } => {
+                self.generate_receive_address(wallet_id).await
             }
-            WalletTask::FetchPlatformAddressBalances { seed_hash } => {
-                self.fetch_platform_address_balances(seed_hash).await
+            WalletTask::FetchPlatformAddressBalances { wallet_id } => {
+                self.fetch_platform_address_balances(wallet_id).await
             }
             WalletTask::TransferPlatformCredits {
-                seed_hash,
+                wallet_id,
                 inputs,
                 outputs,
                 fee_payer_index,
             } => {
-                self.transfer_platform_credits(seed_hash, inputs, outputs, fee_payer_index)
+                self.transfer_platform_credits(wallet_id, inputs, outputs, fee_payer_index)
                     .await
             }
             WalletTask::FundPlatformAddressFromAssetLock {
-                seed_hash,
+                wallet_id,
                 asset_lock_proof,
                 asset_lock_address,
                 outputs,
             } => {
                 self.fund_platform_address_from_asset_lock(
-                    seed_hash,
+                    wallet_id,
                     *asset_lock_proof,
                     asset_lock_address,
                     outputs,
@@ -599,14 +599,14 @@ impl AppContext {
                 .await
             }
             WalletTask::WithdrawFromPlatformAddress {
-                seed_hash,
+                wallet_id,
                 inputs,
                 output_script,
                 core_fee_per_byte,
                 fee_payer_index,
             } => {
                 self.withdraw_from_platform_address(
-                    seed_hash,
+                    wallet_id,
                     inputs,
                     output_script,
                     core_fee_per_byte,
@@ -615,21 +615,21 @@ impl AppContext {
                 .await
             }
             WalletTask::FundPlatformAddressFromWalletUtxos {
-                seed_hash,
+                wallet_id,
                 amount,
                 destination,
                 fee_deduct_from_output,
             } => {
                 self.fund_platform_address_from_wallet_utxos(
-                    seed_hash,
+                    wallet_id,
                     amount,
                     destination,
                     fee_deduct_from_output,
                 )
                 .await
             }
-            WalletTask::LoadAddressInfo { seed_hash } => {
-                let platform_wallet = self.require_platform_wallet(&seed_hash)?;
+            WalletTask::LoadAddressInfo { wallet_id } => {
+                let platform_wallet = self.require_platform_wallet(&wallet_id)?;
                 let wallet_info = platform_wallet.state().await;
                 let info = CoreAddressInfo::all_from_wallet_info(&wallet_info.core_wallet);
                 Ok(BackendTaskSuccessResult::AddressInfo(info))

@@ -18,7 +18,7 @@ const CHUNK_SIZE: u64 = 2048;
 /// positions already present in the local tree.
 pub async fn sync_notes(
     app_context: &Arc<AppContext>,
-    seed_hash: &WalletId,
+    wallet_id: &WalletId,
     shielded_state: &mut ShieldedWalletState,
     network: Network,
 ) -> Result<(u32, u64), TaskError> {
@@ -147,7 +147,7 @@ pub async fn sync_notes(
         let nullifier_bytes = nullifier.to_bytes();
 
         let _ = app_context.db.insert_shielded_note(
-            seed_hash,
+            wallet_id,
             &crate::database::shielded::InsertShieldedNote {
                 note_data: &note_data,
                 position: dn.position,

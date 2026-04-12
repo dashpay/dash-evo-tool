@@ -22,10 +22,10 @@ impl AppContext {
         identity_index: IdentityIndex,
         _sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        let seed_hash = wallet_arc_ref.wallet_id;
+        let wallet_id = wallet_arc_ref.wallet_id;
 
         // Try to delegate to platform-wallet when available.
-        if let Some(platform_wallet) = self.get_platform_wallet(&seed_hash) {
+        if let Some(platform_wallet) = self.get_platform_wallet(&wallet_id) {
             return self
                 .load_identity_via_platform_wallet(
                     &wallet_arc_ref,
@@ -57,7 +57,7 @@ impl AppContext {
         identity_index: IdentityIndex,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let identity_wallet = platform_wallet.identity();
-        let seed_hash = wallet_arc_ref.wallet_id;
+        let wallet_id = wallet_arc_ref.wallet_id;
 
         // Delegate the Platform query + key matching to platform-wallet.
         let identity = identity_wallet
@@ -108,7 +108,7 @@ impl AppContext {
                             derivation_path,
                         } => {
                             let wallet_derivation_path = WalletDerivationPath {
-                                wallet_seed_hash: *wallet_id,
+                                wallet_id: *wallet_id,
                                 derivation_path: derivation_path.clone(),
                             };
                             (
@@ -153,7 +153,7 @@ impl AppContext {
 
         // Build QualifiedIdentity.
         let mut associated_wallets = BTreeMap::new();
-        associated_wallets.insert(seed_hash, wallet_arc_ref.wallet.clone());
+        associated_wallets.insert(wallet_id, wallet_arc_ref.wallet.clone());
 
         let qualified_identity = QualifiedIdentity {
             identity: identity.clone(),
@@ -173,7 +173,7 @@ impl AppContext {
 
         self.insert_local_qualified_identity(
             &qualified_identity,
-            &Some((seed_hash, identity_index)),
+            &Some((wallet_id, identity_index)),
         )
         .map_err(|e| TaskError::Database { source: e })?;
 
@@ -295,10 +295,10 @@ impl AppContext {
         top_bound = top_bound.max(queried_wallet_key_index.saturating_add(1));
         top_bound = top_bound.saturating_add(5);
 
-        let wallet_seed_hash;
+        let wallet_id;
         let (public_key_result_map, public_key_hash_result_map) = {
             let mut wallet = wallet_arc_ref.wallet.write()?;
-            wallet_seed_hash = wallet.seed_hash();
+            wallet_id = wallet.wallet_id();
             wallet
                 .identity_authentication_ecdsa_public_keys_data_map(
                     self,
@@ -331,7 +331,7 @@ impl AppContext {
                     index,
                 );
                 let wallet_derivation_path = WalletDerivationPath {
-                    wallet_seed_hash,
+                    wallet_id,
                     derivation_path,
                 };
                 Some((
@@ -360,7 +360,7 @@ impl AppContext {
 
         let private_keys = private_keys_map.into();
 
-        let wallet_seed_hash = wallet_arc_ref.wallet.read()?.seed_hash();
+        let wallet_id = wallet_arc_ref.wallet.read()?.wallet_id();
 
         let mut qualified_identity = QualifiedIdentity {
             identity: identity.clone(),
@@ -382,14 +382,14 @@ impl AppContext {
         qualified_identity.private_keys = private_keys;
         qualified_identity.dpns_names = maybe_owned_dpns_names;
         qualified_identity.associated_wallets =
-            BTreeMap::from([(wallet_seed_hash, wallet_arc_ref.wallet.clone())]);
+            BTreeMap::from([(wallet_id, wallet_arc_ref.wallet.clone())]);
         qualified_identity.wallet_index = Some(identity_index);
         qualified_identity.status = IdentityStatus::Active;
         qualified_identity.network = self.network;
 
         self.insert_local_qualified_identity(
             &qualified_identity,
-            &Some((wallet_seed_hash, identity_index)),
+            &Some((wallet_id, identity_index)),
         )
         .map_err(|e| TaskError::Database { source: e })?;
 

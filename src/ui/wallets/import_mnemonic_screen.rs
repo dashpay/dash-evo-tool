@@ -236,14 +236,14 @@ impl ImportMnemonicScreen {
                 .as_ref()
                 .and_then(|ws| ws.get(self.selected_core_wallet_index).cloned());
 
-            let (new_wallet_seed_hash, wallet_arc) = self
+            let (new_wallet_id, wallet_arc) = self
                 .app_context
                 .register_wallet(wallet)
                 .map_err(|e| e.to_string())?;
 
             // Set pending wallet selection so the wallet screen auto-selects this wallet
             if let Ok(mut pending) = self.app_context.pending_wallet_selection.lock() {
-                *pending = Some(new_wallet_seed_hash);
+                *pending = Some(new_wallet_id);
             }
 
             // Register with PlatformWallet bridge (always, regardless of backend mode).
@@ -252,7 +252,7 @@ impl ImportMnemonicScreen {
                 && let Ok(seed_bytes) = guard.seed_bytes()
             {
                 self.app_context
-                    .register_with_platform_wallet_manager(new_wallet_seed_hash, *seed_bytes);
+                    .register_with_platform_wallet_manager(new_wallet_id, *seed_bytes);
             }
 
             // Auto-discover identities derived from this wallet

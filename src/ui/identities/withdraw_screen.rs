@@ -488,7 +488,7 @@ impl ScreenLike for WithdrawalScreen {
                         let new_wallet = self
                             .identity
                             .associated_wallets
-                            .get(&wallet_derivation_path.wallet_seed_hash)
+                            .get(&wallet_derivation_path.wallet_id)
                             .cloned();
                         // Reset guard when wallet changes (different Arc pointer)
                         let wallet_changed = match (&self.selected_wallet, &new_wallet) {

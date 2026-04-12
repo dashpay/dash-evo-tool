@@ -55,12 +55,12 @@ pub(crate) fn require_network(
 }
 
 /// Resolve a wallet identifier (alias or 64-char hex seed hash) to a `WalletId`.
-pub(crate) fn wallet(ctx: &AppContext, wallet_id: &str) -> Result<WalletId, McpToolError> {
+pub(crate) fn wallet(ctx: &AppContext, id_or_alias: &str) -> Result<WalletId, McpToolError> {
     let wallets = ctx.wallets.read().unwrap_or_else(|e| e.into_inner());
 
     // Try hex parse first — but only accept if the wallet is actually loaded.
-    if wallet_id.len() == 64
-        && let Ok(bytes) = hex::decode(wallet_id)
+    if id_or_alias.len() == 64
+        && let Ok(bytes) = hex::decode(id_or_alias)
         && let Ok(hash) = <[u8; 32]>::try_from(bytes.as_slice())
         && wallets.contains_key(&hash)
     {
@@ -68,12 +68,12 @@ pub(crate) fn wallet(ctx: &AppContext, wallet_id: &str) -> Result<WalletId, McpT
     }
     let mut available: Vec<String> = Vec::new();
 
-    for (seed_hash, wallet_arc) in wallets.iter() {
+    for (wallet_id, wallet_arc) in wallets.iter() {
         let w = wallet_arc.read().unwrap_or_else(|e| e.into_inner());
-        let hex_prefix = hex::encode(&seed_hash[..4]);
+        let hex_prefix = hex::encode(&wallet_id[..4]);
         if let Some(alias) = &w.alias {
-            if alias == wallet_id {
-                return Ok(*seed_hash);
+            if alias == id_or_alias {
+                return Ok(*wallet_id);
             }
             available.push(format!("  - \"{alias}\" ({hex_prefix}...)"));
         } else {
@@ -82,9 +82,9 @@ pub(crate) fn wallet(ctx: &AppContext, wallet_id: &str) -> Result<WalletId, McpT
     }
 
     let id = if available.is_empty() {
-        format!("\"{wallet_id}\" (no wallets loaded)")
+        format!("\"{id_or_alias}\" (no wallets loaded)")
     } else {
-        format!("\"{wallet_id}\" — available: {}", available.join(", "))
+        format!("\"{id_or_alias}\" — available: {}", available.join(", "))
     };
 
     Err(McpToolError::WalletNotFound { id })
@@ -93,14 +93,14 @@ pub(crate) fn wallet(ctx: &AppContext, wallet_id: &str) -> Result<WalletId, McpT
 /// Get the `Arc<RwLock<Wallet>>` for a given seed hash.
 pub(crate) fn wallet_arc(
     ctx: &AppContext,
-    seed_hash: WalletId,
+    wallet_id: WalletId,
 ) -> Result<Arc<RwLock<crate::model::wallet::Wallet>>, McpToolError> {
     let wallets = ctx.wallets.read().unwrap_or_else(|e| e.into_inner());
     wallets
-        .get(&seed_hash)
+        .get(&wallet_id)
         .cloned()
         .ok_or_else(|| McpToolError::WalletNotFound {
-            id: hex::encode(seed_hash),
+            id: hex::encode(wallet_id),
         })
 }
 
@@ -198,11 +198,11 @@ pub(crate) fn qualified_identity(
 /// for this seed hash (e.g. wallet not unlocked yet).
 pub(crate) fn platform_wallet(
     ctx: &AppContext,
-    seed_hash: WalletId,
+    wallet_id: WalletId,
 ) -> Result<std::sync::Arc<crate::platform_wallet_bridge::PlatformWallet>, McpToolError> {
-    ctx.get_platform_wallet(&seed_hash)
+    ctx.get_platform_wallet(&wallet_id)
         .ok_or_else(|| McpToolError::WalletNotFound {
-            id: hex::encode(seed_hash),
+            id: hex::encode(wallet_id),
         })
 }
 

@@ -14,7 +14,7 @@ impl AppContext {
     /// Fund Platform addresses from an asset lock
     pub(crate) async fn fund_platform_address_from_asset_lock(
         self: &Arc<Self>,
-        seed_hash: WalletId,
+        wallet_id: WalletId,
         asset_lock_proof: AssetLockProof,
         asset_lock_address: Address,
         outputs: BTreeMap<PlatformAddress, Option<Credits>>,
@@ -25,14 +25,14 @@ impl AppContext {
         use dash_sdk::platform::transition::top_up_address::TopUpAddress;
 
         // Get the platform wallet for signing (PlatformAddressWallet implements Signer<PlatformAddress>)
-        let platform_wallet = self.require_platform_wallet(&seed_hash)?;
+        let platform_wallet = self.require_platform_wallet(&wallet_id)?;
 
         // Clone wallet (for asset lock private key lookup) and SDK before the async operation
         let (sdk, asset_lock_private_key) = {
             let wallet_arc = {
                 let wallets = self.wallets.read()?;
                 wallets
-                    .get(&seed_hash)
+                    .get(&wallet_id)
                     .cloned()
                     .ok_or(TaskError::WalletNotFound)?
             };
@@ -128,8 +128,8 @@ impl AppContext {
         }
 
         // Trigger a balance refresh
-        self.fetch_platform_address_balances(seed_hash).await?;
+        self.fetch_platform_address_balances(wallet_id).await?;
 
-        Ok(BackendTaskSuccessResult::PlatformAddressFunded { seed_hash })
+        Ok(BackendTaskSuccessResult::PlatformAddressFunded { wallet_id })
     }
 }

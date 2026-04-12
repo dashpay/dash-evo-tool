@@ -11,7 +11,7 @@ impl AppContext {
     /// Withdraw from Platform addresses to Core
     pub(crate) async fn withdraw_from_platform_address(
         self: &Arc<Self>,
-        seed_hash: WalletId,
+        wallet_id: WalletId,
         inputs: BTreeMap<PlatformAddress, Credits>,
         output_script: CoreScript,
         core_fee_per_byte: u32,
@@ -22,7 +22,7 @@ impl AppContext {
         use dash_sdk::platform::transition::address_credit_withdrawal::WithdrawAddressFunds;
 
         // Get the platform wallet for signing (PlatformAddressWallet implements Signer<PlatformAddress>)
-        let platform_wallet = self.require_platform_wallet(&seed_hash)?;
+        let platform_wallet = self.require_platform_wallet(&wallet_id)?;
         let sdk = self.sdk.load().as_ref().clone();
 
         // Deduct fee from the specified input (should be the one with highest balance)
@@ -46,8 +46,8 @@ impl AppContext {
             .map_err(crate::backend_task::error::TaskError::from)?;
 
         // Trigger a balance refresh
-        self.fetch_platform_address_balances(seed_hash).await?;
+        self.fetch_platform_address_balances(wallet_id).await?;
 
-        Ok(BackendTaskSuccessResult::PlatformAddressWithdrawal { seed_hash })
+        Ok(BackendTaskSuccessResult::PlatformAddressWithdrawal { wallet_id })
     }
 }

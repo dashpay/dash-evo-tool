@@ -333,7 +333,7 @@ impl AppContext {
                     alias = ?w.alias,
                     "Removing wallet with missing wallet_id (needs re-import after v40 migration)"
                 );
-                let _ = db.remove_wallet(&w.seed_hash(), &network);
+                let _ = db.remove_wallet(&w.wallet_id(), &network);
                 false
             } else {
                 true

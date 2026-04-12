@@ -64,7 +64,7 @@ impl CreateAssetLockScreen {
             let wallet_guard = wallet.read().unwrap();
             let used = app_context
                 .db
-                .get_wallet_identity_indices(&wallet_guard.seed_hash(), app_context.network);
+                .get_wallet_identity_indices(&wallet_guard.wallet_id(), app_context.network);
             used.iter().copied().max().map(|max| max + 1).unwrap_or(0)
         };
 
@@ -200,7 +200,7 @@ impl CreateAssetLockScreen {
                 self.identity_index = {
                     let wallet_guard = self.wallet.read().unwrap();
                     let used = self.app_context.db.get_wallet_identity_indices(
-                        &wallet_guard.seed_hash(),
+                        &wallet_guard.wallet_id(),
                         self.app_context.network,
                     );
                     used.iter().copied().max().map(|max| max + 1).unwrap_or(0)
@@ -473,7 +473,7 @@ impl ScreenLike for CreateAssetLockScreen {
                                     .app_context
                                     .db
                                     .get_wallet_identity_indices(
-                                        &wallet_guard.seed_hash(),
+                                        &wallet_guard.wallet_id(),
                                         self.app_context.network,
                                     );
                                 drop(wallet_guard);

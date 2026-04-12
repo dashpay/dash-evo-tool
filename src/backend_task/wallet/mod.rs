@@ -16,15 +16,15 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, PartialEq)]
 pub enum WalletTask {
     GenerateReceiveAddress {
-        seed_hash: WalletId,
+        wallet_id: WalletId,
     },
     /// Fetch Platform address balances and nonces from Platform for a wallet
     FetchPlatformAddressBalances {
-        seed_hash: WalletId,
+        wallet_id: WalletId,
     },
     /// Transfer credits between Platform addresses
     TransferPlatformCredits {
-        seed_hash: WalletId,
+        wallet_id: WalletId,
         /// Source addresses with amounts to transfer
         inputs: BTreeMap<PlatformAddress, Credits>,
         /// Destination addresses with amounts
@@ -35,7 +35,7 @@ pub enum WalletTask {
     },
     /// Fund Platform addresses from an asset lock
     FundPlatformAddressFromAssetLock {
-        seed_hash: WalletId,
+        wallet_id: WalletId,
         /// Asset lock proof
         asset_lock_proof: Box<AssetLockProof>,
         /// Address to fund (the asset lock address is the source)
@@ -45,7 +45,7 @@ pub enum WalletTask {
     },
     /// Withdraw from Platform addresses to Core
     WithdrawFromPlatformAddress {
-        seed_hash: WalletId,
+        wallet_id: WalletId,
         /// Platform addresses and amounts to withdraw
         inputs: BTreeMap<PlatformAddress, Credits>,
         /// Core script to receive the withdrawal (e.g., P2PKH script)
@@ -58,7 +58,7 @@ pub enum WalletTask {
     /// Fund a platform address directly from wallet UTXOs
     /// Creates asset lock, broadcasts, waits for proof, then funds platform address
     FundPlatformAddressFromWalletUtxos {
-        seed_hash: WalletId,
+        wallet_id: WalletId,
         /// Amount in duffs to lock
         amount: u64,
         /// Destination platform address to fund
@@ -69,6 +69,6 @@ pub enum WalletTask {
     },
     /// Load per-address info from the CoreWallet via the platform-wallet bridge
     LoadAddressInfo {
-        seed_hash: WalletId,
+        wallet_id: WalletId,
     },
 }

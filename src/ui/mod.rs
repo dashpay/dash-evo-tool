@@ -628,8 +628,8 @@ impl ScreenType {
             ScreenType::SetTokenPriceScreen(identity_token_info) => Screen::SetTokenPriceScreen(
                 SetTokenPriceScreen::new(identity_token_info.clone(), app_context),
             ),
-            ScreenType::AssetLockDetail(wallet_seed_hash, txid) => Screen::AssetLockDetailScreen(
-                AssetLockDetailScreen::new(*wallet_seed_hash, *txid, app_context),
+            ScreenType::AssetLockDetail(wallet_id, txid) => Screen::AssetLockDetailScreen(
+                AssetLockDetailScreen::new(*wallet_id, *txid, app_context),
             ),
             ScreenType::CreateAssetLock(wallet) => Screen::CreateAssetLockScreen(
                 CreateAssetLockScreen::new(wallet.clone(), app_context),
@@ -686,14 +686,14 @@ impl ScreenType {
                 Screen::DashPayProfileSearchScreen(ProfileSearchScreen::new(app_context.clone()))
             }
             // Shielded screens
-            ScreenType::ShieldScreen(seed_hash) => {
-                Screen::ShieldScreen(ShieldScreen::new(*seed_hash, app_context))
+            ScreenType::ShieldScreen(wallet_id) => {
+                Screen::ShieldScreen(ShieldScreen::new(*wallet_id, app_context))
             }
-            ScreenType::ShieldedSendScreen(seed_hash) => {
-                Screen::ShieldedSendScreen(ShieldedSendScreen::new(*seed_hash, app_context))
+            ScreenType::ShieldedSendScreen(wallet_id) => {
+                Screen::ShieldedSendScreen(ShieldedSendScreen::new(*wallet_id, app_context))
             }
-            ScreenType::UnshieldCreditsScreen(seed_hash) => {
-                Screen::UnshieldCreditsScreen(UnshieldCreditsScreen::new(*seed_hash, app_context))
+            ScreenType::UnshieldCreditsScreen(wallet_id) => {
+                Screen::UnshieldCreditsScreen(UnshieldCreditsScreen::new(*wallet_id, app_context))
             }
         }
     }
@@ -1130,7 +1130,7 @@ impl Screen {
                 ScreenType::SetTokenPriceScreen(screen.identity_token_info.clone())
             }
             Screen::AssetLockDetailScreen(screen) => {
-                ScreenType::AssetLockDetail(screen.wallet_seed_hash, screen.asset_lock_txid)
+                ScreenType::AssetLockDetail(screen.wallet_id, screen.asset_lock_txid)
             }
             Screen::CreateAssetLockScreen(screen) => {
                 ScreenType::CreateAssetLock(screen.wallet.clone())
@@ -1163,9 +1163,9 @@ impl Screen {
             Screen::DashPayQRGeneratorScreen(_) => ScreenType::DashPayQRGenerator,
             Screen::DashPayProfileSearchScreen(_) => ScreenType::DashPayProfileSearch,
             // Shielded screens
-            Screen::ShieldScreen(s) => ScreenType::ShieldScreen(s.seed_hash),
-            Screen::ShieldedSendScreen(s) => ScreenType::ShieldedSendScreen(s.seed_hash),
-            Screen::UnshieldCreditsScreen(s) => ScreenType::UnshieldCreditsScreen(s.seed_hash),
+            Screen::ShieldScreen(s) => ScreenType::ShieldScreen(s.wallet_id),
+            Screen::ShieldedSendScreen(s) => ScreenType::ShieldedSendScreen(s.wallet_id),
+            Screen::UnshieldCreditsScreen(s) => ScreenType::UnshieldCreditsScreen(s.wallet_id),
         }
     }
 }

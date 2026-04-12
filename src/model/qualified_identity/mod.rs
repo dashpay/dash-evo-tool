@@ -744,7 +744,7 @@ impl QualifiedIdentity {
             .into_iter()
             .filter_map(|(_, public_key)| {
                 if let Some(wallet_derivation_path) = &public_key.in_wallet_at_derivation_path {
-                    let seed_hash = wallet_derivation_path.wallet_seed_hash;
+                    let wallet_id = wallet_derivation_path.wallet_id;
                     let derivation_path = &wallet_derivation_path.derivation_path;
                     // second to last element is the wallet index
                     if derivation_path.len() < 2 {
@@ -770,7 +770,7 @@ impl QualifiedIdentity {
                             self.wallet_index, wallet_index
                         );
                     };
-                    Some((seed_hash, wallet_index))
+                    Some((wallet_id, wallet_index))
                 } else {
                     None
                 }

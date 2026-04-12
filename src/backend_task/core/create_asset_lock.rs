@@ -17,13 +17,13 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let amount_duffs = amount / CREDITS_PER_DUFF;
 
-        let (platform_wallet, _seed_hash) = {
+        let (platform_wallet, _wallet_id) = {
             let guard = wallet.read()?;
             let pw = guard
                 .platform_wallet
                 .clone()
                 .ok_or(TaskError::WalletNotFound)?;
-            (pw, guard.seed_hash())
+            (pw, guard.wallet_id())
         };
 
         let (tx, _private_key) = platform_wallet
@@ -62,13 +62,13 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let amount_duffs = amount / CREDITS_PER_DUFF;
 
-        let (platform_wallet, _seed_hash) = {
+        let (platform_wallet, _wallet_id) = {
             let guard = wallet.read()?;
             let pw = guard
                 .platform_wallet
                 .clone()
                 .ok_or(TaskError::WalletNotFound)?;
-            (pw, guard.seed_hash())
+            (pw, guard.wallet_id())
         };
 
         let (tx, _private_key) = platform_wallet

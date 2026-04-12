@@ -653,7 +653,12 @@ impl Wallet {
     /// Checks whether this wallet has any unused asset locks in the database
     /// (where identity_id IS NULL and identity_id_potentially_in_creation IS NULL).
     pub fn has_unused_asset_lock(&self, db: &Database, network: Network) -> bool {
-        db.has_unused_asset_lock_transactions(&self.seed_hash(), network)
+        // wallet_id is None only for wallets never unlocked since v40;
+        // those can't have asset locks, so returning false is correct.
+        let Some(key) = self.wallet_id() else {
+            return false;
+        };
+        db.has_unused_asset_lock_transactions(&key, network)
             .unwrap_or(false)
     }
 

@@ -14,7 +14,7 @@ impl Database {
         tx: &Transaction,
         amount: u64,
         islock: Option<&InstantLock>,
-        wallet_seed_hash: &[u8; 32],
+        wallet_key: &[u8; 32],
         network: Network,
     ) -> rusqlite::Result<()> {
         let tx_bytes = serialize(tx);
@@ -41,7 +41,7 @@ impl Database {
                 &tx_bytes,
                 amount,
                 &islock_bytes,
-                wallet_seed_hash,
+                wallet_key,
                 network.to_string()
             ],
         )?;
@@ -285,7 +285,7 @@ impl Database {
     #[allow(clippy::type_complexity)]
     pub fn get_asset_lock_transactions_for_wallet(
         &self,
-        wallet_seed_hash: &[u8; 32],
+        wallet_key: &[u8; 32],
         network: Network,
     ) -> rusqlite::Result<
         Vec<(
@@ -304,7 +304,7 @@ impl Database {
              WHERE wallet = ?1 AND network = ?2",
         )?;
 
-        let mut rows = stmt.query(params![wallet_seed_hash, network.to_string()])?;
+        let mut rows = stmt.query(params![wallet_key, network.to_string()])?;
         let mut results = Vec::new();
 
         while let Some(row) = rows.next()? {
@@ -333,7 +333,7 @@ impl Database {
     #[allow(clippy::type_complexity)]
     pub fn get_unused_asset_lock_transactions_for_wallet(
         &self,
-        wallet_seed_hash: &[u8; 32],
+        wallet_key: &[u8; 32],
         network: Network,
     ) -> rusqlite::Result<Vec<(Transaction, u64, Option<InstantLock>, Option<u32>)>> {
         let conn = self.conn.lock().unwrap();
@@ -346,7 +346,7 @@ impl Database {
                AND identity_id_potentially_in_creation IS NULL",
         )?;
 
-        let mut rows = stmt.query(params![wallet_seed_hash, network.to_string()])?;
+        let mut rows = stmt.query(params![wallet_key, network.to_string()])?;
         let mut results = Vec::new();
 
         while let Some(row) = rows.next()? {
@@ -373,7 +373,7 @@ impl Database {
     /// and identity_id_potentially_in_creation IS NULL).
     pub fn has_unused_asset_lock_transactions(
         &self,
-        wallet_seed_hash: &[u8; 32],
+        wallet_key: &[u8; 32],
         network: Network,
     ) -> rusqlite::Result<bool> {
         let conn = self.conn.lock().unwrap();
@@ -383,7 +383,7 @@ impl Database {
              WHERE wallet = ?1 AND network = ?2
                AND identity_id IS NULL
                AND identity_id_potentially_in_creation IS NULL",
-            params![wallet_seed_hash, network.to_string()],
+            params![wallet_key, network.to_string()],
             |row| row.get(0),
         )?;
 

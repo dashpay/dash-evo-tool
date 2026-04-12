@@ -323,6 +323,8 @@ impl crate::database::Database {
 
     // Contact operations
 
+    /// Superseded by changeset flush (Item 8.3). Kept for tests only.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub fn save_dashpay_contact(
         &self,
@@ -435,6 +437,8 @@ impl crate::database::Database {
 
     // Contact request operations
 
+    /// Superseded by changeset flush (Item 8.2). Kept for tests only.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub fn save_contact_request(
         &self,

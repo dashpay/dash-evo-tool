@@ -3,7 +3,7 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::identity::IdentityTask;
 use crate::model::amount::Amount;
 use crate::model::fee_estimation::format_credits_as_dash;
-use crate::model::wallet::WalletSeedHash;
+use crate::model::wallet::WalletId;
 use crate::ui::MessageType;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::amount_input::AmountInput;
@@ -268,7 +268,7 @@ impl TopUpIdentityScreen {
         }
 
         // Get wallet seed hash
-        let wallet_seed_hash: WalletSeedHash = {
+        let wallet_seed_hash: WalletId = {
             let wallet = self
                 .wallet
                 .as_ref()

@@ -1,6 +1,6 @@
 use crate::model::qualified_identity::PrivateKeyTarget;
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
-use crate::model::wallet::{Wallet, WalletSeedHash};
+use crate::model::wallet::{Wallet, WalletId};
 use bincode::de::{BorrowDecoder, Decoder};
 use bincode::enc::Encoder;
 use bincode::error::{DecodeError, EncodeError};
@@ -16,7 +16,7 @@ use std::sync::{Arc, RwLock};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct WalletDerivationPath {
-    pub(crate) wallet_seed_hash: WalletSeedHash,
+    pub(crate) wallet_seed_hash: WalletId,
     pub(crate) derivation_path: DerivationPath,
 }
 
@@ -57,7 +57,7 @@ impl Encode for WalletDerivationPath {
 impl<C> Decode<C> for WalletDerivationPath {
     fn decode<D: Decoder<Context = C>>(decoder: &mut D) -> Result<Self, DecodeError> {
         // Decode `wallet_seed_hash`
-        let wallet_seed_hash = WalletSeedHash::decode(decoder)?;
+        let wallet_seed_hash = WalletId::decode(decoder)?;
 
         // Decode the length of the `DerivationPath`
         let path_len = usize::decode(decoder)?;
@@ -97,7 +97,7 @@ impl<'de, C> BorrowDecode<'de, C> for WalletDerivationPath {
         decoder: &mut D,
     ) -> Result<Self, DecodeError> {
         // Decode `wallet_seed_hash`
-        let wallet_seed_hash = WalletSeedHash::decode(decoder)?;
+        let wallet_seed_hash = WalletId::decode(decoder)?;
 
         // Decode the length of the `DerivationPath`
         let path_len = usize::decode(decoder)?;

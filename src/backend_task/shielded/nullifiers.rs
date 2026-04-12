@@ -1,6 +1,6 @@
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
-use crate::model::wallet::WalletSeedHash;
+use crate::model::wallet::WalletId;
 use crate::model::wallet::shielded::ShieldedWalletState;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::platform::shielded::nullifier_sync::{NullifierSyncCheckpoint, NullifierSyncConfig};
@@ -13,7 +13,7 @@ use std::sync::Arc;
 /// on the provided `last_sync_height` and `last_sync_timestamp`.
 pub async fn check_nullifiers(
     app_context: &Arc<AppContext>,
-    seed_hash: &WalletSeedHash,
+    seed_hash: &WalletId,
     shielded_state: &mut ShieldedWalletState,
     network: Network,
 ) -> Result<u32, TaskError> {

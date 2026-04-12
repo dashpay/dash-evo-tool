@@ -1,14 +1,14 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
-use crate::model::wallet::{DerivationPathReference, DerivationPathType, WalletSeedHash};
+use crate::model::wallet::{DerivationPathReference, DerivationPathType, WalletId};
 use crate::spv::CoreBackendMode;
 use std::sync::Arc;
 
 impl AppContext {
     pub(crate) async fn generate_receive_address(
         self: &Arc<Self>,
-        seed_hash: WalletSeedHash,
+        seed_hash: WalletId,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let wallet_arc = {
             let wallets = self.wallets.read()?;

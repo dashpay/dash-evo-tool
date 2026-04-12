@@ -1,7 +1,7 @@
 use super::AppContext;
 use crate::backend_task::error::TaskError;
 use crate::model::qualified_contract::QualifiedContract;
-use crate::model::wallet::WalletSeedHash;
+use crate::model::wallet::WalletId;
 use crate::ui::tokens::tokens_screen::{IdentityTokenBalance, IdentityTokenIdentifier};
 use bincode::config;
 use dash_sdk::dpp::data_contract::TokenConfiguration;
@@ -144,7 +144,7 @@ impl AppContext {
         self.db.remove_token(token_id, self)
     }
 
-    pub fn remove_wallet(&self, seed_hash: &WalletSeedHash) -> Result<(), TaskError> {
+    pub fn remove_wallet(&self, seed_hash: &WalletId) -> Result<(), TaskError> {
         // Acquire write lock first to ensure atomicity — if the lock fails,
         // no changes have been made to the database.
         let mut wallets = self.wallets.write()?;

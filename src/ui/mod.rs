@@ -7,7 +7,7 @@ use crate::model::qualified_identity::encrypted_key_storage::{
     PrivateKeyData, WalletDerivationPath,
 };
 use crate::model::wallet::Wallet;
-use crate::model::wallet::WalletSeedHash;
+use crate::model::wallet::WalletId;
 use crate::model::wallet::single_key::SingleKeyWallet;
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
 use crate::ui::contracts_documents::document_action_screen::{
@@ -307,9 +307,9 @@ pub enum ScreenType {
     CreateAssetLock(Arc<RwLock<Wallet>>),
 
     // Shielded screens
-    ShieldScreen(WalletSeedHash),
-    ShieldedSendScreen(WalletSeedHash),
-    UnshieldCreditsScreen(WalletSeedHash),
+    ShieldScreen(WalletId),
+    ShieldedSendScreen(WalletId),
+    UnshieldCreditsScreen(WalletId),
 
     // DashPay Screens
     DashPayContacts,

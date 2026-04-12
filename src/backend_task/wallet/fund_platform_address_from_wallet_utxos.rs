@@ -1,7 +1,7 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
-use crate::model::wallet::WalletSeedHash;
+use crate::model::wallet::WalletId;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use std::sync::Arc;
@@ -14,7 +14,7 @@ impl AppContext {
     /// If `fee_deduct_from_output` is false, fees are paid from extra wallet balance (recipient receives exact amount).
     pub(crate) async fn fund_platform_address_from_wallet_utxos(
         self: &Arc<Self>,
-        seed_hash: WalletSeedHash,
+        seed_hash: WalletId,
         amount: u64,
         destination: PlatformAddress,
         fee_deduct_from_output: bool,

@@ -7,9 +7,9 @@
 //!
 //! The current `AppContext` stores wallets as:
 //! ```ignore
-//! wallets: RwLock<BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>>
+//! wallets: RwLock<BTreeMap<WalletId, Arc<RwLock<Wallet>>>>
 //! ```
-//! where `WalletSeedHash = [u8; 32]` is SHA-256 of the wallet seed.
+//! where `WalletId = [u8; 32]` is SHA-256 of the wallet seed.
 //!
 //! In the new platform-wallet model, the equivalent is:
 //! - `WalletId = [u8; 32]` (SHA-256 of the root public key, from `key-wallet`)
@@ -17,7 +17,7 @@
 //!   internally via `RwLock<BTreeMap<WalletId, PlatformWallet>>`
 //!
 //! Key differences:
-//! - `WalletSeedHash` is derived from the seed; `WalletId` is derived from
+//! - `WalletId` is derived from the seed; `WalletId` is derived from
 //!   the root public key. Both are `[u8; 32]` and serve as unique wallet identifiers.
 //!   They will produce different values for the same wallet.
 //! - The old model uses `Arc<RwLock<Wallet>>` for interior mutability;
@@ -118,7 +118,6 @@ impl CoreAddressInfo {
 
 // ── Mapping helpers ────────────────────────────────────────────────────
 
-use crate::model::wallet::WalletSeedHash;
 use std::collections::BTreeMap;
 
 /// A bidirectional mapping between `WalletSeedHash` (old key, SHA256 of seed)
@@ -129,8 +128,8 @@ use std::collections::BTreeMap;
 /// allows code that has one key to look up the other.
 #[derive(Debug, Default, Clone)]
 pub struct WalletIdMapping {
-    seed_to_wallet: BTreeMap<WalletSeedHash, WalletId>,
-    wallet_to_seed: BTreeMap<WalletId, WalletSeedHash>,
+    seed_to_wallet: BTreeMap<WalletId, WalletId>,
+    wallet_to_seed: BTreeMap<WalletId, WalletId>,
 }
 
 impl WalletIdMapping {
@@ -139,26 +138,26 @@ impl WalletIdMapping {
     }
 
     /// Register a bidirectional mapping between seed hash and wallet ID.
-    pub fn insert(&mut self, seed_hash: WalletSeedHash, wallet_id: WalletId) {
+    pub fn insert(&mut self, seed_hash: WalletId, wallet_id: WalletId) {
         self.seed_to_wallet.insert(seed_hash, wallet_id);
         self.wallet_to_seed.insert(wallet_id, seed_hash);
     }
 
     /// Remove a mapping by seed hash.
-    pub fn remove_by_seed_hash(&mut self, seed_hash: &WalletSeedHash) {
+    pub fn remove_by_seed_hash(&mut self, seed_hash: &WalletId) {
         if let Some(wallet_id) = self.seed_to_wallet.remove(seed_hash) {
             self.wallet_to_seed.remove(&wallet_id);
         }
     }
 
-    /// Look up the `WalletId` for a given `WalletSeedHash`.
-    pub fn wallet_id_for_seed(&self, seed_hash: &WalletSeedHash) -> Option<&WalletId> {
+    /// Look up the `WalletId` for a given `WalletId`.
+    pub fn wallet_id_for_seed(&self, seed_hash: &WalletId) -> Option<&WalletId> {
         self.seed_to_wallet.get(seed_hash)
     }
 
-    /// Look up the `WalletSeedHash` for a given `WalletId`.
+    /// Look up the `WalletId` for a given `WalletId`.
     #[allow(dead_code)]
-    pub fn seed_hash_for_wallet(&self, wallet_id: &WalletId) -> Option<&WalletSeedHash> {
+    pub fn seed_hash_for_wallet(&self, wallet_id: &WalletId) -> Option<&WalletId> {
         self.wallet_to_seed.get(wallet_id)
     }
 }

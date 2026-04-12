@@ -4,7 +4,7 @@ use crate::context::AppContext;
 use crate::model::qualified_identity::{
     DPNSNameInfo, IdentityStatus, IdentityType, QualifiedIdentity,
 };
-use crate::model::wallet::WalletSeedHash;
+use crate::model::wallet::WalletId;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::platform_value::Value;
@@ -21,7 +21,7 @@ impl AppContext {
         &self,
         sdk: &Sdk,
         dpns_name: String,
-        selected_wallet_seed_hash: Option<WalletSeedHash>,
+        selected_wallet_seed_hash: Option<WalletId>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let normalized_name = crate::model::dpns::normalize_dpns_label(&dpns_name);
 

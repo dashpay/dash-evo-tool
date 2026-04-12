@@ -2,7 +2,7 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use crate::model::wallet::{
     DerivationPathHelpers, DerivationPathReference, DerivationPathType, WalletAddressProvider,
-    WalletSeedHash,
+    WalletId,
 };
 use dash_sdk::RequestSettings;
 use dash_sdk::dpp::address_funds::PlatformAddress;
@@ -15,7 +15,7 @@ use std::sync::Arc;
 impl AppContext {
     pub(crate) async fn fetch_platform_address_balances(
         self: &Arc<Self>,
-        seed_hash: WalletSeedHash,
+        seed_hash: WalletId,
     ) -> Result<BackendTaskSuccessResult, crate::backend_task::error::TaskError> {
         tracing::info!("Platform address sync start");
         let start_time = std::time::Instant::now();

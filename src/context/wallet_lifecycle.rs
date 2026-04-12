@@ -7,7 +7,7 @@ use crate::model::qualified_identity::encrypted_key_storage::{
 };
 use crate::model::qualified_identity::{PrivateKeyTarget, QualifiedIdentity};
 use crate::model::wallet::{
-    DerivationPathHelpers, DerivationPathReference, DerivationPathType, Wallet, WalletSeedHash,
+    DerivationPathHelpers, DerivationPathReference, DerivationPathType, Wallet, WalletId,
 };
 use crate::platform_wallet_bridge::{
     ManagedDpnsNameInfo, ManagedIdentityStatus, ManagedKeyStorage, ManagedPrivateKeyData,
@@ -64,17 +64,18 @@ impl AppContext {
         Ok(())
     }
 
-    /// Get a `PlatformWallet` by `WalletSeedHash`.
+    /// Get a `PlatformWallet` by wallet map key.
     ///
-    /// Returns `None` if the wallet doesn't exist or is locked (no platform_wallet).
+    /// The map is keyed by `WalletId` (post-v40). Returns `None` if the
+    /// wallet doesn't exist or is locked (no platform_wallet).
     pub(crate) fn get_platform_wallet(
         &self,
-        seed_hash: &WalletSeedHash,
+        wallet_key: &WalletId,
     ) -> Option<Arc<PlatformWallet>> {
         self.wallets
             .read()
             .ok()
-            .and_then(|wallets| wallets.get(seed_hash).cloned())
+            .and_then(|wallets| wallets.get(wallet_key).cloned())
             .and_then(|w| w.read().ok().and_then(|g| g.platform_wallet.clone()))
     }
 
@@ -91,14 +92,14 @@ impl AppContext {
         })
     }
 
-    /// Get a `PlatformWallet` by seed hash, or return `TaskError::WalletNotFound`.
+    /// Get a `PlatformWallet` by wallet map key, or return `TaskError::WalletNotFound`.
     ///
     /// Convenience wrapper for backend tasks that need the platform wallet.
     pub(crate) fn require_platform_wallet(
         &self,
-        seed_hash: &WalletSeedHash,
+        wallet_key: &WalletId,
     ) -> Result<Arc<PlatformWallet>, TaskError> {
-        self.get_platform_wallet(seed_hash)
+        self.get_platform_wallet(wallet_key)
             .ok_or(TaskError::WalletNotFound)
     }
 
@@ -214,7 +215,7 @@ impl AppContext {
     pub fn register_wallet(
         self: &Arc<Self>,
         wallet: Wallet,
-    ) -> Result<(WalletSeedHash, Arc<RwLock<Wallet>>), TaskError> {
+    ) -> Result<(WalletId, Arc<RwLock<Wallet>>), TaskError> {
         // 1. Persist wallet (no legacy address maps)
         self.db
             .store_wallet_with_addresses(&wallet, &self.network, &[])
@@ -226,19 +227,23 @@ impl AppContext {
                 }
             })?;
 
-        let seed_hash = wallet.seed_hash();
+        // Use wallet_id as the map key (wallet_id is always available
+        // for newly-created wallets because the seed is open).
+        let map_key = wallet
+            .wallet_id()
+            .unwrap_or_else(|| wallet.seed_hash());
 
         // 2. Register in-memory
         let wallet_arc = Arc::new(RwLock::new(wallet));
         let mut wallets = self.wallets.write()?;
-        wallets.insert(seed_hash, wallet_arc.clone());
+        wallets.insert(map_key, wallet_arc.clone());
         self.has_wallet.store(true, Ordering::Relaxed);
         drop(wallets);
 
         // 3. Create PlatformWallet and load into SPV
         self.handle_wallet_unlocked(&wallet_arc);
 
-        Ok((seed_hash, wallet_arc))
+        Ok((map_key, wallet_arc))
     }
 
     pub fn bootstrap_wallet_addresses(&self, _wallet: &Arc<RwLock<Wallet>>) {
@@ -290,7 +295,7 @@ impl AppContext {
     /// previous unlock), this is a no-op.
     pub(crate) fn register_with_platform_wallet_manager(
         self: &Arc<Self>,
-        seed_hash: WalletSeedHash,
+        seed_hash: WalletId,
         seed_bytes: [u8; 64],
     ) {
         // Check if already registered
@@ -322,12 +327,33 @@ impl AppContext {
                     mapping.insert(seed_hash, wallet_id);
                 }
 
-                // Store on the Wallet struct itself
-                if let Ok(wallets) = self.wallets.read() {
-                    if let Some(wallet_arc) = wallets.get(&seed_hash) {
+                // Persist wallet_id to DB (no-op if already set).
+                if let Err(e) = self.db.set_wallet_id(&seed_hash, &wallet_id) {
+                    tracing::warn!(
+                        error = %e,
+                        seed = %hex::encode(seed_hash),
+                        "Failed to persist wallet_id to database"
+                    );
+                }
+
+                // Store platform_wallet + wallet_id on the Wallet struct,
+                // and re-key the map entry from seed_hash to wallet_id if
+                // it was inserted before wallet_id was computed (password-
+                // protected wallets unlocked for the first time since v40).
+                if let Ok(mut wallets) = self.wallets.write() {
+                    // Try wallet_id first (normal case), then seed_hash
+                    // (first-unlock-since-v40 case).
+                    let wallet_arc = wallets
+                        .get(&wallet_id)
+                        .cloned()
+                        .or_else(|| wallets.remove(&seed_hash));
+                    if let Some(wallet_arc) = wallet_arc {
                         if let Ok(mut wallet) = wallet_arc.write() {
                             wallet.platform_wallet = Some(Arc::clone(&platform_wallet));
+                            wallet.wallet_id = Some(wallet_id);
                         }
+                        // Ensure the entry is keyed by wallet_id.
+                        wallets.insert(wallet_id, wallet_arc);
                     }
                 }
 
@@ -348,8 +374,11 @@ impl AppContext {
     }
 
     pub fn handle_wallet_locked(self: &Arc<Self>, wallet: &Arc<RwLock<Wallet>>) {
-        let seed_hash = match wallet.read() {
-            Ok(guard) => guard.seed_hash(),
+        let (map_key, seed_hash) = match wallet.read() {
+            Ok(guard) => {
+                let key = guard.wallet_id().unwrap_or_else(|| guard.seed_hash());
+                (key, guard.seed_hash())
+            }
             Err(err) => {
                 tracing::warn!(error = %err, "Unable to read wallet during lock handling");
                 return;
@@ -361,6 +390,8 @@ impl AppContext {
             guard.platform_wallet = None;
         }
 
+        // Remove from wallet_id_mapping. The mapping is keyed by
+        // seed_hash (the "old" key side of the bridge).
         if let Ok(mut mapping) = self.wallet_id_mapping.lock() {
             mapping.remove_by_seed_hash(&seed_hash);
         }
@@ -404,6 +435,12 @@ impl AppContext {
                 ),
             }
         }
+
+        // Note: we do NOT remove the wallet from the AppContext.wallets
+        // map here — locking a wallet keeps it visible in the UI, just
+        // without platform_wallet access. The map entry stays at its
+        // current key (wallet_id or seed_hash fallback).
+        let _ = map_key; // suppress unused warning
     }
 
     /// Queue async SyncNotes -> CheckNullifiers for an already-initialized
@@ -415,7 +452,7 @@ impl AppContext {
     /// cannot prove are `'static` (rust-lang/rust#100013). The trampoline
     /// resolves the futures synchronously on a blocking thread, satisfying
     /// the `'static` bound required by `spawn_sync`.
-    fn queue_shielded_sync(self: &Arc<Self>, seed_hash: WalletSeedHash) {
+    fn queue_shielded_sync(self: &Arc<Self>, seed_hash: WalletId) {
         let ctx = Arc::clone(self);
         self.subtasks.spawn_sync("shielded_sync", async move {
             let handle = tokio::runtime::Handle::current();
@@ -450,7 +487,7 @@ impl AppContext {
         });
     }
 
-    fn wallet_seed_snapshot(wallet: &Arc<RwLock<Wallet>>) -> Option<(WalletSeedHash, [u8; 64])> {
+    fn wallet_seed_snapshot(wallet: &Arc<RwLock<Wallet>>) -> Option<(WalletId, [u8; 64])> {
         let guard = wallet.read().ok()?;
         if !guard.is_open() {
             return None;
@@ -582,7 +619,7 @@ impl AppContext {
     /// This uses the proof-verified data from SDK operations rather than fetching.
     pub(crate) fn update_wallet_platform_address_info_from_sdk(
         &self,
-        seed_hash: WalletSeedHash,
+        seed_hash: WalletId,
         address_infos: &dash_sdk::query_types::AddressInfos,
     ) -> Result<(), TaskError> {
         // Verify the wallet exists
@@ -959,11 +996,7 @@ impl AppContext {
             managed.key_storage = mi_key_storage;
             managed.dpns_names = mi_dpns_names;
             managed.status = mi_status;
-            // Note: `managed.wallet_id` receives `seed_hash` bytes during
-            // the M2 transition period. Evo-tool's wallet maps are still
-            // keyed by seed_hash; the M2 refactor commits 4-7 will switch
-            // the value to the real wallet_id and re-key the maps.
-            managed.wallet_id = Some(seed_hash);
+            managed.wallet_id = Some(wallet_id);
             managed.top_ups = qualified_identity.top_ups.clone();
             managed.dashpay_profile = mi_dashpay_profile;
             managed.dashpay_payments = mi_dashpay_payments;
@@ -999,7 +1032,7 @@ impl AppContext {
                         managed.key_storage = mi_key_storage;
                         managed.dpns_names = mi_dpns_names;
                         managed.status = mi_status;
-                        managed.wallet_id = Some(seed_hash); // M2: seed_hash bytes during transition
+                        managed.wallet_id = Some(wallet_id);
                         managed.top_ups = qualified_identity.top_ups.clone();
                         managed.dashpay_profile = mi_dashpay_profile;
                         managed.dashpay_payments = mi_dashpay_payments;
@@ -1446,7 +1479,7 @@ impl AppContext {
     /// Voter/operator keys and encrypted keys are skipped.
     fn convert_key_storage(
         qi_keys: &crate::model::qualified_identity::encrypted_key_storage::KeyStorage,
-        _seed_hash: &WalletSeedHash,
+        _seed_hash: &WalletId,
     ) -> ManagedKeyStorage {
         let mut result = ManagedKeyStorage::new();
 

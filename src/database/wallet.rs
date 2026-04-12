@@ -42,10 +42,11 @@ impl Database {
         let tx = conn.transaction()?;
 
         tx.execute(
-            "INSERT INTO wallet (seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, alias, is_main, uses_password, password_hint, network, confirmed_balance, unconfirmed_balance, total_balance, core_wallet_name)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO wallet (seed_hash, wallet_id, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, alias, is_main, uses_password, password_hint, network, confirmed_balance, unconfirmed_balance, total_balance, core_wallet_name)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 wallet.seed_hash(),
+                wallet.wallet_id().map(|id| id.to_vec()),
                 wallet.encrypted_seed_slice(),
                 wallet.salt(),
                 wallet.nonce(),
@@ -102,6 +103,22 @@ impl Database {
             1 => Ok(true),
             n => Err(rusqlite::Error::StatementChangedRows(n)),
         }
+    }
+
+    /// Persist a newly-computed `wallet_id` for a wallet identified by
+    /// `seed_hash`. No-op if the wallet already has a `wallet_id` set
+    /// (the `AND wallet_id IS NULL` guard prevents clobbering).
+    pub fn set_wallet_id(
+        &self,
+        seed_hash: &[u8; 32],
+        wallet_id: &[u8; 32],
+    ) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE wallet SET wallet_id = ?1 WHERE seed_hash = ?2 AND wallet_id IS NULL",
+            params![wallet_id, seed_hash],
+        )?;
+        Ok(())
     }
 
     /// Update the alias of a wallet based on the seed.
@@ -371,22 +388,23 @@ impl Database {
     /// is per-account. `record` is a bincode serde-encoded
     /// `TransactionRecord`.
     pub fn initialize_wallet_transactions_table(&self, conn: &Connection) -> rusqlite::Result<()> {
+        // Column named `wallet_id` (was `seed_hash` pre-v40) to match
+        // the platform-wallet WalletId that the changeset persister writes.
         conn.execute(
             "CREATE TABLE IF NOT EXISTS wallet_transactions (
-                seed_hash BLOB NOT NULL,
+                wallet_id BLOB NOT NULL,
                 account_type BLOB NOT NULL,
                 txid BLOB NOT NULL,
                 network TEXT NOT NULL,
                 record BLOB NOT NULL,
-                PRIMARY KEY (seed_hash, account_type, txid, network),
-                FOREIGN KEY (seed_hash) REFERENCES wallet(seed_hash) ON DELETE CASCADE
+                PRIMARY KEY (wallet_id, account_type, txid, network)
             )",
             [],
         )?;
 
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_wallet_transactions_seed_network
-             ON wallet_transactions (seed_hash, network)",
+            "CREATE INDEX IF NOT EXISTS idx_wallet_transactions_wallet_network
+             ON wallet_transactions (wallet_id, network)",
             [],
         )?;
 
@@ -405,7 +423,7 @@ impl Database {
 
         tracing::trace!("step 1: retrieve all wallets for the given network");
         let mut stmt = conn.prepare(
-            "SELECT seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, alias, is_main, uses_password, password_hint, confirmed_balance, unconfirmed_balance, total_balance, core_wallet_name FROM wallet WHERE network = ?",
+            "SELECT seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, alias, is_main, uses_password, password_hint, confirmed_balance, unconfirmed_balance, total_balance, core_wallet_name, wallet_id FROM wallet WHERE network = ?",
         )?;
 
         let mut wallets_map: BTreeMap<[u8; 32], Wallet> = BTreeMap::new();
@@ -423,6 +441,7 @@ impl Database {
             // Balances at indices 9-11 are persisted but no longer loaded into
             // the Wallet struct — they are served by PlatformWallet's WalletBalance.
             let core_wallet_name: Option<String> = row.get(12)?;
+            let wallet_id_blob: Option<Vec<u8>> = row.get(13)?;
 
             // Reconstruct the extended public keys
             let master_ecdsa_extended_public_key =
@@ -477,6 +496,10 @@ impl Database {
                 "new wallet loaded from database"
             );
 
+            // Convert wallet_id blob to [u8; 32] if present.
+            let wallet_id: Option<[u8; 32]> =
+                wallet_id_blob.and_then(|b| b.try_into().ok());
+
             // Insert a new Wallet into the map
             wallets_map.insert(
                 seed_hash_array,
@@ -488,6 +511,7 @@ impl Database {
                     alias,
                     is_main,
                     core_wallet_name,
+                    wallet_id,
                 },
             );
 

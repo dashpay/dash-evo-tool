@@ -8,7 +8,7 @@ use crate::model::address::{AddressKind, ValidatedAddress};
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::model::wallet::{Wallet, WalletSeedHash};
+use crate::model::wallet::{Wallet, WalletId};
 use crate::ui::components::address_input::AddressInput;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
@@ -277,7 +277,7 @@ pub enum SourceSelection {
     /// Use an identity's credit balance
     Identity(Box<QualifiedIdentity>),
     /// Use shielded pool balance (stores seed_hash and balance in credits)
-    Shielded(WalletSeedHash, u64),
+    Shielded(WalletId, u64),
 }
 
 /// Status of the send operation
@@ -367,7 +367,7 @@ pub struct WalletSendScreen {
     pub app_context: Arc<AppContext>,
     pub selected_wallet: Option<Arc<RwLock<Wallet>>>,
     #[allow(dead_code)]
-    selected_wallet_seed_hash: Option<WalletSeedHash>,
+    selected_wallet_seed_hash: Option<WalletId>,
 
     // Unified send fields (simple mode)
     selected_source: Option<SourceSelection>,
@@ -607,7 +607,7 @@ impl WalletSendScreen {
     }
 
     /// Get shielded pool balance for the selected wallet (if initialized).
-    fn get_shielded_balance(&self) -> Option<(WalletSeedHash, u64)> {
+    fn get_shielded_balance(&self) -> Option<(WalletId, u64)> {
         let seed_hash = self.selected_wallet_seed_hash?;
         // Try in-memory state first (most accurate, reflects optimistic spend marks)
         let Ok(states) = self.app_context.shielded_states.lock() else {
@@ -902,7 +902,7 @@ impl WalletSendScreen {
         )))
     }
 
-    fn send_core_to_platform(&mut self, seed_hash: WalletSeedHash) -> Result<AppAction, String> {
+    fn send_core_to_platform(&mut self, seed_hash: WalletId) -> Result<AppAction, String> {
         let amount_duffs = self
             .amount
             .as_ref()
@@ -945,7 +945,7 @@ impl WalletSendScreen {
 
     fn send_platform_to_platform(
         &mut self,
-        seed_hash: WalletSeedHash,
+        seed_hash: WalletId,
         addresses: Vec<(PlatformAddress, Address, u64)>,
     ) -> Result<AppAction, String> {
         // Amount in credits (Amount stores in credits for DASH with 11 decimal places)
@@ -1074,7 +1074,7 @@ impl WalletSendScreen {
 
     fn send_platform_to_core(
         &mut self,
-        seed_hash: WalletSeedHash,
+        seed_hash: WalletId,
         addresses: Vec<(PlatformAddress, Address, u64)>,
     ) -> Result<AppAction, String> {
         // Amount in credits
@@ -1349,7 +1349,7 @@ impl WalletSendScreen {
     /// Send from shielded pool to another shielded address (private transfer).
     fn send_shielded_to_shielded(
         &mut self,
-        seed_hash: WalletSeedHash,
+        seed_hash: WalletId,
     ) -> Result<AppAction, String> {
         let amount_credits = self
             .amount
@@ -1381,7 +1381,7 @@ impl WalletSendScreen {
     /// Send from shielded pool to a platform address (unshield).
     fn send_shielded_to_platform(
         &mut self,
-        seed_hash: WalletSeedHash,
+        seed_hash: WalletId,
     ) -> Result<AppAction, String> {
         let amount_credits = self
             .amount
@@ -1410,7 +1410,7 @@ impl WalletSendScreen {
     // === New send handler methods (8 combinations) ===
 
     /// Shield DASH from Core wallet via asset lock (Core -> Shielded).
-    fn send_core_to_shielded(&mut self, seed_hash: WalletSeedHash) -> Result<AppAction, String> {
+    fn send_core_to_shielded(&mut self, seed_hash: WalletId) -> Result<AppAction, String> {
         // Shielding from Core always deposits into the wallet's own shielded pool.
         // Validate the destination is a shielded address (the address input already constrains this).
         if !matches!(
@@ -1449,7 +1449,7 @@ impl WalletSendScreen {
     }
 
     /// Top up an identity from Core wallet via asset lock (Core -> Identity).
-    fn send_core_to_identity(&mut self, _seed_hash: WalletSeedHash) -> Result<AppAction, String> {
+    fn send_core_to_identity(&mut self, _seed_hash: WalletId) -> Result<AppAction, String> {
         let amount_duffs = self
             .amount
             .as_ref()
@@ -1513,7 +1513,7 @@ impl WalletSendScreen {
     /// sequentially.
     fn send_platform_to_shielded(
         &mut self,
-        seed_hash: WalletSeedHash,
+        seed_hash: WalletId,
         addresses: Vec<(PlatformAddress, Address, u64)>,
     ) -> Result<AppAction, String> {
         if !matches!(
@@ -1606,7 +1606,7 @@ impl WalletSendScreen {
     /// Top up an identity from Platform addresses (Platform -> Identity).
     fn send_platform_to_identity(
         &mut self,
-        seed_hash: WalletSeedHash,
+        seed_hash: WalletId,
         addresses: Vec<(PlatformAddress, Address, u64)>,
     ) -> Result<AppAction, String> {
         let amount_credits = self
@@ -1655,7 +1655,7 @@ impl WalletSendScreen {
     }
 
     /// Withdraw from shielded pool to Core address (Shielded -> Core).
-    fn send_shielded_to_core(&mut self, seed_hash: WalletSeedHash) -> Result<AppAction, String> {
+    fn send_shielded_to_core(&mut self, seed_hash: WalletId) -> Result<AppAction, String> {
         let amount_credits = self
             .amount
             .as_ref()
@@ -3277,7 +3277,7 @@ impl WalletSendScreen {
     /// Advanced Core to Platform send
     fn send_advanced_core_to_platform(
         &mut self,
-        seed_hash: WalletSeedHash,
+        seed_hash: WalletId,
     ) -> Result<AppAction, String> {
         // For now, only support single output for Core to Platform
         // The SDK's FundPlatformAddressFromWalletUtxos only supports a single destination
@@ -3337,7 +3337,7 @@ impl WalletSendScreen {
     /// Advanced Platform to Platform send
     fn send_advanced_platform_to_platform(
         &mut self,
-        seed_hash: WalletSeedHash,
+        seed_hash: WalletId,
     ) -> Result<AppAction, String> {
         // Build inputs map from platform_inputs
         let mut inputs: BTreeMap<PlatformAddress, Credits> = BTreeMap::new();
@@ -3393,7 +3393,7 @@ impl WalletSendScreen {
     /// Advanced Platform to Core send (withdrawal)
     fn send_advanced_platform_to_core(
         &mut self,
-        seed_hash: WalletSeedHash,
+        seed_hash: WalletId,
         network: dash_sdk::dpp::dashcore::Network,
     ) -> Result<AppAction, String> {
         // For withdrawal, we only support a single Core output

@@ -3,7 +3,7 @@ pub mod qualified_identity_public_key;
 
 use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
-use crate::model::wallet::{Wallet, WalletSeedHash};
+use crate::model::wallet::{Wallet, WalletId};
 use bincode::{Decode, Encode};
 use dash_sdk::dashcore_rpc::dashcore::{PubkeyHash, signer};
 use dash_sdk::dpp::bls_signatures::{Bls12381G2Impl, SignatureSchemes};
@@ -218,7 +218,7 @@ pub struct QualifiedIdentity {
     pub alias: Option<String>,
     pub private_keys: KeyStorage,
     pub dpns_names: Vec<DPNSNameInfo>,
-    pub associated_wallets: BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>,
+    pub associated_wallets: BTreeMap<WalletId, Arc<RwLock<Wallet>>>,
     /// The index used to register the identity
     pub wallet_index: Option<u32>,
     pub top_ups: BTreeMap<u32, u64>,
@@ -737,7 +737,7 @@ impl QualifiedIdentity {
     ///
     /// ## Returns
     /// A tuple containing the wallet seed hash and the index of the identity in the wallet.
-    pub fn determine_wallet_info(&self) -> Result<Option<(WalletSeedHash, u32)>, String> {
+    pub fn determine_wallet_info(&self) -> Result<Option<(WalletId, u32)>, String> {
         let wallet_info = self
             .private_keys
             .identity_public_keys()

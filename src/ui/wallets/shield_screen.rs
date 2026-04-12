@@ -7,7 +7,7 @@ use crate::model::address::{AddressKind, ValidatedAddress};
 use crate::model::amount::Amount;
 use crate::model::feature_gate::{FeatureGate, FeatureGateUiExt};
 use crate::model::fee_estimation::shielded_fee_for_actions;
-use crate::model::wallet::WalletSeedHash;
+use crate::model::wallet::WalletId;
 use crate::ui::components::ComponentResponse;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::address_input::AddressInput;
@@ -67,7 +67,7 @@ enum Status {
 
 pub struct ShieldScreen {
     pub app_context: Arc<AppContext>,
-    pub seed_hash: WalletSeedHash,
+    pub seed_hash: WalletId,
     address_input: Option<AddressInput>,
     validated_source: Option<ValidatedAddress>,
     amount_input: Option<AmountInput>,
@@ -99,7 +99,7 @@ pub struct ShieldScreen {
 }
 
 impl ShieldScreen {
-    pub fn new(seed_hash: WalletSeedHash, app_context: &Arc<AppContext>) -> Self {
+    pub fn new(seed_hash: WalletId, app_context: &Arc<AppContext>) -> Self {
         let mut screen = Self {
             app_context: app_context.clone(),
             seed_hash,

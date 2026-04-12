@@ -351,7 +351,7 @@ impl AppContext {
             dash_sdk::dpp::address_funds::PlatformAddress,
             (AddressNonce, dash_sdk::dpp::fee::Credits),
         >,
-        wallet_seed_hash: super::WalletSeedHash,
+        wallet_seed_hash: super::WalletId,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         use dash_sdk::platform::transition::put_identity::PutIdentity;
 

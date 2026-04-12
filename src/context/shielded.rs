@@ -4,7 +4,7 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::{TaskError, shielded_build_error};
 use crate::backend_task::shielded::ShieldedTask;
 use crate::context::AppContext;
-use crate::model::wallet::WalletSeedHash;
+use crate::model::wallet::WalletId;
 use crate::model::wallet::shielded::{ShieldedNote, ShieldedWalletState, derive_orchard_keys};
 use dash_sdk::grovedb_commitment_tree::{
     ClientPersistentCommitmentTree, Nullifier, Position, ProvingKey,
@@ -104,7 +104,7 @@ impl AppContext {
     /// a full platform-address sync.
     pub fn bump_platform_address_nonce(
         &self,
-        seed_hash: &WalletSeedHash,
+        seed_hash: &WalletId,
         from_address: &dash_sdk::dpp::address_funds::PlatformAddress,
     ) {
         let core_addr = from_address.to_address_with_network(self.network);
@@ -127,7 +127,7 @@ impl AppContext {
     /// expected nonce.
     fn set_platform_address_nonce(
         &self,
-        seed_hash: &WalletSeedHash,
+        seed_hash: &WalletId,
         from_address: &dash_sdk::dpp::address_funds::PlatformAddress,
         nonce: u32,
     ) {
@@ -169,7 +169,7 @@ impl AppContext {
     /// Get the default shielded payment address for a wallet.
     pub fn shielded_default_address(
         &self,
-        seed_hash: &WalletSeedHash,
+        seed_hash: &WalletId,
     ) -> Option<dash_sdk::grovedb_commitment_tree::PaymentAddress> {
         let states = self
             .shielded_states
@@ -181,7 +181,7 @@ impl AppContext {
     /// Initialize shielded wallet state by deriving ZIP32 keys from the wallet seed.
     pub(crate) fn initialize_shielded_wallet(
         self: &Arc<Self>,
-        seed_hash: WalletSeedHash,
+        seed_hash: WalletId,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         // Check if already initialized
         {
@@ -308,7 +308,7 @@ impl AppContext {
     /// Sync shielded notes from platform.
     pub(crate) async fn sync_shielded_notes(
         self: &Arc<Self>,
-        seed_hash: WalletSeedHash,
+        seed_hash: WalletId,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         // Take the state temporarily for the async operation
         let mut state = {
@@ -349,7 +349,7 @@ impl AppContext {
     /// We read it without removing the state so parallel operations can share it.
     async fn shield_credits_task(
         self: &Arc<Self>,
-        seed_hash: WalletSeedHash,
+        seed_hash: WalletId,
         amount: u64,
         from_address: dash_sdk::dpp::address_funds::PlatformAddress,
         nonce_override: Option<u32>,
@@ -419,7 +419,7 @@ impl AppContext {
     /// Transfer credits within the shielded pool.
     async fn shielded_transfer_task(
         self: &Arc<Self>,
-        seed_hash: WalletSeedHash,
+        seed_hash: WalletId,
         amount: u64,
         recipient_address_bytes: Vec<u8>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
@@ -444,7 +444,7 @@ impl AppContext {
     /// Unshield credits from the shielded pool to a platform address.
     async fn unshield_credits_task(
         self: &Arc<Self>,
-        seed_hash: WalletSeedHash,
+        seed_hash: WalletId,
         amount: u64,
         to_platform_address: dash_sdk::dpp::address_funds::PlatformAddress,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
@@ -469,7 +469,7 @@ impl AppContext {
     /// Withdraw credits from the shielded pool to a core L1 address.
     async fn shielded_withdrawal_task(
         self: &Arc<Self>,
-        seed_hash: WalletSeedHash,
+        seed_hash: WalletId,
         amount: u64,
         to_core_address: dash_sdk::dpp::dashcore::Address,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
@@ -499,7 +499,7 @@ impl AppContext {
     /// On success, marks spent notes and puts the state back.
     async fn with_anchor_retry(
         self: &Arc<Self>,
-        seed_hash: &WalletSeedHash,
+        seed_hash: &WalletId,
         operation_name: &str,
         operation: impl AsyncFn(&ShieldedWalletState) -> Result<Vec<Nullifier>, TaskError>,
     ) -> Result<Vec<Nullifier>, TaskError> {
@@ -578,7 +578,7 @@ impl AppContext {
     /// commitment tree for witnesses, so anchor retry is not applicable.
     async fn shield_from_asset_lock_task(
         self: &Arc<Self>,
-        seed_hash: WalletSeedHash,
+        seed_hash: WalletId,
         amount_duffs: u64,
         source_address: Option<dash_sdk::dashcore_rpc::dashcore::Address>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
@@ -612,7 +612,7 @@ impl AppContext {
     /// Check nullifiers to detect spent notes.
     pub(crate) async fn check_nullifiers_task(
         self: &Arc<Self>,
-        seed_hash: WalletSeedHash,
+        seed_hash: WalletId,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let mut state = {
             let mut states = self.shielded_states.lock()?;
@@ -647,7 +647,7 @@ impl AppContext {
     /// Mark notes as spent in both memory and DB after a successful broadcast.
     fn mark_notes_spent(
         &self,
-        seed_hash: &WalletSeedHash,
+        seed_hash: &WalletId,
         state: &mut ShieldedWalletState,
         spent_nullifiers: &[Nullifier],
     ) {

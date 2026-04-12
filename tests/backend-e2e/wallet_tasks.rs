@@ -1,6 +1,7 @@
 // Tests implemented in Task 2 (WalletTask tests: TC-012 to TC-019)
 
 use crate::framework::harness;
+use crate::framework::identity_helpers::get_platform_address;
 use crate::framework::task_runner::{run_task, run_task_with_nonce_retry};
 use dash_evo_tool::backend_task::core::CoreTask;
 use dash_evo_tool::backend_task::wallet::WalletTask;
@@ -119,18 +120,11 @@ async fn step_fund_platform_address(
             .clone()
     };
 
-    let platform_addr = {
-        let mut wallet = wallet_arc.write().expect("wallet write lock");
-        let addr = wallet
-            .platform_receive_address(
-                dash_sdk::dpp::dashcore::Network::Testnet,
-                false,
-                Some(&ctx.app_context),
-            )
-            .expect("step_fund_platform_address: failed to derive platform receive address");
-        PlatformAddress::try_from(addr)
-            .expect("step_fund_platform_address: failed to convert to PlatformAddress")
-    };
+    let platform_addr = get_platform_address(
+        &wallet_arc,
+        dash_sdk::dpp::dashcore::Network::Testnet,
+        false,
+    );
 
     tracing::info!(
         "step_fund_platform_address: funding platform address {:?}",
@@ -176,20 +170,16 @@ async fn step_fetch_balances(
 ) {
     tracing::info!("=== Step 2: Fetch platform address balances after funding ===");
 
-    // Re-derive the same platform address that step 1 funded (reuse=false
-    // returns the same address as long as it hasn't been marked used).
+    // Re-derive the same platform address that step 1 funded (index 0
+    // is deterministic and matches the address funded in step 1).
     let expected_addr = {
         let wallets = ctx.app_context.wallets().read().expect("wallets lock");
-        let wallet_arc = wallets.get(&seed_hash).expect("framework wallet missing");
-        let mut wallet = wallet_arc.write().expect("wallet write lock");
-        let addr = wallet
-            .platform_receive_address(
-                dash_sdk::dpp::dashcore::Network::Testnet,
-                false,
-                Some(&ctx.app_context),
-            )
-            .expect("step_fetch_balances: failed to derive platform address");
-        PlatformAddress::try_from(addr).expect("step_fetch_balances: PlatformAddress conversion")
+        let wallet_arc = wallets
+            .get(&seed_hash)
+            .expect("framework wallet missing")
+            .clone();
+        drop(wallets);
+        get_platform_address(&wallet_arc, dash_sdk::dpp::dashcore::Network::Testnet, false)
     };
 
     let task = BackendTask::WalletTask(WalletTask::FetchPlatformAddressBalances { seed_hash });
@@ -248,27 +238,10 @@ async fn step_transfer_credits(
     // Derive the first platform address (the one step 1 funded) so it is
     // guaranteed to be in watched_addresses. Then derive a fresh second one
     // as the transfer destination.
-    let (source_candidate, dest_addr) = {
-        let mut wallet = wallet_arc.write().expect("wallet write lock");
-        let src = wallet
-            .platform_receive_address(
-                dash_sdk::dpp::dashcore::Network::Testnet,
-                false, // reuse existing — same address step 1 funded
-                Some(&ctx.app_context),
-            )
-            .expect("step_transfer_credits: failed to derive source platform address");
-        let dst = wallet
-            .platform_receive_address(
-                dash_sdk::dpp::dashcore::Network::Testnet,
-                true, // skip_known — derive a fresh one
-                Some(&ctx.app_context),
-            )
-            .expect("step_transfer_credits: failed to derive second platform address");
-        (
-            PlatformAddress::try_from(src).expect("step_transfer_credits: src PlatformAddress"),
-            PlatformAddress::try_from(dst).expect("step_transfer_credits: dst PlatformAddress"),
-        )
-    };
+    let source_candidate =
+        get_platform_address(&wallet_arc, dash_sdk::dpp::dashcore::Network::Testnet, false);
+    let dest_addr =
+        get_platform_address(&wallet_arc, dash_sdk::dpp::dashcore::Network::Testnet, true);
 
     // Fetch current platform address balances to get the funded amount.
     let fetch_task =
@@ -397,18 +370,8 @@ async fn step_withdraw(
 
     // Fund a fresh platform address so we have credits to withdraw,
     // regardless of what step 3 did to the original address.
-    let fresh_addr = {
-        let mut wallet = wallet_arc.write().expect("wallet write lock");
-        let addr = wallet
-            .platform_receive_address(
-                dash_sdk::dpp::dashcore::Network::Testnet,
-                true,
-                Some(&ctx.app_context),
-            )
-            .expect("step_withdraw: failed to derive platform address");
-        PlatformAddress::try_from(addr)
-            .expect("step_withdraw: failed to convert to PlatformAddress")
-    };
+    let fresh_addr =
+        get_platform_address(&wallet_arc, dash_sdk::dpp::dashcore::Network::Testnet, true);
 
     let fund_task = BackendTask::WalletTask(WalletTask::FundPlatformAddressFromWalletUtxos {
         seed_hash,
@@ -620,21 +583,29 @@ async fn tc_018_fund_platform_address_from_asset_lock() {
     // locks created by other concurrent tests on the same wallet.
     tracing::info!("TC-018: waiting for asset lock IS proof in unused_asset_locks...");
     let proof_timeout = harness::MAX_TEST_TIMEOUT;
-    let min_credits: u64 = 90_000_000;
+    let _min_credits: u64 = 90_000_000;
     let (asset_lock_address, asset_lock_proof) = tokio::time::timeout(proof_timeout, async {
         loop {
             let maybe_lock = {
-                let wallet = wallet_arc.read().expect("wallet read lock");
-                wallet
-                    .unused_asset_locks
-                    .iter()
-                    .find_map(|(_tx, addr, amount, _islock, proof)| {
-                        if *amount >= min_credits {
-                            proof.as_ref().map(|proof| (addr.clone(), proof.clone()))
-                        } else {
-                            None
-                        }
+                let pw = {
+                    let wallet = wallet_arc.read().expect("wallet read lock");
+                    wallet.platform_wallet.clone()
+                };
+                if let Some(pw) = pw {
+                    let locks = pw.asset_locks().list_tracked_locks().await;
+                    locks.into_iter().find_map(|lock| {
+                        lock.proof.as_ref().map(|proof| {
+                            let addr = dash_sdk::dpp::dashcore::Address::from_script(
+                                &lock.transaction.output[0].script_pubkey,
+                                dash_sdk::dpp::dashcore::Network::Testnet,
+                            )
+                            .expect("valid address");
+                            (addr, proof.clone())
+                        })
                     })
+                } else {
+                    None
+                }
             };
             if let Some(found) = maybe_lock {
                 return found;
@@ -651,17 +622,11 @@ async fn tc_018_fund_platform_address_from_asset_lock() {
     );
 
     // Step 3: Derive a fresh platform address for funding
-    let platform_addr = {
-        let mut wallet = wallet_arc.write().expect("wallet write lock");
-        let addr = wallet
-            .platform_receive_address(
-                dash_sdk::dpp::dashcore::Network::Testnet,
-                true, // skip_known — get a fresh one
-                Some(&ctx.app_context),
-            )
-            .expect("TC-018: failed to derive platform address");
-        PlatformAddress::try_from(addr).expect("TC-018: failed to convert to PlatformAddress")
-    };
+    let platform_addr = get_platform_address(
+        &wallet_arc,
+        dash_sdk::dpp::dashcore::Network::Testnet,
+        true,
+    );
 
     let mut outputs = BTreeMap::new();
     outputs.insert(platform_addr, None); // None = distribute evenly

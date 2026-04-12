@@ -110,3 +110,29 @@ pub async fn get_receive_address(
         .expect("Failed to get receive address")
         .to_string()
 }
+
+/// Derive a DIP-17 Platform payment address from a wallet.
+///
+/// Derives the address at index 0 (`skip_known = false`) or index 1
+/// (`skip_known = true`). The addresses are deterministic for a given
+/// seed and network.
+///
+/// Index 0 is the primary platform address (the one the tests fund first).
+/// Index 1 is a fresh secondary address used as a transfer destination.
+///
+/// # Panics
+///
+/// Panics if the wallet is locked or key derivation fails.
+pub fn get_platform_address(
+    wallet_arc: &Arc<RwLock<Wallet>>,
+    network: Network,
+    skip_known: bool,
+) -> dash_sdk::dpp::address_funds::PlatformAddress {
+    let index = if skip_known { 1 } else { 0 };
+    let wallet = wallet_arc.read().expect("wallet lock");
+    let address = wallet
+        .platform_payment_address_at(network, index)
+        .expect("Failed to derive platform payment address");
+    dash_sdk::dpp::address_funds::PlatformAddress::try_from(address)
+        .expect("Failed to convert to PlatformAddress")
+}

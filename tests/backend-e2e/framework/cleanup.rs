@@ -75,7 +75,7 @@ pub async fn cleanup_test_wallets(
                 .expect("framework wallet must exist")
                 .clone()
         };
-        let framework_address = get_receive_address(app_context, &framework_wallet);
+        let framework_address = get_receive_address(app_context, &framework_wallet).await;
 
         // Wait briefly for SPV to sync this wallet's balance.
         let _ =

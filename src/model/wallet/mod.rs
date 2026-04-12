@@ -1155,6 +1155,22 @@ impl Wallet {
         Err("Wallet is locked".to_string())
     }
 
+    /// Derive the DIP-17 Platform payment address at the given HD index.
+    ///
+    /// Returns the P2PKH Core address at path
+    /// `m/9'/<coin_type>'/17'/0'/0'/<index>`.
+    ///
+    /// The wallet must be unlocked (open seed). Returns an error if the wallet
+    /// is locked or key derivation fails.
+    pub fn platform_payment_address_at(
+        &self,
+        network: Network,
+        index: u32,
+    ) -> Result<Address, String> {
+        let provider = WalletAddressProvider::new(self, network)?;
+        provider.platform_payment_address_at(index)
+    }
+
     pub fn derive_bip44_address(
         &self,
         network: Network,
@@ -1419,6 +1435,14 @@ impl WalletAddressProvider {
         }
 
         self
+    }
+
+    /// Derive the DIP-17 Platform payment address at the given index.
+    ///
+    /// The address is derived from the wallet seed at path
+    /// `m/9'/<coin_type>'/17'/0'/0'/<index>` and returned as a P2PKH Core address.
+    pub fn platform_payment_address_at(&self, index: u32) -> Result<Address, String> {
+        self.derive_address_at_index(index).map(|(_, addr)| addr)
     }
 
     /// Derive a Platform address at the given index.

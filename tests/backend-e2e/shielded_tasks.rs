@@ -295,12 +295,11 @@ async fn step_unshield(app_context: &Arc<AppContext>, seed_hash: WalletSeedHash)
             .get(&seed_hash)
             .expect("framework wallet must exist");
         let wallet = wallet_arc.read().expect("wallet lock");
-        let addrs = wallet.platform_addresses(Network::Testnet);
-        assert!(
-            !addrs.is_empty(),
-            "Wallet must have at least one platform address"
-        );
-        addrs[0].1
+        let addr = wallet
+            .platform_payment_address_at(Network::Testnet, 0)
+            .expect("failed to derive platform address");
+        dash_sdk::dpp::address_funds::PlatformAddress::try_from(addr)
+            .expect("failed to convert to PlatformAddress")
     };
 
     let unshield_amount = 30_000;
@@ -431,12 +430,11 @@ async fn tc_079_shield_credits() {
             .get(&seed_hash)
             .expect("framework wallet must exist");
         let wallet = wallet_arc.read().expect("wallet lock");
-        let addrs = wallet.platform_addresses(Network::Testnet);
-        assert!(
-            !addrs.is_empty(),
-            "Wallet must have at least one platform address"
-        );
-        addrs[0].1
+        let addr = wallet
+            .platform_payment_address_at(Network::Testnet, 0)
+            .expect("failed to derive platform address");
+        dash_sdk::dpp::address_funds::PlatformAddress::try_from(addr)
+            .expect("failed to convert to PlatformAddress")
     };
 
     // Fund the platform address

@@ -286,7 +286,7 @@ impl AppContext {
     /// previous unlock), this is a no-op.
     pub(crate) fn register_with_platform_wallet_manager(
         self: &Arc<Self>,
-        wallet_id: WalletId,
+        seed_hash: [u8; 32],
         seed_bytes: [u8; 64],
     ) {
         // Check if already registered by looking at whether the wallet
@@ -295,7 +295,7 @@ impl AppContext {
             let already_registered = wallets.values().any(|w| {
                 w.read()
                     .ok()
-                    .map(|g| g.wallet_id() == wallet_id && g.platform_wallet.is_some())
+                    .map(|g| g.seed_hash() == seed_hash && g.platform_wallet.is_some())
                     .unwrap_or(false)
             });
             if already_registered {
@@ -322,10 +322,10 @@ impl AppContext {
                 let wallet_id = platform_wallet.wallet_id();
 
                 // Persist wallet_id to DB (no-op if already set).
-                if let Err(e) = self.db.set_wallet_id(&wallet_id, &wallet_id) {
+                if let Err(e) = self.db.set_wallet_id(&seed_hash, &wallet_id) {
                     tracing::warn!(
                         error = %e,
-                        seed = %hex::encode(wallet_id),
+                        seed = %hex::encode(seed_hash),
                         "Failed to persist wallet_id to database"
                     );
                 }
@@ -349,7 +349,7 @@ impl AppContext {
             }
             Err(e) => {
                 tracing::warn!(
-                    seed = %hex::encode(wallet_id),
+                    seed = %hex::encode(seed_hash),
                     error = %e,
                     "Failed to create PlatformWallet from seed bytes for bridge"
                 );

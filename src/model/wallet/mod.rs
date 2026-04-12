@@ -275,7 +275,7 @@ bitflags! {
 #[derive(Debug, Clone)]
 pub struct WalletArcRef {
     pub wallet: Arc<RwLock<Wallet>>,
-    pub seed_hash: WalletSeedHash,
+    pub seed_hash: WalletId,
 }
 
 impl From<Arc<RwLock<Wallet>>> for WalletArcRef {
@@ -512,19 +512,15 @@ impl WalletTransaction {
     }
 }
 
-/// Re-export `WalletId` as the canonical wallet identifier type.
-/// Previously `WalletSeedHash = [u8; 32]` (SHA256 of seed). Now
-/// `WalletId = [u8; 32]` (SHA256 of root pubkey + chaincode), matching
-/// platform-wallet's `key_wallet_manager::WalletId`.
-///
-/// The type alias `WalletSeedHash` is kept as a deprecated re-export
-/// during the migration so existing code compiles while call sites
-/// are progressively updated.
+/// Canonical wallet identifier type. `WalletId = [u8; 32]` =
+/// `SHA256(root_pub_key || chain_code)`, matching platform-wallet's
+/// `key_wallet_manager::WalletId`. Replaces the former
+/// `WalletSeedHash` (which was `SHA256(seed_bytes)`).
 pub use crate::platform_wallet_bridge::WalletId;
 
-/// Deprecated alias — use `WalletId` instead.
-#[deprecated(note = "use WalletId instead — seed_hash → wallet_id refactor (M2)")]
-pub type WalletSeedHash = WalletId;
+/// Legacy alias kept for `WalletIdMapping` and `ClosedKeyItem`.
+/// Both are `[u8; 32]` — the alias is purely for documentation.
+pub type WalletSeedHash = [u8; 32];
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum WalletSeed {
@@ -551,7 +547,7 @@ pub type OpenWalletSeed = OpenKeyItem<64>;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClosedKeyItem {
-    pub seed_hash: WalletSeedHash, // SHA-256 hash of the seed
+    pub seed_hash: WalletId, // SHA-256 hash of the seed
     pub encrypted_seed: Vec<u8>,
     pub salt: Vec<u8>,
     pub nonce: Vec<u8>,
@@ -881,7 +877,7 @@ impl Wallet {
     #[allow(dead_code)]
     pub fn find_in_arc_rw_lock_slice(
         slice: &[Arc<RwLock<Wallet>>],
-        wallet_seed_hash: WalletSeedHash,
+        wallet_seed_hash: WalletId,
     ) -> Option<Arc<RwLock<Wallet>>> {
         for wallet in slice {
             // Attempt to read the wallet from the RwLock
@@ -898,7 +894,7 @@ impl Wallet {
 
     pub fn derive_private_key_in_arc_rw_lock_slice(
         slice: &[Arc<RwLock<Wallet>>],
-        wallet_seed_hash: WalletSeedHash,
+        wallet_seed_hash: WalletId,
         derivation_path: &DerivationPath,
         network: Network,
     ) -> Result<Option<[u8; 32]>, String> {

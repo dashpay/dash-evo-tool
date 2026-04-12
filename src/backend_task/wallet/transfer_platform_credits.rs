@@ -1,6 +1,6 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
-use crate::model::wallet::WalletSeedHash;
+use crate::model::wallet::WalletId;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::Credits;
 use std::collections::BTreeMap;
@@ -10,7 +10,7 @@ impl AppContext {
     /// Transfer credits between Platform addresses
     pub(crate) async fn transfer_platform_credits(
         self: &Arc<Self>,
-        seed_hash: WalletSeedHash,
+        seed_hash: WalletId,
         inputs: BTreeMap<PlatformAddress, Credits>,
         outputs: BTreeMap<PlatformAddress, Credits>,
         fee_payer_index: u16,

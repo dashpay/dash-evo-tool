@@ -1,6 +1,6 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
-use crate::model::wallet::WalletSeedHash;
+use crate::model::wallet::WalletId;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::Credits;
 use dash_sdk::dpp::identity::core_script::CoreScript;
@@ -11,7 +11,7 @@ impl AppContext {
     /// Withdraw from Platform addresses to Core
     pub(crate) async fn withdraw_from_platform_address(
         self: &Arc<Self>,
-        seed_hash: WalletSeedHash,
+        seed_hash: WalletId,
         inputs: BTreeMap<PlatformAddress, Credits>,
         output_script: CoreScript,
         core_fee_per_byte: u32,

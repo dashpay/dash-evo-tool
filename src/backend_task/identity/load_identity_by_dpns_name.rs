@@ -4,7 +4,7 @@ use crate::context::AppContext;
 use crate::model::qualified_identity::{
     DPNSNameInfo, IdentityStatus, IdentityType, QualifiedIdentity,
 };
-use crate::model::wallet::WalletSeedHash;
+use crate::model::wallet::WalletId;
 use dash_sdk::Sdk;
 use dash_sdk::platform::{Fetch, Identity};
 
@@ -19,7 +19,7 @@ impl AppContext {
         &self,
         sdk: &Sdk,
         dpns_name: String,
-        selected_wallet_seed_hash: Option<WalletSeedHash>,
+        selected_wallet_seed_hash: Option<WalletId>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         // Step 1: Resolve the DPNS name to an identity ID using the SDK.
         //

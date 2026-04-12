@@ -1,7 +1,7 @@
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
-use crate::model::wallet::WalletSeedHash;
+use crate::model::wallet::WalletId;
 use crate::model::wallet::shielded::{ShieldedNote, ShieldedWalletState};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::grovedb_commitment_tree::{Position, Retention};
@@ -18,7 +18,7 @@ const CHUNK_SIZE: u64 = 2048;
 /// positions already present in the local tree.
 pub async fn sync_notes(
     app_context: &Arc<AppContext>,
-    seed_hash: &WalletSeedHash,
+    seed_hash: &WalletId,
     shielded_state: &mut ShieldedWalletState,
     network: Network,
 ) -> Result<(u32, u64), TaskError> {

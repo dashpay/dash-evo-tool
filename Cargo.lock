@@ -2093,10 +2093,7 @@ dependencies = [
 name = "dash-spv"
 version = "0.42.0"
 dependencies = [
- "anyhow",
  "async-trait",
- "bincode 2.0.1",
- "blsful",
  "chrono",
  "clap",
  "dashcore",
@@ -2104,10 +2101,8 @@ dependencies = [
  "futures",
  "hex",
  "hickory-resolver",
- "indexmap 2.13.0",
  "key-wallet",
  "key-wallet-manager",
- "log",
  "rand 0.8.5",
  "rayon",
  "serde",
@@ -2138,11 +2133,11 @@ dependencies = [
  "ed25519-dalek",
  "hex",
  "hex_lit",
- "log",
  "rustversion",
  "secp256k1",
  "serde",
  "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]
@@ -2156,9 +2151,9 @@ dependencies = [
  "dashcore-rpc-json",
  "hex",
  "jsonrpc",
- "log",
  "serde",
  "serde_json",
+ "tracing",
 ]
 
 [[package]]
@@ -2182,7 +2177,6 @@ dependencies = [
  "bincode 2.0.1",
  "dashcore-private",
  "rs-x11-hash",
- "secp256k1",
  "serde",
 ]
 

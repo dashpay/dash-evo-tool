@@ -2,7 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::shielded::ShieldedTask;
 use crate::context::AppContext;
-use crate::model::wallet::WalletSeedHash;
+use crate::model::wallet::WalletId;
 use crate::ui::ScreenType;
 use crate::ui::components::wallet_unlock_popup::wallet_needs_unlock;
 use crate::ui::helpers::copy_text_to_clipboard;
@@ -15,7 +15,7 @@ use std::sync::Arc;
 /// View component for the Shielded tab within the Wallets screen.
 pub struct ShieldedTabView {
     app_context: Arc<AppContext>,
-    seed_hash: WalletSeedHash,
+    seed_hash: WalletId,
     initializing: bool,
     syncing: bool,
     error_message: Option<String>,
@@ -31,7 +31,7 @@ pub struct ShieldedTabView {
 }
 
 impl ShieldedTabView {
-    pub fn new(app_context: &Arc<AppContext>, seed_hash: WalletSeedHash) -> Self {
+    pub fn new(app_context: &Arc<AppContext>, seed_hash: WalletId) -> Self {
         Self {
             app_context: app_context.clone(),
             seed_hash,
@@ -51,7 +51,7 @@ impl ShieldedTabView {
         self.syncing
     }
 
-    pub fn update_seed_hash(&mut self, seed_hash: WalletSeedHash) {
+    pub fn update_seed_hash(&mut self, seed_hash: WalletId) {
         if self.seed_hash != seed_hash {
             self.seed_hash = seed_hash;
             self.is_initialized = false;

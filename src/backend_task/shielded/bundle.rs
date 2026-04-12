@@ -2,7 +2,7 @@ use crate::backend_task::error::{TaskError, shielded_broadcast_error, shielded_b
 use crate::context::AppContext;
 use crate::context::shielded::get_proving_key;
 use crate::model::fee_estimation::{format_credits_as_dash, shielded_fee_for_actions};
-use crate::model::wallet::WalletSeedHash;
+use crate::model::wallet::WalletId;
 use crate::model::wallet::shielded::{ShieldedNote, ShieldedWalletState};
 use dash_sdk::dpp::address_funds::{
     AddressFundsFeeStrategy, AddressFundsFeeStrategyStep, OrchardAddress, PlatformAddress,
@@ -87,7 +87,7 @@ impl ShieldStage {
 /// Returns the built `StateTransition` so the caller can broadcast in nonce order.
 pub fn build_shield_credit(
     app_context: &Arc<AppContext>,
-    seed_hash: &WalletSeedHash,
+    seed_hash: &WalletId,
     recipient_payment_address: &PaymentAddress,
     amount: u64,
     from_address: PlatformAddress,
@@ -140,7 +140,7 @@ pub fn build_shield_credit(
 /// (including Halo 2 proof generation and RedPallas signature application).
 pub async fn shield_credits(
     app_context: &Arc<AppContext>,
-    seed_hash: &WalletSeedHash,
+    seed_hash: &WalletId,
     recipient_payment_address: &PaymentAddress,
     amount: u64,
     from_address: PlatformAddress,
@@ -246,7 +246,7 @@ pub async fn shield_credits(
 /// Returns the nullifiers of the notes that were spent.
 pub async fn shielded_transfer(
     app_context: &Arc<AppContext>,
-    _seed_hash: &WalletSeedHash,
+    _seed_hash: &WalletId,
     shielded_state: &ShieldedWalletState,
     amount: u64,
     recipient_address_bytes: &[u8],
@@ -338,7 +338,7 @@ pub async fn shielded_transfer(
 /// Returns the nullifiers of the notes that were spent.
 pub async fn unshield_credits(
     app_context: &Arc<AppContext>,
-    _seed_hash: &WalletSeedHash,
+    _seed_hash: &WalletId,
     shielded_state: &ShieldedWalletState,
     amount: u64,
     to_platform_address: PlatformAddress,
@@ -427,7 +427,7 @@ pub async fn unshield_credits(
 /// shielded pool.
 pub async fn shield_from_asset_lock(
     app_context: &Arc<AppContext>,
-    seed_hash: &WalletSeedHash,
+    seed_hash: &WalletId,
     shielded_state: &ShieldedWalletState,
     amount_duffs: u64,
     source_address: Option<&Address>,
@@ -558,7 +558,7 @@ pub async fn shield_from_asset_lock(
 /// Returns the nullifiers of the notes that were spent.
 pub async fn shielded_withdrawal(
     app_context: &Arc<AppContext>,
-    _seed_hash: &WalletSeedHash,
+    _seed_hash: &WalletId,
     shielded_state: &ShieldedWalletState,
     amount: u64,
     to_core_address: Address,

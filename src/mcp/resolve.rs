@@ -5,7 +5,7 @@ use crate::context::connection_status::OverallConnectionState;
 use crate::mcp::error::McpToolError;
 use crate::mcp::server::network_display_name;
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::model::wallet::WalletSeedHash;
+use crate::model::wallet::WalletId;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::Identifier;
 use std::sync::{Arc, RwLock};
@@ -54,8 +54,8 @@ pub(crate) fn require_network(
     Ok(())
 }
 
-/// Resolve a wallet identifier (alias or 64-char hex seed hash) to a `WalletSeedHash`.
-pub(crate) fn wallet(ctx: &AppContext, wallet_id: &str) -> Result<WalletSeedHash, McpToolError> {
+/// Resolve a wallet identifier (alias or 64-char hex seed hash) to a `WalletId`.
+pub(crate) fn wallet(ctx: &AppContext, wallet_id: &str) -> Result<WalletId, McpToolError> {
     let wallets = ctx.wallets.read().unwrap_or_else(|e| e.into_inner());
 
     // Try hex parse first — but only accept if the wallet is actually loaded.
@@ -93,7 +93,7 @@ pub(crate) fn wallet(ctx: &AppContext, wallet_id: &str) -> Result<WalletSeedHash
 /// Get the `Arc<RwLock<Wallet>>` for a given seed hash.
 pub(crate) fn wallet_arc(
     ctx: &AppContext,
-    seed_hash: WalletSeedHash,
+    seed_hash: WalletId,
 ) -> Result<Arc<RwLock<crate::model::wallet::Wallet>>, McpToolError> {
     let wallets = ctx.wallets.read().unwrap_or_else(|e| e.into_inner());
     wallets
@@ -189,7 +189,7 @@ pub(crate) fn qualified_identity(
 /// for this seed hash (e.g. wallet not unlocked yet).
 pub(crate) fn platform_wallet(
     ctx: &AppContext,
-    seed_hash: WalletSeedHash,
+    seed_hash: WalletId,
 ) -> Result<std::sync::Arc<crate::platform_wallet_bridge::PlatformWallet>, McpToolError> {
     ctx.get_platform_wallet(&seed_hash)
         .ok_or_else(|| McpToolError::WalletNotFound {

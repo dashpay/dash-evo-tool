@@ -19,7 +19,7 @@ use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::password_info::PasswordInfo;
 use crate::model::proof_log_item::RequestType;
 use crate::model::wallet::single_key::{SingleKeyHash, SingleKeyWallet};
-use crate::model::wallet::{Wallet, WalletSeedHash};
+use crate::model::wallet::{Wallet, WalletId};
 use crate::platform_wallet_bridge::{PlatformWalletManager, WalletIdMapping};
 use crate::sdk_wrapper::initialize_sdk;
 use crate::spv::CoreBackendMode;
@@ -96,14 +96,14 @@ pub struct AppContext {
     pub(crate) keyword_search_contract: Arc<DataContract>,
     pub(crate) core_client: RwLock<Client>,
     pub(crate) has_wallet: AtomicBool,
-    pub(crate) wallets: RwLock<BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>>,
+    pub(crate) wallets: RwLock<BTreeMap<WalletId, Arc<RwLock<Wallet>>>>,
     pub(crate) single_key_wallets: RwLock<BTreeMap<SingleKeyHash, Arc<RwLock<SingleKeyWallet>>>>,
     /// New platform-wallet manager — multi-wallet coordinator.
     /// Coexists with `wallets` during migration; callers will be incrementally
     /// switched from the old `wallets` map to this manager.
     #[allow(dead_code)] // Used during incremental migration to PlatformWallet
     pub(crate) wallet_manager: Arc<DebugWrapper<PlatformWalletManager>>,
-    /// Bidirectional mapping between `WalletSeedHash` (old key) and `WalletId` (new key).
+    /// Bidirectional mapping between `WalletId` (old key) and `WalletId` (new key).
     /// Protected by a std `Mutex` since updates happen infrequently (wallet add/remove).
     pub(crate) wallet_id_mapping: Mutex<WalletIdMapping>,
     #[allow(dead_code)] // May be used for password validation
@@ -127,9 +127,9 @@ pub struct AppContext {
     pub(crate) connection_status: Arc<ConnectionStatus>,
     /// Pending wallet selection - set after creating/importing a wallet
     /// so the wallet screen can auto-select the new wallet
-    pub(crate) pending_wallet_selection: Mutex<Option<WalletSeedHash>>,
+    pub(crate) pending_wallet_selection: Mutex<Option<WalletId>>,
     /// Currently selected HD wallet (persisted across screen navigation)
-    pub(crate) selected_wallet_hash: Mutex<Option<WalletSeedHash>>,
+    pub(crate) selected_wallet_hash: Mutex<Option<WalletId>>,
     /// Currently selected single key wallet (persisted across screen navigation)
     pub(crate) selected_single_key_hash: Mutex<Option<SingleKeyHash>>,
     /// Cached fee multiplier permille from current epoch (1000 = 1x, 2000 = 2x)
@@ -142,7 +142,7 @@ pub struct AppContext {
     /// Per-wallet shielded state (initialized lazily, keyed by wallet seed hash)
     pub(crate) shielded_states: Mutex<
         std::collections::HashMap<
-            WalletSeedHash,
+            WalletId,
             crate::model::wallet::shielded::ShieldedWalletState,
         >,
     >,
@@ -856,7 +856,7 @@ impl AppContext {
     }
 
     /// Returns a reference to the wallets map.
-    pub fn wallets(&self) -> &RwLock<BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>> {
+    pub fn wallets(&self) -> &RwLock<BTreeMap<WalletId, Arc<RwLock<Wallet>>>> {
         &self.wallets
     }
 

@@ -1,6 +1,6 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
-use crate::model::wallet::WalletSeedHash;
+use crate::model::wallet::WalletId;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::Credits;
 use dash_sdk::dpp::dashcore::Address;
@@ -14,7 +14,7 @@ impl AppContext {
     /// Fund Platform addresses from an asset lock
     pub(crate) async fn fund_platform_address_from_asset_lock(
         self: &Arc<Self>,
-        seed_hash: WalletSeedHash,
+        seed_hash: WalletId,
         asset_lock_proof: AssetLockProof,
         asset_lock_address: Address,
         outputs: BTreeMap<PlatformAddress, Option<Credits>>,

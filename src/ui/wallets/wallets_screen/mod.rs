@@ -13,7 +13,7 @@ use crate::context::AppContext;
 use crate::context::connection_status::spv_phase_summary;
 use crate::model::amount::Amount;
 use crate::model::feature_gate::FeatureGate;
-use crate::model::wallet::{TransactionStatus, Wallet, WalletSeedHash, WalletTransaction};
+use crate::model::wallet::{TransactionStatus, Wallet, WalletId, WalletTransaction};
 use crate::platform_wallet_bridge::CoreAddressInfo;
 use crate::spv::{CoreBackendMode, SpvStatus};
 use crate::ui::components::component_trait::Component;
@@ -114,7 +114,7 @@ pub struct WalletsBalancesScreen {
     show_sk_unlock_dialog: bool,
     sk_password_input: PasswordInput,
     remove_wallet_dialog: Option<ConfirmationDialog>,
-    pending_wallet_removal: Option<WalletSeedHash>,
+    pending_wallet_removal: Option<WalletId>,
     pending_wallet_removal_alias: Option<String>,
     send_dialog: SendDialogState,
     receive_dialog: ReceiveDialogState,
@@ -124,7 +124,7 @@ pub struct WalletsBalancesScreen {
     selected_account: Option<(AccountCategory, Option<u32>)>,
     show_zero_balance_addresses: bool,
     /// Pending refresh of platform address balances (triggered after transfers)
-    pending_platform_balance_refresh: Option<WalletSeedHash>,
+    pending_platform_balance_refresh: Option<WalletId>,
     /// Whether we should refresh the wallet after it's unlocked
     pending_refresh_after_unlock: bool,
     /// The refresh mode to use after unlock (if pending_refresh_after_unlock is true)
@@ -280,7 +280,7 @@ impl WalletsBalancesScreen {
         }
     }
 
-    fn persist_selected_wallet_hash(&self, hash: Option<WalletSeedHash>) {
+    fn persist_selected_wallet_hash(&self, hash: Option<WalletId>) {
         if let Ok(mut guard) = self.app_context.selected_wallet_hash.lock() {
             *guard = hash;
         }
@@ -355,7 +355,7 @@ impl WalletsBalancesScreen {
     }
 
     /// Refresh the cached platform sync info from the database.
-    fn refresh_platform_sync_info_cache(&mut self, seed_hash: &WalletSeedHash) {
+    fn refresh_platform_sync_info_cache(&mut self, seed_hash: &WalletId) {
         self.platform_sync_info = self
             .app_context
             .db
@@ -873,7 +873,7 @@ impl WalletsBalancesScreen {
         }
     }
 
-    fn handle_wallet_removal(&mut self, seed_hash: WalletSeedHash, alias: String) {
+    fn handle_wallet_removal(&mut self, seed_hash: WalletId, alias: String) {
         match self.app_context.remove_wallet(&seed_hash) {
             Ok(()) => {
                 let next_wallet = self
@@ -1072,7 +1072,7 @@ impl WalletsBalancesScreen {
             .sum()
     }
 
-    fn shielded_balance_duffs(&self, seed_hash: &WalletSeedHash) -> u64 {
+    fn shielded_balance_duffs(&self, seed_hash: &WalletId) -> u64 {
         self.app_context
             .shielded_states
             .lock()
@@ -2171,7 +2171,7 @@ impl WalletsBalancesScreen {
 
     /// Returns a SyncNotes backend task if the shielded wallet has been initialized
     /// for the given seed hash.
-    fn shielded_sync_task(&self, seed_hash: &WalletSeedHash) -> Option<BackendTask> {
+    fn shielded_sync_task(&self, seed_hash: &WalletId) -> Option<BackendTask> {
         let states = self.app_context.shielded_states.lock().ok()?;
         if states.contains_key(seed_hash) {
             Some(BackendTask::ShieldedTask(ShieldedTask::SyncNotes {

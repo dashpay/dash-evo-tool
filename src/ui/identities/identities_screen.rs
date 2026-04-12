@@ -7,7 +7,7 @@ use crate::model::qualified_identity::PrivateKeyTarget::{
     PrivateKeyOnMainIdentity, PrivateKeyOnVoterIdentity,
 };
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
-use crate::model::wallet::WalletSeedHash;
+use crate::model::wallet::WalletId;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::{ConfirmationDialog, ConfirmationStatus, island_central_panel};
 use crate::ui::components::top_panel::add_top_panel;
@@ -57,7 +57,7 @@ pub struct IdentitiesScreen {
     pub app_context: Arc<AppContext>,
     pub identity_to_remove: Option<QualifiedIdentity>,
     remove_confirmation_dialog: Option<ConfirmationDialog>,
-    pub wallet_seed_hash_cache: HashMap<WalletSeedHash, String>,
+    pub wallet_seed_hash_cache: HashMap<WalletId, String>,
     sort_column: IdentitiesSortColumn,
     sort_order: IdentitiesSortOrder,
     use_custom_order: bool,
@@ -307,7 +307,7 @@ impl IdentitiesScreen {
         }
     }
 
-    fn find_wallet(&mut self, wallet_seed_hash: &WalletSeedHash) -> Option<String> {
+    fn find_wallet(&mut self, wallet_seed_hash: &WalletId) -> Option<String> {
         if let Some(in_wallet_text) = self.wallet_seed_hash_cache.get(wallet_seed_hash) {
             return Some(in_wallet_text.clone());
         }

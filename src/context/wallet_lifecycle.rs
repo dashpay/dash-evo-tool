@@ -6,7 +6,7 @@ use crate::model::qualified_identity::encrypted_key_storage::{
 };
 use crate::model::qualified_identity::{PrivateKeyTarget, QualifiedIdentity};
 use crate::model::wallet::{
-    DerivationPathHelpers, DerivationPathReference, DerivationPathType, Wallet, WalletSeedHash,
+    DerivationPathHelpers, DerivationPathReference, DerivationPathType, Wallet, WalletId,
 };
 use crate::platform_wallet_bridge::{
     ManagedDpnsNameInfo, ManagedIdentityStatus, ManagedKeyStorage, ManagedPrivateKeyData,
@@ -63,12 +63,12 @@ impl AppContext {
         Ok(())
     }
 
-    /// Get a `PlatformWallet` by `WalletSeedHash`.
+    /// Get a `PlatformWallet` by `WalletId`.
     ///
     /// Returns `None` if the wallet doesn't exist or is locked (no platform_wallet).
     pub(crate) fn get_platform_wallet(
         &self,
-        seed_hash: &WalletSeedHash,
+        seed_hash: &WalletId,
     ) -> Option<Arc<PlatformWallet>> {
         self.wallets
             .read()
@@ -95,7 +95,7 @@ impl AppContext {
     /// Convenience wrapper for backend tasks that need the platform wallet.
     pub(crate) fn require_platform_wallet(
         &self,
-        seed_hash: &WalletSeedHash,
+        seed_hash: &WalletId,
     ) -> Result<Arc<PlatformWallet>, TaskError> {
         self.get_platform_wallet(seed_hash)
             .ok_or(TaskError::WalletNotFound)
@@ -213,7 +213,7 @@ impl AppContext {
     pub fn register_wallet(
         self: &Arc<Self>,
         wallet: Wallet,
-    ) -> Result<(WalletSeedHash, Arc<RwLock<Wallet>>), TaskError> {
+    ) -> Result<(WalletId, Arc<RwLock<Wallet>>), TaskError> {
         // 1. Persist wallet (no legacy address maps)
         self.db
             .store_wallet_with_addresses(&wallet, &self.network, &[])
@@ -289,7 +289,7 @@ impl AppContext {
     /// previous unlock), this is a no-op.
     pub(crate) fn register_with_platform_wallet_manager(
         self: &Arc<Self>,
-        seed_hash: WalletSeedHash,
+        seed_hash: WalletId,
         seed_bytes: [u8; 64],
     ) {
         // Check if already registered
@@ -385,7 +385,7 @@ impl AppContext {
     /// cannot prove are `'static` (rust-lang/rust#100013). The trampoline
     /// resolves the futures synchronously on a blocking thread, satisfying
     /// the `'static` bound required by `spawn_sync`.
-    fn queue_shielded_sync(self: &Arc<Self>, seed_hash: WalletSeedHash) {
+    fn queue_shielded_sync(self: &Arc<Self>, seed_hash: WalletId) {
         let ctx = Arc::clone(self);
         self.subtasks.spawn_sync("shielded_sync", async move {
             let handle = tokio::runtime::Handle::current();
@@ -420,7 +420,7 @@ impl AppContext {
         });
     }
 
-    fn wallet_seed_snapshot(wallet: &Arc<RwLock<Wallet>>) -> Option<(WalletSeedHash, [u8; 64])> {
+    fn wallet_seed_snapshot(wallet: &Arc<RwLock<Wallet>>) -> Option<(WalletId, [u8; 64])> {
         let guard = wallet.read().ok()?;
         if !guard.is_open() {
             return None;
@@ -552,7 +552,7 @@ impl AppContext {
     /// This uses the proof-verified data from SDK operations rather than fetching.
     pub(crate) fn update_wallet_platform_address_info_from_sdk(
         &self,
-        seed_hash: WalletSeedHash,
+        seed_hash: WalletId,
         address_infos: &dash_sdk::query_types::AddressInfos,
     ) -> Result<(), TaskError> {
         // Verify the wallet exists
@@ -1415,7 +1415,7 @@ impl AppContext {
     /// Voter/operator keys and encrypted keys are skipped.
     fn convert_key_storage(
         qi_keys: &crate::model::qualified_identity::encrypted_key_storage::KeyStorage,
-        _seed_hash: &WalletSeedHash,
+        _seed_hash: &WalletId,
     ) -> ManagedKeyStorage {
         let mut result = ManagedKeyStorage::new();
 

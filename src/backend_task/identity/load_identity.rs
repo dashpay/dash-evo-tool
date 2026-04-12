@@ -12,7 +12,7 @@ use crate::model::qualified_identity::qualified_identity_public_key::QualifiedId
 use crate::model::qualified_identity::{
     DPNSNameInfo, IdentityStatus, IdentityType, QualifiedIdentity,
 };
-use crate::model::wallet::{Wallet, WalletSeedHash};
+use crate::model::wallet::{Wallet, WalletId};
 use crate::ui::identities::add_new_identity_screen::MAX_IDENTITY_INDEX;
 use dash_sdk::Sdk;
 use dash_sdk::dashcore_rpc::dashcore::PrivateKey;
@@ -32,7 +32,7 @@ use std::convert::TryInto;
 use std::sync::{Arc, RwLock};
 
 type WalletKeyMap = BTreeMap<(PrivateKeyTarget, u32), (QualifiedIdentityPublicKey, PrivateKeyData)>;
-type WalletMatchResult = Option<(WalletSeedHash, u32, WalletKeyMap)>;
+type WalletMatchResult = Option<(WalletId, u32, WalletKeyMap)>;
 
 impl AppContext {
     pub(super) async fn load_identity(
@@ -219,7 +219,7 @@ impl AppContext {
             None
         };
 
-        // let mut wallet_seed_hash: Option<(WalletSeedHash, u32)> = None;
+        // let mut wallet_seed_hash: Option<(WalletId, u32)> = None;
 
         if identity_type == IdentityType::User {
             let input_private_keys = keys_input
@@ -371,8 +371,8 @@ impl AppContext {
     pub(super) fn match_user_identity_keys_with_wallet(
         &self,
         identity: &Identity,
-        wallets: &BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>,
-        wallet_filter: Option<WalletSeedHash>,
+        wallets: &BTreeMap<WalletId, Arc<RwLock<Wallet>>>,
+        wallet_filter: Option<WalletId>,
     ) -> Result<WalletMatchResult, TaskError> {
         let highest_identity_key_id = identity.public_keys().keys().copied().max().unwrap_or(0);
         let top_bound = highest_identity_key_id.saturating_add(6).max(1);
@@ -413,7 +413,7 @@ impl AppContext {
         &self,
         identity: &Identity,
         wallet: &mut Wallet,
-        wallet_seed_hash: WalletSeedHash,
+        wallet_seed_hash: WalletId,
         top_bound: u32,
     ) -> Result<Option<(u32, WalletKeyMap)>, TaskError> {
         for candidate_index in 0..MAX_IDENTITY_INDEX {
@@ -495,7 +495,7 @@ impl AppContext {
     fn build_wallet_private_key_map(
         &self,
         identity: &Identity,
-        wallet_seed_hash: WalletSeedHash,
+        wallet_seed_hash: WalletId,
         identity_index: u32,
         public_key_map: &BTreeMap<Vec<u8>, u32>,
         public_key_hash_map: &BTreeMap<[u8; 20], u32>,

@@ -18,7 +18,7 @@ use dash_sdk::dpp::dashcore::bls_sig_utils::BLSSignature;
 use dash_sdk::dpp::dashcore::network::message_qrinfo::QRInfo;
 use dash_sdk::dpp::dashcore::BlockHash;
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::model::wallet::WalletSeedHash;
+use crate::model::wallet::WalletId;
 use crate::model::grovestark_prover::ProofDataOutput;
 use crate::ui::tokens::tokens_screen::{
     ContractDescriptionInfo, IdentityTokenIdentifier, TokenInfo,
@@ -214,28 +214,28 @@ pub enum BackendTaskSuccessResult {
     GeneratedZKProof(ProofDataOutput),
     VerifiedZKProof(bool, ProofDataOutput),
     GeneratedReceiveAddress {
-        seed_hash: WalletSeedHash,
+        seed_hash: WalletId,
         address: String,
     },
     /// Per-address info loaded from the CoreWallet bridge
     AddressInfo(Vec<crate::platform_wallet_bridge::CoreAddressInfo>),
     /// Platform address balances fetched from Platform
     PlatformAddressBalances {
-        seed_hash: WalletSeedHash,
+        seed_hash: WalletId,
         /// Map of address to (balance, nonce)
         balances: BTreeMap<Address<NetworkChecked>, (u64, u32)>,
     },
     /// Platform credits transferred between addresses
     PlatformCreditsTransferred {
-        seed_hash: WalletSeedHash,
+        seed_hash: WalletId,
     },
     /// Platform address funded from asset lock
     PlatformAddressFunded {
-        seed_hash: WalletSeedHash,
+        seed_hash: WalletId,
     },
     /// Withdrawal from Platform address to Core initiated
     PlatformAddressWithdrawal {
-        seed_hash: WalletSeedHash,
+        seed_hash: WalletId,
     },
 
     // MNList-specific results
@@ -326,36 +326,36 @@ pub enum BackendTaskSuccessResult {
 
     // Shielded pool results
     ShieldedInitialized {
-        seed_hash: WalletSeedHash,
+        seed_hash: WalletId,
         balance: u64,
     },
     ShieldedNotesSynced {
-        seed_hash: WalletSeedHash,
+        seed_hash: WalletId,
         new_notes: u32,
         balance: u64,
     },
     ShieldedCreditsShielded {
-        seed_hash: WalletSeedHash,
+        seed_hash: WalletId,
         amount: u64,
     },
     ShieldedTransferComplete {
-        seed_hash: WalletSeedHash,
+        seed_hash: WalletId,
         amount: u64,
     },
     ShieldedCreditsUnshielded {
-        seed_hash: WalletSeedHash,
+        seed_hash: WalletId,
         amount: u64,
     },
     ShieldedNullifiersChecked {
-        seed_hash: WalletSeedHash,
+        seed_hash: WalletId,
         spent_count: u32,
     },
     ShieldedFromAssetLock {
-        seed_hash: WalletSeedHash,
+        seed_hash: WalletId,
         amount: u64,
     },
     ShieldedWithdrawalComplete {
-        seed_hash: WalletSeedHash,
+        seed_hash: WalletId,
         amount: u64,
     },
     ProvingKeyReady,

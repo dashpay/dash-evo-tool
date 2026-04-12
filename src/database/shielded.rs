@@ -1,5 +1,5 @@
 use crate::database::Database;
-use crate::model::wallet::WalletSeedHash;
+use crate::model::wallet::WalletId;
 use rusqlite::{Connection, params};
 
 impl Database {
@@ -35,7 +35,7 @@ impl Database {
     /// Insert a shielded note into the database.
     pub fn insert_shielded_note(
         &self,
-        wallet_seed_hash: &WalletSeedHash,
+        wallet_seed_hash: &WalletId,
         note: &InsertShieldedNote<'_>,
     ) -> rusqlite::Result<()> {
         let conn = self.conn.lock().unwrap();
@@ -60,7 +60,7 @@ impl Database {
     /// Get all unspent shielded notes for a wallet on a given network.
     pub fn get_unspent_shielded_notes(
         &self,
-        wallet_seed_hash: &WalletSeedHash,
+        wallet_seed_hash: &WalletId,
         network: &str,
     ) -> rusqlite::Result<Vec<ShieldedNoteRow>> {
         let conn = self.conn.lock().unwrap();
@@ -99,7 +99,7 @@ impl Database {
     /// Get all shielded notes (spent and unspent) for a wallet on a given network.
     pub fn get_all_shielded_notes(
         &self,
-        wallet_seed_hash: &WalletSeedHash,
+        wallet_seed_hash: &WalletId,
         network: &str,
     ) -> rusqlite::Result<Vec<ShieldedNoteRow>> {
         let conn = self.conn.lock().unwrap();
@@ -138,7 +138,7 @@ impl Database {
     /// Mark a shielded note as spent by its nullifier.
     pub fn mark_shielded_note_spent(
         &self,
-        wallet_seed_hash: &WalletSeedHash,
+        wallet_seed_hash: &WalletId,
         nullifier: &[u8; 32],
         network: &str,
     ) -> rusqlite::Result<usize> {
@@ -153,7 +153,7 @@ impl Database {
     /// Delete all shielded notes for a wallet (used by resync).
     pub fn delete_shielded_notes(
         &self,
-        wallet_seed_hash: &WalletSeedHash,
+        wallet_seed_hash: &WalletId,
         network: &str,
     ) -> rusqlite::Result<usize> {
         let conn = self.conn.lock().unwrap();
@@ -238,7 +238,7 @@ impl Database {
     /// Get the last nullifier sync height and timestamp for a wallet on a given network.
     pub fn get_nullifier_sync_info(
         &self,
-        wallet_seed_hash: &WalletSeedHash,
+        wallet_seed_hash: &WalletId,
         network: &str,
     ) -> Result<(u64, u64), String> {
         let conn = self.conn.lock().unwrap();
@@ -262,7 +262,7 @@ impl Database {
     /// Set the last nullifier sync height and timestamp for a wallet on a given network.
     pub fn set_nullifier_sync_info(
         &self,
-        wallet_seed_hash: &WalletSeedHash,
+        wallet_seed_hash: &WalletId,
         network: &str,
         height: u64,
         timestamp: u64,
@@ -286,7 +286,7 @@ impl Database {
     /// Get total shielded balance (sum of unspent note values) for a wallet.
     pub fn get_shielded_balance(
         &self,
-        wallet_seed_hash: &WalletSeedHash,
+        wallet_seed_hash: &WalletId,
         network: &str,
     ) -> rusqlite::Result<u64> {
         let conn = self.conn.lock().unwrap();

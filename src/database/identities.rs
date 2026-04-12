@@ -1,7 +1,7 @@
 use crate::context::AppContext;
 use crate::database::Database;
 use crate::model::qualified_identity::{IdentityStatus, QualifiedIdentity};
-use crate::model::wallet::{Wallet, WalletSeedHash};
+use crate::model::wallet::{Wallet, WalletId};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
@@ -44,7 +44,7 @@ impl Database {
     pub fn insert_local_qualified_identity(
         &self,
         qualified_identity: &QualifiedIdentity,
-        wallet_and_identity_id_info: &Option<(WalletSeedHash, u32)>,
+        wallet_and_identity_id_info: &Option<(WalletId, u32)>,
         app_context: &AppContext,
     ) -> rusqlite::Result<()> {
         let id = qualified_identity.identity.id().to_vec();
@@ -122,7 +122,7 @@ impl Database {
     pub fn get_local_qualified_identities(
         &self,
         app_context: &AppContext,
-        wallets: &BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>,
+        wallets: &BTreeMap<WalletId, Arc<RwLock<Wallet>>>,
     ) -> rusqlite::Result<Vec<QualifiedIdentity>> {
         let network = app_context.network.to_string();
 
@@ -186,7 +186,7 @@ impl Database {
     pub fn get_local_qualified_identities_in_wallets(
         &self,
         app_context: &AppContext,
-        wallets: &BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>,
+        wallets: &BTreeMap<WalletId, Arc<RwLock<Wallet>>>,
     ) -> rusqlite::Result<Vec<QualifiedIdentity>> {
         let network = app_context.network.to_string();
 
@@ -249,7 +249,7 @@ impl Database {
         &self,
         identifier: &Identifier,
         app_context: &AppContext,
-        wallets: &BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>,
+        wallets: &BTreeMap<WalletId, Arc<RwLock<Wallet>>>,
     ) -> rusqlite::Result<Option<QualifiedIdentity>> {
         let network = app_context.network.to_string();
 
@@ -305,7 +305,7 @@ impl Database {
     /// (identified by seed hash) and returns the `wallet_index` values as a set.
     pub fn get_wallet_identity_indices(
         &self,
-        wallet_seed_hash: &WalletSeedHash,
+        wallet_seed_hash: &WalletId,
         network: Network,
     ) -> HashSet<u32> {
         let network_str = network.to_string();
@@ -366,17 +366,17 @@ impl Database {
     pub fn get_local_user_identities(
         &self,
         app_context: &AppContext,
-    ) -> rusqlite::Result<Vec<(QualifiedIdentity, Option<WalletSeedHash>)>> {
+    ) -> rusqlite::Result<Vec<(QualifiedIdentity, Option<WalletId>)>> {
         let network = app_context.network.to_string();
 
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT data,wallet FROM identity WHERE is_local = 1 AND network = ? AND identity_type = 'User' AND data IS NOT NULL",
         )?;
-        let identities: Result<Vec<(QualifiedIdentity, Option<WalletSeedHash>)>, rusqlite::Error> =
+        let identities: Result<Vec<(QualifiedIdentity, Option<WalletId>)>, rusqlite::Error> =
             stmt.query_map(params![network], |row| {
                 let data: Vec<u8> = row.get(0)?;
-                let wallet_id: Option<WalletSeedHash> = row.get(1)?;
+                let wallet_id: Option<WalletId> = row.get(1)?;
                 let mut identity =
                     QualifiedIdentity::from_bytes(&data).map_err(super::CorruptedBlobError)?;
                 identity.network = app_context.network;

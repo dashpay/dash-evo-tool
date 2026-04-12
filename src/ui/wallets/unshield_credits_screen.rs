@@ -4,7 +4,7 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::address::{AddressKind, ValidatedAddress};
 use crate::model::amount::Amount;
-use crate::model::wallet::WalletSeedHash;
+use crate::model::wallet::WalletId;
 use crate::ui::components::ComponentResponse;
 use crate::ui::components::address_input::AddressInput;
 use crate::ui::components::amount_input::AmountInput;
@@ -28,7 +28,7 @@ enum Status {
 
 pub struct UnshieldCreditsScreen {
     pub app_context: Arc<AppContext>,
-    pub seed_hash: WalletSeedHash,
+    pub seed_hash: WalletId,
     amount_input: Option<AmountInput>,
     amount: Option<Amount>,
     address_input: Option<AddressInput>,
@@ -50,7 +50,7 @@ impl UnshieldCreditsScreen {
         self.validated_destination = None;
     }
 
-    pub fn new(seed_hash: WalletSeedHash, app_context: &Arc<AppContext>) -> Self {
+    pub fn new(seed_hash: WalletId, app_context: &Arc<AppContext>) -> Self {
         let max_balance = app_context
             .shielded_states
             .lock()

@@ -2,7 +2,7 @@ use super::AppContext;
 use crate::backend_task::contested_names::ScheduledDPNSVote;
 use crate::model::contested_name::ContestedName;
 use crate::model::qualified_identity::{DPNSNameInfo, QualifiedIdentity};
-use crate::model::wallet::WalletSeedHash;
+use crate::model::wallet::WalletId;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
 use rusqlite::Result;
@@ -12,7 +12,7 @@ impl AppContext {
     pub fn insert_local_qualified_identity(
         &self,
         qualified_identity: &QualifiedIdentity,
-        wallet_and_identity_id_info: &Option<(WalletSeedHash, u32)>,
+        wallet_and_identity_id_info: &Option<(WalletId, u32)>,
     ) -> Result<()> {
         self.db.insert_local_qualified_identity(
             qualified_identity,
@@ -122,7 +122,7 @@ impl AppContext {
     fn load_wallet_for_identity(
         &self,
         identity: &mut QualifiedIdentity,
-        wallet_hashes: &[WalletSeedHash],
+        wallet_hashes: &[WalletId],
     ) -> Result<()> {
         let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
         for wallet_hash in wallet_hashes {

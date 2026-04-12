@@ -18,7 +18,7 @@ use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, Wallet
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::qualified_identity::{IdentityType, PrivateKeyTarget, QualifiedIdentity};
 use crate::model::secret::Secret;
-use crate::model::wallet::{Wallet, WalletArcRef, WalletSeedHash};
+use crate::model::wallet::{Wallet, WalletArcRef, WalletId};
 use dash_sdk::Sdk;
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dashcore_rpc::dashcore::{Address, PrivateKey};
@@ -48,7 +48,7 @@ pub struct IdentityInputToLoad {
     pub payout_address_private_key_input: Secret,
     pub keys_input: Vec<Secret>,
     pub derive_keys_from_wallets: bool,
-    pub selected_wallet_seed_hash: Option<WalletSeedHash>,
+    pub selected_wallet_seed_hash: Option<WalletId>,
 }
 
 /// A key input tuple containing the private key with derivation path, key type, purpose,
@@ -81,7 +81,7 @@ impl IdentityKeys {
         }
     }
 
-    pub fn to_key_storage(&self, wallet_seed_hash: WalletSeedHash) -> KeyStorage {
+    pub fn to_key_storage(&self, wallet_seed_hash: WalletId) -> KeyStorage {
         let Self {
             master_private_key,
             master_private_key_type,
@@ -295,7 +295,7 @@ pub enum RegisterIdentityFundingMethod {
         /// Platform addresses and credits to use
         inputs: BTreeMap<dash_sdk::dpp::address_funds::PlatformAddress, Credits>,
         /// Wallet seed hash for signing
-        wallet_seed_hash: WalletSeedHash,
+        wallet_seed_hash: WalletId,
     },
 }
 
@@ -350,7 +350,7 @@ pub enum IdentityTask {
     SearchIdentitiesUpToIndex(WalletArcRef, IdentityIndex),
     /// Search for an identity by its DPNS name (without .dash suffix)
     /// Second parameter is optional wallet seed hash for key derivation
-    SearchIdentityByDpnsName(String, Option<WalletSeedHash>),
+    SearchIdentityByDpnsName(String, Option<WalletId>),
     RegisterIdentity(IdentityRegistrationInfo),
     TopUpIdentity(IdentityTopUpInfo),
     /// Top up an identity from Platform addresses
@@ -359,7 +359,7 @@ pub enum IdentityTask {
         /// Platform addresses and amounts to use for top-up
         inputs: BTreeMap<dash_sdk::dpp::address_funds::PlatformAddress, Credits>,
         /// Wallet seed hash for signing
-        wallet_seed_hash: WalletSeedHash,
+        wallet_seed_hash: WalletId,
     },
     AddKeyToIdentity(QualifiedIdentity, QualifiedIdentityPublicKey, [u8; 32]),
     WithdrawFromIdentity(QualifiedIdentity, Option<Address>, Credits, Option<KeyID>),
@@ -760,7 +760,7 @@ impl AppContext {
         sdk: &Sdk,
         qualified_identity: QualifiedIdentity,
         inputs: BTreeMap<dash_sdk::dpp::address_funds::PlatformAddress, Credits>,
-        wallet_seed_hash: WalletSeedHash,
+        wallet_seed_hash: WalletId,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         use crate::model::fee_estimation::PlatformFeeEstimator;
         use dash_sdk::platform::transition::top_up_identity_from_addresses::TopUpIdentityFromAddresses;
@@ -850,7 +850,7 @@ impl AppContext {
         // Update destination address balances in any wallets that contain them
         // (using proof-verified data from the SDK response).
         {
-            let seed_hashes: Vec<WalletSeedHash> = self
+            let seed_hashes: Vec<WalletId> = self
                 .wallets
                 .read()
                 .map(|w| w.keys().copied().collect())

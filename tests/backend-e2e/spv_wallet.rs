@@ -58,13 +58,13 @@ async fn test_spv_sync_and_create_wallet() {
     }
 
     // Verify in SPV (10s timeout) — wallet is registered with
-    // PlatformWalletManager, indicated by the wallet-ID mapping.
+    // PlatformWalletManager, indicated by its presence in the wallets map.
     let wallet_in_spv = timeout(Duration::from_secs(10), async {
         loop {
             let registered = app_context
-                .wallet_id_mapping()
-                .lock()
-                .map(|m| m.wallet_id_for_seed(&seed_hash).is_some())
+                .wallets()
+                .read()
+                .map(|w| w.contains_key(&seed_hash))
                 .unwrap_or(false);
             if registered {
                 return true;

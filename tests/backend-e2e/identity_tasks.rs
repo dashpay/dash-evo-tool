@@ -75,7 +75,7 @@ async fn step_top_up_from_platform_addresses(
     let fund_result = run_task_with_nonce_retry(
         &ctx.app_context,
         BackendTask::WalletTask(WalletTask::FundPlatformAddressFromWalletUtxos {
-            seed_hash: si.wallet_seed_hash,
+            wallet_id: si.wallet_seed_hash,
             amount: 200_000,
             destination: platform_addr,
             fee_deduct_from_output: true,
@@ -115,7 +115,7 @@ async fn step_top_up_from_platform_addresses(
         let balances_result = run_task(
             &ctx.app_context,
             BackendTask::WalletTask(WalletTask::FetchPlatformAddressBalances {
-                seed_hash: si.wallet_seed_hash,
+                wallet_id: si.wallet_seed_hash,
             }),
         )
         .await
@@ -157,7 +157,7 @@ async fn step_top_up_from_platform_addresses(
         BackendTask::IdentityTask(IdentityTask::TopUpIdentityFromPlatformAddresses {
             identity: si.qualified_identity.clone(),
             inputs,
-            wallet_seed_hash: si.wallet_seed_hash,
+            wallet_id: si.wallet_seed_hash,
         }),
     )
     .await
@@ -426,7 +426,7 @@ async fn tc_027_load_identity() {
         payout_address_private_key_input: Secret::new(""),
         keys_input: vec![],
         derive_keys_from_wallets: true,
-        selected_wallet_seed_hash: Some(si.wallet_seed_hash),
+        selected_wallet_id: Some(si.wallet_seed_hash),
     };
 
     let result = run_task(
@@ -531,7 +531,7 @@ async fn tc_030_load_nonexistent_identity() {
         payout_address_private_key_input: Secret::new(""),
         keys_input: vec![],
         derive_keys_from_wallets: false,
-        selected_wallet_seed_hash: None,
+        selected_wallet_id: None,
     };
 
     let result = run_task(
@@ -590,7 +590,7 @@ async fn tc_031_incremental_address_discovery() {
     let fund_result = run_task_with_nonce_retry(
         &ctx.app_context,
         BackendTask::WalletTask(WalletTask::FundPlatformAddressFromWalletUtxos {
-            seed_hash: si.wallet_seed_hash,
+            wallet_id: si.wallet_seed_hash,
             amount: 200_000,
             destination: platform_addr,
             fee_deduct_from_output: true,
@@ -660,7 +660,7 @@ async fn tc_031_incremental_address_discovery() {
     let full_sync_result = run_task(
         &ctx.app_context,
         BackendTask::WalletTask(WalletTask::FetchPlatformAddressBalances {
-            seed_hash: si.wallet_seed_hash,
+            wallet_id: si.wallet_seed_hash,
         }),
     )
     .await
@@ -699,7 +699,7 @@ async fn tc_031_incremental_address_discovery() {
     let incr_result = run_task(
         &ctx.app_context,
         BackendTask::WalletTask(WalletTask::FetchPlatformAddressBalances {
-            seed_hash: si.wallet_seed_hash,
+            wallet_id: si.wallet_seed_hash,
         }),
     )
     .await

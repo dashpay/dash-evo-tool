@@ -1587,7 +1587,18 @@ impl AppContext {
         // Load user preference for local node
         let use_local_node = self.db.get_use_local_spv_node().unwrap_or(false);
 
-        // Configure peer discovery based on network type and user preference
+        // Configure peer discovery based on network type and user preference.
+        //
+        // For devnet/regtest and local-node mode, use the configured Core
+        // host as the single SPV peer.
+        //
+        // For mainnet/testnet with DNS discovery, ALSO seed the peer list
+        // from the configured DAPI addresses (if set in .env). DAPI nodes
+        // are masternodes that serve P2P on the standard port (9999 for
+        // mainnet, 19999 for testnet). Using them avoids relying solely on
+        // DNS seeds, which can resolve to stale nodes that don't support
+        // compact block filters — causing CFHeaders timeouts and SPV sync
+        // stalls.
         if self.network == Network::Devnet || self.network == Network::Regtest {
             if let Some(peer) = self.primary_peer_socket() {
                 config.add_peer(peer);
@@ -1597,7 +1608,31 @@ impl AppContext {
                 config.add_peer(peer);
             }
         }
-        // Otherwise, no peers added — SPV will use DNS seed discovery
+
+        // Seed SPV peers from DAPI addresses (all networks except local node).
+        if !use_local_node {
+            let p2p_port = match self.network {
+                Network::Mainnet => 9999u16,
+                Network::Testnet => 19999,
+                _ => 19999,
+            };
+            if let Some(ref dapi_addrs) = cfg.dapi_addresses {
+                for addr_str in dapi_addrs.split(',') {
+                    // Parse "https://68.67.122.1:1443" → extract host IP
+                    let trimmed = addr_str.trim();
+                    if let Some(host) = trimmed
+                        .strip_prefix("https://")
+                        .or_else(|| trimmed.strip_prefix("http://"))
+                    {
+                        // Strip port (":1443") if present
+                        let ip_str = host.split(':').next().unwrap_or(host);
+                        if let Ok(ip) = ip_str.parse::<std::net::IpAddr>() {
+                            config.add_peer(std::net::SocketAddr::new(ip, p2p_port));
+                        }
+                    }
+                }
+            }
+        }
 
         Ok(config)
     }

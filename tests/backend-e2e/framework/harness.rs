@@ -159,7 +159,10 @@ impl BackendTestContext {
                 None,
             )
             .expect("Failed to compute framework wallet hash");
-            tmp_wallet.seed_hash()
+            // Use wallet_id (SHA256 of root_pub_key || chain_code),
+            // NOT seed_hash (SHA256 of seed). AppContext.wallets is
+            // keyed by WalletId after the v40 migration.
+            tmp_wallet.wallet_id()
         };
 
         // Purge stale wallets from the persistent DB before SPV starts.
@@ -205,6 +208,31 @@ impl BackendTestContext {
             }
         }
 
+        // Register framework wallet BEFORE starting SPV so that
+        // `build_spv_config` sees `has_wallets = true` and sets
+        // `start_height = 0` (scan from genesis/checkpoint). Without
+        // this, a fresh DB has no wallets → `start_height = u32::MAX`
+        // → SPV starts at chain tip and never scans the historical
+        // blocks containing the framework wallet's funded UTXOs.
+        tracing::info!("Restoring framework wallet from E2E_WALLET_MNEMONIC");
+        let wallet = dash_evo_tool::model::wallet::Wallet::new_from_seed(
+            seed,
+            Network::Testnet,
+            Some("E2E Framework Wallet".to_string()),
+            None,
+        )
+        .expect("Failed to create framework wallet");
+
+        match app_context.register_wallet(wallet) {
+            Ok((hash, _)) => {
+                tracing::info!("Registered framework wallet (seed_hash: {:?})", &hash[..4]);
+            }
+            Err(TaskError::WalletAlreadyImported) => {
+                tracing::info!("Framework wallet already registered (reusing from persistent DB)");
+            }
+            Err(e) => panic!("Failed to register framework wallet: {}", e),
+        }
+
         // Switch to SPV mode and start
         app_context.set_core_backend_mode(CoreBackendMode::Spv);
         app_context.start_spv().expect("Failed to start SPV");
@@ -245,27 +273,8 @@ impl BackendTestContext {
             .expect("SPV failed to connect to any peers within 60s");
         tracing::info!("SPV connected to peers");
 
-        tracing::info!("Restoring framework wallet from E2E_WALLET_MNEMONIC");
-        let wallet = dash_evo_tool::model::wallet::Wallet::new_from_seed(
-            seed,
-            Network::Testnet,
-            Some("E2E Framework Wallet".to_string()),
-            None,
-        )
-        .expect("Failed to create framework wallet");
-
-        // Try to register; if the wallet already exists (persistent DB), just look it up.
-        match app_context.register_wallet(wallet) {
-            Ok((hash, _)) => {
-                tracing::info!("Registered framework wallet (seed_hash: {:?})", &hash[..4]);
-            }
-            Err(TaskError::WalletAlreadyImported) => {
-                tracing::info!("Framework wallet already registered (reusing from persistent DB)");
-            }
-            Err(e) => panic!("Failed to register framework wallet: {}", e),
-        }
-
-        // Wait for wallet to appear in SPV
+        // Wait for wallet to appear in SPV (wallet was registered above,
+        // before SPV start, so it should be immediate).
         wait::wait_for_wallet_in_spv(&app_context, framework_wallet_hash, Duration::from_secs(30))
             .await
             .expect("Framework wallet not picked up by SPV");

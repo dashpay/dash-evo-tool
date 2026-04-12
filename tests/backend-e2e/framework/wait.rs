@@ -139,7 +139,7 @@ pub async fn wait_for_spendable_balance(
 }
 
 /// Wait until a wallet appears in the SPV subsystem (registered with
-/// PlatformWalletManager, as indicated by the wallet-ID mapping).
+/// PlatformWalletManager, as indicated by the wallet being in the wallets map).
 pub async fn wait_for_wallet_in_spv(
     app_context: &Arc<AppContext>,
     wallet_hash: WalletSeedHash,
@@ -148,9 +148,9 @@ pub async fn wait_for_wallet_in_spv(
     timeout(wait_timeout, async {
         loop {
             let registered = app_context
-                .wallet_id_mapping()
-                .lock()
-                .map(|m| m.wallet_id_for_seed(&wallet_hash).is_some())
+                .wallets()
+                .read()
+                .map(|w| w.contains_key(&wallet_hash))
                 .unwrap_or(false);
             if registered {
                 return;

@@ -102,13 +102,15 @@ pub async fn warm_up_and_init(app_context: &Arc<AppContext>, seed_hash: WalletSe
 
     // Initialize shielded wallet
     tracing::info!("shielded_helpers: initializing shielded wallet...");
-    let task = BackendTask::ShieldedTask(ShieldedTask::InitializeShieldedWallet { seed_hash });
+    let task = BackendTask::ShieldedTask(ShieldedTask::InitializeShieldedWallet {
+        wallet_id: seed_hash,
+    });
     let result = run_task(app_context, task)
         .await
         .expect("shielded_helpers: InitializeShieldedWallet failed");
     match result {
         BackendTaskSuccessResult::ShieldedInitialized {
-            seed_hash: sh,
+            wallet_id: sh,
             balance,
         } => {
             assert_eq!(sh, seed_hash);

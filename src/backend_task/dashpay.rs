@@ -15,6 +15,7 @@ pub mod encryption_tests;
 pub mod errors;
 pub mod incoming_payments;
 pub mod payments;
+pub mod platform_wallet_cache;
 pub mod profile;
 pub mod validation;
 

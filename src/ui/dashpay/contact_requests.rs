@@ -25,6 +25,40 @@ use std::sync::{Arc, RwLock};
 
 use super::format_relative_time;
 
+/// Extract DIP-15 cryptographic fields from a platform
+/// `contactRequest` Document's properties (Item 7b). Each field is
+/// returned as `None` if it's missing or wrong-typed — the load
+/// path skips `EstablishedContact` reconstruction for rows where
+/// any required field is `None` and relies on the next background
+/// contact-request sync to repopulate them.
+fn extract_dip15_crypto_from_document(
+    doc: &Document,
+) -> crate::database::dashpay::ContactRequestCryptoFields {
+    use dash_sdk::dpp::document::DocumentV0Getters;
+    let properties = doc.properties();
+    let u32_prop = |key: &str| -> Option<u32> {
+        properties
+            .get(key)
+            .and_then(|v| v.as_integer::<i64>())
+            .and_then(|i| u32::try_from(i).ok())
+    };
+    let bytes_prop = |key: &str| -> Option<Vec<u8>> {
+        properties
+            .get(key)
+            .and_then(|v| v.as_bytes())
+            .cloned()
+    };
+    crate::database::dashpay::ContactRequestCryptoFields {
+        sender_key_index: u32_prop("senderKeyIndex"),
+        recipient_key_index: u32_prop("recipientKeyIndex"),
+        account_reference: u32_prop("accountReference"),
+        encrypted_public_key: bytes_prop("encryptedPublicKey"),
+        encrypted_account_label_bytes: bytes_prop("encryptedAccountLabel"),
+        auto_accept_proof: bytes_prop("autoAcceptProof"),
+        core_height_created_at: u32_prop("coreHeightCreatedAt"),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ContactRequest {
     pub request_id: Identifier,
@@ -1116,6 +1150,15 @@ impl ScreenLike for ContactRequests {
                         current_identity_id,
                         network_str
                     );
+                    let crypto = extract_dip15_crypto_from_document(doc);
+                    // Platform document `created_at` is TimestampMillis.
+                    // Persist explicitly so the load path hydrates the
+                    // real platform-side timestamp, not the row-save
+                    // local time. Review M2.
+                    let platform_created_at_ms = doc
+                        .created_at()
+                        .or_else(|| doc.updated_at())
+                        .map(|v| v as i64);
                     match self.app_context.db.save_contact_request(
                         &from_identity,
                         &current_identity_id,
@@ -1123,6 +1166,8 @@ impl ScreenLike for ContactRequests {
                         None, // to_username
                         request.account_label.as_deref(),
                         "received",
+                        crypto,
+                        platform_created_at_ms,
                     ) {
                         Ok(id) => tracing::debug!("Saved incoming contact request with id {}", id),
                         Err(e) => tracing::error!("Failed to save incoming contact request: {}", e),
@@ -1169,6 +1214,13 @@ impl ScreenLike for ContactRequests {
                         to_identity,
                         network_str
                     );
+                    let crypto = extract_dip15_crypto_from_document(doc);
+                    // See the matching "Saving incoming" block above
+                    // for the M2 rationale.
+                    let platform_created_at_ms = doc
+                        .created_at()
+                        .or_else(|| doc.updated_at())
+                        .map(|v| v as i64);
                     match self.app_context.db.save_contact_request(
                         &current_identity_id,
                         &to_identity,
@@ -1176,6 +1228,8 @@ impl ScreenLike for ContactRequests {
                         None, // to_username
                         request.account_label.as_deref(),
                         "sent",
+                        crypto,
+                        platform_created_at_ms,
                     ) {
                         Ok(id) => tracing::debug!("Saved outgoing contact request with id {}", id),
                         Err(e) => tracing::error!("Failed to save outgoing contact request: {}", e),

@@ -9,7 +9,6 @@ use dash_sdk::Error;
 use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
-use std::collections::BTreeMap;
 
 impl AppContext {
     pub(super) async fn top_up_identity(
@@ -182,39 +181,12 @@ impl AppContext {
 
         self.update_local_qualified_identity(&qualified_identity)?;
 
-        // Stage an IdentityChangeSet capturing the updated identity balance
-        // so the changeset reflects the Platform confirmation.
-        if let Some(ref pw) = maybe_platform_wallet {
-            use platform_wallet::changeset::changeset::{
-                IdentityChangeSet, IdentityEntry, PlatformWalletChangeSet,
-            };
-            let changeset = PlatformWalletChangeSet {
-                identities: Some(IdentityChangeSet {
-                    identities: BTreeMap::from([(
-                        qualified_identity.identity.id(),
-                        IdentityEntry {
-                            identity: qualified_identity.identity.clone(),
-                            identity_index: qualified_identity.wallet_index.unwrap_or(0),
-                            label: qualified_identity.alias.clone(),
-                            last_updated_balance_block_time: None,
-                            last_synced_keys_block_time: None,
-                            dpns_names: qualified_identity
-                                .dpns_names
-                                .iter()
-                                .map(|n| n.name.clone())
-                                .collect(),
-                            top_ups: if let Some((amount, idx)) = top_up_index {
-                                BTreeMap::from([(idx, amount)])
-                            } else {
-                                Default::default()
-                            },
-                        },
-                    )]),
-                }),
-                ..Default::default()
-            };
-            pw.queue_persist(changeset);
-        }
+        // Identity persistence is owned by `update_local_qualified_identity`
+        // above. The persister doesn't write the `identity` table
+        // (Phase 9a-5d shrunk its scope) — see `src/changeset/sqlite.rs`
+        // for the rationale and the Phase 9b plan to unify identity
+        // persistence under the persister once the platform-wallet is
+        // QualifiedIdentity-aware.
 
         self.db.set_asset_lock_identity_id(
             tx_id.as_byte_array(),

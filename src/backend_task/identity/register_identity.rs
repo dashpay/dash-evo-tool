@@ -264,31 +264,12 @@ impl AppContext {
         self.db
             .set_asset_lock_identity_id(tx_id.as_byte_array(), identity_id.as_bytes())?;
 
-        // Stage an IdentityChangeSet capturing the confirmed identity and its
-        // balance so the changeset reflects the Platform confirmation.
-        if let Some(pw) = self.get_platform_wallet(&wallet_id) {
-            use platform_wallet::changeset::changeset::{
-                IdentityChangeSet, IdentityEntry, PlatformWalletChangeSet,
-            };
-            let changeset = PlatformWalletChangeSet {
-                identities: Some(IdentityChangeSet {
-                    identities: BTreeMap::from([(
-                        identity_id,
-                        IdentityEntry {
-                            identity: qualified_identity.identity.clone(),
-                            identity_index: wallet_identity_index,
-                            label: qualified_identity.alias.clone(),
-                            last_updated_balance_block_time: None,
-                            last_synced_keys_block_time: None,
-                            dpns_names: vec![],
-                            top_ups: Default::default(),
-                        },
-                    )]),
-                }),
-                ..Default::default()
-            };
-            pw.queue_persist(changeset);
-        }
+        // Identity persistence is owned by `insert_local_qualified_identity`
+        // above. The persister doesn't write the `identity` table
+        // (Phase 9a-5d shrunk its scope) — see `src/changeset/sqlite.rs`
+        // for the rationale and the Phase 9b plan to unify identity
+        // persistence under the persister once the platform-wallet is
+        // QualifiedIdentity-aware.
 
         let fee_result = FeeResult::new(estimated_fee, estimated_fee);
         Ok(BackendTaskSuccessResult::RegisteredIdentity(

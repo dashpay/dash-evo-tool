@@ -42,40 +42,65 @@ impl AppContext {
                 let out_point = OutPoint::new(tx.txid(), vout as u32);
                 wallet_outpoints.push((out_point, tx_out.clone(), address.clone()));
 
-                // Check if this is a DashPay contact payment
-                if let Ok(Some((owner_id, contact_id, address_index))) =
-                    self.db.get_dashpay_address_mapping(&address)
-                {
-                    // Update the highest receive index if needed
-                    if let Ok(indices) = self.db.get_contact_address_indices(&owner_id, &contact_id)
-                        && address_index >= indices.highest_receive_index
+                // Check if this is a DashPay contact payment by asking
+                // THIS wallet's platform-wallet whether the address
+                // belongs to one of its `DashpayReceivingFunds`
+                // accounts (Phase 9b-4). We use the platform wallet on
+                // the already-held write guard directly — going
+                // through `app_context.wallets` here would deadlock
+                // trying to re-acquire a read guard on the wallet we
+                // already hold the writer on.
+                //
+                // key-wallet's block processing already advances the
+                // `DashpayReceivingFunds` account's address pool
+                // `highest_used` when the tx output matches — no
+                // separate "bump contact highest receive index" call
+                // is needed (Phase 9b-3 rollback).
+                if let Some(pw) = wallet.platform_wallet.as_ref() {
+                    let dashpay_match = match pw
+                        .dashpay()
+                        .try_match_incoming_dashpay_address(&address)
                     {
-                        let _ = self.db.update_highest_receive_index(
+                        Ok(m) => m,
+                        Err(()) => {
+                            tracing::debug!(
+                                %address,
+                                "DashPay address match skipped: wallet busy. \
+                                 Will be picked up on a future tx or refresh."
+                            );
+                            None
+                        }
+                    };
+                    if let Some(m) = dashpay_match {
+                        let owner_id = m.user_identity_id;
+                        let contact_id = m.friend_identity_id;
+                        let address_index = m.address_index;
+
+                        // Record the received payment via the platform
+                        // wallet — persister catches the changeset and
+                        // writes to `dashpay_payments` on flush
+                        // (Phase 9b-2).
+                        crate::backend_task::dashpay::platform_wallet_cache::cache_payment_with_pw_blocking(
+                            pw,
                             &owner_id,
-                            &contact_id,
-                            address_index + 1,
+                            tx.txid().to_string(),
+                            platform_wallet::wallet::dashpay::PaymentEntry::new_received(
+                                contact_id,
+                                tx_out.value,
+                                None,
+                            ),
+                        );
+
+                        tracing::info!(
+                            "DashPay payment received: {} duffs from contact {} to address {} (index {})",
+                            tx_out.value,
+                            contact_id.to_string(
+                                dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58
+                            ),
+                            address,
+                            address_index
                         );
                     }
-
-                    // Save the payment record
-                    let _ = self.db.save_payment(
-                        &tx.txid().to_string(),
-                        &contact_id, // from contact
-                        &owner_id,   // to us
-                        tx_out.value as i64,
-                        None, // memo not available for incoming
-                        "received",
-                    );
-
-                    tracing::info!(
-                        "DashPay payment received: {} duffs from contact {} to address {} (index {})",
-                        tx_out.value,
-                        contact_id.to_string(
-                            dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58
-                        ),
-                        address,
-                        address_index
-                    );
                 }
             }
         }

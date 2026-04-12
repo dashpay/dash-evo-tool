@@ -32,6 +32,22 @@ pub struct StoredContact {
     pub last_seen: Option<i64>,
 }
 
+/// DIP-15 cryptographic material for a persisted contact request
+/// (Item 7a/7b). Every field is `Option` so legacy call sites can
+/// pass `Default::default()` and let the background contact sync
+/// repopulate them later — the load path skips `EstablishedContact`
+/// reconstruction for rows where any required field is `None`.
+#[derive(Debug, Clone, Default)]
+pub struct ContactRequestCryptoFields {
+    pub sender_key_index: Option<u32>,
+    pub recipient_key_index: Option<u32>,
+    pub account_reference: Option<u32>,
+    pub encrypted_public_key: Option<Vec<u8>>,
+    pub encrypted_account_label_bytes: Option<Vec<u8>>,
+    pub auto_accept_proof: Option<Vec<u8>>,
+    pub core_height_created_at: Option<u32>,
+}
+
 /// DashPay contact request stored locally
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredContactRequest {
@@ -60,20 +76,6 @@ pub struct StoredPayment {
     pub status: String,       // "pending", "confirmed", "failed"
     pub created_at: i64,
     pub confirmed_at: Option<i64>,
-}
-
-/// DashPay contact address index tracking per DIP-0015
-/// Tracks address indices used for sending/receiving payments per contact relationship
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ContactAddressIndex {
-    pub owner_identity_id: Vec<u8>,
-    pub contact_identity_id: Vec<u8>,
-    /// Next address index to use when sending TO this contact
-    pub next_send_index: u32,
-    /// Highest address index seen when receiving FROM this contact (for bloom filter)
-    pub highest_receive_index: u32,
-    /// Number of addresses registered in bloom filter for this contact
-    pub bloom_registered_count: u32,
 }
 
 impl crate::database::Database {
@@ -117,7 +119,15 @@ impl crate::database::Database {
             [],
         )?;
 
-        // Contact requests table
+        // Contact requests table. DIP-15 crypto columns
+        // (sender_key_index, recipient_key_index, account_reference,
+        // encrypted_public_key, encrypted_account_label_bytes,
+        // auto_accept_proof, core_height_created_at) were added in v38
+        // to support full `ContactRequest` reconstruction on wallet
+        // open without re-fetching from platform (Item 7). They're
+        // nullable so the migration runs without backfill — existing
+        // rows stay NULL until the next background contact-request
+        // sync repopulates them.
         tx.execute(
             "CREATE TABLE IF NOT EXISTS dashpay_contact_requests (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -130,7 +140,15 @@ impl crate::database::Database {
                 status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'rejected', 'expired')),
                 created_at INTEGER DEFAULT (unixepoch()),
                 responded_at INTEGER,
-                expires_at INTEGER
+                expires_at INTEGER,
+                sender_key_index INTEGER,
+                recipient_key_index INTEGER,
+                account_reference INTEGER,
+                encrypted_public_key BLOB,
+                encrypted_account_label_bytes BLOB,
+                auto_accept_proof BLOB,
+                core_height_created_at INTEGER,
+                platform_created_at_ms INTEGER
             )",
             [],
         )?;
@@ -178,8 +196,20 @@ impl crate::database::Database {
             [],
         )?;
 
-        // Contact address index tracking table (DIP-0015)
-        // Tracks address indices per contact for payment derivation
+        // Contact address index tracking table.
+        //
+        // Phase 9b-3 rollback (current scope): this table now stores
+        // only `next_send_index` — the send-side counter used by
+        // `get_and_increment_send_index` when handing out unique
+        // payment addresses to send to a contact. The receive-side
+        // `highest_receive_index` and `bloom_registered_count`
+        // columns are dead; they're still declared here so existing
+        // databases keep working, but no code reads them anymore.
+        // Phase 10 will migrate `next_send_index` to live on the
+        // key-wallet's `DashpayExternalAccount` address pool
+        // (`highest_generated + 1`) and drop this table entirely.
+        //
+        // Note: `dashpay_address_mappings` was dropped in v35.
         tx.execute(
             "CREATE TABLE IF NOT EXISTS dashpay_contact_address_indices (
                 owner_identity_id BLOB NOT NULL,
@@ -189,29 +219,6 @@ impl crate::database::Database {
                 bloom_registered_count INTEGER DEFAULT 0,
                 PRIMARY KEY (owner_identity_id, contact_identity_id)
             )",
-            [],
-        )?;
-
-        // DashPay address mappings for incoming payment detection
-        // Maps addresses to contact relationships for transaction matching
-        tx.execute(
-            "CREATE TABLE IF NOT EXISTS dashpay_address_mappings (
-                address TEXT PRIMARY KEY,
-                owner_identity_id BLOB NOT NULL,
-                contact_identity_id BLOB NOT NULL,
-                address_index INTEGER NOT NULL,
-                created_at INTEGER DEFAULT (unixepoch())
-            )",
-            [],
-        )?;
-        tx.execute(
-            "CREATE INDEX IF NOT EXISTS idx_dashpay_address_mappings_owner
-             ON dashpay_address_mappings(owner_identity_id)",
-            [],
-        )?;
-        tx.execute(
-            "CREATE INDEX IF NOT EXISTS idx_dashpay_address_mappings_contact
-             ON dashpay_address_mappings(owner_identity_id, contact_identity_id)",
             [],
         )?;
 
@@ -428,6 +435,7 @@ impl crate::database::Database {
 
     // Contact request operations
 
+    #[allow(clippy::too_many_arguments)]
     pub fn save_contact_request(
         &self,
         from_identity_id: &Identifier,
@@ -436,27 +444,59 @@ impl crate::database::Database {
         to_username: Option<&str>,
         account_label: Option<&str>,
         request_type: &str,
+        crypto: ContactRequestCryptoFields,
+        platform_created_at_ms: Option<i64>,
     ) -> rusqlite::Result<i64> {
-        let sql = "
-            INSERT INTO dashpay_contact_requests
-            (from_identity_id, to_identity_id, network, to_username, account_label, request_type)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-        ";
+        // Review S2: `dashpay_contact_requests` has an auto-increment
+        // `id` PK and no UNIQUE constraint on `(from, to, network)`.
+        // Every contact-request sync used to INSERT a fresh row, so
+        // after N syncs the table held N duplicates per pair. Item 7c
+        // then picked an arbitrary row via last-write-wins in its
+        // HashMap insert. Fix: DELETE any existing row for the same
+        // `(from, to, network)` before INSERT, wrapped in a
+        // transaction so concurrent readers never see the gap.
+        // This bounds the table size at one row per pair, matches
+        // the intent of a "sync fresh state from platform" call,
+        // and doesn't require a schema migration or dedupe of
+        // existing rows (any pre-existing duplicates get collapsed
+        // on the next save).
+        let from_bytes = from_identity_id.to_buffer().to_vec();
+        let to_bytes = to_identity_id.to_buffer().to_vec();
 
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            sql,
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        tx.execute(
+            "DELETE FROM dashpay_contact_requests
+             WHERE from_identity_id = ?1 AND to_identity_id = ?2 AND network = ?3",
+            params![&from_bytes, &to_bytes, network],
+        )?;
+        tx.execute(
+            "INSERT INTO dashpay_contact_requests
+                (from_identity_id, to_identity_id, network, to_username, account_label,
+                 request_type, sender_key_index, recipient_key_index, account_reference,
+                 encrypted_public_key, encrypted_account_label_bytes, auto_accept_proof,
+                 core_height_created_at, platform_created_at_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
-                from_identity_id.to_buffer().to_vec(),
-                to_identity_id.to_buffer().to_vec(),
+                &from_bytes,
+                &to_bytes,
                 network,
                 to_username,
                 account_label,
                 request_type,
+                crypto.sender_key_index,
+                crypto.recipient_key_index,
+                crypto.account_reference,
+                crypto.encrypted_public_key,
+                crypto.encrypted_account_label_bytes,
+                crypto.auto_accept_proof,
+                crypto.core_height_created_at,
+                platform_created_at_ms,
             ],
         )?;
-
-        Ok(conn.last_insert_rowid())
+        let row_id = tx.last_insert_rowid();
+        tx.commit()?;
+        Ok(row_id)
     }
 
     pub fn update_contact_request_status(
@@ -472,6 +512,96 @@ impl crate::database::Database {
 
         self.execute(sql, params![status, request_id])?;
         Ok(())
+    }
+
+    /// Item 7c: Load full `ContactRequest` rows (metadata +
+    /// DIP-15 crypto) for an identity, keyed by `(from, to)` pair.
+    ///
+    /// Returns rows where ALL required DIP-15 columns AND the
+    /// `platform_created_at_ms` timestamp are non-NULL — rows with
+    /// partial crypto (legacy rows or in-flight saves) are skipped.
+    /// The caller joins outgoing+incoming pairs to reconstruct
+    /// `EstablishedContact` objects.
+    ///
+    /// Covers both directions: requests where the identity is the
+    /// sender (outgoing) and where it's the recipient (incoming).
+    ///
+    /// The returned `platform_created_at_ms` is in milliseconds
+    /// (matching `ContactRequest.created_at: TimestampMillis`) —
+    /// NOT the local-save `created_at` column, which is in seconds.
+    /// See M2 in the Item 7 review for why these are separate.
+    #[allow(clippy::type_complexity)]
+    pub fn load_contact_request_crypto_rows(
+        &self,
+        identity_id: &Identifier,
+        network: &str,
+    ) -> rusqlite::Result<
+        Vec<(
+            Identifier,      // from_identity_id
+            Identifier,      // to_identity_id
+            u32,             // sender_key_index
+            u32,             // recipient_key_index
+            u32,             // account_reference
+            Vec<u8>,         // encrypted_public_key
+            Option<Vec<u8>>, // encrypted_account_label_bytes
+            Option<Vec<u8>>, // auto_accept_proof
+            u32,             // core_height_created_at
+            u64,             // platform_created_at_ms (TimestampMillis)
+        )>,
+    > {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT from_identity_id, to_identity_id,
+                    sender_key_index, recipient_key_index, account_reference,
+                    encrypted_public_key, encrypted_account_label_bytes,
+                    auto_accept_proof, core_height_created_at, platform_created_at_ms
+             FROM dashpay_contact_requests
+             WHERE (from_identity_id = ?1 OR to_identity_id = ?1)
+               AND network = ?2
+               AND status = 'accepted'
+               AND sender_key_index IS NOT NULL
+               AND recipient_key_index IS NOT NULL
+               AND account_reference IS NOT NULL
+               AND encrypted_public_key IS NOT NULL
+               AND core_height_created_at IS NOT NULL
+               AND platform_created_at_ms IS NOT NULL",
+        )?;
+
+        let id_bytes = identity_id.to_buffer().to_vec();
+        let rows = stmt
+            .query_map(params![id_bytes, network], |row| {
+                let from_bytes: Vec<u8> = row.get(0)?;
+                let to_bytes: Vec<u8> = row.get(1)?;
+                let sender_key_index: u32 = row.get(2)?;
+                let recipient_key_index: u32 = row.get(3)?;
+                let account_reference: u32 = row.get(4)?;
+                let encrypted_public_key: Vec<u8> = row.get(5)?;
+                let encrypted_account_label_bytes: Option<Vec<u8>> = row.get(6)?;
+                let auto_accept_proof: Option<Vec<u8>> = row.get(7)?;
+                let core_height_created_at: u32 = row.get(8)?;
+                let platform_created_at_ms: i64 = row.get(9)?;
+
+                let from_id = Identifier::from_bytes(&from_bytes)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                let to_id = Identifier::from_bytes(&to_bytes)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+
+                Ok((
+                    from_id,
+                    to_id,
+                    sender_key_index,
+                    recipient_key_index,
+                    account_reference,
+                    encrypted_public_key,
+                    encrypted_account_label_bytes,
+                    auto_accept_proof,
+                    core_height_created_at,
+                    platform_created_at_ms.max(0) as u64,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(rows)
     }
 
     pub fn load_pending_contact_requests(
@@ -644,55 +774,6 @@ impl crate::database::Database {
 
     // Contact address index operations (DIP-0015)
 
-    /// Get or create contact address index entry
-    /// Returns (next_send_index, highest_receive_index, bloom_registered_count)
-    pub fn get_contact_address_indices(
-        &self,
-        owner_identity_id: &Identifier,
-        contact_identity_id: &Identifier,
-    ) -> rusqlite::Result<ContactAddressIndex> {
-        let conn = self.conn.lock().unwrap();
-
-        // Try to get existing entry
-        let mut stmt = conn.prepare(
-            "SELECT owner_identity_id, contact_identity_id, next_send_index,
-                    highest_receive_index, bloom_registered_count
-             FROM dashpay_contact_address_indices
-             WHERE owner_identity_id = ?1 AND contact_identity_id = ?2",
-        )?;
-
-        let result = stmt.query_row(
-            params![
-                owner_identity_id.to_buffer().to_vec(),
-                contact_identity_id.to_buffer().to_vec()
-            ],
-            |row| {
-                Ok(ContactAddressIndex {
-                    owner_identity_id: row.get(0)?,
-                    contact_identity_id: row.get(1)?,
-                    next_send_index: row.get(2)?,
-                    highest_receive_index: row.get(3)?,
-                    bloom_registered_count: row.get(4)?,
-                })
-            },
-        );
-
-        match result {
-            Ok(indices) => Ok(indices),
-            Err(rusqlite::Error::QueryReturnedNoRows) => {
-                // Create new entry with defaults
-                Ok(ContactAddressIndex {
-                    owner_identity_id: owner_identity_id.to_buffer().to_vec(),
-                    contact_identity_id: contact_identity_id.to_buffer().to_vec(),
-                    next_send_index: 0,
-                    highest_receive_index: 0,
-                    bloom_registered_count: 0,
-                })
-            }
-            Err(e) => Err(e),
-        }
-    }
-
     /// Get the next send address index for a contact and increment it atomically.
     /// This is used when sending a payment to ensure unique addresses.
     /// Uses an atomic INSERT/UPDATE with RETURNING to prevent race conditions.
@@ -736,199 +817,160 @@ impl crate::database::Database {
         )
     }
 
-    /// Update the highest receive index seen for a contact
-    /// Called when we detect an incoming payment at a higher index
-    pub fn update_highest_receive_index(
-        &self,
-        owner_identity_id: &Identifier,
-        contact_identity_id: &Identifier,
-        index: u32,
-    ) -> rusqlite::Result<()> {
-        let sql = "
-            INSERT INTO dashpay_contact_address_indices
-            (owner_identity_id, contact_identity_id, highest_receive_index)
-            VALUES (?1, ?2, ?3)
-            ON CONFLICT(owner_identity_id, contact_identity_id)
-            DO UPDATE SET highest_receive_index = MAX(highest_receive_index, ?3)
-        ";
+}
 
-        self.execute(
-            sql,
-            params![
-                owner_identity_id.to_buffer().to_vec(),
-                contact_identity_id.to_buffer().to_vec(),
-                index,
-            ],
-        )?;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database::test_helpers::create_test_database;
 
-        Ok(())
+    /// Item 7c: full DIP-15 crypto round-trip for contact requests.
+    /// Saves one outgoing + one incoming request with full crypto,
+    /// then loads both back and verifies all 7 cryptographic fields
+    /// match byte-for-byte.
+    #[test]
+    fn test_contact_request_dip15_crypto_round_trip() {
+        let db = create_test_database().expect("create test db");
+
+        let owner = Identifier::from([0x11u8; 32]);
+        let contact = Identifier::from([0x22u8; 32]);
+        let network = "testnet";
+
+        // Update status to 'accepted' after insert so the load path
+        // filter picks them up.
+        let accept = |req_id: i64| {
+            db.execute(
+                "UPDATE dashpay_contact_requests SET status = 'accepted' WHERE id = ?1",
+                params![req_id],
+            )
+            .unwrap();
+        };
+
+        // Outgoing: owner → contact
+        let outgoing_crypto = ContactRequestCryptoFields {
+            sender_key_index: Some(1),
+            recipient_key_index: Some(2),
+            account_reference: Some(42),
+            encrypted_public_key: Some(vec![0xa0u8; 96]),
+            encrypted_account_label_bytes: Some(vec![0xb0u8, 0xb1, 0xb2]),
+            auto_accept_proof: None,
+            core_height_created_at: Some(100_000),
+        };
+        let outgoing_id = db
+            .save_contact_request(
+                &owner,
+                &contact,
+                network,
+                None,
+                None,
+                "sent",
+                outgoing_crypto.clone(),
+                Some(1_700_000_000_000),
+            )
+            .expect("save outgoing");
+        accept(outgoing_id);
+
+        // Incoming: contact → owner
+        let incoming_crypto = ContactRequestCryptoFields {
+            sender_key_index: Some(3),
+            recipient_key_index: Some(4),
+            account_reference: Some(7),
+            encrypted_public_key: Some(vec![0xc0u8; 96]),
+            encrypted_account_label_bytes: None,
+            auto_accept_proof: Some(vec![0xd0u8; 32]),
+            core_height_created_at: Some(100_005),
+        };
+        let incoming_id = db
+            .save_contact_request(
+                &contact,
+                &owner,
+                network,
+                None,
+                None,
+                "received",
+                incoming_crypto.clone(),
+                Some(1_700_000_001_000),
+            )
+            .expect("save incoming");
+        accept(incoming_id);
+
+        // Load — should return both rows (outgoing + incoming) for
+        // the owner, since the query's WHERE clause picks up either
+        // direction keyed on the identity.
+        let rows = db
+            .load_contact_request_crypto_rows(&owner, network)
+            .expect("load rows");
+        assert_eq!(rows.len(), 2, "both directions must load");
+
+        // Split by direction from the owner's perspective.
+        let (loaded_outgoing, loaded_incoming) = if rows[0].0 == owner {
+            (&rows[0], &rows[1])
+        } else {
+            (&rows[1], &rows[0])
+        };
+
+        // Outgoing assertions (owner → contact)
+        assert_eq!(loaded_outgoing.0, owner);
+        assert_eq!(loaded_outgoing.1, contact);
+        assert_eq!(loaded_outgoing.2, 1); // sender_key_index
+        assert_eq!(loaded_outgoing.3, 2); // recipient_key_index
+        assert_eq!(loaded_outgoing.4, 42); // account_reference
+        assert_eq!(loaded_outgoing.5, vec![0xa0u8; 96]); // encrypted_public_key
+        assert_eq!(loaded_outgoing.6, Some(vec![0xb0u8, 0xb1, 0xb2]));
+        assert_eq!(loaded_outgoing.7, None); // auto_accept_proof
+        assert_eq!(loaded_outgoing.8, 100_000); // core_height_created_at
+        assert_eq!(loaded_outgoing.9, 1_700_000_000_000); // platform_created_at_ms
+
+        // Incoming assertions (contact → owner)
+        assert_eq!(loaded_incoming.0, contact);
+        assert_eq!(loaded_incoming.1, owner);
+        assert_eq!(loaded_incoming.2, 3);
+        assert_eq!(loaded_incoming.3, 4);
+        assert_eq!(loaded_incoming.4, 7);
+        assert_eq!(loaded_incoming.5, vec![0xc0u8; 96]);
+        assert_eq!(loaded_incoming.6, None);
+        assert_eq!(loaded_incoming.7, Some(vec![0xd0u8; 32]));
+        assert_eq!(loaded_incoming.8, 100_005);
+        assert_eq!(loaded_incoming.9, 1_700_000_001_000);
     }
 
-    /// Update the bloom registered count for a contact
-    /// Called after registering addresses in bloom filter
-    pub fn update_bloom_registered_count(
-        &self,
-        owner_identity_id: &Identifier,
-        contact_identity_id: &Identifier,
-        count: u32,
-    ) -> rusqlite::Result<()> {
-        let sql = "
-            INSERT INTO dashpay_contact_address_indices
-            (owner_identity_id, contact_identity_id, bloom_registered_count)
-            VALUES (?1, ?2, ?3)
-            ON CONFLICT(owner_identity_id, contact_identity_id)
-            DO UPDATE SET bloom_registered_count = ?3
-        ";
+    /// Item 7c: legacy rows (all-None crypto) must be filtered out
+    /// by `load_contact_request_crypto_rows`. The load path in
+    /// `sync_identity_to_platform_wallet` relies on this filter so
+    /// incomplete rows don't cause `ContactRequest::new` panics.
+    #[test]
+    fn test_contact_request_legacy_rows_filtered() {
+        let db = create_test_database().expect("create test db");
 
-        self.execute(
-            sql,
-            params![
-                owner_identity_id.to_buffer().to_vec(),
-                contact_identity_id.to_buffer().to_vec(),
-                count,
-            ],
-        )?;
+        let owner = Identifier::from([0x33u8; 32]);
+        let contact = Identifier::from([0x44u8; 32]);
+        let network = "testnet";
 
-        Ok(())
-    }
+        // Save a legacy-style row with no crypto fields.
+        let id = db
+            .save_contact_request(
+                &owner,
+                &contact,
+                network,
+                None,
+                None,
+                "sent",
+                ContactRequestCryptoFields::default(),
+                None,
+            )
+            .expect("save legacy");
+        db.execute(
+            "UPDATE dashpay_contact_requests SET status = 'accepted' WHERE id = ?1",
+            params![id],
+        )
+        .unwrap();
 
-    /// Get all contact address indices for an identity
-    /// Useful for registering bloom filters on startup
-    pub fn get_all_contact_address_indices(
-        &self,
-        owner_identity_id: &Identifier,
-    ) -> rusqlite::Result<Vec<ContactAddressIndex>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT owner_identity_id, contact_identity_id, next_send_index,
-                    highest_receive_index, bloom_registered_count
-             FROM dashpay_contact_address_indices
-             WHERE owner_identity_id = ?1",
-        )?;
-
-        let indices = stmt
-            .query_map(params![owner_identity_id.to_buffer().to_vec()], |row| {
-                Ok(ContactAddressIndex {
-                    owner_identity_id: row.get(0)?,
-                    contact_identity_id: row.get(1)?,
-                    next_send_index: row.get(2)?,
-                    highest_receive_index: row.get(3)?,
-                    bloom_registered_count: row.get(4)?,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-
-        Ok(indices)
-    }
-
-    // DashPay address mapping operations
-
-    /// Save a DashPay address mapping for incoming payment detection
-    pub fn save_dashpay_address_mapping(
-        &self,
-        owner_identity_id: &Identifier,
-        contact_identity_id: &Identifier,
-        address: &dash_sdk::dpp::dashcore::Address,
-        address_index: u32,
-    ) -> rusqlite::Result<()> {
-        let sql = "
-            INSERT OR REPLACE INTO dashpay_address_mappings
-            (address, owner_identity_id, contact_identity_id, address_index, created_at)
-            VALUES (?1, ?2, ?3, ?4, unixepoch())
-        ";
-
-        self.execute(
-            sql,
-            params![
-                address.to_string(),
-                owner_identity_id.to_buffer().to_vec(),
-                contact_identity_id.to_buffer().to_vec(),
-                address_index,
-            ],
-        )?;
-
-        Ok(())
-    }
-
-    /// Look up a DashPay address mapping to find which contact relationship it belongs to
-    /// Returns (owner_identity_id, contact_identity_id, address_index) if found
-    pub fn get_dashpay_address_mapping(
-        &self,
-        address: &dash_sdk::dpp::dashcore::Address,
-    ) -> rusqlite::Result<Option<(Identifier, Identifier, u32)>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT owner_identity_id, contact_identity_id, address_index
-             FROM dashpay_address_mappings
-             WHERE address = ?1",
-        )?;
-
-        let result = stmt.query_row(params![address.to_string()], |row| {
-            let owner_bytes: Vec<u8> = row.get(0)?;
-            let contact_bytes: Vec<u8> = row.get(1)?;
-            let address_index: u32 = row.get(2)?;
-            Ok((owner_bytes, contact_bytes, address_index))
-        });
-
-        match result {
-            Ok((owner_bytes, contact_bytes, address_index)) => {
-                let owner_id = Identifier::from_bytes(&owner_bytes)
-                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-                let contact_id = Identifier::from_bytes(&contact_bytes)
-                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-                Ok(Some((owner_id, contact_id, address_index)))
-            }
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e),
-        }
-    }
-
-    /// Get all DashPay address mappings for an identity
-    pub fn get_all_dashpay_address_mappings(
-        &self,
-        owner_identity_id: &Identifier,
-    ) -> rusqlite::Result<Vec<(String, Identifier, u32)>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT address, contact_identity_id, address_index
-             FROM dashpay_address_mappings
-             WHERE owner_identity_id = ?1
-             ORDER BY contact_identity_id, address_index",
-        )?;
-
-        let mappings = stmt
-            .query_map(params![owner_identity_id.to_buffer().to_vec()], |row| {
-                let address: String = row.get(0)?;
-                let contact_bytes: Vec<u8> = row.get(1)?;
-                let address_index: u32 = row.get(2)?;
-                Ok((address, contact_bytes, address_index))
-            })?
-            .filter_map(|r| {
-                r.ok().and_then(|(address, contact_bytes, address_index)| {
-                    Identifier::from_bytes(&contact_bytes)
-                        .ok()
-                        .map(|contact_id| (address, contact_id, address_index))
-                })
-            })
-            .collect();
-
-        Ok(mappings)
-    }
-
-    /// Delete all address mappings for a contact relationship
-    pub fn delete_dashpay_address_mappings_for_contact(
-        &self,
-        owner_identity_id: &Identifier,
-        contact_identity_id: &Identifier,
-    ) -> rusqlite::Result<()> {
-        self.execute(
-            "DELETE FROM dashpay_address_mappings
-             WHERE owner_identity_id = ?1 AND contact_identity_id = ?2",
-            params![
-                owner_identity_id.to_buffer().to_vec(),
-                contact_identity_id.to_buffer().to_vec(),
-            ],
-        )?;
-        Ok(())
+        let rows = db
+            .load_contact_request_crypto_rows(&owner, network)
+            .expect("load rows");
+        assert!(
+            rows.is_empty(),
+            "legacy rows with NULL crypto must be filtered out"
+        );
     }
 }

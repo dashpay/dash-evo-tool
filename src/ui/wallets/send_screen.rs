@@ -680,7 +680,9 @@ impl WalletSendScreen {
         else {
             return vec![];
         };
-        let info = pw.state_blocking();
+        let Some(info) = pw.try_state() else {
+            return vec![];
+        };
         let mut addresses: Vec<(Address, u64)> =
             crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.core_wallet)
                 .into_iter()

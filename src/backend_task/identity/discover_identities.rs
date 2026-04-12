@@ -120,11 +120,11 @@ impl AppContext {
                 .map(|(key_id, (pub_key, pk_data)): (&dash_sdk::dpp::identity::KeyID, &(dash_sdk::dpp::identity::IdentityPublicKey, platform_wallet::PrivateKeyData))| {
                     let (evo_pk_data, wallet_path) = match pk_data {
                         platform_wallet::PrivateKeyData::AtWalletDerivationPath {
-                            wallet_seed_hash,
+                            wallet_id,
                             derivation_path,
                         } => {
                             let wallet_derivation_path = WalletDerivationPath {
-                                wallet_seed_hash: *wallet_seed_hash,
+                                wallet_seed_hash: *wallet_id,
                                 derivation_path: derivation_path.clone(),
                             };
                             (

@@ -212,9 +212,21 @@ impl AppContext {
             }
         };
 
-        // Default to SPV provider initially; UI can switch backend after
+        // Default to SPV provider initially; UI can switch backend after.
+        //
+        // Lift the SDK into an `Arc` immediately so that every consumer
+        // (AppContext.sdk, PlatformWalletManager) shares the *same*
+        // `Sdk` instance rather than independently-cloned copies. This
+        // matters because `Sdk::clone` gives each clone its own
+        // `ArcSwapOption<ContextProvider>` field, so mutating one via
+        // `set_context_provider` does not propagate to the others.
+        // Previously PlatformWalletManager held a cloned Sdk whose
+        // provider was frozen at the pre-`bind_app_context` value (i.e.
+        // an `SpvProvider` with no `AppContext`), causing
+        // identity-fetch proof verification to fail with "no app
+        // context" when routed through `PlatformWallet`.
         let sdk = match initialize_sdk(address_list, network, spv_provider.clone()) {
-            Ok(sdk) => sdk,
+            Ok(sdk) => Arc::new(sdk),
             Err(e) => {
                 tracing::error!("Failed to initialize SDK: {e}");
                 return None;
@@ -301,7 +313,7 @@ impl AppContext {
         ));
 
         let wallet_manager = Arc::new(DebugWrapper(PlatformWalletManager::new(
-            Arc::new(sdk.clone()),
+            Arc::clone(&sdk),
             persister,
             Arc::clone(&spv_event_bridge) as Arc<dyn platform_wallet::PlatformEventHandler>,
         )));
@@ -372,7 +384,7 @@ impl AppContext {
             network,
             developer_mode: AtomicBool::new(developer_mode_enabled),
             db,
-            sdk: ArcSwap::from_pointee(sdk),
+            sdk: ArcSwap::from(sdk),
             spv_context_provider: spv_provider.into(),
             rpc_context_provider: rpc_provider.into(),
             config: config_lock,

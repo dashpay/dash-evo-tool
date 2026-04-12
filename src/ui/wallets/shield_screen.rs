@@ -192,17 +192,20 @@ impl ShieldScreen {
                 self.cached_platform_balance = None;
             }
 
-            // Core balance — read from PlatformWallet (state_blocking for
+            // Core balance — read from PlatformWallet (try_state for
             // per-address lookup, lock-free WalletBalance for total).
             if let Some(addr) = self.validated_source.as_ref().and_then(|v| v.as_core()) {
-                let per_addr_balance = wallet.platform_wallet.as_ref().map(|pw| {
-                    let info = pw.state_blocking();
-                    crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.core_wallet)
-                        .into_iter()
-                        .find(|a| &a.address == addr)
-                        .map(|a| a.balance)
-                        .unwrap_or(0)
-                });
+                let per_addr_balance = wallet
+                    .platform_wallet
+                    .as_ref()
+                    .and_then(|pw| pw.try_state())
+                    .map(|info| {
+                        crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.core_wallet)
+                            .into_iter()
+                            .find(|a| &a.address == addr)
+                            .map(|a| a.balance)
+                            .unwrap_or(0)
+                    });
                 self.cached_core_balance = Some(per_addr_balance.unwrap_or(0));
             } else {
                 let pw_balance = wallet

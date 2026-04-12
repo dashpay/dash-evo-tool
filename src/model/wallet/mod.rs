@@ -618,65 +618,113 @@ impl Wallet {
     }
 
     /// All addresses from PlatformWallet's CoreAddressInfo.
-    /// Returns empty if the wallet is locked (no PlatformWallet).
+    /// Returns empty if the wallet is locked (no PlatformWallet) or
+    /// the wallet manager lock is contended.
     pub fn all_addresses_info(&self) -> Vec<crate::platform_wallet_bridge::CoreAddressInfo> {
         self.platform_wallet
             .as_ref()
-            .map(|pw| {
-                let info = pw.state_blocking();
+            .and_then(|pw| pw.try_state())
+            .map(|info| {
                 crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.core_wallet)
             })
             .unwrap_or_default()
     }
 
     /// Look up the derivation path for an address via PlatformWallet.
-    /// Returns `None` if the wallet is locked (no PlatformWallet).
+    /// Returns `None` if the wallet is locked, the lock is contended,
+    /// or the address isn't known.
+    ///
+    /// O(accounts × pools-per-account) where each step is an O(1)
+    /// `HashMap<Address, u32>` lookup on the per-pool reverse index.
+    /// No address catalog rebuild, no per-call allocations beyond
+    /// the `Vec<&ManagedCoreAccount>` from `all_accounts()` and the
+    /// `clone()` of the matching `AddressInfo.path`.
+    ///
+    /// Holistic-review PC1 (performance-oracle): the previous
+    /// implementation called `CoreAddressInfo::all_from_wallet_info`
+    /// on every call, which walked every address in every pool and
+    /// allocated a fresh `Vec<CoreAddressInfo>` per call. On a
+    /// contact-heavy wallet the SPV hot path spent ~10k allocations
+    /// per tx output there. This version goes straight to the
+    /// existing per-pool `address_index` HashMap in key-wallet.
+    ///
+    /// Uses `try_state()` so calls from egui render callbacks (which
+    /// run inside a tokio runtime context) never panic; returns
+    /// `None` on lock contention and the next frame retries.
     pub fn derivation_path_for_address(&self, address: &Address) -> Option<DerivationPath> {
         let pw = self.platform_wallet.as_ref()?;
-        // Use try_state() to avoid panic when called from async context
-        // (state_blocking panics inside tokio runtime).
-        // Returns None if the lock is held, which is safe — the caller retries next cycle.
-        let info = pw.state_blocking();
-        crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.core_wallet)
-            .into_iter()
-            .find(|a| &a.address == address)
-            .map(|a| a.derivation_path)
+        let info = pw.try_state()?;
+        for account in info.core_wallet.accounts.all_accounts() {
+            if let Some(addr_info) = account.get_address_info(address) {
+                return Some(addr_info.path);
+            }
+        }
+        None
     }
 
     /// Async version of `derivation_path_for_address` — safe to call from async context.
     pub async fn derivation_path_for_address_async(&self, address: &Address) -> Option<DerivationPath> {
         let pw = self.platform_wallet.as_ref()?;
         let info = pw.state().await;
-        crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.core_wallet)
-            .into_iter()
-            .find(|a| &a.address == address)
-            .map(|a| a.derivation_path)
+        for account in info.core_wallet.accounts.all_accounts() {
+            if let Some(addr_info) = account.get_address_info(address) {
+                return Some(addr_info.path);
+            }
+        }
+        None
     }
 
     /// Check if an address belongs to this wallet via PlatformWallet.
-    /// Returns `false` if the wallet is locked (no PlatformWallet).
+    /// Returns `false` if the wallet is locked (no PlatformWallet) or
+    /// the lock is contended (next frame will retry).
+    ///
+    /// Faster than `derivation_path_for_address(...).is_some()`
+    /// because it uses `contains_address` which stays inside the
+    /// per-pool HashMap and never clones the matching `AddressInfo`.
     pub fn has_address(&self, address: &Address) -> bool {
-        self.derivation_path_for_address(address).is_some()
+        let Some(pw) = self.platform_wallet.as_ref() else {
+            return false;
+        };
+        let Some(info) = pw.try_state() else {
+            return false;
+        };
+        info.core_wallet
+            .accounts
+            .all_accounts()
+            .iter()
+            .any(|a| a.contains_address(address))
     }
 
     /// Async version of `has_address` — safe to call from async context.
     pub async fn has_address_async(&self, address: &Address) -> bool {
-        self.derivation_path_for_address_async(address).await.is_some()
+        let Some(pw) = self.platform_wallet.as_ref() else {
+            return false;
+        };
+        let info = pw.state().await;
+        info.core_wallet
+            .accounts
+            .all_accounts()
+            .iter()
+            .any(|a| a.contains_address(address))
     }
 
-    /// Per-address balance from PlatformWallet's CoreAddressInfo.
+    /// Per-address balance from PlatformWallet's pool state.
+    /// Uses the per-pool `HashMap<Address, u32>` (see PC1 above)
+    /// rather than rebuilding the full address catalog.
+    /// Returns 0 if the wallet is locked or the lock is contended.
     pub fn address_balance(&self, address: &Address) -> u64 {
-        self.platform_wallet
-            .as_ref()
-            .map(|pw| {
-                let info = pw.state_blocking();
-                crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.core_wallet)
-                    .into_iter()
-                    .find(|a| &a.address == address)
-                    .map(|a| a.balance)
-                    .unwrap_or(0)
-            })
-            .unwrap_or(0)
+        let Some(pw) = self.platform_wallet.as_ref() else {
+            return 0;
+        };
+        let Some(info) = pw.try_state() else {
+            return 0;
+        };
+        for account in info.core_wallet.accounts.all_accounts() {
+            if let Some(addr_info) = account.get_address_info(address) {
+                return addr_info.balance;
+            }
+        }
+        0
     }
 
     pub fn confirmed_balance_duffs(&self) -> u64 {
@@ -711,12 +759,15 @@ impl Wallet {
 
     /// Read transaction history from the PlatformWallet's ManagedWalletInfo.
     ///
-    /// Returns an empty vec when the wallet is locked (no PlatformWallet).
+    /// Returns an empty vec when the wallet is locked or the wallet
+    /// manager lock is contended.
     pub fn get_transactions(&self) -> Vec<WalletTransaction> {
         let Some(pw) = self.platform_wallet.as_ref() else {
             return Vec::new();
         };
-        let info = pw.state_blocking();
+        let Some(info) = pw.try_state() else {
+            return Vec::new();
+        };
         info.core_wallet.transaction_history()
             .into_iter()
             .map(|record| {
@@ -731,7 +782,7 @@ impl Wallet {
                     block_hash: block_info.map(|bi| bi.block_hash()),
                     net_amount: record.net_amount,
                     fee: record.fee,
-                    label: record.label.clone(),
+                    label: Some(record.label.clone()).filter(|s| !s.is_empty()),
                     is_ours: true,
                     status,
                 }

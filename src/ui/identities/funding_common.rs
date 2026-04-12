@@ -70,7 +70,7 @@ pub fn capture_qr_funding_utxo_if_available(
 
     let guard = wallet_arc.read().ok()?;
     let pw = guard.platform_wallet.as_ref()?;
-    let info = pw.state_blocking();
+    let info = pw.try_state()?;
 
     use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
     let candidate_utxo = info

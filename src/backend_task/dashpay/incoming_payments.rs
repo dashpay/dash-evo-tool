@@ -4,7 +4,6 @@ use dash_sdk::dpp::dashcore::{Address, Network};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// Default gap limit for DashPay address derivation
@@ -112,21 +111,14 @@ pub async fn register_dashpay_addresses_for_identity(
         return Ok(result);
     }
 
-    // Load address indices for all contacts
-    let address_indices = app_context
-        .db
-        .get_all_contact_address_indices(&our_identity_id)
-        .map_err(|e| format!("Failed to load address indices: {}", e))?;
-
-    // Create a map for quick lookup
-    let indices_map: BTreeMap<Vec<u8>, _> = address_indices
-        .into_iter()
-        .map(|idx| (idx.contact_identity_id.clone(), idx))
-        .collect();
-
     let network = app_context.network;
 
-    // Acquire the key-wallet read guard for derivation
+    // Acquire the key-wallet read guard for derivation. Note: this
+    // function derives addresses via the standalone DIP-14 helpers
+    // without touching the key-wallet account pool. Phase 10 will
+    // consolidate this with `bootstrap_dashpay_contact_accounts` and
+    // the pool's `maintain_gap_limit` mechanism so all DashPay
+    // address generation flows through one code path.
     let info_guard = platform_wallet_arc.state().await;
     let key_wallet_guard = info_guard.wallet();
 
@@ -139,74 +131,21 @@ pub async fn register_dashpay_addresses_for_identity(
             }
         };
 
-        // Get the current highest receive index for this contact
-        let highest_receive_index = indices_map
-            .get(&contact.contact_identity_id)
-            .map(|idx| idx.highest_receive_index)
-            .unwrap_or(0);
-
-        // Get how many addresses are already registered with bloom filter
-        let bloom_registered = indices_map
-            .get(&contact.contact_identity_id)
-            .map(|idx| idx.bloom_registered_count)
-            .unwrap_or(0);
-
-        // Calculate how many new addresses we need to derive
-        // We want addresses from 0 to (highest_receive_index + GAP_LIMIT)
-        let target_count = highest_receive_index.saturating_add(DASHPAY_GAP_LIMIT);
-
-        // Only derive new addresses if we need more than what's registered
-        if target_count <= bloom_registered {
-            result.contacts_processed += 1;
-            continue;
-        }
-
-        let start_index = bloom_registered;
-        let count = target_count - bloom_registered;
-
-        // Derive the receiving addresses
+        // Always derive the first `DASHPAY_GAP_LIMIT` addresses for
+        // each contact. DIP-14 derivation is deterministic so
+        // repeated calls produce the same addresses — callers can
+        // invoke this idempotently without duplicating work on the
+        // key-wallet side.
         match derive_receiving_addresses_for_contact(
             key_wallet_guard,
             network,
             &our_identity_id,
             &contact_id,
-            start_index,
-            count,
+            0,
+            DASHPAY_GAP_LIMIT,
         ) {
             Ok(addresses) => {
-                // Register each address with the wallet
-                for addr_info in &addresses {
-                    if let Err(e) = register_dashpay_address(
-                        app_context,
-                        wallet,
-                        &addr_info.address,
-                        &our_identity_id,
-                        &contact_id,
-                        addr_info.address_index,
-                    ) {
-                        result.errors.push(format!(
-                            "Failed to register address for contact {}: {}",
-                            contact_id.to_string(Encoding::Base58),
-                            e
-                        ));
-                    } else {
-                        result.addresses_registered += 1;
-                    }
-                }
-
-                // Update the bloom_registered_count in database
-                if let Err(e) = app_context.db.update_bloom_registered_count(
-                    &our_identity_id,
-                    &contact_id,
-                    target_count,
-                ) {
-                    result.errors.push(format!(
-                        "Failed to update bloom count for contact {}: {}",
-                        contact_id.to_string(Encoding::Base58),
-                        e
-                    ));
-                }
-
+                result.addresses_registered += addresses.len();
                 result.contacts_processed += 1;
             }
             Err(e) => {
@@ -222,98 +161,3 @@ pub async fn register_dashpay_addresses_for_identity(
     Ok(result)
 }
 
-/// Register a DashPay address mapping in the database.
-///
-/// Stores the address → (owner_id, contact_id, index) mapping so incoming
-/// payments can be matched to the correct contact relationship.
-/// Address monitoring is handled by ManagedWalletInfo's DashpayReceivingFunds
-/// account pools — no additional address registration needed.
-fn register_dashpay_address(
-    app_context: &AppContext,
-    _wallet: &Arc<std::sync::RwLock<crate::model::wallet::Wallet>>,
-    address: &Address,
-    owner_id: &Identifier,
-    contact_id: &Identifier,
-    address_index: u32,
-) -> Result<(), String> {
-    app_context
-        .db
-        .save_dashpay_address_mapping(owner_id, contact_id, address, address_index)
-        .map_err(|e| format!("Failed to save address mapping: {}", e))
-}
-
-/// Match a received transaction to a DashPay contact
-/// Returns the contact ID and payment details if the address belongs to a contact relationship
-pub fn match_transaction_to_contact(
-    app_context: &AppContext,
-    address: &Address,
-) -> Result<Option<(Identifier, Identifier, u32)>, String> {
-    // Look up the address in the DashPay address mapping
-    app_context
-        .db
-        .get_dashpay_address_mapping(address)
-        .map_err(|e| format!("Failed to lookup address: {}", e))
-}
-
-/// Process an incoming transaction that was detected by SPV
-/// This should be called when WalletEvent::TransactionReceived is received
-pub async fn process_incoming_payment(
-    app_context: &Arc<AppContext>,
-    tx_id: &str,
-    address: &Address,
-    amount_duffs: u64,
-) -> Result<Option<IncomingPaymentInfo>, String> {
-    // Check if this address belongs to a DashPay contact relationship
-    let mapping = match match_transaction_to_contact(app_context, address)? {
-        Some(m) => m,
-        None => return Ok(None), // Not a DashPay address
-    };
-
-    let (owner_id, contact_id, address_index) = mapping;
-
-    // Update the highest receive index if needed
-    let current_indices = app_context
-        .db
-        .get_contact_address_indices(&owner_id, &contact_id)
-        .map_err(|e| format!("Failed to get address indices: {}", e))?;
-
-    if address_index >= current_indices.highest_receive_index {
-        app_context
-            .db
-            .update_highest_receive_index(&owner_id, &contact_id, address_index + 1)
-            .map_err(|e| format!("Failed to update receive index: {}", e))?;
-    }
-
-    // Save the payment record
-    app_context
-        .db
-        .save_payment(
-            tx_id,
-            &contact_id, // from contact
-            &owner_id,   // to us
-            amount_duffs as i64,
-            None, // memo - not available for incoming
-            "received",
-        )
-        .map_err(|e| format!("Failed to save payment: {}", e))?;
-
-    Ok(Some(IncomingPaymentInfo {
-        tx_id: tx_id.to_string(),
-        from_contact_id: contact_id,
-        to_identity_id: owner_id,
-        address: address.clone(),
-        amount_duffs,
-        address_index,
-    }))
-}
-
-/// Information about an incoming DashPay payment
-#[derive(Debug, Clone)]
-pub struct IncomingPaymentInfo {
-    pub tx_id: String,
-    pub from_contact_id: Identifier,
-    pub to_identity_id: Identifier,
-    pub address: Address,
-    pub amount_duffs: u64,
-    pub address_index: u32,
-}

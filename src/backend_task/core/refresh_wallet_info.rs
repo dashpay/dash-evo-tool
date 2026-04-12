@@ -8,8 +8,25 @@ use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{Address, BlockHash, OutPoint, Transaction, TxOut, Txid};
 use dash_sdk::dpp::key_wallet::WalletCoreBalance;
 use crate::platform_wallet_bridge::CoreAddressInfo;
+use platform_wallet::wallet::platform_wallet::{PlatformWallet, WalletStateReadGuard};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
+
+/// Try to acquire a read guard on the platform-wallet manager,
+/// retrying briefly if contended. Returns `None` after ~500 ms.
+///
+/// `state_blocking()` cannot be used here because tokio's
+/// `blocking_read` panics when called from a runtime context, and
+/// `spawn_blocking` worker threads still hold a runtime context.
+fn retry_try_state(pw: &PlatformWallet) -> Option<WalletStateReadGuard<'_>> {
+    for _ in 0..50 {
+        if let Some(guard) = pw.try_state() {
+            return Some(guard);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    None
+}
 
 impl AppContext {
     /// Refresh wallet info with minimal lock contention to avoid UI freezes.
@@ -27,8 +44,10 @@ impl AppContext {
             // Read addresses from PlatformWallet (canonical source).
             // Locked wallets (no PlatformWallet) have no addresses — return empty.
             // Exclude platform payment addresses since those are not tracked by Core.
+            // Use try_state() with brief retry — state_blocking() panics from a
+            // tokio runtime context, and spawn_blocking threads still hold one.
             let addrs = if let Some(pw) = wallet_guard.platform_wallet.as_ref() {
-                let info = pw.state_blocking();
+                let info = retry_try_state(pw).ok_or(TaskError::WalletBusy)?;
                 CoreAddressInfo::all_from_wallet_info(&info.core_wallet)
                     .into_iter()
                     .filter(|a| !a.derivation_path.is_platform_payment(self.network))

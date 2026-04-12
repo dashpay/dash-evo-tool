@@ -35,7 +35,7 @@ impl<T> MigrationResultExt<T> for rusqlite::Result<T> {
     }
 }
 
-pub const DEFAULT_DB_VERSION: u16 = 34;
+pub const DEFAULT_DB_VERSION: u16 = 39;
 
 pub const DEFAULT_NETWORK: &str = "mainnet";
 
@@ -82,6 +82,21 @@ impl Database {
 
     fn apply_version_changes(&self, version: u16, tx: &Connection) -> Result<(), MigrationError> {
         match version {
+            39 => {
+                self.add_platform_created_at_ms_to_contact_requests(tx)?;
+            }
+            38 => {
+                self.add_dip15_crypto_columns_to_contact_requests(tx)?;
+            }
+            37 => {
+                self.recreate_wallet_transactions_with_account_attribution(tx)?;
+            }
+            36 => {
+                self.add_wallet_account_pool_state_and_utxo_instant_lock(tx)?;
+            }
+            35 => {
+                self.drop_dashpay_address_mappings_table(tx)?;
+            }
             34 => {
                 self.add_asset_lock_tracking_columns(tx)?;
             }
@@ -518,8 +533,25 @@ impl Database {
                         value INTEGER NOT NULL,
                         script_pubkey BLOB NOT NULL,
                         network TEXT NOT NULL,
+                        is_instant_locked INTEGER NOT NULL DEFAULT 0,
                         PRIMARY KEY (txid, vout, network)
                     );",
+            [],
+        )?;
+
+        // Per-account address pool state (Phase 10 uniform key-wallet
+        // state persistence). See the v36 migration for the shape
+        // rationale.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS wallet_account_pool_state (
+                seed_hash BLOB NOT NULL,
+                account_type BLOB NOT NULL,
+                pool_type INTEGER NOT NULL,
+                highest_used INTEGER,
+                highest_generated INTEGER,
+                PRIMARY KEY (seed_hash, account_type, pool_type),
+                FOREIGN KEY (seed_hash) REFERENCES wallet(seed_hash) ON DELETE CASCADE
+            )",
             [],
         )?;
 
@@ -1529,6 +1561,236 @@ impl Database {
             }
         }
     }
+
+    /// Migration 39: Add `platform_created_at_ms` column to
+    /// `dashpay_contact_requests` (Item 7, review M2 fix).
+    ///
+    /// The existing `created_at` column is `INTEGER DEFAULT
+    /// (unixepoch())` — it captures **when the row was saved to
+    /// local SQL**, in seconds. That's a different concept from
+    /// **when the contact request was created on platform**, which
+    /// is carried by the document's `created_at` field in
+    /// milliseconds.
+    ///
+    /// Item 7b was writing `unixepoch()` into `created_at` (local
+    /// save time) and Item 7c was reading it back and multiplying
+    /// by 1000 to fake "ms". The reviewer caught this as M2 — the
+    /// arithmetic was right for what was stored but the stored
+    /// value was the wrong timestamp.
+    ///
+    /// This migration adds a new nullable column specifically for
+    /// the platform-side ms timestamp. `created_at` keeps its
+    /// original "local save time" semantics so nothing else is
+    /// disturbed.
+    ///
+    /// Idempotent: probes `pragma_table_info` before the ALTER.
+    fn add_platform_created_at_ms_to_contact_requests(
+        &self,
+        conn: &Connection,
+    ) -> rusqlite::Result<()> {
+        let has_col: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('dashpay_contact_requests')
+             WHERE name='platform_created_at_ms'",
+            [],
+            |row| row.get::<_, i32>(0).map(|c| c > 0),
+        )?;
+        if !has_col {
+            conn.execute(
+                "ALTER TABLE dashpay_contact_requests
+                 ADD COLUMN platform_created_at_ms INTEGER",
+                [],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Migration 38: Add DIP-15 cryptographic columns to
+    /// `dashpay_contact_requests` (Item 7).
+    ///
+    /// The `ContactRequest` struct in key-wallet carries six fields
+    /// that were NOT previously persisted to evo-tool's SQL — the
+    /// DIP-15 crypto material is needed for `EstablishedContact`
+    /// reconstruction on startup and for re-encrypting payments to
+    /// contacts:
+    ///
+    /// - `sender_key_index INTEGER` — index of the sender's identity
+    ///   public key used for ECDH
+    /// - `recipient_key_index INTEGER` — index of the recipient's
+    ///   identity public key used for ECDH
+    /// - `account_reference INTEGER` — encrypted account reference
+    /// - `encrypted_public_key BLOB` — encrypted xpub for payment
+    ///   address derivation
+    /// - `encrypted_account_label_bytes BLOB` (nullable) —
+    ///   ciphertext of the optional account label (the existing
+    ///   `account_label TEXT` column stays separate; it's a
+    ///   plaintext display field, not the ciphertext)
+    /// - `auto_accept_proof BLOB` (nullable) — DIP-15 auto-accept
+    ///   proof
+    /// - `core_height_created_at INTEGER` — Core chain height at
+    ///   creation time
+    ///
+    /// All new columns are nullable so the migration can run
+    /// without a backfill — existing rows keep their NULL values
+    /// and the load path skips them until the next background
+    /// contact-request sync cycle repopulates them from platform.
+    ///
+    /// Idempotent: probes `pragma_table_info` before each
+    /// `ALTER TABLE`.
+    fn add_dip15_crypto_columns_to_contact_requests(
+        &self,
+        conn: &Connection,
+    ) -> rusqlite::Result<()> {
+        let add_column_if_missing =
+            |col_name: &str, col_def: &str| -> rusqlite::Result<()> {
+                let has_col: bool = conn.query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM pragma_table_info('dashpay_contact_requests')
+                         WHERE name='{col_name}'"
+                    ),
+                    [],
+                    |row| row.get::<_, i32>(0).map(|c| c > 0),
+                )?;
+                if !has_col {
+                    conn.execute(
+                        &format!(
+                            "ALTER TABLE dashpay_contact_requests ADD COLUMN {col_def}"
+                        ),
+                        [],
+                    )?;
+                }
+                Ok(())
+            };
+
+        add_column_if_missing("sender_key_index", "sender_key_index INTEGER")?;
+        add_column_if_missing("recipient_key_index", "recipient_key_index INTEGER")?;
+        add_column_if_missing("account_reference", "account_reference INTEGER")?;
+        add_column_if_missing("encrypted_public_key", "encrypted_public_key BLOB")?;
+        add_column_if_missing(
+            "encrypted_account_label_bytes",
+            "encrypted_account_label_bytes BLOB",
+        )?;
+        add_column_if_missing("auto_accept_proof", "auto_accept_proof BLOB")?;
+        add_column_if_missing(
+            "core_height_created_at",
+            "core_height_created_at INTEGER",
+        )?;
+
+        Ok(())
+    }
+
+    /// Migration 37: Recreate `wallet_transactions` with per-account
+    /// attribution (Phase 10 6c).
+    ///
+    /// The previous `wallet_transactions` table was effectively dead
+    /// code: the `replace_wallet_transactions` writer was never called
+    /// anywhere, and no SELECTs read it. It was a schema-only table
+    /// with per-wallet keying `(seed_hash, txid, network)` that
+    /// couldn't represent `cs.core.per_account[AccountType].transactions`
+    /// (the same txid can live in two account buckets).
+    ///
+    /// This migration drops the old dead rows and recreates the
+    /// table with:
+    /// - A per-account primary key `(seed_hash, account_type, txid, network)`
+    /// - A single `record BLOB NOT NULL` column holding a bincode
+    ///   serde-encoded `TransactionRecord` (simpler than mapping ~10
+    ///   individual fields — reuses the type's own serde derive)
+    ///
+    /// Dropping existing rows is safe: they were never read by
+    /// anyone, so there's no data to lose in any functional sense.
+    fn recreate_wallet_transactions_with_account_attribution(
+        &self,
+        conn: &Connection,
+    ) -> rusqlite::Result<()> {
+        conn.execute("DROP TABLE IF EXISTS wallet_transactions", [])?;
+        conn.execute(
+            "CREATE TABLE wallet_transactions (
+                seed_hash BLOB NOT NULL,
+                account_type BLOB NOT NULL,
+                txid BLOB NOT NULL,
+                network TEXT NOT NULL,
+                record BLOB NOT NULL,
+                PRIMARY KEY (seed_hash, account_type, txid, network),
+                FOREIGN KEY (seed_hash) REFERENCES wallet(seed_hash) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_wallet_transactions_seed_network
+             ON wallet_transactions (seed_hash, network)",
+            [],
+        )?;
+        Ok(())
+    }
+
+    /// Migration 36: Add `wallet_account_pool_state` table and
+    /// `utxos.is_instant_locked` column for Phase 10 uniform
+    /// key-wallet account state persistence.
+    ///
+    /// `wallet_account_pool_state` stores per-(account, pool) monotonic
+    /// watermarks that let the load path reconstruct key-wallet's
+    /// `highest_used` / `highest_generated` without rescanning the
+    /// blockchain. Addresses derived up to `highest_generated` are
+    /// regenerated from the seed at wallet open, and `highest_used`
+    /// marks which ones have been observed used.
+    ///
+    /// `utxos.is_instant_locked` captures the IS-lock flag on UTXOs
+    /// so the balance split (confirmed vs instant-locked-unconfirmed)
+    /// survives restart.
+    ///
+    /// Idempotent: uses `IF NOT EXISTS` on the table and probes
+    /// `pragma_table_info` before the `ALTER TABLE`.
+    fn add_wallet_account_pool_state_and_utxo_instant_lock(
+        &self,
+        conn: &Connection,
+    ) -> rusqlite::Result<()> {
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS wallet_account_pool_state (
+                seed_hash BLOB NOT NULL,
+                account_type BLOB NOT NULL,
+                pool_type INTEGER NOT NULL,
+                highest_used INTEGER,
+                highest_generated INTEGER,
+                PRIMARY KEY (seed_hash, account_type, pool_type),
+                FOREIGN KEY (seed_hash) REFERENCES wallet(seed_hash) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+
+        // Add `is_instant_locked` column to `utxos` if missing.
+        let has_col: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('utxos') WHERE name='is_instant_locked'",
+            [],
+            |row| row.get::<_, i32>(0).map(|c| c > 0),
+        )?;
+        if !has_col {
+            conn.execute(
+                "ALTER TABLE utxos ADD COLUMN is_instant_locked INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
+
+        Ok(())
+    }
+
+    /// Migration 35: Drop `dashpay_address_mappings` table.
+    ///
+    /// DashPay receiving addresses are now tracked by key-wallet's
+    /// `DashpayReceivingFunds` accounts (registered at contact
+    /// establishment via `DashPayWallet::register_contact_account`), so
+    /// the separate evo-tool mapping table is redundant. Phase 9b-4
+    /// migrated all callers to `DashPayWallet::match_incoming_dashpay_address`.
+    fn drop_dashpay_address_mappings_table(&self, conn: &Connection) -> rusqlite::Result<()> {
+        conn.execute(
+            "DROP INDEX IF EXISTS idx_dashpay_address_mappings_contact",
+            [],
+        )?;
+        conn.execute(
+            "DROP INDEX IF EXISTS idx_dashpay_address_mappings_owner",
+            [],
+        )?;
+        conn.execute("DROP TABLE IF EXISTS dashpay_address_mappings", [])?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -1589,14 +1851,100 @@ mod test {
             "last_nullifier_sync_timestamp",
         );
 
-        // wallet_transactions.status (v30)
-        assert_column_exists(conn, "wallet_transactions", "status");
+        // `wallet_transactions.status` was introduced in v30 and
+        // removed in v37 when the whole table was recreated with
+        // per-account attribution (Phase 10 6c). The v37 assertions
+        // below cover the new shape.
 
         // contact_private_info table (v29)
         assert_table_exists(conn, "contact_private_info");
 
         // dashpay_contact_requests table (pre-existing, but checked for completeness)
         assert_table_exists(conn, "dashpay_contact_requests");
+
+        // dashpay_address_mappings dropped in v35 (Phase 9b-4 cleanup).
+        assert_table_not_exists(conn, "dashpay_address_mappings");
+
+        // wallet_account_pool_state introduced in v36 (Phase 10
+        // uniform key-wallet state persistence).
+        assert_table_exists(conn, "wallet_account_pool_state");
+        for col in [
+            "seed_hash",
+            "account_type",
+            "pool_type",
+            "highest_used",
+            "highest_generated",
+        ] {
+            assert_column_exists(conn, "wallet_account_pool_state", col);
+        }
+        // utxos.is_instant_locked added in v36.
+        assert_column_exists(conn, "utxos", "is_instant_locked");
+
+        // wallet_transactions recreated with per-account attribution
+        // in v37 (Phase 10 6c). Previously keyed on (seed_hash, txid,
+        // network); now (seed_hash, account_type, txid, network) with
+        // a single `record BLOB` column holding a bincode
+        // serde-encoded `TransactionRecord`.
+        assert_table_exists(conn, "wallet_transactions");
+        for col in ["seed_hash", "account_type", "txid", "network", "record"] {
+            assert_column_exists(conn, "wallet_transactions", col);
+        }
+        // The old columns (timestamp/height/block_hash/net_amount/fee/
+        // label/is_ours/raw_transaction/status) must be gone.
+        for old_col in [
+            "timestamp",
+            "height",
+            "block_hash",
+            "net_amount",
+            "fee",
+            "label",
+            "is_ours",
+            "raw_transaction",
+            "status",
+        ] {
+            assert_column_not_exists(conn, "wallet_transactions", old_col);
+        }
+
+        // DIP-15 crypto columns added to `dashpay_contact_requests`
+        // in v38 (Item 7), plus platform timestamp column in v39
+        // (review M2).
+        for col in [
+            "sender_key_index",
+            "recipient_key_index",
+            "account_reference",
+            "encrypted_public_key",
+            "encrypted_account_label_bytes",
+            "auto_accept_proof",
+            "core_height_created_at",
+            "platform_created_at_ms",
+        ] {
+            assert_column_exists(conn, "dashpay_contact_requests", col);
+        }
+    }
+
+    fn assert_column_not_exists(conn: &Connection, table: &str, column: &str) {
+        let exists: bool = conn
+            .query_row(
+                &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name='{column}'"),
+                [],
+                |row| row.get::<_, i32>(0).map(|c| c > 0),
+            )
+            .unwrap();
+        assert!(
+            !exists,
+            "column `{column}` should NOT exist in table `{table}`"
+        );
+    }
+
+    fn assert_table_not_exists(conn: &Connection, table: &str) {
+        let exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                params![table],
+                |row| row.get::<_, i32>(0).map(|c| c > 0),
+            )
+            .unwrap();
+        assert!(!exists, "table `{table}` should not exist");
     }
 
     #[test]
@@ -1699,7 +2047,7 @@ mod test {
             )
             .unwrap();
         assert_eq!(version, DEFAULT_DB_VERSION);
-        assert_eq!(version, 34);
+        assert_eq!(version, 39);
 
         assert_v33_schema(&conn);
     }
@@ -1816,7 +2164,7 @@ mod test {
         );
 
         // Verify final version
-        assert_eq!(db.db_schema_version().unwrap(), 34);
+        assert_eq!(db.db_schema_version().unwrap(), 39);
 
         // Verify full v33 schema
         let conn = db.conn.lock().unwrap();
@@ -2473,5 +2821,133 @@ mod test {
             )
             .unwrap();
         assert_eq!(lock_identity, Some(vec![0xBBu8; 32]));
+    }
+
+    /// Holistic-review M3: the v35 migration must drop
+    /// `dashpay_address_mappings` cleanly even when the table is
+    /// populated with real data. The fresh-install test covers the
+    /// empty case; this one exercises the upgrade path with rows
+    /// and indices in place, which is what real user databases
+    /// look like.
+    #[test]
+    fn test_v35_migration_drops_populated_table() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_file_path = temp_dir.path().join("populated_v34.db");
+        let db = super::Database::new(&db_file_path).unwrap();
+
+        // Build a full database at the current version then simulate
+        // "pre-v35" by recreating the `dashpay_address_mappings`
+        // table + indices and setting the version back to 34.
+        db.create_tables().unwrap();
+        db.set_default_version().unwrap();
+
+        {
+            let conn = db.conn.lock().unwrap();
+
+            // Recreate the table with its original v34 schema.
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS dashpay_address_mappings (
+                    address TEXT PRIMARY KEY,
+                    owner_identity_id BLOB NOT NULL,
+                    contact_identity_id BLOB NOT NULL,
+                    address_index INTEGER NOT NULL,
+                    created_at INTEGER DEFAULT (unixepoch())
+                )",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_dashpay_address_mappings_owner
+                 ON dashpay_address_mappings(owner_identity_id)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_dashpay_address_mappings_contact
+                 ON dashpay_address_mappings(owner_identity_id, contact_identity_id)",
+                [],
+            )
+            .unwrap();
+
+            // Populate with representative rows across two owners
+            // and three contacts to exercise the indices.
+            let owner_a = vec![0x01u8; 32];
+            let owner_b = vec![0x02u8; 32];
+            let contact_1 = vec![0x11u8; 32];
+            let contact_2 = vec![0x12u8; 32];
+            let contact_3 = vec![0x13u8; 32];
+            let rows = [
+                ("addr_a1_0", &owner_a, &contact_1, 0u32),
+                ("addr_a1_1", &owner_a, &contact_1, 1),
+                ("addr_a2_0", &owner_a, &contact_2, 0),
+                ("addr_b1_0", &owner_b, &contact_1, 0),
+                ("addr_b3_0", &owner_b, &contact_3, 0),
+            ];
+            for (addr, owner, contact, idx) in rows {
+                conn.execute(
+                    "INSERT INTO dashpay_address_mappings
+                        (address, owner_identity_id, contact_identity_id, address_index)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![addr, owner, contact, idx],
+                )
+                .unwrap();
+            }
+
+            // Verify we actually populated the table and indices.
+            let count: i64 = conn
+                .query_row("SELECT COUNT(*) FROM dashpay_address_mappings", [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(count, 5, "populated table must have 5 rows");
+
+            let index_count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master
+                     WHERE type='index' AND tbl_name='dashpay_address_mappings'
+                     AND name LIKE 'idx_%'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(index_count, 2, "populated table must have 2 indices");
+
+            // Downgrade the recorded schema version to 34.
+            conn.execute("UPDATE settings SET database_version = 34 WHERE id = 1", [])
+                .unwrap();
+        }
+
+        assert_eq!(db.db_schema_version().unwrap(), 34);
+
+        // Run the migration. This should DROP the table and its
+        // indices without error.
+        db.try_perform_migration(34, DEFAULT_DB_VERSION)
+            .expect("v34 → v35 migration must succeed on populated table");
+
+        // Verify final version and that the table + indices are gone.
+        assert_eq!(db.db_schema_version().unwrap(), DEFAULT_DB_VERSION);
+        let conn = db.conn.lock().unwrap();
+        assert_table_not_exists(&conn, "dashpay_address_mappings");
+        let index_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type='index' AND name LIKE 'idx_dashpay_address_mappings%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            index_count, 0,
+            "v35 migration must drop all `dashpay_address_mappings` indices"
+        );
+
+        // Cross-check that adjacent DashPay tables survived intact
+        // (no FK cascade damage). `dashpay_contact_requests` has
+        // indices of the same name prefix pattern so we verify it
+        // still has rows/structure.
+        assert_table_exists(&conn, "dashpay_contact_requests");
+        assert_table_exists(&conn, "dashpay_profiles");
+        assert_table_exists(&conn, "dashpay_contacts");
+        assert_table_exists(&conn, "dashpay_payments");
     }
 }

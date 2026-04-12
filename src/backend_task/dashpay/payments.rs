@@ -10,7 +10,10 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::{Value, string_encoding::Encoding};
 use dash_sdk::drive::query::{WhereClause, WhereOperator};
 use dash_sdk::platform::{Document, DocumentQuery, FetchMany, Identifier};
+use platform_wallet::wallet::dashpay::PaymentEntry;
 use std::sync::Arc;
+
+use super::platform_wallet_cache::cache_payment;
 
 /// Payment record for local storage
 #[derive(Debug, Clone)]
@@ -326,15 +329,15 @@ pub async fn send_payment_to_contact_impl(
         payment.amount
     );
 
-    // Save to database using the db interface - propagate errors
-    app_context.db.save_payment(
-        &txid,
-        &from_identity.identity.id(),
-        &to_contact_id,
-        amount_duffs as i64,
-        memo.as_deref(),
-        "sent",
-    )?;
+    // Record the sent payment via the platform wallet so the
+    // persister writes it to `dashpay_payments` on flush (Phase 9b-2).
+    cache_payment(
+        app_context,
+        &from_identity,
+        txid.clone(),
+        PaymentEntry::new_sent(to_contact_id, amount_duffs, memo.clone()),
+    )
+    .await;
 
     // Convert to Dash for display
     let amount_dash = amount_duffs as f64 / 100_000_000.0;

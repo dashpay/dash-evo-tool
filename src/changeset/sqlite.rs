@@ -549,30 +549,236 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
             }
         }
 
+        // --- Load contact requests from dashpay_contact_requests ---
+        let mut contact_cs = platform_wallet::changeset::ContactChangeSet::default();
+        {
+            use platform_wallet::changeset::ContactRequestEntry;
+            use platform_wallet::ContactRequest;
+
+            let mut stmt = guard.prepare(
+                "SELECT from_identity_id, to_identity_id, request_type,
+                        sender_key_index, recipient_key_index, account_reference,
+                        encrypted_public_key, encrypted_account_label_bytes,
+                        auto_accept_proof, core_height_created_at, platform_created_at_ms
+                 FROM dashpay_contact_requests
+                 WHERE network = ?1
+                   AND sender_key_index IS NOT NULL
+                   AND encrypted_public_key IS NOT NULL",
+            ).map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+
+            let rows = stmt.query_map(
+                rusqlite::params![&self.network],
+                |row| {
+                    Ok((
+                        row.get::<_, Vec<u8>>(0)?,
+                        row.get::<_, Vec<u8>>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, u32>(3)?,
+                        row.get::<_, u32>(4)?,
+                        row.get::<_, u32>(5)?,
+                        row.get::<_, Vec<u8>>(6)?,
+                        row.get::<_, Option<Vec<u8>>>(7)?,
+                        row.get::<_, Option<Vec<u8>>>(8)?,
+                        row.get::<_, u32>(9)?,
+                        row.get::<_, Option<u64>>(10)?,
+                    ))
+                },
+            ).map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+
+            for row in rows {
+                let (from_bytes, to_bytes, request_type,
+                     sender_ki, recipient_ki, account_ref,
+                     enc_pub_key, enc_label, auto_accept,
+                     core_height, created_at_ms,
+                ) = row.map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+
+                let from_id = match <[u8; 32]>::try_from(from_bytes.as_slice()) {
+                    Ok(arr) => dash_sdk::platform::Identifier::from(arr),
+                    Err(_) => continue,
+                };
+                let to_id = match <[u8; 32]>::try_from(to_bytes.as_slice()) {
+                    Ok(arr) => dash_sdk::platform::Identifier::from(arr),
+                    Err(_) => continue,
+                };
+
+                let mut request = ContactRequest::new(
+                    from_id, to_id, sender_ki, recipient_ki,
+                    account_ref, enc_pub_key, core_height,
+                    created_at_ms.unwrap_or(0),
+                );
+                request.encrypted_account_label = enc_label;
+                request.auto_accept_proof = auto_accept;
+
+                let entry = ContactRequestEntry { request };
+
+                match request_type.as_str() {
+                    "sent" => { contact_cs.sent_requests.insert((from_id, to_id), entry); }
+                    "received" => { contact_cs.incoming_requests.insert((to_id, from_id), entry); }
+                    _ => continue,
+                }
+            }
+        }
+
+        // --- Load established contacts from dashpay_contacts ---
+        {
+            let mut stmt = guard.prepare(
+                "SELECT owner_identity_id, contact_identity_id
+                 FROM dashpay_contacts
+                 WHERE network = ?1 AND contact_status = 'accepted'",
+            ).map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+
+            let rows = stmt.query_map(
+                rusqlite::params![&self.network],
+                |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?)),
+            ).map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+
+            for row in rows {
+                let (owner_bytes, contact_bytes) =
+                    row.map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+                let owner_id = match <[u8; 32]>::try_from(owner_bytes.as_slice()) {
+                    Ok(arr) => dash_sdk::platform::Identifier::from(arr),
+                    Err(_) => continue,
+                };
+                let contact_id = match <[u8; 32]>::try_from(contact_bytes.as_slice()) {
+                    Ok(arr) => dash_sdk::platform::Identifier::from(arr),
+                    Err(_) => continue,
+                };
+
+                // Build EstablishedContact from the loaded sent + incoming
+                // requests if both exist for this (owner, contact) pair.
+                let outgoing = contact_cs.sent_requests.get(&(owner_id, contact_id));
+                let incoming = contact_cs.incoming_requests.get(&(contact_id, owner_id));
+                if let (Some(out), Some(inc)) = (outgoing, incoming) {
+                    let established = platform_wallet::EstablishedContact::new(
+                        contact_id,
+                        out.request.clone(),
+                        inc.request.clone(),
+                    );
+                    contact_cs.established.insert((owner_id, contact_id), established);
+                }
+            }
+        }
+
+        // --- Load DashPay profiles from dashpay_profiles ---
+        let mut profiles: std::collections::BTreeMap<
+            dash_sdk::platform::Identifier,
+            Option<platform_wallet::wallet::dashpay::DashPayProfile>,
+        > = std::collections::BTreeMap::new();
+        {
+            use platform_wallet::wallet::dashpay::DashPayProfile;
+
+            let mut stmt = guard.prepare(
+                "SELECT identity_id, display_name, bio, avatar_url, avatar_bytes, public_message
+                 FROM dashpay_profiles
+                 WHERE network = ?1",
+            ).map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+
+            let rows = stmt.query_map(
+                rusqlite::params![&self.network],
+                |row| {
+                    Ok((
+                        row.get::<_, Vec<u8>>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<Vec<u8>>>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                    ))
+                },
+            ).map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+
+            for row in rows {
+                let (id_bytes, display_name, bio, avatar_url, avatar_bytes, public_message) =
+                    row.map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+                let id = match <[u8; 32]>::try_from(id_bytes.as_slice()) {
+                    Ok(arr) => dash_sdk::platform::Identifier::from(arr),
+                    Err(_) => continue,
+                };
+                profiles.insert(id, Some(DashPayProfile {
+                    display_name, bio, avatar_url, avatar_bytes, public_message,
+                }));
+            }
+        }
+
+        // --- Load DashPay payments from dashpay_payments ---
+        let mut payments_overlay: std::collections::BTreeMap<
+            dash_sdk::platform::Identifier,
+            std::collections::BTreeMap<String, platform_wallet::wallet::dashpay::PaymentEntry>,
+        > = std::collections::BTreeMap::new();
+        {
+            use platform_wallet::wallet::dashpay::{PaymentDirection, PaymentEntry, PaymentStatus};
+
+            let mut stmt = guard.prepare(
+                "SELECT tx_id, from_identity_id, to_identity_id, amount, memo, payment_type, status
+                 FROM dashpay_payments",
+            ).map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            }).map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+
+            for row in rows {
+                let (tx_id, from_bytes, to_bytes, amount, memo, payment_type, status) =
+                    row.map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+                let from_id = match <[u8; 32]>::try_from(from_bytes.as_slice()) {
+                    Ok(arr) => dash_sdk::platform::Identifier::from(arr),
+                    Err(_) => continue,
+                };
+                let to_id = match <[u8; 32]>::try_from(to_bytes.as_slice()) {
+                    Ok(arr) => dash_sdk::platform::Identifier::from(arr),
+                    Err(_) => continue,
+                };
+                let (owner_id, counterparty_id, direction) = match payment_type.as_str() {
+                    "sent" => (from_id, to_id, PaymentDirection::Sent),
+                    _ => (to_id, from_id, PaymentDirection::Received),
+                };
+                let status = match status.as_str() {
+                    "confirmed" => PaymentStatus::Confirmed,
+                    "failed" => PaymentStatus::Failed,
+                    _ => PaymentStatus::Pending,
+                };
+                payments_overlay.entry(owner_id).or_default().insert(
+                    tx_id,
+                    PaymentEntry {
+                        counterparty_id,
+                        amount_duffs: amount as u64,
+                        memo,
+                        direction,
+                        status,
+                    },
+                );
+            }
+        }
+
+        // --- Assemble the changeset ---
         let has_core = !per_account.is_empty();
         let has_asset_locks = !asset_lock_cs.asset_locks.is_empty();
+        let has_contacts = !<platform_wallet::changeset::ContactChangeSet as platform_wallet::changeset::Merge>::is_empty(&contact_cs);
+        let has_profiles = !profiles.is_empty();
+        let has_payments = !payments_overlay.is_empty();
 
-        if !has_core && !has_asset_locks {
+        if !has_core && !has_asset_locks && !has_contacts && !has_profiles && !has_payments {
             return Ok(PlatformWalletChangeSet::default());
         }
 
-        let core = if has_core {
-            Some(WalletChangeSet {
-                per_account,
-                ..Default::default()
-            })
-        } else {
-            None
-        };
-        let asset_locks = if has_asset_locks {
-            Some(asset_lock_cs)
-        } else {
-            None
-        };
-
         Ok(PlatformWalletChangeSet {
-            core,
-            asset_locks,
+            core: if has_core {
+                Some(WalletChangeSet { per_account, ..Default::default() })
+            } else {
+                None
+            },
+            asset_locks: if has_asset_locks { Some(asset_lock_cs) } else { None },
+            contacts: if has_contacts { Some(contact_cs) } else { None },
+            dashpay_profiles: if has_profiles { Some(profiles) } else { None },
+            dashpay_payments_overlay: if has_payments { Some(payments_overlay) } else { None },
             ..Default::default()
         })
     }
@@ -600,6 +806,12 @@ impl SqliteWalletPersister {
             platform_addresses,
             asset_locks,
             token_balances,
+            // DashPay overlay fields are write-through: the write path
+            // uses the IdentityEntry-based write_identity_dashpay_subset,
+            // and the load path returns them via these overlay fields.
+            // They're not written separately during flush.
+            dashpay_profiles: _,
+            dashpay_payments_overlay: _,
         } = cs;
 
         // Sub-changesets owned by backend tasks (or fully deferred)
@@ -2417,5 +2629,162 @@ mod tests {
         assert!(entry.proof.is_none());
         // The loaded transaction should serialize identically.
         assert_eq!(entry.transaction, tx);
+    }
+
+    /// Round-trip: write contact requests + profile + payments via
+    /// flush, then load them back via load() and verify.
+    #[test]
+    fn test_contacts_and_dashpay_round_trip() {
+        use dash_sdk::platform::Identifier;
+        use platform_wallet::changeset::{ContactChangeSet, ContactRequestEntry};
+        use platform_wallet::wallet::dashpay::{
+            DashPayProfile, PaymentDirection, PaymentEntry, PaymentStatus,
+        };
+        use platform_wallet::ContactRequest;
+
+        let db = Arc::new(create_test_database().expect("create test db"));
+        let persister = make_persister(db.clone());
+
+        // Insert wallet row.
+        db.execute(
+            "INSERT INTO wallet
+                (seed_hash, wallet_id, encrypted_seed, salt, nonce,
+                 master_ecdsa_bip44_account_0_epk, uses_password, network)
+             VALUES (?1, ?1, ?2, ?3, ?4, ?5, 0, 'testnet')",
+            rusqlite::params![
+                &TEST_WALLET_ID[..],
+                vec![0u8; 32],
+                vec![0u8; 16],
+                vec![0u8; 12],
+                vec![0u8; 33],
+            ],
+        )
+        .expect("insert wallet row");
+
+        let owner_id = Identifier::from([1u8; 32]);
+        let contact_id = Identifier::from([2u8; 32]);
+
+        // Build a ContactChangeSet with a sent request.
+        let sent_request = ContactRequest::new(
+            owner_id,
+            contact_id,
+            3, // sender_key_index
+            5, // recipient_key_index
+            42, // account_reference
+            vec![0xABu8; 96], // encrypted_public_key
+            100_000, // core_height_created_at
+            1_700_000_000_000, // created_at ms
+        );
+        let mut contact_cs = ContactChangeSet::default();
+        contact_cs.sent_requests.insert(
+            (owner_id, contact_id),
+            ContactRequestEntry { request: sent_request },
+        );
+
+        // Build a profile changeset.
+        let profile = DashPayProfile {
+            display_name: Some("Alice".into()),
+            bio: Some("test bio".into()),
+            avatar_url: None,
+            avatar_bytes: None,
+            public_message: Some("hello".into()),
+        };
+        let mut profiles_map = std::collections::BTreeMap::new();
+        profiles_map.insert(owner_id, Some(profile.clone()));
+
+        // Build a payment changeset.
+        let payment = PaymentEntry {
+            counterparty_id: contact_id,
+            amount_duffs: 50_000,
+            memo: Some("lunch".into()),
+            direction: PaymentDirection::Sent,
+            status: PaymentStatus::Confirmed,
+        };
+        let mut payments_map = std::collections::BTreeMap::new();
+        payments_map
+            .entry(owner_id)
+            .or_insert_with(std::collections::BTreeMap::<String, PaymentEntry>::new)
+            .insert("tx123".into(), payment.clone());
+
+        // Build the identity subset changeset (profile + payments go
+        // through write_identity_dashpay_subset, which requires an
+        // IdentityEntry). We need a minimal identity for the write path.
+        use dash_sdk::dpp::identity::{Identity, v0::IdentityV0};
+        let identity = Identity::V0(IdentityV0 {
+            id: owner_id,
+            public_keys: std::collections::BTreeMap::new(),
+            balance: 0,
+            revision: 0,
+        });
+        let mut id_cs = platform_wallet::changeset::IdentityChangeSet::default();
+        id_cs.identities.insert(
+            owner_id,
+            platform_wallet::changeset::IdentityEntry {
+                identity,
+                identity_index: 0,
+                label: None,
+                last_updated_balance_block_time: None,
+                last_synced_keys_block_time: None,
+                dpns_names: Vec::new(),
+                top_ups: std::collections::BTreeMap::new(),
+                status: Default::default(),
+                key_storage: std::collections::BTreeMap::new(),
+                wallet_id: Some(TEST_WALLET_ID),
+                dashpay_profile: Some(profile.clone()),
+                dashpay_payments: {
+                    let mut m = std::collections::BTreeMap::new();
+                    m.insert("tx123".into(), payment.clone());
+                    m
+                },
+            },
+        );
+
+        // Flush: contacts + identity dashpay subset.
+        let cs = PlatformWalletChangeSet {
+            identities: Some(id_cs),
+            contacts: Some(contact_cs),
+            ..Default::default()
+        };
+        persister.store(TEST_WALLET_ID, cs);
+        persister.flush(TEST_WALLET_ID).expect("flush");
+
+        // Load and verify round-trip.
+        let loaded = persister.load(TEST_WALLET_ID).expect("load");
+
+        // Verify contacts loaded.
+        let loaded_contacts = loaded.contacts.expect("contacts populated");
+        assert_eq!(loaded_contacts.sent_requests.len(), 1);
+        let loaded_req = &loaded_contacts
+            .sent_requests
+            .get(&(owner_id, contact_id))
+            .expect("sent request")
+            .request;
+        assert_eq!(loaded_req.sender_key_index, 3);
+        assert_eq!(loaded_req.recipient_key_index, 5);
+        assert_eq!(loaded_req.account_reference, 42);
+        assert_eq!(loaded_req.encrypted_public_key, vec![0xABu8; 96]);
+        assert_eq!(loaded_req.core_height_created_at, 100_000);
+        assert_eq!(loaded_req.created_at, 1_700_000_000_000);
+
+        // Verify profile loaded via overlay.
+        let loaded_profiles = loaded.dashpay_profiles.expect("profiles populated");
+        let loaded_profile = loaded_profiles
+            .get(&owner_id)
+            .expect("owner profile")
+            .as_ref()
+            .expect("profile is Some");
+        assert_eq!(loaded_profile.display_name.as_deref(), Some("Alice"));
+        assert_eq!(loaded_profile.bio.as_deref(), Some("test bio"));
+        assert_eq!(loaded_profile.public_message.as_deref(), Some("hello"));
+
+        // Verify payment loaded via overlay.
+        let loaded_payments = loaded.dashpay_payments_overlay.expect("payments populated");
+        let owner_payments = loaded_payments.get(&owner_id).expect("owner payments");
+        let loaded_payment = owner_payments.get("tx123").expect("tx123 payment");
+        assert_eq!(loaded_payment.amount_duffs, 50_000);
+        assert_eq!(loaded_payment.direction, PaymentDirection::Sent);
+        assert_eq!(loaded_payment.status, PaymentStatus::Confirmed);
+        assert_eq!(loaded_payment.memo.as_deref(), Some("lunch"));
+        assert_eq!(loaded_payment.counterparty_id, contact_id);
     }
 }

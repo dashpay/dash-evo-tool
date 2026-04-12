@@ -947,13 +947,10 @@ impl AppContext {
         // SQL. The persister writes `dashpay_profiles` and
         // `dashpay_payments` on flush (Phase 9b-1, 9b-2), but
         // `SqliteWalletPersister::load()` is a no-op because it
-        // can't construct a full `IdentityEntry` without access to
-        // the identity blob. Instead, we rehydrate the DashPay
-        // subset here, where we already have the identity and are
-        // about to write it into the ManagedIdentity. This closes
-        // the write-only persistence gap (data-integrity C1).
-        let (mi_dashpay_profile, mi_dashpay_payments) =
-            self.load_dashpay_state_for_identity(&identity_id);
+        // DashPay profiles and payments are loaded by the persister's
+        // load() via the dashpay_profiles/dashpay_payments_overlay
+        // fields, applied at replay_persisted_state_after_bootstrap.
+        // No direct-load needed here.
 
         // 3c. Hydrate established contacts (Item 7c). Reads
         // `dashpay_contact_requests` rows with full DIP-15 crypto,
@@ -973,8 +970,8 @@ impl AppContext {
             managed.status = mi_status;
             managed.wallet_id = Some(wallet_id);
             managed.top_ups = qualified_identity.top_ups.clone();
-            managed.dashpay_profile = mi_dashpay_profile;
-            managed.dashpay_payments = mi_dashpay_payments;
+            // dashpay_profile and dashpay_payments are populated
+            // by the persister load overlay at replay time.
             // Established contacts: extend rather than replace so
             // live-mutation entries (auto-established during this
             // session) aren't clobbered by a mid-session resync.
@@ -1009,8 +1006,8 @@ impl AppContext {
                         managed.status = mi_status;
                         managed.wallet_id = Some(wallet_id);
                         managed.top_ups = qualified_identity.top_ups.clone();
-                        managed.dashpay_profile = mi_dashpay_profile;
-                        managed.dashpay_payments = mi_dashpay_payments;
+                        // dashpay_profile + dashpay_payments populated by
+                        // persister load overlay at replay time.
                         managed.established_contacts = mi_established_contacts;
                         if let Some(alias) = &qualified_identity.alias {
                             managed.label = Some(alias.clone());
@@ -1045,6 +1042,9 @@ impl AppContext {
     /// the full `Identity` blob needed to construct an `IdentityEntry`,
     /// so the read happens here where the `QualifiedIdentity` is
     /// already in scope.
+    /// Superseded by persister load overlay (dashpay_profiles +
+    /// dashpay_payments_overlay fields). Kept for potential debugging.
+    #[allow(dead_code)]
     fn load_dashpay_state_for_identity(
         &self,
         identity_id: &dash_sdk::platform::Identifier,

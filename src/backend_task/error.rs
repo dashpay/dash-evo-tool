@@ -14,6 +14,7 @@ use dash_sdk::dpp::consensus::ConsensusError;
 use dash_sdk::dpp::consensus::basic::basic_error::BasicError;
 use dash_sdk::dpp::consensus::state::state_error::StateError;
 use dash_sdk::dpp::dashcore;
+use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use thiserror::Error;
 
@@ -391,6 +392,67 @@ pub enum TaskError {
         "Token at position {position} was not found in the contract. Please reload the contract and retry."
     )]
     TokenPositionNotFound { position: u16 },
+
+    /// The token name contains whitespace or control characters.
+    #[error(
+        "The token name \"{}\" in {form} contains invalid characters. \
+         Token names must not include spaces or control characters. Please rename and try again.",
+        escape_token_name(token_name)
+    )]
+    InvalidTokenNameCharacter {
+        form: String,
+        token_name: String,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// The token name length is outside the allowed range.
+    #[error(
+        "The token {form} is {actual} characters long, but must be between {min} and {max}. \
+         Please adjust the name length and try again."
+    )]
+    InvalidTokenNameLength {
+        form: String,
+        actual: usize,
+        min: usize,
+        max: usize,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// The token language code is not recognized.
+    #[error(
+        "The language code \"{language_code}\" is not valid. \
+         Use a standard language code like \"en\" or \"fr\" and try again."
+    )]
+    InvalidTokenLanguageCode {
+        language_code: String,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// The token's decimal places exceed the platform limit.
+    #[error(
+        "Token decimals cannot exceed {max_decimals}, but {decimals} was specified. \
+         Please use a smaller value."
+    )]
+    TokenDecimalsOverLimit {
+        decimals: u8,
+        max_decimals: u8,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// The token's base supply exceeds the platform limit.
+    #[error(
+        "The token base supply of {base_supply} is too large. \
+         Please use a smaller value."
+    )]
+    InvalidTokenBaseSupply {
+        base_supply: u64,
+        #[source]
+        source_error: Box<SdkError>,
+    },
 
     // ──────────────────────────────────────────────────────────────────────────
     // Contract errors
@@ -939,6 +1001,18 @@ pub enum TaskError {
     /// Nullifier sync failed.
     #[error("Could not check for spent shielded notes. Please check your connection and retry.")]
     ShieldedNullifierSyncFailed { detail: String },
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Network context errors
+    // ──────────────────────────────────────────────────────────────────────────
+    /// Creating a network context failed during a network switch.
+    #[error("Could not connect to {network}. Check your network configuration and retry.")]
+    NetworkContextCreationFailed { network: Network, detail: String },
+}
+
+/// Escapes control characters in a token name for safe display in error messages.
+fn escape_token_name(name: &str) -> String {
+    name.chars().filter(|c| !c.is_control()).collect()
 }
 
 /// Returns `true` when a `dashcore_rpc::Error` wraps an HTTP 401 response,
@@ -1180,6 +1254,26 @@ impl From<SdkError> for TaskError {
                 current_count: u64,
                 minimum_required: u64,
             },
+            InvalidTokenNameCharacter {
+                form: String,
+                token_name: String,
+            },
+            InvalidTokenNameLength {
+                form: String,
+                actual: usize,
+                min: usize,
+                max: usize,
+            },
+            InvalidTokenLanguageCode {
+                language_code: String,
+            },
+            TokenDecimalsOverLimit {
+                decimals: u8,
+                max_decimals: u8,
+            },
+            InvalidTokenBaseSupply {
+                base_supply: u64,
+            },
         }
 
         let kind: Option<ConsensusKind> = {
@@ -1223,6 +1317,36 @@ impl From<SdkError> for TaskError {
                         Some(ConsensusKind::InsufficientPoolNotes {
                             current_count: e.current_count(),
                             minimum_required: e.minimum_required(),
+                        })
+                    }
+                    ConsensusError::BasicError(BasicError::InvalidTokenNameCharacterError(e)) => {
+                        Some(ConsensusKind::InvalidTokenNameCharacter {
+                            form: e.form().to_string(),
+                            token_name: e.token_name().to_string(),
+                        })
+                    }
+                    ConsensusError::BasicError(BasicError::InvalidTokenNameLengthError(e)) => {
+                        Some(ConsensusKind::InvalidTokenNameLength {
+                            form: e.form().to_string(),
+                            actual: e.actual(),
+                            min: e.min(),
+                            max: e.max(),
+                        })
+                    }
+                    ConsensusError::BasicError(BasicError::InvalidTokenLanguageCodeError(e)) => {
+                        Some(ConsensusKind::InvalidTokenLanguageCode {
+                            language_code: e.language_code().to_string(),
+                        })
+                    }
+                    ConsensusError::BasicError(BasicError::DecimalsOverLimitError(e)) => {
+                        Some(ConsensusKind::TokenDecimalsOverLimit {
+                            decimals: e.decimals(),
+                            max_decimals: e.max_decimals(),
+                        })
+                    }
+                    ConsensusError::BasicError(BasicError::InvalidTokenBaseSupplyError(e)) => {
+                        Some(ConsensusKind::InvalidTokenBaseSupply {
+                            base_supply: e.base_supply(),
                         })
                     }
                     _ => None,
@@ -1283,6 +1407,45 @@ impl From<SdkError> for TaskError {
                 minimum_required,
                 source_error: boxed,
             },
+            Some(ConsensusKind::InvalidTokenNameCharacter { form, token_name }) => {
+                TaskError::InvalidTokenNameCharacter {
+                    form,
+                    token_name,
+                    source_error: boxed,
+                }
+            }
+            Some(ConsensusKind::InvalidTokenNameLength {
+                form,
+                actual,
+                min,
+                max,
+            }) => TaskError::InvalidTokenNameLength {
+                form,
+                actual,
+                min,
+                max,
+                source_error: boxed,
+            },
+            Some(ConsensusKind::InvalidTokenLanguageCode { language_code }) => {
+                TaskError::InvalidTokenLanguageCode {
+                    language_code,
+                    source_error: boxed,
+                }
+            }
+            Some(ConsensusKind::TokenDecimalsOverLimit {
+                decimals,
+                max_decimals,
+            }) => TaskError::TokenDecimalsOverLimit {
+                decimals,
+                max_decimals,
+                source_error: boxed,
+            },
+            Some(ConsensusKind::InvalidTokenBaseSupply { base_supply }) => {
+                TaskError::InvalidTokenBaseSupply {
+                    base_supply,
+                    source_error: boxed,
+                }
+            }
             None => {
                 // Extract timeout duration before consuming boxed.
                 let timeout_secs = if let SdkError::TimeoutReached(d, _) = &*boxed {
@@ -1388,6 +1551,10 @@ mod tests {
     use super::*;
     use dash_sdk::dapi_client::DapiClientError;
     use dash_sdk::dapi_client::transport::TransportError;
+    use dash_sdk::dpp::consensus::basic::data_contract::{
+        DecimalsOverLimitError, InvalidTokenBaseSupplyError, InvalidTokenLanguageCodeError,
+        InvalidTokenNameCharacterError, InvalidTokenNameLengthError,
+    };
     use dash_sdk::dpp::consensus::basic::identity::InvalidInstantAssetLockProofSignatureError;
     use dash_sdk::dpp::consensus::state::identity::duplicated_identity_public_key_id_state_error::DuplicatedIdentityPublicKeyIdStateError;
     use dash_sdk::dpp::consensus::state::identity::duplicated_identity_public_key_state_error::DuplicatedIdentityPublicKeyStateError;
@@ -2308,6 +2475,225 @@ mod tests {
         assert!(
             !msg.contains("timed out"),
             "Connection refused should NOT say 'timed out', got: {msg}"
+        );
+    }
+
+    // ─── Token validation consensus error tests ──────────────────────────────
+
+    #[test]
+    fn from_sdk_error_invalid_token_name_character_via_consensus() {
+        let consensus = ConsensusError::from(InvalidTokenNameCharacterError::new(
+            "singular form".to_string(),
+            "token lklimek".to_string(),
+        ));
+        let sdk_err = SdkError::from(consensus);
+        let err = TaskError::from(sdk_err);
+        assert!(matches!(err, TaskError::InvalidTokenNameCharacter { .. }));
+    }
+
+    #[test]
+    fn from_sdk_error_invalid_token_name_character_via_broadcast() {
+        let consensus = ConsensusError::from(InvalidTokenNameCharacterError::new(
+            "singular form".to_string(),
+            "bad name".to_string(),
+        ));
+        let broadcast_err = dash_sdk::error::StateTransitionBroadcastError {
+            code: 10201,
+            message: "invalid token name character".to_string(),
+            cause: Some(consensus),
+        };
+        let sdk_err = SdkError::StateTransitionBroadcastError(broadcast_err);
+        let err = TaskError::from(sdk_err);
+        assert!(matches!(err, TaskError::InvalidTokenNameCharacter { .. }));
+    }
+
+    #[test]
+    fn invalid_token_name_character_display_is_user_friendly() {
+        let consensus = ConsensusError::from(InvalidTokenNameCharacterError::new(
+            "singular form".to_string(),
+            "bad\tname".to_string(),
+        ));
+        let sdk_err = SdkError::from(consensus);
+        let err = TaskError::from(sdk_err);
+        let msg = err.to_string();
+        assert!(
+            msg.contains("badname"),
+            "Expected escaped token name in message, got: {msg}"
+        );
+        assert!(
+            msg.contains("rename"),
+            "Expected actionable guidance, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn from_sdk_error_invalid_token_name_length_via_consensus() {
+        let consensus =
+            ConsensusError::from(InvalidTokenNameLengthError::new(2, 3, 24, "singular form"));
+        let sdk_err = SdkError::from(consensus);
+        let err = TaskError::from(sdk_err);
+        assert!(
+            matches!(
+                err,
+                TaskError::InvalidTokenNameLength {
+                    actual: 2,
+                    min: 3,
+                    max: 24,
+                    ..
+                }
+            ),
+            "Expected InvalidTokenNameLength, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn from_sdk_error_invalid_token_name_length_via_broadcast() {
+        let consensus =
+            ConsensusError::from(InvalidTokenNameLengthError::new(50, 3, 24, "singular form"));
+        let broadcast_err = dash_sdk::error::StateTransitionBroadcastError {
+            code: 10202,
+            message: "invalid token name length".to_string(),
+            cause: Some(consensus),
+        };
+        let sdk_err = SdkError::StateTransitionBroadcastError(broadcast_err);
+        let err = TaskError::from(sdk_err);
+        assert!(matches!(err, TaskError::InvalidTokenNameLength { .. }));
+    }
+
+    #[test]
+    fn invalid_token_name_length_display_is_user_friendly() {
+        let consensus =
+            ConsensusError::from(InvalidTokenNameLengthError::new(2, 3, 24, "singular form"));
+        let sdk_err = SdkError::from(consensus);
+        let err = TaskError::from(sdk_err);
+        let msg = err.to_string();
+        assert!(msg.contains("2"), "Expected actual length, got: {msg}");
+        assert!(msg.contains("3"), "Expected min length, got: {msg}");
+        assert!(msg.contains("24"), "Expected max length, got: {msg}");
+        assert!(
+            msg.contains("adjust"),
+            "Expected actionable guidance, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn from_sdk_error_invalid_token_language_code_via_consensus() {
+        let consensus =
+            ConsensusError::from(InvalidTokenLanguageCodeError::new("zz_FAKE".to_string()));
+        let sdk_err = SdkError::from(consensus);
+        let err = TaskError::from(sdk_err);
+        assert!(matches!(err, TaskError::InvalidTokenLanguageCode { .. }));
+    }
+
+    #[test]
+    fn from_sdk_error_invalid_token_language_code_via_broadcast() {
+        let consensus = ConsensusError::from(InvalidTokenLanguageCodeError::new("xx".to_string()));
+        let broadcast_err = dash_sdk::error::StateTransitionBroadcastError {
+            code: 10203,
+            message: "invalid language code".to_string(),
+            cause: Some(consensus),
+        };
+        let sdk_err = SdkError::StateTransitionBroadcastError(broadcast_err);
+        let err = TaskError::from(sdk_err);
+        assert!(matches!(err, TaskError::InvalidTokenLanguageCode { .. }));
+    }
+
+    #[test]
+    fn invalid_token_language_code_display_is_user_friendly() {
+        let consensus =
+            ConsensusError::from(InvalidTokenLanguageCodeError::new("zz_FAKE".to_string()));
+        let sdk_err = SdkError::from(consensus);
+        let err = TaskError::from(sdk_err);
+        let msg = err.to_string();
+        assert!(
+            msg.contains("zz_FAKE"),
+            "Expected language code in message, got: {msg}"
+        );
+        assert!(
+            msg.contains("en") || msg.contains("fr"),
+            "Expected example codes, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn from_sdk_error_token_decimals_over_limit_via_consensus() {
+        let consensus = ConsensusError::from(DecimalsOverLimitError::new(20, 8));
+        let sdk_err = SdkError::from(consensus);
+        let err = TaskError::from(sdk_err);
+        assert!(
+            matches!(
+                err,
+                TaskError::TokenDecimalsOverLimit {
+                    decimals: 20,
+                    max_decimals: 8,
+                    ..
+                }
+            ),
+            "Expected TokenDecimalsOverLimit, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn from_sdk_error_token_decimals_over_limit_via_broadcast() {
+        let consensus = ConsensusError::from(DecimalsOverLimitError::new(20, 8));
+        let broadcast_err = dash_sdk::error::StateTransitionBroadcastError {
+            code: 10204,
+            message: "decimals over limit".to_string(),
+            cause: Some(consensus),
+        };
+        let sdk_err = SdkError::StateTransitionBroadcastError(broadcast_err);
+        let err = TaskError::from(sdk_err);
+        assert!(matches!(err, TaskError::TokenDecimalsOverLimit { .. }));
+    }
+
+    #[test]
+    fn token_decimals_over_limit_display_is_user_friendly() {
+        let consensus = ConsensusError::from(DecimalsOverLimitError::new(20, 8));
+        let sdk_err = SdkError::from(consensus);
+        let err = TaskError::from(sdk_err);
+        let msg = err.to_string();
+        assert!(msg.contains("20"), "Expected decimals value, got: {msg}");
+        assert!(msg.contains("8"), "Expected max decimals, got: {msg}");
+        assert!(
+            msg.contains("smaller value"),
+            "Expected actionable guidance, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn from_sdk_error_invalid_token_base_supply_via_consensus() {
+        let consensus = ConsensusError::from(InvalidTokenBaseSupplyError::new(u64::MAX));
+        let sdk_err = SdkError::from(consensus);
+        let err = TaskError::from(sdk_err);
+        assert!(matches!(err, TaskError::InvalidTokenBaseSupply { .. }));
+    }
+
+    #[test]
+    fn from_sdk_error_invalid_token_base_supply_via_broadcast() {
+        let consensus = ConsensusError::from(InvalidTokenBaseSupplyError::new(u64::MAX));
+        let broadcast_err = dash_sdk::error::StateTransitionBroadcastError {
+            code: 10205,
+            message: "invalid base supply".to_string(),
+            cause: Some(consensus),
+        };
+        let sdk_err = SdkError::StateTransitionBroadcastError(broadcast_err);
+        let err = TaskError::from(sdk_err);
+        assert!(matches!(err, TaskError::InvalidTokenBaseSupply { .. }));
+    }
+
+    #[test]
+    fn invalid_token_base_supply_display_is_user_friendly() {
+        let consensus = ConsensusError::from(InvalidTokenBaseSupplyError::new(u64::MAX));
+        let sdk_err = SdkError::from(consensus);
+        let err = TaskError::from(sdk_err);
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&u64::MAX.to_string()),
+            "Expected base supply value, got: {msg}"
+        );
+        assert!(
+            msg.contains("smaller value"),
+            "Expected actionable guidance, got: {msg}"
         );
     }
 }

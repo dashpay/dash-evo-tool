@@ -33,11 +33,7 @@ impl AppContext {
 
                 (out_point, 0u32, None)
             }
-            TopUpIdentityFundingMethod::FundWithWallet(
-                amount,
-                identity_index,
-                top_up_index,
-            ) => {
+            TopUpIdentityFundingMethod::FundWithWallet(amount, identity_index, top_up_index) => {
                 let platform_wallet = {
                     let guard = wallet.read().map_err(TaskError::from)?;
                     guard
@@ -49,19 +45,18 @@ impl AppContext {
                 // Single call: builds asset lock TX, broadcasts, waits for
                 // finality proof (IS or CL), and returns the proof + key.
                 // The lock is tracked by AssetLockManager for later resumption.
-                let (_asset_lock_proof, _asset_lock_proof_private_key, out_point) =
-                    platform_wallet
-                        .asset_locks()
-                        .create_funded_asset_lock_proof(
-                            amount,
-                            0,
-                            platform_wallet::AssetLockFundingType::IdentityTopUp,
-                            identity_index,
-                        )
-                        .await
-                        .map_err(|e| TaskError::AssetLockTransactionBuildFailed {
-                            detail: e.to_string(),
-                        })?;
+                let (_asset_lock_proof, _asset_lock_proof_private_key, out_point) = platform_wallet
+                    .asset_locks()
+                    .create_funded_asset_lock_proof(
+                        amount,
+                        0,
+                        platform_wallet::AssetLockFundingType::IdentityTopUp,
+                        identity_index,
+                    )
+                    .await
+                    .map_err(|e| TaskError::AssetLockTransactionBuildFailed {
+                        detail: e.to_string(),
+                    })?;
 
                 (out_point, identity_index, Some((amount, top_up_index)))
             }
@@ -117,19 +112,14 @@ impl AppContext {
                     .await
                     .map_err(|retry_err| match retry_err {
                         platform_wallet::PlatformWalletError::Sdk(sdk_err) => self
-                            .log_drive_proof_error(
-                                sdk_err,
-                                RequestType::BroadcastStateTransition,
-                            ),
+                            .log_drive_proof_error(sdk_err, RequestType::BroadcastStateTransition),
                         other => TaskError::PlatformWallet {
                             source: Box::new(other),
                         },
                     })?
             }
             Err(platform_wallet::PlatformWalletError::Sdk(e)) => {
-                return Err(
-                    self.log_drive_proof_error(e, RequestType::BroadcastStateTransition)
-                );
+                return Err(self.log_drive_proof_error(e, RequestType::BroadcastStateTransition));
             }
             Err(other) => {
                 return Err(TaskError::PlatformWallet {

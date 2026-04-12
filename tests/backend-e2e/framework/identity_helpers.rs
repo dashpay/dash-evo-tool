@@ -13,6 +13,10 @@ use std::sync::{Arc, RwLock};
 /// Build an `IdentityRegistrationInfo` for a wallet-funded identity.
 ///
 /// Derives master key + additional keys from the wallet at identity_index 0.
+/// Returns the registration info AND the raw master authentication private key
+/// bytes (32 bytes). The key bytes must be captured here because the wallet
+/// encrypts them after registration, making post-registration extraction
+/// impossible.
 ///
 /// # Panics
 ///
@@ -21,7 +25,7 @@ pub fn build_identity_registration(
     app_context: &Arc<AppContext>,
     wallet_arc: &Arc<RwLock<Wallet>>,
     wallet_seed_hash: WalletSeedHash,
-) -> IdentityRegistrationInfo {
+) -> (IdentityRegistrationInfo, Vec<u8>) {
     let dashpay_contract_id = app_context.dashpay_contract_id();
     let key_specs = default_identity_key_specs(dashpay_contract_id);
 
@@ -58,7 +62,9 @@ pub fn build_identity_registration(
 
     drop(wallet);
 
-    IdentityRegistrationInfo {
+    let master_key_bytes = master_private_key.inner.secret_bytes().to_vec();
+
+    let reg_info = IdentityRegistrationInfo {
         alias_input: format!("e2e-test-{}", hex::encode(&wallet_seed_hash[..4])),
         keys: IdentityKeys::new(
             Some((master_private_key, master_derivation_path)),
@@ -68,12 +74,17 @@ pub fn build_identity_registration(
         wallet: wallet_arc.clone(),
         wallet_identity_index: identity_index,
         identity_funding_method: RegisterIdentityFundingMethod::FundWithWallet(
-            // Asset lock amount in duffs. Platform registration fee is ~241k credits
-            // (~241k duffs). 1M duffs provides comfortable margin for fees + top-up.
-            1_000_000,
+            // Asset lock amount in duffs. Platform credits ≈ duffs × 1000 minus fees.
+            // 25M duffs → ~25B credits after fees.
+            // Token contract registration: ~20B credits (base 10B + token 10B).
+            // Identity registration: ~241M credits.
+            // Remaining: ~5B for subsequent operations (top-up, transfer, etc.).
+            25_000_000,
             identity_index,
         ),
-    }
+    };
+
+    (reg_info, master_key_bytes)
 }
 
 /// Get a receive address string from a wallet.
@@ -82,14 +93,46 @@ pub fn build_identity_registration(
 /// before awaiting the async `next_receive_address` (which takes a tokio write
 /// lock on `PlatformWalletInfo`). Holding `std::sync::RwLock` across `.await`
 /// would deadlock with SPV block processing.
-pub async fn get_receive_address(_app_context: &AppContext, wallet_arc: &Arc<RwLock<Wallet>>) -> String {
+pub async fn get_receive_address(
+    _app_context: &AppContext,
+    wallet_arc: &Arc<RwLock<Wallet>>,
+) -> String {
     let pw = {
         let wallet = wallet_arc.read().expect("wallet lock");
-        wallet.platform_wallet.clone().expect("platform wallet must exist")
+        wallet
+            .platform_wallet
+            .clone()
+            .expect("platform wallet must exist")
     };
     pw.core()
         .next_receive_address()
         .await
         .expect("Failed to get receive address")
         .to_string()
+}
+
+/// Derive a DIP-17 Platform payment address from a wallet.
+///
+/// Derives the address at index 0 (`skip_known = false`) or index 1
+/// (`skip_known = true`). The addresses are deterministic for a given
+/// seed and network.
+///
+/// Index 0 is the primary platform address (the one the tests fund first).
+/// Index 1 is a fresh secondary address used as a transfer destination.
+///
+/// # Panics
+///
+/// Panics if the wallet is locked or key derivation fails.
+pub fn get_platform_address(
+    wallet_arc: &Arc<RwLock<Wallet>>,
+    network: Network,
+    skip_known: bool,
+) -> dash_sdk::dpp::address_funds::PlatformAddress {
+    let index = if skip_known { 1 } else { 0 };
+    let wallet = wallet_arc.read().expect("wallet lock");
+    let address = wallet
+        .platform_payment_address_at(network, index)
+        .expect("Failed to derive platform payment address");
+    dash_sdk::dpp::address_funds::PlatformAddress::try_from(address)
+        .expect("Failed to convert to PlatformAddress")
 }

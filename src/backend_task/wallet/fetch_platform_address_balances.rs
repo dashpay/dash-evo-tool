@@ -5,6 +5,7 @@ use crate::model::wallet::{
     WalletId,
 };
 use dash_sdk::RequestSettings;
+use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use dash_sdk::platform::address_sync::AddressSyncConfig;
@@ -178,7 +179,11 @@ impl AppContext {
             .get_all_platform_address_info(&seed_hash, &self.network)
             .unwrap_or_default()
             .into_iter()
-            .map(|(addr, balance, nonce)| (addr, (balance, nonce)))
+            .filter_map(|(addr, balance, nonce)| {
+                PlatformAddress::try_from(addr)
+                    .ok()
+                    .map(|pa| (pa, (balance, nonce)))
+            })
             .collect();
 
         let addresses_with_balance = provider.found_balances().len();
@@ -191,6 +196,7 @@ impl AppContext {
         Ok(BackendTaskSuccessResult::PlatformAddressBalances {
             seed_hash,
             balances,
+            network: self.network(),
         })
     }
 }

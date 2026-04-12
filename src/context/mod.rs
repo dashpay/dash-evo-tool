@@ -15,6 +15,7 @@ use crate::config::{Config, NetworkConfig};
 use crate::context_provider::Provider as RpcProvider;
 use crate::context_provider_spv::SpvProvider;
 use crate::database::Database;
+use crate::model::feature_gate::FeatureGate;
 use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::password_info::PasswordInfo;
 use crate::model::proof_log_item::RequestType;
@@ -489,18 +490,20 @@ impl AppContext {
     }
 
     pub fn set_core_backend_mode(self: &Arc<Self>, mode: CoreBackendMode) {
-        self.core_backend_mode
-            .store(mode.as_u8(), Ordering::Relaxed);
+        self.set_core_backend_mode_inner(mode, true);
+    }
 
-        // Persist the mode to the database (hold the guard to ensure cache invalidation)
-        let _guard = self.invalidate_settings_cache();
-        if let Err(e) = self.db.update_core_backend_mode(mode.as_u8()) {
-            tracing::error!("Failed to persist core backend mode: {}", e);
-        }
+    /// Switch the backend mode in-memory only, without persisting to the DB.
+    /// Used by headless (MCP/CLI) mode to force SPV without overwriting the
+    /// GUI's saved preference.
+    pub fn set_core_backend_mode_volatile(self: &Arc<Self>, mode: CoreBackendMode) {
+        self.set_core_backend_mode_inner(mode, false);
+    }
 
+    fn set_core_backend_mode_inner(self: &Arc<Self>, mode: CoreBackendMode, persist: bool) {
         // Switch SDK context provider to match the selected backend.
-        // Early returns are defensive: if code is added after this match, a failed
-        // bind should not proceed with a stale provider.
+        // Only store/persist the mode after binding succeeds — otherwise the app
+        // would report the new mode while still wired to the old provider.
         #[allow(clippy::needless_return)]
         match mode {
             CoreBackendMode::Spv => {
@@ -526,6 +529,16 @@ impl AppContext {
                 }
             }
         }
+
+        self.core_backend_mode
+            .store(mode.as_u8(), Ordering::Relaxed);
+
+        if persist {
+            let _guard = self.invalidate_settings_cache();
+            if let Err(e) = self.db.update_core_backend_mode(mode.as_u8()) {
+                tracing::error!("Failed to persist core backend mode: {}", e);
+            }
+        }
     }
 
     /// Get the cached fee multiplier permille (1000 = 1x, 2000 = 2x)
@@ -546,9 +559,19 @@ impl AppContext {
     }
 
     /// Update the cached platform protocol version from epoch info.
-    pub fn set_platform_protocol_version(&self, version: u32) {
+    ///
+    /// When the version crosses the shielded threshold for the first time,
+    /// retroactively initializes shielded wallets that were unlocked before
+    /// the protocol version was known.
+    pub fn set_platform_protocol_version(self: &Arc<Self>, version: u32) {
+        let was_shielded = FeatureGate::Shielded.is_available(self);
+
         self.platform_protocol_version
-            .store(version, Ordering::Relaxed);
+            .swap(version, Ordering::Relaxed);
+
+        if !was_shielded && FeatureGate::Shielded.is_available(self) {
+            self.init_missing_shielded_wallets();
+        }
     }
 
     /// Get a fee estimator configured with the cached fee multiplier.
@@ -603,7 +626,7 @@ impl AppContext {
 
         // Note: developer_mode is now global and managed separately
 
-        // 2. Rebuild the RPC client (cookie auth → user/pass fallback)
+        // 2. Rebuild the RPC client with the new credentials (cookie auth first, then user/pass).
         let addr = format!("http://{}:{}", cfg.rpc_host(), cfg.rpc_port(self.network));
         let new_client = Self::create_core_rpc_client(&addr, self.network, &cfg.devnet_name, &cfg)?;
 
@@ -856,6 +879,11 @@ impl AppContext {
 /// Test-only accessors for fields that are normally `pub(crate)`.
 #[cfg(any(test, feature = "testing"))]
 impl AppContext {
+    /// Returns a clone of the current SDK instance.
+    pub fn sdk(&self) -> Sdk {
+        self.sdk.load().as_ref().clone()
+    }
+
     /// Returns a reference to the database.
     pub fn db(&self) -> &Arc<Database> {
         &self.db

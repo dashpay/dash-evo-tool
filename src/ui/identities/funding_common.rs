@@ -74,7 +74,8 @@ pub fn capture_qr_funding_utxo_if_available(
 
     use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
     let candidate_utxo = info
-        .core_wallet.get_spendable_utxos()
+        .core_wallet
+        .get_spendable_utxos()
         .iter()
         .filter(|utxo| utxo.address == address && utxo.value() > 0)
         .max_by_key(|utxo: &&&dash_sdk::dpp::key_wallet::Utxo| utxo.value())

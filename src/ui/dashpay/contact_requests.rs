@@ -42,12 +42,8 @@ fn extract_dip15_crypto_from_document(
             .and_then(|v| v.as_integer::<i64>())
             .and_then(|i| u32::try_from(i).ok())
     };
-    let bytes_prop = |key: &str| -> Option<Vec<u8>> {
-        properties
-            .get(key)
-            .and_then(|v| v.as_bytes())
-            .cloned()
-    };
+    let bytes_prop =
+        |key: &str| -> Option<Vec<u8>> { properties.get(key).and_then(|v| v.as_bytes()).cloned() };
     crate::database::dashpay::ContactRequestCryptoFields {
         sender_key_index: u32_prop("senderKeyIndex"),
         recipient_key_index: u32_prop("recipientKeyIndex"),

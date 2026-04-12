@@ -816,7 +816,6 @@ impl crate::database::Database {
             |row| row.get(0),
         )
     }
-
 }
 
 #[cfg(test)]

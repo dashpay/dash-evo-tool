@@ -665,7 +665,9 @@ impl Wallet {
             .as_ref()
             .and_then(|pw| pw.try_state())
             .map(|info| {
-                crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.core_wallet)
+                crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(
+                    &info.core_wallet,
+                )
             })
             .unwrap_or_default()
     }
@@ -703,7 +705,10 @@ impl Wallet {
     }
 
     /// Async version of `derivation_path_for_address` — safe to call from async context.
-    pub async fn derivation_path_for_address_async(&self, address: &Address) -> Option<DerivationPath> {
+    pub async fn derivation_path_for_address_async(
+        &self,
+        address: &Address,
+    ) -> Option<DerivationPath> {
         let pw = self.platform_wallet.as_ref()?;
         let info = pw.state().await;
         for account in info.core_wallet.accounts.all_accounts() {
@@ -808,7 +813,8 @@ impl Wallet {
         let Some(info) = pw.try_state() else {
             return Vec::new();
         };
-        info.core_wallet.transaction_history()
+        info.core_wallet
+            .transaction_history()
             .into_iter()
             .map(|record| {
                 let height = record.height();
@@ -1189,6 +1195,22 @@ impl Wallet {
         Err("Wallet is locked".to_string())
     }
 
+    /// Derive the DIP-17 Platform payment address at the given HD index.
+    ///
+    /// Returns the P2PKH Core address at path
+    /// `m/9'/<coin_type>'/17'/0'/0'/<index>`.
+    ///
+    /// The wallet must be unlocked (open seed). Returns an error if the wallet
+    /// is locked or key derivation fails.
+    pub fn platform_payment_address_at(
+        &self,
+        network: Network,
+        index: u32,
+    ) -> Result<Address, String> {
+        let provider = WalletAddressProvider::new(self, network)?;
+        provider.platform_payment_address_at(index)
+    }
+
     pub fn derive_bip44_address(
         &self,
         network: Network,
@@ -1453,6 +1475,14 @@ impl WalletAddressProvider {
         }
 
         self
+    }
+
+    /// Derive the DIP-17 Platform payment address at the given index.
+    ///
+    /// The address is derived from the wallet seed at path
+    /// `m/9'/<coin_type>'/17'/0'/0'/<index>` and returned as a P2PKH Core address.
+    pub fn platform_payment_address_at(&self, index: u32) -> Result<Address, String> {
+        self.derive_address_at_index(index).map(|(_, addr)| addr)
     }
 
     /// Derive a Platform address at the given index.

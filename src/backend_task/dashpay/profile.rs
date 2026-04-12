@@ -100,12 +100,7 @@ pub async fn load_profile(
     } else {
         // No profile found — cache the empty state via the platform
         // wallet to avoid repeated network queries.
-        cache_profile(
-            app_context,
-            &identity,
-            Some(DashPayProfile::default()),
-        )
-        .await;
+        cache_profile(app_context, &identity, Some(DashPayProfile::default())).await;
 
         Ok(BackendTaskSuccessResult::DashPayProfile(None))
     }
@@ -452,8 +447,7 @@ pub async fn search_profiles(
         ));
     }
 
-    // Normalize the search query (DPNS uses lowercase normalized labels)
-    let normalized_query = query_trimmed.to_lowercase();
+    let normalized_query = crate::model::dpns::normalize_dpns_label(query_trimmed);
 
     // Search DPNS for usernames starting with the query
     let mut dpns_query =
@@ -485,11 +479,16 @@ pub async fn search_profiles(
     let mut identity_usernames: Vec<(Identifier, String)> = Vec::new();
     for (_, doc) in dpns_results {
         if let Some(document) = doc {
-            let identity_id = document.owner_id();
+            // Extract identity ID from records.identity — the authoritative
+            // reference, which may differ from owner_id() after name transfers.
+            let identity_id = crate::model::dpns::extract_identity_id_from_dpns_document(&document);
 
-            // Get the label (username) from the document
+            let Some(identity_id) = identity_id else {
+                continue;
+            };
+
             let username = document
-                .get("normalizedLabel")
+                .get("label")
                 .and_then(|v| v.as_text())
                 .map(|s| format!("{}.dash", s))
                 .unwrap_or_else(|| format!("{}.dash", identity_id.to_string(Encoding::Base58)));

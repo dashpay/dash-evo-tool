@@ -476,6 +476,20 @@ impl WalletsBalancesScreen {
         self.pending_list_is_single_key = false;
     }
 
+    /// Clear all transient request/pending state that could fire against the
+    /// wrong context after a network switch.
+    pub(crate) fn reset_transient_state(&mut self) {
+        self.pending_platform_balance_refresh = None;
+        self.pending_refresh_after_unlock = false;
+        self.pending_asset_lock_search_after_unlock = false;
+        self.pending_wallet_refresh_on_switch = false;
+        self.pending_core_wallet_seed_hash = None;
+        self.pending_core_wallet_options = None;
+        self.core_wallet_dialog = None;
+        self.refreshing = false;
+        self.asset_lock_search_banner.take_and_clear();
+    }
+
     /// Reset all cached AddressInput widgets so they pick up the new network.
     pub(crate) fn invalidate_address_inputs(&mut self) {
         self.mine_dialog.address_input = None;
@@ -1209,8 +1223,7 @@ impl WalletsBalancesScreen {
             tabs.insert(0, AccountTab::Category(AccountCategory::Bip44, Some(0)));
         }
 
-        // Add the Shielded tab only when the connected network supports it
-        // (all shielded state transitions present in the platform version).
+        // Add the Shielded tab only when the connected network supports it.
         if FeatureGate::Shielded.is_available(&self.app_context) {
             tabs.push(AccountTab::Shielded);
         }
@@ -1291,7 +1304,9 @@ impl WalletsBalancesScreen {
         if let Some(pw) = wallet.platform_wallet.as_ref()
             && let Some(info) = pw.try_state()
         {
-            for addr_info in crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.core_wallet) {
+            for addr_info in crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(
+                &info.core_wallet,
+            ) {
                 let (cat, _) = crate::ui::wallets::account_summary::categorize_account_path(
                     &addr_info.derivation_path,
                     network,
@@ -2915,10 +2930,12 @@ impl ScreenLike for WalletsBalancesScreen {
                         .and_then(|addr| {
                             let pw = wallet.platform_wallet.as_ref()?;
                             let info = pw.try_state()?;
-                            crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.core_wallet)
-                                .into_iter()
-                                .find(|a| a.address == addr)
-                                .map(|a| a.balance)
+                            crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(
+                                &info.core_wallet,
+                            )
+                            .into_iter()
+                            .find(|a| a.address == addr)
+                            .map(|a| a.balance)
                         })
                         .unwrap_or(0);
                     self.receive_dialog
@@ -2960,6 +2977,7 @@ impl ScreenLike for WalletsBalancesScreen {
             crate::ui::BackendTaskSuccessResult::PlatformAddressBalances {
                 seed_hash,
                 balances: _,
+                network: _,
             } => {
                 self.refreshing = false;
                 // Platform address balances are persisted to DB by the backend task.

@@ -266,7 +266,9 @@ pub fn collect_account_summaries(
     if let Some(pw) = wallet.platform_wallet.as_ref()
         && let Some(info) = pw.try_state()
     {
-        for addr_info in crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.core_wallet) {
+        for addr_info in
+            crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.core_wallet)
+        {
             let (category, index) = categorize_account_path(
                 &addr_info.derivation_path,
                 network,

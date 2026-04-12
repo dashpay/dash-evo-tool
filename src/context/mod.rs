@@ -324,16 +324,19 @@ impl AppContext {
         }
         .into_iter()
         .filter(|w| {
+            // Wallets with [0u8; 32] sentinel wallet_id are password-
+            // protected wallets that haven't been unlocked since the
+            // v40 migration. They can't be in the wallet_id-keyed map.
+            // Auto-remove them with a log — the user can re-import.
+            // TODO: replace with a proper WalletMigrationScreen that
+            // offers per-wallet unlock / remove.
             if w.wallet_id() == [0u8; 32] {
-                // wallet_id was NULL in DB (password-protected wallet never
-                // unlocked since v40 migration). Remove from DB — the user
-                // can re-import and unlock it. A proper migration screen
-                // with per-wallet unlock UI is a follow-up.
                 tracing::warn!(
                     alias = ?w.alias,
-                    "Removing wallet with missing wallet_id (needs re-import after v40 migration)"
+                    "Removing wallet with missing wallet_id \
+                     (password-protected, needs re-import after v40 migration)"
                 );
-                let _ = db.remove_wallet(&w.wallet_id(), &network);
+                let _ = db.remove_wallet(&w.seed_hash(), &network);
                 false
             } else {
                 true

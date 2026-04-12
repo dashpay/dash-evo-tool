@@ -158,10 +158,6 @@ impl AppContext {
         let has_wallet = !wallets.is_empty();
         drop(wallets);
 
-        if let Ok(mut mapping) = self.wallet_id_mapping.lock() {
-            mapping.remove_by_seed_hash(seed_hash);
-        }
-
         self.has_wallet.store(has_wallet, Ordering::Relaxed);
 
         Ok(())

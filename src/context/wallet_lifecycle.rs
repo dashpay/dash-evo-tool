@@ -55,10 +55,6 @@ impl AppContext {
             single_key_wallets.clear();
         }
 
-        if let Ok(mut mapping) = self.wallet_id_mapping.lock() {
-            *mapping = crate::platform_wallet_bridge::WalletIdMapping::new();
-        }
-
         self.has_wallet.store(false, Ordering::Relaxed);
 
         Ok(())
@@ -287,22 +283,29 @@ impl AppContext {
         }
     }
 
-    /// Register an open wallet with the `PlatformWalletManager` and populate
-    /// the `wallet_id_mapping`.
+    /// Register an open wallet with the `PlatformWalletManager`.
     ///
-    /// This bridges the old `Wallet` type to the new `PlatformWallet` type
-    /// during migration. If the wallet is already registered (e.g. from a
+    /// Creates a `PlatformWallet`, persists the computed `wallet_id` to
+    /// the DB, and re-keys the `AppContext.wallets` map entry from
+    /// `seed_hash` to `wallet_id`. If the wallet is already registered (e.g. from a
     /// previous unlock), this is a no-op.
     pub(crate) fn register_with_platform_wallet_manager(
         self: &Arc<Self>,
         seed_hash: WalletId,
         seed_bytes: [u8; 64],
     ) {
-        // Check if already registered
-        if let Ok(mapping) = self.wallet_id_mapping.lock()
-            && mapping.wallet_id_for_seed(&seed_hash).is_some()
-        {
-            return;
+        // Check if already registered by looking at whether the wallet
+        // already has a PlatformWallet attached.
+        if let Ok(wallets) = self.wallets.read() {
+            let already_registered = wallets.values().any(|w| {
+                w.read()
+                    .ok()
+                    .map(|g| g.seed_hash() == seed_hash && g.platform_wallet.is_some())
+                    .unwrap_or(false)
+            });
+            if already_registered {
+                return;
+            }
         }
 
         let kw_network = self.wallet_network_key();
@@ -322,10 +325,6 @@ impl AppContext {
         }) {
             Ok(platform_wallet) => {
                 let wallet_id = platform_wallet.wallet_id();
-
-                if let Ok(mut mapping) = self.wallet_id_mapping.lock() {
-                    mapping.insert(seed_hash, wallet_id);
-                }
 
                 // Persist wallet_id to DB (no-op if already set).
                 if let Err(e) = self.db.set_wallet_id(&seed_hash, &wallet_id) {
@@ -374,11 +373,8 @@ impl AppContext {
     }
 
     pub fn handle_wallet_locked(self: &Arc<Self>, wallet: &Arc<RwLock<Wallet>>) {
-        let (map_key, seed_hash) = match wallet.read() {
-            Ok(guard) => {
-                let key = guard.wallet_id().unwrap_or_else(|| guard.seed_hash());
-                (key, guard.seed_hash())
-            }
+        let _map_key = match wallet.read() {
+            Ok(guard) => guard.wallet_id().unwrap_or_else(|| guard.seed_hash()),
             Err(err) => {
                 tracing::warn!(error = %err, "Unable to read wallet during lock handling");
                 return;
@@ -390,11 +386,10 @@ impl AppContext {
             guard.platform_wallet = None;
         }
 
-        // Remove from wallet_id_mapping. The mapping is keyed by
-        // seed_hash (the "old" key side of the bridge).
-        if let Ok(mut mapping) = self.wallet_id_mapping.lock() {
-            mapping.remove_by_seed_hash(&seed_hash);
-        }
+        // Note: we do NOT remove the wallet from the AppContext.wallets
+        // map here — locking a wallet keeps it visible in the UI, just
+        // without platform_wallet access. The map entry stays at its
+        // current key (wallet_id or seed_hash fallback).
     }
 
     /// Initialize shielded state for unlocked wallets that were skipped

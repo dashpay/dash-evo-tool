@@ -518,7 +518,7 @@ impl WalletTransaction {
 /// `WalletSeedHash` (which was `SHA256(seed_bytes)`).
 pub use crate::platform_wallet_bridge::WalletId;
 
-/// Legacy alias kept for `WalletIdMapping` and `ClosedKeyItem`.
+/// Legacy alias kept for `ClosedKeyItem.seed_hash` field type.
 /// Both are `[u8; 32]` — the alias is purely for documentation.
 pub type WalletSeedHash = [u8; 32];
 

@@ -21,7 +21,7 @@ use crate::model::password_info::PasswordInfo;
 use crate::model::proof_log_item::RequestType;
 use crate::model::wallet::single_key::{SingleKeyHash, SingleKeyWallet};
 use crate::model::wallet::{Wallet, WalletId};
-use crate::platform_wallet_bridge::{PlatformWalletManager, WalletIdMapping};
+use crate::platform_wallet_bridge::PlatformWalletManager;
 use crate::sdk_wrapper::initialize_sdk;
 use crate::spv::CoreBackendMode;
 use crate::spv::event_bridge::SpvEventBridge;
@@ -104,9 +104,6 @@ pub struct AppContext {
     /// switched from the old `wallets` map to this manager.
     #[allow(dead_code)] // Used during incremental migration to PlatformWallet
     pub(crate) wallet_manager: Arc<DebugWrapper<PlatformWalletManager>>,
-    /// Bidirectional mapping between `WalletId` (old key) and `WalletId` (new key).
-    /// Protected by a std `Mutex` since updates happen infrequently (wallet add/remove).
-    pub(crate) wallet_id_mapping: Mutex<WalletIdMapping>,
     #[allow(dead_code)] // May be used for password validation
     pub(crate) password_info: Option<PasswordInfo>,
     /// Whether to animate the UI elements.
@@ -406,7 +403,6 @@ impl AppContext {
             wallets: RwLock::new(wallets),
             single_key_wallets: RwLock::new(single_key_wallets),
             wallet_manager,
-            wallet_id_mapping: Mutex::new(WalletIdMapping::new()),
             password_info,
             animate,
             cached_settings: RwLock::new(None),
@@ -899,10 +895,6 @@ impl AppContext {
         self.dashpay_contract.id()
     }
 
-    /// Returns a reference to the wallet-ID mapping (seed hash ↔ wallet ID).
-    pub fn wallet_id_mapping(&self) -> &Mutex<WalletIdMapping> {
-        &self.wallet_id_mapping
-    }
 }
 
 /// Returns the default platform version for the given network.

@@ -515,22 +515,16 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                     });
 
                 // Derive status from proof + legacy columns.
-                let status = if proof.is_some() {
-                    match &proof {
-                        Some(dash_sdk::dpp::prelude::AssetLockProof::Instant(_)) => {
-                            AssetLockStatus::InstantSendLocked
-                        }
-                        Some(dash_sdk::dpp::prelude::AssetLockProof::Chain(_)) => {
-                            AssetLockStatus::ChainLocked
-                        }
-                        None => unreachable!(),
+                let status = match &proof {
+                    Some(dash_sdk::dpp::prelude::AssetLockProof::Instant(_)) => {
+                        AssetLockStatus::InstantSendLocked
                     }
-                } else if islock_data.is_some() {
-                    AssetLockStatus::InstantSendLocked
-                } else if chain_height.is_some() {
-                    AssetLockStatus::ChainLocked
-                } else {
-                    AssetLockStatus::Broadcast
+                    Some(dash_sdk::dpp::prelude::AssetLockProof::Chain(_)) => {
+                        AssetLockStatus::ChainLocked
+                    }
+                    None if islock_data.is_some() => AssetLockStatus::InstantSendLocked,
+                    None if chain_height.is_some() => AssetLockStatus::ChainLocked,
+                    None => AssetLockStatus::Broadcast,
                 };
 
                 asset_lock_cs.asset_locks.insert(

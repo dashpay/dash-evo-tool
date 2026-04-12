@@ -309,7 +309,10 @@ pub async fn send_contact_request_with_proof(
     let changeset = PlatformWalletChangeSet {
         contacts: Some(ContactChangeSet {
             sent_requests: BTreeMap::from([(
-                (sender_id, to_identity_id),
+                platform_wallet::changeset::SentContactRequestKey {
+                    owner_id: sender_id,
+                    recipient_id: to_identity_id,
+                },
                 ContactRequestEntry {
                     request: contact_request,
                 },

@@ -612,8 +612,24 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                 let entry = ContactRequestEntry { request };
 
                 match request_type.as_str() {
-                    "sent" => { contact_cs.sent_requests.insert((from_id, to_id), entry); }
-                    "received" => { contact_cs.incoming_requests.insert((to_id, from_id), entry); }
+                    "sent" => {
+                        contact_cs.sent_requests.insert(
+                            platform_wallet::changeset::SentContactRequestKey {
+                                owner_id: from_id,
+                                recipient_id: to_id,
+                            },
+                            entry,
+                        );
+                    }
+                    "received" => {
+                        contact_cs.incoming_requests.insert(
+                            platform_wallet::changeset::ReceivedContactRequestKey {
+                                owner_id: to_id,
+                                sender_id: from_id,
+                            },
+                            entry,
+                        );
+                    }
                     _ => continue,
                 }
             }
@@ -646,15 +662,23 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
 
                 // Build EstablishedContact from the loaded sent + incoming
                 // requests if both exist for this (owner, contact) pair.
-                let outgoing = contact_cs.sent_requests.get(&(owner_id, contact_id));
-                let incoming = contact_cs.incoming_requests.get(&(contact_id, owner_id));
+                let sent_key = platform_wallet::changeset::SentContactRequestKey {
+                    owner_id,
+                    recipient_id: contact_id,
+                };
+                let recv_key = platform_wallet::changeset::ReceivedContactRequestKey {
+                    owner_id,
+                    sender_id: contact_id,
+                };
+                let outgoing = contact_cs.sent_requests.get(&sent_key);
+                let incoming = contact_cs.incoming_requests.get(&recv_key);
                 if let (Some(out), Some(inc)) = (outgoing, incoming) {
                     let established = platform_wallet::EstablishedContact::new(
                         contact_id,
                         out.request.clone(),
                         inc.request.clone(),
                     );
-                    contact_cs.established.insert((owner_id, contact_id), established);
+                    contact_cs.established.insert(sent_key, established);
                 }
             }
         }
@@ -1401,10 +1425,10 @@ impl SqliteWalletPersister {
         )?;
 
         // Upsert sent requests.
-        for ((owner, recipient), entry) in cs.sent_requests {
+        for (key, entry) in cs.sent_requests {
             let r = &entry.request;
-            let from_bytes = owner.to_buffer();
-            let to_bytes = recipient.to_buffer();
+            let from_bytes = key.owner_id.to_buffer();
+            let to_bytes = key.recipient_id.to_buffer();
             delete_existing.execute(rusqlite::params![&from_bytes, &to_bytes, network])?;
             insert.execute(rusqlite::params![
                 &from_bytes,
@@ -1423,10 +1447,10 @@ impl SqliteWalletPersister {
         }
 
         // Upsert incoming requests.
-        for ((owner, sender), entry) in cs.incoming_requests {
+        for (key, entry) in cs.incoming_requests {
             let r = &entry.request;
-            let from_bytes = sender.to_buffer();
-            let to_bytes = owner.to_buffer();
+            let from_bytes = key.sender_id.to_buffer();
+            let to_bytes = key.owner_id.to_buffer();
             delete_existing.execute(rusqlite::params![&from_bytes, &to_bytes, network])?;
             insert.execute(rusqlite::params![
                 &from_bytes,
@@ -1445,14 +1469,14 @@ impl SqliteWalletPersister {
         }
 
         // Delete tombstones.
-        for (owner, recipient) in cs.removed_sent {
-            let from_bytes = owner.to_buffer();
-            let to_bytes = recipient.to_buffer();
+        for key in cs.removed_sent {
+            let from_bytes = key.owner_id.to_buffer();
+            let to_bytes = key.recipient_id.to_buffer();
             delete_existing.execute(rusqlite::params![&from_bytes, &to_bytes, network])?;
         }
-        for (owner, sender) in cs.removed_incoming {
-            let from_bytes = sender.to_buffer();
-            let to_bytes = owner.to_buffer();
+        for key in cs.removed_incoming {
+            let from_bytes = key.sender_id.to_buffer();
+            let to_bytes = key.owner_id.to_buffer();
             delete_existing.execute(rusqlite::params![&from_bytes, &to_bytes, network])?;
         }
 
@@ -1475,9 +1499,9 @@ impl SqliteWalletPersister {
                     contact_status = 'accepted',
                     updated_at = unixepoch()",
             )?;
-            for ((owner, contact), _established) in &cs.established {
-                let owner_bytes = owner.to_buffer();
-                let contact_bytes = contact.to_buffer();
+            for (key, _established) in &cs.established {
+                let owner_bytes = key.owner_id.to_buffer();
+                let contact_bytes = key.recipient_id.to_buffer();
                 upsert_contact.execute(rusqlite::params![
                     &owner_bytes,
                     &contact_bytes,
@@ -2677,7 +2701,10 @@ mod tests {
         );
         let mut contact_cs = ContactChangeSet::default();
         contact_cs.sent_requests.insert(
-            (owner_id, contact_id),
+            platform_wallet::changeset::SentContactRequestKey {
+                owner_id,
+                recipient_id: contact_id,
+            },
             ContactRequestEntry { request: sent_request },
         );
 
@@ -2756,7 +2783,10 @@ mod tests {
         assert_eq!(loaded_contacts.sent_requests.len(), 1);
         let loaded_req = &loaded_contacts
             .sent_requests
-            .get(&(owner_id, contact_id))
+            .get(&platform_wallet::changeset::SentContactRequestKey {
+                owner_id,
+                recipient_id: contact_id,
+            })
             .expect("sent request")
             .request;
         assert_eq!(loaded_req.sender_key_index, 3);

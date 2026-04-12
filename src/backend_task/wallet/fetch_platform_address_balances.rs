@@ -180,7 +180,9 @@ impl AppContext {
             .unwrap_or_default()
             .into_iter()
             .filter_map(|(addr, balance, nonce)| {
-                PlatformAddress::try_from(addr).ok().map(|pa| (pa, (balance, nonce)))
+                PlatformAddress::try_from(addr)
+                    .ok()
+                    .map(|pa| (pa, (balance, nonce)))
             })
             .collect();
 

@@ -278,8 +278,8 @@ impl AppState {
     #[cfg(feature = "testing")]
     pub fn new(ctx: egui::Context) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         // Create an isolated temp directory so parallel tests never collide.
-        let temp_dir = tempfile::tempdir()
-            .map_err(|e| format!("Failed to create temp data dir: {}", e))?;
+        let temp_dir =
+            tempfile::tempdir().map_err(|e| format!("Failed to create temp data dir: {}", e))?;
         let data_dir = temp_dir.path().to_path_buf();
         ensure_data_dir_exists(&data_dir)?;
 
@@ -651,8 +651,7 @@ impl AppState {
     /// Called during shutdown to ensure any staged-but-unflushed changesets
     /// (e.g. from `FlushStrategy::Manual`) are written before the process exits.
     fn flush_all_wallet_persistence(&self) {
-        let contexts: Vec<&Arc<AppContext>> =
-            self.network_contexts.values().collect();
+        let contexts: Vec<&Arc<AppContext>> = self.network_contexts.values().collect();
 
         for ctx in contexts {
             if let Ok(wallets) = ctx.wallets.read() {

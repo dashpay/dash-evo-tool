@@ -84,7 +84,10 @@ impl Database {
         match version {
             39 => {
                 self.add_platform_created_at_ms_to_contact_requests(tx)
-                    .migration_err("dashpay_contact_requests", "add platform_created_at_ms column")?;
+                    .migration_err(
+                        "dashpay_contact_requests",
+                        "add platform_created_at_ms column",
+                    )?;
             }
             38 => {
                 self.add_dip15_crypto_columns_to_contact_requests(tx)
@@ -1646,26 +1649,23 @@ impl Database {
         &self,
         conn: &Connection,
     ) -> rusqlite::Result<()> {
-        let add_column_if_missing =
-            |col_name: &str, col_def: &str| -> rusqlite::Result<()> {
-                let has_col: bool = conn.query_row(
-                    &format!(
-                        "SELECT COUNT(*) FROM pragma_table_info('dashpay_contact_requests')
+        let add_column_if_missing = |col_name: &str, col_def: &str| -> rusqlite::Result<()> {
+            let has_col: bool = conn.query_row(
+                &format!(
+                    "SELECT COUNT(*) FROM pragma_table_info('dashpay_contact_requests')
                          WHERE name='{col_name}'"
-                    ),
+                ),
+                [],
+                |row| row.get::<_, i32>(0).map(|c| c > 0),
+            )?;
+            if !has_col {
+                conn.execute(
+                    &format!("ALTER TABLE dashpay_contact_requests ADD COLUMN {col_def}"),
                     [],
-                    |row| row.get::<_, i32>(0).map(|c| c > 0),
                 )?;
-                if !has_col {
-                    conn.execute(
-                        &format!(
-                            "ALTER TABLE dashpay_contact_requests ADD COLUMN {col_def}"
-                        ),
-                        [],
-                    )?;
-                }
-                Ok(())
-            };
+            }
+            Ok(())
+        };
 
         add_column_if_missing("sender_key_index", "sender_key_index INTEGER")?;
         add_column_if_missing("recipient_key_index", "recipient_key_index INTEGER")?;
@@ -1676,10 +1676,7 @@ impl Database {
             "encrypted_account_label_bytes BLOB",
         )?;
         add_column_if_missing("auto_accept_proof", "auto_accept_proof BLOB")?;
-        add_column_if_missing(
-            "core_height_created_at",
-            "core_height_created_at INTEGER",
-        )?;
+        add_column_if_missing("core_height_created_at", "core_height_created_at INTEGER")?;
 
         Ok(())
     }
@@ -2488,11 +2485,9 @@ mod test {
         // v33 FK cleanup ran correctly at its migration step; we just
         // can't verify survivors here because of the later DROP.
         let valid_txs: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM wallet_transactions",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT COUNT(*) FROM wallet_transactions", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(
             valid_txs, 0,

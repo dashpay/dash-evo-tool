@@ -399,7 +399,9 @@ impl AddressInput {
         if let Some(pw) = guard.platform_wallet.as_ref()
             && let Some(info) = pw.try_state()
         {
-            for addr_info in crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.core_wallet) {
+            for addr_info in crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(
+                &info.core_wallet,
+            ) {
                 if !addr_info.derivation_path.is_bip44(self.network) {
                     continue;
                 }
@@ -443,7 +445,9 @@ impl AddressInput {
         if let Some(pw) = guard.platform_wallet.as_ref()
             && let Some(info) = pw.try_state()
         {
-            for addr_info in crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.core_wallet) {
+            for addr_info in crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(
+                &info.core_wallet,
+            ) {
                 if !addr_info.derivation_path.is_platform_payment(self.network) {
                     continue;
                 }

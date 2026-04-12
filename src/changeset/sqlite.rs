@@ -213,11 +213,11 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
         // thunks through key-wallet's `WalletManager::apply_changeset`
         // to land on the per-pool `set_highest_used` and per-UTXO
         // `set_instant_locked` calls.
+        use dash_sdk::dpp::dashcore::hashes::Hash;
         use dash_sdk::dpp::dashcore::{OutPoint, Txid};
         use dash_sdk::dpp::key_wallet::account::account_type::AccountType;
         use dash_sdk::dpp::key_wallet::changeset::{AccountChangeSet, WalletChangeSet};
         use dash_sdk::dpp::key_wallet::managed_account::address_pool::AddressPoolType;
-        use dash_sdk::dpp::dashcore::hashes::Hash;
         use std::collections::BTreeMap;
 
         let conn = self.db.shared_connection();
@@ -250,8 +250,8 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                 .map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
 
             for row_result in rows {
-                let (account_key, pool_disc, highest_used) = row_result
-                    .map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+                let (account_key, pool_disc, highest_used) =
+                    row_result.map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
 
                 let Ok(account_type) = AccountType::from_db_key(&account_key) else {
                     tracing::warn!(
@@ -261,8 +261,7 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                     );
                     continue;
                 };
-                let Some(pool_type) = AddressPoolType::from_db_discriminant(pool_disc as u8)
-                else {
+                let Some(pool_type) = AddressPoolType::from_db_discriminant(pool_disc as u8) else {
                     tracing::warn!(
                         pool_disc,
                         "persister load: unrecognized AddressPoolType discriminant — \
@@ -321,12 +320,10 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
             let mut locked_outpoints: std::collections::BTreeSet<OutPoint> =
                 std::collections::BTreeSet::new();
             for row_result in rows {
-                let (txid_bytes, vout) = row_result
-                    .map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+                let (txid_bytes, vout) =
+                    row_result.map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
                 let Ok(txid) = Txid::from_slice(&txid_bytes) else {
-                    tracing::warn!(
-                        "persister load: invalid txid in utxos table — skipping row"
-                    );
+                    tracing::warn!("persister load: invalid txid in utxos table — skipping row");
                     continue;
                 };
                 locked_outpoints.insert(OutPoint {
@@ -367,20 +364,17 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                 )
                 .map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
             let rows = stmt
-                .query_map(
-                    rusqlite::params![&wallet_id[..], &self.network],
-                    |row| {
-                        let account_key: Vec<u8> = row.get(0)?;
-                        let txid_bytes: Vec<u8> = row.get(1)?;
-                        let record_bytes: Vec<u8> = row.get(2)?;
-                        Ok((account_key, txid_bytes, record_bytes))
-                    },
-                )
+                .query_map(rusqlite::params![&wallet_id[..], &self.network], |row| {
+                    let account_key: Vec<u8> = row.get(0)?;
+                    let txid_bytes: Vec<u8> = row.get(1)?;
+                    let record_bytes: Vec<u8> = row.get(2)?;
+                    Ok((account_key, txid_bytes, record_bytes))
+                })
                 .map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
 
             for row_result in rows {
-                let (account_key, txid_bytes, record_bytes) = row_result
-                    .map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+                let (account_key, txid_bytes, record_bytes) =
+                    row_result.map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
 
                 let Ok(account_type) = AccountType::from_db_key(&account_key) else {
                     tracing::warn!(
@@ -395,21 +389,20 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                     );
                     continue;
                 };
-                let record: TransactionRecord =
-                    match bincode::serde::decode_from_slice(
-                        &record_bytes,
-                        bincode::config::standard(),
-                    ) {
-                        Ok((record, _)) => record,
-                        Err(e) => {
-                            tracing::warn!(
-                                error = %e,
-                                "persister load: TransactionRecord bincode decode failed — \
-                                 skipping row (DB written by incompatible crate version?)"
-                            );
-                            continue;
-                        }
-                    };
+                let record: TransactionRecord = match bincode::serde::decode_from_slice(
+                    &record_bytes,
+                    bincode::config::standard(),
+                ) {
+                    Ok((record, _)) => record,
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "persister load: TransactionRecord bincode decode failed — \
+                             skipping row (DB written by incompatible crate version?)"
+                        );
+                        continue;
+                    }
+                };
                 per_account
                     .entry(account_type)
                     .or_default()
@@ -536,9 +529,10 @@ impl SqliteWalletPersister {
         let has_dashpay_identity_work = identities
             .as_ref()
             .map(|id_cs| {
-                id_cs.identities.values().any(|e| {
-                    e.dashpay_profile.is_some() || !e.dashpay_payments.is_empty()
-                })
+                id_cs
+                    .identities
+                    .values()
+                    .any(|e| e.dashpay_profile.is_some() || !e.dashpay_payments.is_empty())
             })
             .unwrap_or(false);
         if !has_core_work && !has_dashpay_identity_work {
@@ -662,10 +656,7 @@ impl SqliteWalletPersister {
                     ])?;
                 }
                 None => {
-                    delete_profile.execute(rusqlite::params![
-                        id.to_buffer().to_vec(),
-                        network,
-                    ])?;
+                    delete_profile.execute(rusqlite::params![id.to_buffer().to_vec(), network,])?;
                 }
             }
 
@@ -845,15 +836,13 @@ impl SqliteWalletPersister {
             if !bucket.transactions.is_empty() {
                 let account_key = account_type.to_db_key();
                 for (txid, record) in &bucket.transactions {
-                    let record_bytes = bincode::serde::encode_to_vec(
-                        record,
-                        bincode::config::standard(),
-                    )
-                    .map_err(|e| {
-                        SqlitePersistError::Encode(format!(
-                            "TransactionRecord bincode encode failed: {e}"
-                        ))
-                    })?;
+                    let record_bytes =
+                        bincode::serde::encode_to_vec(record, bincode::config::standard())
+                            .map_err(|e| {
+                                SqlitePersistError::Encode(format!(
+                                    "TransactionRecord bincode encode failed: {e}"
+                                ))
+                            })?;
                     upsert_tx_record.execute(rusqlite::params![
                         &wallet_id[..],
                         &account_key,
@@ -1043,7 +1032,9 @@ mod tests {
 
         // First flush: pending payment.
         let mut id_cs = platform_wallet::changeset::IdentityChangeSet::default();
-        id_cs.identities.insert(owner_id, build_entry(PaymentStatus::Pending));
+        id_cs
+            .identities
+            .insert(owner_id, build_entry(PaymentStatus::Pending));
         persister.store(
             TEST_WALLET_ID,
             PlatformWalletChangeSet {
@@ -1068,7 +1059,9 @@ mod tests {
         // Second flush: same tx_id, status confirmed. Upsert should
         // land on the same row and stamp confirmed_at.
         let mut id_cs = platform_wallet::changeset::IdentityChangeSet::default();
-        id_cs.identities.insert(owner_id, build_entry(PaymentStatus::Confirmed));
+        id_cs
+            .identities
+            .insert(owner_id, build_entry(PaymentStatus::Confirmed));
         persister.store(
             TEST_WALLET_ID,
             PlatformWalletChangeSet {
@@ -1156,7 +1149,9 @@ mod tests {
 
         // Second flush: clear the profile (None).
         let mut id_cs = platform_wallet::changeset::IdentityChangeSet::default();
-        id_cs.identities.insert(identity_id, entry_with_profile(None));
+        id_cs
+            .identities
+            .insert(identity_id, entry_with_profile(None));
         persister.store(
             TEST_WALLET_ID,
             PlatformWalletChangeSet {
@@ -1260,7 +1255,9 @@ mod tests {
                 ..Default::default()
             },
         );
-        persister.flush(TEST_WALLET_ID).expect("flush without avatar");
+        persister
+            .flush(TEST_WALLET_ID)
+            .expect("flush without avatar");
         assert_eq!(
             db.load_dashpay_profile(&identity_id, "testnet")
                 .expect("load")
@@ -1367,9 +1364,7 @@ mod tests {
     /// to close the round-trip.
     #[test]
     fn test_write_core_highest_used_round_trip() {
-        use dash_sdk::dpp::key_wallet::account::account_type::{
-            AccountType, StandardAccountType,
-        };
+        use dash_sdk::dpp::key_wallet::account::account_type::{AccountType, StandardAccountType};
         use dash_sdk::dpp::key_wallet::changeset::{AccountChangeSet, WalletChangeSet};
         use dash_sdk::dpp::key_wallet::managed_account::address_pool::AddressPoolType;
         use std::collections::{BTreeMap, BTreeSet};
@@ -1452,7 +1447,11 @@ mod tests {
             rows
         };
         // 3 accounts × 2 pools = 6 rows.
-        assert_eq!(rows.len(), 6, "expected 6 (account, pool) rows after first flush");
+        assert_eq!(
+            rows.len(),
+            6,
+            "expected 6 (account, pool) rows after first flush"
+        );
 
         // Verify via the AccountType::from_db_key round-trip that
         // each row's account key decodes to the expected variant.
@@ -1536,7 +1535,6 @@ mod tests {
             )
             .unwrap();
         assert_eq!(coinjoin_internal, 5, "stale internal must not regress");
-
     }
 
     /// Phase 10 6a: an `AccountChangeSet.utxos_instant_locked` entry
@@ -1547,11 +1545,9 @@ mod tests {
     fn test_write_core_utxo_instant_locked() {
         use dash_sdk::dpp::dashcore::hashes::Hash;
         use dash_sdk::dpp::dashcore::{OutPoint, TxOut, Txid};
-        use dash_sdk::dpp::key_wallet::account::account_type::{
-            AccountType, StandardAccountType,
-        };
-        use dash_sdk::dpp::key_wallet::changeset::{AccountChangeSet, WalletChangeSet};
         use dash_sdk::dpp::key_wallet::Utxo;
+        use dash_sdk::dpp::key_wallet::account::account_type::{AccountType, StandardAccountType};
+        use dash_sdk::dpp::key_wallet::changeset::{AccountChangeSet, WalletChangeSet};
 
         let db = Arc::new(create_test_database().expect("create test db"));
         let persister = make_persister(db.clone());
@@ -1574,8 +1570,10 @@ mod tests {
 
         let pubkey_bytes = [0x02u8; 33];
         let pubkey = dash_sdk::dpp::dashcore::PublicKey::from_slice(&pubkey_bytes).unwrap();
-        let test_addr =
-            dash_sdk::dpp::dashcore::Address::p2pkh(&pubkey, dash_sdk::dpp::dashcore::Network::Testnet);
+        let test_addr = dash_sdk::dpp::dashcore::Address::p2pkh(
+            &pubkey,
+            dash_sdk::dpp::dashcore::Network::Testnet,
+        );
         let txid = Txid::from_slice(&[0x11u8; 32]).unwrap();
         let outpoint = OutPoint { txid, vout: 0 };
         let standard = AccountType::Standard {
@@ -1662,9 +1660,7 @@ mod tests {
         use dash_sdk::dpp::dashcore::hashes::Hash;
         use dash_sdk::dpp::dashcore::{OutPoint, TxOut, Txid};
         use dash_sdk::dpp::key_wallet::Utxo;
-        use dash_sdk::dpp::key_wallet::account::account_type::{
-            AccountType, StandardAccountType,
-        };
+        use dash_sdk::dpp::key_wallet::account::account_type::{AccountType, StandardAccountType};
         use dash_sdk::dpp::key_wallet::changeset::{AccountChangeSet, WalletChangeSet};
         use dash_sdk::dpp::key_wallet::managed_account::address_pool::AddressPoolType;
 
@@ -1699,11 +1695,14 @@ mod tests {
         };
 
         let mut bucket_std = AccountChangeSet::default();
-        bucket_std.highest_used.insert(AddressPoolType::External, 42);
-        bucket_std.highest_used.insert(AddressPoolType::Internal, 11);
+        bucket_std
+            .highest_used
+            .insert(AddressPoolType::External, 42);
+        bucket_std
+            .highest_used
+            .insert(AddressPoolType::Internal, 11);
         let pubkey_bytes = [0x02u8; 33];
-        let pubkey =
-            dash_sdk::dpp::dashcore::PublicKey::from_slice(&pubkey_bytes).unwrap();
+        let pubkey = dash_sdk::dpp::dashcore::PublicKey::from_slice(&pubkey_bytes).unwrap();
         let test_addr = dash_sdk::dpp::dashcore::Address::p2pkh(
             &pubkey,
             dash_sdk::dpp::dashcore::Network::Testnet,
@@ -1758,12 +1757,18 @@ mod tests {
             .get(&standard)
             .expect("standard bucket present");
         assert_eq!(
-            std_bucket.highest_used.get(&AddressPoolType::External).copied(),
+            std_bucket
+                .highest_used
+                .get(&AddressPoolType::External)
+                .copied(),
             Some(42),
             "standard external highest_used"
         );
         assert_eq!(
-            std_bucket.highest_used.get(&AddressPoolType::Internal).copied(),
+            std_bucket
+                .highest_used
+                .get(&AddressPoolType::Internal)
+                .copied(),
             Some(11),
             "standard internal highest_used"
         );
@@ -1773,7 +1778,10 @@ mod tests {
             .get(&dashpay_recv)
             .expect("dashpay_recv bucket present");
         assert_eq!(
-            dp_bucket.highest_used.get(&AddressPoolType::External).copied(),
+            dp_bucket
+                .highest_used
+                .get(&AddressPoolType::External)
+                .copied(),
             Some(7),
             "dashpay_recv external highest_used"
         );
@@ -1795,12 +1803,8 @@ mod tests {
     #[test]
     fn test_write_core_transaction_round_trip() {
         use dash_sdk::dpp::dashcore::hashes::Hash;
-        use dash_sdk::dpp::dashcore::{
-            OutPoint, Transaction, TxIn, TxOut, Txid,
-        };
-        use dash_sdk::dpp::key_wallet::account::account_type::{
-            AccountType, StandardAccountType,
-        };
+        use dash_sdk::dpp::dashcore::{OutPoint, Transaction, TxIn, TxOut, Txid};
+        use dash_sdk::dpp::key_wallet::account::account_type::{AccountType, StandardAccountType};
         use dash_sdk::dpp::key_wallet::changeset::{AccountChangeSet, WalletChangeSet};
         use dash_sdk::dpp::key_wallet::managed_account::transaction_record::{
             InputDetail, OutputDetail, OutputRole, TransactionDirection, TransactionRecord,
@@ -1843,8 +1847,7 @@ mod tests {
         // `load()` to log-and-skip the row. The v1 of this test
         // used `Vec::new()` for input_details and missed the bug.
         let pubkey_bytes = [0x02u8; 33];
-        let pubkey =
-            dash_sdk::dpp::dashcore::PublicKey::from_slice(&pubkey_bytes).unwrap();
+        let pubkey = dash_sdk::dpp::dashcore::PublicKey::from_slice(&pubkey_bytes).unwrap();
         let testnet_addr = dash_sdk::dpp::dashcore::Address::p2pkh(
             &pubkey,
             dash_sdk::dpp::dashcore::Network::Testnet,

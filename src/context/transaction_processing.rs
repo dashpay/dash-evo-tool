@@ -57,20 +57,18 @@ impl AppContext {
                 // separate "bump contact highest receive index" call
                 // is needed (Phase 9b-3 rollback).
                 if let Some(pw) = wallet.platform_wallet.as_ref() {
-                    let dashpay_match = match pw
-                        .dashpay()
-                        .try_match_incoming_dashpay_address(&address)
-                    {
-                        Ok(m) => m,
-                        Err(()) => {
-                            tracing::debug!(
-                                %address,
-                                "DashPay address match skipped: wallet busy. \
-                                 Will be picked up on a future tx or refresh."
-                            );
-                            None
-                        }
-                    };
+                    let dashpay_match =
+                        match pw.dashpay().try_match_incoming_dashpay_address(&address) {
+                            Ok(m) => m,
+                            Err(()) => {
+                                tracing::debug!(
+                                    %address,
+                                    "DashPay address match skipped: wallet busy. \
+                                     Will be picked up on a future tx or refresh."
+                                );
+                                None
+                            }
+                        };
                     if let Some(m) = dashpay_match {
                         let owner_id = m.user_identity_id;
                         let contact_id = m.friend_identity_id;

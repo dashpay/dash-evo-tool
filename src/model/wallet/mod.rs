@@ -625,7 +625,9 @@ impl Wallet {
             .as_ref()
             .and_then(|pw| pw.try_state())
             .map(|info| {
-                crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.core_wallet)
+                crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(
+                    &info.core_wallet,
+                )
             })
             .unwrap_or_default()
     }
@@ -663,7 +665,10 @@ impl Wallet {
     }
 
     /// Async version of `derivation_path_for_address` — safe to call from async context.
-    pub async fn derivation_path_for_address_async(&self, address: &Address) -> Option<DerivationPath> {
+    pub async fn derivation_path_for_address_async(
+        &self,
+        address: &Address,
+    ) -> Option<DerivationPath> {
         let pw = self.platform_wallet.as_ref()?;
         let info = pw.state().await;
         for account in info.core_wallet.accounts.all_accounts() {
@@ -768,7 +773,8 @@ impl Wallet {
         let Some(info) = pw.try_state() else {
             return Vec::new();
         };
-        info.core_wallet.transaction_history()
+        info.core_wallet
+            .transaction_history()
             .into_iter()
             .map(|record| {
                 let height = record.height();

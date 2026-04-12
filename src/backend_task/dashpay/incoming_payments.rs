@@ -160,4 +160,3 @@ pub async fn register_dashpay_addresses_for_identity(
 
     Ok(result)
 }
-

@@ -93,10 +93,16 @@ pub fn build_identity_registration(
 /// before awaiting the async `next_receive_address` (which takes a tokio write
 /// lock on `PlatformWalletInfo`). Holding `std::sync::RwLock` across `.await`
 /// would deadlock with SPV block processing.
-pub async fn get_receive_address(_app_context: &AppContext, wallet_arc: &Arc<RwLock<Wallet>>) -> String {
+pub async fn get_receive_address(
+    _app_context: &AppContext,
+    wallet_arc: &Arc<RwLock<Wallet>>,
+) -> String {
     let pw = {
         let wallet = wallet_arc.read().expect("wallet lock");
-        wallet.platform_wallet.clone().expect("platform wallet must exist")
+        wallet
+            .platform_wallet
+            .clone()
+            .expect("platform wallet must exist")
     };
     pw.core()
         .next_receive_address()

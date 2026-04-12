@@ -100,12 +100,7 @@ pub async fn load_profile(
     } else {
         // No profile found — cache the empty state via the platform
         // wallet to avoid repeated network queries.
-        cache_profile(
-            app_context,
-            &identity,
-            Some(DashPayProfile::default()),
-        )
-        .await;
+        cache_profile(app_context, &identity, Some(DashPayProfile::default())).await;
 
         Ok(BackendTaskSuccessResult::DashPayProfile(None))
     }

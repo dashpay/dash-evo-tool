@@ -200,11 +200,13 @@ impl ShieldScreen {
                     .as_ref()
                     .and_then(|pw| pw.try_state())
                     .map(|info| {
-                        crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.core_wallet)
-                            .into_iter()
-                            .find(|a| &a.address == addr)
-                            .map(|a| a.balance)
-                            .unwrap_or(0)
+                        crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(
+                            &info.core_wallet,
+                        )
+                        .into_iter()
+                        .find(|a| &a.address == addr)
+                        .map(|a| a.balance)
+                        .unwrap_or(0)
                     });
                 self.cached_core_balance = Some(per_addr_balance.unwrap_or(0));
             } else {

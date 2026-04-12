@@ -32,7 +32,9 @@ pub async fn verify_framework_funded(app_context: &Arc<AppContext>, wallet_hash:
     }
 
     // Only derive address in the panic path (rare).
-    let address = get_wallet_balance_and_address(app_context, wallet_hash).await.1;
+    let address = get_wallet_balance_and_address(app_context, wallet_hash)
+        .await
+        .1;
     panic!(
         "Framework wallet balance is below minimum ({} duffs < {} duffs).\n\
          Fund this address manually: {}\n\

@@ -157,10 +157,12 @@ impl AppContext {
 
         if let Some(pw) = platform_wallet {
             let info = pw.state().await;
-            let first_addr = crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.core_wallet)
-                .into_iter()
-                .next()
-                .map(|a| a.address);
+            let first_addr = crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(
+                &info.core_wallet,
+            )
+            .into_iter()
+            .next()
+            .map(|a| a.address);
             Ok((seed_hash, first_addr))
         } else {
             // Locked wallet — no addresses available

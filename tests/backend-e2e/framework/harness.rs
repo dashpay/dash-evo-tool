@@ -392,7 +392,9 @@ impl BackendTestContext {
         let test_address = {
             let pw = {
                 let w = wallet_arc.read().expect("wallet lock");
-                w.platform_wallet.clone().expect("platform wallet must exist")
+                w.platform_wallet
+                    .clone()
+                    .expect("platform wallet must exist")
             };
             pw.core()
                 .next_receive_address()

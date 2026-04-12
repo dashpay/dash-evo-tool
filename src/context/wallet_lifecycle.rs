@@ -1,7 +1,7 @@
 use super::AppContext;
 use crate::backend_task::error::TaskError;
-use crate::model::feature_gate::FeatureGate;
 use crate::database::is_unique_constraint_violation;
+use crate::model::feature_gate::FeatureGate;
 use crate::model::qualified_identity::encrypted_key_storage::{
     PrivateKeyData as QIPrivateKeyData, WalletDerivationPath,
 };
@@ -146,7 +146,9 @@ impl AppContext {
     /// Call before `start_spv()` when wallet state isn't persisted yet.
     pub async fn reset_spv_filter_committed_height(&self) {
         // TODO: re-wire after SpvRuntime exposes reset_filter_committed_height
-        tracing::debug!("reset_spv_filter_committed_height: not yet implemented in new SpvRuntime API");
+        tracing::debug!(
+            "reset_spv_filter_committed_height: not yet implemented in new SpvRuntime API"
+        );
     }
 
     pub fn start_spv(self: &Arc<Self>) -> Result<(), TaskError> {
@@ -157,12 +159,10 @@ impl AppContext {
         }
 
         tracing::info!("start_spv: building SPV config...");
-        let config = self
-            .build_spv_config()
-            .map_err(|e| {
-                tracing::error!("start_spv: failed to build config: {}", e);
-                TaskError::SpvStartFailed { detail: e }
-            })?;
+        let config = self.build_spv_config().map_err(|e| {
+            tracing::error!("start_spv: failed to build config: {}", e);
+            TaskError::SpvStartFailed { detail: e }
+        })?;
         tracing::info!("start_spv: config built, starting SPV...");
 
         // Events now flow through PlatformEventHandler trait directly
@@ -314,8 +314,7 @@ impl AppContext {
                     Default::default(),
                 ),
             )
-        })
-        {
+        }) {
             Ok(platform_wallet) => {
                 let wallet_id = platform_wallet.wallet_id();
 
@@ -703,13 +702,15 @@ impl AppContext {
 
             for address in account.account_type.all_addresses() {
                 if let Some(info) = account.get_address_info(&address)
-                    && let Ok(true) = self.register_spv_address(
-                        wallet_arc,
-                        address.clone(),
-                        info.path.clone(),
-                        path_type,
-                        path_reference,
-                    ).await
+                    && let Ok(true) = self
+                        .register_spv_address(
+                            wallet_arc,
+                            address.clone(),
+                            info.path.clone(),
+                            path_type,
+                            path_reference,
+                        )
+                        .await
                 {
                     inserted += 1;
                 }
@@ -949,8 +950,7 @@ impl AppContext {
         // with NULL crypto are skipped — those are either legacy
         // (pre-v38) or in-flight; the next background
         // `DashPayContactRequests` sync will repopulate them.
-        let mi_established_contacts =
-            self.load_established_contacts_for_identity(&identity_id);
+        let mi_established_contacts = self.load_established_contacts_for_identity(&identity_id);
 
         // 4. Add or update the identity in the manager
         if let Some(managed) = manager.identity_manager.managed_identity_mut(&identity_id) {
@@ -987,10 +987,15 @@ impl AppContext {
             // Add new identity
             // TODO(Phase 9a-5d): forward the returned changeset to the persister
             // instead of relying on the in-memory mutation alone.
-            match manager.identity_manager.add_identity(qualified_identity.identity.clone(), identity_index) {
+            match manager
+                .identity_manager
+                .add_identity(qualified_identity.identity.clone(), identity_index)
+            {
                 Ok(_cs) => {
                     // Now set extra fields on the newly added managed identity
-                    if let Some(managed) = manager.identity_manager.managed_identity_mut(&identity_id) {
+                    if let Some(managed) =
+                        manager.identity_manager.managed_identity_mut(&identity_id)
+                    {
                         managed.key_storage = mi_key_storage;
                         managed.dpns_names = mi_dpns_names;
                         managed.status = mi_status;
@@ -1075,12 +1080,11 @@ impl AppContext {
         match self.db.load_payment_history(identity_id, LOAD_LIMIT) {
             Ok(stored_payments) => {
                 for sp in stored_payments {
-                    let (direction, counterparty_bytes) =
-                        if sp.from_identity_id == identity_bytes {
-                            (PaymentDirection::Sent, &sp.to_identity_id)
-                        } else {
-                            (PaymentDirection::Received, &sp.from_identity_id)
-                        };
+                    let (direction, counterparty_bytes) = if sp.from_identity_id == identity_bytes {
+                        (PaymentDirection::Sent, &sp.to_identity_id)
+                    } else {
+                        (PaymentDirection::Received, &sp.from_identity_id)
+                    };
                     let Ok(counterparty_id) =
                         dash_sdk::platform::Identifier::from_bytes(counterparty_bytes)
                     else {
@@ -1235,11 +1239,7 @@ impl AppContext {
             };
             result.insert(
                 contact_id,
-                EstablishedContact::new(
-                    contact_id,
-                    outgoing.clone(),
-                    incoming.clone(),
-                ),
+                EstablishedContact::new(contact_id, outgoing.clone(), incoming.clone()),
             );
         }
 

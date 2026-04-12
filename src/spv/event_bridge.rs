@@ -5,9 +5,9 @@
 use crate::context::connection_status::ConnectionStatus;
 use crate::spv::types::failed_manager_name;
 use crate::spv::types::{SpvStatus, SpvStatusSnapshot};
+use dash_sdk::dash_spv::EventHandler;
 use dash_sdk::dash_spv::network::NetworkEvent;
 use dash_sdk::dash_spv::sync::{SyncEvent, SyncProgress as SpvSyncProgress, SyncState};
-use dash_sdk::dash_spv::EventHandler;
 use platform_wallet::events::{PlatformEventHandler, WalletEvent};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::SystemTime;
@@ -86,7 +86,9 @@ impl SpvEventBridge {
                     let _ = tx.try_send(());
                 }
             }
-            WalletEvent::TransactionReceived { wallet_id, record, .. } => {
+            WalletEvent::TransactionReceived {
+                wallet_id, record, ..
+            } => {
                 tracing::debug!(
                     wallet_id = %hex::encode(wallet_id),
                     txid = %record.txid,
@@ -97,7 +99,12 @@ impl SpvEventBridge {
                     let _ = tx.try_send(());
                 }
             }
-            WalletEvent::TransactionStatusChanged { wallet_id, txid, status, .. } => {
+            WalletEvent::TransactionStatusChanged {
+                wallet_id,
+                txid,
+                status,
+                ..
+            } => {
                 tracing::debug!(
                     wallet_id = %hex::encode(wallet_id),
                     %txid,
@@ -185,7 +192,15 @@ impl SpvEventBridge {
     /// Mirrors the old `EventHandler::on_sync_event` implementation
     /// (minus the dead finality channel code).
     fn handle_sync_event(&self, event: &SyncEvent) {
-        eprintln!("[DEBUG handle_sync_event] t={:?} {:?}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() % 100000, event);
+        eprintln!(
+            "[DEBUG handle_sync_event] t={:?} {:?}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
+                % 100000,
+            event
+        );
         // Transition to Running on SyncComplete.
         if matches!(event, SyncEvent::SyncComplete { .. }) {
             eprintln!("[DEBUG handle_sync_event] SyncComplete! Setting Running status");

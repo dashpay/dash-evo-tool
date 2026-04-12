@@ -1282,11 +1282,13 @@ impl WalletsBalancesScreen {
             .as_ref()
             .and_then(|pw| pw.try_state())
             .map(|info| {
-                crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.core_wallet)
-                    .into_iter()
-                    .filter(|a| a.derivation_path.is_bip44_external(network))
-                    .map(|a| (a.address.to_string(), a.balance))
-                    .collect()
+                crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(
+                    &info.core_wallet,
+                )
+                .into_iter()
+                .filter(|a| a.derivation_path.is_bip44_external(network))
+                .map(|a| (a.address.to_string(), a.balance))
+                .collect()
             })
             .unwrap_or_default();
         Ok(addresses)

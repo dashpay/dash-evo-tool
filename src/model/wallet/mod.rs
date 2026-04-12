@@ -512,7 +512,19 @@ impl WalletTransaction {
     }
 }
 
-pub type WalletSeedHash = [u8; 32];
+/// Re-export `WalletId` as the canonical wallet identifier type.
+/// Previously `WalletSeedHash = [u8; 32]` (SHA256 of seed). Now
+/// `WalletId = [u8; 32]` (SHA256 of root pubkey + chaincode), matching
+/// platform-wallet's `key_wallet_manager::WalletId`.
+///
+/// The type alias `WalletSeedHash` is kept as a deprecated re-export
+/// during the migration so existing code compiles while call sites
+/// are progressively updated.
+pub use crate::platform_wallet_bridge::WalletId;
+
+/// Deprecated alias — use `WalletId` instead.
+#[deprecated(note = "use WalletId instead — seed_hash → wallet_id refactor (M2)")]
+pub type WalletSeedHash = WalletId;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum WalletSeed {

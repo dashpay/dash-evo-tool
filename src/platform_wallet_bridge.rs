@@ -1,29 +1,23 @@
 //! Bridge module for platform-wallet integration.
 //!
 //! Re-exports types from `platform-wallet` and provides conversion helpers
-//! between old wallet types and new platform wallet types.
+//! between evo-tool's `Wallet` type and platform-wallet's `PlatformWallet`.
 //!
-//! # Migration plan for AppContext
+//! # Wallet identification
 //!
-//! The current `AppContext` stores wallets as:
+//! `AppContext` stores wallets as:
 //! ```ignore
 //! wallets: RwLock<BTreeMap<WalletId, Arc<RwLock<Wallet>>>>
 //! ```
-//! where `WalletId = [u8; 32]` is SHA-256 of the wallet seed.
+//! where `WalletId = [u8; 32]` is `SHA256(root_pub_key || chain_code)`,
+//! matching `key_wallet_manager::WalletId`. This replaced the former
+//! `WalletSeedHash = SHA256(seed_bytes)` in the v40 migration.
 //!
-//! In the new platform-wallet model, the equivalent is:
-//! - `WalletId = [u8; 32]` (SHA-256 of the root public key, from `key-wallet`)
-//! - `PlatformWalletManager` manages multiple `PlatformWallet` instances
-//!   internally via `RwLock<BTreeMap<WalletId, PlatformWallet>>`
+//! `PlatformWalletManager` uses the same `WalletId` internally, so the
+//! two maps are keyed consistently.
 //!
-//! Key differences:
-//! - `WalletId` is derived from the seed; `WalletId` is derived from
-//!   the root public key. Both are `[u8; 32]` and serve as unique wallet identifiers.
-//!   They will produce different values for the same wallet.
-//! - The old model uses `Arc<RwLock<Wallet>>` for interior mutability;
-//!   the new model uses `PlatformWallet` which is cheaply cloneable (all Arc fields).
-//! - `PlatformWallet` subsumes the old `Wallet` by composing `CoreWallet`,
-//!   `IdentityWallet`, `DashPayWallet`, and `PlatformAddressWallet`.
+//! `PlatformWallet` subsumes the old `Wallet` by composing `CoreWallet`,
+//! `IdentityWallet`, `DashPayWallet`, and `PlatformAddressWallet`.
 
 // ── Primary types ──────────────────────────────────────────────────────
 

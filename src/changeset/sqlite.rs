@@ -1103,10 +1103,17 @@ impl SqliteWalletPersister {
             };
 
             // Encode proof as bincode serde blob.
-            let proof_data: Option<Vec<u8>> = entry.proof.as_ref().map(|p| {
-                bincode::serde::encode_to_vec(p, bincode::config::standard())
-                    .unwrap_or_default()
-            });
+            let proof_data: Option<Vec<u8>> = entry
+                .proof
+                .as_ref()
+                .map(|p| {
+                    bincode::serde::encode_to_vec(p, bincode::config::standard()).map_err(|e| {
+                        SqlitePersistError::Encode(format!(
+                            "AssetLockProof bincode encode failed: {e}"
+                        ))
+                    })
+                })
+                .transpose()?;
 
             let funding_type_disc: i64 = match entry.funding_type {
                 platform_wallet::AssetLockFundingType::IdentityRegistration => 0,

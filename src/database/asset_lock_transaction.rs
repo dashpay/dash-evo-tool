@@ -1,54 +1,12 @@
 use crate::context::AppContext;
 use crate::database::Database;
-use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{
     InstantLock, Network, Transaction,
-    consensus::{deserialize, serialize},
+    consensus::deserialize,
 };
 use rusqlite::{Connection, params};
 
 impl Database {
-    /// Stores an asset lock transaction and optional InstantLock into the database.
-    pub fn store_asset_lock_transaction(
-        &self,
-        tx: &Transaction,
-        amount: u64,
-        islock: Option<&InstantLock>,
-        wallet_key: &[u8; 32],
-        network: Network,
-    ) -> rusqlite::Result<()> {
-        let tx_bytes = serialize(tx);
-        let txid = tx.txid().to_byte_array();
-
-        let islock_bytes = islock.map(serialize);
-
-        let conn = self.conn.lock().unwrap();
-
-        let sql = "
-        INSERT INTO asset_lock_transaction (tx_id, output_index, transaction_data, amount, instant_lock_data, wallet, network)
-        VALUES (?1, 0, ?2, ?3, ?4, ?5, ?6)
-        ON CONFLICT(tx_id, output_index) DO UPDATE SET
-            transaction_data = excluded.transaction_data,
-            amount = excluded.amount,
-            instant_lock_data = COALESCE(excluded.instant_lock_data, asset_lock_transaction.instant_lock_data),
-            network = excluded.network;
-        ";
-
-        conn.execute(
-            sql,
-            params![
-                &txid,
-                &tx_bytes,
-                amount,
-                &islock_bytes,
-                wallet_key,
-                network.to_string()
-            ],
-        )?;
-
-        Ok(())
-    }
-
     /// Retrieves an asset lock transaction by its transaction ID.
     ///
     /// Returns (Transaction, amount, Option<InstantLock>, Option<chain_locked_height>,
@@ -110,23 +68,6 @@ impl Database {
         } else {
             Ok(None)
         }
-    }
-
-    /// Updates the chain locked height for an asset lock transaction.
-    #[allow(dead_code)] // May be used for tracking chain confirmation status
-    pub fn update_asset_lock_chain_locked_height(
-        &self,
-        txid: &[u8; 32],
-        chain_locked_height: Option<u32>,
-    ) -> rusqlite::Result<()> {
-        let conn = self.conn.lock().unwrap();
-
-        conn.execute(
-            "UPDATE asset_lock_transaction SET chain_locked_height = ?1 WHERE tx_id = ?2",
-            params![chain_locked_height, txid],
-        )?;
-
-        Ok(())
     }
 
     /// Sets the identity ID for an asset lock transaction.

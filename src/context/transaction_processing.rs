@@ -161,16 +161,10 @@ impl AppContext {
                     .map(|tx_out| tx_out.value)
                     .sum();
 
-                // Store the asset lock transaction in the database
-                self.db.store_asset_lock_transaction(
-                    tx,
-                    amount,
-                    islock.as_ref(),
-                    &wallet.seed_hash(),
-                    self.network,
-                )?;
-
-                // Register with PlatformWallet's AssetLockManager
+                // Register with PlatformWallet's AssetLockManager.
+                // The manager's recover_asset_lock_blocking queues
+                // an AssetLockChangeSet that the persister flushes
+                // atomically to asset_lock_transaction (Item 8.1d).
                 if let Some(pw) = wallet.platform_wallet.as_ref() {
                     pw.asset_locks().recover_asset_lock_blocking(
                         tx.clone(),

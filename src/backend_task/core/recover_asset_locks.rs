@@ -218,28 +218,10 @@ impl AppContext {
                 (None, None)
             };
 
-            // Store the asset lock in the database
-            if let Err(e) = self.db.store_asset_lock_transaction(
-                &raw_tx,
-                credit_amount,
-                None,
-                &seed_hash,
-                self.network,
-            ) {
-                tracing::warn!("Failed to store asset lock {}: {}", txid, e);
-                continue;
-            }
-
-            // Also store the chain locked height if available
-            if let Some(height) = chain_locked_height
-                && let Err(e) = self
-                    .db
-                    .update_asset_lock_chain_locked_height(txid.as_byte_array(), Some(height))
-            {
-                tracing::warn!("Failed to update chain locked height for {}: {}", txid, e);
-            }
-
-            // Register with PlatformWallet's AssetLockManager
+            // Register with PlatformWallet's AssetLockManager.
+            // The manager's recover_asset_lock_blocking queues an
+            // AssetLockChangeSet that the persister flushes atomically
+            // to asset_lock_transaction (Item 8.1d).
             {
                 let wallet_guard = wallet.read()?;
                 register_with_asset_lock_manager(&wallet_guard, &raw_tx, credit_amount, proof);
@@ -347,28 +329,9 @@ impl AppContext {
                     (None, None)
                 };
 
-                // Store in database
-                if let Err(e) = self.db.store_asset_lock_transaction(
-                    &raw_tx,
-                    credit_amount,
-                    None,
-                    &seed_hash,
-                    self.network,
-                ) {
-                    tracing::warn!("Failed to store asset lock {}: {}", txid, e);
-                    continue;
-                }
-
-                // Also store the chain locked height if available
-                if let Some(height) = chain_locked_height
-                    && let Err(e) = self
-                        .db
-                        .update_asset_lock_chain_locked_height(txid.as_byte_array(), Some(height))
-                {
-                    tracing::warn!("Failed to update chain locked height for {}: {}", txid, e);
-                }
-
-                // Register with PlatformWallet's AssetLockManager
+                // Register with PlatformWallet's AssetLockManager.
+                // The manager's recover_asset_lock_blocking queues an
+                // AssetLockChangeSet (Item 8.1d).
                 {
                     let wallet_guard = wallet.read()?;
                     register_with_asset_lock_manager(&wallet_guard, &raw_tx, credit_amount, proof);

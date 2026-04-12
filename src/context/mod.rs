@@ -325,7 +325,13 @@ impl AppContext {
             }
         }
         .into_iter()
-        .map(|w| (w.seed_hash(), Arc::new(RwLock::new(w))))
+        .map(|w| {
+            // Use wallet_id as the map key when available (v40+ wallets
+            // that have been opened at least once). Fall back to
+            // seed_hash for wallets that haven't been unlocked since v40.
+            let key = w.wallet_id().unwrap_or_else(|| w.seed_hash());
+            (key, Arc::new(RwLock::new(w)))
+        })
         .collect();
 
         let single_key_wallets: BTreeMap<_, _> = match db.get_single_key_wallets(network) {

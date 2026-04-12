@@ -734,10 +734,11 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
 
             let mut stmt = guard.prepare(
                 "SELECT tx_id, from_identity_id, to_identity_id, amount, memo, payment_type, status
-                 FROM dashpay_payments",
+                 FROM dashpay_payments
+                 WHERE wallet_id = ?1",
             ).map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
 
-            let rows = stmt.query_map([], |row| {
+            let rows = stmt.query_map(rusqlite::params![&wallet_id[..]], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, Vec<u8>>(1)?,
@@ -946,7 +947,7 @@ impl SqliteWalletPersister {
             Self::write_core(&tx, &wallet_id, &self.network, core)?;
         }
         if let Some(id_cs) = identities {
-            Self::write_identity_dashpay_subset(&tx, &self.network, id_cs)?;
+            Self::write_identity_dashpay_subset(&tx, &wallet_id, &self.network, id_cs)?;
         }
         if let Some(al_cs) = asset_locks
             && has_asset_lock_work
@@ -979,6 +980,7 @@ impl SqliteWalletPersister {
     /// Phase 9b-2 added the payment write path.
     fn write_identity_dashpay_subset(
         tx: &rusqlite::Transaction,
+        wallet_id: &WalletId,
         network: &str,
         id_cs: IdentityChangeSet,
     ) -> Result<(), SqlitePersistError> {
@@ -1017,9 +1019,10 @@ impl SqliteWalletPersister {
         // reaches `confirmed`.
         let mut upsert_payment = tx.prepare_cached(
             "INSERT INTO dashpay_payments
-                (tx_id, from_identity_id, to_identity_id, amount, memo, payment_type, status)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                (tx_id, wallet_id, from_identity_id, to_identity_id, amount, memo, payment_type, status)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(tx_id) DO UPDATE SET
+                wallet_id = COALESCE(excluded.wallet_id, wallet_id),
                 amount = excluded.amount,
                 memo = excluded.memo,
                 payment_type = excluded.payment_type,
@@ -1066,6 +1069,7 @@ impl SqliteWalletPersister {
                 };
                 upsert_payment.execute(rusqlite::params![
                     tx_id,
+                    &wallet_id[..],
                     from_id.to_buffer().to_vec(),
                     to_id.to_buffer().to_vec(),
                     payment.amount_duffs as i64,

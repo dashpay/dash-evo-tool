@@ -25,7 +25,7 @@ impl WalletsBalancesScreen {
             let locks = self
                 .app_context
                 .db
-                .get_asset_lock_transactions_for_wallet(&wallet.wallet_id().unwrap_or_default(), network)
+                .get_asset_lock_transactions_for_wallet(&wallet.wallet_id(), network)
                 .unwrap_or_default();
 
             let dark_mode = ui.ctx().style().visuals.dark_mode;
@@ -64,7 +64,7 @@ impl WalletsBalancesScreen {
                         let platform_addresses: Vec<(String, u64)> = self
                             .app_context
                             .db
-                            .get_all_platform_address_info(&wallet.wallet_id().unwrap_or_default(), &network)
+                            .get_all_platform_address_info(&wallet.wallet_id(), &network)
                             .unwrap_or_default()
                             .into_iter()
                             .filter_map(|(core_addr, balance, _nonce)| {

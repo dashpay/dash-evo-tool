@@ -223,11 +223,7 @@ impl AppContext {
                 }
             })?;
 
-        // Use wallet_id as the map key (wallet_id is always available
-        // for newly-created wallets because the seed is open).
-        let map_key = wallet
-            .wallet_id()
-            .unwrap_or_else(|| wallet.seed_hash());
+        let map_key = wallet.wallet_id();
 
         // 2. Register in-memory
         let wallet_arc = Arc::new(RwLock::new(wallet));
@@ -251,30 +247,29 @@ impl AppContext {
     pub fn handle_wallet_unlocked(self: &Arc<Self>, wallet: &Arc<RwLock<Wallet>>) {
         if let Some((seed_hash, seed_bytes)) = Self::wallet_seed_snapshot(wallet) {
             // Register with the PlatformWalletManager (creates PlatformWallet
-            // and wires SPV event channel so IS-lock/ChainLock events reach
-            // AssetLockManager). Wallet loading into SPV is handled by the
-            // SpvRuntime's wallet adapter automatically.
+            // and wires SPV event channel). NOTE: this may re-key the wallets
+            // map entry from seed_hash to wallet_id.
             self.register_with_platform_wallet_manager(seed_hash, seed_bytes);
-            // WalletManager bumps its own structural revision when wallets
-            // are added/removed, so no external notify_wallets_changed() is needed.
-            // Note: Platform address sync is not done here.
-            // Core UTXO refresh is handled at startup in bootstrap_loaded_wallets.
 
-            // Initialize shielded wallet state only when the network supports it
-            // (all shielded state transitions present). On mainnet (which doesn't
-            // support shielded transactions yet), skip entirely to avoid
-            // unnecessary sync attempts and log noise.
+            // After registration, use wallet_id for all subsequent lookups —
+            // the map entry was re-keyed from seed_hash to wallet_id.
+            let wallet_id = wallet
+                .read()
+                .ok()
+                .map(|g| g.wallet_id())
+                .unwrap_or(seed_hash);
+
             if FeatureGate::Shielded.is_available(self) {
-                match self.initialize_shielded_wallet(seed_hash) {
+                match self.initialize_shielded_wallet(wallet_id) {
                     Ok(_) => {
                         tracing::trace!(
-                            seed = %hex::encode(seed_hash),
+                            wallet_id = %hex::encode(wallet_id),
                             "Shielded wallet state initialized on unlock"
                         );
-                        self.queue_shielded_sync(seed_hash);
+                        self.queue_shielded_sync(wallet_id);
                     }
                     Err(e) => tracing::debug!(
-                        seed = %hex::encode(seed_hash),
+                        wallet_id = %hex::encode(wallet_id),
                         error = %e,
                         "Shielded wallet init skipped on unlock"
                     ),
@@ -335,24 +330,14 @@ impl AppContext {
                     );
                 }
 
-                // Store platform_wallet + wallet_id on the Wallet struct,
-                // and re-key the map entry from seed_hash to wallet_id if
-                // it was inserted before wallet_id was computed (password-
-                // protected wallets unlocked for the first time since v40).
-                if let Ok(mut wallets) = self.wallets.write() {
-                    // Try wallet_id first (normal case), then seed_hash
-                    // (first-unlock-since-v40 case).
-                    let wallet_arc = wallets
-                        .get(&wallet_id)
-                        .cloned()
-                        .or_else(|| wallets.remove(&seed_hash));
-                    if let Some(wallet_arc) = wallet_arc {
+                // Store platform_wallet on the Wallet struct. The map
+                // is already keyed by wallet_id (populated at load time
+                // or at creation; the migration screen ensures this).
+                if let Ok(wallets) = self.wallets.read() {
+                    if let Some(wallet_arc) = wallets.get(&wallet_id) {
                         if let Ok(mut wallet) = wallet_arc.write() {
                             wallet.platform_wallet = Some(Arc::clone(&platform_wallet));
-                            wallet.wallet_id = Some(wallet_id);
                         }
-                        // Ensure the entry is keyed by wallet_id.
-                        wallets.insert(wallet_id, wallet_arc);
                     }
                 }
 
@@ -374,7 +359,7 @@ impl AppContext {
 
     pub fn handle_wallet_locked(self: &Arc<Self>, wallet: &Arc<RwLock<Wallet>>) {
         let _map_key = match wallet.read() {
-            Ok(guard) => guard.wallet_id().unwrap_or_else(|| guard.seed_hash()),
+            Ok(guard) => guard.wallet_id(),
             Err(err) => {
                 tracing::warn!(error = %err, "Unable to read wallet during lock handling");
                 return;

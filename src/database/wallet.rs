@@ -46,7 +46,7 @@ impl Database {
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 wallet.seed_hash(),
-                wallet.wallet_id().map(|id| id.to_vec()),
+                wallet.wallet_id().to_vec(),
                 wallet.encrypted_seed_slice(),
                 wallet.salt(),
                 wallet.nonce(),
@@ -496,9 +496,13 @@ impl Database {
                 "new wallet loaded from database"
             );
 
-            // Convert wallet_id blob to [u8; 32] if present.
-            let wallet_id: Option<[u8; 32]> =
-                wallet_id_blob.and_then(|b| b.try_into().ok());
+            // Convert wallet_id blob to [u8; 32]. If NULL in the DB
+            // (password-protected wallet never unlocked since v40), use
+            // [0u8; 32] as a sentinel — the wallet migration screen
+            // detects this and prompts the user to unlock or remove.
+            let wallet_id: [u8; 32] = wallet_id_blob
+                .and_then(|b| <[u8; 32]>::try_from(b).ok())
+                .unwrap_or([0u8; 32]);
 
             // Insert a new Wallet into the map
             wallets_map.insert(

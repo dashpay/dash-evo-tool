@@ -324,10 +324,7 @@ impl AppContext {
         }
         .into_iter()
         .map(|w| {
-            // Use wallet_id as the map key when available (v40+ wallets
-            // that have been opened at least once). Fall back to
-            // seed_hash for wallets that haven't been unlocked since v40.
-            let key = w.wallet_id().unwrap_or_else(|| w.seed_hash());
+            let key = w.wallet_id();
             (key, Arc::new(RwLock::new(w)))
         })
         .collect();

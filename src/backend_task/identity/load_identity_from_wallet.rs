@@ -22,7 +22,7 @@ impl AppContext {
         identity_index: IdentityIndex,
         _sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        let seed_hash = wallet_arc_ref.seed_hash;
+        let seed_hash = wallet_arc_ref.wallet_id;
 
         // Try to delegate to platform-wallet when available.
         if let Some(platform_wallet) = self.get_platform_wallet(&seed_hash) {
@@ -57,7 +57,7 @@ impl AppContext {
         identity_index: IdentityIndex,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let identity_wallet = platform_wallet.identity();
-        let seed_hash = wallet_arc_ref.seed_hash;
+        let seed_hash = wallet_arc_ref.wallet_id;
 
         // Delegate the Platform query + key matching to platform-wallet.
         let identity = identity_wallet

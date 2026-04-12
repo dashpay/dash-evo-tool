@@ -28,7 +28,7 @@ impl AddNewIdentityScreen {
         let locks = self
             .app_context
             .db
-            .get_unused_asset_lock_transactions_for_wallet(&wallet.wallet_id().unwrap_or_default(), network)
+            .get_unused_asset_lock_transactions_for_wallet(&wallet.wallet_id(), network)
             .unwrap_or_default();
         drop(wallet);
 

@@ -887,7 +887,7 @@ impl SqliteWalletPersister {
                 tx.execute(
                     "UPDATE wallet
                      SET last_terminal_block = MAX(last_terminal_block, ?1)
-                     WHERE seed_hash = ?2 AND network = ?3",
+                     WHERE wallet_id = ?2 AND network = ?3",
                     rusqlite::params![height as i64, &wallet_id[..], network],
                 )?;
             }

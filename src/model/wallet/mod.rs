@@ -275,26 +275,25 @@ bitflags! {
 #[derive(Debug, Clone)]
 pub struct WalletArcRef {
     pub wallet: Arc<RwLock<Wallet>>,
-    pub seed_hash: WalletId,
+    pub wallet_id: WalletId,
 }
 
 impl From<Arc<RwLock<Wallet>>> for WalletArcRef {
     fn from(wallet: Arc<RwLock<Wallet>>) -> Self {
-        // From trait doesn't allow returning Result, so use a fallback for poisoned locks
-        let seed_hash = wallet
+        let wallet_id = wallet
             .read()
-            .map(|w| w.seed_hash())
+            .map(|w| w.wallet_id())
             .unwrap_or_else(|poisoned| {
                 tracing::warn!("Wallet lock poisoned during WalletArcRef conversion");
-                poisoned.into_inner().seed_hash()
+                poisoned.into_inner().wallet_id()
             });
-        Self { wallet, seed_hash }
+        Self { wallet, wallet_id }
     }
 }
 
 impl PartialEq for WalletArcRef {
     fn eq(&self, other: &Self) -> bool {
-        self.seed_hash == other.seed_hash
+        self.wallet_id == other.wallet_id
     }
 }
 
@@ -311,10 +310,11 @@ pub struct Wallet {
     /// Dash Core wallet name for multi-wallet RPC calls
     pub core_wallet_name: Option<String>,
     /// Platform-wallet `WalletId` (`SHA256(root_pub_key || chain_code)`).
-    /// Populated eagerly at creation for open wallets, or lazily at
-    /// unlock time for password-protected wallets. `None` only for
-    /// wallets that have never been unlocked since the v40 migration.
-    pub wallet_id: Option<crate::platform_wallet_bridge::WalletId>,
+    /// Always populated — the wallet migration screen at first launch
+    /// after v40 ensures every wallet has wallet_id before the main
+    /// UI loads. Use this as the canonical wallet identifier for map
+    /// keys, DB queries, and persistence.
+    pub wallet_id: crate::platform_wallet_bridge::WalletId,
 }
 
 impl Wallet {
@@ -383,7 +383,7 @@ impl Wallet {
             alias,
             is_main: true,
             core_wallet_name: None,
-            wallet_id: Some(wallet_id),
+            wallet_id,
         })
     }
 
@@ -408,12 +408,8 @@ impl Wallet {
         sha256::Hash::hash(&data).to_byte_array()
     }
 
-    /// The platform-wallet `WalletId`, if known.
-    ///
-    /// `Some` for wallets that have been opened (seed available at
-    /// creation or since last unlock). `None` only for password-
-    /// protected wallets that have never been unlocked since v40.
-    pub fn wallet_id(&self) -> Option<crate::platform_wallet_bridge::WalletId> {
+    /// The platform-wallet `WalletId`.
+    pub fn wallet_id(&self) -> crate::platform_wallet_bridge::WalletId {
         self.wallet_id
     }
 }
@@ -653,12 +649,7 @@ impl Wallet {
     /// Checks whether this wallet has any unused asset locks in the database
     /// (where identity_id IS NULL and identity_id_potentially_in_creation IS NULL).
     pub fn has_unused_asset_lock(&self, db: &Database, network: Network) -> bool {
-        // wallet_id is None only for wallets never unlocked since v40;
-        // those can't have asset locks, so returning false is correct.
-        let Some(key) = self.wallet_id() else {
-            return false;
-        };
-        db.has_unused_asset_lock_transactions(&key, network)
+        db.has_unused_asset_lock_transactions(&self.wallet_id(), network)
             .unwrap_or(false)
     }
 
@@ -1670,7 +1661,7 @@ mod tests {
             alias: Some("Test Wallet".to_string()),
             is_main: true,
             core_wallet_name: None,
-            wallet_id: Some(wallet_id),
+            wallet_id,
         }
     }
 
@@ -2109,9 +2100,9 @@ mod tests {
         let ref1 = WalletArcRef::from(arc1);
         let ref2 = WalletArcRef::from(arc2);
 
-        // Same seed hash means equal
+        // Same wallet_id means equal
         assert_eq!(ref1, ref2);
-        assert_eq!(ref1.seed_hash, seed_hash);
+        assert_eq!(ref1.wallet_id, ref1.wallet.read().unwrap().wallet_id());
     }
 
     // ========================================================================

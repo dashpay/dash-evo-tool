@@ -1669,6 +1669,7 @@ impl Database {
             "contestant",
             "contract",
             "shielded_notes",
+            "shielded_wallet_meta",
             "contact_private_info",
             "scheduled_votes",
         ] {

@@ -71,7 +71,7 @@ impl QualifiedIdentityPublicKey {
                         if let Some(derivation_path) = wallet.derivation_path_for_address(&address)
                         {
                             in_wallet_at_derivation_path = Some(WalletDerivationPath {
-                                wallet_seed_hash: wallet.seed_hash(),
+                                wallet_seed_hash: wallet.wallet_id(),
                                 derivation_path,
                             });
                             break;
@@ -82,7 +82,7 @@ impl QualifiedIdentityPublicKey {
                                 wallet.derivation_path_for_address(testnet_address)
                             {
                                 in_wallet_at_derivation_path = Some(WalletDerivationPath {
-                                    wallet_seed_hash: wallet.seed_hash(),
+                                    wallet_seed_hash: wallet.wallet_id(),
                                     derivation_path,
                                 });
                                 break;
@@ -109,7 +109,7 @@ impl QualifiedIdentityPublicKey {
                         if let Some(derivation_path) = wallet.derivation_path_for_address(&address)
                         {
                             in_wallet_at_derivation_path = Some(WalletDerivationPath {
-                                wallet_seed_hash: wallet.seed_hash(),
+                                wallet_seed_hash: wallet.wallet_id(),
                                 derivation_path,
                             });
                             break;
@@ -120,7 +120,7 @@ impl QualifiedIdentityPublicKey {
                                 wallet.derivation_path_for_address(testnet_address)
                             {
                                 in_wallet_at_derivation_path = Some(WalletDerivationPath {
-                                    wallet_seed_hash: wallet.seed_hash(),
+                                    wallet_seed_hash: wallet.wallet_id(),
                                     derivation_path,
                                 });
                                 break;
@@ -155,7 +155,7 @@ impl QualifiedIdentityPublicKey {
                     let wallet = locked_wallet.read().unwrap();
                     if let Some(derivation_path) = wallet.derivation_path_for_address(&address) {
                         in_wallet_at_derivation_path = Some(WalletDerivationPath {
-                            wallet_seed_hash: wallet.seed_hash(),
+                            wallet_seed_hash: wallet.wallet_id(),
                             derivation_path,
                         });
                         break;
@@ -166,7 +166,7 @@ impl QualifiedIdentityPublicKey {
                             wallet.derivation_path_for_address(testnet_address)
                         {
                             in_wallet_at_derivation_path = Some(WalletDerivationPath {
-                                wallet_seed_hash: wallet.seed_hash(),
+                                wallet_seed_hash: wallet.wallet_id(),
                                 derivation_path,
                             });
                             break;

@@ -1244,6 +1244,36 @@ impl SqliteWalletPersister {
             delete_existing.execute(rusqlite::params![&from_bytes, &to_bytes, network])?;
         }
 
+        // Item 8.3: Upsert established contacts into dashpay_contacts.
+        // An established contact is a bidirectional relationship where
+        // both sides have exchanged requests. The underlying requests
+        // are already written above (sent + incoming). This table
+        // stores the relationship itself + display-only profile fields.
+        //
+        // Display fields (username, display_name, avatar_url,
+        // public_message) are set NULL here — populated by separate
+        // profile fetches. Only the status ('accepted') and the
+        // (owner, contact, network) triple matter for the relationship.
+        if !cs.established.is_empty() {
+            let mut upsert_contact = tx.prepare_cached(
+                "INSERT INTO dashpay_contacts
+                    (owner_identity_id, contact_identity_id, network, contact_status, updated_at)
+                 VALUES (?1, ?2, ?3, 'accepted', unixepoch())
+                 ON CONFLICT(owner_identity_id, contact_identity_id, network) DO UPDATE SET
+                    contact_status = 'accepted',
+                    updated_at = unixepoch()",
+            )?;
+            for ((owner, contact), _established) in &cs.established {
+                let owner_bytes = owner.to_buffer();
+                let contact_bytes = contact.to_buffer();
+                upsert_contact.execute(rusqlite::params![
+                    &owner_bytes,
+                    &contact_bytes,
+                    network,
+                ])?;
+            }
+        }
+
         Ok(())
     }
 }

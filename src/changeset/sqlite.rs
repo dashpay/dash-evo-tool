@@ -2339,4 +2339,83 @@ mod tests {
         // TransactionRecord.
         assert_eq!(loaded_record, &record, "TransactionRecord round-trip");
     }
+
+    /// Item 8.1: write_asset_locks + load_asset_locks round-trip.
+    #[test]
+    fn test_asset_lock_round_trip() {
+        use dash_sdk::dpp::dashcore::{OutPoint, Transaction, Txid};
+        use platform_wallet::changeset::{AssetLockChangeSet, AssetLockEntry};
+        use platform_wallet::wallet::asset_lock::tracked::AssetLockStatus;
+
+        let db = Arc::new(create_test_database().expect("create test db"));
+        let persister = make_persister(db.clone());
+
+        // Insert wallet row.
+        db.execute(
+            "INSERT INTO wallet
+                (seed_hash, wallet_id, encrypted_seed, salt, nonce,
+                 master_ecdsa_bip44_account_0_epk, uses_password, network)
+             VALUES (?1, ?1, ?2, ?3, ?4, ?5, 0, 'testnet')",
+            rusqlite::params![
+                &TEST_WALLET_ID[..],
+                vec![0u8; 32],
+                vec![0u8; 16],
+                vec![0u8; 12],
+                vec![0u8; 33],
+            ],
+        )
+        .expect("insert wallet row");
+
+        let txid = Txid::from_byte_array([0xAA; 32]);
+        let outpoint = OutPoint::new(txid, 0);
+        let tx = Transaction {
+            version: 3,
+            lock_time: 0,
+            input: vec![],
+            output: vec![],
+            special_transaction_payload: None,
+        };
+
+        let mut al_cs = AssetLockChangeSet::default();
+        al_cs.asset_locks.insert(
+            outpoint,
+            AssetLockEntry {
+                out_point: outpoint,
+                transaction: tx.clone(),
+                account_index: 0,
+                funding_type:
+                    platform_wallet::AssetLockFundingType::IdentityRegistration,
+                identity_index: 5,
+                amount_duffs: 100_000,
+                status: AssetLockStatus::Broadcast,
+                proof: None,
+            },
+        );
+
+        let cs = PlatformWalletChangeSet {
+            asset_locks: Some(al_cs),
+            ..Default::default()
+        };
+        persister.store(TEST_WALLET_ID, cs);
+        persister.flush(TEST_WALLET_ID).expect("flush");
+
+        // Load and verify round-trip.
+        let loaded = persister.load(TEST_WALLET_ID).expect("load");
+        let loaded_al = loaded.asset_locks.expect("asset_locks populated");
+        assert_eq!(loaded_al.asset_locks.len(), 1);
+
+        let entry = loaded_al.asset_locks.get(&outpoint).expect("entry");
+        assert_eq!(entry.out_point, outpoint);
+        assert_eq!(entry.account_index, 0);
+        assert_eq!(
+            entry.funding_type,
+            platform_wallet::AssetLockFundingType::IdentityRegistration,
+        );
+        assert_eq!(entry.identity_index, 5);
+        assert_eq!(entry.amount_duffs, 100_000);
+        assert_eq!(entry.status, AssetLockStatus::Broadcast);
+        assert!(entry.proof.is_none());
+        // The loaded transaction should serialize identically.
+        assert_eq!(entry.transaction, tx);
+    }
 }

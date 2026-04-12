@@ -1101,21 +1101,7 @@ impl ScreenLike for ContactsList {
                         };
                         self.contacts.insert(contact_data.identity_id, contact);
 
-                        // Save to database
-                        self.app_context
-                            .db
-                            .save_dashpay_contact(
-                                &owner_id,
-                                &contact_data.identity_id,
-                                &network_str,
-                                contact_data.username.as_deref(),
-                                contact_data.display_name.as_deref(),
-                                contact_data.avatar_url.as_deref(),
-                                None,       // public_message - not yet fetched
-                                "accepted", // Only accepted contacts are returned from load_contacts
-                            )
-                            .or_show_error(self.app_context.egui_ctx())
-                            .ok();
+                        // DB persistence handled by changeset flush (Item 8.3).
 
                         // Save private info if present
                         if let Some(nickname) = &contact_data.nickname {
@@ -1203,25 +1189,9 @@ impl ScreenLike for ContactsList {
                     }
 
                     // Save updated profile to database if we have a selected identity
-                    if let Some(identity) = &self.selected_identity {
-                        let owner_id = identity.identity.id();
-                        let network_str = self.app_context.network.to_string();
-                        if let Err(e) = self.app_context.db.save_dashpay_contact(
-                            &owner_id,
-                            &contact_id,
-                            &network_str,
-                            contact.username.as_deref(),
-                            contact.display_name.as_deref(),
-                            contact.avatar_url.as_deref(),
-                            public_message.as_deref(),
-                            "accepted",
-                        ) {
-                            tracing::warn!(
-                                "Failed to save updated contact profile to database: {}",
-                                e
-                            );
-                        }
-                    }
+                    // DB persistence handled by changeset flush (Item 8.3).
+                    // Profile display fields are populated by the
+                    // platform-wallet's identity sync cycle.
                 }
             }
             _ => {

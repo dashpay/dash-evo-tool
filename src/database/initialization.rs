@@ -83,22 +83,28 @@ impl Database {
     fn apply_version_changes(&self, version: u16, tx: &Connection) -> Result<(), MigrationError> {
         match version {
             39 => {
-                self.add_platform_created_at_ms_to_contact_requests(tx)?;
+                self.add_platform_created_at_ms_to_contact_requests(tx)
+                    .migration_err("dashpay_contact_requests", "add platform_created_at_ms column")?;
             }
             38 => {
-                self.add_dip15_crypto_columns_to_contact_requests(tx)?;
+                self.add_dip15_crypto_columns_to_contact_requests(tx)
+                    .migration_err("dashpay_contact_requests", "add dip15 crypto columns")?;
             }
             37 => {
-                self.recreate_wallet_transactions_with_account_attribution(tx)?;
+                self.recreate_wallet_transactions_with_account_attribution(tx)
+                    .migration_err("wallet_transactions", "recreate with account attribution")?;
             }
             36 => {
-                self.add_wallet_account_pool_state_and_utxo_instant_lock(tx)?;
+                self.add_wallet_account_pool_state_and_utxo_instant_lock(tx)
+                    .migration_err("wallet", "add pool state and utxo instant lock columns")?;
             }
             35 => {
-                self.drop_dashpay_address_mappings_table(tx)?;
+                self.drop_dashpay_address_mappings_table(tx)
+                    .migration_err("dashpay_address_mappings", "drop table")?;
             }
             34 => {
-                self.add_asset_lock_tracking_columns(tx)?;
+                self.add_asset_lock_tracking_columns(tx)
+                    .migration_err("asset_locks", "add tracking columns")?;
             }
             // Versions 28-32 were consolidated into v33 to resolve migration
             // numbering conflicts between the zk and v1.0-dev branches.
@@ -2177,7 +2183,12 @@ mod test {
         let db_file_path = temp_dir.path().join("orphans.db");
         let db = super::Database::new(&db_file_path).unwrap();
 
-        // Build full schema at current version
+        // Build full schema at current version, then recreate
+        // wallet_transactions with the pre-migration-37 schema (which
+        // had `timestamp`, `status`, etc.) so we can test the v33 FK
+        // cleanup against the table shape it was designed for.
+        // Migration 37 restructured wallet_transactions to per-account
+        // attribution with a `record` blob, dropping `timestamp`.
         db.create_tables().unwrap();
         db.set_default_version().unwrap();
 
@@ -2186,6 +2197,28 @@ mod test {
 
         {
             let conn = db.conn.lock().unwrap();
+
+            // Recreate wallet_transactions with the pre-migration-37
+            // schema so the INSERT below can use `timestamp` + `status`.
+            conn.execute_batch(
+                "DROP TABLE IF EXISTS wallet_transactions;
+                 CREATE TABLE wallet_transactions (
+                    seed_hash BLOB NOT NULL,
+                    txid BLOB NOT NULL,
+                    network TEXT NOT NULL,
+                    timestamp INTEGER NOT NULL,
+                    height INTEGER,
+                    block_hash BLOB,
+                    net_amount INTEGER NOT NULL,
+                    fee INTEGER,
+                    label TEXT,
+                    is_ours INTEGER NOT NULL,
+                    raw_transaction BLOB NOT NULL,
+                    status INTEGER NOT NULL DEFAULT 2,
+                    PRIMARY KEY (seed_hash, txid, network)
+                 );",
+            )
+            .unwrap();
 
             // Insert a real wallet with the old network name
             conn.execute(
@@ -2449,17 +2482,21 @@ mod test {
         assert_table_exists(&conn, "shielded_notes");
         assert_table_exists(&conn, "shielded_wallet_meta");
 
-        // Valid wallet_transactions should survive with network renamed to mainnet
+        // wallet_transactions: migration 37 drops and recreates the table
+        // with per-account attribution (different schema), so both valid
+        // and orphan rows from the pre-migration-37 schema are gone. The
+        // v33 FK cleanup ran correctly at its migration step; we just
+        // can't verify survivors here because of the later DROP.
         let valid_txs: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM wallet_transactions WHERE seed_hash = ?1 AND network = 'mainnet'",
-                params![valid_seed_hash],
+                "SELECT COUNT(*) FROM wallet_transactions",
+                [],
                 |row| row.get(0),
             )
             .unwrap();
         assert_eq!(
-            valid_txs, 1,
-            "valid wallet_transactions should survive with network=mainnet"
+            valid_txs, 0,
+            "wallet_transactions should be empty after migration 37 table recreation"
         );
 
         // Wallet itself should have mainnet

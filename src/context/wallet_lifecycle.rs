@@ -1,5 +1,6 @@
 use super::AppContext;
 use crate::backend_task::error::TaskError;
+use crate::model::feature_gate::FeatureGate;
 use crate::database::is_unique_constraint_violation;
 use crate::model::qualified_identity::encrypted_key_storage::{
     PrivateKeyData as QIPrivateKeyData, WalletDerivationPath,

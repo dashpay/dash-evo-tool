@@ -651,15 +651,8 @@ impl AppState {
     /// Called during shutdown to ensure any staged-but-unflushed changesets
     /// (e.g. from `FlushStrategy::Manual`) are written before the process exits.
     fn flush_all_wallet_persistence(&self) {
-        let contexts: Vec<&Arc<AppContext>> = [
-            Some(&self.mainnet_app_context),
-            self.testnet_app_context.as_ref(),
-            self.devnet_app_context.as_ref(),
-            self.local_app_context.as_ref(),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
+        let contexts: Vec<&Arc<AppContext>> =
+            self.network_contexts.values().collect();
 
         for ctx in contexts {
             if let Ok(wallets) = ctx.wallets.read() {

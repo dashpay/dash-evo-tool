@@ -2973,6 +2973,7 @@ impl ScreenLike for WalletsBalancesScreen {
             crate::ui::BackendTaskSuccessResult::PlatformAddressBalances {
                 seed_hash,
                 balances: _,
+                network: _,
             } => {
                 self.refreshing = false;
                 // Platform address balances are persisted to DB by the backend task.

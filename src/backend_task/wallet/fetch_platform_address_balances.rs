@@ -179,7 +179,9 @@ impl AppContext {
             .get_all_platform_address_info(&seed_hash, &self.network)
             .unwrap_or_default()
             .into_iter()
-            .map(|(addr, balance, nonce)| (addr, (balance, nonce)))
+            .filter_map(|(addr, balance, nonce)| {
+                PlatformAddress::try_from(addr).ok().map(|pa| (pa, (balance, nonce)))
+            })
             .collect();
 
         let addresses_with_balance = provider.found_balances().len();

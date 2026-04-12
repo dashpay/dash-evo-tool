@@ -1133,9 +1133,11 @@ impl Database {
     /// token→children, contract→children, contested_name→children.
     fn clean_orphaned_fk_rows(&self, conn: &Connection) -> Result<(), MigrationError> {
         // --- CASCADE children of wallet(seed_hash) ---
+        // wallet_transactions and wallet_account_pool_state are omitted
+        // because v40 drops and recreates them with the `wallet_id`
+        // column name. Any orphans are cleaned by the DROP itself.
         let wallet_fk_delete: &[(&str, &str)] = &[
             ("wallet_addresses", "seed_hash"),
-            ("wallet_transactions", "seed_hash"),
             ("platform_address_balances", "seed_hash"),
             ("shielded_notes", "wallet_seed_hash"),
             ("shielded_wallet_meta", "wallet_seed_hash"),
@@ -2615,7 +2617,7 @@ mod test {
         // Orphaned wallet_transactions should be gone
         let orphan_txs: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM wallet_transactions WHERE seed_hash = ?1",
+                "SELECT COUNT(*) FROM wallet_transactions WHERE wallet_id = ?1",
                 params![orphan_seed_hash],
                 |row| row.get(0),
             )
@@ -2655,59 +2657,28 @@ mod test {
             .unwrap();
         assert_eq!(wallet_network, "mainnet");
 
-        // Orphaned wallet_addresses should be gone, valid ones survive
-        let orphan_addrs: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM wallet_addresses WHERE seed_hash = ?1",
-                params![orphan_seed_hash],
-                |row| row.get(0),
-            )
+        // v40 migration DELETEs all cache tables (wallet_addresses,
+        // asset_lock_transaction, identity, etc.) as part of the
+        // seed_hash → wallet_id cache nuke. So every cache table is
+        // empty after migration.
+        let all_addrs: i64 = conn
+            .query_row("SELECT COUNT(*) FROM wallet_addresses", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(
-            orphan_addrs, 0,
-            "orphaned wallet_addresses should be deleted"
+            all_addrs, 0,
+            "wallet_addresses should be empty after v40 cache nuke"
         );
 
-        let valid_addrs: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM wallet_addresses WHERE seed_hash = ?1",
-                params![valid_seed_hash],
-                |row| row.get(0),
-            )
+        let all_locks: i64 = conn
+            .query_row("SELECT COUNT(*) FROM asset_lock_transaction", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(
-            valid_addrs, 1,
-            "valid wallet_addresses should survive migration"
-        );
-
-        // asset_lock_transaction with orphaned identity_id should be SET NULL
-        let valid_identity_id = vec![0xEEu8; 32];
-
-        let orphan_lock_identity: Option<Vec<u8>> = conn
-            .query_row(
-                "SELECT identity_id FROM asset_lock_transaction WHERE tx_id = ?1",
-                params![vec![0xA1u8; 32]],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert!(
-            orphan_lock_identity.is_none(),
-            "orphaned asset_lock identity_id should be NULL, got {:?}",
-            orphan_lock_identity
-        );
-
-        // asset_lock_transaction with valid identity_id should keep it
-        let valid_lock_identity: Option<Vec<u8>> = conn
-            .query_row(
-                "SELECT identity_id FROM asset_lock_transaction WHERE tx_id = ?1",
-                params![vec![0xA2u8; 32]],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(
-            valid_lock_identity,
-            Some(valid_identity_id),
-            "valid asset_lock identity_id should be preserved"
+            all_locks, 0,
+            "asset_lock_transaction should be empty after v40 cache nuke"
         );
     }
 
@@ -2985,25 +2956,23 @@ mod test {
         // wallet should have core_wallet_name (added by v33)
         assert_column_exists(&conn, "wallet", "core_wallet_name");
 
-        // Identity should survive with network renamed
-        let id_network: String = conn
-            .query_row(
-                "SELECT network FROM identity WHERE id = ?1",
-                params![vec![0xBBu8; 32]],
-                |row| row.get(0),
-            )
+        // v40 migration DELETEs all cache tables (identity,
+        // asset_lock_transaction, etc.) as part of the seed_hash →
+        // wallet_id cache nuke. Verify they're empty.
+        let id_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM identity", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(id_network, "mainnet");
+        assert_eq!(id_count, 0, "identity table should be empty after v40 nuke");
 
-        // Asset lock should survive with identity_id intact
-        let lock_identity: Option<Vec<u8>> = conn
-            .query_row(
-                "SELECT identity_id FROM asset_lock_transaction WHERE tx_id = ?1",
-                params![vec![0xCCu8; 32]],
-                |row| row.get(0),
-            )
+        let lock_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM asset_lock_transaction", [], |row| {
+                row.get(0)
+            })
             .unwrap();
-        assert_eq!(lock_identity, Some(vec![0xBBu8; 32]));
+        assert_eq!(
+            lock_count, 0,
+            "asset_lock_transaction should be empty after v40 nuke"
+        );
     }
 
     /// Holistic-review M3: the v35 migration must drop

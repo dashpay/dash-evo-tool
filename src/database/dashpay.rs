@@ -171,6 +171,7 @@ impl crate::database::Database {
             "CREATE TABLE IF NOT EXISTS dashpay_payments (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 tx_id TEXT UNIQUE NOT NULL,
+                wallet_id BLOB,
                 from_identity_id BLOB NOT NULL,
                 to_identity_id BLOB NOT NULL,
                 amount INTEGER NOT NULL,

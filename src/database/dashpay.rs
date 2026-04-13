@@ -85,6 +85,7 @@ impl crate::database::Database {
         tx.execute(
             "CREATE TABLE IF NOT EXISTS dashpay_profiles (
                 identity_id BLOB NOT NULL,
+                wallet_id BLOB,
                 network TEXT NOT NULL,
                 display_name TEXT,
                 bio TEXT,
@@ -105,6 +106,7 @@ impl crate::database::Database {
             "CREATE TABLE IF NOT EXISTS dashpay_contacts (
                 owner_identity_id BLOB NOT NULL,
                 contact_identity_id BLOB NOT NULL,
+                wallet_id BLOB,
                 network TEXT NOT NULL,
                 username TEXT,
                 display_name TEXT,
@@ -133,6 +135,7 @@ impl crate::database::Database {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 from_identity_id BLOB NOT NULL,
                 to_identity_id BLOB NOT NULL,
+                wallet_id BLOB,
                 network TEXT NOT NULL,
                 to_username TEXT,
                 account_label TEXT,

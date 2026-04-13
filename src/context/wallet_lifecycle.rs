@@ -247,8 +247,7 @@ impl AppContext {
     pub fn handle_wallet_unlocked(self: &Arc<Self>, wallet: &Arc<RwLock<Wallet>>) {
         if let Some((wallet_id, seed_bytes)) = Self::wallet_seed_snapshot(wallet) {
             // Register with the PlatformWalletManager (creates PlatformWallet
-            // and wires SPV event channel). NOTE: this may re-key the wallets
-            // map entry from wallet_id to wallet_id.
+            // and wires SPV event channel).
             self.register_with_platform_wallet_manager(wallet_id, seed_bytes);
 
             // After registration, use wallet_id for all subsequent lookups —

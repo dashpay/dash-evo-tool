@@ -135,11 +135,9 @@ impl AppContext {
         // Try to derive keys from wallets if requested
         let mut encrypted_private_keys = std::collections::BTreeMap::new();
 
-        if let Some((_, _, wallet_private_keys)) = self.match_user_identity_keys_with_wallet(
-            &identity,
-            &wallets,
-            selected_wallet_id,
-        )? {
+        if let Some((_, _, wallet_private_keys)) =
+            self.match_user_identity_keys_with_wallet(&identity, &wallets, selected_wallet_id)?
+        {
             encrypted_private_keys.extend(wallet_private_keys);
         }
 

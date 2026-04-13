@@ -139,10 +139,7 @@ pub struct AppContext {
     platform_protocol_version: AtomicU32,
     /// Per-wallet shielded state (initialized lazily, keyed by wallet seed hash)
     pub(crate) shielded_states: Mutex<
-        std::collections::HashMap<
-            WalletId,
-            crate::model::wallet::shielded::ShieldedWalletState,
-        >,
+        std::collections::HashMap<WalletId, crate::model::wallet::shielded::ShieldedWalletState>,
     >,
     /// The egui context, stored for use in non-UI code paths (e.g. display_task_result).
     /// Clone is O(1) — egui::Context is Arc-backed and the same instance for the app lifetime.
@@ -910,7 +907,6 @@ impl AppContext {
     pub fn dashpay_contract_id(&self) -> Identifier {
         self.dashpay_contract.id()
     }
-
 }
 
 /// Returns the default platform version for the given network.

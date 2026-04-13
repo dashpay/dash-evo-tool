@@ -373,8 +373,8 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT data,wallet FROM identity WHERE is_local = 1 AND network = ? AND identity_type = 'User' AND data IS NOT NULL",
         )?;
-        let identities: Result<Vec<(QualifiedIdentity, Option<WalletId>)>, rusqlite::Error> =
-            stmt.query_map(params![network], |row| {
+        let identities: Result<Vec<(QualifiedIdentity, Option<WalletId>)>, rusqlite::Error> = stmt
+            .query_map(params![network], |row| {
                 let data: Vec<u8> = row.get(0)?;
                 let wallet_id: Option<WalletId> = row.get(1)?;
                 let mut identity =

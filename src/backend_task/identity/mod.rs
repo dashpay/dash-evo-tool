@@ -732,13 +732,8 @@ impl AppContext {
                 inputs,
                 wallet_id,
             } => {
-                self.top_up_identity_from_platform_addresses(
-                    sdk,
-                    identity,
-                    inputs,
-                    wallet_id,
-                )
-                .await
+                self.top_up_identity_from_platform_addresses(sdk, identity, inputs, wallet_id)
+                    .await
             }
             IdentityTask::TransferToAddresses {
                 identity,
@@ -793,8 +788,7 @@ impl AppContext {
         );
 
         // Update source address balances using proof-verified data from SDK response
-        if let Err(e) =
-            self.update_wallet_platform_address_info_from_sdk(wallet_id, &address_infos)
+        if let Err(e) = self.update_wallet_platform_address_info_from_sdk(wallet_id, &address_infos)
         {
             tracing::warn!("Failed to update wallet platform address info: {}", e);
         }

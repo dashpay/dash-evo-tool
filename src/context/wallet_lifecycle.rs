@@ -64,10 +64,7 @@ impl AppContext {
     ///
     /// The map is keyed by `WalletId` (post-v40). Returns `None` if the
     /// wallet doesn't exist or is locked (no platform_wallet).
-    pub(crate) fn get_platform_wallet(
-        &self,
-        wallet_key: &WalletId,
-    ) -> Option<Arc<PlatformWallet>> {
+    pub(crate) fn get_platform_wallet(&self, wallet_key: &WalletId) -> Option<Arc<PlatformWallet>> {
         self.wallets
             .read()
             .ok()
@@ -414,7 +411,6 @@ impl AppContext {
                 ),
             }
         }
-
     }
 
     /// Queue async SyncNotes -> CheckNullifiers for an already-initialized

@@ -69,8 +69,7 @@ async fn step_top_up_from_platform_addresses(
     // Must use a DIP-17 Platform payment address (m/9'/coin_type'/17'/...),
     // NOT a BIP44 receive address. sync_address_balances only scans DIP-17
     // addresses via WalletAddressProvider.
-    let platform_addr =
-        get_platform_address(&si.wallet_arc, Network::Testnet, false);
+    let platform_addr = get_platform_address(&si.wallet_arc, Network::Testnet, false);
 
     let fund_result = run_task_with_nonce_retry(
         &ctx.app_context,
@@ -292,8 +291,7 @@ async fn step_transfer_to_addresses(
     // Must use a DIP-17 Platform payment address (m/9'/coin_type'/17'/...),
     // NOT a BIP44 receive address. sync_address_balances only scans DIP-17
     // addresses via WalletAddressProvider.
-    let platform_addr =
-        get_platform_address(&si.wallet_arc, Network::Testnet, false);
+    let platform_addr = get_platform_address(&si.wallet_arc, Network::Testnet, false);
 
     let mut outputs = std::collections::BTreeMap::new();
     outputs.insert(platform_addr, 5_000_000u64);
@@ -578,8 +576,11 @@ async fn tc_031_incremental_address_discovery() {
 
     // Step 1: Derive a platform payment address
     tracing::info!("=== Step 1: derive platform payment address ===");
-    let platform_addr =
-        get_platform_address(&si.wallet_arc, dash_sdk::dpp::dashcore::Network::Testnet, false);
+    let platform_addr = get_platform_address(
+        &si.wallet_arc,
+        dash_sdk::dpp::dashcore::Network::Testnet,
+        false,
+    );
     tracing::info!(
         "Platform address: {}",
         platform_addr.to_bech32m_string(dash_sdk::dpp::dashcore::Network::Testnet)

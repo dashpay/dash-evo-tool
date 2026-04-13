@@ -110,10 +110,7 @@ impl AddNewIdentityScreen {
         Self::new_with_wallet(app_context, None)
     }
 
-    pub fn new_with_wallet(
-        app_context: &Arc<AppContext>,
-        wallet_id: Option<[u8; 32]>,
-    ) -> Self {
+    pub fn new_with_wallet(app_context: &Arc<AppContext>, wallet_id: Option<[u8; 32]>) -> Self {
         let mut selected_wallet = None;
 
         if app_context.has_wallet.load(Ordering::Relaxed) {

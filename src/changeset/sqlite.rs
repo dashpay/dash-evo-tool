@@ -261,8 +261,7 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                 .map_err(sqlite_err)?;
 
             for row_result in rows {
-                let (account_key, pool_disc, highest_used) =
-                    row_result.map_err(sqlite_err)?;
+                let (account_key, pool_disc, highest_used) = row_result.map_err(sqlite_err)?;
 
                 let account_type = AccountType::from_db_key(&account_key).map_err(|_| {
                     Box::new(SqlitePersistError::Encode(
@@ -270,15 +269,16 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                     )) as Box<_>
                 })?;
                 let pool_disc_u8 = u8::try_from(pool_disc).map_err(|_| {
-                    Box::new(SqlitePersistError::Encode(
-                        format!("pool_disc out of u8 range: {pool_disc}"),
-                    )) as Box<_>
+                    Box::new(SqlitePersistError::Encode(format!(
+                        "pool_disc out of u8 range: {pool_disc}"
+                    ))) as Box<_>
                 })?;
-                let pool_type = AddressPoolType::from_db_discriminant(pool_disc_u8).ok_or_else(|| {
-                    Box::new(SqlitePersistError::Encode(
-                        format!("unrecognized AddressPoolType discriminant: {pool_disc}"),
-                    )) as Box<_>
-                })?;
+                let pool_type =
+                    AddressPoolType::from_db_discriminant(pool_disc_u8).ok_or_else(|| {
+                        Box::new(SqlitePersistError::Encode(format!(
+                            "unrecognized AddressPoolType discriminant: {pool_disc}"
+                        ))) as Box<_>
+                    })?;
                 let highest_used = highest_used.ok_or_else(|| {
                     Box::new(SqlitePersistError::Encode(
                         "NULL highest_used in wallet_account_pool_state".into(),
@@ -288,11 +288,14 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                     .entry(account_type)
                     .or_default()
                     .highest_used
-                    .insert(pool_type, u32::try_from(highest_used).map_err(|_| {
-                        Box::new(SqlitePersistError::Encode(
-                            format!("highest_used out of u32 range: {highest_used}"),
-                        )) as Box<_>
-                    })?);
+                    .insert(
+                        pool_type,
+                        u32::try_from(highest_used).map_err(|_| {
+                            Box::new(SqlitePersistError::Encode(format!(
+                                "highest_used out of u32 range: {highest_used}"
+                            ))) as Box<_>
+                        })?,
+                    );
             }
         }
 
@@ -334,17 +337,16 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
             let mut locked_outpoints: std::collections::BTreeSet<OutPoint> =
                 std::collections::BTreeSet::new();
             for row_result in rows {
-                let (txid_bytes, vout) =
-                    row_result.map_err(sqlite_err)?;
+                let (txid_bytes, vout) = row_result.map_err(sqlite_err)?;
                 let txid = Txid::from_slice(&txid_bytes).map_err(|_| {
                     Box::new(SqlitePersistError::Encode("invalid txid in utxos".into())) as Box<_>
                 })?;
                 locked_outpoints.insert(OutPoint {
                     txid,
                     vout: u32::try_from(vout).map_err(|_| {
-                        Box::new(SqlitePersistError::Encode(
-                            format!("utxo vout out of u32 range: {vout}"),
-                        )) as Box<_>
+                        Box::new(SqlitePersistError::Encode(format!(
+                            "utxo vout out of u32 range: {vout}"
+                        ))) as Box<_>
                     })?,
                 });
             }
@@ -390,8 +392,7 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                 .map_err(sqlite_err)?;
 
             for row_result in rows {
-                let (account_key, txid_bytes, record_bytes) =
-                    row_result.map_err(sqlite_err)?;
+                let (account_key, txid_bytes, record_bytes) = row_result.map_err(sqlite_err)?;
 
                 let account_type = AccountType::from_db_key(&account_key).map_err(|_| {
                     Box::new(SqlitePersistError::Encode(
@@ -403,15 +404,13 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                         "invalid txid in wallet_transactions".into(),
                     )) as Box<_>
                 })?;
-                let (record, _): (TransactionRecord, _) = bincode::serde::decode_from_slice(
-                    &record_bytes,
-                    bincode::config::standard(),
-                )
-                .map_err(|e| {
-                    Box::new(SqlitePersistError::Encode(
-                        format!("TransactionRecord bincode decode failed: {e}"),
-                    )) as Box<_>
-                })?;
+                let (record, _): (TransactionRecord, _) =
+                    bincode::serde::decode_from_slice(&record_bytes, bincode::config::standard())
+                        .map_err(|e| {
+                        Box::new(SqlitePersistError::Encode(format!(
+                            "TransactionRecord bincode decode failed: {e}"
+                        ))) as Box<_>
+                    })?;
                 per_account
                     .entry(account_type)
                     .or_default()
@@ -484,18 +483,18 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                 })?;
                 let txid = Txid::from_byte_array(txid_arr);
                 let output_idx = u32::try_from(output_index).map_err(|_| {
-                    Box::new(SqlitePersistError::Encode(
-                        format!("asset lock output_index out of u32 range: {output_index}"),
-                    )) as Box<_>
+                    Box::new(SqlitePersistError::Encode(format!(
+                        "asset lock output_index out of u32 range: {output_index}"
+                    ))) as Box<_>
                 })?;
                 let outpoint = OutPoint::new(txid, output_idx);
 
                 // Decode transaction.
-                let transaction: dash_sdk::dpp::dashcore::Transaction =
-                    deserialize(&tx_data).map_err(|e| {
-                        Box::new(SqlitePersistError::Encode(
-                            format!("cannot decode asset lock transaction {txid}: {e}"),
-                        )) as Box<_>
+                let transaction: dash_sdk::dpp::dashcore::Transaction = deserialize(&tx_data)
+                    .map_err(|e| {
+                        Box::new(SqlitePersistError::Encode(format!(
+                            "cannot decode asset lock transaction {txid}: {e}"
+                        ))) as Box<_>
                     })?;
 
                 // Decode funding type.
@@ -507,25 +506,24 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                     4 => platform_wallet::AssetLockFundingType::AssetLockAddressTopUp,
                     5 => platform_wallet::AssetLockFundingType::AssetLockShieldedAddressTopUp,
                     d => {
-                        return Err(Box::new(SqlitePersistError::Encode(
-                            format!("unknown funding_type discriminant {d} for {txid}"),
-                        )) as Box<_>);
+                        return Err(Box::new(SqlitePersistError::Encode(format!(
+                            "unknown funding_type discriminant {d} for {txid}"
+                        ))) as Box<_>);
                     }
                 };
 
                 // Decode proof from bincode serde blob (if present).
-                let proof: Option<dash_sdk::dpp::prelude::AssetLockProof> =
-                    proof_data
-                        .map(|blob| {
-                            bincode::serde::decode_from_slice(&blob, bincode::config::standard())
-                                .map(|(p, _)| p)
-                                .map_err(|e| {
-                                    Box::new(SqlitePersistError::Encode(
-                                        format!("asset lock proof decode failed for {txid}: {e}"),
-                                    )) as Box<_>
-                                })
-                        })
-                        .transpose()?;
+                let proof: Option<dash_sdk::dpp::prelude::AssetLockProof> = proof_data
+                    .map(|blob| {
+                        bincode::serde::decode_from_slice(&blob, bincode::config::standard())
+                            .map(|(p, _)| p)
+                            .map_err(|e| {
+                                Box::new(SqlitePersistError::Encode(format!(
+                                    "asset lock proof decode failed for {txid}: {e}"
+                                ))) as Box<_>
+                            })
+                    })
+                    .transpose()?;
 
                 // Derive status from proof. No legacy column fallback —
                 // v40 nuked all data, so every row was written by the
@@ -546,20 +544,20 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                         out_point: outpoint,
                         transaction,
                         account_index: u32::try_from(account_index).map_err(|_| {
-                            Box::new(SqlitePersistError::Encode(
-                                format!("account_index out of u32 range: {account_index}"),
-                            )) as Box<_>
+                            Box::new(SqlitePersistError::Encode(format!(
+                                "account_index out of u32 range: {account_index}"
+                            ))) as Box<_>
                         })?,
                         funding_type,
                         identity_index: u32::try_from(identity_index).map_err(|_| {
-                            Box::new(SqlitePersistError::Encode(
-                                format!("identity_index out of u32 range: {identity_index}"),
-                            )) as Box<_>
+                            Box::new(SqlitePersistError::Encode(format!(
+                                "identity_index out of u32 range: {identity_index}"
+                            ))) as Box<_>
                         })?,
                         amount_duffs: u64::try_from(amount).map_err(|_| {
-                            Box::new(SqlitePersistError::Encode(
-                                format!("amount out of u64 range: {amount}"),
-                            )) as Box<_>
+                            Box::new(SqlitePersistError::Encode(format!(
+                                "amount out of u64 range: {amount}"
+                            ))) as Box<_>
                         })?,
                         status,
                         proof,
@@ -571,11 +569,12 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
         // --- Load contact requests from dashpay_contact_requests ---
         let mut contact_cs = platform_wallet::changeset::ContactChangeSet::default();
         {
-            use platform_wallet::changeset::ContactRequestEntry;
             use platform_wallet::ContactRequest;
+            use platform_wallet::changeset::ContactRequestEntry;
 
-            let mut stmt = guard.prepare(
-                "SELECT from_identity_id, to_identity_id, request_type,
+            let mut stmt = guard
+                .prepare(
+                    "SELECT from_identity_id, to_identity_id, request_type,
                         sender_key_index, recipient_key_index, account_reference,
                         encrypted_public_key, encrypted_account_label_bytes,
                         auto_accept_proof, core_height_created_at, platform_created_at_ms
@@ -583,11 +582,11 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                  WHERE wallet_id = ?1 AND network = ?2
                    AND sender_key_index IS NOT NULL
                    AND encrypted_public_key IS NOT NULL",
-            ).map_err(sqlite_err)?;
+                )
+                .map_err(sqlite_err)?;
 
-            let rows = stmt.query_map(
-                rusqlite::params![&wallet_id[..], &self.network],
-                |row| {
+            let rows = stmt
+                .query_map(rusqlite::params![&wallet_id[..], &self.network], |row| {
                     Ok((
                         row.get::<_, Vec<u8>>(0)?,
                         row.get::<_, Vec<u8>>(1)?,
@@ -601,29 +600,48 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                         row.get::<_, u32>(9)?,
                         row.get::<_, Option<i64>>(10)?,
                     ))
-                },
-            ).map_err(sqlite_err)?;
+                })
+                .map_err(sqlite_err)?;
 
             for row in rows {
-                let (from_bytes, to_bytes, request_type,
-                     sender_ki, recipient_ki, account_ref,
-                     enc_pub_key, enc_label, auto_accept,
-                     core_height, created_at_ms,
+                let (
+                    from_bytes,
+                    to_bytes,
+                    request_type,
+                    sender_ki,
+                    recipient_ki,
+                    account_ref,
+                    enc_pub_key,
+                    enc_label,
+                    auto_accept,
+                    core_height,
+                    created_at_ms,
                 ) = row.map_err(sqlite_err)?;
 
                 let from_id = dash_sdk::platform::Identifier::from(
                     <[u8; 32]>::try_from(from_bytes.as_slice()).map_err(|_| {
-                        Box::new(SqlitePersistError::Encode("invalid contact request from_identity_id".into())) as Box<_>
+                        Box::new(SqlitePersistError::Encode(
+                            "invalid contact request from_identity_id".into(),
+                        )) as Box<_>
                     })?,
                 );
                 let to_id = match <[u8; 32]>::try_from(to_bytes.as_slice()) {
                     Ok(arr) => dash_sdk::platform::Identifier::from(arr),
-                    Err(_) => return Err(Box::new(SqlitePersistError::Encode("invalid identity_id length".into())) as Box<_>),
+                    Err(_) => {
+                        return Err(Box::new(SqlitePersistError::Encode(
+                            "invalid identity_id length".into(),
+                        )) as Box<_>);
+                    }
                 };
 
                 let mut request = ContactRequest::new(
-                    from_id, to_id, sender_ki, recipient_ki,
-                    account_ref, enc_pub_key, core_height,
+                    from_id,
+                    to_id,
+                    sender_ki,
+                    recipient_ki,
+                    account_ref,
+                    enc_pub_key,
+                    core_height,
                     u64::try_from(created_at_ms.unwrap_or(0).max(0)).map_err(|_| {
                         Box::new(SqlitePersistError::Encode(
                             "created_at_ms out of u64 range".into(),
@@ -654,36 +672,48 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                             entry,
                         );
                     }
-                    other => return Err(Box::new(SqlitePersistError::Encode(
-                        format!("unknown contact request_type: '{other}'"),
-                    )) as Box<_>),
+                    other => {
+                        return Err(Box::new(SqlitePersistError::Encode(format!(
+                            "unknown contact request_type: '{other}'"
+                        ))) as Box<_>);
+                    }
                 }
             }
         }
 
         // --- Load established contacts from dashpay_contacts ---
         {
-            let mut stmt = guard.prepare(
-                "SELECT owner_identity_id, contact_identity_id
+            let mut stmt = guard
+                .prepare(
+                    "SELECT owner_identity_id, contact_identity_id
                  FROM dashpay_contacts
                  WHERE wallet_id = ?1 AND network = ?2 AND contact_status = 'accepted'",
-            ).map_err(sqlite_err)?;
+                )
+                .map_err(sqlite_err)?;
 
-            let rows = stmt.query_map(
-                rusqlite::params![&wallet_id[..], &self.network],
-                |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?)),
-            ).map_err(sqlite_err)?;
+            let rows = stmt
+                .query_map(rusqlite::params![&wallet_id[..], &self.network], |row| {
+                    Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
+                })
+                .map_err(sqlite_err)?;
 
             for row in rows {
-                let (owner_bytes, contact_bytes) =
-                    row.map_err(sqlite_err)?;
+                let (owner_bytes, contact_bytes) = row.map_err(sqlite_err)?;
                 let owner_id = match <[u8; 32]>::try_from(owner_bytes.as_slice()) {
                     Ok(arr) => dash_sdk::platform::Identifier::from(arr),
-                    Err(_) => return Err(Box::new(SqlitePersistError::Encode("invalid identity_id length".into())) as Box<_>),
+                    Err(_) => {
+                        return Err(Box::new(SqlitePersistError::Encode(
+                            "invalid identity_id length".into(),
+                        )) as Box<_>);
+                    }
                 };
                 let contact_id = match <[u8; 32]>::try_from(contact_bytes.as_slice()) {
                     Ok(arr) => dash_sdk::platform::Identifier::from(arr),
-                    Err(_) => return Err(Box::new(SqlitePersistError::Encode("invalid identity_id length".into())) as Box<_>),
+                    Err(_) => {
+                        return Err(Box::new(SqlitePersistError::Encode(
+                            "invalid identity_id length".into(),
+                        )) as Box<_>);
+                    }
                 };
 
                 // Build EstablishedContact from the loaded sent + incoming
@@ -723,9 +753,8 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                  WHERE wallet_id = ?1 AND network = ?2",
             ).map_err(sqlite_err)?;
 
-            let rows = stmt.query_map(
-                rusqlite::params![&wallet_id[..], &self.network],
-                |row| {
+            let rows = stmt
+                .query_map(rusqlite::params![&wallet_id[..], &self.network], |row| {
                     Ok((
                         row.get::<_, Vec<u8>>(0)?,
                         row.get::<_, Option<String>>(1)?,
@@ -734,19 +763,30 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                         row.get::<_, Option<Vec<u8>>>(4)?,
                         row.get::<_, Option<String>>(5)?,
                     ))
-                },
-            ).map_err(sqlite_err)?;
+                })
+                .map_err(sqlite_err)?;
 
             for row in rows {
                 let (id_bytes, display_name, bio, avatar_url, avatar_bytes, public_message) =
                     row.map_err(sqlite_err)?;
                 let id = match <[u8; 32]>::try_from(id_bytes.as_slice()) {
                     Ok(arr) => dash_sdk::platform::Identifier::from(arr),
-                    Err(_) => return Err(Box::new(SqlitePersistError::Encode("invalid identity_id length".into())) as Box<_>),
+                    Err(_) => {
+                        return Err(Box::new(SqlitePersistError::Encode(
+                            "invalid identity_id length".into(),
+                        )) as Box<_>);
+                    }
                 };
-                profiles.insert(id, Some(DashPayProfile {
-                    display_name, bio, avatar_url, avatar_bytes, public_message,
-                }));
+                profiles.insert(
+                    id,
+                    Some(DashPayProfile {
+                        display_name,
+                        bio,
+                        avatar_url,
+                        avatar_bytes,
+                        public_message,
+                    }),
+                );
             }
         }
 
@@ -764,52 +804,66 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                  WHERE wallet_id = ?1",
             ).map_err(sqlite_err)?;
 
-            let rows = stmt.query_map(rusqlite::params![&wallet_id[..]], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, Vec<u8>>(1)?,
-                    row.get::<_, Vec<u8>>(2)?,
-                    row.get::<_, i64>(3)?,
-                    row.get::<_, Option<String>>(4)?,
-                    row.get::<_, String>(5)?,
-                    row.get::<_, String>(6)?,
-                ))
-            }).map_err(sqlite_err)?;
+            let rows = stmt
+                .query_map(rusqlite::params![&wallet_id[..]], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Vec<u8>>(1)?,
+                        row.get::<_, Vec<u8>>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                    ))
+                })
+                .map_err(sqlite_err)?;
 
             for row in rows {
                 let (tx_id, from_bytes, to_bytes, amount, memo, payment_type, status) =
                     row.map_err(sqlite_err)?;
                 let from_id = match <[u8; 32]>::try_from(from_bytes.as_slice()) {
                     Ok(arr) => dash_sdk::platform::Identifier::from(arr),
-                    Err(_) => return Err(Box::new(SqlitePersistError::Encode("invalid identity_id length".into())) as Box<_>),
+                    Err(_) => {
+                        return Err(Box::new(SqlitePersistError::Encode(
+                            "invalid identity_id length".into(),
+                        )) as Box<_>);
+                    }
                 };
                 let to_id = match <[u8; 32]>::try_from(to_bytes.as_slice()) {
                     Ok(arr) => dash_sdk::platform::Identifier::from(arr),
-                    Err(_) => return Err(Box::new(SqlitePersistError::Encode("invalid identity_id length".into())) as Box<_>),
+                    Err(_) => {
+                        return Err(Box::new(SqlitePersistError::Encode(
+                            "invalid identity_id length".into(),
+                        )) as Box<_>);
+                    }
                 };
                 let (owner_id, counterparty_id, direction) = match payment_type.as_str() {
                     "sent" => (from_id, to_id, PaymentDirection::Sent),
                     "received" => (to_id, from_id, PaymentDirection::Received),
-                    other => return Err(Box::new(SqlitePersistError::Encode(
-                        format!("unknown payment_type '{other}' for tx {tx_id}"),
-                    )) as Box<_>),
+                    other => {
+                        return Err(Box::new(SqlitePersistError::Encode(format!(
+                            "unknown payment_type '{other}' for tx {tx_id}"
+                        ))) as Box<_>);
+                    }
                 };
                 let status = match status.as_str() {
                     "pending" => PaymentStatus::Pending,
                     "confirmed" => PaymentStatus::Confirmed,
                     "failed" => PaymentStatus::Failed,
-                    other => return Err(Box::new(SqlitePersistError::Encode(
-                        format!("unknown payment status '{other}' for tx {tx_id}"),
-                    )) as Box<_>),
+                    other => {
+                        return Err(Box::new(SqlitePersistError::Encode(format!(
+                            "unknown payment status '{other}' for tx {tx_id}"
+                        ))) as Box<_>);
+                    }
                 };
                 payments_overlay.entry(owner_id).or_default().insert(
                     tx_id,
                     PaymentEntry {
                         counterparty_id,
                         amount_duffs: u64::try_from(amount).map_err(|_| {
-                            Box::new(SqlitePersistError::Encode(
-                                format!("payment amount out of u64 range: {amount}"),
-                            )) as Box<_>
+                            Box::new(SqlitePersistError::Encode(format!(
+                                "payment amount out of u64 range: {amount}"
+                            ))) as Box<_>
                         })?,
                         memo,
                         direction,
@@ -832,14 +886,25 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
 
         Ok(PlatformWalletChangeSet {
             core: if has_core {
-                Some(WalletChangeSet { per_account, ..Default::default() })
+                Some(WalletChangeSet {
+                    per_account,
+                    ..Default::default()
+                })
             } else {
                 None
             },
-            asset_locks: if has_asset_locks { Some(asset_lock_cs) } else { None },
+            asset_locks: if has_asset_locks {
+                Some(asset_lock_cs)
+            } else {
+                None
+            },
             contacts: if has_contacts { Some(contact_cs) } else { None },
             dashpay_profiles: if has_profiles { Some(profiles) } else { None },
-            dashpay_payments_overlay: if has_payments { Some(payments_overlay) } else { None },
+            dashpay_payments_overlay: if has_payments {
+                Some(payments_overlay)
+            } else {
+                None
+            },
             ..Default::default()
         })
     }
@@ -910,7 +975,10 @@ impl SqliteWalletPersister {
                 "persister: dropping dashpay_profiles overlay (load-only, written via identity subset)"
             );
         }
-        if dashpay_payments_overlay.as_ref().map_or(false, |m| !m.is_empty()) {
+        if dashpay_payments_overlay
+            .as_ref()
+            .map_or(false, |m| !m.is_empty())
+        {
             tracing::debug!(
                 "persister: dropping dashpay_payments_overlay (load-only, written via identity subset)"
             );
@@ -960,7 +1028,8 @@ impl SqliteWalletPersister {
                     .any(|e| e.dashpay_profile.is_some() || !e.dashpay_payments.is_empty())
             })
             .unwrap_or(false);
-        if !has_core_work && !has_dashpay_identity_work && !has_asset_lock_work && !has_contact_work {
+        if !has_core_work && !has_dashpay_identity_work && !has_asset_lock_work && !has_contact_work
+        {
             // S3 contract check: if the only "work" in the changeset
             // was in the backend-task-owned identity top-level
             // fields, we're about to return without opening a
@@ -984,9 +1053,9 @@ impl SqliteWalletPersister {
         }
 
         let conn = self.db.shared_connection();
-        let mut guard = conn.lock().map_err(|e| {
-            SqlitePersistError::MutexPoisoned(e.to_string())
-        })?;
+        let mut guard = conn
+            .lock()
+            .map_err(|e| SqlitePersistError::MutexPoisoned(e.to_string()))?;
         let tx = guard.transaction()?;
 
         if let Some(core) = core
@@ -1375,14 +1444,18 @@ impl SqliteWalletPersister {
             let (islock_data, chain_height): (Option<Vec<u8>>, Option<u32>) = match &entry.status {
                 AssetLockStatus::InstantSendLocked => {
                     // Extract InstantLock from proof if available.
-                    if let Some(dash_sdk::dpp::prelude::AssetLockProof::Instant(is_proof)) = &entry.proof {
+                    if let Some(dash_sdk::dpp::prelude::AssetLockProof::Instant(is_proof)) =
+                        &entry.proof
+                    {
                         (Some(serialize(&is_proof.instant_lock)), None)
                     } else {
                         (None, None)
                     }
                 }
                 AssetLockStatus::ChainLocked => {
-                    if let Some(dash_sdk::dpp::prelude::AssetLockProof::Chain(chain_proof)) = &entry.proof {
+                    if let Some(dash_sdk::dpp::prelude::AssetLockProof::Chain(chain_proof)) =
+                        &entry.proof
+                    {
                         (None, Some(chain_proof.core_chain_locked_height))
                     } else {
                         (None, None)
@@ -1728,13 +1801,15 @@ mod tests {
         id_cs
             .identities
             .insert(owner_id, build_entry(PaymentStatus::Pending));
-        persister.store(
-            TEST_WALLET_ID,
-            PlatformWalletChangeSet {
-                identities: Some(id_cs),
-                ..Default::default()
-            },
-        ).expect("store");
+        persister
+            .store(
+                TEST_WALLET_ID,
+                PlatformWalletChangeSet {
+                    identities: Some(id_cs),
+                    ..Default::default()
+                },
+            )
+            .expect("store");
         persister.flush(TEST_WALLET_ID).expect("flush pending");
 
         // Read back via the existing evo-tool helper.
@@ -1755,13 +1830,15 @@ mod tests {
         id_cs
             .identities
             .insert(owner_id, build_entry(PaymentStatus::Confirmed));
-        persister.store(
-            TEST_WALLET_ID,
-            PlatformWalletChangeSet {
-                identities: Some(id_cs),
-                ..Default::default()
-            },
-        ).expect("store");
+        persister
+            .store(
+                TEST_WALLET_ID,
+                PlatformWalletChangeSet {
+                    identities: Some(id_cs),
+                    ..Default::default()
+                },
+            )
+            .expect("store");
         persister.flush(TEST_WALLET_ID).expect("flush confirmed");
 
         let payments = db
@@ -1824,13 +1901,15 @@ mod tests {
         id_cs
             .identities
             .insert(identity_id, entry_with_profile(Some(profile)));
-        persister.store(
-            TEST_WALLET_ID,
-            PlatformWalletChangeSet {
-                identities: Some(id_cs),
-                ..Default::default()
-            },
-        ).expect("store");
+        persister
+            .store(
+                TEST_WALLET_ID,
+                PlatformWalletChangeSet {
+                    identities: Some(id_cs),
+                    ..Default::default()
+                },
+            )
+            .expect("store");
         persister.flush(TEST_WALLET_ID).expect("flush set");
 
         assert!(
@@ -1845,13 +1924,15 @@ mod tests {
         id_cs
             .identities
             .insert(identity_id, entry_with_profile(None));
-        persister.store(
-            TEST_WALLET_ID,
-            PlatformWalletChangeSet {
-                identities: Some(id_cs),
-                ..Default::default()
-            },
-        ).expect("store");
+        persister
+            .store(
+                TEST_WALLET_ID,
+                PlatformWalletChangeSet {
+                    identities: Some(id_cs),
+                    ..Default::default()
+                },
+            )
+            .expect("store");
         persister.flush(TEST_WALLET_ID).expect("flush clear");
 
         // But wait — the flush gate currently requires
@@ -1922,13 +2003,15 @@ mod tests {
         id_cs
             .identities
             .insert(identity_id, make_entry(Some(vec![1, 2, 3, 4, 5])));
-        persister.store(
-            TEST_WALLET_ID,
-            PlatformWalletChangeSet {
-                identities: Some(id_cs),
-                ..Default::default()
-            },
-        ).expect("store");
+        persister
+            .store(
+                TEST_WALLET_ID,
+                PlatformWalletChangeSet {
+                    identities: Some(id_cs),
+                    ..Default::default()
+                },
+            )
+            .expect("store");
         persister.flush(TEST_WALLET_ID).expect("flush with avatar");
         assert_eq!(
             db.load_dashpay_profile(&identity_id, "testnet")
@@ -1941,13 +2024,15 @@ mod tests {
         // Second flush: same profile, avatar_bytes = None.
         let mut id_cs = platform_wallet::changeset::IdentityChangeSet::default();
         id_cs.identities.insert(identity_id, make_entry(None));
-        persister.store(
-            TEST_WALLET_ID,
-            PlatformWalletChangeSet {
-                identities: Some(id_cs),
-                ..Default::default()
-            },
-        ).expect("store");
+        persister
+            .store(
+                TEST_WALLET_ID,
+                PlatformWalletChangeSet {
+                    identities: Some(id_cs),
+                    ..Default::default()
+                },
+            )
+            .expect("store");
         persister
             .flush(TEST_WALLET_ID)
             .expect("flush without avatar");
@@ -2014,13 +2099,15 @@ mod tests {
         // Store + flush: should clear staged.
         let mut id_cs = platform_wallet::changeset::IdentityChangeSet::default();
         id_cs.identities.insert(identity_id, make_entry("first"));
-        persister.store(
-            TEST_WALLET_ID,
-            PlatformWalletChangeSet {
-                identities: Some(id_cs),
-                ..Default::default()
-            },
-        ).expect("store");
+        persister
+            .store(
+                TEST_WALLET_ID,
+                PlatformWalletChangeSet {
+                    identities: Some(id_cs),
+                    ..Default::default()
+                },
+            )
+            .expect("store");
         assert!(persister.staged.lock().unwrap().is_empty());
 
         // The first store triggered auto-flush (Immediate strategy),
@@ -2032,13 +2119,15 @@ mod tests {
         // prior flush cleared state.
         let mut id_cs = platform_wallet::changeset::IdentityChangeSet::default();
         id_cs.identities.insert(identity_id, make_entry("second"));
-        persister.store(
-            TEST_WALLET_ID,
-            PlatformWalletChangeSet {
-                identities: Some(id_cs),
-                ..Default::default()
-            },
-        ).expect("store");
+        persister
+            .store(
+                TEST_WALLET_ID,
+                PlatformWalletChangeSet {
+                    identities: Some(id_cs),
+                    ..Default::default()
+                },
+            )
+            .expect("store");
         let stored = db
             .load_dashpay_profile(&identity_id, "testnet")
             .expect("load")
@@ -2108,14 +2197,16 @@ mod tests {
         };
 
         // First flush: three accounts, various highs.
-        persister.store(
-            TEST_WALLET_ID,
-            build(vec![
-                (standard, 12, 3),
-                (coinjoin, 7, 5),
-                (dashpay_recv, 4, 0),
-            ]),
-        ).expect("store");
+        persister
+            .store(
+                TEST_WALLET_ID,
+                build(vec![
+                    (standard, 12, 3),
+                    (coinjoin, 7, 5),
+                    (dashpay_recv, 4, 0),
+                ]),
+            )
+            .expect("store");
         persister.flush(TEST_WALLET_ID).expect("first flush");
 
         // Verify the rows are in wallet_account_pool_state.
@@ -2168,13 +2259,15 @@ mod tests {
 
         // Second flush: lower highs must NOT regress — MAX merge.
         // Higher highs win.
-        persister.store(
-            TEST_WALLET_ID,
-            build(vec![
-                (standard, 5, 100), // external lower (must stay 12), internal higher (100 wins)
-                (coinjoin, 9, 1),   // external higher (9 wins), internal lower (must stay 5)
-            ]),
-        ).expect("store");
+        persister
+            .store(
+                TEST_WALLET_ID,
+                build(vec![
+                    (standard, 5, 100), // external lower (must stay 12), internal higher (100 wins)
+                    (coinjoin, 9, 1),   // external higher (9 wins), internal lower (must stay 5)
+                ]),
+            )
+            .expect("store");
         persister.flush(TEST_WALLET_ID).expect("second flush");
 
         let standard_external: i64 = db
@@ -2292,13 +2385,15 @@ mod tests {
         bucket.utxos_added.insert(outpoint, utxo);
         let mut wcs = WalletChangeSet::default();
         wcs.per_account.insert(standard, bucket);
-        persister.store(
-            TEST_WALLET_ID,
-            PlatformWalletChangeSet {
-                core: Some(wcs),
-                ..Default::default()
-            },
-        ).expect("store");
+        persister
+            .store(
+                TEST_WALLET_ID,
+                PlatformWalletChangeSet {
+                    core: Some(wcs),
+                    ..Default::default()
+                },
+            )
+            .expect("store");
         persister.flush(TEST_WALLET_ID).expect("insert flush");
 
         // Row exists with is_instant_locked = 0.
@@ -2320,13 +2415,15 @@ mod tests {
         bucket.utxos_instant_locked.insert(outpoint);
         let mut wcs = WalletChangeSet::default();
         wcs.per_account.insert(standard, bucket);
-        persister.store(
-            TEST_WALLET_ID,
-            PlatformWalletChangeSet {
-                core: Some(wcs),
-                ..Default::default()
-            },
-        ).expect("store");
+        persister
+            .store(
+                TEST_WALLET_ID,
+                PlatformWalletChangeSet {
+                    core: Some(wcs),
+                    ..Default::default()
+                },
+            )
+            .expect("store");
         persister.flush(TEST_WALLET_ID).expect("lock flush");
 
         let flag_after: i64 = db
@@ -2427,13 +2524,15 @@ mod tests {
         wcs.per_account.insert(standard, bucket_std);
         wcs.per_account.insert(dashpay_recv, bucket_dp);
 
-        persister.store(
-            TEST_WALLET_ID,
-            PlatformWalletChangeSet {
-                core: Some(wcs),
-                ..Default::default()
-            },
-        ).expect("store");
+        persister
+            .store(
+                TEST_WALLET_ID,
+                PlatformWalletChangeSet {
+                    core: Some(wcs),
+                    ..Default::default()
+                },
+            )
+            .expect("store");
         persister
             .flush(TEST_WALLET_ID)
             .expect("flush after write phase");
@@ -2590,13 +2689,15 @@ mod tests {
         let mut wcs = WalletChangeSet::default();
         wcs.per_account.insert(standard, bucket);
 
-        persister.store(
-            TEST_WALLET_ID,
-            PlatformWalletChangeSet {
-                core: Some(wcs),
-                ..Default::default()
-            },
-        ).expect("store");
+        persister
+            .store(
+                TEST_WALLET_ID,
+                PlatformWalletChangeSet {
+                    core: Some(wcs),
+                    ..Default::default()
+                },
+            )
+            .expect("store");
         persister.flush(TEST_WALLET_ID).expect("flush");
 
         // Verify the row landed in SQL.
@@ -2675,8 +2776,7 @@ mod tests {
                 out_point: outpoint,
                 transaction: tx.clone(),
                 account_index: 0,
-                funding_type:
-                    platform_wallet::AssetLockFundingType::IdentityRegistration,
+                funding_type: platform_wallet::AssetLockFundingType::IdentityRegistration,
                 identity_index: 5,
                 amount_duffs: 100_000,
                 status: AssetLockStatus::Broadcast,
@@ -2716,11 +2816,11 @@ mod tests {
     #[test]
     fn test_contacts_and_dashpay_round_trip() {
         use dash_sdk::platform::Identifier;
+        use platform_wallet::ContactRequest;
         use platform_wallet::changeset::{ContactChangeSet, ContactRequestEntry};
         use platform_wallet::wallet::dashpay::{
             DashPayProfile, PaymentDirection, PaymentEntry, PaymentStatus,
         };
-        use platform_wallet::ContactRequest;
 
         let db = Arc::new(create_test_database().expect("create test db"));
         let persister = make_persister(db.clone());
@@ -2748,11 +2848,11 @@ mod tests {
         let sent_request = ContactRequest::new(
             owner_id,
             contact_id,
-            3, // sender_key_index
-            5, // recipient_key_index
-            42, // account_reference
-            vec![0xABu8; 96], // encrypted_public_key
-            100_000, // core_height_created_at
+            3,                 // sender_key_index
+            5,                 // recipient_key_index
+            42,                // account_reference
+            vec![0xABu8; 96],  // encrypted_public_key
+            100_000,           // core_height_created_at
             1_700_000_000_000, // created_at ms
         );
         let mut contact_cs = ContactChangeSet::default();
@@ -2761,7 +2861,9 @@ mod tests {
                 owner_id,
                 recipient_id: contact_id,
             },
-            ContactRequestEntry { request: sent_request },
+            ContactRequestEntry {
+                request: sent_request,
+            },
         );
 
         // Build a profile changeset.

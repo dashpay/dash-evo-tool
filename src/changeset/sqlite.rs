@@ -545,13 +545,13 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                         encrypted_public_key, encrypted_account_label_bytes,
                         auto_accept_proof, core_height_created_at, platform_created_at_ms
                  FROM dashpay_contact_requests
-                 WHERE network = ?1
+                 WHERE wallet_id = ?1 AND network = ?2
                    AND sender_key_index IS NOT NULL
                    AND encrypted_public_key IS NOT NULL",
             ).map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
 
             let rows = stmt.query_map(
-                rusqlite::params![&self.network],
+                rusqlite::params![&wallet_id[..], &self.network],
                 |row| {
                     Ok((
                         row.get::<_, Vec<u8>>(0)?,
@@ -627,11 +627,11 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
             let mut stmt = guard.prepare(
                 "SELECT owner_identity_id, contact_identity_id
                  FROM dashpay_contacts
-                 WHERE network = ?1 AND contact_status = 'accepted'",
+                 WHERE wallet_id = ?1 AND network = ?2 AND contact_status = 'accepted'",
             ).map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
 
             let rows = stmt.query_map(
-                rusqlite::params![&self.network],
+                rusqlite::params![&wallet_id[..], &self.network],
                 |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?)),
             ).map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
 
@@ -681,11 +681,11 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
             let mut stmt = guard.prepare(
                 "SELECT identity_id, display_name, bio, avatar_url, avatar_bytes, public_message
                  FROM dashpay_profiles
-                 WHERE network = ?1",
+                 WHERE wallet_id = ?1 AND network = ?2",
             ).map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
 
             let rows = stmt.query_map(
-                rusqlite::params![&self.network],
+                rusqlite::params![&wallet_id[..], &self.network],
                 |row| {
                     Ok((
                         row.get::<_, Vec<u8>>(0)?,
@@ -962,7 +962,7 @@ impl SqliteWalletPersister {
         if let Some(ct_cs) = contacts
             && has_contact_work
         {
-            Self::write_contact_requests(&tx, &self.network, ct_cs)?;
+            Self::write_contact_requests(&tx, &wallet_id, &self.network, ct_cs)?;
         }
 
         tx.commit()?;
@@ -998,10 +998,11 @@ impl SqliteWalletPersister {
         // is currently not set" and the column should match.
         let mut upsert_profile = tx.prepare_cached(
             "INSERT INTO dashpay_profiles
-                (identity_id, network, display_name, bio, avatar_url,
+                (identity_id, wallet_id, network, display_name, bio, avatar_url,
                  avatar_bytes, public_message, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, unixepoch())
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, unixepoch())
              ON CONFLICT(identity_id, network) DO UPDATE SET
+                wallet_id = COALESCE(excluded.wallet_id, wallet_id),
                 display_name = excluded.display_name,
                 bio = excluded.bio,
                 avatar_url = excluded.avatar_url,
@@ -1042,6 +1043,7 @@ impl SqliteWalletPersister {
                 Some(profile) => {
                     upsert_profile.execute(rusqlite::params![
                         id.to_buffer().to_vec(),
+                        &wallet_id[..],
                         network,
                         profile.display_name,
                         profile.bio,
@@ -1416,6 +1418,7 @@ impl SqliteWalletPersister {
     /// account_reference, encrypted_public_key, etc.).
     fn write_contact_requests(
         tx: &rusqlite::Transaction,
+        wallet_id: &WalletId,
         network: &str,
         cs: platform_wallet::changeset::ContactChangeSet,
     ) -> Result<(), SqlitePersistError> {
@@ -1425,11 +1428,11 @@ impl SqliteWalletPersister {
         )?;
         let mut insert = tx.prepare_cached(
             "INSERT INTO dashpay_contact_requests
-                (from_identity_id, to_identity_id, network, request_type, status,
+                (from_identity_id, to_identity_id, wallet_id, network, request_type, status,
                  sender_key_index, recipient_key_index, account_reference,
                  encrypted_public_key, encrypted_account_label_bytes,
                  auto_accept_proof, core_height_created_at, platform_created_at_ms)
-             VALUES (?1, ?2, ?3, ?4, 'accepted', ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+             VALUES (?1, ?2, ?3, ?4, ?5, 'accepted', ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         )?;
 
         // Upsert sent requests.
@@ -1441,6 +1444,7 @@ impl SqliteWalletPersister {
             insert.execute(rusqlite::params![
                 &from_bytes,
                 &to_bytes,
+                &wallet_id[..],
                 network,
                 "sent",
                 r.sender_key_index,
@@ -1463,6 +1467,7 @@ impl SqliteWalletPersister {
             insert.execute(rusqlite::params![
                 &from_bytes,
                 &to_bytes,
+                &wallet_id[..],
                 network,
                 "received",
                 r.sender_key_index,
@@ -1501,9 +1506,10 @@ impl SqliteWalletPersister {
         if !cs.established.is_empty() {
             let mut upsert_contact = tx.prepare_cached(
                 "INSERT INTO dashpay_contacts
-                    (owner_identity_id, contact_identity_id, network, contact_status, updated_at)
-                 VALUES (?1, ?2, ?3, 'accepted', unixepoch())
+                    (owner_identity_id, contact_identity_id, wallet_id, network, contact_status, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, 'accepted', unixepoch())
                  ON CONFLICT(owner_identity_id, contact_identity_id, network) DO UPDATE SET
+                    wallet_id = COALESCE(excluded.wallet_id, wallet_id),
                     contact_status = 'accepted',
                     updated_at = unixepoch()",
             )?;
@@ -1513,6 +1519,7 @@ impl SqliteWalletPersister {
                 upsert_contact.execute(rusqlite::params![
                     &owner_bytes,
                     &contact_bytes,
+                    &wallet_id[..],
                     network,
                 ])?;
             }

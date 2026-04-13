@@ -1171,7 +1171,7 @@ impl Wallet {
         if let Some(pw) = &self.platform_wallet {
             return pw
                 .core()
-                .next_receive_address_blocking()
+                .next_receive_address_for_account_blocking(0)
                 .map_err(|e| e.to_string());
         }
         Err("Wallet is locked".to_string())
@@ -1185,7 +1185,7 @@ impl Wallet {
         if let Some(pw) = &self.platform_wallet {
             return pw
                 .core()
-                .next_change_address_blocking()
+                .next_change_address_for_account_blocking(0)
                 .map_err(|e| e.to_string());
         }
         Err("Wallet is locked".to_string())

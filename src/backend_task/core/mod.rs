@@ -553,20 +553,16 @@ impl AppContext {
             (pw, guard.wallet_id())
         };
 
-        // Build and sign via PlatformWallet's CoreWallet
+        // Build, sign, and broadcast via CoreWallet
         let tx = platform_wallet
             .core()
-            .send_transaction(parsed_recipients)
+            .send_to_addresses(parsed_recipients)
             .await
             .map_err(|e| TaskError::WalletPaymentFailed {
                 detail: e.to_string(),
             })?;
 
-        let txid = self
-            .core_client
-            .read()?
-            .send_raw_transaction(&tx)
-            .map_err(TaskError::from)?;
+        let txid = tx.txid();
 
         // Wallet changes (UTXO updates) are auto-flushed via
         // FlushStrategy::Immediate when queued by the platform wallet.

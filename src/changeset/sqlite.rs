@@ -108,6 +108,11 @@ impl SqliteWalletPersister {
     }
 }
 
+/// Convert a `rusqlite::Error` into the trait's boxed error type.
+fn sqlite_err(e: rusqlite::Error) -> Box<dyn std::error::Error + Send + Sync> {
+    Box::new(SqlitePersistError::from(e))
+}
+
 // ---------------------------------------------------------------------------
 // Persister trait impl — store / flush / load
 // ---------------------------------------------------------------------------
@@ -245,7 +250,7 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                      FROM wallet_account_pool_state
                      WHERE wallet_id = ?1",
                 )
-                .map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+                .map_err(sqlite_err)?;
             let rows = stmt
                 .query_map(rusqlite::params![&wallet_id[..]], |row| {
                     let account_key: Vec<u8> = row.get(0)?;
@@ -253,11 +258,11 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                     let highest_used: Option<i64> = row.get(2)?;
                     Ok((account_key, pool_disc, highest_used))
                 })
-                .map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+                .map_err(sqlite_err)?;
 
             for row_result in rows {
                 let (account_key, pool_disc, highest_used) =
-                    row_result.map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+                    row_result.map_err(sqlite_err)?;
 
                 let account_type = AccountType::from_db_key(&account_key).map_err(|_| {
                     Box::new(SqlitePersistError::Encode(
@@ -317,20 +322,20 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                     "SELECT txid, vout FROM utxos
                      WHERE network = ?1 AND is_instant_locked = 1",
                 )
-                .map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+                .map_err(sqlite_err)?;
             let rows = stmt
                 .query_map(rusqlite::params![&self.network], |row| {
                     let txid_bytes: Vec<u8> = row.get(0)?;
                     let vout: i64 = row.get(1)?;
                     Ok((txid_bytes, vout))
                 })
-                .map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+                .map_err(sqlite_err)?;
 
             let mut locked_outpoints: std::collections::BTreeSet<OutPoint> =
                 std::collections::BTreeSet::new();
             for row_result in rows {
                 let (txid_bytes, vout) =
-                    row_result.map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+                    row_result.map_err(sqlite_err)?;
                 let txid = Txid::from_slice(&txid_bytes).map_err(|_| {
                     Box::new(SqlitePersistError::Encode("invalid txid in utxos".into())) as Box<_>
                 })?;
@@ -374,7 +379,7 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                      FROM wallet_transactions
                      WHERE wallet_id = ?1 AND network = ?2",
                 )
-                .map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+                .map_err(sqlite_err)?;
             let rows = stmt
                 .query_map(rusqlite::params![&wallet_id[..], &self.network], |row| {
                     let account_key: Vec<u8> = row.get(0)?;
@@ -382,11 +387,11 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                     let record_bytes: Vec<u8> = row.get(2)?;
                     Ok((account_key, txid_bytes, record_bytes))
                 })
-                .map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+                .map_err(sqlite_err)?;
 
             for row_result in rows {
                 let (account_key, txid_bytes, record_bytes) =
-                    row_result.map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+                    row_result.map_err(sqlite_err)?;
 
                 let account_type = AccountType::from_db_key(&account_key).map_err(|_| {
                     Box::new(SqlitePersistError::Encode(
@@ -429,7 +434,7 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                      FROM asset_lock_transaction
                      WHERE wallet = ?1 AND network = ?2",
                 )
-                .map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+                .map_err(sqlite_err)?;
             let rows = stmt
                 .query_map(rusqlite::params![&wallet_id[..], &self.network], |row| {
                     let txid_bytes: Vec<u8> = row.get(0)?;
@@ -455,7 +460,7 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                         proof_data,
                     ))
                 })
-                .map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+                .map_err(sqlite_err)?;
 
             for row in rows {
                 let (
@@ -469,7 +474,7 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                     funding_type_disc,
                     identity_index,
                     proof_data,
-                ) = row.map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+                ) = row.map_err(sqlite_err)?;
 
                 // Decode txid.
                 let txid_arr: [u8; 32] = txid_bytes.as_slice().try_into().map_err(|_| {
@@ -578,7 +583,7 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                  WHERE wallet_id = ?1 AND network = ?2
                    AND sender_key_index IS NOT NULL
                    AND encrypted_public_key IS NOT NULL",
-            ).map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+            ).map_err(sqlite_err)?;
 
             let rows = stmt.query_map(
                 rusqlite::params![&wallet_id[..], &self.network],
@@ -597,14 +602,14 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                         row.get::<_, Option<i64>>(10)?,
                     ))
                 },
-            ).map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+            ).map_err(sqlite_err)?;
 
             for row in rows {
                 let (from_bytes, to_bytes, request_type,
                      sender_ki, recipient_ki, account_ref,
                      enc_pub_key, enc_label, auto_accept,
                      core_height, created_at_ms,
-                ) = row.map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+                ) = row.map_err(sqlite_err)?;
 
                 let from_id = dash_sdk::platform::Identifier::from(
                     <[u8; 32]>::try_from(from_bytes.as_slice()).map_err(|_| {
@@ -662,16 +667,16 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                 "SELECT owner_identity_id, contact_identity_id
                  FROM dashpay_contacts
                  WHERE wallet_id = ?1 AND network = ?2 AND contact_status = 'accepted'",
-            ).map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+            ).map_err(sqlite_err)?;
 
             let rows = stmt.query_map(
                 rusqlite::params![&wallet_id[..], &self.network],
                 |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?)),
-            ).map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+            ).map_err(sqlite_err)?;
 
             for row in rows {
                 let (owner_bytes, contact_bytes) =
-                    row.map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+                    row.map_err(sqlite_err)?;
                 let owner_id = match <[u8; 32]>::try_from(owner_bytes.as_slice()) {
                     Ok(arr) => dash_sdk::platform::Identifier::from(arr),
                     Err(_) => return Err(Box::new(SqlitePersistError::Encode("invalid identity_id length".into())) as Box<_>),
@@ -716,7 +721,7 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                 "SELECT identity_id, display_name, bio, avatar_url, avatar_bytes, public_message
                  FROM dashpay_profiles
                  WHERE wallet_id = ?1 AND network = ?2",
-            ).map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+            ).map_err(sqlite_err)?;
 
             let rows = stmt.query_map(
                 rusqlite::params![&wallet_id[..], &self.network],
@@ -730,11 +735,11 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                         row.get::<_, Option<String>>(5)?,
                     ))
                 },
-            ).map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+            ).map_err(sqlite_err)?;
 
             for row in rows {
                 let (id_bytes, display_name, bio, avatar_url, avatar_bytes, public_message) =
-                    row.map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+                    row.map_err(sqlite_err)?;
                 let id = match <[u8; 32]>::try_from(id_bytes.as_slice()) {
                     Ok(arr) => dash_sdk::platform::Identifier::from(arr),
                     Err(_) => return Err(Box::new(SqlitePersistError::Encode("invalid identity_id length".into())) as Box<_>),
@@ -757,7 +762,7 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                 "SELECT tx_id, from_identity_id, to_identity_id, amount, memo, payment_type, status
                  FROM dashpay_payments
                  WHERE wallet_id = ?1",
-            ).map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+            ).map_err(sqlite_err)?;
 
             let rows = stmt.query_map(rusqlite::params![&wallet_id[..]], |row| {
                 Ok((
@@ -769,11 +774,11 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                     row.get::<_, String>(5)?,
                     row.get::<_, String>(6)?,
                 ))
-            }).map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+            }).map_err(sqlite_err)?;
 
             for row in rows {
                 let (tx_id, from_bytes, to_bytes, amount, memo, payment_type, status) =
-                    row.map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
+                    row.map_err(sqlite_err)?;
                 let from_id = match <[u8; 32]>::try_from(from_bytes.as_slice()) {
                     Ok(arr) => dash_sdk::platform::Identifier::from(arr),
                     Err(_) => return Err(Box::new(SqlitePersistError::Encode("invalid identity_id length".into())) as Box<_>),

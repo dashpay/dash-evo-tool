@@ -179,7 +179,11 @@ async fn step_fetch_balances(
             .expect("framework wallet missing")
             .clone();
         drop(wallets);
-        get_platform_address(&wallet_arc, dash_sdk::dpp::dashcore::Network::Testnet, false)
+        get_platform_address(
+            &wallet_arc,
+            dash_sdk::dpp::dashcore::Network::Testnet,
+            false,
+        )
     };
 
     let task = BackendTask::WalletTask(WalletTask::FetchPlatformAddressBalances { seed_hash });
@@ -238,8 +242,11 @@ async fn step_transfer_credits(
     // Derive the first platform address (the one step 1 funded) so it is
     // guaranteed to be in watched_addresses. Then derive a fresh second one
     // as the transfer destination.
-    let source_candidate =
-        get_platform_address(&wallet_arc, dash_sdk::dpp::dashcore::Network::Testnet, false);
+    let source_candidate = get_platform_address(
+        &wallet_arc,
+        dash_sdk::dpp::dashcore::Network::Testnet,
+        false,
+    );
     let dest_addr =
         get_platform_address(&wallet_arc, dash_sdk::dpp::dashcore::Network::Testnet, true);
 
@@ -622,11 +629,8 @@ async fn tc_018_fund_platform_address_from_asset_lock() {
     );
 
     // Step 3: Derive a fresh platform address for funding
-    let platform_addr = get_platform_address(
-        &wallet_arc,
-        dash_sdk::dpp::dashcore::Network::Testnet,
-        true,
-    );
+    let platform_addr =
+        get_platform_address(&wallet_arc, dash_sdk::dpp::dashcore::Network::Testnet, true);
 
     let mut outputs = BTreeMap::new();
     outputs.insert(platform_addr, None); // None = distribute evenly

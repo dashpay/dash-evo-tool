@@ -1,9 +1,6 @@
 use crate::context::AppContext;
 use crate::database::Database;
-use dash_sdk::dpp::dashcore::{
-    InstantLock, Network, Transaction,
-    consensus::deserialize,
-};
+use dash_sdk::dpp::dashcore::{InstantLock, Network, Transaction, consensus::deserialize};
 use rusqlite::{Connection, params};
 
 impl Database {

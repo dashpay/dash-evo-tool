@@ -1347,10 +1347,7 @@ impl WalletSendScreen {
     }
 
     /// Send from shielded pool to another shielded address (private transfer).
-    fn send_shielded_to_shielded(
-        &mut self,
-        wallet_id: WalletId,
-    ) -> Result<AppAction, String> {
+    fn send_shielded_to_shielded(&mut self, wallet_id: WalletId) -> Result<AppAction, String> {
         let amount_credits = self
             .amount
             .as_ref()
@@ -1379,10 +1376,7 @@ impl WalletSendScreen {
     }
 
     /// Send from shielded pool to a platform address (unshield).
-    fn send_shielded_to_platform(
-        &mut self,
-        wallet_id: WalletId,
-    ) -> Result<AppAction, String> {
+    fn send_shielded_to_platform(&mut self, wallet_id: WalletId) -> Result<AppAction, String> {
         let amount_credits = self
             .amount
             .as_ref()
@@ -2131,18 +2125,17 @@ impl WalletSendScreen {
                 .into_iter()
                 .filter(|qi| Some(qi.identity.id()) != source_identity_id)
                 .collect();
-            let shielded_info: Option<(String, u64)> =
-                self.selected_wallet_id.and_then(|sh| {
-                    let states = self.app_context.shielded_states.lock().ok()?;
-                    let state = states.get(&sh)?;
-                    use dash_sdk::dpp::address_funds::OrchardAddress;
-                    let raw = state.keys.default_address.to_raw_address_bytes();
-                    let addr = OrchardAddress::from_raw_bytes(&raw).ok()?;
-                    Some((
-                        addr.to_bech32m_string(self.app_context.network),
-                        state.shielded_balance,
-                    ))
-                });
+            let shielded_info: Option<(String, u64)> = self.selected_wallet_id.and_then(|sh| {
+                let states = self.app_context.shielded_states.lock().ok()?;
+                let state = states.get(&sh)?;
+                use dash_sdk::dpp::address_funds::OrchardAddress;
+                let raw = state.keys.default_address.to_raw_address_bytes();
+                let addr = OrchardAddress::from_raw_bytes(&raw).ok()?;
+                Some((
+                    addr.to_bech32m_string(self.app_context.network),
+                    state.shielded_balance,
+                ))
+            });
             self.address_input.get_or_insert_with(|| {
                 let allowed_kinds = match &self.selected_source {
                     Some(SourceSelection::CoreWallet) => {
@@ -3275,10 +3268,7 @@ impl WalletSendScreen {
     }
 
     /// Advanced Core to Platform send
-    fn send_advanced_core_to_platform(
-        &mut self,
-        wallet_id: WalletId,
-    ) -> Result<AppAction, String> {
+    fn send_advanced_core_to_platform(&mut self, wallet_id: WalletId) -> Result<AppAction, String> {
         // For now, only support single output for Core to Platform
         // The SDK's FundPlatformAddressFromWalletUtxos only supports a single destination
         if self.advanced_outputs.len() != 1 {

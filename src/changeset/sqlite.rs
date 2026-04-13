@@ -123,9 +123,16 @@ impl SqliteWalletPersister {
 // ---------------------------------------------------------------------------
 
 impl PlatformWalletPersistence for SqliteWalletPersister {
-    fn store(&self, wallet_id: WalletId, changeset: PlatformWalletChangeSet) {
+    fn store(
+        &self,
+        wallet_id: WalletId,
+        changeset: PlatformWalletChangeSet,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         {
-            let mut staged = self.staged.lock().unwrap();
+            let mut staged = self.staged.lock().map_err(|e| {
+                Box::new(SqlitePersistError::MutexPoisoned(e.to_string()))
+                    as Box<dyn std::error::Error + Send + Sync>
+            })?;
             staged
                 .entry(wallet_id)
                 .or_insert_with(PlatformWalletChangeSet::default)
@@ -136,6 +143,7 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                 tracing::warn!(error = %e, "Auto-flush after store failed");
             }
         }
+        Ok(())
     }
 
     fn flush(&self, wallet_id: WalletId) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -143,7 +151,10 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
         // success we discard it; on failure we re-merge it back so
         // data isn't lost (C2 from holistic data-integrity review).
         let changeset = {
-            let mut staged = self.staged.lock().unwrap();
+            let mut staged = self.staged.lock().map_err(|e| {
+                Box::new(SqlitePersistError::MutexPoisoned(e.to_string()))
+                    as Box<dyn std::error::Error + Send + Sync>
+            })?;
             staged.remove(&wallet_id).unwrap_or_default()
         };
         if changeset.is_empty() {
@@ -165,7 +176,10 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                 // in first, then overlaying any newer arrivals on
                 // top. This is the opposite of the normal merge
                 // direction and matches LWW semantics: newer wins.
-                let mut staged = self.staged.lock().unwrap();
+                let mut staged = self.staged.lock().map_err(|poison| {
+                    Box::new(SqlitePersistError::MutexPoisoned(poison.to_string()))
+                        as Box<dyn std::error::Error + Send + Sync>
+                })?;
                 let newer = staged.remove(&wallet_id);
                 let mut merged = backup;
                 if let Some(newer) = newer {
@@ -932,7 +946,9 @@ impl SqliteWalletPersister {
         }
 
         let conn = self.db.shared_connection();
-        let mut guard = conn.lock().unwrap();
+        let mut guard = conn.lock().map_err(|e| {
+            SqlitePersistError::MutexPoisoned(e.to_string())
+        })?;
         let tx = guard.transaction()?;
 
         if let Some(core) = core
@@ -1542,7 +1558,7 @@ mod tests {
         let persister = make_persister(db);
 
         let cs = PlatformWalletChangeSet::default();
-        persister.store(TEST_WALLET_ID, cs);
+        persister.store(TEST_WALLET_ID, cs).expect("store");
         persister
             .flush(TEST_WALLET_ID)
             .expect("flush empty changeset");
@@ -1599,7 +1615,7 @@ mod tests {
             identities: Some(id_cs),
             ..Default::default()
         };
-        persister.store(TEST_WALLET_ID, cs);
+        persister.store(TEST_WALLET_ID, cs).expect("store");
         persister.flush(TEST_WALLET_ID).expect("flush");
 
         // Read back via the existing evo-tool helper to confirm the
@@ -1676,7 +1692,7 @@ mod tests {
                 identities: Some(id_cs),
                 ..Default::default()
             },
-        );
+        ).expect("store");
         persister.flush(TEST_WALLET_ID).expect("flush pending");
 
         // Read back via the existing evo-tool helper.
@@ -1703,7 +1719,7 @@ mod tests {
                 identities: Some(id_cs),
                 ..Default::default()
             },
-        );
+        ).expect("store");
         persister.flush(TEST_WALLET_ID).expect("flush confirmed");
 
         let payments = db
@@ -1772,7 +1788,7 @@ mod tests {
                 identities: Some(id_cs),
                 ..Default::default()
             },
-        );
+        ).expect("store");
         persister.flush(TEST_WALLET_ID).expect("flush set");
 
         assert!(
@@ -1793,7 +1809,7 @@ mod tests {
                 identities: Some(id_cs),
                 ..Default::default()
             },
-        );
+        ).expect("store");
         persister.flush(TEST_WALLET_ID).expect("flush clear");
 
         // But wait — the flush gate currently requires
@@ -1870,7 +1886,7 @@ mod tests {
                 identities: Some(id_cs),
                 ..Default::default()
             },
-        );
+        ).expect("store");
         persister.flush(TEST_WALLET_ID).expect("flush with avatar");
         assert_eq!(
             db.load_dashpay_profile(&identity_id, "testnet")
@@ -1889,7 +1905,7 @@ mod tests {
                 identities: Some(id_cs),
                 ..Default::default()
             },
-        );
+        ).expect("store");
         persister
             .flush(TEST_WALLET_ID)
             .expect("flush without avatar");
@@ -1962,7 +1978,7 @@ mod tests {
                 identities: Some(id_cs),
                 ..Default::default()
             },
-        );
+        ).expect("store");
         assert!(persister.staged.lock().unwrap().is_empty());
 
         // The first store triggered auto-flush (Immediate strategy),
@@ -1980,7 +1996,7 @@ mod tests {
                 identities: Some(id_cs),
                 ..Default::default()
             },
-        );
+        ).expect("store");
         let stored = db
             .load_dashpay_profile(&identity_id, "testnet")
             .expect("load")
@@ -2057,7 +2073,7 @@ mod tests {
                 (coinjoin, 7, 5),
                 (dashpay_recv, 4, 0),
             ]),
-        );
+        ).expect("store");
         persister.flush(TEST_WALLET_ID).expect("first flush");
 
         // Verify the rows are in wallet_account_pool_state.
@@ -2116,7 +2132,7 @@ mod tests {
                 (standard, 5, 100), // external lower (must stay 12), internal higher (100 wins)
                 (coinjoin, 9, 1),   // external higher (9 wins), internal lower (must stay 5)
             ]),
-        );
+        ).expect("store");
         persister.flush(TEST_WALLET_ID).expect("second flush");
 
         let standard_external: i64 = db
@@ -2240,7 +2256,7 @@ mod tests {
                 core: Some(wcs),
                 ..Default::default()
             },
-        );
+        ).expect("store");
         persister.flush(TEST_WALLET_ID).expect("insert flush");
 
         // Row exists with is_instant_locked = 0.
@@ -2268,7 +2284,7 @@ mod tests {
                 core: Some(wcs),
                 ..Default::default()
             },
-        );
+        ).expect("store");
         persister.flush(TEST_WALLET_ID).expect("lock flush");
 
         let flag_after: i64 = db
@@ -2375,7 +2391,7 @@ mod tests {
                 core: Some(wcs),
                 ..Default::default()
             },
-        );
+        ).expect("store");
         persister
             .flush(TEST_WALLET_ID)
             .expect("flush after write phase");
@@ -2538,7 +2554,7 @@ mod tests {
                 core: Some(wcs),
                 ..Default::default()
             },
-        );
+        ).expect("store");
         persister.flush(TEST_WALLET_ID).expect("flush");
 
         // Verify the row landed in SQL.
@@ -2630,7 +2646,7 @@ mod tests {
             asset_locks: Some(al_cs),
             ..Default::default()
         };
-        persister.store(TEST_WALLET_ID, cs);
+        persister.store(TEST_WALLET_ID, cs).expect("store");
         persister.flush(TEST_WALLET_ID).expect("flush");
 
         // Load and verify round-trip.
@@ -2770,7 +2786,7 @@ mod tests {
             contacts: Some(contact_cs),
             ..Default::default()
         };
-        persister.store(TEST_WALLET_ID, cs);
+        persister.store(TEST_WALLET_ID, cs).expect("store");
         persister.flush(TEST_WALLET_ID).expect("flush");
 
         // Load and verify round-trip.

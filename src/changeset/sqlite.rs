@@ -269,27 +269,21 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                 let (account_key, pool_disc, highest_used) =
                     row_result.map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
 
-                let Ok(account_type) = AccountType::from_db_key(&account_key) else {
-                    tracing::warn!(
-                        "persister load: unrecognized account_type bincode in \
-                         wallet_account_pool_state — skipping row (DB written \
-                         by newer crate version?)"
-                    );
-                    continue;
-                };
-                let Some(pool_type) = AddressPoolType::from_db_discriminant(pool_disc as u8) else {
-                    tracing::warn!(
-                        pool_disc,
-                        "persister load: unrecognized AddressPoolType discriminant — \
-                         skipping row"
-                    );
-                    continue;
-                };
-                let Some(highest_used) = highest_used else {
-                    // NULL highest_used means "never observed used".
-                    // Nothing to apply for this pool; skip.
-                    continue;
-                };
+                let account_type = AccountType::from_db_key(&account_key).map_err(|_| {
+                    Box::new(SqlitePersistError::Encode(
+                        "unrecognized account_type in wallet_account_pool_state".into(),
+                    )) as Box<_>
+                })?;
+                let pool_type = AddressPoolType::from_db_discriminant(pool_disc as u8).ok_or_else(|| {
+                    Box::new(SqlitePersistError::Encode(
+                        format!("unrecognized AddressPoolType discriminant: {pool_disc}"),
+                    )) as Box<_>
+                })?;
+                let highest_used = highest_used.ok_or_else(|| {
+                    Box::new(SqlitePersistError::Encode(
+                        "NULL highest_used in wallet_account_pool_state".into(),
+                    )) as Box<_>
+                })?;
                 per_account
                     .entry(account_type)
                     .or_default()
@@ -338,10 +332,9 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
             for row_result in rows {
                 let (txid_bytes, vout) =
                     row_result.map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
-                let Ok(txid) = Txid::from_slice(&txid_bytes) else {
-                    tracing::warn!("persister load: invalid txid in utxos table — skipping row");
-                    continue;
-                };
+                let txid = Txid::from_slice(&txid_bytes).map_err(|_| {
+                    Box::new(SqlitePersistError::Encode("invalid txid in utxos".into())) as Box<_>
+                })?;
                 locked_outpoints.insert(OutPoint {
                     txid,
                     vout: vout as u32,
@@ -392,33 +385,25 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                 let (account_key, txid_bytes, record_bytes) =
                     row_result.map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
 
-                let Ok(account_type) = AccountType::from_db_key(&account_key) else {
-                    tracing::warn!(
-                        "persister load: unrecognized account_type bincode in \
-                         wallet_transactions — skipping row"
-                    );
-                    continue;
-                };
-                let Ok(txid) = Txid::from_slice(&txid_bytes) else {
-                    tracing::warn!(
-                        "persister load: invalid txid in wallet_transactions — skipping row"
-                    );
-                    continue;
-                };
-                let record: TransactionRecord = match bincode::serde::decode_from_slice(
+                let account_type = AccountType::from_db_key(&account_key).map_err(|_| {
+                    Box::new(SqlitePersistError::Encode(
+                        "unrecognized account_type in wallet_transactions".into(),
+                    )) as Box<_>
+                })?;
+                let txid = Txid::from_slice(&txid_bytes).map_err(|_| {
+                    Box::new(SqlitePersistError::Encode(
+                        "invalid txid in wallet_transactions".into(),
+                    )) as Box<_>
+                })?;
+                let (record, _): (TransactionRecord, _) = bincode::serde::decode_from_slice(
                     &record_bytes,
                     bincode::config::standard(),
-                ) {
-                    Ok((record, _)) => record,
-                    Err(e) => {
-                        tracing::warn!(
-                            error = %e,
-                            "persister load: TransactionRecord bincode decode failed — \
-                             skipping row (DB written by incompatible crate version?)"
-                        );
-                        continue;
-                    }
-                };
+                )
+                .map_err(|e| {
+                    Box::new(SqlitePersistError::Encode(
+                        format!("TransactionRecord bincode decode failed: {e}"),
+                    )) as Box<_>
+                })?;
                 per_account
                     .entry(account_type)
                     .or_default()
@@ -484,23 +469,21 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                 ) = row.map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
 
                 // Decode txid.
-                let txid = match txid_bytes.as_slice().try_into() {
-                    Ok(arr) => Txid::from_byte_array(arr),
-                    Err(_) => {
-                        tracing::warn!("persister load: invalid txid in asset_lock_transaction — skipping row");
-                        continue;
-                    }
-                };
+                let txid_arr: [u8; 32] = txid_bytes.as_slice().try_into().map_err(|_| {
+                    Box::new(SqlitePersistError::Encode(
+                        "invalid txid in asset_lock_transaction".into(),
+                    )) as Box<_>
+                })?;
+                let txid = Txid::from_byte_array(txid_arr);
                 let outpoint = OutPoint::new(txid, output_index as u32);
 
                 // Decode transaction.
-                let transaction: dash_sdk::dpp::dashcore::Transaction = match deserialize(&tx_data) {
-                    Ok(tx) => tx,
-                    Err(_) => {
-                        tracing::warn!(%txid, "persister load: cannot decode asset lock transaction — skipping row");
-                        continue;
-                    }
-                };
+                let transaction: dash_sdk::dpp::dashcore::Transaction =
+                    deserialize(&tx_data).map_err(|e| {
+                        Box::new(SqlitePersistError::Encode(
+                            format!("cannot decode asset lock transaction {txid}: {e}"),
+                        )) as Box<_>
+                    })?;
 
                 // Decode funding type.
                 let funding_type = match funding_type_disc {
@@ -511,32 +494,29 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                     4 => platform_wallet::AssetLockFundingType::AssetLockAddressTopUp,
                     5 => platform_wallet::AssetLockFundingType::AssetLockShieldedAddressTopUp,
                     d => {
-                        tracing::warn!(%txid, disc = d, "persister load: unknown funding_type discriminant — skipping row");
-                        continue;
+                        return Err(Box::new(SqlitePersistError::Encode(
+                            format!("unknown funding_type discriminant {d} for {txid}"),
+                        )) as Box<_>);
                     }
                 };
 
                 // Decode proof from bincode serde blob (if present).
-                let had_proof_data = proof_data.is_some();
                 let proof: Option<dash_sdk::dpp::prelude::AssetLockProof> =
-                    proof_data.and_then(|blob| {
-                        bincode::serde::decode_from_slice(&blob, bincode::config::standard())
-                            .map(|(p, _)| p)
-                            .map_err(|e| {
-                                tracing::warn!(%txid, error = %e, "persister load: cannot decode asset lock proof — treating as None");
-                                e
-                            })
-                            .ok()
-                    });
+                    proof_data
+                        .map(|blob| {
+                            bincode::serde::decode_from_slice(&blob, bincode::config::standard())
+                                .map(|(p, _)| p)
+                                .map_err(|e| {
+                                    Box::new(SqlitePersistError::Encode(
+                                        format!("asset lock proof decode failed for {txid}: {e}"),
+                                    )) as Box<_>
+                                })
+                        })
+                        .transpose()?;
 
-                // If proof_data existed but decode failed AND no legacy
-                // fallback columns, skip the row to avoid status downgrade.
-                if had_proof_data && proof.is_none() && islock_data.is_none() && chain_height.is_none() {
-                    tracing::error!(%txid, "persister load: proof decode failed with no legacy fallback — skipping row");
-                    continue;
-                }
-
-                // Derive status from proof + legacy columns.
+                // Derive status from proof. No legacy column fallback —
+                // v40 nuked all data, so every row was written by the
+                // current persister which always populates proof_data.
                 let status = match &proof {
                     Some(dash_sdk::dpp::prelude::AssetLockProof::Instant(_)) => {
                         AssetLockStatus::InstantSendLocked
@@ -544,8 +524,6 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                     Some(dash_sdk::dpp::prelude::AssetLockProof::Chain(_)) => {
                         AssetLockStatus::ChainLocked
                     }
-                    None if islock_data.is_some() => AssetLockStatus::InstantSendLocked,
-                    None if chain_height.is_some() => AssetLockStatus::ChainLocked,
                     None => AssetLockStatus::Broadcast,
                 };
 
@@ -608,16 +586,14 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                      core_height, created_at_ms,
                 ) = row.map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
 
-                let from_id = match <[u8; 32]>::try_from(from_bytes.as_slice()) {
-                    Ok(arr) => dash_sdk::platform::Identifier::from(arr),
-                    Err(_) => {
-                        tracing::warn!("persister load: invalid contact request from_identity_id length — skipping row");
-                        continue;
-                    }
-                };
+                let from_id = dash_sdk::platform::Identifier::from(
+                    <[u8; 32]>::try_from(from_bytes.as_slice()).map_err(|_| {
+                        Box::new(SqlitePersistError::Encode("invalid contact request from_identity_id".into())) as Box<_>
+                    })?,
+                );
                 let to_id = match <[u8; 32]>::try_from(to_bytes.as_slice()) {
                     Ok(arr) => dash_sdk::platform::Identifier::from(arr),
-                    Err(_) => { tracing::warn!("persister load: invalid identity_id length — skipping row"); continue; }
+                    Err(_) => return Err(Box::new(SqlitePersistError::Encode("invalid identity_id length".into())) as Box<_>),
                 };
 
                 let mut request = ContactRequest::new(
@@ -649,7 +625,9 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                             entry,
                         );
                     }
-                    _ => continue,
+                    other => return Err(Box::new(SqlitePersistError::Encode(
+                        format!("unknown contact request_type: '{other}'"),
+                    )) as Box<_>),
                 }
             }
         }
@@ -672,11 +650,11 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                     row.map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
                 let owner_id = match <[u8; 32]>::try_from(owner_bytes.as_slice()) {
                     Ok(arr) => dash_sdk::platform::Identifier::from(arr),
-                    Err(_) => { tracing::warn!("persister load: invalid identity_id length — skipping row"); continue; }
+                    Err(_) => return Err(Box::new(SqlitePersistError::Encode("invalid identity_id length".into())) as Box<_>),
                 };
                 let contact_id = match <[u8; 32]>::try_from(contact_bytes.as_slice()) {
                     Ok(arr) => dash_sdk::platform::Identifier::from(arr),
-                    Err(_) => { tracing::warn!("persister load: invalid identity_id length — skipping row"); continue; }
+                    Err(_) => return Err(Box::new(SqlitePersistError::Encode("invalid identity_id length".into())) as Box<_>),
                 };
 
                 // Build EstablishedContact from the loaded sent + incoming
@@ -735,7 +713,7 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                     row.map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
                 let id = match <[u8; 32]>::try_from(id_bytes.as_slice()) {
                     Ok(arr) => dash_sdk::platform::Identifier::from(arr),
-                    Err(_) => { tracing::warn!("persister load: invalid identity_id length — skipping row"); continue; }
+                    Err(_) => return Err(Box::new(SqlitePersistError::Encode("invalid identity_id length".into())) as Box<_>),
                 };
                 profiles.insert(id, Some(DashPayProfile {
                     display_name, bio, avatar_url, avatar_bytes, public_message,
@@ -774,28 +752,26 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                     row.map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
                 let from_id = match <[u8; 32]>::try_from(from_bytes.as_slice()) {
                     Ok(arr) => dash_sdk::platform::Identifier::from(arr),
-                    Err(_) => { tracing::warn!("persister load: invalid identity_id length — skipping row"); continue; }
+                    Err(_) => return Err(Box::new(SqlitePersistError::Encode("invalid identity_id length".into())) as Box<_>),
                 };
                 let to_id = match <[u8; 32]>::try_from(to_bytes.as_slice()) {
                     Ok(arr) => dash_sdk::platform::Identifier::from(arr),
-                    Err(_) => { tracing::warn!("persister load: invalid identity_id length — skipping row"); continue; }
+                    Err(_) => return Err(Box::new(SqlitePersistError::Encode("invalid identity_id length".into())) as Box<_>),
                 };
                 let (owner_id, counterparty_id, direction) = match payment_type.as_str() {
                     "sent" => (from_id, to_id, PaymentDirection::Sent),
                     "received" => (to_id, from_id, PaymentDirection::Received),
-                    other => {
-                        tracing::warn!(payment_type = other, %tx_id, "persister load: unknown payment_type — skipping row");
-                        continue;
-                    }
+                    other => return Err(Box::new(SqlitePersistError::Encode(
+                        format!("unknown payment_type '{other}' for tx {tx_id}"),
+                    )) as Box<_>),
                 };
                 let status = match status.as_str() {
                     "pending" => PaymentStatus::Pending,
                     "confirmed" => PaymentStatus::Confirmed,
                     "failed" => PaymentStatus::Failed,
-                    other => {
-                        tracing::warn!(status = other, %tx_id, "persister load: unknown payment status — skipping row");
-                        continue;
-                    }
+                    other => return Err(Box::new(SqlitePersistError::Encode(
+                        format!("unknown payment status '{other}' for tx {tx_id}"),
+                    )) as Box<_>),
                 };
                 payments_overlay.entry(owner_id).or_default().insert(
                     tx_id,

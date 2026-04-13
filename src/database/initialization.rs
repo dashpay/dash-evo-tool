@@ -1672,6 +1672,9 @@ impl Database {
             "shielded_wallet_meta",
             "contact_private_info",
             "scheduled_votes",
+            "top_up",
+            "identity_order",
+            "token_order",
         ] {
             // Some tables may not exist on all upgrade paths; ignore
             // "no such table" errors.

@@ -1470,7 +1470,7 @@ impl SqliteWalletPersister {
                  sender_key_index, recipient_key_index, account_reference,
                  encrypted_public_key, encrypted_account_label_bytes,
                  auto_accept_proof, core_height_created_at, platform_created_at_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'accepted', ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+             VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         )?;
 
         // Upsert sent requests.

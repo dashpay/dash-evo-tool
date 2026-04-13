@@ -1,32 +1,22 @@
 //! SQLite-backed implementation of [`PlatformWalletPersistence`].
 //!
-//! # Scope (Phase 9b)
+//! # Scope
 //!
-//! The persister handles wallet state with no backend-task owner,
-//! plus the DashPay subsets that Phase 9b migrated to the changeset
-//! flow:
+//! The persister owns the full write+load cycle for:
 //!
-//! - `core.chain` → `wallet.last_terminal_block` and SPV UTXO state
-//!   (Phase 9a-5d).
-//! - `identities.dashpay_profile` → `dashpay_profiles` table (9b-1).
-//! - `identities.dashpay_payments` → `dashpay_payments` table (9b-2).
+//! - `core` — chain height, per-account pool state, UTXOs (IS-lock
+//!   flags), transaction records.
+//! - `asset_locks` — asset lock transactions (Item 8.1).
+//! - `contacts` — sent/incoming contact requests + established
+//!   contacts (Item 8.2/8.3).
+//! - `dashpay_profiles` / `dashpay_payments` — written via
+//!   `IdentityEntry` in the identity subset, loaded via overlay
+//!   fields on `PlatformWalletChangeSet`.
 //!
-//! - `asset_locks` → `asset_lock_transaction` table (Item 8.1b).
-//!
-//! Everything else — contacts, platform addresses, token balances,
-//! the QualifiedIdentity blob on `identity`, label, top_ups,
-//! dpns_names, status — is still owned by backend tasks via direct
-//! `Database::*` writers.
-//!
-//! Phase 9b-3 (per-contact DashPay derivation indices) was rolled
-//! back: `highest_receive_index` / `bloom_registered_count` were
-//! duplicate shadow copies of state key-wallet already tracks on the
-//! `DashpayReceivingFunds` account pools (`highest_used` /
-//! `highest_generated`). Phase 10 will persist that state uniformly
-//! for all account types via the `cs.core.per_account` fields.
-//! Sub-changesets that arrive in the buffered `staged` map for those
-//! tables are silently dropped on flush with a `tracing::debug!`
-//! recording what was discarded.
+//! Not persister-owned (backend-task or external):
+//! - `platform_addresses`, `token_balances` — dropped on flush.
+//! - Identity blobs (`identity` table) — external, loaded by
+//!   evo-tool lifecycle helpers.
 //!
 //! Earlier revisions of this file (the Phase 9a-5a rewrite) tried to
 //! be the sole writer for every sub-changeset, but the `identity`
@@ -818,10 +808,9 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
 
 impl SqliteWalletPersister {
     /// Internal flush — drains the changeset by value into one
-    /// `rusqlite::Transaction`. Only the `core` sub-changeset is
-    /// actually written; the platform-side sub-changesets are
-    /// silently dropped (logged at debug) per the module-level scope
-    /// note.
+    /// `rusqlite::Transaction`. Writes core, identity DashPay subset,
+    /// asset locks, and contacts atomically. Platform addresses and
+    /// token balances are dropped (logged at debug).
     fn flush_inner(
         &self,
         wallet_id: WalletId,
@@ -834,12 +823,12 @@ impl SqliteWalletPersister {
             platform_addresses,
             asset_locks,
             token_balances,
-            // DashPay overlay fields are write-through: the write path
-            // uses the IdentityEntry-based write_identity_dashpay_subset,
-            // and the load path returns them via these overlay fields.
-            // They're not written separately during flush.
-            dashpay_profiles: _,
-            dashpay_payments_overlay: _,
+            // DashPay overlay fields are load-only: the write path
+            // uses the IdentityEntry-based write_identity_dashpay_subset.
+            // These overlay fields are populated by load() for the
+            // apply_changeset step. They're not written during flush.
+            dashpay_profiles,
+            dashpay_payments_overlay,
         } = cs;
 
         // Sub-changesets owned by backend tasks (or fully deferred)
@@ -873,6 +862,16 @@ impl SqliteWalletPersister {
                 "persister: dropping TokenBalanceChangeSet (backend tasks own token balance persistence)"
             );
         }
+        if dashpay_profiles.as_ref().map_or(false, |m| !m.is_empty()) {
+            tracing::debug!(
+                "persister: dropping dashpay_profiles overlay (load-only, written via identity subset)"
+            );
+        }
+        if dashpay_payments_overlay.as_ref().map_or(false, |m| !m.is_empty()) {
+            tracing::debug!(
+                "persister: dropping dashpay_payments_overlay (load-only, written via identity subset)"
+            );
+        }
 
         // S3: log any IdentityChangeSet top-level fields
         // (`removed` / `primary_identity` / `last_scanned_index`)
@@ -891,13 +890,14 @@ impl SqliteWalletPersister {
             })
             .unwrap_or(false);
         if has_identity_top_level_drops {
-            let id_cs = identities.as_ref().unwrap();
-            tracing::debug!(
-                removed = id_cs.removed.len(),
-                has_primary = id_cs.primary_identity.is_some(),
-                has_last_scanned_index = id_cs.last_scanned_index.is_some(),
-                "persister: dropping IdentityChangeSet top-level fields (backend tasks own identity removal / primary tracking)"
-            );
+            if let Some(id_cs) = identities.as_ref() {
+                tracing::debug!(
+                    removed = id_cs.removed.len(),
+                    has_primary = id_cs.primary_identity.is_some(),
+                    has_last_scanned_index = id_cs.last_scanned_index.is_some(),
+                    "persister: dropping IdentityChangeSet top-level fields (backend tasks own identity removal / primary tracking)"
+                );
+            }
         }
 
         // Decide whether there's anything to write at all. We need a
@@ -969,7 +969,6 @@ impl SqliteWalletPersister {
         Ok(())
     }
 
-    /// Write the contact-derivation-state subset of a
     /// Write the DashPay-related subset of an `IdentityChangeSet`
     /// to the `dashpay_profiles` and `dashpay_payments` tables.
     ///
@@ -1534,9 +1533,7 @@ mod tests {
         SqliteWalletPersister::new(db, "testnet".to_string())
     }
 
-    /// `load` is a no-op in the current scope: returns an empty
-    /// changeset regardless of database state. The actual loading
-    /// happens via the evo-tool domain helpers.
+    /// Empty database returns an empty changeset.
     #[test]
     fn test_load_returns_empty_changeset() {
         let db = Arc::new(create_test_database().expect("create test db"));

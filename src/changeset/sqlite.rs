@@ -517,6 +517,7 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                 };
 
                 // Decode proof from bincode serde blob (if present).
+                let had_proof_data = proof_data.is_some();
                 let proof: Option<dash_sdk::dpp::prelude::AssetLockProof> =
                     proof_data.and_then(|blob| {
                         bincode::serde::decode_from_slice(&blob, bincode::config::standard())
@@ -527,6 +528,13 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                             })
                             .ok()
                     });
+
+                // If proof_data existed but decode failed AND no legacy
+                // fallback columns, skip the row to avoid status downgrade.
+                if had_proof_data && proof.is_none() && islock_data.is_none() && chain_height.is_none() {
+                    tracing::error!(%txid, "persister load: proof decode failed with no legacy fallback — skipping row");
+                    continue;
+                }
 
                 // Derive status from proof + legacy columns.
                 let status = match &proof {
@@ -588,7 +596,7 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                         row.get::<_, Option<Vec<u8>>>(7)?,
                         row.get::<_, Option<Vec<u8>>>(8)?,
                         row.get::<_, u32>(9)?,
-                        row.get::<_, Option<u64>>(10)?,
+                        row.get::<_, Option<i64>>(10)?,
                     ))
                 },
             ).map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
@@ -602,17 +610,20 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
 
                 let from_id = match <[u8; 32]>::try_from(from_bytes.as_slice()) {
                     Ok(arr) => dash_sdk::platform::Identifier::from(arr),
-                    Err(_) => continue,
+                    Err(_) => {
+                        tracing::warn!("persister load: invalid contact request from_identity_id length — skipping row");
+                        continue;
+                    }
                 };
                 let to_id = match <[u8; 32]>::try_from(to_bytes.as_slice()) {
                     Ok(arr) => dash_sdk::platform::Identifier::from(arr),
-                    Err(_) => continue,
+                    Err(_) => { tracing::warn!("persister load: invalid identity_id length — skipping row"); continue; }
                 };
 
                 let mut request = ContactRequest::new(
                     from_id, to_id, sender_ki, recipient_ki,
                     account_ref, enc_pub_key, core_height,
-                    created_at_ms.unwrap_or(0),
+                    created_at_ms.unwrap_or(0).max(0) as u64,
                 );
                 request.encrypted_account_label = enc_label;
                 request.auto_accept_proof = auto_accept;
@@ -661,11 +672,11 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                     row.map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
                 let owner_id = match <[u8; 32]>::try_from(owner_bytes.as_slice()) {
                     Ok(arr) => dash_sdk::platform::Identifier::from(arr),
-                    Err(_) => continue,
+                    Err(_) => { tracing::warn!("persister load: invalid identity_id length — skipping row"); continue; }
                 };
                 let contact_id = match <[u8; 32]>::try_from(contact_bytes.as_slice()) {
                     Ok(arr) => dash_sdk::platform::Identifier::from(arr),
-                    Err(_) => continue,
+                    Err(_) => { tracing::warn!("persister load: invalid identity_id length — skipping row"); continue; }
                 };
 
                 // Build EstablishedContact from the loaded sent + incoming
@@ -724,7 +735,7 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                     row.map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
                 let id = match <[u8; 32]>::try_from(id_bytes.as_slice()) {
                     Ok(arr) => dash_sdk::platform::Identifier::from(arr),
-                    Err(_) => continue,
+                    Err(_) => { tracing::warn!("persister load: invalid identity_id length — skipping row"); continue; }
                 };
                 profiles.insert(id, Some(DashPayProfile {
                     display_name, bio, avatar_url, avatar_bytes, public_message,
@@ -763,20 +774,28 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                     row.map_err(|e| Box::new(SqlitePersistError::from(e)) as Box<_>)?;
                 let from_id = match <[u8; 32]>::try_from(from_bytes.as_slice()) {
                     Ok(arr) => dash_sdk::platform::Identifier::from(arr),
-                    Err(_) => continue,
+                    Err(_) => { tracing::warn!("persister load: invalid identity_id length — skipping row"); continue; }
                 };
                 let to_id = match <[u8; 32]>::try_from(to_bytes.as_slice()) {
                     Ok(arr) => dash_sdk::platform::Identifier::from(arr),
-                    Err(_) => continue,
+                    Err(_) => { tracing::warn!("persister load: invalid identity_id length — skipping row"); continue; }
                 };
                 let (owner_id, counterparty_id, direction) = match payment_type.as_str() {
                     "sent" => (from_id, to_id, PaymentDirection::Sent),
-                    _ => (to_id, from_id, PaymentDirection::Received),
+                    "received" => (to_id, from_id, PaymentDirection::Received),
+                    other => {
+                        tracing::warn!(payment_type = other, %tx_id, "persister load: unknown payment_type — skipping row");
+                        continue;
+                    }
                 };
                 let status = match status.as_str() {
+                    "pending" => PaymentStatus::Pending,
                     "confirmed" => PaymentStatus::Confirmed,
                     "failed" => PaymentStatus::Failed,
-                    _ => PaymentStatus::Pending,
+                    other => {
+                        tracing::warn!(status = other, %tx_id, "persister load: unknown payment status — skipping row");
+                        continue;
+                    }
                 };
                 payments_overlay.entry(owner_id).or_default().insert(
                     tx_id,

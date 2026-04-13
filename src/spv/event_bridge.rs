@@ -192,18 +192,8 @@ impl SpvEventBridge {
     /// Mirrors the old `EventHandler::on_sync_event` implementation
     /// (minus the dead finality channel code).
     fn handle_sync_event(&self, event: &SyncEvent) {
-        eprintln!(
-            "[DEBUG handle_sync_event] t={:?} {:?}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis()
-                % 100000,
-            event
-        );
         // Transition to Running on SyncComplete.
         if matches!(event, SyncEvent::SyncComplete { .. }) {
-            eprintln!("[DEBUG handle_sync_event] SyncComplete! Setting Running status");
             if let Ok(mut snap) = self.status.write() {
                 snap.status = SpvStatus::Running;
             }

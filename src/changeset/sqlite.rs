@@ -1583,6 +1583,24 @@ mod tests {
         SqliteWalletPersister::new(db, "testnet".to_string())
     }
 
+    /// Insert a test wallet row to satisfy FK constraints.
+    fn insert_test_wallet_row(db: &Database) {
+        db.execute(
+            "INSERT INTO wallet
+                (seed_hash, wallet_id, encrypted_seed, salt, nonce,
+                 master_ecdsa_bip44_account_0_epk, uses_password, network)
+             VALUES (?1, ?1, ?2, ?3, ?4, ?5, 0, 'testnet')",
+            rusqlite::params![
+                &TEST_WALLET_ID[..],
+                vec![0u8; 32],
+                vec![0u8; 16],
+                vec![0u8; 12],
+                vec![0u8; 33],
+            ],
+        )
+        .expect("insert test wallet row");
+    }
+
     /// Empty database returns an empty changeset.
     #[test]
     fn test_load_returns_empty_changeset() {
@@ -2065,21 +2083,7 @@ mod tests {
         let db = Arc::new(create_test_database().expect("create test db"));
         let persister = make_persister(db.clone());
 
-        // Insert a wallet row so the FK constraint is satisfied.
-        db.execute(
-            "INSERT INTO wallet
-                (seed_hash, wallet_id, encrypted_seed, salt, nonce,
-                 master_ecdsa_bip44_account_0_epk, uses_password, network)
-             VALUES (?1, ?1, ?2, ?3, ?4, ?5, 0, 'testnet')",
-            rusqlite::params![
-                &TEST_WALLET_ID[..],
-                vec![0u8; 32],
-                vec![0u8; 16],
-                vec![0u8; 12],
-                vec![0u8; 33],
-            ],
-        )
-        .expect("insert wallet row");
+        insert_test_wallet_row(&db);
 
         let standard = AccountType::Standard {
             index: 0,
@@ -2246,20 +2250,7 @@ mod tests {
         let persister = make_persister(db.clone());
 
         // Insert wallet row to satisfy FK.
-        db.execute(
-            "INSERT INTO wallet
-                (seed_hash, wallet_id, encrypted_seed, salt, nonce,
-                 master_ecdsa_bip44_account_0_epk, uses_password, network)
-             VALUES (?1, ?1, ?2, ?3, ?4, ?5, 0, 'testnet')",
-            rusqlite::params![
-                &TEST_WALLET_ID[..],
-                vec![0u8; 32],
-                vec![0u8; 16],
-                vec![0u8; 12],
-                vec![0u8; 33],
-            ],
-        )
-        .expect("insert wallet row");
+        insert_test_wallet_row(&db);
 
         let pubkey_bytes = [0x02u8; 33];
         let pubkey = dash_sdk::dpp::dashcore::PublicKey::from_slice(&pubkey_bytes).unwrap();
@@ -2361,20 +2352,7 @@ mod tests {
         let persister = make_persister(db.clone());
 
         // Wallet row for FK.
-        db.execute(
-            "INSERT INTO wallet
-                (seed_hash, wallet_id, encrypted_seed, salt, nonce,
-                 master_ecdsa_bip44_account_0_epk, uses_password, network)
-             VALUES (?1, ?1, ?2, ?3, ?4, ?5, 0, 'testnet')",
-            rusqlite::params![
-                &TEST_WALLET_ID[..],
-                vec![0u8; 32],
-                vec![0u8; 16],
-                vec![0u8; 12],
-                vec![0u8; 33],
-            ],
-        )
-        .expect("insert wallet row");
+        insert_test_wallet_row(&db);
 
         // Write phase: pool state for two account types + one locked UTXO.
         let standard = AccountType::Standard {
@@ -2509,20 +2487,7 @@ mod tests {
         let persister = make_persister(db.clone());
 
         // Wallet row for FK.
-        db.execute(
-            "INSERT INTO wallet
-                (seed_hash, wallet_id, encrypted_seed, salt, nonce,
-                 master_ecdsa_bip44_account_0_epk, uses_password, network)
-             VALUES (?1, ?1, ?2, ?3, ?4, ?5, 0, 'testnet')",
-            rusqlite::params![
-                &TEST_WALLET_ID[..],
-                vec![0u8; 32],
-                vec![0u8; 16],
-                vec![0u8; 12],
-                vec![0u8; 33],
-            ],
-        )
-        .expect("insert wallet row");
+        insert_test_wallet_row(&db);
 
         let standard = AccountType::Standard {
             index: 0,
@@ -2643,20 +2608,7 @@ mod tests {
         let persister = make_persister(db.clone());
 
         // Insert wallet row.
-        db.execute(
-            "INSERT INTO wallet
-                (seed_hash, wallet_id, encrypted_seed, salt, nonce,
-                 master_ecdsa_bip44_account_0_epk, uses_password, network)
-             VALUES (?1, ?1, ?2, ?3, ?4, ?5, 0, 'testnet')",
-            rusqlite::params![
-                &TEST_WALLET_ID[..],
-                vec![0u8; 32],
-                vec![0u8; 16],
-                vec![0u8; 12],
-                vec![0u8; 33],
-            ],
-        )
-        .expect("insert wallet row");
+        insert_test_wallet_row(&db);
 
         let txid = Txid::from_byte_array([0xAA; 32]);
         let outpoint = OutPoint::new(txid, 0);
@@ -2726,20 +2678,7 @@ mod tests {
         let persister = make_persister(db.clone());
 
         // Insert wallet row.
-        db.execute(
-            "INSERT INTO wallet
-                (seed_hash, wallet_id, encrypted_seed, salt, nonce,
-                 master_ecdsa_bip44_account_0_epk, uses_password, network)
-             VALUES (?1, ?1, ?2, ?3, ?4, ?5, 0, 'testnet')",
-            rusqlite::params![
-                &TEST_WALLET_ID[..],
-                vec![0u8; 32],
-                vec![0u8; 16],
-                vec![0u8; 12],
-                vec![0u8; 33],
-            ],
-        )
-        .expect("insert wallet row");
+        insert_test_wallet_row(&db);
 
         let owner_id = Identifier::from([1u8; 32]);
         let contact_id = Identifier::from([2u8; 32]);

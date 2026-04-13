@@ -264,7 +264,12 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                         "unrecognized account_type in wallet_account_pool_state".into(),
                     )) as Box<_>
                 })?;
-                let pool_type = AddressPoolType::from_db_discriminant(pool_disc as u8).ok_or_else(|| {
+                let pool_disc_u8 = u8::try_from(pool_disc).map_err(|_| {
+                    Box::new(SqlitePersistError::Encode(
+                        format!("pool_disc out of u8 range: {pool_disc}"),
+                    )) as Box<_>
+                })?;
+                let pool_type = AddressPoolType::from_db_discriminant(pool_disc_u8).ok_or_else(|| {
                     Box::new(SqlitePersistError::Encode(
                         format!("unrecognized AddressPoolType discriminant: {pool_disc}"),
                     )) as Box<_>
@@ -278,7 +283,11 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                     .entry(account_type)
                     .or_default()
                     .highest_used
-                    .insert(pool_type, highest_used as u32);
+                    .insert(pool_type, u32::try_from(highest_used).map_err(|_| {
+                        Box::new(SqlitePersistError::Encode(
+                            format!("highest_used out of u32 range: {highest_used}"),
+                        )) as Box<_>
+                    })?);
             }
         }
 
@@ -327,7 +336,11 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                 })?;
                 locked_outpoints.insert(OutPoint {
                     txid,
-                    vout: vout as u32,
+                    vout: u32::try_from(vout).map_err(|_| {
+                        Box::new(SqlitePersistError::Encode(
+                            format!("utxo vout out of u32 range: {vout}"),
+                        )) as Box<_>
+                    })?,
                 });
             }
 
@@ -465,7 +478,12 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                     )) as Box<_>
                 })?;
                 let txid = Txid::from_byte_array(txid_arr);
-                let outpoint = OutPoint::new(txid, output_index as u32);
+                let output_idx = u32::try_from(output_index).map_err(|_| {
+                    Box::new(SqlitePersistError::Encode(
+                        format!("asset lock output_index out of u32 range: {output_index}"),
+                    )) as Box<_>
+                })?;
+                let outpoint = OutPoint::new(txid, output_idx);
 
                 // Decode transaction.
                 let transaction: dash_sdk::dpp::dashcore::Transaction =
@@ -522,10 +540,22 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                     platform_wallet::changeset::AssetLockEntry {
                         out_point: outpoint,
                         transaction,
-                        account_index: account_index as u32,
+                        account_index: u32::try_from(account_index).map_err(|_| {
+                            Box::new(SqlitePersistError::Encode(
+                                format!("account_index out of u32 range: {account_index}"),
+                            )) as Box<_>
+                        })?,
                         funding_type,
-                        identity_index: identity_index as u32,
-                        amount_duffs: amount as u64,
+                        identity_index: u32::try_from(identity_index).map_err(|_| {
+                            Box::new(SqlitePersistError::Encode(
+                                format!("identity_index out of u32 range: {identity_index}"),
+                            )) as Box<_>
+                        })?,
+                        amount_duffs: u64::try_from(amount).map_err(|_| {
+                            Box::new(SqlitePersistError::Encode(
+                                format!("amount out of u64 range: {amount}"),
+                            )) as Box<_>
+                        })?,
                         status,
                         proof,
                     },
@@ -589,7 +619,11 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                 let mut request = ContactRequest::new(
                     from_id, to_id, sender_ki, recipient_ki,
                     account_ref, enc_pub_key, core_height,
-                    created_at_ms.unwrap_or(0).max(0) as u64,
+                    u64::try_from(created_at_ms.unwrap_or(0).max(0)).map_err(|_| {
+                        Box::new(SqlitePersistError::Encode(
+                            "created_at_ms out of u64 range".into(),
+                        )) as Box<_>
+                    })?,
                 );
                 request.encrypted_account_label = enc_label;
                 request.auto_accept_proof = auto_accept;
@@ -767,7 +801,11 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                     tx_id,
                     PaymentEntry {
                         counterparty_id,
-                        amount_duffs: amount as u64,
+                        amount_duffs: u64::try_from(amount).map_err(|_| {
+                            Box::new(SqlitePersistError::Encode(
+                                format!("payment amount out of u64 range: {amount}"),
+                            )) as Box<_>
+                        })?,
                         memo,
                         direction,
                         status,

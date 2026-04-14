@@ -9,8 +9,10 @@ use crate::ui::identities::add_new_identity_screen::AddNewIdentityScreen;
 use crate::ui::{RootScreenType, Screen, ScreenLike};
 
 use crate::model::wallet::Wallet;
+use crate::model::wallet::alias::validate_optional_alias;
 use crate::ui::components::password_input::PasswordInput;
 use crate::ui::theme::{ComponentStyles, DashColors};
+use crate::ui::wallets::alias_input::render_optional_alias_input;
 use bip39::Mnemonic;
 use egui::{ComboBox, Grid, RichText, Ui, Vec2};
 use std::sync::Arc;
@@ -126,17 +128,7 @@ impl ImportMnemonicScreen {
             );
         }
 
-        let alias = if self.alias_input.trim().is_empty() {
-            let existing_wallet_count = self
-                .app_context
-                .single_key_wallets
-                .read()
-                .map(|w| w.len())
-                .unwrap_or(0);
-            Some(format!("Key {number}", number = existing_wallet_count + 1))
-        } else {
-            Some(self.alias_input.clone())
-        };
+        let alias = Some(self.resolve_single_key_wallet_alias()?);
 
         // The single import path takes WIF only — normalise hex input to
         // WIF first so users can paste either shape while every import
@@ -184,6 +176,41 @@ impl ImportMnemonicScreen {
         Ok(AppAction::None)
     }
 
+    fn resolve_hd_wallet_alias(&self) -> Result<String, String> {
+        let existing_wallet_count = self
+            .app_context
+            .wallets
+            .read()
+            .map(|w| w.len())
+            .unwrap_or(0);
+        if let Some(alias) =
+            validate_optional_alias(&self.alias_input).map_err(|e| e.to_string())?
+        {
+            Ok(alias.to_string())
+        } else {
+            Ok(format!(
+                "Wallet {number}",
+                number = existing_wallet_count + 1
+            ))
+        }
+    }
+
+    fn resolve_single_key_wallet_alias(&self) -> Result<String, String> {
+        let existing_wallet_count = self
+            .app_context
+            .single_key_wallets
+            .read()
+            .map(|w| w.len())
+            .unwrap_or(0);
+        if let Some(alias) =
+            validate_optional_alias(&self.alias_input).map_err(|e| e.to_string())?
+        {
+            Ok(alias.to_string())
+        } else {
+            Ok(format!("Key {number}", number = existing_wallet_count + 1))
+        }
+    }
+
     fn save_wallet(&mut self) -> Result<AppAction, String> {
         if let Some(mnemonic) = &self.seed_phrase {
             let seed = mnemonic.to_seed("");
@@ -195,17 +222,7 @@ impl ImportMnemonicScreen {
             };
 
             // Generate default wallet name if none provided
-            let wallet_alias = if self.alias_input.trim().is_empty() {
-                let existing_wallet_count = self
-                    .app_context
-                    .wallets
-                    .read()
-                    .map(|w| w.len())
-                    .unwrap_or(0);
-                format!("Wallet {number}", number = existing_wallet_count + 1)
-            } else {
-                self.alias_input.clone()
-            };
+            let wallet_alias = self.resolve_hd_wallet_alias()?;
 
             let wallet = Wallet::new_from_seed(
                 seed,
@@ -583,10 +600,7 @@ impl ScreenLike for ImportMnemonicScreen {
 
                     ui.add_space(8.0);
 
-                    ui.horizontal(|ui| {
-                        ui.label("Name:");
-                        ui.text_edit_singleline(&mut self.alias_input);
-                    });
+                    render_optional_alias_input(ui, "Name:", &mut self.alias_input);
 
                     step += 1;
 
@@ -699,5 +713,150 @@ impl ScreenLike for ImportMnemonicScreen {
 
         action |= pending_action;
         action
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ImportMnemonicScreen;
+    use crate::app_dir::ensure_env_file;
+    use crate::context::AppContext;
+    use crate::context::connection_status::ConnectionStatus;
+    use crate::database::test_helpers::create_database_at_path;
+    use crate::model::wallet::Wallet;
+    use crate::model::wallet::alias::MAX_CHARS;
+    use crate::model::wallet::birth_height::WalletOrigin;
+    use crate::utils::tasks::TaskManager;
+    use bip39::Mnemonic;
+    use dash_sdk::dpp::dashcore::Network;
+    use std::sync::Arc;
+
+    fn offline_ctx() -> (Arc<AppContext>, tempfile::TempDir) {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp_dir.path().to_path_buf();
+        ensure_env_file(&data_dir);
+        let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
+        let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
+        let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
+        let ctx = AppContext::new(
+            data_dir,
+            Network::Testnet,
+            db,
+            Arc::new(TaskManager::new()),
+            Arc::new(ConnectionStatus::new()),
+            egui::Context::default(),
+            app_kv,
+            secret_store,
+            crate::model::user_role::UserRoleCell::default(),
+        )
+        .expect("offline testnet AppContext::new");
+        (ctx, temp_dir)
+    }
+
+    fn test_mnemonic() -> Mnemonic {
+        Mnemonic::parse_normalized(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        )
+        .expect("mnemonic should parse")
+    }
+
+    fn register_existing_hd_wallet(app_context: &Arc<AppContext>, alias: &str, seed_byte: u8) {
+        let seed = [seed_byte; 64];
+        let wallet = Wallet::new_from_seed(seed, Network::Testnet, Some(alias.to_string()), None)
+            .expect("wallet should build");
+        app_context
+            .register_wallet(wallet, &seed, WalletOrigin::Imported)
+            .expect("wallet should register");
+    }
+
+    #[tokio::test]
+    async fn resolve_hd_wallet_alias_falls_back_for_whitespace_only_input() {
+        let (app_context, _tmp) = offline_ctx();
+        for i in 0..4 {
+            register_existing_hd_wallet(&app_context, &format!("Existing {i}"), 7 + i as u8);
+        }
+        let mut screen = ImportMnemonicScreen::new(&app_context);
+        screen.alias_input = "   ".to_string();
+
+        let alias = screen
+            .resolve_hd_wallet_alias()
+            .expect("alias should resolve");
+
+        assert_eq!(alias, "Wallet 5");
+    }
+
+    #[test]
+    fn resolve_single_key_wallet_alias_falls_back_for_whitespace_only_input() {
+        let (app_context, _tmp) = offline_ctx();
+        // Count defaults from the in-memory map length; leave it empty so Key 1 is chosen.
+        let mut screen = ImportMnemonicScreen::new(&app_context);
+        screen.alias_input = "  \n ".to_string();
+
+        let alias = screen
+            .resolve_single_key_wallet_alias()
+            .expect("alias should resolve");
+
+        assert_eq!(alias, "Key 1");
+    }
+
+    #[test]
+    fn resolve_wallet_alias_preserves_invalid_input_on_validation_error() {
+        let raw = "x".repeat(MAX_CHARS + 1);
+        let (app_context, _tmp) = offline_ctx();
+        let mut screen = ImportMnemonicScreen::new(&app_context);
+        screen.alias_input = raw.clone();
+
+        let err = screen
+            .resolve_hd_wallet_alias()
+            .expect_err("alias should be rejected");
+
+        assert!(err.contains("Name is"));
+        assert_eq!(raw.chars().count(), MAX_CHARS + 1);
+    }
+
+    #[tokio::test]
+    async fn save_wallet_uses_default_wallet_n_alias_for_whitespace_only_input() {
+        let (app_context, _tmp) = offline_ctx();
+        let mnemonic = test_mnemonic();
+        let expected_seed = mnemonic.to_seed("");
+        let expected_seed_hash = {
+            use crate::model::wallet::ClosedKeyItem;
+            ClosedKeyItem::compute_seed_hash(&expected_seed)
+        };
+        let mut screen = ImportMnemonicScreen::new(&app_context);
+        screen.seed_phrase = Some(mnemonic);
+        screen.alias_input = "  \n\t ".to_string();
+        screen.identity_scan_count = 0;
+
+        screen.save_wallet().expect("save should succeed");
+
+        let expected_wallet = app_context
+            .wallets
+            .read()
+            .unwrap()
+            .values()
+            .find(|wallet| wallet.read().unwrap().seed_hash() == expected_seed_hash)
+            .cloned()
+            .expect("wallet should be registered");
+        assert_eq!(
+            expected_wallet.read().unwrap().alias.as_deref(),
+            Some("Wallet 1")
+        );
+    }
+
+    #[test]
+    fn save_wallet_rejects_over_limit_alias_without_registering_wallet() {
+        let (app_context, _tmp) = offline_ctx();
+        let mut screen = ImportMnemonicScreen::new(&app_context);
+        screen.seed_phrase = Some(test_mnemonic());
+        screen.alias_input = "a".repeat(MAX_CHARS + 1);
+        screen.identity_scan_count = 0;
+
+        let err = screen
+            .save_wallet()
+            .expect_err("over-limit alias should be rejected");
+
+        assert!(err.contains("Name is"));
+        assert!(app_context.wallets.read().unwrap().is_empty());
     }
 }

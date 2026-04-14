@@ -1,4 +1,5 @@
 pub mod add_new_wallet_screen;
+mod alias_input;
 pub mod asset_lock_detail_screen;
 pub mod create_asset_lock_screen;
 pub mod import_mnemonic_screen;

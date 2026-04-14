@@ -104,6 +104,24 @@ impl WalletMigrationEntry {
         let mut seed_zeroed = seed;
         zeroize::Zeroize::zeroize(&mut seed_zeroed);
 
+        // A `wallet_id` of all-zero bytes is cryptographically
+        // impossible from a real seed (it would require a SHA-256
+        // collision against the empty pre-image). Treat it as a
+        // sentinel for derivation failure — refuse to write it,
+        // since a NULL wallet_id surfaces in the migration screen
+        // for retry while a zeroed wallet_id would silently bind
+        // every future persister write to the wrong key.
+        if wallet_id == [0u8; 32] {
+            tracing::error!(
+                db_seed_hash = %hex::encode(self.info.seed_hash),
+                "WalletMigrationScreen: derived wallet_id is all-zero — refusing to write"
+            );
+            return Err(
+                "Could not derive a valid wallet key. The wallet may be corrupted — try re-importing your recovery phrase."
+                    .to_string(),
+            );
+        }
+
         db.set_wallet_id_for_locked_wallet(&self.info.seed_hash, &wallet_id)
             .map_err(|e| {
                 tracing::warn!(

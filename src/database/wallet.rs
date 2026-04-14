@@ -783,10 +783,19 @@ impl Database {
             return Ok(vec![]);
         }
 
+        // Filter on `uses_password = 1`: only password-protected
+        // wallets are legitimate candidates for the migration screen.
+        // A `uses_password = 0` row with a NULL wallet_id means
+        // backfill failed (corrupt seed, unparseable network, etc.) —
+        // surfacing it here would trap the user in an infinite
+        // password loop because `decrypt_seed` would always reject
+        // the raw seed bytes as invalid AES-GCM ciphertext. Such
+        // rows must be repaired by a separate code path (or surfaced
+        // as a hard error during `ensure_wallet_id_column_and_backfill`).
         let mut stmt = conn.prepare(
             "SELECT seed_hash, alias, password_hint, encrypted_seed, salt, nonce, network
              FROM wallet
-             WHERE wallet_id IS NULL",
+             WHERE wallet_id IS NULL AND uses_password = 1",
         )?;
 
         let rows = stmt.query_map([], |row| {
@@ -807,7 +816,29 @@ impl Database {
                     )),
                 )
             })?;
-            let network = network_str.parse::<Network>().unwrap_or(Network::Testnet);
+            // Normalize the legacy "dash" network alias from v0.9.0
+            // databases (the v33 rename migration would normally
+            // convert it, but this query may run against pre-v33
+            // wallet rows). Match `ensure_wallet_id_column_and_backfill`
+            // for consistency.
+            let normalized_network = if network_str == "dash" {
+                "mainnet"
+            } else {
+                network_str.as_str()
+            };
+            // Strict parse. A bad value would feed the wrong network
+            // into `derive_wallet_id_from_seed` after unlock and
+            // silently produce a wrong-network wallet_id, permanently
+            // locking the user out of their funds.
+            let network = normalized_network.parse::<Network>().map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    6,
+                    rusqlite::types::Type::Text,
+                    Box::new(crate::database::CorruptedBlobError(format!(
+                        "unparseable wallet.network value `{network_str}`: {e}"
+                    ))),
+                )
+            })?;
 
             Ok(LockedWalletInfo {
                 seed_hash,
@@ -830,16 +861,26 @@ impl Database {
     /// `wallet_id` was set concurrently. This method is **only** for the
     /// migration screen — do not use it anywhere else. For routine wallet
     /// persistence, use `store_wallet` or `store_wallet_with_addresses`.
+    ///
+    /// Returns `Err(QueryReturnedNoRows)` if no row matched (wrong
+    /// `seed_hash`, wallet already had a `wallet_id`, or the wallet
+    /// row was deleted between the read and this write). The caller
+    /// should treat that as a failure rather than retrying with the
+    /// same arguments.
     pub fn set_wallet_id_for_locked_wallet(
         &self,
         seed_hash: &[u8; 32],
         wallet_id: &[u8; 32],
     ) -> rusqlite::Result<()> {
-        self.execute(
+        let rows = self.execute(
             "UPDATE wallet SET wallet_id = ?1 WHERE seed_hash = ?2 AND wallet_id IS NULL",
             params![wallet_id.as_slice(), seed_hash.as_slice()],
         )?;
-        Ok(())
+        match rows {
+            1 => Ok(()),
+            0 => Err(rusqlite::Error::QueryReturnedNoRows),
+            n => Err(rusqlite::Error::StatementChangedRows(n)),
+        }
     }
 }
 
@@ -1713,11 +1754,19 @@ mod tests {
         db.set_wallet_id_for_locked_wallet(&seed_hash, &wallet_id)
             .unwrap();
 
-        // Attempting to write a different wallet_id should be a no-op
-        // (AND wallet_id IS NULL guard prevents clobber).
+        // Attempting to write a different wallet_id MUST fail —
+        // the `AND wallet_id IS NULL` guard means 0 rows match,
+        // and `set_wallet_id_for_locked_wallet` now returns
+        // `QueryReturnedNoRows` instead of silently swallowing the
+        // outcome (SF-C7 fix). The wallet_id stays untouched in SQL.
         let different_id = [0xFFu8; 32];
-        db.set_wallet_id_for_locked_wallet(&seed_hash, &different_id)
-            .unwrap();
+        let err = db
+            .set_wallet_id_for_locked_wallet(&seed_hash, &different_id)
+            .expect_err("clobber attempt must return an error");
+        assert!(
+            matches!(err, rusqlite::Error::QueryReturnedNoRows),
+            "expected QueryReturnedNoRows, got: {err:?}"
+        );
 
         // wallet_id should still be the original.
         let stored: Vec<u8> = {

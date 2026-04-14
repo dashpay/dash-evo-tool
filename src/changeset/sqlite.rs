@@ -116,11 +116,12 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                 .or_insert_with(PlatformWalletChangeSet::default)
                 .merge(changeset);
         }
-        // The persister flushes inline on every store call.
-        if let Err(e) = self.flush(wallet_id) {
-            tracing::warn!(error = %e, "Inline flush after store failed");
-        }
-        Ok(())
+        // The persister flushes inline on every store call. Propagate
+        // any flush error so callers can react (retry, surface a
+        // banner, fail the operation). The flush impl re-merges the
+        // staged changeset on failure, so the data is not lost — the
+        // next `store` or `flush` call will retry the same payload.
+        self.flush(wallet_id)
     }
 
     fn flush(&self, wallet_id: WalletId) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

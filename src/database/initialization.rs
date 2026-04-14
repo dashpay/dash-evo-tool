@@ -144,15 +144,51 @@ impl Database {
 
         for (seed_hash_bytes, raw_seed, network_str) in &rows {
             if raw_seed.len() != 64 {
-                tracing::warn!(
+                // Logged at error: the wallet row is corrupt and
+                // unusable. We do NOT abort startup — other wallets
+                // may be fine, and the locked-wallet query filters
+                // `uses_password = 1`, so this no-password row will
+                // not surface in WalletMigrationScreen and trap the
+                // user in an infinite password loop. The wallet stays
+                // present in SQL with `wallet_id IS NULL`; user-
+                // visible recovery is out of scope (re-import).
+                tracing::error!(
                     seed = %hex::encode(seed_hash_bytes),
                     len = raw_seed.len(),
-                    "ensure_wallet_id_column_and_backfill: skipping wallet with unexpected seed length"
+                    "ensure_wallet_id_column_and_backfill: wallet has corrupt seed length, leaving wallet_id NULL — wallet will be unusable"
                 );
                 continue;
             }
             let seed: [u8; 64] = raw_seed.as_slice().try_into().unwrap();
-            let network = network_str.parse::<Network>().unwrap_or(Network::Testnet);
+            // Normalize the legacy "dash" network alias to "mainnet"
+            // — this backfill runs before the v33 migration that
+            // performs the schema-level rename, and v0.9.0 databases
+            // store "dash" verbatim. After v33, the column always
+            // holds "mainnet", but supporting both keeps the upgrade
+            // path from v0.9.0 → v34 working.
+            let normalized_network = if network_str == "dash" {
+                "mainnet"
+            } else {
+                network_str.as_str()
+            };
+            // Parse strictly. A bad value here would silently derive
+            // a wrong-network wallet_id (mainnet wallet keyed under
+            // testnet derivation), permanently locking the user out
+            // of their funds. Skip the row so the locked-wallet guard
+            // surfaces the corruption to the user instead.
+            let network = match normalized_network.parse::<Network>() {
+                Ok(net) => net,
+                Err(e) => {
+                    tracing::error!(
+                        seed = %hex::encode(seed_hash_bytes),
+                        network_str = %network_str,
+                        error = %e,
+                        "ensure_wallet_id_column_and_backfill: unparseable network — \
+                         skipping (locked-wallet guard will surface this)"
+                    );
+                    continue;
+                }
+            };
             let Some(wallet_id) = crate::model::wallet::derive_wallet_id_from_seed(&seed, network)
             else {
                 tracing::warn!(

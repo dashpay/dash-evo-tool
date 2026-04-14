@@ -7,7 +7,7 @@ impl Database {
     /// Retrieves an asset lock transaction by its transaction ID.
     ///
     /// Returns (Transaction, amount, Option<InstantLock>, Option<chain_locked_height>,
-    /// Option<identity_id>, wallet_seed_hash, network).
+    /// Option<identity_id>, wallet_id, network).
     #[allow(clippy::type_complexity)]
     pub fn get_asset_lock_transaction(
         &self,
@@ -49,7 +49,7 @@ impl Database {
                 None
             };
 
-            let wallet_seed_hash: [u8; 32] = wallet_seed
+            let wallet_id: [u8; 32] = wallet_seed
                 .try_into()
                 .map_err(|_| rusqlite::Error::InvalidQuery)?;
 
@@ -59,7 +59,7 @@ impl Database {
                 islock,
                 chain_locked_height,
                 identity_id,
-                wallet_seed_hash,
+                wallet_id,
                 network,
             )))
         } else {
@@ -199,7 +199,7 @@ impl Database {
                 None
             };
 
-            let wallet_seed_array: [u8; 32] = wallet_seed
+            let wallet_id: [u8; 32] = wallet_seed
                 .try_into()
                 .map_err(|_| rusqlite::Error::InvalidQuery)?;
 
@@ -209,7 +209,7 @@ impl Database {
                 islock,
                 chain_locked_height,
                 identity_id,
-                wallet_seed_array,
+                wallet_id,
             ));
         }
 
@@ -370,18 +370,11 @@ impl Database {
                 None
             };
 
-            let wallet_seed_hash: [u8; 32] = wallet_seed
+            let wallet_id: [u8; 32] = wallet_seed
                 .try_into()
                 .map_err(|_| rusqlite::Error::InvalidQuery)?;
 
-            results.push((
-                tx,
-                amount,
-                islock,
-                chain_locked_height,
-                wallet_seed_hash,
-                network,
-            ));
+            results.push((tx, amount, islock, chain_locked_height, wallet_id, network));
         }
 
         Ok(results)

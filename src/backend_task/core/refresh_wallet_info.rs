@@ -281,8 +281,8 @@ impl AppContext {
                 .collect()
         };
 
-        // UTXOs, transactions, and balances are now persisted via the
-        // changeset path (auto-flushed via FlushStrategy::Immediate). Only
+        // UTXOs, transactions, and balances are persisted via the changeset
+        // path (the persister flushes inline on every store call). Only
         // asset lock cleanup and in-memory state updates remain as direct
         // operations.
 
@@ -313,8 +313,8 @@ impl AppContext {
                         0,             // locked
                     );
                 }
-                // Wallet changes are auto-flushed via FlushStrategy::Immediate
-                // when queued by the platform wallet.
+                // Wallet changes are persisted inline when queued by
+                // the platform wallet (the persister flushes on every store).
             }
         }
 

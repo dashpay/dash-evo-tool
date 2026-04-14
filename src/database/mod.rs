@@ -16,7 +16,7 @@ mod tokens;
 mod top_ups;
 mod utxo;
 mod wallet;
-pub use wallet::WalletError;
+pub use wallet::{LockedWalletInfo, WalletError};
 
 use dash_sdk::dpp::dashcore::Network;
 use rusqlite::{Connection, Params};

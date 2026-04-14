@@ -333,7 +333,7 @@ impl AppContext {
                     "Removing wallet with missing wallet_id \
                      (password-protected, needs re-import after v40 migration)"
                 );
-                let _ = db.remove_wallet(&w.seed_hash(), &network);
+                let _ = db.remove_wallet(&w.wallet_id(), &network);
                 false
             } else {
                 true

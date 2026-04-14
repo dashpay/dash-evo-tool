@@ -103,10 +103,10 @@ impl AppContext {
     /// is queued the call is a no-op. Persistence failures are logged but
     /// never propagated — the in-memory state remains authoritative.
     ///
-    /// With [`FlushStrategy::Immediate`](crate::changeset::FlushStrategy::Immediate)
-    /// (the default), each `queue()` call auto-flushes, making explicit calls
-    /// here unnecessary for most code paths. This method remains available for
-    /// batch operations that use [`FlushStrategy::Manual`](crate::changeset::FlushStrategy::Manual).
+    /// The persister flushes inline on every `store()` call, so explicit
+    /// calls here are unnecessary for most code paths. This method remains
+    /// available as a safety net for callers that want to guarantee any
+    /// pending staged state is written before proceeding.
     #[allow(dead_code)]
     pub(crate) fn flush_wallet_persistence(&self, platform_wallet: &PlatformWallet) {
         if let Err(e) = platform_wallet.flush_persist() {
@@ -282,7 +282,7 @@ impl AppContext {
     /// previous unlock), this is a no-op.
     pub(crate) fn register_with_platform_wallet_manager(
         self: &Arc<Self>,
-        seed_hash: [u8; 32],
+        wallet_id: [u8; 32],
         seed_bytes: [u8; 64],
     ) {
         // Check if already registered by looking at whether the wallet
@@ -291,7 +291,7 @@ impl AppContext {
             let already_registered = wallets.values().any(|w| {
                 w.read()
                     .ok()
-                    .map(|g| g.seed_hash() == seed_hash && g.platform_wallet.is_some())
+                    .map(|g| g.wallet_id() == wallet_id && g.platform_wallet.is_some())
                     .unwrap_or(false)
             });
             if already_registered {
@@ -317,15 +317,6 @@ impl AppContext {
             Ok(platform_wallet) => {
                 let wallet_id = platform_wallet.wallet_id();
 
-                // Persist wallet_id to DB (no-op if already set).
-                if let Err(e) = self.db.set_wallet_id(&seed_hash, &wallet_id) {
-                    tracing::warn!(
-                        error = %e,
-                        seed = %hex::encode(seed_hash),
-                        "Failed to persist wallet_id to database"
-                    );
-                }
-
                 // Store platform_wallet on the Wallet struct. The map
                 // is already keyed by wallet_id (populated at load time
                 // or at creation; the migration screen ensures this).
@@ -345,7 +336,7 @@ impl AppContext {
             }
             Err(e) => {
                 tracing::warn!(
-                    seed = %hex::encode(seed_hash),
+                    wallet_id = %hex::encode(wallet_id),
                     error = %e,
                     "Failed to create PlatformWallet from seed bytes for bridge"
                 );
@@ -947,18 +938,21 @@ impl AppContext {
         // fields, applied at replay_persisted_state_after_bootstrap.
         // No direct-load needed here.
 
-        // 3c. Hydrate established contacts (Item 7c). Reads
-        // `dashpay_contact_requests` rows with full DIP-15 crypto,
-        // joins outgoing+incoming pairs, builds full
-        // `ContactRequest` + `EstablishedContact` instances. Rows
-        // with NULL crypto are skipped — those are either legacy
-        // (pre-v38) or in-flight; the next background
-        // `DashPayContactRequests` sync will repopulate them.
-        let mi_established_contacts = self.load_established_contacts_for_identity(&identity_id);
+        // 3c. Established contacts: NOT hydrated here. They land on
+        // the `ManagedIdentity` via the persister's `load()` →
+        // `apply_changeset` flow at `PlatformWallet` creation time,
+        // and via subsequent persister `store()` calls during normal
+        // operation. Since contact writers are persister-only at
+        // runtime (`Database::save_contact_request` and
+        // `save_dashpay_contact` are `#[cfg(test)]` only), there is
+        // no contact in SQL that wouldn't already be in
+        // `managed.established_contacts`.
 
         // 4. Add or update the identity in the manager
         if let Some(managed) = manager.identity_manager.managed_identity_mut(&identity_id) {
-            // Update existing managed identity
+            // Update existing managed identity. Established contacts
+            // are owned by the platform-wallet's apply path, so we
+            // leave `managed.established_contacts` alone.
             managed.identity = qualified_identity.identity.clone();
             managed.key_storage = mi_key_storage;
             managed.dpns_names = mi_dpns_names;
@@ -967,15 +961,6 @@ impl AppContext {
             managed.top_ups = qualified_identity.top_ups.clone();
             // dashpay_profile and dashpay_payments are populated
             // by the persister load overlay at replay time.
-            // Established contacts: extend rather than replace so
-            // live-mutation entries (auto-established during this
-            // session) aren't clobbered by a mid-session resync.
-            for (contact_id, contact) in mi_established_contacts.clone() {
-                managed
-                    .established_contacts
-                    .entry(contact_id)
-                    .or_insert(contact);
-            }
             if let Some(alias) = &qualified_identity.alias {
                 managed.label = Some(alias.clone());
             }
@@ -1003,7 +988,8 @@ impl AppContext {
                         managed.top_ups = qualified_identity.top_ups.clone();
                         // dashpay_profile + dashpay_payments populated by
                         // persister load overlay at replay time.
-                        managed.established_contacts = mi_established_contacts;
+                        // established_contacts populated by the persister's
+                        // apply path — see step 3c above.
                         if let Some(alias) = &qualified_identity.alias {
                             managed.label = Some(alias.clone());
                         }
@@ -1023,240 +1009,6 @@ impl AppContext {
                 }
             }
         }
-    }
-
-    /// Hydrate the DashPay subset (`dashpay_profile` +
-    /// `dashpay_payments`) for an identity from SQL. Called by
-    /// `sync_identity_to_platform_wallet` to rebuild the state that
-    /// the persister wrote on the previous run. Returns
-    /// `(None, empty map)` if no rows exist or the SQL read fails.
-    ///
-    /// The persister writes these fields via `write_identity_dashpay_subset`
-    /// on flush. `SqliteWalletPersister::load()` intentionally does
-    /// NOT read them — the persister layer doesn't have access to
-    /// the full `Identity` blob needed to construct an `IdentityEntry`,
-    /// so the read happens here where the `QualifiedIdentity` is
-    /// already in scope.
-    /// Superseded by persister load overlay (dashpay_profiles +
-    /// dashpay_payments_overlay fields). Kept for potential debugging.
-    #[allow(dead_code)]
-    fn load_dashpay_state_for_identity(
-        &self,
-        identity_id: &dash_sdk::platform::Identifier,
-    ) -> (
-        Option<platform_wallet::wallet::dashpay::DashPayProfile>,
-        std::collections::BTreeMap<String, platform_wallet::wallet::dashpay::PaymentEntry>,
-    ) {
-        use platform_wallet::wallet::dashpay::{
-            DashPayProfile, PaymentDirection, PaymentEntry, PaymentStatus,
-        };
-
-        let network_str = self.network.to_string();
-
-        // Profile: straightforward map from StoredProfile to DashPayProfile.
-        let profile = match self.db.load_dashpay_profile(identity_id, &network_str) {
-            Ok(Some(stored)) => Some(DashPayProfile {
-                display_name: stored.display_name,
-                bio: stored.bio,
-                avatar_url: stored.avatar_url,
-                avatar_hash: None,
-                avatar_fingerprint: None,
-                avatar_bytes: stored.avatar_bytes,
-                public_message: stored.public_message,
-            }),
-            Ok(None) => None,
-            Err(e) => {
-                tracing::debug!(
-                    identity = %identity_id,
-                    error = %e,
-                    "load_dashpay_state: profile read failed — leaving empty"
-                );
-                None
-            }
-        };
-
-        // Payment history: convert StoredPayment rows to a
-        // BTreeMap<tx_id, PaymentEntry>. `from_identity_id` vs
-        // `to_identity_id` determines direction from the owner's
-        // perspective.
-        let mut payments = std::collections::BTreeMap::new();
-        const LOAD_LIMIT: u32 = 10_000;
-        let identity_bytes = identity_id.to_buffer();
-        match self.db.load_payment_history(identity_id, LOAD_LIMIT) {
-            Ok(stored_payments) => {
-                for sp in stored_payments {
-                    let (direction, counterparty_bytes) = if sp.from_identity_id == identity_bytes {
-                        (PaymentDirection::Sent, &sp.to_identity_id)
-                    } else {
-                        (PaymentDirection::Received, &sp.from_identity_id)
-                    };
-                    let Ok(counterparty_id) =
-                        dash_sdk::platform::Identifier::from_bytes(counterparty_bytes)
-                    else {
-                        tracing::debug!(
-                            identity = %identity_id,
-                            tx_id = %sp.tx_id,
-                            "load_dashpay_state: invalid counterparty id — skipping payment"
-                        );
-                        continue;
-                    };
-                    let status = match sp.status.as_str() {
-                        "confirmed" => PaymentStatus::Confirmed,
-                        "failed" => PaymentStatus::Failed,
-                        _ => PaymentStatus::Pending,
-                    };
-                    payments.insert(
-                        sp.tx_id,
-                        PaymentEntry {
-                            counterparty_id,
-                            amount_duffs: sp.amount as u64,
-                            memo: sp.memo,
-                            direction,
-                            status,
-                        },
-                    );
-                }
-            }
-            Err(e) => {
-                tracing::debug!(
-                    identity = %identity_id,
-                    error = %e,
-                    "load_dashpay_state: payment history read failed — leaving empty"
-                );
-            }
-        }
-
-        (profile, payments)
-    }
-
-    /// Item 7c: Hydrate `managed.established_contacts` from SQL.
-    ///
-    /// Loads every `dashpay_contact_requests` row for this identity
-    /// where the DIP-15 crypto columns are populated (status =
-    /// 'accepted'), groups them by `(from, to)` pair, and for each
-    /// pair where BOTH directions exist builds a full
-    /// `EstablishedContact` with real `ContactRequest` crypto. Rows
-    /// with NULL crypto (legacy or mid-sync) are silently excluded
-    /// by the SQL WHERE clause — the next background
-    /// `DashPayContactRequests` sync repopulates them.
-    ///
-    /// Returns `BTreeMap<contact_identity_id, EstablishedContact>`
-    /// ready to be assigned to `ManagedIdentity.established_contacts`.
-    ///
-    /// Does NOT touch key-wallet's receival-account state — that's
-    /// separately bootstrapped by `bootstrap_dashpay_contact_accounts`.
-    fn load_established_contacts_for_identity(
-        &self,
-        identity_id: &dash_sdk::platform::Identifier,
-    ) -> std::collections::BTreeMap<
-        dash_sdk::platform::Identifier,
-        platform_wallet::wallet::dashpay::EstablishedContact,
-    > {
-        use platform_wallet::wallet::dashpay::{ContactRequest, EstablishedContact};
-
-        let network_str = self.network.to_string();
-        let rows = match self
-            .db
-            .load_contact_request_crypto_rows(identity_id, &network_str)
-        {
-            Ok(rows) => rows,
-            Err(e) => {
-                tracing::debug!(
-                    identity = %identity_id,
-                    error = %e,
-                    "load_established_contacts: SQL read failed — returning empty map"
-                );
-                return std::collections::BTreeMap::new();
-            }
-        };
-
-        // Group rows by `(from, to)` pair so we can find matching
-        // outgoing + incoming for each contact.
-        let mut by_pair: std::collections::BTreeMap<
-            (
-                dash_sdk::platform::Identifier,
-                dash_sdk::platform::Identifier,
-            ),
-            ContactRequest,
-        > = std::collections::BTreeMap::new();
-
-        for (
-            from_id,
-            to_id,
-            sender_key_index,
-            recipient_key_index,
-            account_reference,
-            encrypted_public_key,
-            encrypted_account_label_bytes,
-            auto_accept_proof,
-            core_height_created_at,
-            platform_created_at_ms,
-        ) in rows
-        {
-            let mut request = ContactRequest::new(
-                from_id,
-                to_id,
-                sender_key_index,
-                recipient_key_index,
-                account_reference,
-                encrypted_public_key,
-                core_height_created_at,
-                // The `platform_created_at_ms` column is already in
-                // milliseconds (matching `ContactRequest.created_at:
-                // TimestampMillis`). No conversion. See Item 7 review M2.
-                platform_created_at_ms,
-            );
-            request.encrypted_account_label = encrypted_account_label_bytes;
-            request.auto_accept_proof = auto_accept_proof;
-
-            by_pair.insert((from_id, to_id), request);
-        }
-
-        // Join outgoing (owner → contact) with incoming (contact → owner).
-        let mut result = std::collections::BTreeMap::new();
-        for ((from_id, to_id), outgoing) in &by_pair {
-            // Only process pairs where `from_id == identity_id`
-            // (outgoing). The sibling incoming entry will be keyed
-            // `(contact_id, identity_id)`.
-            if *from_id != *identity_id {
-                continue;
-            }
-            // S1: self-contact edge case. A malformed platform
-            // contact request with `from == to == identity` would
-            // otherwise build `EstablishedContact::new(owner, req,
-            // req)` — semantically wrong (you can't be your own
-            // contact). Skip.
-            if *from_id == *to_id {
-                tracing::debug!(
-                    identity = %identity_id,
-                    "load_established_contacts: self-contact row — skipping"
-                );
-                continue;
-            }
-            let contact_id = *to_id;
-            let Some(incoming) = by_pair.get(&(contact_id, *identity_id)) else {
-                tracing::debug!(
-                    identity = %identity_id,
-                    contact = %contact_id,
-                    "load_established_contacts: outgoing without matching incoming — skipping"
-                );
-                continue;
-            };
-            result.insert(
-                contact_id,
-                EstablishedContact::new(contact_id, outgoing.clone(), incoming.clone()),
-            );
-        }
-
-        if !result.is_empty() {
-            tracing::debug!(
-                identity = %identity_id,
-                count = result.len(),
-                "load_established_contacts: reconstructed from SQL"
-            );
-        }
-
-        result
     }
 
     /// Sync all locally stored identities to platform-wallet IdentityManagers.
@@ -1290,9 +1042,13 @@ impl AppContext {
     /// Called during wallet bootstrap (after identities are synced) so that
     /// SPV monitors incoming payment addresses for existing contacts.
     fn bootstrap_dashpay_contact_accounts(&self) {
-        let network_str = self.network.to_string();
-
-        // Load all identities to find their contacts
+        // Established contacts are sourced from the in-memory
+        // `ManagedIdentity.established_contacts` map populated by the
+        // persister's `load()` → `apply_changeset` flow at
+        // `PlatformWallet` creation time. They are by definition
+        // accepted (the contract for `EstablishedContact` requires
+        // both directions of the contact-request handshake), so no
+        // status filter is needed.
         let identities = match self.load_local_qualified_identities() {
             Ok(ids) => ids,
             Err(e) => {
@@ -1306,15 +1062,6 @@ impl AppContext {
         for identity in &identities {
             let identity_id = identity.identity.id();
 
-            // Load contacts for this identity from DB
-            let contacts = match self.db.load_dashpay_contacts(&identity_id, &network_str) {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::debug!(identity = %identity_id, error = %e, "Failed to load contacts");
-                    continue;
-                }
-            };
-
             // Find the PlatformWallet for this identity's wallet
             let (wallet_id, _) = match identity.determine_wallet_info() {
                 Ok(Some(info)) => info,
@@ -1325,18 +1072,29 @@ impl AppContext {
                 None => continue,
             };
 
-            for contact in &contacts {
-                if contact.contact_status != "accepted" {
+            // Snapshot the established_contact ids from the in-memory
+            // ManagedIdentity. We collect into a Vec so we can drop
+            // the read-side wallet_manager guard before the
+            // per-contact registration loop below acquires its own
+            // write guard.
+            let contact_ids: Vec<dash_sdk::platform::Identifier> = {
+                let Ok(wm_guard) = pw.wallet_manager().try_read() else {
+                    tracing::debug!(
+                        identity = %identity_id,
+                        "Skipping contact account bootstrap: wallet_manager read lock contended"
+                    );
                     continue;
-                }
-
-                let contact_id = match dash_sdk::dpp::prelude::Identifier::from_bytes(
-                    &contact.contact_identity_id,
-                ) {
-                    Ok(id) => id,
-                    Err(_) => continue,
                 };
+                let Some(info) = wm_guard.get_wallet_info(&pw.wallet_id()) else {
+                    continue;
+                };
+                let Some(managed) = info.identity_manager.managed_identity(&identity_id) else {
+                    continue;
+                };
+                managed.established_contacts.keys().copied().collect()
+            };
 
+            for contact_id in contact_ids {
                 // Register the contact account synchronously using blocking locks.
                 // This creates a DashpayReceivingFunds account in ManagedWalletInfo
                 // so SPV monitors incoming payment addresses for this contact.

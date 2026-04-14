@@ -32,6 +32,7 @@ use crate::ui::tools::platform_info_screen::PlatformInfoScreen;
 use crate::ui::tools::proof_log_screen::ProofLogScreen;
 use crate::ui::tools::proof_visualizer_screen::ProofVisualizerScreen;
 use crate::ui::tools::transition_visualizer_screen::TransitionVisualizerScreen;
+use crate::ui::wallets::wallet_migration_screen::WalletMigrationScreen;
 use crate::ui::wallets::wallets_screen::WalletsBalancesScreen;
 use crate::ui::welcome_screen::WelcomeScreen;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
@@ -176,6 +177,18 @@ pub struct AppState {
     /// when running under the `testing` feature.
     #[cfg(feature = "testing")]
     _temp_dir: Option<tempfile::TempDir>,
+    /// Migration screen shown when password-protected wallets need unlocking
+    /// before the v34 migration can proceed. While `Some`, `update()` renders
+    /// only this screen and skips all regular app logic. Cleared once
+    /// migration completes and full initialization succeeds.
+    /// Under the `testing` feature this field is never written (migration is
+    /// not triggered in tests), hence `dead_code` when testing.
+    #[cfg_attr(feature = "testing", allow(dead_code))]
+    wallet_migration: Option<WalletMigrationScreen>,
+    /// Saved constructor arguments used to complete full initialization after
+    /// the wallet migration screen finishes. Cleared once `new_inner` runs.
+    #[cfg(not(feature = "testing"))]
+    pending_init: Option<PendingInit>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -250,6 +263,17 @@ impl BitOrAssign for AppAction {
         *self = rhs;
     }
 }
+/// Saved constructor arguments used to complete full initialization once the
+/// wallet migration screen finishes. Only used in the production (non-testing)
+/// code path.
+#[cfg(not(feature = "testing"))]
+struct PendingInit {
+    db: Arc<Database>,
+    db_file_path: PathBuf,
+    data_dir: PathBuf,
+    egui_ctx: egui::Context,
+}
+
 impl AppState {
     /// Creates a new `AppState` using the production database.
     ///
@@ -265,8 +289,24 @@ impl AppState {
         initialize_logger();
         let db_file_path = data_file_path(&data_dir, "data.db")?;
         let db = Arc::new(Database::new(&db_file_path)?);
-        db.initialize(&db_file_path)?;
-        Self::new_inner(ctx, db, data_dir)
+
+        // Phase 1 of the v34 migration: add wallet_id column + backfill
+        // no-password wallets. This commits immediately so the column persists
+        // even if the full migration rolls back later.
+        db.ensure_wallet_id_column_and_backfill()?;
+
+        // Check whether any password-protected wallet still needs unlocking.
+        let locked = db.locked_wallets_needing_wallet_id()?;
+        if locked.is_empty() {
+            // Happy path: no locked wallets — run full migration and init normally.
+            db.initialize(&db_file_path)?;
+            Self::new_inner(ctx, db, data_dir)
+        } else {
+            // Migration mode: defer full initialization until the user unlocks
+            // each wallet. Construct a bare-minimum AppState that only hosts the
+            // migration screen — no AppContext, no SDK clients.
+            Self::new_in_migration_mode(ctx, db, db_file_path, data_dir, locked)
+        }
     }
 
     /// Creates a new `AppState` using an in-memory database and an isolated
@@ -294,6 +334,115 @@ impl AppState {
         // Keep the temp dir alive for the lifetime of AppState.
         state._temp_dir = Some(temp_dir);
         Ok(state)
+    }
+
+    /// Create a bare-minimum `AppState` that hosts only the wallet migration
+    /// screen. No `AppContext`, no SDK clients, no ZMQ listeners.
+    ///
+    /// `update()` detects `wallet_migration.is_some()` and renders only the
+    /// migration screen. When the user finishes unlocking wallets,
+    /// `finish_post_migration_init()` is called to complete initialization.
+    #[cfg(not(feature = "testing"))]
+    fn new_in_migration_mode(
+        ctx: egui::Context,
+        db: Arc<Database>,
+        db_file_path: PathBuf,
+        data_dir: PathBuf,
+        locked: Vec<crate::database::LockedWalletInfo>,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let (task_result_sender, task_result_receiver) =
+            tokiompsc::channel(256).with_egui_ctx(ctx.clone());
+        let (core_message_sender, core_message_receiver) =
+            mpsc::channel().with_egui_ctx(ctx.clone());
+
+        let subtasks = Arc::new(TaskManager::new());
+        let connection_status = Arc::new(ConnectionStatus::new());
+
+        // Migration mode uses default theme until settings are loaded.
+        let theme = ThemeState::new(ThemeMode::System);
+
+        let migration_screen = WalletMigrationScreen::new(db.clone(), locked);
+
+        Ok(Self {
+            main_screens: BTreeMap::new(),
+            selected_main_screen: RootScreenType::RootScreenWalletsBalances,
+            screen_stack: vec![],
+            chosen_network: Network::Mainnet,
+            connection_status,
+            network_contexts: BTreeMap::new(),
+            network_switch_pending: None,
+            network_switch_banner: None,
+            zmq_listeners: BTreeMap::new(),
+            core_message_sender,
+            core_message_receiver,
+            task_result_sender,
+            task_result_receiver,
+            theme,
+            last_scheduled_vote_check: Instant::now(),
+            last_repaint_request: Instant::now(),
+            subtasks,
+            show_welcome_screen: false,
+            welcome_screen: None,
+            previous_connection_state: None,
+            connection_banner_handle: None,
+            shutdown_receiver: None,
+            shutdown_started: None,
+            accessibility_enforced: false,
+            accessibility_activated: false,
+            accessibility_retries: 0,
+            #[cfg(feature = "mcp")]
+            mcp_app_context: None,
+            wallet_migration: Some(migration_screen),
+            pending_init: Some(PendingInit {
+                db,
+                db_file_path,
+                data_dir,
+                egui_ctx: ctx,
+            }),
+        })
+    }
+
+    /// Complete full initialization after the wallet migration screen finishes.
+    ///
+    /// Calls `db.initialize()` (which now succeeds because all wallets have been
+    /// unlocked), then calls `new_inner()` and patches the current `AppState`
+    /// with the fully initialized state. Any error is surfaced as a global banner.
+    #[cfg(not(feature = "testing"))]
+    fn finish_post_migration_init(&mut self, egui_ctx: &egui::Context) {
+        let Some(pending) = self.pending_init.take() else {
+            return;
+        };
+        match pending.db.initialize(&pending.db_file_path) {
+            Err(e) => {
+                MessageBanner::set_global(
+                    egui_ctx,
+                    "The database upgrade could not be completed. Please restart the app and try again.",
+                    MessageType::Error,
+                )
+                .with_details(&e);
+                return;
+            }
+            Ok(()) => {}
+        }
+        match Self::new_inner(pending.egui_ctx, pending.db, pending.data_dir) {
+            Ok(mut new_state) => {
+                new_state.wallet_migration = None;
+                new_state.pending_init = None;
+                // Swap the task channels so in-flight messages aren't lost.
+                // (In migration mode no tasks are dispatched, so the channels
+                // are empty — but keep the pattern correct.)
+                new_state.task_result_sender = self.task_result_sender.clone();
+                *self = new_state;
+            }
+            Err(e) => {
+                MessageBanner::set_global(
+                    egui_ctx,
+                    "The app could not start after the database upgrade. Please restart.",
+                    MessageType::Error,
+                )
+                .with_details(e.as_ref());
+            }
+        }
     }
 
     fn new_inner(
@@ -597,6 +746,9 @@ impl AppState {
             mcp_app_context,
             #[cfg(feature = "testing")]
             _temp_dir: None,
+            wallet_migration: None,
+            #[cfg(not(feature = "testing"))]
+            pending_init: None,
         };
 
         // Initialize welcome screen if needed (uses whichever context is active)
@@ -649,7 +801,8 @@ impl AppState {
     /// Flush all platform wallet persisters across every network context.
     ///
     /// Called during shutdown to ensure any staged-but-unflushed changesets
-    /// (e.g. from `FlushStrategy::Manual`) are written before the process exits.
+    /// are written before the process exits. The persister flushes inline on
+    /// every store call, so this is a safety net for edge cases only.
     fn flush_all_wallet_persistence(&self) {
         let contexts: Vec<&Arc<AppContext>> = self.network_contexts.values().collect();
 
@@ -1037,6 +1190,25 @@ impl App for AppState {
             self.shutdown_receiver = Some(self.subtasks.shutdown_async());
             self.shutdown_started = Some(std::time::Instant::now());
             ctx.request_repaint();
+            return;
+        }
+
+        // ── Wallet migration mode ──────────────────────────────────────────────
+        // If a wallet migration screen is present, render ONLY that screen.
+        // No AppContext, no SDK clients, no ZMQ. When the user finishes unlocking
+        // all wallets (completed = true), run full initialization and transition
+        // to the normal app.
+        #[cfg(not(feature = "testing"))]
+        if let Some(migration_screen) = &mut self.wallet_migration {
+            self.theme.poll_and_apply(ctx);
+            let action = migration_screen.ui(ctx);
+            let _ = action; // migration screen only returns AppAction::None
+            let completed = migration_screen.completed;
+            if completed {
+                // Take the screen so `self` is fully writable again.
+                self.wallet_migration = None;
+                self.finish_post_migration_init(ctx);
+            }
             return;
         }
 

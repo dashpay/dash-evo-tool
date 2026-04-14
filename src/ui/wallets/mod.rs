@@ -9,4 +9,5 @@ pub mod shielded_send_screen;
 pub mod shielded_tab;
 pub mod single_key_send_screen;
 pub mod unshield_credits_screen;
+pub mod wallet_migration_screen;
 pub mod wallets_screen;

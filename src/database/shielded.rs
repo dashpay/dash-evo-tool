@@ -35,16 +35,16 @@ impl Database {
     /// Insert a shielded note into the database.
     pub fn insert_shielded_note(
         &self,
-        wallet_seed_hash: &WalletId,
+        wallet_id: &WalletId,
         note: &InsertShieldedNote<'_>,
     ) -> rusqlite::Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT OR IGNORE INTO shielded_notes
-             (wallet_seed_hash, note_data, position, cmx, nullifier, block_height, value, network)
+             (wallet_id, note_data, position, cmx, nullifier, block_height, value, network)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
-                wallet_seed_hash.as_slice(),
+                wallet_id.as_slice(),
                 note.note_data,
                 note.position as i64,
                 note.cmx.as_slice(),
@@ -60,18 +60,18 @@ impl Database {
     /// Get all unspent shielded notes for a wallet on a given network.
     pub fn get_unspent_shielded_notes(
         &self,
-        wallet_seed_hash: &WalletId,
+        wallet_id: &WalletId,
         network: &str,
     ) -> rusqlite::Result<Vec<ShieldedNoteRow>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, note_data, position, cmx, nullifier, block_height, value
              FROM shielded_notes
-             WHERE wallet_seed_hash = ?1 AND network = ?2 AND is_spent = 0
+             WHERE wallet_id = ?1 AND network = ?2 AND is_spent = 0
              ORDER BY position ASC",
         )?;
 
-        let rows = stmt.query_map(params![wallet_seed_hash.as_slice(), network], |row| {
+        let rows = stmt.query_map(params![wallet_id.as_slice(), network], |row| {
             Ok(ShieldedNoteRow {
                 id: row.get(0)?,
                 note_data: row.get(1)?,
@@ -99,18 +99,18 @@ impl Database {
     /// Get all shielded notes (spent and unspent) for a wallet on a given network.
     pub fn get_all_shielded_notes(
         &self,
-        wallet_seed_hash: &WalletId,
+        wallet_id: &WalletId,
         network: &str,
     ) -> rusqlite::Result<Vec<ShieldedNoteRow>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, note_data, position, cmx, nullifier, block_height, value
              FROM shielded_notes
-             WHERE wallet_seed_hash = ?1 AND network = ?2
+             WHERE wallet_id = ?1 AND network = ?2
              ORDER BY position ASC",
         )?;
 
-        let rows = stmt.query_map(params![wallet_seed_hash.as_slice(), network], |row| {
+        let rows = stmt.query_map(params![wallet_id.as_slice(), network], |row| {
             Ok(ShieldedNoteRow {
                 id: row.get(0)?,
                 note_data: row.get(1)?,
@@ -138,28 +138,28 @@ impl Database {
     /// Mark a shielded note as spent by its nullifier.
     pub fn mark_shielded_note_spent(
         &self,
-        wallet_seed_hash: &WalletId,
+        wallet_id: &WalletId,
         nullifier: &[u8; 32],
         network: &str,
     ) -> rusqlite::Result<usize> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "UPDATE shielded_notes SET is_spent = 1
-             WHERE wallet_seed_hash = ?1 AND nullifier = ?2 AND network = ?3",
-            params![wallet_seed_hash.as_slice(), nullifier.as_slice(), network],
+             WHERE wallet_id = ?1 AND nullifier = ?2 AND network = ?3",
+            params![wallet_id.as_slice(), nullifier.as_slice(), network],
         )
     }
 
     /// Delete all shielded notes for a wallet (used by resync).
     pub fn delete_shielded_notes(
         &self,
-        wallet_seed_hash: &WalletId,
+        wallet_id: &WalletId,
         network: &str,
     ) -> rusqlite::Result<usize> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "DELETE FROM shielded_notes WHERE wallet_seed_hash = ?1 AND network = ?2",
-            params![wallet_seed_hash.as_slice(), network],
+            "DELETE FROM shielded_notes WHERE wallet_id = ?1 AND network = ?2",
+            params![wallet_id.as_slice(), network],
         )
     }
 
@@ -238,14 +238,14 @@ impl Database {
     /// Get the last nullifier sync height and timestamp for a wallet on a given network.
     pub fn get_nullifier_sync_info(
         &self,
-        wallet_seed_hash: &WalletId,
+        wallet_id: &WalletId,
         network: &str,
     ) -> Result<(u64, u64), String> {
         let conn = self.conn.lock().unwrap();
         let result = conn.query_row(
             "SELECT last_nullifier_sync_height, last_nullifier_sync_timestamp FROM shielded_wallet_meta
-             WHERE wallet_seed_hash = ?1 AND network = ?2",
-            params![wallet_seed_hash.as_slice(), network],
+             WHERE wallet_id = ?1 AND network = ?2",
+            params![wallet_id.as_slice(), network],
             |row| {
                 let height: i64 = row.get(0)?;
                 let timestamp: i64 = row.get(1)?;
@@ -262,7 +262,7 @@ impl Database {
     /// Set the last nullifier sync height and timestamp for a wallet on a given network.
     pub fn set_nullifier_sync_info(
         &self,
-        wallet_seed_hash: &WalletId,
+        wallet_id: &WalletId,
         network: &str,
         height: u64,
         timestamp: u64,
@@ -270,10 +270,10 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT OR REPLACE INTO shielded_wallet_meta
-             (wallet_seed_hash, network, last_nullifier_sync_height, last_nullifier_sync_timestamp)
+             (wallet_id, network, last_nullifier_sync_height, last_nullifier_sync_timestamp)
              VALUES (?1, ?2, ?3, ?4)",
             params![
-                wallet_seed_hash.as_slice(),
+                wallet_id.as_slice(),
                 network,
                 height as i64,
                 timestamp as i64
@@ -286,15 +286,15 @@ impl Database {
     /// Get total shielded balance (sum of unspent note values) for a wallet.
     pub fn get_shielded_balance(
         &self,
-        wallet_seed_hash: &WalletId,
+        wallet_id: &WalletId,
         network: &str,
     ) -> rusqlite::Result<u64> {
         let conn = self.conn.lock().unwrap();
         let result: i64 = conn
             .query_row(
                 "SELECT COALESCE(SUM(value), 0) FROM shielded_notes
-             WHERE wallet_seed_hash = ?1 AND network = ?2 AND is_spent = 0",
-                params![wallet_seed_hash.as_slice(), network],
+             WHERE wallet_id = ?1 AND network = ?2 AND is_spent = 0",
+                params![wallet_id.as_slice(), network],
                 |row| row.get(0),
             )
             .unwrap_or(0);

@@ -342,8 +342,6 @@ impl Wallet {
             _ => (seed.to_vec(), vec![], vec![], false),
         };
 
-        let seed_hash = ClosedKeyItem::compute_seed_hash(&seed);
-
         // Derive master BIP44 extended public key
         let master_priv = ExtendedPrivKey::new_master(network, &seed).map_err(|e| {
             TaskError::WalletKeyDerivationFailed {
@@ -371,7 +369,7 @@ impl Wallet {
             wallet_seed: WalletSeed::Open(OpenWalletSeed {
                 seed,
                 wallet_info: ClosedKeyItem {
-                    seed_hash,
+                    wallet_id,
                     encrypted_seed,
                     salt,
                     nonce,
@@ -412,6 +410,24 @@ impl Wallet {
     pub fn wallet_id(&self) -> crate::platform_wallet_bridge::WalletId {
         self.wallet_id
     }
+}
+
+/// Derive the canonical `wallet_id` for a 64-byte BIP32 seed on the given
+/// network. `wallet_id = SHA256(root_pub_key.serialize() || root_chain_code)`
+/// — identical to how the v34 migration computes it. Placing both sites on
+/// the same helper prevents drift.
+///
+/// Used by both the v34 migration and `WalletMigrationScreen`.
+pub(crate) fn derive_wallet_id_from_seed(
+    seed: &[u8; 64],
+    network: Network,
+) -> Option<crate::platform_wallet_bridge::WalletId> {
+    use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
+    use dash_sdk::dpp::key_wallet::bip32::{ExtendedPrivKey, ExtendedPubKey};
+    let secp = Secp256k1::new();
+    let master_priv = ExtendedPrivKey::new_master(network, seed).ok()?;
+    let root_pub = ExtendedPubKey::from_priv(&secp, &master_priv);
+    Some(Wallet::compute_wallet_id_from_root_pub(&root_pub))
 }
 
 /// Transaction lifecycle status.
@@ -510,13 +526,9 @@ impl WalletTransaction {
 
 /// Canonical wallet identifier type. `WalletId = [u8; 32]` =
 /// `SHA256(root_pub_key || chain_code)`, matching platform-wallet's
-/// `key_wallet_manager::WalletId`. Replaces the former
-/// `WalletSeedHash` (which was `SHA256(seed_bytes)`).
+/// `key_wallet_manager::WalletId`. Formerly called `WalletSeedHash`
+/// (which was `SHA256(seed_bytes)`); all callers now use `WalletId`.
 pub use crate::platform_wallet_bridge::WalletId;
-
-/// Legacy alias kept for `ClosedKeyItem.seed_hash` field type.
-/// Both are `[u8; 32]` — the alias is purely for documentation.
-pub type WalletSeedHash = [u8; 32];
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum WalletSeed {
@@ -531,9 +543,8 @@ pub struct OpenKeyItem<const N: usize> {
 
 impl<const N: usize> Debug for OpenKeyItem<N> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let hash = ClosedKeyItem::compute_seed_hash(&self.seed);
         f.debug_struct("OpenKeyItem")
-            .field("seed_hash", &hex::encode(hash))
+            .field("wallet_id", &hex::encode(self.wallet_info.wallet_id))
             .finish()
     }
 }
@@ -543,7 +554,8 @@ pub type OpenWalletSeed = OpenKeyItem<64>;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClosedKeyItem {
-    pub seed_hash: WalletId, // SHA-256 hash of the seed
+    /// `SHA256(root_pub_key || chain_code)` — the canonical wallet identifier.
+    pub wallet_id: WalletId,
     pub encrypted_seed: Vec<u8>,
     pub salt: Vec<u8>,
     pub nonce: Vec<u8>,
@@ -839,13 +851,6 @@ impl Wallet {
         }
     }
 
-    pub fn seed_hash(&self) -> [u8; 32] {
-        match &self.wallet_seed {
-            WalletSeed::Open(opened) => opened.wallet_info.seed_hash,
-            WalletSeed::Closed(closed) => closed.seed_hash,
-        }
-    }
-
     pub fn encrypted_seed_slice(&self) -> &[u8] {
         match &self.wallet_seed {
             WalletSeed::Open(opened) => opened.wallet_info.encrypted_seed.as_slice(),
@@ -874,45 +879,37 @@ impl Wallet {
         }
     }
 
-    // Allow dead_code: This utility method finds wallets by seed hash in collections,
+    // Allow dead_code: This utility method finds wallets by wallet_id in collections,
     // useful for wallet lookup operations and multi-wallet management
     #[allow(dead_code)]
     pub fn find_in_arc_rw_lock_slice(
         slice: &[Arc<RwLock<Wallet>>],
-        wallet_seed_hash: WalletId,
+        wallet_id: WalletId,
     ) -> Option<Arc<RwLock<Wallet>>> {
         for wallet in slice {
-            // Attempt to read the wallet from the RwLock
             let wallet_ref = wallet.read().unwrap();
-            // Check if the wallet's seed hash matches the provided wallet_seed_hash
-            if wallet_ref.seed_hash() == wallet_seed_hash {
-                // Return a clone of the Arc<RwLock<Wallet>> that matches
+            if wallet_ref.wallet_id() == wallet_id {
                 return Some(wallet.clone());
             }
         }
-        // Return None if no wallet with the matching seed hash is found
         None
     }
 
     pub fn derive_private_key_in_arc_rw_lock_slice(
         slice: &[Arc<RwLock<Wallet>>],
-        wallet_seed_hash: WalletId,
+        wallet_id: WalletId,
         derivation_path: &DerivationPath,
         network: Network,
     ) -> Result<Option<[u8; 32]>, String> {
         for wallet in slice {
-            // Attempt to read the wallet from the RwLock
             let wallet_ref = wallet.read().unwrap();
-            // Check if this wallet's seed hash matches the target hash
-            if wallet_ref.seed_hash() == wallet_seed_hash {
-                // Attempt to derive the private key using the provided derivation path
+            if wallet_ref.wallet_id() == wallet_id {
                 let extended_private_key = derivation_path
                     .derive_priv_ecdsa_for_master_seed(wallet_ref.seed_bytes()?, network)
                     .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
                 return Ok(Some(extended_private_key.private_key.secret_bytes()));
             }
         }
-        // Return None if no wallet with the matching seed hash is found
         Ok(None)
     }
 
@@ -1093,7 +1090,7 @@ impl Wallet {
         app_context
             .db
             .add_address_if_not_exists(
-                &self.seed_hash(),
+                &self.wallet_id(),
                 &address,
                 &app_context.network,
                 derivation_path,
@@ -1238,7 +1235,7 @@ impl Wallet {
     ) -> Result<(), String> {
         context
             .db
-            .update_address_balance(&self.seed_hash(), address, new_balance)
+            .update_address_balance(&self.wallet_id(), address, new_balance)
             .map_err(|e| e.to_string())
     }
 
@@ -1247,12 +1244,12 @@ impl Wallet {
         used_utxos: &BTreeMap<OutPoint, (TxOut, Address)>,
         db: &Database,
     ) -> Result<(), String> {
-        let seed_hash = self.seed_hash();
+        let wallet_id = self.wallet_id();
         let affected_addresses: BTreeSet<_> =
             used_utxos.values().map(|(_, addr)| addr.clone()).collect();
         for address in affected_addresses {
             let new_balance = self.address_balance(&address);
-            db.update_address_balance(&seed_hash, &address, new_balance)
+            db.update_address_balance(&wallet_id, &address, new_balance)
                 .map_err(|e| e.to_string())?;
         }
         Ok(())
@@ -1266,7 +1263,7 @@ impl Wallet {
     ) -> Result<(), String> {
         context
             .db
-            .update_address_total_received(&self.seed_hash(), address, total_received)
+            .update_address_total_received(&self.wallet_id(), address, total_received)
             .map_err(|e| e.to_string())
     }
 
@@ -1640,7 +1637,6 @@ mod tests {
         let master_bip44_ecdsa_extended_public_key =
             ExtendedPubKey::from_priv(&secp, &bip44_account_private);
 
-        let seed_hash = ClosedKeyItem::compute_seed_hash(&seed);
         let root_pub = ExtendedPubKey::from_priv(&secp, &master_private_key);
         let wallet_id = Wallet::compute_wallet_id_from_root_pub(&root_pub);
 
@@ -1649,7 +1645,7 @@ mod tests {
             wallet_seed: WalletSeed::Open(OpenWalletSeed {
                 seed,
                 wallet_info: ClosedKeyItem {
-                    seed_hash,
+                    wallet_id,
                     encrypted_seed: seed.to_vec(),
                     salt: vec![],
                     nonce: vec![],
@@ -1794,11 +1790,11 @@ mod tests {
     }
 
     #[test]
-    fn test_wallet_seed_hash_consistent() {
+    fn test_wallet_id_consistent() {
         let wallet = test_wallet();
-        let hash1 = wallet.seed_hash();
-        let hash2 = wallet.seed_hash();
-        assert_eq!(hash1, hash2);
+        let id1 = wallet.wallet_id();
+        let id2 = wallet.wallet_id();
+        assert_eq!(id1, id2);
     }
 
     #[test]
@@ -2072,7 +2068,7 @@ mod tests {
     #[test]
     fn test_wallet_seed_close_and_reopen() {
         let mut wallet = test_wallet();
-        let original_hash = wallet.seed_hash();
+        let original_id = wallet.wallet_id();
 
         wallet.wallet_seed.close();
         assert!(!wallet.is_open());
@@ -2083,7 +2079,7 @@ mod tests {
         // Reopen without password (test wallet has no encryption)
         wallet.wallet_seed.open_no_password().unwrap();
         assert!(wallet.is_open());
-        assert_eq!(wallet.seed_hash(), original_hash);
+        assert_eq!(wallet.wallet_id(), original_id);
     }
 
     // ========================================================================
@@ -2093,7 +2089,6 @@ mod tests {
     #[test]
     fn test_wallet_arc_ref_equality() {
         let wallet = test_wallet();
-        let seed_hash = wallet.seed_hash();
         let arc1 = Arc::new(RwLock::new(wallet.clone()));
         let arc2 = Arc::new(RwLock::new(wallet));
 
@@ -2112,11 +2107,11 @@ mod tests {
     #[test]
     fn test_find_in_arc_rw_lock_slice_found() {
         let wallet = test_wallet();
-        let seed_hash = wallet.seed_hash();
+        let wallet_id = wallet.wallet_id();
         let arc = Arc::new(RwLock::new(wallet));
         let slice = vec![arc];
 
-        let result = Wallet::find_in_arc_rw_lock_slice(&slice, seed_hash);
+        let result = Wallet::find_in_arc_rw_lock_slice(&slice, wallet_id);
         assert!(result.is_some());
     }
 

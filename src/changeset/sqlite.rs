@@ -46,28 +46,20 @@ use std::sync::{Arc, Mutex};
 
 use dash_sdk::dpp::dashcore::hashes::Hash;
 
-/// Controls when queued changesets are written to storage.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FlushStrategy {
-    /// Flush to storage after every [`store`](PlatformWalletPersistence::store) call.
-    Immediate,
-    /// Caller must explicitly call [`flush`](PlatformWalletPersistence::flush).
-    Manual,
-}
-
 /// Persists [`PlatformWalletChangeSet`] deltas into the evo-tool SQLite database.
 ///
 /// See the module docs for the current scope. The persister is
 /// shared across all wallets managed by a `PlatformWalletManager`;
 /// each wallet is identified by its `WalletId` (SHA256 of root
 /// public key + chain code, from `key-wallet`).
+///
+/// Every [`store`](PlatformWalletPersistence::store) call flushes
+/// inline to SQLite. There is no deferred batch window.
 pub struct SqliteWalletPersister {
     db: Arc<Database>,
     network: String,
     /// Per-wallet accumulated changesets waiting to be flushed.
     staged: Mutex<BTreeMap<WalletId, PlatformWalletChangeSet>>,
-    /// When to write queued changesets to storage.
-    strategy: FlushStrategy,
 }
 
 /// Error type for [`SqliteWalletPersister`].
@@ -89,22 +81,13 @@ pub enum SqlitePersistError {
 impl SqliteWalletPersister {
     /// Create a new persister for the given `network`.
     ///
-    /// Uses [`FlushStrategy::Immediate`] by default so that every
-    /// `store()` call is automatically persisted.
+    /// Every `store()` call flushes inline to SQLite.
     pub fn new(db: Arc<Database>, network: String) -> Self {
         Self {
             db,
             network,
             staged: Mutex::new(BTreeMap::new()),
-            strategy: FlushStrategy::Immediate,
         }
-    }
-
-    /// Set the flush strategy for this persister.
-    #[allow(dead_code)]
-    pub fn with_strategy(mut self, strategy: FlushStrategy) -> Self {
-        self.strategy = strategy;
-        self
     }
 }
 
@@ -133,10 +116,9 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                 .or_insert_with(PlatformWalletChangeSet::default)
                 .merge(changeset);
         }
-        if matches!(self.strategy, FlushStrategy::Immediate) {
-            if let Err(e) = self.flush(wallet_id) {
-                tracing::warn!(error = %e, "Auto-flush after store failed");
-            }
+        // The persister flushes inline on every store call.
+        if let Err(e) = self.flush(wallet_id) {
+            tracing::warn!(error = %e, "Inline flush after store failed");
         }
         Ok(())
     }
@@ -747,11 +729,14 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
         {
             use platform_wallet::wallet::dashpay::DashPayProfile;
 
-            let mut stmt = guard.prepare(
-                "SELECT identity_id, display_name, bio, avatar_url, avatar_bytes, public_message
+            let mut stmt = guard
+                .prepare(
+                    "SELECT identity_id, display_name, bio, avatar_url, avatar_hash,
+                        avatar_fingerprint, avatar_bytes, public_message
                  FROM dashpay_profiles
                  WHERE wallet_id = ?1 AND network = ?2",
-            ).map_err(sqlite_err)?;
+                )
+                .map_err(sqlite_err)?;
 
             let rows = stmt
                 .query_map(rusqlite::params![&wallet_id[..], &self.network], |row| {
@@ -761,14 +746,24 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                         row.get::<_, Option<String>>(2)?,
                         row.get::<_, Option<String>>(3)?,
                         row.get::<_, Option<Vec<u8>>>(4)?,
-                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, Option<Vec<u8>>>(5)?,
+                        row.get::<_, Option<Vec<u8>>>(6)?,
+                        row.get::<_, Option<String>>(7)?,
                     ))
                 })
                 .map_err(sqlite_err)?;
 
             for row in rows {
-                let (id_bytes, display_name, bio, avatar_url, avatar_bytes, public_message) =
-                    row.map_err(sqlite_err)?;
+                let (
+                    id_bytes,
+                    display_name,
+                    bio,
+                    avatar_url,
+                    avatar_hash,
+                    avatar_fingerprint,
+                    avatar_bytes,
+                    public_message,
+                ) = row.map_err(sqlite_err)?;
                 let id = match <[u8; 32]>::try_from(id_bytes.as_slice()) {
                     Ok(arr) => dash_sdk::platform::Identifier::from(arr),
                     Err(_) => {
@@ -777,14 +772,33 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                         )) as Box<_>);
                     }
                 };
+                let avatar_hash = match avatar_hash {
+                    Some(bytes) => Some(<[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| {
+                        Box::new(SqlitePersistError::Encode(
+                            "avatar_hash must be 32 bytes".into(),
+                        )) as Box<dyn std::error::Error + Send + Sync>
+                    })?),
+                    None => None,
+                };
+                let avatar_fingerprint = match avatar_fingerprint {
+                    Some(bytes) => {
+                        Some(<[u8; 8]>::try_from(bytes.as_slice()).map_err(|_| {
+                            Box::new(SqlitePersistError::Encode(
+                                "avatar_fingerprint must be 8 bytes".into(),
+                            ))
+                                as Box<dyn std::error::Error + Send + Sync>
+                        })?)
+                    }
+                    None => None,
+                };
                 profiles.insert(
                     id,
                     Some(DashPayProfile {
                         display_name,
                         bio,
                         avatar_url,
-                        avatar_hash: None,
-                        avatar_fingerprint: None,
+                        avatar_hash,
+                        avatar_fingerprint,
                         avatar_bytes,
                         public_message,
                     }),
@@ -1113,13 +1127,15 @@ impl SqliteWalletPersister {
         let mut upsert_profile = tx.prepare_cached(
             "INSERT INTO dashpay_profiles
                 (identity_id, wallet_id, network, display_name, bio, avatar_url,
-                 avatar_bytes, public_message, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, unixepoch())
+                 avatar_hash, avatar_fingerprint, avatar_bytes, public_message, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, unixepoch())
              ON CONFLICT(identity_id, network) DO UPDATE SET
                 wallet_id = COALESCE(excluded.wallet_id, wallet_id),
                 display_name = excluded.display_name,
                 bio = excluded.bio,
                 avatar_url = excluded.avatar_url,
+                avatar_hash = excluded.avatar_hash,
+                avatar_fingerprint = excluded.avatar_fingerprint,
                 avatar_bytes = excluded.avatar_bytes,
                 public_message = excluded.public_message,
                 updated_at = unixepoch()",
@@ -1162,6 +1178,8 @@ impl SqliteWalletPersister {
                         profile.display_name,
                         profile.bio,
                         profile.avatar_url,
+                        profile.avatar_hash,
+                        profile.avatar_fingerprint,
                         profile.avatar_bytes,
                         profile.public_message,
                     ])?;
@@ -1662,9 +1680,9 @@ mod tests {
     fn insert_test_wallet_row(db: &Database) {
         db.execute(
             "INSERT INTO wallet
-                (seed_hash, wallet_id, encrypted_seed, salt, nonce,
+                (wallet_id, encrypted_seed, salt, nonce,
                  master_ecdsa_bip44_account_0_epk, uses_password, network)
-             VALUES (?1, ?1, ?2, ?3, ?4, ?5, 0, 'testnet')",
+             VALUES (?1, ?2, ?3, ?4, ?5, 0, 'testnet')",
             rusqlite::params![
                 &TEST_WALLET_ID[..],
                 vec![0u8; 32],
@@ -1725,8 +1743,8 @@ mod tests {
             display_name: Some("alice".into()),
             bio: Some("test bio".into()),
             avatar_url: Some("https://example.com/avatar.png".into()),
-            avatar_hash: None,
-            avatar_fingerprint: None,
+            avatar_hash: Some([0xaa; 32]),
+            avatar_fingerprint: Some([0xbb; 8]),
             avatar_bytes: Some(vec![1, 2, 3, 4]),
             public_message: Some("hello world".into()),
         };
@@ -1769,6 +1787,8 @@ mod tests {
         );
         assert_eq!(stored.public_message.as_deref(), Some("hello world"));
         assert_eq!(stored.avatar_bytes, Some(vec![1, 2, 3, 4]));
+        assert_eq!(stored.avatar_hash, Some(vec![0xaa; 32]));
+        assert_eq!(stored.avatar_fingerprint, Some(vec![0xbb; 8]));
     }
 
     /// An IdentityChangeSet carrying a `dashpay_payments` entry lands

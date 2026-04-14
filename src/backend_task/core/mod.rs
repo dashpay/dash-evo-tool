@@ -568,8 +568,8 @@ impl AppContext {
 
         let txid = tx.txid();
 
-        // Wallet changes (UTXO updates) are auto-flushed via
-        // FlushStrategy::Immediate when queued by the platform wallet.
+        // Wallet changes (UTXO updates) are persisted inline when queued
+        // by the platform wallet (the persister flushes on every store call).
 
         let total_amount: u64 = request.recipients.iter().map(|r| r.amount_duffs).sum();
         let recipients_result: Vec<(String, u64)> = request

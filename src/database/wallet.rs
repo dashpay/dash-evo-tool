@@ -364,7 +364,7 @@ impl Database {
         Ok(())
     }
 
-    /// Phase 10 6c: `wallet_transactions` table with per-account
+    /// The `wallet_transactions` table with per-account
     /// attribution. One row per `(wallet_id, account_type, txid,
     /// network)` — same txid can appear in multiple accounts'
     /// buckets because `cs.core.per_account[AccountType].transactions`
@@ -438,7 +438,7 @@ impl Database {
                     )
                 })?;
 
-            // wallet_id is the PK (NOT NULL) in v41 — always valid 32 bytes.
+            // wallet_id is the PK (NOT NULL) in v34 — always valid 32 bytes.
             let wallet_id: [u8; 32] = wallet_id_blob.try_into().map_err(|_| {
                 rusqlite::Error::FromSqlConversionFailure(
                     0,
@@ -905,6 +905,28 @@ pub struct LockedWalletInfo {
     pub network: Network,
 }
 
+impl LockedWalletInfo {
+    /// Attempt to decrypt the 64-byte wallet seed using the given
+    /// password. Delegates to
+    /// [`crate::model::wallet::encryption::decrypt_seed_bytes`]
+    /// without constructing a throwaway `ClosedKeyItem` — avoids the
+    /// placeholder `wallet_id: [0u8; 32]` state that's otherwise
+    /// required by `ClosedKeyItem::decrypt_seed`.
+    ///
+    /// Returns a stringly-typed error matching the underlying
+    /// `decrypt_seed_bytes` contract; translate to a typed
+    /// `UnlockError` at the call boundary where user-facing error
+    /// messaging matters.
+    pub fn try_decrypt(&self, password: &str) -> Result<[u8; 64], String> {
+        crate::model::wallet::encryption::decrypt_seed_bytes(
+            &self.encrypted_seed,
+            &self.salt,
+            &self.nonce,
+            password,
+        )
+    }
+}
+
 /// Ensure the address is valid for the given network and
 /// update its network if necessary.
 ///
@@ -982,7 +1004,7 @@ impl From<WalletError> for rusqlite::Error {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::database::test_helpers::create_test_database;
     use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
@@ -1572,7 +1594,9 @@ mod tests {
     // =========================================================================
 
     /// Create a v33-era in-memory DB: wallet table with seed_hash PK, no wallet_id column.
-    fn make_v33_db() -> Database {
+    ///
+    /// `pub(crate)` so migration tests in `initialization.rs` can reuse this fixture.
+    pub(crate) fn make_v33_db() -> Database {
         let db = Database::new(":memory:").unwrap();
         {
             let conn = db.conn.lock().unwrap();
@@ -1607,7 +1631,7 @@ mod tests {
     }
 
     /// Build valid BIP44-account-0 EPK bytes for a testnet seed.
-    fn build_epk_bytes(seed: &[u8; 64]) -> Vec<u8> {
+    pub(crate) fn build_epk_bytes(seed: &[u8; 64]) -> Vec<u8> {
         let secp = dash_sdk::dpp::dashcore::secp256k1::Secp256k1::new();
         let master =
             dash_sdk::dpp::key_wallet::bip32::ExtendedPrivKey::new_master(Network::Testnet, seed)
@@ -1641,7 +1665,7 @@ mod tests {
     }
 
     /// Insert a password-protected wallet row (encrypted_seed is the ciphertext).
-    fn insert_password_wallet(
+    pub(crate) fn insert_password_wallet(
         db: &Database,
         seed_hash: &[u8; 32],
         encrypted_seed: &[u8],
@@ -1918,12 +1942,16 @@ mod tests {
         };
         let mut entry = WalletMigrationEntry::new(info);
         entry.set_password("wrong_pw");
-        let result = entry.try_unlock(&db);
-        assert!(result.is_err(), "wrong password should fail");
-        let msg = result.unwrap_err();
+        let err = entry
+            .try_unlock(&db)
+            .expect_err("wrong password should fail");
         assert!(
-            msg.contains("incorrect") || msg.contains("password"),
-            "unexpected error: {msg}"
+            matches!(
+                err,
+                crate::ui::wallets::wallet_migration_screen::UnlockError::WrongPassword
+            ),
+            "expected UnlockError::WrongPassword, got: {err:?}"
         );
     }
+
 }

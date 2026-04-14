@@ -263,8 +263,8 @@ impl AppContext {
 
         // Identity persistence is owned by `insert_local_qualified_identity`
         // above. The persister doesn't write the `identity` table
-        // (Phase 9a-5d shrunk its scope) — see `src/changeset/sqlite.rs`
-        // for the rationale and the Phase 9b plan to unify identity
+        // (scope was reduced) — see `src/changeset/sqlite.rs`
+        // for the rationale and the plan to unify identity
         // persistence under the persister once the platform-wallet is
         // QualifiedIdentity-aware.
 

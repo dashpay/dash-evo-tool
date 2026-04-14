@@ -330,7 +330,7 @@ pub async fn send_payment_to_contact_impl(
     );
 
     // Record the sent payment via the platform wallet so the
-    // persister writes it to `dashpay_payments` on flush (Phase 9b-2).
+    // persister writes it to `dashpay_payments` on flush.
     cache_payment(
         app_context,
         &from_identity,

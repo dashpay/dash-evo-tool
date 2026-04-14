@@ -11,7 +11,7 @@
 //! ```
 //! where `WalletId = [u8; 32]` is `SHA256(root_pub_key || chain_code)`,
 //! matching `key_wallet_manager::WalletId`. This replaced the former
-//! `WalletSeedHash = SHA256(seed_bytes)` in the v40 migration.
+//! `WalletSeedHash = SHA256(seed_bytes)` in the v34 migration.
 //!
 //! `PlatformWalletManager` uses the same `WalletId` internally, so the
 //! two maps are keyed consistently.

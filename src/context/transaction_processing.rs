@@ -45,7 +45,7 @@ impl AppContext {
                 // Check if this is a DashPay contact payment by asking
                 // THIS wallet's platform-wallet whether the address
                 // belongs to one of its `DashpayReceivingFunds`
-                // accounts (Phase 9b-4). We use the platform wallet on
+                // accounts. We use the platform wallet on
                 // the already-held write guard directly — going
                 // through `app_context.wallets` here would deadlock
                 // trying to re-acquire a read guard on the wallet we
@@ -55,7 +55,7 @@ impl AppContext {
                 // `DashpayReceivingFunds` account's address pool
                 // `highest_used` when the tx output matches — no
                 // separate "bump contact highest receive index" call
-                // is needed (Phase 9b-3 rollback).
+                // is needed.
                 if let Some(pw) = wallet.platform_wallet.as_ref() {
                     let dashpay_match =
                         match pw.dashpay().try_match_incoming_dashpay_address(&address) {
@@ -77,7 +77,7 @@ impl AppContext {
                         // Record the received payment via the platform
                         // wallet — persister catches the changeset and
                         // writes to `dashpay_payments` on flush
-                        // (Phase 9b-2).
+                        //.
                         crate::backend_task::dashpay::platform_wallet_cache::cache_payment_with_pw_blocking(
                             pw,
                             &owner_id,

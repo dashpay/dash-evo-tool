@@ -457,12 +457,11 @@ pub async fn accept_contact_request(
             source: Box::new(e),
         })?;
 
-    // Contact persistence is owned by the `dashpay_contact_requests`
-    // and `dashpay_contacts` writes performed earlier in this flow via
-    // `Database::save_contact_request` / `Database::save_dashpay_contact`.
-    // The persister doesn't write contact tables (Phase 9a-5d shrunk its
-    // scope) — see `src/changeset/sqlite.rs` for the rationale and the
-    // Phase 9b plan to unify contact persistence under the persister.
+    // Contact persistence is owned by the platform-wallet persister:
+    // the flush of a `ContactChangeSet` writes both
+    // `dashpay_contact_requests` and `dashpay_contacts` rows. The
+    // direct-write helpers (`Database::save_contact_request`,
+    // `Database::save_dashpay_contact`) are `#[cfg(test)]` only.
     let _ = (platform_wallet, contact_request);
 
     Ok(BackendTaskSuccessResult::DashPayContactRequestAccepted(

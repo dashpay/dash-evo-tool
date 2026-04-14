@@ -3,7 +3,7 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::database::Database;
 use crate::database::LockedWalletInfo;
-use crate::model::wallet::{ClosedKeyItem, derive_wallet_id_from_seed};
+use crate::model::wallet::derive_wallet_id_from_seed;
 use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::{BannerHandle, OptionBannerExt};
@@ -12,16 +12,43 @@ use eframe::egui::Context;
 use egui::{Grid, RichText, Ui};
 use std::sync::Arc;
 
-/// Per-wallet entry state during migration.
+/// Typed errors from [`WalletMigrationEntry::try_unlock`].
+///
+/// User-facing messages live in the `#[error(...)]` attributes so the
+/// UI can render them via `Display` at the call site — no user-facing
+/// strings are stored in variant fields (per project convention).
 #[cfg_attr(feature = "testing", allow(dead_code))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum UnlockError {
+    #[error("Enter the wallet password to continue.")]
+    EmptyPassword,
+    #[error("The password is incorrect. Check the password and try again.")]
+    WrongPassword,
+    #[error(
+        "Could not derive a wallet key. The wallet may be corrupted — try re-importing your recovery phrase."
+    )]
+    DeriveFailed,
+    #[error(
+        "Could not derive a valid wallet key. The wallet may be corrupted — try re-importing your recovery phrase."
+    )]
+    ZeroWalletId,
+    #[error("Could not save the wallet key. Please restart the application and try again.")]
+    Persistence(#[source] rusqlite::Error),
+}
+
+/// Per-wallet entry state during migration. `Error` carries the
+/// user-facing message so it stays paired with the status — callers
+/// can't have `status == Error` with no message or vice versa.
+#[cfg_attr(feature = "testing", allow(dead_code))]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum EntryStatus {
     /// Waiting for the user to enter a password.
     Idle,
     /// Unlock succeeded — wallet_id has been written.
     Done,
-    /// Wrong password or derivation/DB error.
-    Error,
+    /// Wrong password, derivation, or DB error. Message is
+    /// user-ready (from `UnlockError::Display`).
+    Error { message: String },
 }
 
 /// One row in the migration screen — one per locked wallet.
@@ -32,8 +59,6 @@ pub(crate) struct WalletMigrationEntry {
     info: LockedWalletInfo,
     password_input: PasswordInput,
     status: EntryStatus,
-    /// Per-row error message (wrong password, DB failure, etc.).
-    error_message: Option<String>,
 }
 
 #[cfg_attr(feature = "testing", allow(dead_code))]
@@ -48,7 +73,6 @@ impl WalletMigrationEntry {
             info,
             password_input,
             status: EntryStatus::Idle,
-            error_message: None,
         }
     }
 
@@ -71,31 +95,23 @@ impl WalletMigrationEntry {
     }
 
     /// Attempt to decrypt the seed with the current password, derive wallet_id,
-    /// and write it to the database. Returns `Ok(())` on success.
-    pub(crate) fn try_unlock(&mut self, db: &Database) -> Result<(), String> {
+    /// and write it to the database. Returns `Ok(())` on success or a typed
+    /// [`UnlockError`]; the caller translates to a user message via `Display`.
+    pub(crate) fn try_unlock(&mut self, db: &Database) -> Result<(), UnlockError> {
         let password = self.password_input.text().to_string();
         if password.is_empty() {
-            return Err("Enter the wallet password to continue.".to_string());
+            return Err(UnlockError::EmptyPassword);
         }
 
-        // Build a ClosedKeyItem so we can use the shared decrypt path.
-        // wallet_id is not used by decrypt_seed; it will be derived from the seed below.
-        let closed = ClosedKeyItem {
-            wallet_id: [0u8; 32],
-            encrypted_seed: self.info.encrypted_seed.clone(),
-            salt: self.info.salt.clone(),
-            nonce: self.info.nonce.clone(),
-            password_hint: self.info.password_hint.clone(),
-        };
-
-        let seed = closed.decrypt_seed(&password).map_err(|_| {
-            "The password is incorrect. Check the password and try again.".to_string()
-        })?;
+        // Decrypt the seed via the shared helper — no dummy
+        // `ClosedKeyItem` with a fake `wallet_id` required.
+        let seed = self
+            .info
+            .try_decrypt(&password)
+            .map_err(|_| UnlockError::WrongPassword)?;
 
         let wallet_id = derive_wallet_id_from_seed(&seed, self.info.network)
-            .ok_or_else(|| {
-                "Could not derive a wallet key. The wallet may be corrupted — try re-importing your recovery phrase.".to_string()
-            })?;
+            .ok_or(UnlockError::DeriveFailed)?;
 
         // Zero out seed immediately after use — we only need wallet_id.
         // derive_password_key and derive_wallet_id_from_seed both work on
@@ -105,7 +121,7 @@ impl WalletMigrationEntry {
         zeroize::Zeroize::zeroize(&mut seed_zeroed);
 
         // A `wallet_id` of all-zero bytes is cryptographically
-        // impossible from a real seed (it would require a SHA-256
+        // impossible from a real seed (would require a SHA-256
         // collision against the empty pre-image). Treat it as a
         // sentinel for derivation failure — refuse to write it,
         // since a NULL wallet_id surfaces in the migration screen
@@ -116,10 +132,7 @@ impl WalletMigrationEntry {
                 db_seed_hash = %hex::encode(self.info.seed_hash),
                 "WalletMigrationScreen: derived wallet_id is all-zero — refusing to write"
             );
-            return Err(
-                "Could not derive a valid wallet key. The wallet may be corrupted — try re-importing your recovery phrase."
-                    .to_string(),
-            );
+            return Err(UnlockError::ZeroWalletId);
         }
 
         db.set_wallet_id_for_locked_wallet(&self.info.seed_hash, &wallet_id)
@@ -129,8 +142,7 @@ impl WalletMigrationEntry {
                     error = %e,
                     "WalletMigrationScreen: failed to write wallet_id to database"
                 );
-                "Could not save the wallet key. Please restart the application and try again."
-                    .to_string()
+                UnlockError::Persistence(e)
             })?;
 
         // Clear password from memory.
@@ -176,12 +188,12 @@ impl WalletMigrationScreen {
 
         ui.label(RichText::new(&label).strong());
 
-        match entry.status {
+        match &entry.status {
             EntryStatus::Done => {
                 ui.label(RichText::new("Unlocked").color(crate::ui::theme::DashColors::SUCCESS));
                 ui.end_row();
             }
-            EntryStatus::Idle | EntryStatus::Error => {
+            EntryStatus::Idle | EntryStatus::Error { .. } => {
                 let resp = entry.password_input.show(ui);
 
                 let unlock_clicked = ui.button("Unlock").clicked();
@@ -192,15 +204,14 @@ impl WalletMigrationScreen {
                     match entry.try_unlock(db) {
                         Ok(()) => {
                             entry.status = EntryStatus::Done;
-                            entry.error_message = None;
                         }
-                        Err(msg) => {
-                            entry.status = EntryStatus::Error;
-                            entry.error_message = Some(msg.clone());
-                            entry.password_input.set_error(Some(msg));
+                        Err(err) => {
+                            let message = err.to_string();
+                            entry.password_input.set_error(Some(message.clone()));
+                            entry.status = EntryStatus::Error { message };
                         }
                     }
-                } else if entry.status == EntryStatus::Error {
+                } else if matches!(entry.status, EntryStatus::Error { .. }) {
                     // Keep the error visible until the user changes the password.
                 } else {
                     entry.password_input.set_error(None);
@@ -290,7 +301,7 @@ mod tests {
     /// Used by tests that don't need raw DB access.
     pub(crate) fn make_locked_wallet_info(seed: &[u8; 64], password: &str) -> LockedWalletInfo {
         let (encrypted_seed, salt, nonce) = encrypt_message(seed, password).expect("encrypt");
-        let seed_hash = ClosedKeyItem::compute_seed_hash(seed);
+        let seed_hash = crate::model::wallet::ClosedKeyItem::compute_seed_hash(seed);
         LockedWalletInfo {
             seed_hash,
             alias: Some("Test Wallet".to_string()),
@@ -337,12 +348,11 @@ mod tests {
         // password_input is empty by default
         let db = create_test_database().unwrap();
         let mut entry = WalletMigrationEntry::new(info);
-        // password is not set — should fail with "Enter the wallet password"
-        let result = entry.try_unlock(&db);
-        assert!(result.is_err());
+        // Password not set — should return typed EmptyPassword variant.
+        let err = entry.try_unlock(&db).expect_err("must error on empty password");
         assert!(
-            result.unwrap_err().contains("Enter the wallet password"),
-            "expected empty-password message"
+            matches!(err, UnlockError::EmptyPassword),
+            "expected UnlockError::EmptyPassword, got: {err:?}"
         );
     }
 
@@ -355,5 +365,37 @@ mod tests {
         let db = Arc::new(create_test_database().unwrap());
         let screen = WalletMigrationScreen::new(db, vec![]);
         assert!(!screen.completed, "should not be completed on creation");
+    }
+
+    /// TC-C3: If the DB `UPDATE wallet SET wallet_id = ?` fails
+    /// (e.g. the row was concurrently deleted, or the `wallet`
+    /// table is missing), `try_unlock` must return a typed
+    /// `UnlockError::Persistence` variant. The caller relies on
+    /// this to keep the entry in `EntryStatus::Error` rather than
+    /// flipping it to `Done` — a silent success on a failed DB
+    /// write would leave the user thinking the wallet was
+    /// migrated while it remained at `wallet_id IS NULL`, trapping
+    /// them in the migration screen forever on the next launch.
+    #[test]
+    fn test_try_unlock_db_error_returns_persistence_variant() {
+        let seed = [0x42u8; 64];
+        let password = "correct_password";
+        let info = make_locked_wallet_info(&seed, password);
+
+        // Build the DB, then DROP the wallet table so the UPDATE
+        // inside set_wallet_id_for_locked_wallet will fail.
+        let db = create_test_database().unwrap();
+        db.execute("DROP TABLE wallet", []).unwrap();
+
+        let mut entry = WalletMigrationEntry::new(info);
+        entry.set_password(password);
+
+        let err = entry
+            .try_unlock(&db)
+            .expect_err("try_unlock must fail when the wallet table is gone");
+        assert!(
+            matches!(err, UnlockError::Persistence(_)),
+            "expected UnlockError::Persistence, got: {err:?}"
+        );
     }
 }

@@ -1,9 +1,10 @@
 //! Helpers for routing DashPay mutations through the platform-wallet
 //! changeset flow.
 //!
-//! Phase 9b migrates backend tasks away from direct `Database::*` DB
-//! writes and onto mutation methods that emit changesets the
-//! persister catches on flush. Every helper follows the same shape:
+//! DashPay backend tasks write state through mutation methods that
+//! emit changesets the persister catches on flush, rather than
+//! calling `Database::*` writers directly. Every helper follows the
+//! same shape:
 //! resolve the owner's `PlatformWallet`, acquire its state-mut
 //! guard, call the mutation on `ManagedIdentity`, wrap the emitted
 //! sub-changeset in a top-level [`PlatformWalletChangeSet`], and

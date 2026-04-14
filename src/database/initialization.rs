@@ -585,8 +585,8 @@ impl Database {
             [],
         )?;
 
-        // Create the wallet table (legacy v40 shape: seed_hash as PK,
-        // wallet_id as nullable column). The v41 rebuild runs at the
+        // Create the wallet table (legacy v33 shape: seed_hash as PK,
+        // wallet_id as nullable column). The v34 rebuild runs at the
         // end of `create_tables` to promote wallet_id to PRIMARY KEY
         // and drop seed_hash — keeping fresh-install and migration
         // paths converging on the same rebuild routine.
@@ -619,7 +619,7 @@ impl Database {
             [],
         )?;
 
-        // Create wallet addresses (legacy v40 shape; rebuilt to v41 at
+        // Create wallet addresses (legacy v33 shape; rebuilt to v34 at
         // the end of `create_tables`).
         conn.execute(
             "CREATE TABLE IF NOT EXISTS wallet_addresses (
@@ -640,8 +640,8 @@ impl Database {
         conn.execute("CREATE INDEX IF NOT EXISTS idx_wallet_addresses_path_reference ON wallet_addresses (path_reference)", [])?;
         conn.execute("CREATE INDEX IF NOT EXISTS idx_wallet_addresses_path_type ON wallet_addresses (path_type)", [])?;
 
-        // Create Platform address balances table (legacy v40 shape;
-        // rebuilt to v41 at the end of `create_tables`).
+        // Create Platform address balances table (legacy v33 shape;
+        // rebuilt to v34 at the end of `create_tables`).
         conn.execute(
             "CREATE TABLE IF NOT EXISTS platform_address_balances (
                 seed_hash BLOB NOT NULL,
@@ -674,7 +674,7 @@ impl Database {
 
         // Per-account address pool state (Phase 10 uniform key-wallet
         // state persistence). See the v36 migration for the shape
-        // rationale. v40 renamed the key column to `wallet_id`; v41
+        // rationale. v34 renames the key column to `wallet_id` and
         // adds the FK to wallet(wallet_id) (applied by the rebuild at
         // the end of `create_tables`).
         conn.execute(
@@ -702,8 +702,8 @@ impl Database {
         // Create wallet transactions table for SPV history
         self.initialize_wallet_transactions_table(&conn)?;
 
-        // Create asset lock transaction table (legacy v40 shape;
-        // rebuilt to v41 at the end of `create_tables` to flip the
+        // Create asset lock transaction table (legacy v33 shape;
+        // rebuilt to v34 at the end of `create_tables` to flip the
         // FK from wallet(seed_hash) to wallet(wallet_id)).
         conn.execute(
             "CREATE TABLE IF NOT EXISTS asset_lock_transaction (
@@ -734,8 +734,8 @@ impl Database {
             [],
         )?;
 
-        // Create the identities table (legacy v40 shape; rebuilt to
-        // v41 at the end of `create_tables` to flip the wallet FK
+        // Create the identities table (legacy v33 shape; rebuilt to
+        // v34 at the end of `create_tables` to flip the wallet FK
         // target to wallet(wallet_id)).
         conn.execute(
                     "CREATE TABLE IF NOT EXISTS identity (
@@ -829,8 +829,8 @@ impl Database {
         // Initialize single key wallet table
         self.initialize_single_key_wallet_table(&conn)?;
 
-        // Initialize shielded pool tables (legacy v40 shape; rebuilt
-        // to v41 by the final step below).
+        // Initialize shielded pool tables (legacy v33 shape; rebuilt
+        // to v34 by the final step below).
         self.create_shielded_tables(&conn)?;
         self.create_shielded_wallet_meta_table(&conn)?;
 
@@ -1264,7 +1264,7 @@ impl Database {
     fn clean_orphaned_fk_rows(&self, conn: &Connection) -> Result<(), MigrationError> {
         // --- CASCADE children of wallet(seed_hash) ---
         // wallet_transactions and wallet_account_pool_state are omitted
-        // because v40 drops and recreates them with the `wallet_id`
+        // because v34 drops and recreates them with the `wallet_id`
         // column name. Any orphans are cleaned by the DROP itself.
         let wallet_fk_delete: &[(&str, &str)] = &[
             ("wallet_addresses", "seed_hash"),
@@ -1646,7 +1646,7 @@ impl Database {
     /// `wallet` primary key. Ending state: `wallet_id` is the primary key,
     /// `seed_hash` is gone, all child tables key on `wallet_id` with proper
     /// FK constraints, and the DashPay contact-request table has its final
-    /// v41 column set.
+    /// v34 column set.
     ///
     /// Note: Steps 1 and 2 (add `wallet_id` column + backfill no-password wallets)
     /// were extracted to [`Database::ensure_wallet_id_column_and_backfill`] which
@@ -2020,11 +2020,11 @@ mod test {
     fn assert_v33_schema(conn: &Connection) {
         // wallet.core_wallet_name (v28)
         assert_column_exists(conn, "wallet", "core_wallet_name");
-        // wallet.wallet_id is now the PRIMARY KEY (v41); seed_hash is gone.
+        // wallet.wallet_id is now the PRIMARY KEY (v34); seed_hash is gone.
         assert_column_exists(conn, "wallet", "wallet_id");
         assert_column_not_exists(conn, "wallet", "seed_hash");
 
-        // shielded_notes table (v29; v41 renamed wallet_seed_hash → wallet_id).
+        // shielded_notes table (v29; v34 renames wallet_seed_hash → wallet_id).
         assert_table_exists(conn, "shielded_notes");
         for col in [
             "wallet_id",
@@ -2042,7 +2042,7 @@ mod test {
         assert_column_not_exists(conn, "shielded_notes", "wallet_seed_hash");
 
         // shielded_wallet_meta table with last_nullifier_sync_timestamp (v30);
-        // v41 renamed wallet_seed_hash → wallet_id.
+        // v34 renames wallet_seed_hash → wallet_id.
         assert_table_exists(conn, "shielded_wallet_meta");
         assert_column_exists(conn, "shielded_wallet_meta", "wallet_id");
         assert_column_not_exists(conn, "shielded_wallet_meta", "wallet_seed_hash");
@@ -2054,7 +2054,7 @@ mod test {
 
         // `wallet_transactions.status` was introduced in v30 and
         // removed in v37 when the whole table was recreated with
-        // per-account attribution (Phase 10 6c). The v37 assertions
+        // per-account attribution. The v37 assertions
         // below cover the new shape.
 
         // contact_private_info table (v29)
@@ -2063,11 +2063,11 @@ mod test {
         // dashpay_contact_requests table (pre-existing, but checked for completeness)
         assert_table_exists(conn, "dashpay_contact_requests");
 
-        // dashpay_address_mappings dropped in v35 (Phase 9b-4 cleanup).
+        // dashpay_address_mappings dropped in v35.
         assert_table_not_exists(conn, "dashpay_address_mappings");
 
         // wallet_account_pool_state introduced in v36, recreated in
-        // v40 with `wallet_id` column (was `seed_hash`).
+        // v34 with `wallet_id` column (was `seed_hash`).
         assert_table_exists(conn, "wallet_account_pool_state");
         for col in [
             "wallet_id",
@@ -2081,8 +2081,8 @@ mod test {
         // utxos.is_instant_locked added in v36.
         assert_column_exists(conn, "utxos", "is_instant_locked");
 
-        // wallet_transactions recreated in v37 (Phase 10 6c), then
-        // again in v40 with `wallet_id` column (was `seed_hash`).
+        // wallet_transactions recreated in v37, then
+        // again in v34 with `wallet_id` column (was `seed_hash`).
         assert_table_exists(conn, "wallet_transactions");
         for col in ["wallet_id", "account_type", "txid", "network", "record"] {
             assert_column_exists(conn, "wallet_transactions", col);
@@ -2263,7 +2263,7 @@ mod test {
         {
             let conn = db.conn.lock().unwrap();
 
-            // FK enforcement may be ON after create_tables' v41 rebuild.
+            // FK enforcement may be ON after create_tables' v34 rebuild.
             // Disable it for the cross-table DROP/CREATE dance below.
             conn.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
 
@@ -2277,7 +2277,7 @@ mod test {
 
             // Rebuild `wallet` in its v27 shape: seed_hash PK, no wallet_id,
             // no core_wallet_name. The fresh-install DB is empty at this
-            // point, so no data preservation needed. (v41 dropped the
+            // point, so no data preservation needed. (v34 drops the
             // seed_hash column — we're recreating the legacy shape here
             // purely to exercise the migration ladder.)
             conn.execute_batch(
@@ -2303,7 +2303,7 @@ mod test {
             )
             .unwrap();
 
-            // Rebuild wallet child tables in their pre-v41 shape so the
+            // Rebuild wallet child tables in their pre-v34 shape so the
             // v33 orphan-cleanup migration (`DELETE FROM ... WHERE
             // seed_hash NOT IN (SELECT seed_hash FROM wallet)`) runs
             // against the schema it was written for.
@@ -2448,16 +2448,16 @@ mod test {
         {
             let conn = db.conn.lock().unwrap();
 
-            // FK enforcement may be ON after create_tables' v41 rebuild.
+            // FK enforcement may be ON after create_tables' v34 rebuild.
             // Disable it for the cross-table DROP/CREATE dance that
             // rebuilds legacy schemas (otherwise child table FKs would
             // trip while we recreate their parent).
             conn.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
 
-            // Rebuild `wallet` in its pre-v40 shape (seed_hash PK, no
+            // Rebuild `wallet` in its pre-v34 shape (seed_hash PK, no
             // wallet_id column) — we're exercising the migration ladder
             // starting from v27, and every INSERT below uses seed_hash
-            // as the wallet key. The v41 create_tables output is empty
+            // as the wallet key. The v34 create_tables output is empty
             // at this point, so there's nothing to preserve.
             conn.execute_batch(
                 "DROP TABLE IF EXISTS wallet;
@@ -2504,17 +2504,17 @@ mod test {
             )
             .unwrap();
 
-            // Drop wallet_account_pool_state — it was created by v41
+            // Drop wallet_account_pool_state — it was created by v34
             // create_tables with FK to wallet(wallet_id), which would
             // be a dangling FK once we roll wallet back to its v27
             // shape (no wallet_id column). The v36 migration will
             // recreate it with the seed_hash FK appropriate for the
-            // intermediate state, then v40/v41 will rebuild again.
+            // intermediate state, then v34 rebuild again.
             conn.execute_batch("DROP TABLE IF EXISTS wallet_account_pool_state")
                 .unwrap();
 
             // Rebuild wallet_addresses + platform_address_balances in
-            // their pre-v41 shape (seed_hash column, FK to
+            // their pre-v34 shape (seed_hash column, FK to
             // wallet(seed_hash)) so the INSERTs below and the v33
             // orphan-cleanup migration run against the schema they
             // were written against.
@@ -2545,7 +2545,7 @@ mod test {
             )
             .unwrap();
 
-            // Rebuild asset_lock_transaction in its pre-v41 shape
+            // Rebuild asset_lock_transaction in its pre-v34 shape
             // (FK to wallet(seed_hash)) so the INSERTs validate.
             conn.execute_batch(
                 "DROP TABLE IF EXISTS asset_lock_transaction;
@@ -2572,7 +2572,7 @@ mod test {
             )
             .unwrap();
 
-            // Rebuild identity in its pre-v41 shape.
+            // Rebuild identity in its pre-v34 shape.
             conn.execute_batch(
                 "DROP TABLE IF EXISTS identity;
                  CREATE TABLE identity (
@@ -2594,8 +2594,8 @@ mod test {
 
             // Insert a real wallet with the old network name. The
             // encrypted_seed blob must be 64 bytes for a no-password
-            // wallet so the v40 migration can derive wallet_id from
-            // it — otherwise v41 aborts with "locked password wallets
+            // wallet so the v34 migration can derive wallet_id from
+            // it — otherwise v34 aborts with "locked password wallets
             // require unlock" (wallet_id stays NULL).
             conn.execute(
                 "INSERT INTO wallet (
@@ -2876,14 +2876,14 @@ mod test {
             "wallet_transactions should be empty after migration 37 table recreation"
         );
 
-        // Wallet itself should have mainnet. v41 dropped seed_hash,
+        // Wallet itself should have mainnet. v34 drops seed_hash,
         // so we key by the single surviving wallet row.
         let wallet_network: String = conn
             .query_row("SELECT network FROM wallet", [], |row| row.get(0))
             .unwrap();
         assert_eq!(wallet_network, "mainnet");
 
-        // v40 migration DELETEs all cache tables (wallet_addresses,
+        // v34 migration DELETEs all cache tables (wallet_addresses,
         // asset_lock_transaction, identity, etc.) as part of the
         // seed_hash → wallet_id cache nuke. So every cache table is
         // empty after migration.
@@ -2894,7 +2894,7 @@ mod test {
             .unwrap();
         assert_eq!(
             all_addrs, 0,
-            "wallet_addresses should be empty after v40 cache nuke"
+            "wallet_addresses should be empty after v34 cache nuke"
         );
 
         let all_locks: i64 = conn
@@ -2904,7 +2904,7 @@ mod test {
             .unwrap();
         assert_eq!(
             all_locks, 0,
-            "asset_lock_transaction should be empty after v40 cache nuke"
+            "asset_lock_transaction should be empty after v34 cache nuke"
         );
     }
 
@@ -3159,10 +3159,10 @@ mod test {
         let conn = db.conn.lock().unwrap();
         assert_v33_schema(&conn);
 
-        // Verify data survived migration. v41 dropped the seed_hash
+        // Verify data survived migration. v34 drops the seed_hash
         // column, so we key by the single surviving wallet row instead
-        // of by seed_hash. The v40 migration backfilled wallet_id on
-        // this no-password wallet, and v41 rebuilt the table with
+        // of by seed_hash. The v34 migration backfills wallet_id on
+        // this no-password wallet, and v34 rebuilds the table with
         // wallet_id as the primary key.
         let wallet_network: String = conn
             .query_row("SELECT network FROM wallet", [], |row| row.get(0))
@@ -3182,13 +3182,13 @@ mod test {
         // wallet should have core_wallet_name (added by v33)
         assert_column_exists(&conn, "wallet", "core_wallet_name");
 
-        // v40 migration DELETEs all cache tables (identity,
+        // v34 migration DELETEs all cache tables (identity,
         // asset_lock_transaction, etc.) as part of the seed_hash →
         // wallet_id cache nuke. Verify they're empty.
         let id_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM identity", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(id_count, 0, "identity table should be empty after v40 nuke");
+        assert_eq!(id_count, 0, "identity table should be empty after v34 nuke");
 
         let lock_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM asset_lock_transaction", [], |row| {
@@ -3197,7 +3197,7 @@ mod test {
             .unwrap();
         assert_eq!(
             lock_count, 0,
-            "asset_lock_transaction should be empty after v40 nuke"
+            "asset_lock_transaction should be empty after v34 nuke"
         );
     }
 
@@ -3355,5 +3355,62 @@ mod test {
         assert_table_exists(&conn, "dashpay_profiles");
         assert_table_exists(&conn, "dashpay_contacts");
         assert_table_exists(&conn, "dashpay_payments");
+    }
+
+    /// TC-C1: v33 → v34 migration must abort with the locked-wallet
+    /// sentinel when a password-protected wallet has no `wallet_id`
+    /// yet. If this guard ever regresses to silently dropping the
+    /// wallet during the schema rebuild, the user's encrypted seed
+    /// would be lost with no path to recovery.
+    #[test]
+    fn test_v33_to_v34_aborts_when_locked_password_wallets_present() {
+        use crate::database::wallet::tests::{
+            build_epk_bytes, insert_password_wallet, make_v33_db,
+        };
+        use crate::model::wallet::encryption::encrypt_message;
+
+        let db = make_v33_db();
+        let seed = [0x77u8; 64];
+        let seed_hash = crate::model::wallet::ClosedKeyItem::compute_seed_hash(&seed);
+        let epk = build_epk_bytes(&seed);
+        let (encrypted, salt, nonce) = encrypt_message(&seed, "secret").unwrap();
+
+        insert_password_wallet(&db, &seed_hash, &encrypted, &salt, &nonce, &epk);
+
+        // Backfill runs first (idempotent, adds wallet_id column) —
+        // it cannot populate wallet_id for password wallets, so the
+        // row stays at wallet_id = NULL.
+        db.ensure_wallet_id_column_and_backfill().unwrap();
+
+        // Migration must abort with the sentinel. Asserting the
+        // exact substring is load-bearing: WalletMigrationScreen
+        // matches on this prefix to route the user to the unlock
+        // flow rather than showing a generic migration failure.
+        let err = db
+            .try_perform_migration(33, 34)
+            .expect_err("migration must fail while a locked wallet is present");
+        let err_str = err.to_string();
+        assert!(
+            err_str.contains("locked password wallets require unlock"),
+            "unexpected migration error: {err_str}"
+        );
+
+        // The wallet row must still exist and its encrypted_seed
+        // must be byte-identical — no destructive rebuild ran.
+        let (stored_seed, stored_salt, stored_nonce): (Vec<u8>, Vec<u8>, Vec<u8>) = {
+            let conn = db.conn.lock().unwrap();
+            conn.query_row(
+                "SELECT encrypted_seed, salt, nonce FROM wallet WHERE seed_hash = ?1",
+                params![seed_hash.as_slice()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("wallet row must still exist after guarded migration")
+        };
+        assert_eq!(
+            stored_seed, encrypted,
+            "encrypted_seed must survive the aborted migration unchanged"
+        );
+        assert_eq!(stored_salt, salt);
+        assert_eq!(stored_nonce, nonce);
     }
 }

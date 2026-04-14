@@ -18,17 +18,18 @@
 //! - Identity blobs (`identity` table) — external, loaded by
 //!   evo-tool lifecycle helpers.
 //!
-//! Earlier revisions of this file (the Phase 9a-5a rewrite) tried to
-//! be the sole writer for every sub-changeset, but the `identity`
-//! table stores serialized `QualifiedIdentity` blobs (an evo-tool
-//! wrapper around `dpp::Identity` that the platform-wallet doesn't
-//! know about) and the persister was latently corrupting them on
-//! every flush. The pragmatic resolution is for the persister to
-//! stop writing state that backend tasks already own. Phase 9c will
-//! revisit and either move `QualifiedIdentity` (and similar evo-tool
-//! wrappers) into a shared crate, or introduce a serializer
-//! abstraction so the persister can round-trip evo-tool's wrapper
-//! format without depending on its types.
+//! An earlier revision of this file tried to be the sole writer for
+//! every sub-changeset, but the `identity` table stores serialized
+//! `QualifiedIdentity` blobs (an evo-tool wrapper around
+//! `dpp::Identity` that the platform-wallet doesn't know about) and
+//! the persister was latently corrupting them on every flush. The
+//! pragmatic resolution is for the persister to stop writing state
+//! that backend tasks already own. A future commit (tracked as
+//! evo-tool task #130) will revisit and either move
+//! `QualifiedIdentity` (and similar evo-tool wrappers) into a shared
+//! crate, or introduce a serializer abstraction so the persister can
+//! round-trip evo-tool's wrapper format without depending on its
+//! types.
 //!
 //! # Atomicity
 //!
@@ -173,7 +174,7 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
         &self,
         wallet_id: WalletId,
     ) -> Result<PlatformWalletChangeSet, Box<dyn std::error::Error + Send + Sync>> {
-        // What the persister DOES load (Phase 10 6b):
+        // What the persister DOES load (post-bootstrap replay):
         //
         // - `cs.core.per_account[*].highest_used` — read from
         //   `wallet_account_pool_state`. Reconstructs the per-pool
@@ -299,7 +300,7 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
         // outpoint. That's the shape `AccountChangeSet::utxos_instant_locked`
         // already assumes on the apply side.
         //
-        // TODO(Phase 10 6c): if key-wallet gains per-account UTXO
+        // TODO(post-bootstrap replay): if key-wallet gains per-account UTXO
         // attribution on load, route locked outpoints into the
         // correct bucket directly.
         {
@@ -346,7 +347,7 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
             }
         }
 
-        // --- Load per-account transaction records (Phase 10 6c) ---
+        // --- Load per-account transaction records ---
         //
         // Each row decodes directly into a `TransactionRecord` via
         // bincode's serde bridge. The `account_type` BLOB decodes
@@ -1109,8 +1110,8 @@ impl SqliteWalletPersister {
     /// whose profile is `None` and whose payments are empty are
     /// silently skipped.
     ///
-    /// Phase 9b-1 added the profile write path.
-    /// Phase 9b-2 added the payment write path.
+    /// v34 migration adds the profile write path.
+    /// v34 migration adds the payment write path.
     fn write_identity_dashpay_subset(
         tx: &rusqlite::Transaction,
         wallet_id: &WalletId,
@@ -1235,11 +1236,11 @@ impl SqliteWalletPersister {
     ///   persistence 6a). MAX-merge upsert so stale replay doesn't
     ///   regress.
     /// - Per-UTXO `is_instant_locked` flag (`utxos.is_instant_locked`
-    ///   column, Phase 10 6a). OR-merge — once locked, stays locked.
+    ///   column). OR-merge — once locked, stays locked.
     ///
     /// Still deferred:
     /// - `addresses_used` — derived from `highest_used` on load
-    ///   (Phase 10 6b via the pool regeneration + `set_highest_used`
+    ///  (via the pool regeneration + `set_highest_used`
     ///   sequence), so no separate storage needed.
     /// - `highest_generated` — currently not in `AccountChangeSet`
     ///   (key-wallet mutates it implicitly during address generation).
@@ -1282,7 +1283,7 @@ impl SqliteWalletPersister {
         )?;
         let mut delete_utxo =
             tx.prepare_cached("DELETE FROM utxos WHERE txid = ?1 AND vout = ?2 AND network = ?3")?;
-        // Phase 10 6a: flip the `is_instant_locked` flag on a UTXO
+        // Flip the `is_instant_locked` flag on a UTXO
         // row. OR-merge (`MAX(..., 1)`) so once a UTXO is marked
         // locked, a stale replay carrying the pre-lock state can't
         // flip it back.
@@ -1291,7 +1292,7 @@ impl SqliteWalletPersister {
              SET is_instant_locked = MAX(is_instant_locked, 1)
              WHERE txid = ?1 AND vout = ?2 AND network = ?3",
         )?;
-        // Phase 10 6a: monotonic upsert of per-(account, pool)
+        // Monotonic upsert of per-(account, pool)
         // `highest_used` watermark. `highest_generated` is left NULL
         // for now — the load path reconstructs it via gap-limit
         // regeneration from `highest_used`.
@@ -1303,7 +1304,7 @@ impl SqliteWalletPersister {
              ON CONFLICT(wallet_id, account_type, pool_type) DO UPDATE SET
                 highest_used = MAX(COALESCE(highest_used, 0), excluded.highest_used)",
         )?;
-        // Phase 10 6c: upsert of per-(account, txid) `TransactionRecord`
+        // upsert of per-(account, txid) `TransactionRecord`
         // rows. The record is bincode serde-encoded — it carries every
         // field on the struct (context, direction, input/output
         // details, net_amount, fee, label, first_seen). INSERT OR
@@ -1358,7 +1359,7 @@ impl SqliteWalletPersister {
                 }
             }
 
-            // Phase 10 6c: write per-account transaction records.
+            // write per-account transaction records.
             // Encoded as a single bincode serde blob per row; the
             // decode path in `load()` reconstructs the full
             // `TransactionRecord` with its embedded `Transaction`,
@@ -1720,7 +1721,7 @@ mod tests {
 
     /// An IdentityChangeSet with a `dashpay_profile` lands in the
     /// `dashpay_profiles` table; the rest of the IdentityEntry is
-    /// silently ignored (Phase 9b-1 scope).
+    /// silently ignored.
     #[test]
     fn test_dashpay_profile_round_trip_via_changeset() {
         use dash_sdk::dpp::identity::Identity;
@@ -2184,7 +2185,7 @@ mod tests {
         assert_eq!(stored.display_name.as_deref(), Some("second"));
     }
 
-    /// Phase 10 6a: `AccountChangeSet.highest_used` entries land in
+    /// `AccountChangeSet.highest_used` entries land in
     /// `wallet_account_pool_state` and survive a subsequent flush
     /// with a lower value (MAX-merge on the upsert).
     ///
@@ -2358,7 +2359,7 @@ mod tests {
         assert_eq!(coinjoin_internal, 5, "stale internal must not regress");
     }
 
-    /// Phase 10 6a: an `AccountChangeSet.utxos_instant_locked` entry
+    /// An `AccountChangeSet.utxos_instant_locked` entry
     /// flips the `is_instant_locked` flag on the corresponding
     /// `utxos` row. OR-merge — once locked, a subsequent flush
     /// can't unlock it.
@@ -2462,7 +2463,7 @@ mod tests {
         assert_eq!(flag_after, 1, "UTXO must be marked instant-locked");
     }
 
-    /// Phase 10 6b: full load round-trip. Write per-account
+    /// Full load round-trip. Write per-account
     /// `highest_used` via a changeset, then `load()` it back and
     /// verify the returned `PlatformWalletChangeSet` contains the
     /// same buckets with the same values. Covers both pool state
@@ -2597,7 +2598,7 @@ mod tests {
         );
     }
 
-    /// Phase 10 6c: full load round-trip for per-account transaction
+    /// full load round-trip for per-account transaction
     /// records. Writes a `TransactionRecord` into the Standard
     /// bucket, flushes, loads the wallet from SQL, verifies the
     /// decoded record matches the original field-for-field.
@@ -2946,5 +2947,126 @@ mod tests {
         assert_eq!(loaded_payment.status, PaymentStatus::Confirmed);
         assert_eq!(loaded_payment.memo.as_deref(), Some("lunch"));
         assert_eq!(loaded_payment.counterparty_id, contact_id);
+    }
+
+    /// TC-C2: if `flush_inner` fails (SQL error, table missing,
+    /// constraint violation), the staged changeset must survive so
+    /// the caller can retry. Without this guarantee, a transient DB
+    /// failure during SPV block processing would silently drop
+    /// every wallet mutation in the current batch.
+    ///
+    /// The test forces a failure by dropping the
+    /// `asset_lock_transaction` table out from under the persister
+    /// between `store()` and `flush()`, then recreates it and
+    /// retries — the row must appear only after the retry, proving
+    /// the payload was re-staged rather than lost.
+    #[test]
+    fn test_flush_failure_restores_staged_changeset_for_retry() {
+        use dash_sdk::dpp::dashcore::{OutPoint, Transaction, Txid};
+        use platform_wallet::changeset::{AssetLockChangeSet, AssetLockEntry};
+        use platform_wallet::wallet::asset_lock::tracked::AssetLockStatus;
+
+        let db = Arc::new(create_test_database().expect("create test db"));
+        let persister = make_persister(db.clone());
+        insert_test_wallet_row(&db);
+
+        let txid = Txid::from_byte_array([0xCC; 32]);
+        let outpoint = OutPoint::new(txid, 0);
+        let tx = Transaction {
+            version: 3,
+            lock_time: 0,
+            input: vec![],
+            output: vec![],
+            special_transaction_payload: None,
+        };
+
+        let mut al_cs = AssetLockChangeSet::default();
+        al_cs.asset_locks.insert(
+            outpoint,
+            AssetLockEntry {
+                out_point: outpoint,
+                transaction: tx,
+                account_index: 0,
+                funding_type: platform_wallet::AssetLockFundingType::IdentityRegistration,
+                identity_index: 7,
+                amount_duffs: 200_000,
+                status: AssetLockStatus::Broadcast,
+                proof: None,
+            },
+        );
+        let cs = PlatformWalletChangeSet {
+            asset_locks: Some(al_cs),
+            ..Default::default()
+        };
+
+        // Drop the target table so the inline flush inside `store`
+        // fails with "no such table: asset_lock_transaction".
+        db.execute("DROP TABLE asset_lock_transaction", [])
+            .expect("drop asset_lock_transaction");
+
+        // store() auto-flushes inline; must bubble the error rather
+        // than swallow it (SF-C3 contract).
+        let store_err = persister
+            .store(TEST_WALLET_ID, cs)
+            .expect_err("store must bubble the flush failure");
+        assert!(
+            store_err.to_string().contains("asset_lock_transaction"),
+            "expected the SQL error to mention the missing table: {store_err}"
+        );
+
+        // The second flush must ALSO fail — proving the changeset
+        // was re-staged by the backup-restore path. If staged were
+        // cleared on failure, this flush would see an empty buffer
+        // and succeed with Ok(()).
+        let retry_err = persister
+            .flush(TEST_WALLET_ID)
+            .expect_err("staged payload must still be retryable after the first failure");
+        assert!(
+            retry_err.to_string().contains("asset_lock_transaction"),
+            "expected the retry to hit the same missing-table error: {retry_err}"
+        );
+
+        // Recreate the table and retry once more. This time the
+        // previously-staged payload must land in SQL.
+        db.execute(
+            "CREATE TABLE asset_lock_transaction (
+                tx_id BLOB NOT NULL,
+                output_index INTEGER NOT NULL DEFAULT 0,
+                transaction_data BLOB NOT NULL,
+                amount INTEGER,
+                instant_lock_data BLOB,
+                chain_locked_height INTEGER,
+                identity_id BLOB,
+                identity_id_potentially_in_creation BLOB,
+                wallet BLOB NOT NULL,
+                network TEXT NOT NULL,
+                account_index INTEGER NOT NULL DEFAULT 0,
+                funding_type INTEGER NOT NULL DEFAULT 0,
+                identity_index INTEGER NOT NULL DEFAULT 0,
+                proof_data BLOB,
+                PRIMARY KEY (tx_id, output_index)
+             )",
+            [],
+        )
+        .expect("recreate asset_lock_transaction");
+
+        persister
+            .flush(TEST_WALLET_ID)
+            .expect("flush must succeed once the table is back");
+
+        // Confirm the row landed in SQL (not that it's merely loaded
+        // from the in-memory staged buffer).
+        let stored_txid: Vec<u8> = {
+            let conn = db.shared_connection();
+            let guard = conn.lock().unwrap();
+            guard
+                .query_row(
+                    "SELECT tx_id FROM asset_lock_transaction WHERE wallet = ?1",
+                    rusqlite::params![&TEST_WALLET_ID[..]],
+                    |row| row.get(0),
+                )
+                .expect("row must exist after successful retry")
+        };
+        assert_eq!(stored_txid, txid.as_byte_array().to_vec());
     }
 }

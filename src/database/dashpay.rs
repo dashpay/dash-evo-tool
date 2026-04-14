@@ -202,7 +202,7 @@ impl crate::database::Database {
 
         // Contact address index tracking table.
         //
-        // Phase 9b-3 rollback (current scope): this table now stores
+        // // this table now stores
         // only `next_send_index` — the send-side counter used by
         // `get_and_increment_send_index` when handing out unique
         // payment addresses to send to a contact. The receive-side

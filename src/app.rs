@@ -432,6 +432,18 @@ impl AppState {
                 // (In migration mode no tasks are dispatched, so the channels
                 // are empty — but keep the pattern correct.)
                 new_state.task_result_sender = self.task_result_sender.clone();
+                // TODO(ARCH-1, task #141): replace this `*self = new_state`
+                // wholesale-replacement pattern with an `AppLifecycle` enum
+                // at the eframe::App level. The current swap manually
+                // re-grafts `task_result_sender` from `self`; any new
+                // `AppState` field added later that needs to survive the
+                // migration→running transition will silently lose its
+                // value unless someone remembers to add a corresponding
+                // copy line here. Lifting the lifecycle to an enum
+                // (`Initializing` / `Migrating(MigrationState)` /
+                // `Running(AppState)` / `FailedInit`) makes the
+                // transitions explicit and exhaustive in the type
+                // system, eliminating this whole class of foot-gun.
                 *self = new_state;
             }
             Err(e) => {

@@ -78,29 +78,50 @@ impl ClosedKeyItem {
     }
 
     /// Decrypt the seed using AES-256-GCM.
-    #[allow(deprecated)]
     pub fn decrypt_seed(&self, password: &str) -> Result<[u8; 64], String> {
-        // Derive the key
-        let key = derive_password_key(password, &self.salt)?;
-
-        // Create cipher instance
-        let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| e.to_string())?;
-
-        // Decrypt the seed
-        let nonce_arr = Nonce::from_slice(&self.nonce);
-        let seed = cipher
-            .decrypt(nonce_arr, self.encrypted_seed.as_slice())
-            .map_err(|e| e.to_string())?;
-
-        let sized_seed = seed.try_into().map_err(|e: Vec<u8>| {
-            format!(
-                "invalid seed length, expected 64 bytes, got {} bytes",
-                e.len()
-            )
-        })?;
-
-        Ok(sized_seed)
+        decrypt_seed_bytes(&self.encrypted_seed, &self.salt, &self.nonce, password)
     }
+}
+
+/// Decrypt a 64-byte seed from AES-256-GCM-encrypted storage.
+///
+/// Takes the three byte fields the decryption actually needs —
+/// `encrypted_seed`, `salt`, `nonce` — rather than a whole
+/// [`ClosedKeyItem`]. Callsites that don't already carry a
+/// `ClosedKeyItem` (e.g. [`crate::database::wallet::LockedWalletInfo`]
+/// in the wallet migration screen) can invoke this directly without
+/// synthesizing an unused `wallet_id` placeholder.
+///
+/// Returns a stringly-typed error for backward compatibility with
+/// [`ClosedKeyItem::decrypt_seed`]; callers that need typed error
+/// handling should translate at the call boundary.
+#[allow(deprecated)]
+pub fn decrypt_seed_bytes(
+    encrypted_seed: &[u8],
+    salt: &[u8],
+    nonce: &[u8],
+    password: &str,
+) -> Result<[u8; 64], String> {
+    // Derive the key from password + salt.
+    let key = derive_password_key(password, salt)?;
+
+    // Create cipher instance.
+    let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| e.to_string())?;
+
+    // Decrypt.
+    let nonce_arr = Nonce::from_slice(nonce);
+    let seed = cipher
+        .decrypt(nonce_arr, encrypted_seed)
+        .map_err(|e| e.to_string())?;
+
+    let sized_seed = seed.try_into().map_err(|e: Vec<u8>| {
+        format!(
+            "invalid seed length, expected 64 bytes, got {} bytes",
+            e.len()
+        )
+    })?;
+
+    Ok(sized_seed)
 }
 #[cfg(test)]
 mod tests {

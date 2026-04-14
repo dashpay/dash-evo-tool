@@ -89,7 +89,7 @@ pub async fn load_profile(
         // Cache the loaded profile via the platform-wallet so the
         // persister catches it on the next flush. The
         // `dashpay_profiles` row gets written by the persister, not
-        // by a direct `db.save_dashpay_profile` call (Phase 9b-1).
+        // by a direct `db.save_dashpay_profile` call.
         cache_profile(
             app_context,
             &identity,
@@ -274,7 +274,7 @@ pub async fn update_profile(
             }
         }
 
-        // Cache the updated profile via the platform-wallet (Phase 9b-1).
+        // Cache the updated profile via the platform-wallet.
         cache_profile(
             app_context,
             &identity,
@@ -351,8 +351,7 @@ pub async fn update_profile(
             }
         }
 
-        // Cache the newly created profile via the platform-wallet
-        // (Phase 9b-1).
+        // Cache the newly created profile via the platform-wallet.
         cache_profile(
             app_context,
             &identity,

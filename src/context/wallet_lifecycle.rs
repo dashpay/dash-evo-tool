@@ -329,7 +329,6 @@ impl AppContext {
                 }
 
                 tracing::info!(
-                    seed = %hex::encode(wallet_id),
                     wallet_id = %hex::encode(wallet_id),
                     "Registered wallet with PlatformWallet bridge"
                 );
@@ -390,13 +389,13 @@ impl AppContext {
             match self.initialize_shielded_wallet(wallet_id) {
                 Ok(_) => {
                     tracing::info!(
-                        seed = %hex::encode(wallet_id),
+                        wallet_id = %hex::encode(wallet_id),
                         "Shielded wallet initialized after protocol version update"
                     );
                     self.queue_shielded_sync(wallet_id);
                 }
                 Err(e) => tracing::debug!(
-                    seed = %hex::encode(wallet_id),
+                    wallet_id = %hex::encode(wallet_id),
                     error = %e,
                     "Shielded wallet init failed after protocol version update"
                 ),
@@ -423,14 +422,14 @@ impl AppContext {
                         Ok(_) => {
                             if let Err(e) = ctx.check_nullifiers_task(wallet_id).await {
                                 tracing::debug!(
-                                    seed = %hex::encode(wallet_id),
+                                    wallet_id = %hex::encode(wallet_id),
                                     error = %e,
                                     "Shielded nullifier check after init failed"
                                 );
                             }
                         }
                         Err(e) => tracing::debug!(
-                            seed = %hex::encode(wallet_id),
+                            wallet_id = %hex::encode(wallet_id),
                             error = %e,
                             "Shielded note sync after init failed"
                         ),
@@ -440,7 +439,7 @@ impl AppContext {
             .await;
             if let Err(e) = result {
                 tracing::debug!(
-                    seed = %hex::encode(wallet_id),
+                    wallet_id = %hex::encode(wallet_id),
                     error = %e,
                     "Shielded sync task panicked"
                 );
@@ -512,7 +511,7 @@ impl AppContext {
         // monitors incoming payment addresses for established contacts.
         self.bootstrap_dashpay_contact_accounts();
 
-        // Phase 10 6b: replay persisted account state
+        // Post-bootstrap: replay persisted account state
         // (`wallet_account_pool_state` rows + `utxos.is_instant_locked`)
         // now that DashPay contact accounts exist. The initial
         // `load_persisted` that runs during `PlatformWallet` creation
@@ -889,7 +888,7 @@ impl AppContext {
             None => {
                 tracing::trace!(
                     identity = %qualified_identity.identity.id(),
-                    seed = %hex::encode(wallet_id),
+                    wallet_id = %hex::encode(wallet_id),
                     "Skipping platform-wallet sync: platform wallet not registered"
                 );
                 return;
@@ -931,7 +930,7 @@ impl AppContext {
 
         // 3b. Hydrate DashPay state (profile + payment history) from
         // SQL. The persister writes `dashpay_profiles` and
-        // `dashpay_payments` on flush (Phase 9b-1, 9b-2), but
+        // `dashpay_payments` on flush (v34 migration adds the dashpay_profile / dashpay_payments write paths), but
         // `SqliteWalletPersister::load()` is a no-op because it
         // DashPay profiles and payments are loaded by the persister's
         // load() via the dashpay_profiles/dashpay_payments_overlay
@@ -970,7 +969,7 @@ impl AppContext {
             );
         } else {
             // Add new identity
-            // TODO(Phase 9a-5d): forward the returned changeset to the persister
+            // TODO: forward the returned changeset to the persister
             // instead of relying on the in-memory mutation alone.
             match manager
                 .identity_manager
@@ -1158,7 +1157,7 @@ impl AppContext {
         }
     }
 
-    /// Phase 10 6b: replay persisted account state for every
+    /// Post-bootstrap: replay persisted account state for every
     /// registered platform wallet after DashPay contact accounts
     /// have been bootstrapped.
     ///
@@ -1194,7 +1193,7 @@ impl AppContext {
                     if let Err(e) = pw_clone.load_and_apply_persisted().await {
                         tracing::warn!(
                             error = %e,
-                            "Phase 10 6b replay failed — persisted pool state not \
+                            "Persisted state replay failed — persisted pool state not \
                              hydrated for this wallet; SPV replay will re-establish \
                              state from blocks forward"
                         );

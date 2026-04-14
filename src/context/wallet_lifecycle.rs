@@ -1059,6 +1059,8 @@ impl AppContext {
                 display_name: stored.display_name,
                 bio: stored.bio,
                 avatar_url: stored.avatar_url,
+                avatar_hash: None,
+                avatar_fingerprint: None,
                 avatar_bytes: stored.avatar_bytes,
                 public_message: stored.public_message,
             }),

@@ -263,7 +263,7 @@ impl SendPaymentScreen {
                         .and_then(|g| {
                             g.platform_wallet
                                 .as_ref()
-                                .map(|pw| pw.core().balance().spendable() as f64 / 100_000_000.0)
+                                .map(|pw| pw.core().balance().confirmed() as f64 / 100_000_000.0)
                         })
                         .unwrap_or(0.0);
                     ui.label(
@@ -304,7 +304,7 @@ impl SendPaymentScreen {
                     .and_then(|g| {
                         g.platform_wallet
                             .as_ref()
-                            .map(|pw| pw.core().balance().spendable())
+                            .map(|pw| pw.core().balance().confirmed())
                     })
                     .unwrap_or(0);
 

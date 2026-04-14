@@ -157,7 +157,7 @@ impl AsyncTool<DashMcpService> for WalletBalancesQuery {
         Ok(WalletBalancesOutput {
             alias,
             total_duffs: bal.total(),
-            confirmed_duffs: bal.spendable(),
+            confirmed_duffs: bal.confirmed(),
             unconfirmed_duffs: bal.unconfirmed(),
         })
     }

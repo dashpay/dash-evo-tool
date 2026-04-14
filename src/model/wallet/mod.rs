@@ -771,7 +771,7 @@ impl Wallet {
     pub fn confirmed_balance_duffs(&self) -> u64 {
         self.platform_wallet
             .as_ref()
-            .map(|pw| pw.core().balance().spendable())
+            .map(|pw| pw.core().balance().confirmed())
             .unwrap_or(0)
     }
 
@@ -781,7 +781,7 @@ impl Wallet {
     pub fn spv_confirmed_balance(&self) -> Option<u64> {
         self.platform_wallet
             .as_ref()
-            .map(|pw| pw.core().balance().spendable())
+            .map(|pw| pw.core().balance().confirmed())
     }
 
     pub fn unconfirmed_balance_duffs(&self) -> u64 {

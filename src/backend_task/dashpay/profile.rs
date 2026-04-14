@@ -86,6 +86,8 @@ pub async fn load_profile(
                 } else {
                     Some(avatar_url.to_string())
                 },
+                avatar_hash: None,
+                avatar_fingerprint: None,
                 avatar_bytes: None,
                 public_message: None,
             }),
@@ -251,6 +253,8 @@ pub async fn update_profile(
                 display_name: display_name_for_db.clone(),
                 bio: bio_for_db.clone(),
                 avatar_url: avatar_url_for_db.clone(),
+                avatar_hash: None,
+                avatar_fingerprint: None,
                 avatar_bytes: None,
                 public_message: None,
             }),
@@ -327,6 +331,8 @@ pub async fn update_profile(
                 display_name: display_name_for_db.clone(),
                 bio: bio_for_db.clone(),
                 avatar_url: avatar_url_for_db.clone(),
+                avatar_hash: None,
+                avatar_fingerprint: None,
                 avatar_bytes: None,
                 public_message: None,
             }),

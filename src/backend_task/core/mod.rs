@@ -556,7 +556,11 @@ impl AppContext {
         // Build, sign, and broadcast via CoreWallet
         let tx = platform_wallet
             .core()
-            .send_to_addresses(parsed_recipients)
+            .send_to_addresses(
+                dash_sdk::dpp::key_wallet::account::account_type::StandardAccountType::BIP44Account,
+                0,
+                parsed_recipients,
+            )
             .await
             .map_err(|e| TaskError::WalletPaymentFailed {
                 detail: e.to_string(),

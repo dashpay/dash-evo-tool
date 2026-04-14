@@ -101,11 +101,8 @@ impl AppContext {
 
         if identity_type == IdentityType::User
             && derive_keys_from_wallets
-            && let Some((_, _, wallet_private_keys)) = self.match_user_identity_keys_with_wallet(
-                &identity,
-                &wallets,
-                selected_wallet_id,
-            )?
+            && let Some((_, _, wallet_private_keys)) =
+                self.match_user_identity_keys_with_wallet(&identity, &wallets, selected_wallet_id)?
         {
             encrypted_private_keys.extend(wallet_private_keys);
         }
@@ -390,19 +387,10 @@ impl AppContext {
             }
 
             if let Some((identity_index, wallet_private_keys)) = self
-                .attempt_match_identity_with_wallet(
-                    identity,
-                    &mut wallet,
-                    wallet_id,
-                    top_bound,
-                )?
+                .attempt_match_identity_with_wallet(identity, &mut wallet, wallet_id, top_bound)?
             {
                 drop(wallet);
-                return Ok(Some((
-                    wallet_id,
-                    identity_index,
-                    wallet_private_keys,
-                )));
+                return Ok(Some((wallet_id, identity_index, wallet_private_keys)));
             }
         }
 

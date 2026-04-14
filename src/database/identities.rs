@@ -302,10 +302,10 @@ impl Database {
     /// Returns the set of identity wallet indices already used by the given wallet.
     ///
     /// This queries the `identity` table for all rows belonging to the wallet
-    /// (identified by seed hash) and returns the `wallet_index` values as a set.
+    /// (identified by wallet_id) and returns the `wallet_index` values as a set.
     pub fn get_wallet_identity_indices(
         &self,
-        wallet_seed_hash: &WalletId,
+        wallet_id: &WalletId,
         network: Network,
     ) -> HashSet<u32> {
         let network_str = network.to_string();
@@ -322,7 +322,7 @@ impl Database {
                 panic!("Failed to prepare wallet identity indices query: {e}");
             });
         stmt.query_map(
-            rusqlite::params![wallet_seed_hash.as_slice(), network_str],
+            rusqlite::params![wallet_id.as_slice(), network_str],
             |row| row.get::<_, u32>(0),
         )
         .map(|rows| rows.filter_map(|r| r.ok()).collect())
@@ -373,8 +373,8 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT data,wallet FROM identity WHERE is_local = 1 AND network = ? AND identity_type = 'User' AND data IS NOT NULL",
         )?;
-        let identities: Result<Vec<(QualifiedIdentity, Option<WalletId>)>, rusqlite::Error> =
-            stmt.query_map(params![network], |row| {
+        let identities: Result<Vec<(QualifiedIdentity, Option<WalletId>)>, rusqlite::Error> = stmt
+            .query_map(params![network], |row| {
                 let data: Vec<u8> = row.get(0)?;
                 let wallet_id: Option<WalletId> = row.get(1)?;
                 let mut identity =

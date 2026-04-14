@@ -73,13 +73,20 @@ pub fn capture_qr_funding_utxo_if_available(
     let info = pw.try_state()?;
 
     use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+    let synced_height = info.core_wallet.synced_height();
     let candidate_utxo = info
         .core_wallet
-        .get_spendable_utxos()
-        .iter()
-        .filter(|utxo| utxo.address == address && utxo.value() > 0)
-        .max_by_key(|utxo: &&&dash_sdk::dpp::key_wallet::Utxo| utxo.value())
-        .map(|utxo| (utxo.outpoint, utxo.txout.clone()));
+        .accounts
+        .standard_bip44_accounts
+        .get(&0)
+        .and_then(|account| {
+            account
+                .spendable_utxos(synced_height)
+                .into_iter()
+                .filter(|utxo| utxo.address == address && utxo.value() > 0)
+                .max_by_key(|utxo| utxo.value())
+                .map(|utxo| (utxo.outpoint, utxo.txout.clone()))
+        });
 
     if let Some((outpoint, tx_out)) = candidate_utxo {
         let mut step = step

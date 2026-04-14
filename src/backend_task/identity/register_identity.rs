@@ -83,10 +83,7 @@ impl AppContext {
 
                 (asset_lock_proof, out_point)
             }
-            RegisterIdentityFundingMethod::FundWithPlatformAddresses {
-                inputs,
-                wallet_id,
-            } => {
+            RegisterIdentityFundingMethod::FundWithPlatformAddresses { inputs, wallet_id } => {
                 // Fetch fresh nonces from platform to ensure we have current values
                 let addresses_to_fetch: std::collections::BTreeSet<PlatformAddress> =
                     inputs.keys().cloned().collect();
@@ -427,8 +424,8 @@ impl AppContext {
                 qualified_identity.status = IdentityStatus::Unknown; // Force refresh
 
                 // Update source address balances using proof-verified data from SDK response
-                if let Err(e) = self
-                    .update_wallet_platform_address_info_from_sdk(wallet_id, &address_infos)
+                if let Err(e) =
+                    self.update_wallet_platform_address_info_from_sdk(wallet_id, &address_infos)
                 {
                     tracing::warn!("Failed to update wallet platform address info: {}", e);
                 }

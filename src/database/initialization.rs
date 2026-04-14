@@ -1,9 +1,7 @@
 use crate::database::Database;
 use chrono::Utc;
-use dash_sdk::dpp::dashcore::hashes::{Hash, sha256};
 use dash_sdk::dpp::dashcore::Network;
-use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
-use dash_sdk::dpp::key_wallet::bip32::{ExtendedPrivKey, ExtendedPubKey};
+use dash_sdk::dpp::dashcore::hashes::{Hash, sha256};
 use rusqlite::{Connection, params};
 use std::fs;
 use std::path::Path;
@@ -39,7 +37,7 @@ impl<T> MigrationResultExt<T> for rusqlite::Result<T> {
     }
 }
 
-pub const DEFAULT_DB_VERSION: u16 = 40;
+pub const DEFAULT_DB_VERSION: u16 = 34;
 
 pub const DEFAULT_NETWORK: &str = "mainnet";
 
@@ -71,6 +69,17 @@ impl Database {
             let current_version = self.db_schema_version()?;
             if current_version != DEFAULT_DB_VERSION {
                 self.backup_db(db_file_path)?;
+
+                // Phase 1 of the v34 migration (add wallet_id column + backfill
+                // no-password wallets) is extracted here so it commits before the
+                // main migration transaction starts. This ensures the column persists
+                // even if the main migration rolls back (e.g., because a
+                // password-protected wallet still needs unlocking via
+                // WalletMigrationScreen). Idempotent — safe to call repeatedly.
+                if current_version < 34 {
+                    self.ensure_wallet_id_column_and_backfill()?;
+                }
+
                 if let Err(e) = self.try_perform_migration(current_version, DEFAULT_DB_VERSION) {
                     let version_after_migration = self.db_schema_version().unwrap_or(0);
                     return Err(rusqlite::Error::InvalidParameterName(format!(
@@ -84,38 +93,87 @@ impl Database {
         Ok(())
     }
 
+    /// Idempotent Phase 1 of the v34 migration.
+    ///
+    /// Adds the nullable `wallet_id BLOB` column to `wallet` (if missing) and
+    /// backfills `wallet_id` for every wallet where `uses_password = 0` by
+    /// decrypting the 64-byte raw seed and computing
+    /// `SHA256(root_pub_key.serialize() || root_chain_code)`.
+    ///
+    /// This method is intentionally separate from `migrate_v33_to_v34_consolidated`
+    /// so that the column and backfill commit immediately — even if the main
+    /// migration rolls back because a password-protected wallet has not been
+    /// unlocked yet. `WalletMigrationScreen` writes `wallet_id` for those wallets,
+    /// then calls `initialize` again; by that time this method is a no-op because
+    /// the column already exists and all no-password wallets are already backfilled.
+    pub fn ensure_wallet_id_column_and_backfill(&self) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().unwrap();
+
+        // Step 1: Add wallet_id column to wallet table (idempotent).
+        let has_wallet_id: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('wallet') WHERE name='wallet_id'",
+            [],
+            |row| row.get::<_, i32>(0).map(|c| c > 0),
+        )?;
+        if !has_wallet_id {
+            // wallet table may not exist at all on very old DBs (pre-v1). Guard.
+            let wallet_table_exists: bool = conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='wallet'",
+                [],
+                |row| row.get::<_, i32>(0).map(|c| c > 0),
+            )?;
+            if wallet_table_exists {
+                conn.execute("ALTER TABLE wallet ADD COLUMN wallet_id BLOB", [])?;
+            } else {
+                // No wallet table — nothing to backfill.
+                return Ok(());
+            }
+        }
+
+        // Step 2: Backfill wallet_id for no-password wallets.
+        //         encrypted_seed stores raw 64-byte seed when uses_password = 0.
+        let rows: Vec<(Vec<u8>, Vec<u8>, String)> = {
+            let mut stmt = conn.prepare(
+                "SELECT seed_hash, encrypted_seed, network
+                 FROM wallet
+                 WHERE uses_password = 0 AND wallet_id IS NULL",
+            )?;
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+                .collect::<Result<_, _>>()?
+        };
+
+        for (seed_hash_bytes, raw_seed, network_str) in &rows {
+            if raw_seed.len() != 64 {
+                tracing::warn!(
+                    seed = %hex::encode(seed_hash_bytes),
+                    len = raw_seed.len(),
+                    "ensure_wallet_id_column_and_backfill: skipping wallet with unexpected seed length"
+                );
+                continue;
+            }
+            let seed: [u8; 64] = raw_seed.as_slice().try_into().unwrap();
+            let network = network_str.parse::<Network>().unwrap_or(Network::Testnet);
+            let Some(wallet_id) = crate::model::wallet::derive_wallet_id_from_seed(&seed, network)
+            else {
+                tracing::warn!(
+                    seed = %hex::encode(seed_hash_bytes),
+                    "ensure_wallet_id_column_and_backfill: failed to derive wallet_id — skipping"
+                );
+                continue;
+            };
+            conn.execute(
+                "UPDATE wallet SET wallet_id = ?1 WHERE seed_hash = ?2",
+                params![&wallet_id[..], seed_hash_bytes],
+            )?;
+        }
+
+        Ok(())
+    }
+
     fn apply_version_changes(&self, version: u16, tx: &Connection) -> Result<(), MigrationError> {
         match version {
-            40 => {
-                self.migrate_to_wallet_id_keying(tx)
-                    .migration_err("wallet", "migrate to wallet_id keying")?;
-            }
-            39 => {
-                self.add_platform_created_at_ms_to_contact_requests(tx)
-                    .migration_err(
-                        "dashpay_contact_requests",
-                        "add platform_created_at_ms column",
-                    )?;
-            }
-            38 => {
-                self.add_dip15_crypto_columns_to_contact_requests(tx)
-                    .migration_err("dashpay_contact_requests", "add dip15 crypto columns")?;
-            }
-            37 => {
-                self.recreate_wallet_transactions_with_account_attribution(tx)
-                    .migration_err("wallet_transactions", "recreate with account attribution")?;
-            }
-            36 => {
-                self.add_wallet_account_pool_state_and_utxo_instant_lock(tx)
-                    .migration_err("wallet", "add pool state and utxo instant lock columns")?;
-            }
-            35 => {
-                self.drop_dashpay_address_mappings_table(tx)
-                    .migration_err("dashpay_address_mappings", "drop table")?;
-            }
             34 => {
-                self.add_asset_lock_tracking_columns(tx)
-                    .migration_err("asset_locks", "add tracking columns")?;
+                self.migrate_v33_to_v34_consolidated(tx)?;
             }
             // Versions 28-32 were consolidated into v33 to resolve migration
             // numbering conflicts between the zk and v1.0-dev branches.
@@ -329,6 +387,21 @@ impl Database {
                 source: rusqlite::Error::InvalidQuery,
             }),
             std::cmp::Ordering::Less => {
+                // Phase 1 of the v34 migration (add wallet_id column + backfill
+                // no-password wallets) must commit before the main migration
+                // transaction starts — so it runs here, outside the lock below,
+                // whenever we're upgrading through v34. This mirrors the call in
+                // `initialize()` and ensures tests that call `try_perform_migration`
+                // directly also get the column added first.
+                if original_version < 34 && to_version >= 34 {
+                    self.ensure_wallet_id_column_and_backfill()
+                        .map_err(|e| MigrationError {
+                            table: Some("wallet".into()),
+                            details: "ensure_wallet_id_column_and_backfill".into(),
+                            source: e,
+                        })?;
+                }
+
                 let mut conn = self
                     .conn
                     .lock()
@@ -476,7 +549,11 @@ impl Database {
             [],
         )?;
 
-        // Create the wallet table
+        // Create the wallet table (legacy v40 shape: seed_hash as PK,
+        // wallet_id as nullable column). The v41 rebuild runs at the
+        // end of `create_tables` to promote wallet_id to PRIMARY KEY
+        // and drop seed_hash — keeping fresh-install and migration
+        // paths converging on the same rebuild routine.
         conn.execute(
             "CREATE TABLE IF NOT EXISTS wallet (
                 seed_hash BLOB NOT NULL PRIMARY KEY,
@@ -506,7 +583,8 @@ impl Database {
             [],
         )?;
 
-        // Create wallet addresses
+        // Create wallet addresses (legacy v40 shape; rebuilt to v41 at
+        // the end of `create_tables`).
         conn.execute(
             "CREATE TABLE IF NOT EXISTS wallet_addresses (
                 seed_hash BLOB NOT NULL,
@@ -526,7 +604,8 @@ impl Database {
         conn.execute("CREATE INDEX IF NOT EXISTS idx_wallet_addresses_path_reference ON wallet_addresses (path_reference)", [])?;
         conn.execute("CREATE INDEX IF NOT EXISTS idx_wallet_addresses_path_type ON wallet_addresses (path_type)", [])?;
 
-        // Create Platform address balances table
+        // Create Platform address balances table (legacy v40 shape;
+        // rebuilt to v41 at the end of `create_tables`).
         conn.execute(
             "CREATE TABLE IF NOT EXISTS platform_address_balances (
                 seed_hash BLOB NOT NULL,
@@ -559,9 +638,9 @@ impl Database {
 
         // Per-account address pool state (Phase 10 uniform key-wallet
         // state persistence). See the v36 migration for the shape
-        // rationale. Column named `wallet_id` (was `seed_hash` pre-v40)
-        // to match the platform-wallet WalletId that the changeset
-        // persister writes.
+        // rationale. v40 renamed the key column to `wallet_id`; v41
+        // adds the FK to wallet(wallet_id) (applied by the rebuild at
+        // the end of `create_tables`).
         conn.execute(
             "CREATE TABLE IF NOT EXISTS wallet_account_pool_state (
                 wallet_id BLOB NOT NULL,
@@ -587,7 +666,9 @@ impl Database {
         // Create wallet transactions table for SPV history
         self.initialize_wallet_transactions_table(&conn)?;
 
-        // Create asset lock transaction table
+        // Create asset lock transaction table (legacy v40 shape;
+        // rebuilt to v41 at the end of `create_tables` to flip the
+        // FK from wallet(seed_hash) to wallet(wallet_id)).
         conn.execute(
             "CREATE TABLE IF NOT EXISTS asset_lock_transaction (
                         tx_id BLOB NOT NULL,
@@ -617,7 +698,9 @@ impl Database {
             [],
         )?;
 
-        // Create the identities table
+        // Create the identities table (legacy v40 shape; rebuilt to
+        // v41 at the end of `create_tables` to flip the wallet FK
+        // target to wallet(wallet_id)).
         conn.execute(
                     "CREATE TABLE IF NOT EXISTS identity (
                         id BLOB PRIMARY KEY,
@@ -710,9 +793,20 @@ impl Database {
         // Initialize single key wallet table
         self.initialize_single_key_wallet_table(&conn)?;
 
-        // Initialize shielded pool tables
+        // Initialize shielded pool tables (legacy v40 shape; rebuilt
+        // to v41 by the final step below).
         self.create_shielded_tables(&conn)?;
         self.create_shielded_wallet_meta_table(&conn)?;
+
+        // Finalize: promote wallet_id to PRIMARY KEY and flip every
+        // child FK to reference wallet(wallet_id). Fresh installs
+        // have an empty wallet table (no locked-wallet guard fires),
+        // so this converges on the same v34 schema that migration
+        // produces. Any MigrationError from the guard is surfaced as
+        // a rusqlite::Error since create_tables signature is
+        // rusqlite-typed; on an empty DB this branch is unreachable.
+        self.migrate_v33_to_v34_consolidated(&conn)
+            .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))?;
 
         Ok(())
     }
@@ -1401,81 +1495,6 @@ impl Database {
         Ok(())
     }
 
-    /// Migration 34: Recreate `asset_lock_transaction` with composite primary key
-    /// `(tx_id, output_index)` and add tracking columns for full `TrackedAssetLock`
-    /// round-trip persistence.
-    fn add_asset_lock_tracking_columns(&self, conn: &Connection) -> rusqlite::Result<()> {
-        // Check if already migrated (has the output_index column).
-        let has_output_index: bool = conn.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('asset_lock_transaction') WHERE name='output_index'",
-            [],
-            |row| row.get::<_, i32>(0).map(|c| c > 0),
-        )?;
-        if has_output_index {
-            return Ok(());
-        }
-
-        // Recreate the table with composite PK and new columns.
-        conn.execute("PRAGMA foreign_keys = OFF", [])?;
-
-        conn.execute(
-            "ALTER TABLE asset_lock_transaction RENAME TO asset_lock_transaction_old",
-            [],
-        )?;
-
-        conn.execute(
-            "CREATE TABLE asset_lock_transaction (
-                tx_id BLOB NOT NULL,
-                output_index INTEGER NOT NULL DEFAULT 0,
-                transaction_data BLOB NOT NULL,
-                amount INTEGER,
-                instant_lock_data BLOB,
-                chain_locked_height INTEGER,
-                identity_id BLOB,
-                identity_id_potentially_in_creation BLOB,
-                wallet BLOB NOT NULL,
-                network TEXT NOT NULL,
-                account_index INTEGER NOT NULL DEFAULT 0,
-                funding_type INTEGER NOT NULL DEFAULT 0,
-                identity_index INTEGER NOT NULL DEFAULT 0,
-                proof_data BLOB,
-                PRIMARY KEY (tx_id, output_index),
-                FOREIGN KEY (identity_id)
-                    REFERENCES identity(id) ON DELETE SET NULL,
-                FOREIGN KEY (identity_id_potentially_in_creation)
-                    REFERENCES identity(id) ON DELETE SET NULL,
-                FOREIGN KEY (wallet)
-                    REFERENCES wallet(seed_hash) ON DELETE CASCADE
-            )",
-            [],
-        )?;
-
-        // Copy existing rows — new columns get defaults (0 / NULL).
-        conn.execute(
-            "INSERT INTO asset_lock_transaction
-              (tx_id, output_index, transaction_data, amount, instant_lock_data,
-               chain_locked_height, identity_id, identity_id_potentially_in_creation,
-               wallet, network)
-             SELECT tx_id, 0, transaction_data, amount, instant_lock_data,
-                    chain_locked_height, identity_id,
-                    identity_id_potentially_in_creation, wallet, network
-             FROM asset_lock_transaction_old",
-            [],
-        )?;
-
-        conn.execute("DROP TABLE asset_lock_transaction_old", [])?;
-
-        // Recreate index that existed before.
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_asset_lock_transaction_network ON asset_lock_transaction (network)",
-            [],
-        )?;
-
-        conn.execute("PRAGMA foreign_keys = ON", [])?;
-
-        Ok(())
-    }
-
     /// Run database consistency checks on startup.
     /// Non-fatal: logs warnings for any issues found but does not fail.
     fn run_consistency_checks(&self) {
@@ -1583,76 +1602,82 @@ impl Database {
         }
     }
 
-    /// Migration 40: Add `wallet_id` column to `wallet` table, nuke
-    /// all cache tables, and recreate persister-owned tables with the
-    /// correct `wallet_id` column name.
+    /// Consolidated migration v33 → v34.
     ///
-    /// `wallet_id = SHA256(root_pub_key.serialize() || root_chain_code)`.
-    /// For `uses_password = 0` wallets, the raw seed is stored in
-    /// `encrypted_seed` and we can derive the root key to compute
-    /// `wallet_id` eagerly. For password-protected wallets, `wallet_id`
-    /// stays NULL until the user unlocks the wallet.
+    /// This single step replaces eight intermediate migration steps
+    /// (v34-v41) that existed only on this feature branch and were never
+    /// released. Starting state: v33 schema with `seed_hash` as the
+    /// `wallet` primary key. Ending state: `wallet_id` is the primary key,
+    /// `seed_hash` is gone, all child tables key on `wallet_id` with proper
+    /// FK constraints, and the DashPay contact-request table has its final
+    /// v41 column set.
     ///
-    /// All cache tables (identities, contacts, addresses, UTXOs, asset
-    /// locks, etc.) are deleted. They will be re-populated from chain
-    /// and platform sync on first launch after upgrade. Only the
-    /// `wallet` row (encrypted seed credentials) is preserved.
-    fn migrate_to_wallet_id_keying(&self, conn: &Connection) -> rusqlite::Result<()> {
-        // 1. Add wallet_id column to wallet table (if missing).
-        let has_wallet_id: bool = conn.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('wallet') WHERE name='wallet_id'",
-            [],
-            |row| row.get::<_, i32>(0).map(|c| c > 0),
-        )?;
-        if !has_wallet_id {
-            conn.execute("ALTER TABLE wallet ADD COLUMN wallet_id BLOB", [])?;
+    /// Note: Steps 1 and 2 (add `wallet_id` column + backfill no-password wallets)
+    /// were extracted to [`Database::ensure_wallet_id_column_and_backfill`] which
+    /// is called by `initialize` **before** this transaction starts. This allows
+    /// those changes to commit even if this migration rolls back (e.g., when
+    /// password-protected wallets need unlocking via `WalletMigrationScreen`).
+    ///
+    /// Steps:
+    /// 1. Guard: abort if any `wallet_id IS NULL` (locked password wallets).
+    /// 2. Guard: abort if any duplicate `wallet_id` values.
+    /// 3. `PRAGMA foreign_keys = OFF` — about to drop/recreate FK parents.
+    /// 4. DELETE all cache-table rows (tolerate missing tables).
+    /// 5. DROP and recreate every cache table in final v34 shape.
+    /// 6. Ensure `utxos.is_instant_locked` exists.
+    /// 7. Recreate `dashpay_contact_requests` with DIP-15 columns.
+    /// 8. Rebuild `wallet` with `wallet_id` as PRIMARY KEY, drop `seed_hash`.
+    /// 9. Drop `dashpay_address_mappings` and its indexes.
+    /// 10. Clear `selected_wallet_hash` in settings.
+    /// 11. `PRAGMA foreign_keys = ON`.
+    fn migrate_v33_to_v34_consolidated(&self, conn: &Connection) -> Result<(), MigrationError> {
+        // Step 1: Guard — refuse if any wallet still has NULL wallet_id.
+        //         The sentinel prefix is matched by WalletMigrationScreen.
+        let locked: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM wallet WHERE wallet_id IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .migration_err("wallet", "check for locked wallets (wallet_id IS NULL)")?;
+        if locked > 0 {
+            return Err(MigrationError {
+                table: Some("wallet".into()),
+                details: format!(
+                    "locked password wallets require unlock: {locked} wallet(s) \
+                     have no wallet_id yet — unlock each wallet via \
+                     WalletMigrationScreen, then re-run migration"
+                ),
+                source: rusqlite::Error::InvalidQuery,
+            });
         }
 
-        // 2. Eagerly compute wallet_id for no-password wallets.
-        //    encrypted_seed stores raw 64-byte seed when uses_password = 0.
-        let mut stmt = conn.prepare(
-            "SELECT seed_hash, encrypted_seed, network
-             FROM wallet
-             WHERE uses_password = 0 AND wallet_id IS NULL",
-        )?;
-        let rows: Vec<(Vec<u8>, Vec<u8>, String)> = stmt
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
-            .collect::<Result<_, _>>()?;
-
-        let secp = Secp256k1::new();
-        for (seed_hash_bytes, raw_seed, network_str) in &rows {
-            if raw_seed.len() != 64 {
-                tracing::warn!(
-                    seed = %hex::encode(seed_hash_bytes),
-                    len = raw_seed.len(),
-                    "v40 migration: skipping wallet with unexpected seed length"
-                );
-                continue;
-            }
-            let seed: [u8; 64] = raw_seed.as_slice().try_into().unwrap();
-            let network = network_str.parse::<Network>().unwrap_or(Network::Testnet);
-            let Ok(master_priv) = ExtendedPrivKey::new_master(network, &seed) else {
-                tracing::warn!(
-                    seed = %hex::encode(seed_hash_bytes),
-                    "v40 migration: failed to derive master key — skipping"
-                );
-                continue;
-            };
-            let root_pub = ExtendedPubKey::from_priv(&secp, &master_priv);
-            // WalletId = SHA256(root_pub_key.serialize() || root_chain_code)
-            let mut data = Vec::with_capacity(33 + 32);
-            data.extend_from_slice(&root_pub.public_key.serialize());
-            data.extend_from_slice(&root_pub.chain_code[..]);
-            let wallet_id = sha256::Hash::hash(&data).to_byte_array();
-
-            conn.execute(
-                "UPDATE wallet SET wallet_id = ?1 WHERE seed_hash = ?2",
-                params![&wallet_id[..], seed_hash_bytes],
-            )?;
+        // Step 4: Guard — wallet_id must be unique (will become PK).
+        let dup_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) - COUNT(DISTINCT wallet_id) FROM wallet",
+                [],
+                |row| row.get(0),
+            )
+            .migration_err("wallet", "check wallet_id uniqueness")?;
+        if dup_count != 0 {
+            return Err(MigrationError {
+                table: Some("wallet".into()),
+                details: format!(
+                    "cannot promote wallet_id to PRIMARY KEY: {dup_count} duplicate wallet_id \
+                     value(s) detected across wallet rows"
+                ),
+                source: rusqlite::Error::InvalidQuery,
+            });
         }
 
-        // 3. Nuke all cache tables. These will be repopulated by chain
-        //    and platform sync on first launch after upgrade.
+        // Step 5: Disable FK enforcement while we drop/recreate FK parents.
+        conn.execute_batch("PRAGMA foreign_keys = OFF")
+            .migration_err("pragma", "foreign_keys=OFF for v34 table rebuild")?;
+
+        // Step 6: Delete all cache-table rows. Use `let _ =` to tolerate
+        //         tables that may not exist on all upgrade paths (e.g.
+        //         wallet_account_pool_state introduced in v36).
         for table in [
             "identity",
             "wallet_addresses",
@@ -1675,281 +1700,250 @@ impl Database {
             "top_up",
             "identity_order",
             "token_order",
+            "token",
+            "identity_token_balances",
         ] {
-            // Some tables may not exist on all upgrade paths; ignore
-            // "no such table" errors.
             let _ = conn.execute(&format!("DELETE FROM {table}"), []);
         }
 
-        // Also clear token-related tables if they exist.
-        let _ = conn.execute("DELETE FROM token", []);
-        let _ = conn.execute("DELETE FROM identity_token_balances", []);
-
-        // 4. Recreate persister-owned tables with correct column name
-        //    (was `seed_hash`, now `wallet_id`). DROP + CREATE is safe
-        //    because step 3 already cleared any data in flight.
-        conn.execute("DROP TABLE IF EXISTS wallet_account_pool_state", [])?;
-        conn.execute(
-            "CREATE TABLE wallet_account_pool_state (
+        // Step 7: DROP and recreate every cache table in v34 final shape.
+        //         All in one execute_batch so DDL lands atomically.
+        conn.execute_batch(
+            "DROP TABLE IF EXISTS wallet_addresses;
+             CREATE TABLE wallet_addresses (
                 wallet_id BLOB NOT NULL,
-                account_type BLOB NOT NULL,
-                pool_type INTEGER NOT NULL,
-                highest_used INTEGER,
-                highest_generated INTEGER,
-                PRIMARY KEY (wallet_id, account_type, pool_type)
-            )",
-            [],
-        )?;
+                address TEXT NOT NULL,
+                derivation_path TEXT NOT NULL,
+                balance INTEGER,
+                path_reference INTEGER NOT NULL,
+                path_type INTEGER NOT NULL,
+                total_received INTEGER DEFAULT 0,
+                PRIMARY KEY (wallet_id, address),
+                FOREIGN KEY (wallet_id) REFERENCES wallet(wallet_id) ON DELETE CASCADE
+             );
+             CREATE INDEX IF NOT EXISTS idx_wallet_addresses_path_reference
+                 ON wallet_addresses (path_reference);
+             CREATE INDEX IF NOT EXISTS idx_wallet_addresses_path_type
+                 ON wallet_addresses (path_type);
 
-        conn.execute("DROP TABLE IF EXISTS wallet_transactions", [])?;
-        conn.execute(
-            "CREATE TABLE wallet_transactions (
+             DROP TABLE IF EXISTS platform_address_balances;
+             CREATE TABLE platform_address_balances (
+                wallet_id BLOB NOT NULL,
+                address TEXT NOT NULL,
+                balance INTEGER NOT NULL DEFAULT 0,
+                nonce INTEGER NOT NULL DEFAULT 0,
+                network TEXT NOT NULL,
+                updated_at INTEGER NOT NULL DEFAULT 0,
+                last_full_sync_balance INTEGER DEFAULT NULL,
+                PRIMARY KEY (wallet_id, address, network),
+                FOREIGN KEY (wallet_id) REFERENCES wallet(wallet_id) ON DELETE CASCADE
+             );
+
+             DROP TABLE IF EXISTS shielded_notes;
+             CREATE TABLE shielded_notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                wallet_id BLOB NOT NULL,
+                note_data BLOB NOT NULL,
+                position INTEGER NOT NULL,
+                cmx BLOB NOT NULL,
+                nullifier BLOB NOT NULL,
+                block_height INTEGER NOT NULL,
+                is_spent INTEGER NOT NULL DEFAULT 0,
+                value INTEGER NOT NULL,
+                network TEXT NOT NULL,
+                UNIQUE(wallet_id, nullifier, network),
+                FOREIGN KEY (wallet_id) REFERENCES wallet(wallet_id) ON DELETE CASCADE
+             );
+             CREATE INDEX IF NOT EXISTS idx_shielded_notes_wallet_network
+                 ON shielded_notes (wallet_id, network);
+
+             DROP TABLE IF EXISTS shielded_wallet_meta;
+             CREATE TABLE shielded_wallet_meta (
+                wallet_id BLOB NOT NULL,
+                network TEXT NOT NULL,
+                last_nullifier_sync_height INTEGER NOT NULL DEFAULT 0,
+                last_nullifier_sync_timestamp INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (wallet_id, network),
+                FOREIGN KEY (wallet_id) REFERENCES wallet(wallet_id) ON DELETE CASCADE
+             );
+
+             DROP TABLE IF EXISTS asset_lock_transaction;
+             CREATE TABLE asset_lock_transaction (
+                tx_id BLOB NOT NULL,
+                output_index INTEGER NOT NULL DEFAULT 0,
+                transaction_data BLOB NOT NULL,
+                amount INTEGER,
+                instant_lock_data BLOB,
+                chain_locked_height INTEGER,
+                identity_id BLOB,
+                identity_id_potentially_in_creation BLOB,
+                wallet BLOB NOT NULL,
+                network TEXT NOT NULL,
+                account_index INTEGER NOT NULL DEFAULT 0,
+                funding_type INTEGER NOT NULL DEFAULT 0,
+                identity_index INTEGER NOT NULL DEFAULT 0,
+                proof_data BLOB,
+                PRIMARY KEY (tx_id, output_index),
+                FOREIGN KEY (identity_id) REFERENCES identity(id) ON DELETE SET NULL,
+                FOREIGN KEY (identity_id_potentially_in_creation)
+                    REFERENCES identity(id) ON DELETE SET NULL,
+                FOREIGN KEY (wallet) REFERENCES wallet(wallet_id) ON DELETE CASCADE
+             );
+             CREATE INDEX IF NOT EXISTS idx_asset_lock_transaction_network
+                 ON asset_lock_transaction (network);
+
+             DROP TABLE IF EXISTS identity;
+             CREATE TABLE identity (
+                id BLOB PRIMARY KEY,
+                data BLOB,
+                status INTEGER NOT NULL DEFAULT 0,
+                is_local INTEGER NOT NULL,
+                alias TEXT,
+                info TEXT,
+                wallet BLOB,
+                wallet_index INTEGER,
+                identity_type TEXT,
+                network TEXT NOT NULL,
+                CHECK ((wallet IS NOT NULL AND wallet_index IS NOT NULL)
+                    OR (wallet IS NULL AND wallet_index IS NULL)),
+                FOREIGN KEY (wallet) REFERENCES wallet(wallet_id) ON DELETE CASCADE
+             );
+             CREATE INDEX IF NOT EXISTS idx_identity_local_network_type
+                 ON identity (is_local, network, identity_type);
+
+             DROP TABLE IF EXISTS wallet_transactions;
+             CREATE TABLE wallet_transactions (
                 wallet_id BLOB NOT NULL,
                 account_type BLOB NOT NULL,
                 txid BLOB NOT NULL,
                 network TEXT NOT NULL,
                 record BLOB NOT NULL,
-                PRIMARY KEY (wallet_id, account_type, txid, network)
-            )",
-            [],
+                PRIMARY KEY (wallet_id, account_type, txid, network),
+                FOREIGN KEY (wallet_id) REFERENCES wallet(wallet_id) ON DELETE CASCADE
+             );
+             CREATE INDEX IF NOT EXISTS idx_wallet_transactions_wallet_network
+                 ON wallet_transactions (wallet_id, network);
+
+             DROP TABLE IF EXISTS wallet_account_pool_state;
+             CREATE TABLE wallet_account_pool_state (
+                wallet_id BLOB NOT NULL,
+                account_type BLOB NOT NULL,
+                pool_type INTEGER NOT NULL,
+                highest_used INTEGER,
+                highest_generated INTEGER,
+                PRIMARY KEY (wallet_id, account_type, pool_type),
+                FOREIGN KEY (wallet_id) REFERENCES wallet(wallet_id) ON DELETE CASCADE
+             );",
+        )
+        .migration_err(
+            "cache tables",
+            "recreate all cache tables with wallet_id FK",
         )?;
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_wallet_transactions_wallet_network
-             ON wallet_transactions (wallet_id, network)",
-            [],
-        )?;
 
-        // 5. Clear the selected wallet hash in settings — the old
-        //    seed_hash value won't match the new wallet_id key.
-        let _ = conn.execute(
-            "UPDATE settings SET selected_wallet_hash = NULL WHERE 1=1",
-            [],
-        );
-
-        Ok(())
-    }
-
-    /// Migration 39: Add `platform_created_at_ms` column to
-    /// `dashpay_contact_requests` (Item 7, review M2 fix).
-    ///
-    /// The existing `created_at` column is `INTEGER DEFAULT
-    /// (unixepoch())` — it captures **when the row was saved to
-    /// local SQL**, in seconds. That's a different concept from
-    /// **when the contact request was created on platform**, which
-    /// is carried by the document's `created_at` field in
-    /// milliseconds.
-    ///
-    /// Item 7b was writing `unixepoch()` into `created_at` (local
-    /// save time) and Item 7c was reading it back and multiplying
-    /// by 1000 to fake "ms". The reviewer caught this as M2 — the
-    /// arithmetic was right for what was stored but the stored
-    /// value was the wrong timestamp.
-    ///
-    /// This migration adds a new nullable column specifically for
-    /// the platform-side ms timestamp. `created_at` keeps its
-    /// original "local save time" semantics so nothing else is
-    /// disturbed.
-    ///
-    /// Idempotent: probes `pragma_table_info` before the ALTER.
-    fn add_platform_created_at_ms_to_contact_requests(
-        &self,
-        conn: &Connection,
-    ) -> rusqlite::Result<()> {
-        let has_col: bool = conn.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('dashpay_contact_requests')
-             WHERE name='platform_created_at_ms'",
-            [],
-            |row| row.get::<_, i32>(0).map(|c| c > 0),
-        )?;
-        if !has_col {
-            conn.execute(
-                "ALTER TABLE dashpay_contact_requests
-                 ADD COLUMN platform_created_at_ms INTEGER",
-                [],
-            )?;
-        }
-        Ok(())
-    }
-
-    /// Migration 38: Add DIP-15 cryptographic columns to
-    /// `dashpay_contact_requests` (Item 7).
-    ///
-    /// The `ContactRequest` struct in key-wallet carries six fields
-    /// that were NOT previously persisted to evo-tool's SQL — the
-    /// DIP-15 crypto material is needed for `EstablishedContact`
-    /// reconstruction on startup and for re-encrypting payments to
-    /// contacts:
-    ///
-    /// - `sender_key_index INTEGER` — index of the sender's identity
-    ///   public key used for ECDH
-    /// - `recipient_key_index INTEGER` — index of the recipient's
-    ///   identity public key used for ECDH
-    /// - `account_reference INTEGER` — encrypted account reference
-    /// - `encrypted_public_key BLOB` — encrypted xpub for payment
-    ///   address derivation
-    /// - `encrypted_account_label_bytes BLOB` (nullable) —
-    ///   ciphertext of the optional account label (the existing
-    ///   `account_label TEXT` column stays separate; it's a
-    ///   plaintext display field, not the ciphertext)
-    /// - `auto_accept_proof BLOB` (nullable) — DIP-15 auto-accept
-    ///   proof
-    /// - `core_height_created_at INTEGER` — Core chain height at
-    ///   creation time
-    ///
-    /// All new columns are nullable so the migration can run
-    /// without a backfill — existing rows keep their NULL values
-    /// and the load path skips them until the next background
-    /// contact-request sync cycle repopulates them from platform.
-    ///
-    /// Idempotent: probes `pragma_table_info` before each
-    /// `ALTER TABLE`.
-    fn add_dip15_crypto_columns_to_contact_requests(
-        &self,
-        conn: &Connection,
-    ) -> rusqlite::Result<()> {
-        let add_column_if_missing = |col_name: &str, col_def: &str| -> rusqlite::Result<()> {
-            let has_col: bool = conn.query_row(
-                &format!(
-                    "SELECT COUNT(*) FROM pragma_table_info('dashpay_contact_requests')
-                         WHERE name='{col_name}'"
-                ),
+        // Step 8: Ensure utxos.is_instant_locked exists. The column was
+        //         added in v36; older upgrade paths may lack it. The rows
+        //         were cleared in step 6 so we only need the schema change.
+        let has_instant_locked: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('utxos') WHERE name='is_instant_locked'",
                 [],
                 |row| row.get::<_, i32>(0).map(|c| c > 0),
-            )?;
-            if !has_col {
-                conn.execute(
-                    &format!("ALTER TABLE dashpay_contact_requests ADD COLUMN {col_def}"),
-                    [],
-                )?;
-            }
-            Ok(())
-        };
-
-        add_column_if_missing("sender_key_index", "sender_key_index INTEGER")?;
-        add_column_if_missing("recipient_key_index", "recipient_key_index INTEGER")?;
-        add_column_if_missing("account_reference", "account_reference INTEGER")?;
-        add_column_if_missing("encrypted_public_key", "encrypted_public_key BLOB")?;
-        add_column_if_missing(
-            "encrypted_account_label_bytes",
-            "encrypted_account_label_bytes BLOB",
-        )?;
-        add_column_if_missing("auto_accept_proof", "auto_accept_proof BLOB")?;
-        add_column_if_missing("core_height_created_at", "core_height_created_at INTEGER")?;
-
-        Ok(())
-    }
-
-    /// Migration 37: Recreate `wallet_transactions` with per-account
-    /// attribution (Phase 10 6c).
-    ///
-    /// The previous `wallet_transactions` table was effectively dead
-    /// code: the `replace_wallet_transactions` writer was never called
-    /// anywhere, and no SELECTs read it. It was a schema-only table
-    /// with per-wallet keying `(seed_hash, txid, network)` that
-    /// couldn't represent `cs.core.per_account[AccountType].transactions`
-    /// (the same txid can live in two account buckets).
-    ///
-    /// This migration drops the old dead rows and recreates the
-    /// table with:
-    /// - A per-account primary key `(seed_hash, account_type, txid, network)`
-    /// - A single `record BLOB NOT NULL` column holding a bincode
-    ///   serde-encoded `TransactionRecord` (simpler than mapping ~10
-    ///   individual fields — reuses the type's own serde derive)
-    ///
-    /// Dropping existing rows is safe: they were never read by
-    /// anyone, so there's no data to lose in any functional sense.
-    fn recreate_wallet_transactions_with_account_attribution(
-        &self,
-        conn: &Connection,
-    ) -> rusqlite::Result<()> {
-        conn.execute("DROP TABLE IF EXISTS wallet_transactions", [])?;
-        conn.execute(
-            "CREATE TABLE wallet_transactions (
-                seed_hash BLOB NOT NULL,
-                account_type BLOB NOT NULL,
-                txid BLOB NOT NULL,
-                network TEXT NOT NULL,
-                record BLOB NOT NULL,
-                PRIMARY KEY (seed_hash, account_type, txid, network),
-                FOREIGN KEY (seed_hash) REFERENCES wallet(seed_hash) ON DELETE CASCADE
-            )",
-            [],
-        )?;
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_wallet_transactions_seed_network
-             ON wallet_transactions (seed_hash, network)",
-            [],
-        )?;
-        Ok(())
-    }
-
-    /// Migration 36: Add `wallet_account_pool_state` table and
-    /// `utxos.is_instant_locked` column for Phase 10 uniform
-    /// key-wallet account state persistence.
-    ///
-    /// `wallet_account_pool_state` stores per-(account, pool) monotonic
-    /// watermarks that let the load path reconstruct key-wallet's
-    /// `highest_used` / `highest_generated` without rescanning the
-    /// blockchain. Addresses derived up to `highest_generated` are
-    /// regenerated from the seed at wallet open, and `highest_used`
-    /// marks which ones have been observed used.
-    ///
-    /// `utxos.is_instant_locked` captures the IS-lock flag on UTXOs
-    /// so the balance split (confirmed vs instant-locked-unconfirmed)
-    /// survives restart.
-    ///
-    /// Idempotent: uses `IF NOT EXISTS` on the table and probes
-    /// `pragma_table_info` before the `ALTER TABLE`.
-    fn add_wallet_account_pool_state_and_utxo_instant_lock(
-        &self,
-        conn: &Connection,
-    ) -> rusqlite::Result<()> {
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS wallet_account_pool_state (
-                seed_hash BLOB NOT NULL,
-                account_type BLOB NOT NULL,
-                pool_type INTEGER NOT NULL,
-                highest_used INTEGER,
-                highest_generated INTEGER,
-                PRIMARY KEY (seed_hash, account_type, pool_type),
-                FOREIGN KEY (seed_hash) REFERENCES wallet(seed_hash) ON DELETE CASCADE
-            )",
-            [],
-        )?;
-
-        // Add `is_instant_locked` column to `utxos` if missing.
-        let has_col: bool = conn.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('utxos') WHERE name='is_instant_locked'",
-            [],
-            |row| row.get::<_, i32>(0).map(|c| c > 0),
-        )?;
-        if !has_col {
+            )
+            .migration_err("utxos", "check for is_instant_locked column")?;
+        if !has_instant_locked {
             conn.execute(
                 "ALTER TABLE utxos ADD COLUMN is_instant_locked INTEGER NOT NULL DEFAULT 0",
                 [],
-            )?;
+            )
+            .migration_err("utxos", "add is_instant_locked column")?;
         }
 
-        Ok(())
-    }
+        // Step 9: Recreate dashpay_contact_requests with DIP-15 crypto
+        //         columns and platform_created_at_ms (added in v38/v39),
+        //         plus wallet_id (added in MED #15 fix). DROP+CREATE is
+        //         safe because step 6 already deleted all rows.
+        conn.execute_batch(
+            "DROP TABLE IF EXISTS dashpay_contact_requests;
+             CREATE TABLE dashpay_contact_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                from_identity_id BLOB NOT NULL,
+                to_identity_id BLOB NOT NULL,
+                wallet_id BLOB,
+                network TEXT NOT NULL,
+                to_username TEXT,
+                account_label TEXT,
+                request_type TEXT NOT NULL CHECK (request_type IN ('sent', 'received')),
+                status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'rejected', 'expired')),
+                created_at INTEGER DEFAULT (unixepoch()),
+                responded_at INTEGER,
+                expires_at INTEGER,
+                sender_key_index INTEGER,
+                recipient_key_index INTEGER,
+                account_reference INTEGER,
+                encrypted_public_key BLOB,
+                encrypted_account_label_bytes BLOB,
+                auto_accept_proof BLOB,
+                core_height_created_at INTEGER,
+                platform_created_at_ms INTEGER
+             );
+             CREATE INDEX IF NOT EXISTS idx_contact_requests_from
+                 ON dashpay_contact_requests(from_identity_id);
+             CREATE INDEX IF NOT EXISTS idx_contact_requests_to
+                 ON dashpay_contact_requests(to_identity_id);",
+        )
+        .migration_err("dashpay_contact_requests", "recreate with DIP-15 columns")?;
 
-    /// Migration 35: Drop `dashpay_address_mappings` table.
-    ///
-    /// DashPay receiving addresses are now tracked by key-wallet's
-    /// `DashpayReceivingFunds` accounts (registered at contact
-    /// establishment via `DashPayWallet::register_contact_account`), so
-    /// the separate evo-tool mapping table is redundant. Phase 9b-4
-    /// migrated all callers to `DashPayWallet::match_incoming_dashpay_address`.
-    fn drop_dashpay_address_mappings_table(&self, conn: &Connection) -> rusqlite::Result<()> {
-        conn.execute(
-            "DROP INDEX IF EXISTS idx_dashpay_address_mappings_contact",
-            [],
-        )?;
-        conn.execute(
-            "DROP INDEX IF EXISTS idx_dashpay_address_mappings_owner",
-            [],
-        )?;
-        conn.execute("DROP TABLE IF EXISTS dashpay_address_mappings", [])?;
+        // Step 10: Rebuild `wallet` — preserve data, promote wallet_id to
+        //          PRIMARY KEY, drop seed_hash column.
+        conn.execute_batch(
+            "CREATE TABLE wallet_new (
+                wallet_id BLOB NOT NULL PRIMARY KEY,
+                encrypted_seed BLOB NOT NULL,
+                salt BLOB NOT NULL,
+                nonce BLOB NOT NULL,
+                master_ecdsa_bip44_account_0_epk BLOB NOT NULL,
+                alias TEXT,
+                is_main INTEGER,
+                uses_password INTEGER NOT NULL,
+                password_hint TEXT,
+                network TEXT NOT NULL,
+                confirmed_balance INTEGER DEFAULT 0,
+                unconfirmed_balance INTEGER DEFAULT 0,
+                total_balance INTEGER DEFAULT 0,
+                last_platform_full_sync INTEGER DEFAULT 0,
+                last_platform_sync_checkpoint INTEGER DEFAULT 0,
+                last_terminal_block INTEGER DEFAULT 0,
+                core_wallet_name TEXT DEFAULT NULL
+             );
+             INSERT INTO wallet_new
+             SELECT wallet_id, encrypted_seed, salt, nonce,
+                    master_ecdsa_bip44_account_0_epk, alias, is_main, uses_password,
+                    password_hint, network, confirmed_balance, unconfirmed_balance,
+                    total_balance, last_platform_full_sync, last_platform_sync_checkpoint,
+                    last_terminal_block, core_wallet_name
+             FROM wallet;
+             DROP TABLE wallet;
+             ALTER TABLE wallet_new RENAME TO wallet;
+             CREATE INDEX idx_wallet_network ON wallet (network);",
+        )
+        .migration_err("wallet", "rebuild with wallet_id as PRIMARY KEY")?;
+
+        // Step 11: Drop dashpay_address_mappings (removed in what was v35).
+        conn.execute_batch(
+            "DROP INDEX IF EXISTS idx_dashpay_address_mappings_contact;
+             DROP INDEX IF EXISTS idx_dashpay_address_mappings_owner;
+             DROP TABLE IF EXISTS dashpay_address_mappings;",
+        )
+        .migration_err("dashpay_address_mappings", "drop table and indexes")?;
+
+        // Step 12: Clear selected_wallet_hash — old seed_hash value won't
+        //          match the new wallet_id key.
+        let _ = conn.execute("UPDATE settings SET selected_wallet_hash = NULL", []);
+
+        // Step 13: Re-enable FK enforcement.
+        conn.execute_batch("PRAGMA foreign_keys = ON")
+            .migration_err("pragma", "foreign_keys=ON after v34 table rebuild")?;
+
         Ok(())
     }
 }
@@ -1983,17 +1977,21 @@ mod test {
         assert!(exists, "column `{column}` should exist in table `{table}`");
     }
 
-    /// Verify the full v33 schema: all tables and columns introduced in v28-v33.
+    /// Verify the full schema at DEFAULT_DB_VERSION — all tables and
+    /// columns introduced by the current migration ladder (v28 through
+    /// the latest). Despite the name, this is the "final schema"
+    /// assertion kept under its historical name.
     fn assert_v33_schema(conn: &Connection) {
         // wallet.core_wallet_name (v28)
         assert_column_exists(conn, "wallet", "core_wallet_name");
-        // wallet.wallet_id (v40)
+        // wallet.wallet_id is now the PRIMARY KEY (v41); seed_hash is gone.
         assert_column_exists(conn, "wallet", "wallet_id");
+        assert_column_not_exists(conn, "wallet", "seed_hash");
 
-        // shielded_notes table (v29)
+        // shielded_notes table (v29; v41 renamed wallet_seed_hash → wallet_id).
         assert_table_exists(conn, "shielded_notes");
         for col in [
-            "wallet_seed_hash",
+            "wallet_id",
             "note_data",
             "position",
             "cmx",
@@ -2005,9 +2003,13 @@ mod test {
         ] {
             assert_column_exists(conn, "shielded_notes", col);
         }
+        assert_column_not_exists(conn, "shielded_notes", "wallet_seed_hash");
 
-        // shielded_wallet_meta table with last_nullifier_sync_timestamp (v30)
+        // shielded_wallet_meta table with last_nullifier_sync_timestamp (v30);
+        // v41 renamed wallet_seed_hash → wallet_id.
         assert_table_exists(conn, "shielded_wallet_meta");
+        assert_column_exists(conn, "shielded_wallet_meta", "wallet_id");
+        assert_column_not_exists(conn, "shielded_wallet_meta", "wallet_seed_hash");
         assert_column_exists(
             conn,
             "shielded_wallet_meta",
@@ -2207,7 +2209,7 @@ mod test {
             )
             .unwrap();
         assert_eq!(version, DEFAULT_DB_VERSION);
-        assert_eq!(version, 40);
+        assert_eq!(version, 34);
 
         assert_v33_schema(&conn);
     }
@@ -2225,6 +2227,10 @@ mod test {
         {
             let conn = db.conn.lock().unwrap();
 
+            // FK enforcement may be ON after create_tables' v41 rebuild.
+            // Disable it for the cross-table DROP/CREATE dance below.
+            conn.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
+
             // Remove v28+ tables entirely
             conn.execute("DROP TABLE IF EXISTS shielded_notes", [])
                 .unwrap();
@@ -2233,17 +2239,13 @@ mod test {
             conn.execute("DROP TABLE IF EXISTS contact_private_info", [])
                 .unwrap();
 
-            // Recreate `wallet` without `core_wallet_name` (SQLite has no DROP COLUMN)
+            // Rebuild `wallet` in its v27 shape: seed_hash PK, no wallet_id,
+            // no core_wallet_name. The fresh-install DB is empty at this
+            // point, so no data preservation needed. (v41 dropped the
+            // seed_hash column — we're recreating the legacy shape here
+            // purely to exercise the migration ladder.)
             conn.execute_batch(
-                "CREATE TABLE wallet_old AS SELECT
-                    seed_hash, encrypted_seed, salt, nonce,
-                    master_ecdsa_bip44_account_0_epk, alias, is_main,
-                    uses_password, password_hint, network,
-                    confirmed_balance, unconfirmed_balance, total_balance,
-                    last_platform_full_sync, last_platform_sync_checkpoint,
-                    last_terminal_block
-                 FROM wallet;
-                 DROP TABLE wallet;
+                "DROP TABLE IF EXISTS wallet;
                  CREATE TABLE wallet (
                     seed_hash BLOB NOT NULL PRIMARY KEY,
                     encrypted_seed BLOB NOT NULL,
@@ -2261,9 +2263,67 @@ mod test {
                     last_platform_full_sync INTEGER DEFAULT 0,
                     last_platform_sync_checkpoint INTEGER DEFAULT 0,
                     last_terminal_block INTEGER DEFAULT 0
+                 );",
+            )
+            .unwrap();
+
+            // Rebuild wallet child tables in their pre-v41 shape so the
+            // v33 orphan-cleanup migration (`DELETE FROM ... WHERE
+            // seed_hash NOT IN (SELECT seed_hash FROM wallet)`) runs
+            // against the schema it was written for.
+            conn.execute_batch(
+                "DROP TABLE IF EXISTS wallet_addresses;
+                 CREATE TABLE wallet_addresses (
+                    seed_hash BLOB NOT NULL,
+                    address TEXT NOT NULL,
+                    derivation_path TEXT NOT NULL,
+                    balance INTEGER,
+                    path_reference INTEGER NOT NULL,
+                    path_type INTEGER NOT NULL,
+                    PRIMARY KEY (seed_hash, address),
+                    FOREIGN KEY (seed_hash) REFERENCES wallet(seed_hash) ON DELETE CASCADE
                  );
-                 INSERT INTO wallet SELECT * FROM wallet_old;
-                 DROP TABLE wallet_old;",
+                 DROP TABLE IF EXISTS platform_address_balances;
+                 CREATE TABLE platform_address_balances (
+                    seed_hash BLOB NOT NULL,
+                    address TEXT NOT NULL,
+                    balance INTEGER NOT NULL DEFAULT 0,
+                    nonce INTEGER NOT NULL DEFAULT 0,
+                    network TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (seed_hash, address, network),
+                    FOREIGN KEY (seed_hash) REFERENCES wallet(seed_hash) ON DELETE CASCADE
+                 );
+                 DROP TABLE IF EXISTS asset_lock_transaction;
+                 CREATE TABLE asset_lock_transaction (
+                    tx_id BLOB PRIMARY KEY,
+                    transaction_data BLOB NOT NULL,
+                    amount INTEGER,
+                    instant_lock_data BLOB,
+                    chain_locked_height INTEGER,
+                    identity_id BLOB,
+                    identity_id_potentially_in_creation BLOB,
+                    wallet BLOB NOT NULL,
+                    network TEXT NOT NULL,
+                    FOREIGN KEY (identity_id) REFERENCES identity(id) ON DELETE SET NULL,
+                    FOREIGN KEY (identity_id_potentially_in_creation) REFERENCES identity(id) ON DELETE SET NULL,
+                    FOREIGN KEY (wallet) REFERENCES wallet(seed_hash) ON DELETE CASCADE
+                 );
+                 DROP TABLE IF EXISTS identity;
+                 CREATE TABLE identity (
+                    id BLOB PRIMARY KEY,
+                    data BLOB,
+                    is_in_creation INTEGER NOT NULL DEFAULT 0,
+                    is_local INTEGER NOT NULL,
+                    alias TEXT,
+                    info TEXT,
+                    wallet BLOB,
+                    wallet_index INTEGER,
+                    identity_type TEXT,
+                    network TEXT NOT NULL,
+                    CHECK ((wallet IS NOT NULL AND wallet_index IS NOT NULL) OR (wallet IS NULL AND wallet_index IS NULL)),
+                    FOREIGN KEY (wallet) REFERENCES wallet(seed_hash) ON DELETE CASCADE
+                 );",
             )
             .unwrap();
 
@@ -2324,7 +2384,7 @@ mod test {
         );
 
         // Verify final version
-        assert_eq!(db.db_schema_version().unwrap(), 40);
+        assert_eq!(db.db_schema_version().unwrap(), DEFAULT_DB_VERSION);
 
         // Verify full v33 schema
         let conn = db.conn.lock().unwrap();
@@ -2352,6 +2412,40 @@ mod test {
         {
             let conn = db.conn.lock().unwrap();
 
+            // FK enforcement may be ON after create_tables' v41 rebuild.
+            // Disable it for the cross-table DROP/CREATE dance that
+            // rebuilds legacy schemas (otherwise child table FKs would
+            // trip while we recreate their parent).
+            conn.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
+
+            // Rebuild `wallet` in its pre-v40 shape (seed_hash PK, no
+            // wallet_id column) — we're exercising the migration ladder
+            // starting from v27, and every INSERT below uses seed_hash
+            // as the wallet key. The v41 create_tables output is empty
+            // at this point, so there's nothing to preserve.
+            conn.execute_batch(
+                "DROP TABLE IF EXISTS wallet;
+                 CREATE TABLE wallet (
+                    seed_hash BLOB NOT NULL PRIMARY KEY,
+                    encrypted_seed BLOB NOT NULL,
+                    salt BLOB NOT NULL,
+                    nonce BLOB NOT NULL,
+                    master_ecdsa_bip44_account_0_epk BLOB NOT NULL,
+                    alias TEXT,
+                    is_main INTEGER,
+                    uses_password INTEGER NOT NULL,
+                    password_hint TEXT,
+                    network TEXT NOT NULL,
+                    confirmed_balance INTEGER DEFAULT 0,
+                    unconfirmed_balance INTEGER DEFAULT 0,
+                    total_balance INTEGER DEFAULT 0,
+                    last_platform_full_sync INTEGER DEFAULT 0,
+                    last_platform_sync_checkpoint INTEGER DEFAULT 0,
+                    last_terminal_block INTEGER DEFAULT 0
+                 );",
+            )
+            .unwrap();
+
             // Recreate wallet_transactions with the pre-migration-37
             // schema so the INSERT below can use `timestamp` + `status`.
             conn.execute_batch(
@@ -2374,7 +2468,99 @@ mod test {
             )
             .unwrap();
 
-            // Insert a real wallet with the old network name
+            // Drop wallet_account_pool_state — it was created by v41
+            // create_tables with FK to wallet(wallet_id), which would
+            // be a dangling FK once we roll wallet back to its v27
+            // shape (no wallet_id column). The v36 migration will
+            // recreate it with the seed_hash FK appropriate for the
+            // intermediate state, then v40/v41 will rebuild again.
+            conn.execute_batch("DROP TABLE IF EXISTS wallet_account_pool_state")
+                .unwrap();
+
+            // Rebuild wallet_addresses + platform_address_balances in
+            // their pre-v41 shape (seed_hash column, FK to
+            // wallet(seed_hash)) so the INSERTs below and the v33
+            // orphan-cleanup migration run against the schema they
+            // were written against.
+            conn.execute_batch(
+                "DROP TABLE IF EXISTS wallet_addresses;
+                 CREATE TABLE wallet_addresses (
+                    seed_hash BLOB NOT NULL,
+                    address TEXT NOT NULL,
+                    derivation_path TEXT NOT NULL,
+                    balance INTEGER,
+                    path_reference INTEGER NOT NULL,
+                    path_type INTEGER NOT NULL,
+                    total_received INTEGER DEFAULT 0,
+                    PRIMARY KEY (seed_hash, address),
+                    FOREIGN KEY (seed_hash) REFERENCES wallet(seed_hash) ON DELETE CASCADE
+                 );
+                 DROP TABLE IF EXISTS platform_address_balances;
+                 CREATE TABLE platform_address_balances (
+                    seed_hash BLOB NOT NULL,
+                    address TEXT NOT NULL,
+                    balance INTEGER NOT NULL DEFAULT 0,
+                    nonce INTEGER NOT NULL DEFAULT 0,
+                    network TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (seed_hash, address, network),
+                    FOREIGN KEY (seed_hash) REFERENCES wallet(seed_hash) ON DELETE CASCADE
+                 );",
+            )
+            .unwrap();
+
+            // Rebuild asset_lock_transaction in its pre-v41 shape
+            // (FK to wallet(seed_hash)) so the INSERTs validate.
+            conn.execute_batch(
+                "DROP TABLE IF EXISTS asset_lock_transaction;
+                 CREATE TABLE asset_lock_transaction (
+                    tx_id BLOB NOT NULL,
+                    output_index INTEGER NOT NULL DEFAULT 0,
+                    transaction_data BLOB NOT NULL,
+                    amount INTEGER,
+                    instant_lock_data BLOB,
+                    chain_locked_height INTEGER,
+                    identity_id BLOB,
+                    identity_id_potentially_in_creation BLOB,
+                    wallet BLOB NOT NULL,
+                    network TEXT NOT NULL,
+                    account_index INTEGER NOT NULL DEFAULT 0,
+                    funding_type INTEGER NOT NULL DEFAULT 0,
+                    identity_index INTEGER NOT NULL DEFAULT 0,
+                    proof_data BLOB,
+                    PRIMARY KEY (tx_id, output_index),
+                    FOREIGN KEY (identity_id) REFERENCES identity(id) ON DELETE SET NULL,
+                    FOREIGN KEY (identity_id_potentially_in_creation) REFERENCES identity(id) ON DELETE SET NULL,
+                    FOREIGN KEY (wallet) REFERENCES wallet(seed_hash) ON DELETE CASCADE
+                 );",
+            )
+            .unwrap();
+
+            // Rebuild identity in its pre-v41 shape.
+            conn.execute_batch(
+                "DROP TABLE IF EXISTS identity;
+                 CREATE TABLE identity (
+                    id BLOB PRIMARY KEY,
+                    data BLOB,
+                    status INTEGER NOT NULL DEFAULT 0,
+                    is_local INTEGER NOT NULL,
+                    alias TEXT,
+                    info TEXT,
+                    wallet BLOB,
+                    wallet_index INTEGER,
+                    identity_type TEXT,
+                    network TEXT NOT NULL,
+                    CHECK ((wallet IS NOT NULL AND wallet_index IS NOT NULL) OR (wallet IS NULL AND wallet_index IS NULL)),
+                    FOREIGN KEY (wallet) REFERENCES wallet(seed_hash) ON DELETE CASCADE
+                 );",
+            )
+            .unwrap();
+
+            // Insert a real wallet with the old network name. The
+            // encrypted_seed blob must be 64 bytes for a no-password
+            // wallet so the v40 migration can derive wallet_id from
+            // it — otherwise v41 aborts with "locked password wallets
+            // require unlock" (wallet_id stays NULL).
             conn.execute(
                 "INSERT INTO wallet (
                     seed_hash, encrypted_seed, salt, nonce,
@@ -2382,7 +2568,7 @@ mod test {
                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     valid_seed_hash,
-                    vec![1u8; 16],
+                    vec![1u8; 64],
                     vec![2u8; 16],
                     vec![3u8; 12],
                     vec![4u8; 33],
@@ -2513,7 +2699,10 @@ mod test {
             conn.execute("DROP TABLE IF EXISTS contact_private_info", [])
                 .unwrap();
 
-            // Recreate wallet without core_wallet_name
+            // Recreate wallet without core_wallet_name. The source
+            // table already has v27 shape (rebuilt above), so it
+            // already lacks core_wallet_name — but rebuild anyway to
+            // match the test's original intent.
             conn.execute_batch(
                 "CREATE TABLE wallet_old AS SELECT
                     seed_hash, encrypted_seed, salt, nonce,
@@ -2651,13 +2840,10 @@ mod test {
             "wallet_transactions should be empty after migration 37 table recreation"
         );
 
-        // Wallet itself should have mainnet
+        // Wallet itself should have mainnet. v41 dropped seed_hash,
+        // so we key by the single surviving wallet row.
         let wallet_network: String = conn
-            .query_row(
-                "SELECT network FROM wallet WHERE seed_hash = ?1",
-                params![valid_seed_hash],
-                |row| row.get(0),
-            )
+            .query_row("SELECT network FROM wallet", [], |row| row.get(0))
             .unwrap();
         assert_eq!(wallet_network, "mainnet");
 
@@ -2937,13 +3123,13 @@ mod test {
         let conn = db.conn.lock().unwrap();
         assert_v33_schema(&conn);
 
-        // Verify data survived migration
+        // Verify data survived migration. v41 dropped the seed_hash
+        // column, so we key by the single surviving wallet row instead
+        // of by seed_hash. The v40 migration backfilled wallet_id on
+        // this no-password wallet, and v41 rebuilt the table with
+        // wallet_id as the primary key.
         let wallet_network: String = conn
-            .query_row(
-                "SELECT network FROM wallet WHERE seed_hash = ?1",
-                params![vec![0xAAu8; 32]],
-                |row| row.get(0),
-            )
+            .query_row("SELECT network FROM wallet", [], |row| row.get(0))
             .unwrap();
         assert_eq!(
             wallet_network, "mainnet",
@@ -2979,28 +3165,56 @@ mod test {
         );
     }
 
-    /// Holistic-review M3: the v35 migration must drop
-    /// `dashpay_address_mappings` cleanly even when the table is
-    /// populated with real data. The fresh-install test covers the
-    /// empty case; this one exercises the upgrade path with rows
-    /// and indices in place, which is what real user databases
-    /// look like.
+    /// The consolidated v34 migration must drop `dashpay_address_mappings`
+    /// cleanly even when the table is populated with real data. The
+    /// fresh-install test covers the empty case; this one exercises the
+    /// upgrade path with rows and indices in place, which is what real
+    /// user databases look like.
     #[test]
-    fn test_v35_migration_drops_populated_table() {
+    fn test_v34_migration_drops_dashpay_address_mappings() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let db_file_path = temp_dir.path().join("populated_v34.db");
+        let db_file_path = temp_dir.path().join("populated_v33.db");
         let db = super::Database::new(&db_file_path).unwrap();
 
-        // Build a full database at the current version then simulate
-        // "pre-v35" by recreating the `dashpay_address_mappings`
-        // table + indices and setting the version back to 34.
+        // Build a full database at the current version then simulate a
+        // v33 state: rebuild the wallet table with seed_hash PK (no
+        // wallet_id), recreate dashpay_address_mappings, and set the
+        // version back to 33 so the v34 migration path is exercised.
         db.create_tables().unwrap();
         db.set_default_version().unwrap();
 
         {
             let conn = db.conn.lock().unwrap();
 
-            // Recreate the table with its original v34 schema.
+            // Disable FK enforcement while we recreate the wallet table
+            // in its pre-v34 shape (seed_hash PK, no wallet_id) so that
+            // the v34 migration logic sees the schema it was written for.
+            conn.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
+            conn.execute_batch(
+                "DROP TABLE IF EXISTS wallet;
+                 CREATE TABLE wallet (
+                    seed_hash BLOB NOT NULL PRIMARY KEY,
+                    encrypted_seed BLOB NOT NULL,
+                    salt BLOB NOT NULL,
+                    nonce BLOB NOT NULL,
+                    master_ecdsa_bip44_account_0_epk BLOB NOT NULL,
+                    alias TEXT,
+                    is_main INTEGER,
+                    uses_password INTEGER NOT NULL,
+                    password_hint TEXT,
+                    network TEXT NOT NULL,
+                    confirmed_balance INTEGER DEFAULT 0,
+                    unconfirmed_balance INTEGER DEFAULT 0,
+                    total_balance INTEGER DEFAULT 0,
+                    last_platform_full_sync INTEGER DEFAULT 0,
+                    last_platform_sync_checkpoint INTEGER DEFAULT 0,
+                    last_terminal_block INTEGER DEFAULT 0,
+                    core_wallet_name TEXT DEFAULT NULL
+                 );",
+            )
+            .unwrap();
+
+            // Recreate the table with its original v33-era schema.
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS dashpay_address_mappings (
                     address TEXT PRIMARY KEY,
@@ -3068,17 +3282,17 @@ mod test {
                 .unwrap();
             assert_eq!(index_count, 2, "populated table must have 2 indices");
 
-            // Downgrade the recorded schema version to 34.
-            conn.execute("UPDATE settings SET database_version = 34 WHERE id = 1", [])
+            // Downgrade the recorded schema version to 33.
+            conn.execute("UPDATE settings SET database_version = 33 WHERE id = 1", [])
                 .unwrap();
         }
 
-        assert_eq!(db.db_schema_version().unwrap(), 34);
+        assert_eq!(db.db_schema_version().unwrap(), 33);
 
         // Run the migration. This should DROP the table and its
         // indices without error.
-        db.try_perform_migration(34, DEFAULT_DB_VERSION)
-            .expect("v34 → v35 migration must succeed on populated table");
+        db.try_perform_migration(33, DEFAULT_DB_VERSION)
+            .expect("v33 → v34 migration must succeed on populated dashpay_address_mappings table");
 
         // Verify final version and that the table + indices are gone.
         assert_eq!(db.db_schema_version().unwrap(), DEFAULT_DB_VERSION);

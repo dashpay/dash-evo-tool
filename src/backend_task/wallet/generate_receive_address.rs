@@ -23,7 +23,7 @@ impl AppContext {
             let platform_wallet = self.require_platform_wallet(&wallet_id)?;
             let address = platform_wallet
                 .core()
-                .next_receive_address()
+                .next_receive_address_for_account(0)
                 .await
                 .map_err(|e| TaskError::WalletAddressDerivationFailed {
                     detail: e.to_string(),

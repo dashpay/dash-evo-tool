@@ -42,10 +42,9 @@ impl Database {
         let tx = conn.transaction()?;
 
         tx.execute(
-            "INSERT INTO wallet (seed_hash, wallet_id, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, alias, is_main, uses_password, password_hint, network, confirmed_balance, unconfirmed_balance, total_balance, core_wallet_name)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO wallet (wallet_id, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, alias, is_main, uses_password, password_hint, network, confirmed_balance, unconfirmed_balance, total_balance, core_wallet_name)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
-                wallet.seed_hash(),
                 wallet.wallet_id().to_vec(),
                 wallet.encrypted_seed_slice(),
                 wallet.salt(),
@@ -63,15 +62,15 @@ impl Database {
             ],
         )?;
 
-        let seed_hash = wallet.seed_hash();
+        let wallet_id = wallet.wallet_id();
         for (address, derivation_path, path_reference, path_type) in addresses {
             let checked_addr = check_address_for_network(address.as_unchecked().clone(), network)?;
             tx.execute(
                 "INSERT OR IGNORE INTO wallet_addresses
-                 (seed_hash, address, derivation_path, path_reference, path_type, balance)
+                 (wallet_id, address, derivation_path, path_reference, path_type, balance)
                  VALUES (?, ?, ?, ?, ?, NULL)",
                 params![
-                    seed_hash,
+                    wallet_id,
                     checked_addr.to_string(),
                     derivation_path.to_string(),
                     *path_reference as u32,
@@ -90,13 +89,13 @@ impl Database {
     /// (including the unexpected case of >1 rows affected).
     pub fn set_wallet_core_wallet_name(
         &self,
-        seed_hash: &[u8; 32],
+        wallet_id: &[u8; 32],
         core_wallet_name: Option<&str>,
     ) -> rusqlite::Result<bool> {
         let conn = self.conn.lock().unwrap();
         let rows = conn.execute(
-            "UPDATE wallet SET core_wallet_name = ? WHERE seed_hash = ?",
-            params![core_wallet_name, seed_hash],
+            "UPDATE wallet SET core_wallet_name = ? WHERE wallet_id = ?",
+            params![core_wallet_name, wallet_id],
         )?;
         match rows {
             0 => Ok(false),
@@ -105,34 +104,18 @@ impl Database {
         }
     }
 
-    /// Persist a newly-computed `wallet_id` for a wallet identified by
-    /// `seed_hash`. No-op if the wallet already has a `wallet_id` set
-    /// (the `AND wallet_id IS NULL` guard prevents clobbering).
-    pub fn set_wallet_id(
-        &self,
-        seed_hash: &[u8; 32],
-        wallet_id: &[u8; 32],
-    ) -> rusqlite::Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "UPDATE wallet SET wallet_id = ?1 WHERE seed_hash = ?2 AND wallet_id IS NULL",
-            params![wallet_id, seed_hash],
-        )?;
-        Ok(())
-    }
-
-    /// Update the alias of a wallet based on the seed.
+    /// Update the alias of a wallet identified by `wallet_id`.
     /// If the alias is `None`, it sets the alias to NULL in the database.
     pub fn set_wallet_alias(
         &self,
-        seed_hash: &[u8; 32],
+        wallet_id: &[u8; 32],
         new_alias: Option<String>,
     ) -> rusqlite::Result<()> {
         let conn = self.conn.lock().unwrap();
 
         conn.execute(
-            "UPDATE wallet SET alias = ? WHERE seed_hash = ?",
-            params![new_alias, seed_hash],
+            "UPDATE wallet SET alias = ? WHERE wallet_id = ?",
+            params![new_alias, wallet_id],
         )?;
 
         Ok(())
@@ -142,15 +125,15 @@ impl Database {
     ///
     /// This clears dependent records (addresses, utxos, asset locks, identity links)
     /// to keep the database consistent before deleting the wallet itself.
-    pub fn remove_wallet(&self, seed_hash: &[u8; 32], network: &Network) -> rusqlite::Result<()> {
+    pub fn remove_wallet(&self, wallet_id: &[u8; 32], network: &Network) -> rusqlite::Result<()> {
         let network_str = network.to_string();
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
 
         let mut address_stmt =
-            tx.prepare("SELECT address FROM wallet_addresses WHERE seed_hash = ?")?;
+            tx.prepare("SELECT address FROM wallet_addresses WHERE wallet_id = ?")?;
         let address_rows =
-            address_stmt.query_map(params![seed_hash], |row| row.get::<_, String>(0))?;
+            address_stmt.query_map(params![wallet_id], |row| row.get::<_, String>(0))?;
         let mut addresses = Vec::new();
         for address in address_rows {
             addresses.push(address?);
@@ -166,12 +149,12 @@ impl Database {
 
         tx.execute(
             "UPDATE identity SET wallet = NULL, wallet_index = NULL WHERE wallet = ? AND network = ?",
-            params![seed_hash, &network_str],
+            params![wallet_id, &network_str],
         )?;
 
         tx.execute(
-            "DELETE FROM wallet WHERE seed_hash = ? AND network = ?",
-            params![seed_hash, &network_str],
+            "DELETE FROM wallet WHERE wallet_id = ? AND network = ?",
+            params![wallet_id, &network_str],
         )?;
 
         tx.commit()
@@ -181,13 +164,13 @@ impl Database {
     #[allow(dead_code)] // May be used for batch wallet metadata updates
     pub fn update_wallet_alias_and_main(
         &self,
-        seed_hash: &[u8; 32],
+        wallet_id: &[u8; 32],
         new_alias: Option<String>,
         is_main: bool,
     ) -> rusqlite::Result<()> {
         self.execute(
-            "UPDATE wallet SET alias = ?, is_main = ? WHERE seed_hash = ?",
-            params![new_alias, is_main as i32, seed_hash],
+            "UPDATE wallet SET alias = ?, is_main = ? WHERE wallet_id = ?",
+            params![new_alias, is_main as i32, wallet_id],
         )?;
         Ok(())
     }
@@ -197,7 +180,7 @@ impl Database {
     #[allow(clippy::too_many_arguments)]
     pub fn add_address_if_not_exists(
         &self,
-        seed_hash: &[u8; 32],
+        wallet_id: &[u8; 32],
         address: &Address,
         network: &Network,
         derivation_path: &DerivationPath,
@@ -209,22 +192,22 @@ impl Database {
 
         let address = check_address_for_network(address.as_unchecked().clone(), network)?;
 
-        // Step 1: Check if the address already exists for the given seed.
+        // Step 1: Check if the address already exists for the given wallet.
         let mut stmt = conn.prepare(
             "SELECT COUNT(1) FROM wallet_addresses
-         WHERE seed_hash = ? AND address = ?",
+         WHERE wallet_id = ? AND address = ?",
         )?;
         let count: u32 =
-            stmt.query_row(params![seed_hash, address.to_string()], |row| row.get(0))?;
+            stmt.query_row(params![wallet_id, address.to_string()], |row| row.get(0))?;
 
         // Step 2: If the address doesn't exist, insert it.
         if count == 0 {
             conn.execute(
                 "INSERT INTO wallet_addresses
-             (seed_hash, address, derivation_path, path_reference, path_type, balance)
+             (wallet_id, address, derivation_path, path_reference, path_type, balance)
              VALUES (?, ?, ?, ?, ?, ?)",
                 params![
-                    seed_hash,
+                    wallet_id,
                     address.to_string(),
                     derivation_path.to_string(),
                     path_reference as u32,
@@ -239,15 +222,15 @@ impl Database {
     /// Update the balance of an existing address.
     pub fn update_address_balance(
         &self,
-        seed_hash: &[u8; 32],
+        wallet_id: &[u8; 32],
         address: &Address,
         new_balance: u64,
     ) -> rusqlite::Result<()> {
         let rows_affected = self.execute(
             "UPDATE wallet_addresses
          SET balance = ?
-         WHERE seed_hash = ? AND address = ?",
-            params![new_balance, seed_hash, address.to_string()],
+         WHERE wallet_id = ? AND address = ?",
+            params![new_balance, wallet_id, address.to_string()],
         )?;
 
         if rows_affected == 0 {
@@ -260,15 +243,15 @@ impl Database {
     /// Add a balance to an existing address.
     pub fn add_to_address_balance(
         &self,
-        seed_hash: &[u8; 32],
+        wallet_id: &[u8; 32],
         address: &Address,
         additional_balance: u64,
     ) -> rusqlite::Result<()> {
         let rows_affected = self.execute(
             "UPDATE wallet_addresses
          SET balance = balance + ?
-         WHERE seed_hash = ? AND address = ?",
-            params![additional_balance, seed_hash, address.to_string()],
+         WHERE wallet_id = ? AND address = ?",
+            params![additional_balance, wallet_id, address.to_string()],
         )?;
 
         if rows_affected == 0 {
@@ -308,14 +291,14 @@ impl Database {
     /// Update the wallet's balance fields in the database.
     pub fn update_wallet_balances(
         &self,
-        seed_hash: &[u8; 32],
+        wallet_id: &[u8; 32],
         confirmed_balance: u64,
         unconfirmed_balance: u64,
         total_balance: u64,
     ) -> rusqlite::Result<()> {
         self.execute(
-            "UPDATE wallet SET confirmed_balance = ?, unconfirmed_balance = ?, total_balance = ? WHERE seed_hash = ?",
-            params![confirmed_balance as i64, unconfirmed_balance as i64, total_balance as i64, seed_hash],
+            "UPDATE wallet SET confirmed_balance = ?, unconfirmed_balance = ?, total_balance = ? WHERE wallet_id = ?",
+            params![confirmed_balance as i64, unconfirmed_balance as i64, total_balance as i64, wallet_id],
         )?;
         Ok(())
     }
@@ -370,25 +353,25 @@ impl Database {
     /// Update the total_received for an address.
     pub fn update_address_total_received(
         &self,
-        seed_hash: &[u8; 32],
+        wallet_id: &[u8; 32],
         address: &Address,
         total_received: u64,
     ) -> rusqlite::Result<()> {
         self.execute(
-            "UPDATE wallet_addresses SET total_received = ? WHERE seed_hash = ? AND address = ?",
-            params![total_received as i64, seed_hash, address.to_string()],
+            "UPDATE wallet_addresses SET total_received = ? WHERE wallet_id = ? AND address = ?",
+            params![total_received as i64, wallet_id, address.to_string()],
         )?;
         Ok(())
     }
 
     /// Phase 10 6c: `wallet_transactions` table with per-account
-    /// attribution. One row per `(seed_hash, account_type, txid,
+    /// attribution. One row per `(wallet_id, account_type, txid,
     /// network)` — same txid can appear in multiple accounts'
     /// buckets because `cs.core.per_account[AccountType].transactions`
     /// is per-account. `record` is a bincode serde-encoded
     /// `TransactionRecord`.
     pub fn initialize_wallet_transactions_table(&self, conn: &Connection) -> rusqlite::Result<()> {
-        // Column named `wallet_id` (was `seed_hash` pre-v40) to match
+        // Column named `wallet_id` (was `seed_hash` pre-v34) to match
         // the platform-wallet WalletId that the changeset persister writes.
         conn.execute(
             "CREATE TABLE IF NOT EXISTS wallet_transactions (
@@ -423,13 +406,13 @@ impl Database {
 
         tracing::trace!("step 1: retrieve all wallets for the given network");
         let mut stmt = conn.prepare(
-            "SELECT seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, alias, is_main, uses_password, password_hint, confirmed_balance, unconfirmed_balance, total_balance, core_wallet_name, wallet_id FROM wallet WHERE network = ?",
+            "SELECT wallet_id, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, alias, is_main, uses_password, password_hint, confirmed_balance, unconfirmed_balance, total_balance, core_wallet_name FROM wallet WHERE network = ?",
         )?;
 
         let mut wallets_map: BTreeMap<[u8; 32], Wallet> = BTreeMap::new();
 
         let wallet_rows = stmt.query_map([network_str.clone()], |row| {
-            let seed_hash: Vec<u8> = row.get(0)?;
+            let wallet_id_blob: Vec<u8> = row.get(0)?;
             let encrypted_seed: Vec<u8> = row.get(1)?;
             let salt: Vec<u8> = row.get(2)?;
             let nonce: Vec<u8> = row.get(3)?;
@@ -441,7 +424,6 @@ impl Database {
             // Balances at indices 9-11 are persisted but no longer loaded into
             // the Wallet struct — they are served by PlatformWallet's WalletBalance.
             let core_wallet_name: Option<String> = row.get(12)?;
-            let wallet_id_blob: Option<Vec<u8>> = row.get(13)?;
 
             // Reconstruct the extended public keys
             let master_ecdsa_extended_public_key =
@@ -456,17 +438,18 @@ impl Database {
                     )
                 })?;
 
-            let seed_hash_array: [u8; 32] = seed_hash.try_into().map_err(|_| {
+            // wallet_id is the PK (NOT NULL) in v41 — always valid 32 bytes.
+            let wallet_id: [u8; 32] = wallet_id_blob.try_into().map_err(|_| {
                 rusqlite::Error::FromSqlConversionFailure(
                     0,
                     rusqlite::types::Type::Blob,
                     Box::new(CorruptedBlobError(
-                        "Seed hash should be 32 bytes".to_string(),
+                        "wallet_id should be 32 bytes".to_string(),
                     )),
                 )
             })?;
             let closed_wallet_seed = ClosedKeyItem {
-                seed_hash: seed_hash_array,
+                wallet_id,
                 encrypted_seed: encrypted_seed.clone(),
                 salt,
                 nonce,
@@ -491,22 +474,14 @@ impl Database {
 
             tracing::trace!(
                 alias = ?alias,
-                wallet_seed = ?seed_hash_array,
+                wallet_id = ?wallet_id,
                 network = network_str,
                 "new wallet loaded from database"
             );
 
-            // Convert wallet_id blob to [u8; 32]. If NULL in the DB
-            // (password-protected wallet never unlocked since v40), use
-            // [0u8; 32] as a sentinel — the wallet migration screen
-            // detects this and prompts the user to unlock or remove.
-            let wallet_id: [u8; 32] = wallet_id_blob
-                .and_then(|b| <[u8; 32]>::try_from(b).ok())
-                .unwrap_or([0u8; 32]);
-
             // Insert a new Wallet into the map
             wallets_map.insert(
-                seed_hash_array,
+                wallet_id,
                 Wallet {
                     platform_wallet: None,
                     wallet_seed,
@@ -548,26 +523,26 @@ impl Database {
 
         let identity_rows = identity_stmt.query_map([network_str.clone()], |row| {
             let data: Vec<u8> = row.get(0)?;
-            let wallet_seed_hash: Vec<u8> = row.get(1)?;
+            let wallet_id_blob: Vec<u8> = row.get(1)?;
             let wallet_index: u32 = row.get(2)?;
 
-            let wallet_seed_hash_array: [u8; 32] = wallet_seed_hash.try_into().map_err(|_| {
+            let wallet_id_array: [u8; 32] = wallet_id_blob.try_into().map_err(|_| {
                 rusqlite::Error::FromSqlConversionFailure(
                     1,
                     rusqlite::types::Type::Blob,
                     Box::new(CorruptedBlobError(
-                        "Identity wallet seed hash should be 32 bytes".to_string(),
+                        "Identity wallet_id should be 32 bytes".to_string(),
                     )),
                 )
             })?;
 
-            Ok((data, wallet_seed_hash_array, wallet_index))
+            Ok((data, wallet_id_array, wallet_index))
         })?;
         // Process the identities and add them to the corresponding wallets.
         for row in identity_rows {
-            let (identity_data, wallet_seed_hash_array, wallet_index) = row?;
+            let (identity_data, wallet_id_array, wallet_index) = row?;
 
-            if let Some(wallet) = wallets_map.get_mut(&wallet_seed_hash_array) {
+            if let Some(wallet) = wallets_map.get_mut(&wallet_id_array) {
                 let mut identity = QualifiedIdentity::from_bytes(&identity_data).map_err(|e| {
                     tracing::warn!(wallet_index, error = %e, "found corrupted identity blob");
                     rusqlite::Error::FromSqlConversionFailure(
@@ -584,7 +559,7 @@ impl Database {
                 identity.network = *network;
 
                 tracing::trace!(
-                    wallet_seed = hex::encode(wallet_seed_hash_array),
+                    wallet_id = hex::encode(wallet_id_array),
                     wallet_alias = ?wallet.alias,
                     identity = ?identity.identity.id().to_string(Encoding::Base58),
                     identity_alias = ?identity.alias,
@@ -604,7 +579,7 @@ impl Database {
     /// Store or update Platform address balance and nonce.
     pub fn set_platform_address_info(
         &self,
-        seed_hash: &[u8; 32],
+        wallet_id: &[u8; 32],
         address: &Address,
         balance: u64,
         nonce: u32,
@@ -620,14 +595,14 @@ impl Database {
 
         self.execute(
             "INSERT INTO platform_address_balances
-             (seed_hash, address, balance, nonce, network, updated_at)
+             (wallet_id, address, balance, nonce, network, updated_at)
              VALUES (?, ?, ?, ?, ?, ?)
-             ON CONFLICT(seed_hash, address, network) DO UPDATE SET
+             ON CONFLICT(wallet_id, address, network) DO UPDATE SET
              balance = excluded.balance,
              nonce = excluded.nonce,
              updated_at = excluded.updated_at",
             params![
-                seed_hash,
+                wallet_id,
                 address_str,
                 balance as i64,
                 nonce as i64,
@@ -641,7 +616,7 @@ impl Database {
     /// Get Platform address balance and nonce for a specific address
     pub fn get_platform_address_info(
         &self,
-        seed_hash: &[u8; 32],
+        wallet_id: &[u8; 32],
         address: &Address,
         network: &Network,
     ) -> rusqlite::Result<Option<(u64, u32)>> {
@@ -652,10 +627,10 @@ impl Database {
 
         let mut stmt = conn.prepare(
             "SELECT balance, nonce FROM platform_address_balances
-             WHERE seed_hash = ? AND address = ? AND network = ?",
+             WHERE wallet_id = ? AND address = ? AND network = ?",
         )?;
 
-        let result = stmt.query_row(params![seed_hash, address_str, network_str], |row| {
+        let result = stmt.query_row(params![wallet_id, address_str, network_str], |row| {
             let balance: i64 = row.get(0)?;
             let nonce: i64 = row.get(1)?;
             Ok((balance as u64, nonce as u32))
@@ -671,7 +646,7 @@ impl Database {
     /// Get all Platform address balances for a wallet
     pub fn get_all_platform_address_info(
         &self,
-        seed_hash: &[u8; 32],
+        wallet_id: &[u8; 32],
         network: &Network,
     ) -> rusqlite::Result<Vec<(Address, u64, u32)>> {
         let conn = self.conn.lock().unwrap();
@@ -679,10 +654,10 @@ impl Database {
 
         let mut stmt = conn.prepare(
             "SELECT address, balance, nonce FROM platform_address_balances
-             WHERE seed_hash = ? AND network = ?",
+             WHERE wallet_id = ? AND network = ?",
         )?;
 
-        let rows = stmt.query_map(params![seed_hash, network_str], |row| {
+        let rows = stmt.query_map(params![wallet_id, network_str], |row| {
             let address_str: String = row.get(0)?;
             let balance: i64 = row.get(1)?;
             let nonce: i64 = row.get(2)?;
@@ -711,13 +686,13 @@ impl Database {
     /// Delete Platform address balances for a wallet (used when removing wallet)
     pub fn delete_platform_address_info(
         &self,
-        seed_hash: &[u8; 32],
+        wallet_id: &[u8; 32],
         network: &Network,
     ) -> rusqlite::Result<()> {
         let network_str = network.to_string();
         self.execute(
-            "DELETE FROM platform_address_balances WHERE seed_hash = ? AND network = ?",
-            params![seed_hash, network_str],
+            "DELETE FROM platform_address_balances WHERE wallet_id = ? AND network = ?",
+            params![wallet_id, network_str],
         )?;
         Ok(())
     }
@@ -748,7 +723,7 @@ impl Database {
         let deleted = conn.execute(
             "DELETE FROM wallet_addresses
              WHERE path_reference = 16
-             AND seed_hash IN (SELECT seed_hash FROM wallet WHERE network = ?)",
+             AND wallet_id IN (SELECT wallet_id FROM wallet WHERE network = ?)",
             params![network_str],
         )?;
 
@@ -757,11 +732,11 @@ impl Database {
 
     /// Get the last platform sync timestamp and sync height for a wallet.
     /// Returns (last_sync_timestamp, last_sync_height) or (0, 0) if not set.
-    pub fn get_platform_sync_info(&self, seed_hash: &[u8; 32]) -> rusqlite::Result<(u64, u64)> {
+    pub fn get_platform_sync_info(&self, wallet_id: &[u8; 32]) -> rusqlite::Result<(u64, u64)> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
-            "SELECT last_platform_full_sync, last_platform_sync_checkpoint FROM wallet WHERE seed_hash = ?",
-            params![seed_hash],
+            "SELECT last_platform_full_sync, last_platform_sync_checkpoint FROM wallet WHERE wallet_id = ?",
+            params![wallet_id],
             |row| {
                 let last_sync: i64 = row.get(0)?;
                 let sync_height: i64 = row.get(1)?;
@@ -778,16 +753,115 @@ impl Database {
     /// than the old checkpoint concept.
     pub fn set_platform_sync_info(
         &self,
-        seed_hash: &[u8; 32],
+        wallet_id: &[u8; 32],
         last_sync_timestamp: u64,
         sync_height: u64,
     ) -> rusqlite::Result<()> {
         self.execute(
-            "UPDATE wallet SET last_platform_full_sync = ?, last_platform_sync_checkpoint = ? WHERE seed_hash = ?",
-            params![last_sync_timestamp as i64, sync_height as i64, seed_hash],
+            "UPDATE wallet SET last_platform_full_sync = ?, last_platform_sync_checkpoint = ? WHERE wallet_id = ?",
+            params![last_sync_timestamp as i64, sync_height as i64, wallet_id],
         )?;
         Ok(())
     }
+
+    /// Returns all wallets that still have `wallet_id IS NULL`.
+    ///
+    /// After `ensure_wallet_id_column_and_backfill` runs, only password-protected
+    /// wallets (where `uses_password = 1`) can still have a null `wallet_id`.
+    /// `WalletMigrationScreen` calls this to find wallets that need the user to
+    /// enter their password before migration can proceed.
+    pub fn locked_wallets_needing_wallet_id(&self) -> rusqlite::Result<Vec<LockedWalletInfo>> {
+        let conn = self.conn.lock().unwrap();
+
+        // If the wallet_id column doesn't exist yet, return empty (no wallets need unlock).
+        let has_wallet_id_col: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('wallet') WHERE name='wallet_id'",
+            [],
+            |row| row.get::<_, i32>(0).map(|c| c > 0),
+        )?;
+        if !has_wallet_id_col {
+            return Ok(vec![]);
+        }
+
+        let mut stmt = conn.prepare(
+            "SELECT seed_hash, alias, password_hint, encrypted_seed, salt, nonce, network
+             FROM wallet
+             WHERE wallet_id IS NULL",
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            let seed_hash_blob: Vec<u8> = row.get(0)?;
+            let alias: Option<String> = row.get(1)?;
+            let password_hint: Option<String> = row.get(2)?;
+            let encrypted_seed: Vec<u8> = row.get(3)?;
+            let salt: Vec<u8> = row.get(4)?;
+            let nonce: Vec<u8> = row.get(5)?;
+            let network_str: String = row.get(6)?;
+
+            let seed_hash: [u8; 32] = seed_hash_blob.try_into().map_err(|_| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Blob,
+                    Box::new(crate::database::CorruptedBlobError(
+                        "seed_hash must be 32 bytes".to_string(),
+                    )),
+                )
+            })?;
+            let network = network_str.parse::<Network>().unwrap_or(Network::Testnet);
+
+            Ok(LockedWalletInfo {
+                seed_hash,
+                alias,
+                password_hint,
+                encrypted_seed,
+                salt,
+                nonce,
+                network,
+            })
+        })?;
+
+        rows.collect()
+    }
+
+    /// Write `wallet_id` for a password-protected wallet that was just unlocked
+    /// by `WalletMigrationScreen`.
+    ///
+    /// The `AND wallet_id IS NULL` guard prevents clobbering a wallet whose
+    /// `wallet_id` was set concurrently. This method is **only** for the
+    /// migration screen — do not use it anywhere else. For routine wallet
+    /// persistence, use `store_wallet` or `store_wallet_with_addresses`.
+    pub fn set_wallet_id_for_locked_wallet(
+        &self,
+        seed_hash: &[u8; 32],
+        wallet_id: &[u8; 32],
+    ) -> rusqlite::Result<()> {
+        self.execute(
+            "UPDATE wallet SET wallet_id = ?1 WHERE seed_hash = ?2 AND wallet_id IS NULL",
+            params![wallet_id.as_slice(), seed_hash.as_slice()],
+        )?;
+        Ok(())
+    }
+}
+
+/// Carries the fields that `WalletMigrationScreen` needs to attempt decryption
+/// and derive `wallet_id` for a password-protected wallet.
+#[derive(Debug, Clone)]
+pub struct LockedWalletInfo {
+    /// `SHA256(seed)` — the row's primary key in the pre-v34 schema.
+    /// Used to identify the row when writing `wallet_id` back.
+    pub seed_hash: [u8; 32],
+    /// Human-readable wallet label, if any.
+    pub alias: Option<String>,
+    /// Optional hint shown to the user when asking for the password.
+    pub password_hint: Option<String>,
+    /// AES-256-GCM ciphertext of the 64-byte seed.
+    pub encrypted_seed: Vec<u8>,
+    /// Argon2 salt used when deriving the encryption key.
+    pub salt: Vec<u8>,
+    /// AES-GCM nonce.
+    pub nonce: Vec<u8>,
+    /// Network the wallet was created on.
+    pub network: Network,
 }
 
 /// Ensure the address is valid for the given network and
@@ -881,7 +955,7 @@ mod tests {
         Address::p2pkh(&pubkey, network)
     }
 
-    fn create_test_seed_hash() -> [u8; 32] {
+    fn create_test_wallet_id() -> [u8; 32] {
         let mut hash = [0u8; 32];
         for (i, byte) in hash.iter_mut().enumerate() {
             *byte = i as u8;
@@ -907,18 +981,18 @@ mod tests {
     #[test]
     fn test_get_wallets_invalid_epk_uses_from_sql_conversion_failure() {
         let db = create_test_database().expect("Failed to create test database");
-        let seed_hash = create_test_seed_hash();
+        let wallet_id = create_test_wallet_id();
 
         {
             let conn = db.conn.lock().unwrap();
             conn.execute(
                 "INSERT INTO wallet (
-                    seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk,
+                    wallet_id, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk,
                     alias, is_main, uses_password, password_hint, network,
                     confirmed_balance, unconfirmed_balance, total_balance
                  ) VALUES (?, ?, ?, ?, ?, NULL, 0, 0, NULL, 'testnet', 0, 0, 0)",
                 rusqlite::params![
-                    seed_hash.as_slice(),
+                    wallet_id.as_slice(),
                     vec![0u8; 64],
                     vec![0u8; 16],
                     vec![0u8; 12],
@@ -938,7 +1012,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_wallets_invalid_seed_hash_length_uses_from_sql_conversion_failure() {
+    fn test_get_wallets_invalid_wallet_id_length_uses_from_sql_conversion_failure() {
         let db = create_test_database().expect("Failed to create test database");
         let valid_epk = create_test_master_epk_bytes(Network::Testnet);
 
@@ -946,7 +1020,7 @@ mod tests {
             let conn = db.conn.lock().unwrap();
             conn.execute(
                 "INSERT INTO wallet (
-                    seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk,
+                    wallet_id, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk,
                     alias, is_main, uses_password, password_hint, network,
                     confirmed_balance, unconfirmed_balance, total_balance
                  ) VALUES (?, ?, ?, ?, ?, NULL, 0, 0, NULL, 'testnet', 0, 0, 0)",
@@ -973,19 +1047,19 @@ mod tests {
     #[test]
     fn test_get_wallets_invalid_open_seed_length_uses_from_sql_conversion_failure() {
         let db = create_test_database().expect("Failed to create test database");
-        let seed_hash = create_test_seed_hash();
+        let wallet_id = create_test_wallet_id();
         let valid_epk = create_test_master_epk_bytes(Network::Testnet);
 
         {
             let conn = db.conn.lock().unwrap();
             conn.execute(
                 "INSERT INTO wallet (
-                    seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk,
+                    wallet_id, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk,
                     alias, is_main, uses_password, password_hint, network,
                     confirmed_balance, unconfirmed_balance, total_balance
                  ) VALUES (?, ?, ?, ?, ?, NULL, 0, 0, NULL, 'testnet', 0, 0, 0)",
                 rusqlite::params![
-                    seed_hash.as_slice(),
+                    wallet_id.as_slice(),
                     vec![0u8; 63],
                     vec![0u8; 16],
                     vec![0u8; 12],
@@ -1007,16 +1081,16 @@ mod tests {
     #[test]
     fn test_wallet_balance_update() {
         let db = create_test_database().expect("Failed to create test database");
-        let seed_hash = create_test_seed_hash();
+        let wallet_id = create_test_wallet_id();
 
         // We need to insert a wallet first (simplified - using raw SQL for test setup)
         {
             let conn = db.conn.lock().unwrap();
             conn.execute(
-                "INSERT INTO wallet (seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, uses_password, network)
+                "INSERT INTO wallet (wallet_id, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, uses_password, network)
                  VALUES (?, ?, ?, ?, ?, 0, 'testnet')",
                 rusqlite::params![
-                    seed_hash.as_slice(),
+                    wallet_id.as_slice(),
                     vec![0u8; 64],  // Dummy encrypted seed
                     vec![0u8; 16],  // Dummy salt
                     vec![0u8; 12],  // Dummy nonce
@@ -1027,15 +1101,15 @@ mod tests {
         }
 
         // Update balances
-        db.update_wallet_balances(&seed_hash, 1_000_000, 500_000, 1_500_000)
+        db.update_wallet_balances(&wallet_id, 1_000_000, 500_000, 1_500_000)
             .expect("Failed to update wallet balances");
 
         // Verify via raw query (since get_wallets is complex)
         let conn = db.conn.lock().unwrap();
         let (confirmed, unconfirmed, total): (i64, i64, i64) = conn
             .query_row(
-                "SELECT confirmed_balance, unconfirmed_balance, total_balance FROM wallet WHERE seed_hash = ?",
-                rusqlite::params![seed_hash.as_slice()],
+                "SELECT confirmed_balance, unconfirmed_balance, total_balance FROM wallet WHERE wallet_id = ?",
+                rusqlite::params![wallet_id.as_slice()],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .expect("Failed to query balances");
@@ -1049,17 +1123,17 @@ mod tests {
     fn test_platform_address_info() {
         let db = create_test_database().expect("Failed to create test database");
         let network = Network::Testnet;
-        let seed_hash = create_test_seed_hash();
+        let wallet_id = create_test_wallet_id();
         let address = create_test_address(network);
 
         // Insert test wallet first
         {
             let conn = db.conn.lock().unwrap();
             conn.execute(
-                "INSERT INTO wallet (seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, uses_password, network)
+                "INSERT INTO wallet (wallet_id, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, uses_password, network)
                  VALUES (?, ?, ?, ?, ?, 0, 'testnet')",
                 rusqlite::params![
-                    seed_hash.as_slice(),
+                    wallet_id.as_slice(),
                     vec![0u8; 64],
                     vec![0u8; 16],
                     vec![0u8; 12],
@@ -1071,17 +1145,17 @@ mod tests {
 
         // Initially no platform address info
         let info = db
-            .get_platform_address_info(&seed_hash, &address, &network)
+            .get_platform_address_info(&wallet_id, &address, &network)
             .expect("Failed to get platform address info");
         assert!(info.is_none());
 
         // Set platform address info
-        db.set_platform_address_info(&seed_hash, &address, 10_000_000, 5, &network)
+        db.set_platform_address_info(&wallet_id, &address, 10_000_000, 5, &network)
             .expect("Failed to set platform address info");
 
         // Retrieve it
         let info = db
-            .get_platform_address_info(&seed_hash, &address, &network)
+            .get_platform_address_info(&wallet_id, &address, &network)
             .expect("Failed to get platform address info")
             .expect("Expected platform address info");
 
@@ -1089,11 +1163,11 @@ mod tests {
         assert_eq!(info.1, 5); // nonce
 
         // Update it
-        db.set_platform_address_info(&seed_hash, &address, 20_000_000, 10, &network)
+        db.set_platform_address_info(&wallet_id, &address, 20_000_000, 10, &network)
             .expect("Failed to update platform address info");
 
         let info = db
-            .get_platform_address_info(&seed_hash, &address, &network)
+            .get_platform_address_info(&wallet_id, &address, &network)
             .expect("Failed to get platform address info")
             .expect("Expected platform address info");
 
@@ -1105,16 +1179,16 @@ mod tests {
     fn test_get_all_platform_address_info() {
         let db = create_test_database().expect("Failed to create test database");
         let network = Network::Testnet;
-        let seed_hash = create_test_seed_hash();
+        let wallet_id = create_test_wallet_id();
 
         // Insert test wallet first
         {
             let conn = db.conn.lock().unwrap();
             conn.execute(
-                "INSERT INTO wallet (seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, uses_password, network)
+                "INSERT INTO wallet (wallet_id, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, uses_password, network)
                  VALUES (?, ?, ?, ?, ?, 0, 'testnet')",
                 rusqlite::params![
-                    seed_hash.as_slice(),
+                    wallet_id.as_slice(),
                     vec![0u8; 64],
                     vec![0u8; 16],
                     vec![0u8; 12],
@@ -1137,10 +1211,10 @@ mod tests {
                 .as_secs() as i64;
             conn.execute(
                 "INSERT OR REPLACE INTO platform_address_balances
-                 (seed_hash, address, balance, nonce, network, updated_at)
+                 (wallet_id, address, balance, nonce, network, updated_at)
                  VALUES (?, ?, ?, ?, ?, ?)",
                 rusqlite::params![
-                    seed_hash.as_slice(),
+                    wallet_id.as_slice(),
                     addr_str,
                     (i as i64 + 1) * 1_000_000,
                     i as i64,
@@ -1154,7 +1228,7 @@ mod tests {
         // Get all addresses (note: the addresses won't parse correctly, but the function should still return 0 valid entries)
         // This tests that the function handles the case gracefully
         let all_info = db
-            .get_all_platform_address_info(&seed_hash, &network)
+            .get_all_platform_address_info(&wallet_id, &network)
             .expect("Failed to get all platform address info");
 
         // The modified addresses won't parse, so we expect 0 results
@@ -1166,16 +1240,16 @@ mod tests {
     fn test_get_all_platform_address_info_valid() {
         let db = create_test_database().expect("Failed to create test database");
         let network = Network::Testnet;
-        let seed_hash = create_test_seed_hash();
+        let wallet_id = create_test_wallet_id();
 
         // Insert test wallet first
         {
             let conn = db.conn.lock().unwrap();
             conn.execute(
-                "INSERT INTO wallet (seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, uses_password, network)
+                "INSERT INTO wallet (wallet_id, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, uses_password, network)
                  VALUES (?, ?, ?, ?, ?, 0, 'testnet')",
                 rusqlite::params![
-                    seed_hash.as_slice(),
+                    wallet_id.as_slice(),
                     vec![0u8; 64],
                     vec![0u8; 16],
                     vec![0u8; 12],
@@ -1187,12 +1261,12 @@ mod tests {
 
         // Add a single valid platform address using the helper function
         let address = create_test_address(network);
-        db.set_platform_address_info(&seed_hash, &address, 5_000_000, 3, &network)
+        db.set_platform_address_info(&wallet_id, &address, 5_000_000, 3, &network)
             .expect("Failed to set platform address info");
 
         // Get all addresses
         let all_info = db
-            .get_all_platform_address_info(&seed_hash, &network)
+            .get_all_platform_address_info(&wallet_id, &network)
             .expect("Failed to get all platform address info");
 
         assert_eq!(all_info.len(), 1);
@@ -1204,17 +1278,17 @@ mod tests {
     fn test_delete_platform_address_info() {
         let db = create_test_database().expect("Failed to create test database");
         let network = Network::Testnet;
-        let seed_hash = create_test_seed_hash();
+        let wallet_id = create_test_wallet_id();
         let address = create_test_address(network);
 
         // Insert test wallet first
         {
             let conn = db.conn.lock().unwrap();
             conn.execute(
-                "INSERT INTO wallet (seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, uses_password, network)
+                "INSERT INTO wallet (wallet_id, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, uses_password, network)
                  VALUES (?, ?, ?, ?, ?, 0, 'testnet')",
                 rusqlite::params![
-                    seed_hash.as_slice(),
+                    wallet_id.as_slice(),
                     vec![0u8; 64],
                     vec![0u8; 16],
                     vec![0u8; 12],
@@ -1225,22 +1299,22 @@ mod tests {
         }
 
         // Set platform address info
-        db.set_platform_address_info(&seed_hash, &address, 10_000_000, 5, &network)
+        db.set_platform_address_info(&wallet_id, &address, 10_000_000, 5, &network)
             .expect("Failed to set platform address info");
 
         // Verify it exists
         let info = db
-            .get_platform_address_info(&seed_hash, &address, &network)
+            .get_platform_address_info(&wallet_id, &address, &network)
             .expect("Failed to get platform address info");
         assert!(info.is_some());
 
         // Delete all platform address info for the wallet
-        db.delete_platform_address_info(&seed_hash, &network)
+        db.delete_platform_address_info(&wallet_id, &network)
             .expect("Failed to delete platform address info");
 
         // Should be gone
         let info = db
-            .get_platform_address_info(&seed_hash, &address, &network)
+            .get_platform_address_info(&wallet_id, &address, &network)
             .expect("Failed to get platform address info");
         assert!(info.is_none());
     }
@@ -1248,16 +1322,16 @@ mod tests {
     #[test]
     fn test_platform_sync_info() {
         let db = create_test_database().expect("Failed to create test database");
-        let seed_hash = create_test_seed_hash();
+        let wallet_id = create_test_wallet_id();
 
         // Insert test wallet first
         {
             let conn = db.conn.lock().unwrap();
             conn.execute(
-                "INSERT INTO wallet (seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, uses_password, network)
+                "INSERT INTO wallet (wallet_id, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, uses_password, network)
                  VALUES (?, ?, ?, ?, ?, 0, 'testnet')",
                 rusqlite::params![
-                    seed_hash.as_slice(),
+                    wallet_id.as_slice(),
                     vec![0u8; 64],
                     vec![0u8; 16],
                     vec![0u8; 12],
@@ -1269,7 +1343,7 @@ mod tests {
 
         // Initial sync info should be zeros
         let (last_sync, sync_height) = db
-            .get_platform_sync_info(&seed_hash)
+            .get_platform_sync_info(&wallet_id)
             .expect("Failed to get platform sync info");
         assert_eq!(last_sync, 0);
         assert_eq!(sync_height, 0);
@@ -1277,11 +1351,11 @@ mod tests {
         // Set sync info
         let timestamp = 1700000000u64;
         let height = 100000u64;
-        db.set_platform_sync_info(&seed_hash, timestamp, height)
+        db.set_platform_sync_info(&wallet_id, timestamp, height)
             .expect("Failed to set platform sync info");
 
         let (last_sync, sync_height) = db
-            .get_platform_sync_info(&seed_hash)
+            .get_platform_sync_info(&wallet_id)
             .expect("Failed to get platform sync info");
         assert_eq!(last_sync, timestamp);
         assert_eq!(sync_height, height);
@@ -1290,16 +1364,16 @@ mod tests {
     #[test]
     fn test_set_wallet_alias() {
         let db = create_test_database().expect("Failed to create test database");
-        let seed_hash = create_test_seed_hash();
+        let wallet_id = create_test_wallet_id();
 
         // Insert test wallet first
         {
             let conn = db.conn.lock().unwrap();
             conn.execute(
-                "INSERT INTO wallet (seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, uses_password, network)
+                "INSERT INTO wallet (wallet_id, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, uses_password, network)
                  VALUES (?, ?, ?, ?, ?, 0, 'testnet')",
                 rusqlite::params![
-                    seed_hash.as_slice(),
+                    wallet_id.as_slice(),
                     vec![0u8; 64],
                     vec![0u8; 16],
                     vec![0u8; 12],
@@ -1310,15 +1384,15 @@ mod tests {
         }
 
         // Set alias
-        db.set_wallet_alias(&seed_hash, Some("My Wallet".to_string()))
+        db.set_wallet_alias(&wallet_id, Some("My Wallet".to_string()))
             .expect("Failed to set wallet alias");
 
         // Verify
         let conn = db.conn.lock().unwrap();
         let alias: Option<String> = conn
             .query_row(
-                "SELECT alias FROM wallet WHERE seed_hash = ?",
-                rusqlite::params![seed_hash.as_slice()],
+                "SELECT alias FROM wallet WHERE wallet_id = ?",
+                rusqlite::params![wallet_id.as_slice()],
                 |row| row.get(0),
             )
             .expect("Failed to query alias");
@@ -1327,14 +1401,14 @@ mod tests {
         drop(conn);
 
         // Clear alias
-        db.set_wallet_alias(&seed_hash, None)
+        db.set_wallet_alias(&wallet_id, None)
             .expect("Failed to clear wallet alias");
 
         let conn = db.conn.lock().unwrap();
         let alias: Option<String> = conn
             .query_row(
-                "SELECT alias FROM wallet WHERE seed_hash = ?",
-                rusqlite::params![seed_hash.as_slice()],
+                "SELECT alias FROM wallet WHERE wallet_id = ?",
+                rusqlite::params![wallet_id.as_slice()],
                 |row| row.get(0),
             )
             .expect("Failed to query alias");
@@ -1345,7 +1419,7 @@ mod tests {
     fn test_address_balance_operations() {
         let db = create_test_database().expect("Failed to create test database");
         let network = Network::Testnet;
-        let seed_hash = create_test_seed_hash();
+        let wallet_id = create_test_wallet_id();
         let address = create_test_address(network);
         let derivation_path = DerivationPath::from_str("m/44'/1'/0'/0/0").unwrap();
 
@@ -1353,10 +1427,10 @@ mod tests {
         {
             let conn = db.conn.lock().unwrap();
             conn.execute(
-                "INSERT INTO wallet (seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, uses_password, network)
+                "INSERT INTO wallet (wallet_id, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, uses_password, network)
                  VALUES (?, ?, ?, ?, ?, 0, 'testnet')",
                 rusqlite::params![
-                    seed_hash.as_slice(),
+                    wallet_id.as_slice(),
                     vec![0u8; 64],
                     vec![0u8; 16],
                     vec![0u8; 12],
@@ -1368,7 +1442,7 @@ mod tests {
 
         // Add address
         db.add_address_if_not_exists(
-            &seed_hash,
+            &wallet_id,
             &address,
             &network,
             &derivation_path,
@@ -1379,19 +1453,19 @@ mod tests {
         .expect("Failed to add address");
 
         // Update address balance
-        db.update_address_balance(&seed_hash, &address, 2_000_000)
+        db.update_address_balance(&wallet_id, &address, 2_000_000)
             .expect("Failed to update address balance");
 
         // Add to address balance
-        db.add_to_address_balance(&seed_hash, &address, 500_000)
+        db.add_to_address_balance(&wallet_id, &address, 500_000)
             .expect("Failed to add to address balance");
 
         // Verify final balance
         let conn = db.conn.lock().unwrap();
         let balance: i64 = conn
             .query_row(
-                "SELECT balance FROM wallet_addresses WHERE seed_hash = ? AND address = ?",
-                rusqlite::params![seed_hash.as_slice(), address.to_string()],
+                "SELECT balance FROM wallet_addresses WHERE wallet_id = ? AND address = ?",
+                rusqlite::params![wallet_id.as_slice(), address.to_string()],
                 |row| row.get(0),
             )
             .expect("Failed to query balance");
@@ -1402,7 +1476,7 @@ mod tests {
     fn test_update_address_total_received() {
         let db = create_test_database().expect("Failed to create test database");
         let network = Network::Testnet;
-        let seed_hash = create_test_seed_hash();
+        let wallet_id = create_test_wallet_id();
         let address = create_test_address(network);
         let derivation_path = DerivationPath::from_str("m/44'/1'/0'/0/0").unwrap();
 
@@ -1410,10 +1484,10 @@ mod tests {
         {
             let conn = db.conn.lock().unwrap();
             conn.execute(
-                "INSERT INTO wallet (seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, uses_password, network)
+                "INSERT INTO wallet (wallet_id, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, uses_password, network)
                  VALUES (?, ?, ?, ?, ?, 0, 'testnet')",
                 rusqlite::params![
-                    seed_hash.as_slice(),
+                    wallet_id.as_slice(),
                     vec![0u8; 64],
                     vec![0u8; 16],
                     vec![0u8; 12],
@@ -1425,7 +1499,7 @@ mod tests {
 
         // Add address
         db.add_address_if_not_exists(
-            &seed_hash,
+            &wallet_id,
             &address,
             &network,
             &derivation_path,
@@ -1436,18 +1510,371 @@ mod tests {
         .expect("Failed to add address");
 
         // Update total received
-        db.update_address_total_received(&seed_hash, &address, 10_000_000)
+        db.update_address_total_received(&wallet_id, &address, 10_000_000)
             .expect("Failed to update total received");
 
         // Verify
         let conn = db.conn.lock().unwrap();
         let total_received: i64 = conn
             .query_row(
-                "SELECT total_received FROM wallet_addresses WHERE seed_hash = ? AND address = ?",
-                rusqlite::params![seed_hash.as_slice(), address.to_string()],
+                "SELECT total_received FROM wallet_addresses WHERE wallet_id = ? AND address = ?",
+                rusqlite::params![wallet_id.as_slice(), address.to_string()],
                 |row| row.get(0),
             )
             .expect("Failed to query total_received");
         assert_eq!(total_received, 10_000_000);
+    }
+
+    // =========================================================================
+    // Migration helpers: locked_wallets_needing_wallet_id,
+    // set_wallet_id_for_locked_wallet, ensure_wallet_id_column_and_backfill
+    // =========================================================================
+
+    /// Create a v33-era in-memory DB: wallet table with seed_hash PK, no wallet_id column.
+    fn make_v33_db() -> Database {
+        let db = Database::new(":memory:").unwrap();
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute_batch(
+                "CREATE TABLE settings (
+                    id INTEGER PRIMARY KEY,
+                    network TEXT NOT NULL,
+                    start_root_screen INTEGER NOT NULL DEFAULT 20,
+                    database_version INTEGER NOT NULL DEFAULT 33
+                 );
+                 INSERT INTO settings (id, network, database_version)
+                 VALUES (1, 'testnet', 33);
+                 CREATE TABLE wallet (
+                    seed_hash BLOB NOT NULL PRIMARY KEY,
+                    encrypted_seed BLOB NOT NULL,
+                    salt BLOB NOT NULL,
+                    nonce BLOB NOT NULL,
+                    master_ecdsa_bip44_account_0_epk BLOB NOT NULL,
+                    alias TEXT,
+                    is_main INTEGER,
+                    uses_password INTEGER NOT NULL,
+                    password_hint TEXT,
+                    network TEXT NOT NULL,
+                    confirmed_balance INTEGER DEFAULT 0,
+                    unconfirmed_balance INTEGER DEFAULT 0,
+                    total_balance INTEGER DEFAULT 0
+                 );",
+            )
+            .unwrap();
+        }
+        db
+    }
+
+    /// Build valid BIP44-account-0 EPK bytes for a testnet seed.
+    fn build_epk_bytes(seed: &[u8; 64]) -> Vec<u8> {
+        let secp = dash_sdk::dpp::dashcore::secp256k1::Secp256k1::new();
+        let master =
+            dash_sdk::dpp::key_wallet::bip32::ExtendedPrivKey::new_master(Network::Testnet, seed)
+                .unwrap();
+        let path = DerivationPath::from(vec![
+            dash_sdk::dpp::key_wallet::bip32::ChildNumber::Hardened { index: 44 },
+            dash_sdk::dpp::key_wallet::bip32::ChildNumber::Hardened { index: 1 },
+            dash_sdk::dpp::key_wallet::bip32::ChildNumber::Hardened { index: 0 },
+        ]);
+        let account = master.derive_priv(&secp, &path).unwrap();
+        ExtendedPubKey::from_priv(&secp, &account).encode()
+    }
+
+    /// Insert a no-password wallet row with an explicit seed stored in encrypted_seed.
+    fn insert_no_password_wallet(db: &Database, seed_hash: &[u8; 32], seed: &[u8; 64]) {
+        let epk = build_epk_bytes(seed);
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO wallet (seed_hash, encrypted_seed, salt, nonce,
+             master_ecdsa_bip44_account_0_epk, uses_password, network)
+             VALUES (?, ?, ?, ?, ?, 0, 'testnet')",
+            rusqlite::params![
+                seed_hash.as_slice(),
+                seed.as_slice(),
+                vec![0u8; 16],
+                vec![0u8; 12],
+                epk,
+            ],
+        )
+        .unwrap();
+    }
+
+    /// Insert a password-protected wallet row (encrypted_seed is the ciphertext).
+    fn insert_password_wallet(
+        db: &Database,
+        seed_hash: &[u8; 32],
+        encrypted_seed: &[u8],
+        salt: &[u8],
+        nonce: &[u8],
+        epk: &[u8],
+    ) {
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO wallet (seed_hash, encrypted_seed, salt, nonce,
+             master_ecdsa_bip44_account_0_epk, uses_password, network)
+             VALUES (?, ?, ?, ?, ?, 1, 'testnet')",
+            rusqlite::params![seed_hash.as_slice(), encrypted_seed, salt, nonce, epk,],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_locked_wallets_returns_empty_when_no_locked_wallets() {
+        let db = make_v33_db();
+        let seed = [10u8; 64];
+        let seed_hash = crate::model::wallet::ClosedKeyItem::compute_seed_hash(&seed);
+        insert_no_password_wallet(&db, &seed_hash, &seed);
+
+        // Add wallet_id column and backfill.
+        db.ensure_wallet_id_column_and_backfill().unwrap();
+
+        let locked = db.locked_wallets_needing_wallet_id().unwrap();
+        assert!(
+            locked.is_empty(),
+            "no-password wallet should not appear in locked list after backfill"
+        );
+    }
+
+    #[test]
+    fn test_locked_wallets_returns_password_wallet() {
+        use crate::model::wallet::encryption::encrypt_message;
+
+        let db = make_v33_db();
+        let seed = [11u8; 64];
+        let seed_hash = crate::model::wallet::ClosedKeyItem::compute_seed_hash(&seed);
+        let epk = build_epk_bytes(&seed);
+        let (enc, salt, nonce) = encrypt_message(&seed, "s3cr3t").unwrap();
+
+        insert_password_wallet(&db, &seed_hash, &enc, &salt, &nonce, &epk);
+        db.ensure_wallet_id_column_and_backfill().unwrap();
+
+        let locked = db.locked_wallets_needing_wallet_id().unwrap();
+        assert_eq!(locked.len(), 1, "should have one locked wallet");
+        assert_eq!(locked[0].seed_hash, seed_hash);
+        assert_eq!(locked[0].encrypted_seed, enc);
+        assert_eq!(locked[0].salt, salt);
+        assert_eq!(locked[0].nonce, nonce);
+        assert_eq!(locked[0].network, Network::Testnet);
+    }
+
+    #[test]
+    fn test_set_wallet_id_for_locked_wallet_writes_wallet_id() {
+        use crate::model::wallet::encryption::encrypt_message;
+
+        let db = make_v33_db();
+        let seed = [12u8; 64];
+        let seed_hash = crate::model::wallet::ClosedKeyItem::compute_seed_hash(&seed);
+        let epk = build_epk_bytes(&seed);
+        let (enc, salt, nonce) = encrypt_message(&seed, "pw").unwrap();
+
+        insert_password_wallet(&db, &seed_hash, &enc, &salt, &nonce, &epk);
+        db.ensure_wallet_id_column_and_backfill().unwrap();
+
+        // Should appear as locked.
+        assert_eq!(db.locked_wallets_needing_wallet_id().unwrap().len(), 1);
+
+        let wallet_id =
+            crate::model::wallet::derive_wallet_id_from_seed(&seed, Network::Testnet).unwrap();
+        db.set_wallet_id_for_locked_wallet(&seed_hash, &wallet_id)
+            .unwrap();
+
+        // Should no longer appear as locked.
+        assert!(db.locked_wallets_needing_wallet_id().unwrap().is_empty());
+
+        // Read wallet_id back and verify.
+        let stored: Vec<u8> = {
+            let conn = db.conn.lock().unwrap();
+            conn.query_row(
+                "SELECT wallet_id FROM wallet WHERE seed_hash = ?",
+                rusqlite::params![seed_hash.as_slice()],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(stored.as_slice(), wallet_id.as_slice());
+    }
+
+    #[test]
+    fn test_set_wallet_id_guard_prevents_clobber() {
+        use crate::model::wallet::encryption::encrypt_message;
+
+        let db = make_v33_db();
+        let seed = [13u8; 64];
+        let seed_hash = crate::model::wallet::ClosedKeyItem::compute_seed_hash(&seed);
+        let epk = build_epk_bytes(&seed);
+        let (enc, salt, nonce) = encrypt_message(&seed, "pw").unwrap();
+
+        insert_password_wallet(&db, &seed_hash, &enc, &salt, &nonce, &epk);
+        db.ensure_wallet_id_column_and_backfill().unwrap();
+
+        let wallet_id =
+            crate::model::wallet::derive_wallet_id_from_seed(&seed, Network::Testnet).unwrap();
+        // Write wallet_id once.
+        db.set_wallet_id_for_locked_wallet(&seed_hash, &wallet_id)
+            .unwrap();
+
+        // Attempting to write a different wallet_id should be a no-op
+        // (AND wallet_id IS NULL guard prevents clobber).
+        let different_id = [0xFFu8; 32];
+        db.set_wallet_id_for_locked_wallet(&seed_hash, &different_id)
+            .unwrap();
+
+        // wallet_id should still be the original.
+        let stored: Vec<u8> = {
+            let conn = db.conn.lock().unwrap();
+            conn.query_row(
+                "SELECT wallet_id FROM wallet WHERE seed_hash = ?",
+                rusqlite::params![seed_hash.as_slice()],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            stored.as_slice(),
+            wallet_id.as_slice(),
+            "wallet_id should not be clobbered"
+        );
+    }
+
+    #[test]
+    fn test_ensure_wallet_id_column_and_backfill_is_idempotent() {
+        let db = make_v33_db();
+        let seed = [14u8; 64];
+        let seed_hash = crate::model::wallet::ClosedKeyItem::compute_seed_hash(&seed);
+        insert_no_password_wallet(&db, &seed_hash, &seed);
+
+        // Call multiple times — should not error.
+        db.ensure_wallet_id_column_and_backfill().unwrap();
+        db.ensure_wallet_id_column_and_backfill().unwrap();
+        db.ensure_wallet_id_column_and_backfill().unwrap();
+
+        // No-password wallet should have wallet_id set.
+        let locked = db.locked_wallets_needing_wallet_id().unwrap();
+        assert!(locked.is_empty(), "backfill should have set wallet_id");
+    }
+
+    #[test]
+    fn test_ensure_wallet_id_backfill_correct_value() {
+        use dash_sdk::dpp::dashcore::hashes::{Hash, sha256};
+        use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
+        use dash_sdk::dpp::key_wallet::bip32::{ExtendedPrivKey, ExtendedPubKey};
+
+        let db = make_v33_db();
+        let seed = [15u8; 64];
+        let seed_hash = crate::model::wallet::ClosedKeyItem::compute_seed_hash(&seed);
+        insert_no_password_wallet(&db, &seed_hash, &seed);
+
+        db.ensure_wallet_id_column_and_backfill().unwrap();
+
+        // Compute expected wallet_id independently.
+        let secp = Secp256k1::new();
+        let master = ExtendedPrivKey::new_master(Network::Testnet, &seed).unwrap();
+        let root_pub = ExtendedPubKey::from_priv(&secp, &master);
+        let mut data = Vec::with_capacity(65);
+        data.extend_from_slice(&root_pub.public_key.serialize());
+        data.extend_from_slice(&root_pub.chain_code[..]);
+        let expected = sha256::Hash::hash(&data).to_byte_array();
+
+        let stored: Vec<u8> = {
+            let conn = db.conn.lock().unwrap();
+            conn.query_row(
+                "SELECT wallet_id FROM wallet WHERE seed_hash = ?",
+                rusqlite::params![seed_hash.as_slice()],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            stored.as_slice(),
+            expected.as_slice(),
+            "backfilled wallet_id must match SHA256(root_pub||chain_code)"
+        );
+    }
+
+    #[test]
+    fn test_try_unlock_correct_password_writes_wallet_id() {
+        use crate::database::LockedWalletInfo;
+        use crate::model::wallet::encryption::encrypt_message;
+        use crate::ui::wallets::wallet_migration_screen::WalletMigrationEntry;
+
+        let seed = [20u8; 64];
+        let password = "hunter2";
+        let (enc, salt, nonce) = encrypt_message(&seed, password).unwrap();
+        let seed_hash = crate::model::wallet::ClosedKeyItem::compute_seed_hash(&seed);
+        let epk = build_epk_bytes(&seed);
+
+        let db = make_v33_db();
+        insert_password_wallet(&db, &seed_hash, &enc, &salt, &nonce, &epk);
+        db.ensure_wallet_id_column_and_backfill().unwrap();
+
+        // Verify it's locked.
+        let locked = db.locked_wallets_needing_wallet_id().unwrap();
+        assert_eq!(locked.len(), 1);
+
+        let info = LockedWalletInfo {
+            seed_hash,
+            alias: None,
+            password_hint: None,
+            encrypted_seed: enc,
+            salt,
+            nonce,
+            network: Network::Testnet,
+        };
+
+        let mut entry = WalletMigrationEntry::new(info.clone());
+        entry.set_password(password);
+        entry.try_unlock(&db).expect("unlock should succeed");
+
+        // Should no longer appear as locked.
+        assert!(db.locked_wallets_needing_wallet_id().unwrap().is_empty());
+
+        // wallet_id should be the correct derivation.
+        let expected =
+            crate::model::wallet::derive_wallet_id_from_seed(&seed, Network::Testnet).unwrap();
+        let stored: Vec<u8> = {
+            let conn = db.conn.lock().unwrap();
+            conn.query_row(
+                "SELECT wallet_id FROM wallet WHERE seed_hash = ?",
+                rusqlite::params![seed_hash.as_slice()],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(stored.as_slice(), expected.as_slice());
+    }
+
+    #[test]
+    fn test_try_unlock_wrong_password_returns_error() {
+        use crate::database::LockedWalletInfo;
+        use crate::model::wallet::encryption::encrypt_message;
+        use crate::ui::wallets::wallet_migration_screen::WalletMigrationEntry;
+
+        let seed = [21u8; 64];
+        let (enc, salt, nonce) = encrypt_message(&seed, "correct_pw").unwrap();
+        let seed_hash = crate::model::wallet::ClosedKeyItem::compute_seed_hash(&seed);
+        let epk = build_epk_bytes(&seed);
+
+        let db = make_v33_db();
+        insert_password_wallet(&db, &seed_hash, &enc, &salt, &nonce, &epk);
+        db.ensure_wallet_id_column_and_backfill().unwrap();
+
+        let info = LockedWalletInfo {
+            seed_hash,
+            alias: None,
+            password_hint: None,
+            encrypted_seed: enc,
+            salt,
+            nonce,
+            network: Network::Testnet,
+        };
+        let mut entry = WalletMigrationEntry::new(info);
+        entry.set_password("wrong_pw");
+        let result = entry.try_unlock(&db);
+        assert!(result.is_err(), "wrong password should fail");
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("incorrect") || msg.contains("password"),
+            "unexpected error: {msg}"
+        );
     }
 }

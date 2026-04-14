@@ -71,13 +71,13 @@ impl SpvEventBridge {
         match event {
             WalletEvent::BalanceUpdated {
                 wallet_id,
-                spendable,
+                confirmed,
                 unconfirmed,
                 ..
             } => {
                 tracing::debug!(
                     wallet_id = %hex::encode(wallet_id),
-                    spendable,
+                    confirmed,
                     unconfirmed,
                     "BalanceUpdated event received"
                 );

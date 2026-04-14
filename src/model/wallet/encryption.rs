@@ -115,16 +115,14 @@ mod tests {
         let (encrypted_seed, salt, nonce) =
             ClosedKeyItem::encrypt_seed(&seed, password).expect("Encryption failed");
 
-        // Compute the seed hash
-        let seed_hash = ClosedKeyItem::compute_seed_hash(&seed);
-
-        // Create a ClosedWalletSeed instance with the encrypted data
+        // Create a ClosedWalletSeed instance with the encrypted data.
+        // wallet_id is not used by decrypt_seed so a zero placeholder is fine.
         let closed_wallet_seed = ClosedKeyItem {
-            seed_hash,
+            wallet_id: [0u8; 32],
             encrypted_seed,
             salt,
             nonce,
-            password_hint: None, // Set password hint if needed
+            password_hint: None,
         };
 
         // Decrypt the seed using the instance method
@@ -146,12 +144,10 @@ mod tests {
         let (encrypted_seed, salt, nonce) =
             ClosedKeyItem::encrypt_seed(&seed, password).expect("Encryption failed");
 
-        // Compute the seed hash
-        let seed_hash = ClosedKeyItem::compute_seed_hash(&seed);
-
-        // Create a ClosedWalletSeed instance with the encrypted data
+        // Create a ClosedWalletSeed instance with the encrypted data.
+        // wallet_id is not used by decrypt_seed so a zero placeholder is fine.
         let closed_wallet_seed = ClosedKeyItem {
-            seed_hash,
+            wallet_id: [0u8; 32],
             encrypted_seed,
             salt,
             nonce,

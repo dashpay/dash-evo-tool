@@ -209,9 +209,7 @@ impl IdentitiesScreen {
         if let Some(master_identity_public_key) = qi.private_keys.find_master_key()
             && let Some(wallet_derivation_path) =
                 &master_identity_public_key.in_wallet_at_derivation_path
-            && let Some(alias) = self
-                .wallet_id_cache
-                .get(&wallet_derivation_path.wallet_id)
+            && let Some(alias) = self.wallet_id_cache.get(&wallet_derivation_path.wallet_id)
         {
             return alias.clone();
         }

@@ -538,6 +538,12 @@ impl crate::database::Database {
     /// (matching `ContactRequest.created_at: TimestampMillis`) —
     /// NOT the local-save `created_at` column, which is in seconds.
     /// See M2 in the Item 7 review for why these are separate.
+    ///
+    /// Superseded at runtime by the persister's `load()` flow which
+    /// reconstructs `EstablishedContact` instances directly into the
+    /// in-memory `ManagedIdentity.established_contacts` map. Kept
+    /// only for tests that exercise the raw row-shape.
+    #[cfg(test)]
     #[allow(clippy::type_complexity)]
     pub fn load_contact_request_crypto_rows(
         &self,

@@ -62,6 +62,29 @@ pub async fn load_profile(
             .get("avatarUrl")
             .and_then(|v| v.as_text())
             .unwrap_or_default();
+        // `avatarHash` / `avatarFingerprint` are required by the
+        // DashPay contract whenever `avatarUrl` is set, and pinned
+        // to 32 / 8 bytes. A wrong-length value is a contract
+        // violation and propagates as a TaskError so callers can
+        // surface it rather than silently swallowing the field.
+        let avatar_hash: Option<[u8; 32]> = doc
+            .get("avatarHash")
+            .and_then(|v| v.as_bytes())
+            .map(|b| {
+                <[u8; 32]>::try_from(b.as_slice()).map_err(|_| DashPayError::InvalidDocument {
+                    reason: format!("avatarHash must be 32 bytes (got {})", b.len()),
+                })
+            })
+            .transpose()?;
+        let avatar_fingerprint: Option<[u8; 8]> = doc
+            .get("avatarFingerprint")
+            .and_then(|v| v.as_bytes())
+            .map(|b| {
+                <[u8; 8]>::try_from(b.as_slice()).map_err(|_| DashPayError::InvalidDocument {
+                    reason: format!("avatarFingerprint must be 8 bytes (got {})", b.len()),
+                })
+            })
+            .transpose()?;
 
         // Cache the loaded profile via the platform-wallet so the
         // persister catches it on the next flush. The
@@ -86,6 +109,8 @@ pub async fn load_profile(
                 } else {
                     Some(avatar_url.to_string())
                 },
+                avatar_hash,
+                avatar_fingerprint,
                 avatar_bytes: None,
                 public_message: None,
             }),
@@ -153,6 +178,10 @@ pub async fn update_profile(
     let display_name_for_db = display_name.clone();
     let bio_for_db = bio.clone();
     let avatar_url_for_db = avatar_url.clone();
+    // Computed below when avatar_url is non-empty and fetch succeeds.
+    // Kept around so the persister cache mirrors what landed on-chain.
+    let mut avatar_hash_for_db: Option<[u8; 32]> = None;
+    let mut avatar_fingerprint_for_db: Option<[u8; 8]> = None;
 
     // Only add non-empty fields according to DashPay DIP
     if let Some(name) = display_name.filter(|name| !name.is_empty()) {
@@ -172,6 +201,7 @@ pub async fn update_profile(
                 // Calculate SHA-256 hash of the image
                 let avatar_hash = calculate_avatar_hash(&image_bytes);
                 profile_data.insert("avatarHash".to_string(), Value::Bytes(avatar_hash.to_vec()));
+                avatar_hash_for_db = Some(avatar_hash);
 
                 // Calculate DHash perceptual fingerprint
                 match calculate_dhash_fingerprint(&image_bytes) {
@@ -180,6 +210,7 @@ pub async fn update_profile(
                             "avatarFingerprint".to_string(),
                             Value::Bytes(fingerprint.to_vec()),
                         );
+                        avatar_fingerprint_for_db = Some(fingerprint);
                     }
                     Err(e) => {
                         tracing::warn!("Could not calculate avatar fingerprint: {}", e);
@@ -251,6 +282,8 @@ pub async fn update_profile(
                 display_name: display_name_for_db.clone(),
                 bio: bio_for_db.clone(),
                 avatar_url: avatar_url_for_db.clone(),
+                avatar_hash: avatar_hash_for_db,
+                avatar_fingerprint: avatar_fingerprint_for_db,
                 avatar_bytes: None,
                 public_message: None,
             }),
@@ -327,6 +360,8 @@ pub async fn update_profile(
                 display_name: display_name_for_db.clone(),
                 bio: bio_for_db.clone(),
                 avatar_url: avatar_url_for_db.clone(),
+                avatar_hash: avatar_hash_for_db,
+                avatar_fingerprint: avatar_fingerprint_for_db,
                 avatar_bytes: None,
                 public_message: None,
             }),

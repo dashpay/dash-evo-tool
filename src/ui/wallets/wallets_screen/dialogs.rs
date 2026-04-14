@@ -1209,7 +1209,7 @@ impl WalletsBalancesScreen {
             let spendable = guard
                 .platform_wallet
                 .as_ref()
-                .map(|pw| pw.core().balance().spendable())
+                .map(|pw| pw.core().balance().confirmed())
                 .unwrap_or(0);
             if amount_duffs > spendable {
                 return Err("Insufficient confirmed balance".to_string());

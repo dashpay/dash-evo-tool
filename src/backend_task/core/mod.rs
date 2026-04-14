@@ -553,23 +553,23 @@ impl AppContext {
             (pw, guard.wallet_id())
         };
 
-        // Build and sign via PlatformWallet's CoreWallet
+        // Build, sign, and broadcast via CoreWallet
         let tx = platform_wallet
             .core()
-            .send_transaction(parsed_recipients)
+            .send_to_addresses(
+                dash_sdk::dpp::key_wallet::account::account_type::StandardAccountType::BIP44Account,
+                0,
+                parsed_recipients,
+            )
             .await
             .map_err(|e| TaskError::WalletPaymentFailed {
                 detail: e.to_string(),
             })?;
 
-        let txid = self
-            .core_client
-            .read()?
-            .send_raw_transaction(&tx)
-            .map_err(TaskError::from)?;
+        let txid = tx.txid();
 
-        // Wallet changes (UTXO updates) are auto-flushed via
-        // FlushStrategy::Immediate when queued by the platform wallet.
+        // Wallet changes (UTXO updates) are persisted inline when queued
+        // by the platform wallet (the persister flushes on every store call).
 
         let total_amount: u64 = request.recipients.iter().map(|r| r.amount_duffs).sum();
         let recipients_result: Vec<(String, u64)> = request

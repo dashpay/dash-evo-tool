@@ -50,7 +50,7 @@ pub enum CoreTask {
     RefreshSingleKeyWalletInfo(Arc<RwLock<SingleKeyWallet>>),
     StartDashQT(Network, PathBuf, bool),
     CreateRegistrationAssetLock(Arc<RwLock<Wallet>>, Credits, u32), // wallet, amount in credits, identity index
-    CreateTopUpAssetLock(Arc<RwLock<Wallet>>, Credits, u32, u32), // wallet, amount in credits, identity index, top up index
+    CreateTopUpAssetLock(Arc<RwLock<Wallet>>, Credits, u32), // wallet, amount in credits, identity index
     SendWalletPayment {
         wallet: Arc<RwLock<Wallet>>,
         request: WalletPaymentRequest,
@@ -90,8 +90,8 @@ impl PartialEq for CoreTask {
                     CoreTask::CreateRegistrationAssetLock(_, _, _)
                 )
                 | (
-                    CoreTask::CreateTopUpAssetLock(_, _, _, _),
-                    CoreTask::CreateTopUpAssetLock(_, _, _, _)
+                    CoreTask::CreateTopUpAssetLock(_, _, _),
+                    CoreTask::CreateTopUpAssetLock(_, _, _)
                 )
                 | (
                     CoreTask::SendWalletPayment { .. },
@@ -319,10 +319,10 @@ impl AppContext {
                     .await;
                 self.with_wallet_recovery(&wallet_id, first_addr.as_ref(), false, result)
             }
-            CoreTask::CreateTopUpAssetLock(wallet, amount, identity_index, top_up_index) => {
+            CoreTask::CreateTopUpAssetLock(wallet, amount, identity_index) => {
                 let (wallet_id, first_addr) = Self::core_wallet_first_address(&wallet).await?;
                 let result = self
-                    .create_top_up_asset_lock(wallet, amount, true, identity_index, top_up_index)
+                    .create_top_up_asset_lock(wallet, amount, true, identity_index)
                     .await;
                 self.with_wallet_recovery(&wallet_id, first_addr.as_ref(), false, result)
             }

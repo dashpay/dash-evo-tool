@@ -163,12 +163,11 @@ async fn test_tc005_create_top_up_asset_lock() {
             .clone()
     };
 
-    // identity_index=0 (SHARED_IDENTITY's index), topup_index=1
+    // identity_index=0 (SHARED_IDENTITY's index)
     let task = BackendTask::CoreTask(CoreTask::CreateTopUpAssetLock(
         wallet.clone(),
         50_000_000,
         0,
-        1,
     ));
 
     let result = run_task(app_context, task)

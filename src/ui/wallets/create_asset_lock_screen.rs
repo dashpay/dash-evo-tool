@@ -51,7 +51,6 @@ pub struct CreateAssetLockScreen {
     asset_lock_purpose: Option<AssetLockPurpose>,
     selected_identity: Option<QualifiedIdentity>,
     selected_identity_string: String,
-    top_up_index: u32,
     show_advanced_options: bool,
 }
 
@@ -88,7 +87,6 @@ impl CreateAssetLockScreen {
             asset_lock_purpose: None,
             selected_identity: None,
             selected_identity_string: String::new(),
-            top_up_index: 0,
             show_advanced_options: false,
         }
     }
@@ -205,7 +203,6 @@ impl CreateAssetLockScreen {
                     );
                     used.iter().copied().max().map(|max| max + 1).unwrap_or(0)
                 };
-                self.top_up_index = 0;
                 // Reset amount input to default 0.5 DASH
                 self.amount_input = Some(
                     AmountInput::new(Amount::new_dash(0.5))
@@ -392,7 +389,7 @@ impl ScreenLike for CreateAssetLockScreen {
                                 return;
                             }
 
-                            let identity_selector_response = ui.add(IdentitySelector::new(
+                            ui.add(IdentitySelector::new(
                                 "top_up_identity_selector",
                                 &mut self.selected_identity_string,
                                 &identities
@@ -401,61 +398,8 @@ impl ScreenLike for CreateAssetLockScreen {
                             .label("Identity to top up:")
                             .width(300.0));
 
-                            // Update top_up_index to next unused value when identity selection changes
-                            if identity_selector_response.changed()
-                                && let Some(selected) = &self.selected_identity {
-                                    self.top_up_index = selected
-                                        .top_ups
-                                        .keys()
-                                        .max()
-                                        .cloned()
-                                        .map(|i| i + 1)
-                                        .unwrap_or(0);
-                                }
-
                             if self.selected_identity.is_none() {
                                 return;
-                            }
-
-                            if self.show_advanced_options {
-                                ui.add_space(10.0);
-                                ui.separator();
-                                ui.add_space(10.0);
-
-                                ui.heading(RichText::new("2. Top Up Index Selection").color(DashColors::text_primary(dark_mode)));
-                                ui.add_space(10.0);
-
-                                // Get used top_up indices from selected identity
-                                let used_top_up_indices: HashSet<u32> = self.selected_identity
-                                    .as_ref()
-                                    .map(|id| id.top_ups.keys().cloned().collect())
-                                    .unwrap_or_default();
-
-                                ui.horizontal(|ui| {
-                                    ui.label("Top Up Index:");
-                                    let selected_text = if used_top_up_indices.contains(&self.top_up_index) {
-                                        format!("{} (used)", self.top_up_index)
-                                    } else {
-                                        format!("{}", self.top_up_index)
-                                    };
-                                    egui::ComboBox::from_id_salt("top_up_index")
-                                        .selected_text(selected_text)
-                                        .show_ui(ui, |ui| {
-                                            for i in 0..MAX_IDENTITY_INDEX {
-                                                let is_used = used_top_up_indices.contains(&i);
-                                                let label = if is_used {
-                                                    format!("{} (used)", i)
-                                                } else {
-                                                    format!("{}", i)
-                                                };
-                                                let is_selected = self.top_up_index == i;
-                                                let response = ui.add_enabled(!is_used, Button::new(label).selected(is_selected));
-                                                if response.clicked() {
-                                                    self.top_up_index = i;
-                                                }
-                                            }
-                                        });
-                                });
                             }
                         } else if self.asset_lock_purpose == Some(AssetLockPurpose::Registration)
 
@@ -597,7 +541,7 @@ impl ScreenLike for CreateAssetLockScreen {
                                                         if let Some(identity) = &self.selected_identity {
                                                             if let Some(identity_index) = identity.wallet_index {
                                                                 AppAction::BackendTask(BackendTask::CoreTask(
-                                                                    CoreTask::CreateTopUpAssetLock(self.wallet.clone(), credits, identity_index, self.top_up_index)
+                                                                    CoreTask::CreateTopUpAssetLock(self.wallet.clone(), credits, identity_index)
                                                                 ))
                                                             } else {
                                                                 MessageBanner::set_global(ui.ctx(), "Selected identity has no wallet index", MessageType::Error);
@@ -894,36 +838,6 @@ mod tests {
         non_contiguous.insert(0, ());
         non_contiguous.insert(5, ());
         assert_eq!(calculate_next_identity_index(&non_contiguous), 6);
-    }
-
-    /// Test next unused top_up index calculation
-    #[test]
-    fn test_next_unused_top_up_index() {
-        use std::collections::BTreeMap;
-
-        // Helper function that mimics the next top_up index calculation
-        fn calculate_next_top_up_index(used_indices: &BTreeMap<u32, ()>) -> u32 {
-            used_indices
-                .keys()
-                .max()
-                .cloned()
-                .map(|i| i + 1)
-                .unwrap_or(0)
-        }
-
-        // No used indices -> next is 0
-        let empty: BTreeMap<u32, ()> = BTreeMap::new();
-        assert_eq!(calculate_next_top_up_index(&empty), 0);
-
-        // Used indices: 0 -> next is 1
-        let mut used = BTreeMap::new();
-        used.insert(0, ());
-        assert_eq!(calculate_next_top_up_index(&used), 1);
-
-        // Used indices: 0, 1, 2 -> next is 3
-        used.insert(1, ());
-        used.insert(2, ());
-        assert_eq!(calculate_next_top_up_index(&used), 3);
     }
 
     /// Test AssetLockPurpose enum values

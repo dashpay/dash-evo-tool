@@ -957,7 +957,11 @@ impl AppContext {
             managed.dpns_names = mi_dpns_names;
             managed.status = mi_status;
             managed.wallet_id = Some(wallet_id);
-            managed.top_ups = qualified_identity.top_ups.clone();
+            // Top-up history is an evo-tool-only concern (the wallet
+            // can't reconstruct user-intent top-up numbering from chain
+            // or Platform state). It lives in the `top_up` SQL table and
+            // is hydrated into `QualifiedIdentity.top_ups` on load —
+            // never shuttled into platform-wallet.
             // dashpay_profile and dashpay_payments are populated
             // by the persister load overlay at replay time.
             if let Some(alias) = &qualified_identity.alias {
@@ -984,7 +988,8 @@ impl AppContext {
                         managed.dpns_names = mi_dpns_names;
                         managed.status = mi_status;
                         managed.wallet_id = Some(wallet_id);
-                        managed.top_ups = qualified_identity.top_ups.clone();
+                        // Top-up history stays in evo-tool's SQL `top_up`
+                        // table only — see comment on the update path above.
                         // dashpay_profile + dashpay_payments populated by
                         // persister load overlay at replay time.
                         // established_contacts populated by the persister's

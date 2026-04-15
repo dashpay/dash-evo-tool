@@ -58,7 +58,6 @@ impl AppContext {
         amount: Credits,
         _allow_take_fee_from_amount: bool,
         identity_index: u32,
-        _topup_index: u32,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let amount_duffs = amount / CREDITS_PER_DUFF;
 

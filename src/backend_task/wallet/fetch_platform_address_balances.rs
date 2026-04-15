@@ -1,18 +1,32 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use crate::model::wallet::{
-    DerivationPathHelpers, DerivationPathReference, DerivationPathType, WalletAddressProvider,
-    WalletId,
+    DerivationPathHelpers, DerivationPathReference, DerivationPathType, WalletId,
 };
 use dash_sdk::RequestSettings;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use dash_sdk::platform::address_sync::AddressSyncConfig;
-use dash_sdk::platform::address_sync::AddressSyncResult;
 use std::sync::Arc;
 
 impl AppContext {
+    /// Sync platform address balances for the wallet.
+    ///
+    /// Delegates address discovery, derivation and balance writes to
+    /// platform-wallet's [`PlatformAddressWallet::sync_balances`]. The
+    /// per-address `(balance, nonce)` snapshots are persisted via the
+    /// wallet's [`PlatformWalletPersistence`] implementation — evo-tool's
+    /// `SqliteWalletPersister` writes them to the
+    /// `platform_address_balances` table in a single transaction.
+    ///
+    /// This task is still responsible for the evo-tool-only rows that
+    /// aren't part of the changeset:
+    /// - `wallet_addresses` — HD derivation path metadata keyed by
+    ///   derived address, needed so the UI can show which local wallet
+    ///   owns each platform address.
+    /// - `platform_sync_info` — the `(timestamp, height)` watermark used
+    ///   to drive incremental sync on the next invocation.
     pub(crate) async fn fetch_platform_address_balances(
         self: &Arc<Self>,
         wallet_id: WalletId,
@@ -20,54 +34,13 @@ impl AppContext {
         tracing::info!("Platform address sync start");
         let start_time = std::time::Instant::now();
 
-        // Validate via platform wallet bridge (establishes the new lookup path).
-        // The platform wallet is not yet used for address derivation — the old
-        // Wallet model's WalletAddressProvider handles that. This will be migrated
-        // once PlatformAddressWallet provides equivalent functionality.
-        let _platform_wallet = self.get_platform_wallet(&wallet_id);
+        let platform_wallet = self
+            .get_platform_wallet(&wallet_id)
+            .ok_or(crate::backend_task::error::TaskError::WalletNotFound)?;
 
-        let wallet_arc = {
-            let wallets = self.wallets.read()?;
-            wallets
-                .get(&wallet_id)
-                .cloned()
-                .ok_or(crate::backend_task::error::TaskError::WalletNotFound)?
-        };
-
-        // Get last sync timestamp from database
-        let (last_sync_timestamp, last_sync_height) =
-            self.db.get_platform_sync_info(&wallet_id).unwrap_or((0, 0));
-
-        // Load stored platform address info from DB for incremental sync
-        let stored_info = self
-            .db
-            .get_all_platform_address_info(&wallet_id, &self.network)
-            .unwrap_or_default();
-
-        // Create provider (requires wallet to be open for address derivation)
-        let mut provider = {
-            let wallet = wallet_arc.read()?;
-            match WalletAddressProvider::new(&wallet, self.network) {
-                Ok(provider) => {
-                    provider.with_stored_state(&stored_info, self.network, last_sync_height)
-                }
-                Err(_) if !wallet.is_open() => {
-                    return Err(crate::backend_task::error::TaskError::WalletLocked);
-                }
-                Err(e) => {
-                    return Err(
-                        crate::backend_task::error::TaskError::WalletAddressProviderSetupFailed {
-                            detail: e,
-                        },
-                    );
-                }
-            }
-        };
-
-        // Sync using SDK's privacy-preserving method (handles both full and incremental)
-        let sdk = self.sdk.load().as_ref().clone();
-
-        let config = if sdk.network == Network::Regtest {
+        // Regtest needs `ban_failed_address = false` — transient DAPI
+        // failures are expected in local setups.
+        let config = if self.network == Network::Regtest {
             Some(AddressSyncConfig {
                 request_settings: RequestSettings {
                     ban_failed_address: Some(false),
@@ -79,101 +52,71 @@ impl AppContext {
             None
         };
 
-        let last_ts = if last_sync_timestamp > 0 {
-            Some(last_sync_timestamp)
-        } else {
-            None
-        };
-
-        let result = match sdk
-            .sync_address_balances(&mut provider, config, last_ts)
+        let per_account = platform_wallet
+            .platform()
+            .sync_balances(config)
             .await
-        {
-            Ok(res) => res,
-            // TODO: Replace with structural match when the SDK exposes a typed
-            // variant for empty-tree proof responses.
-            Err(e) if e.to_string().contains("empty tree") => {
-                tracing::debug!(
-                    "Platform address balance tree is empty. Returning empty sync result."
+            .map_err(|e| crate::backend_task::error::TaskError::PlatformWallet {
+                source: Box::new(e),
+            })?;
+
+        // Aggregate across accounts: evo-tool currently persists derivation
+        // path metadata for account 0 only (the primary HD platform payment
+        // account). Extending to multiple accounts requires schema work on
+        // `wallet_addresses` which is out of scope here.
+        let mut total_found = 0usize;
+        let mut total_absent = 0usize;
+        let mut max_new_sync_height = 0u64;
+        let mut max_new_sync_timestamp = 0u64;
+
+        for (account_index, result) in &per_account {
+            total_found += result.found.len();
+            total_absent += result.absent.len();
+            max_new_sync_height = max_new_sync_height.max(result.new_sync_height);
+            max_new_sync_timestamp = max_new_sync_timestamp.max(result.new_sync_timestamp);
+
+            for ((index, address), funds) in &result.found {
+                let derivation_path = DerivationPath::platform_payment_path(
+                    self.network,
+                    *account_index,
+                    0, // key_class
+                    *index,
                 );
-                AddressSyncResult::default()
+                let core_address = address.to_address_with_network(self.network);
+                if let Err(e) = self.db.add_address_if_not_exists(
+                    &wallet_id,
+                    &core_address,
+                    &self.network,
+                    &derivation_path,
+                    DerivationPathReference::PlatformPayment,
+                    DerivationPathType::CLEAR_FUNDS,
+                    None,
+                ) {
+                    tracing::warn!("Failed to persist Platform address metadata: {}", e);
+                }
+                tracing::info!(
+                    "Sync found address: {} with balance: {}, nonce: {}",
+                    address.to_bech32m_string(self.network),
+                    funds.balance,
+                    funds.nonce
+                );
             }
-            Err(e) => return Err(crate::backend_task::error::TaskError::from(e)),
-        };
-
-        tracing::info!(
-            "Sync complete: duration={:?}, found={}, absent={}, highest_index={:?}, checkpoint={}, new_sync_height={}, new_sync_timestamp={}",
-            start_time.elapsed(),
-            result.found.len(),
-            result.absent.len(),
-            result.highest_found_index,
-            result.checkpoint_height,
-            result.new_sync_height,
-            result.new_sync_timestamp,
-        );
-
-        // Log the found balances from provider
-        for (addr, funds) in provider.found_balances() {
-            use dash_sdk::dpp::address_funds::PlatformAddress;
-            let platform_addr_str = PlatformAddress::try_from(addr.clone())
-                .map(|p| p.to_bech32m_string(self.network))
-                .unwrap_or_else(|_| addr.to_string());
-            tracing::info!(
-                "Sync found address: {} with balance: {}, nonce: {}",
-                platform_addr_str,
-                funds.balance,
-                funds.nonce
-            );
         }
 
-        // Persist sync state
-        if let Err(e) = self.db.set_platform_sync_info(
-            &wallet_id,
-            result.new_sync_timestamp,
-            result.new_sync_height,
-        ) {
+        // Persist the sync watermark — the max across accounts serves
+        // as the "earliest point at which no account is ahead".
+        if let Err(e) =
+            self.db
+                .set_platform_sync_info(&wallet_id, max_new_sync_timestamp, max_new_sync_height)
+        {
             tracing::warn!("Failed to save platform sync info: {}", e);
         }
 
-        // Persist addresses and balances to database
-        for (index, (address, funds)) in provider.found_balances_with_indices() {
-            // Persist the address to wallet_addresses table if not already there
-            let derivation_path = DerivationPath::platform_payment_path(
-                self.network,
-                0, // account
-                0, // key_class
-                index,
-            );
-            if let Err(e) = self.db.add_address_if_not_exists(
-                &wallet_id,
-                address,
-                &self.network,
-                &derivation_path,
-                DerivationPathReference::PlatformPayment,
-                DerivationPathType::CLEAR_FUNDS,
-                None,
-            ) {
-                tracing::warn!("Failed to persist Platform address: {}", e);
-            }
-
-            // Persist balance to platform_address_balances table
-            if let Err(e) = self.db.set_platform_address_info(
-                &wallet_id,
-                address,
-                funds.balance,
-                funds.nonce,
-                &self.network,
-            ) {
-                tracing::warn!("Failed to persist Platform address info: {}", e);
-            }
-        }
-
-        // Return the complete platform_address_info from DB, not just
-        // found_balances.  The SDK's incremental sync only reports addresses
-        // whose balance changed; unchanged addresses are absent from
-        // found_balances but still have valid nonces in the DB.
-        // Returning only found_balances would cause the UI to lose nonce
-        // values for stable-balance addresses (issue #652).
+        // Return the complete platform_address_info from DB. The
+        // persister writes balances + nonces for addresses that changed;
+        // unchanged rows still have valid nonces. Returning only
+        // `found` would cause the UI to lose nonce values for
+        // stable-balance addresses (issue #652).
         let balances = self
             .db
             .get_all_platform_address_info(&wallet_id, &self.network)
@@ -186,11 +129,15 @@ impl AppContext {
             })
             .collect();
 
-        let addresses_with_balance = provider.found_balances().len();
         tracing::info!(
-            "Platform address sync complete: total_duration={:?}, addresses_with_balance={}",
+            "Platform address sync complete: total_duration={:?}, \
+             accounts={}, found={}, absent={}, new_sync_height={}, new_sync_timestamp={}",
             start_time.elapsed(),
-            addresses_with_balance
+            per_account.len(),
+            total_found,
+            total_absent,
+            max_new_sync_height,
+            max_new_sync_timestamp,
         );
 
         Ok(BackendTaskSuccessResult::PlatformAddressBalances {

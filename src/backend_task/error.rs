@@ -341,12 +341,6 @@ pub enum TaskError {
     // ──────────────────────────────────────────────────────────────────────────
     // Wallet / platform-address operation errors
     // ──────────────────────────────────────────────────────────────────────────
-    /// Wallet address provider could not be set up (wallet is open but derivation failed).
-    #[error(
-        "Could not prepare wallet addresses for sync. Please close and reopen your wallet, then retry."
-    )]
-    WalletAddressProviderSetupFailed { detail: String },
-
     /// A Core address could not be converted to a Platform address.
     #[error("Could not convert a wallet address for platform use. Please retry.")]
     AddressConversionFailed {

@@ -285,7 +285,6 @@ impl IdentityKeys {
 }
 
 pub type IdentityIndex = u32;
-pub type TopUpIndex = u32;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RegisterIdentityFundingMethod {
     UseAssetLock(OutPoint),
@@ -302,7 +301,7 @@ pub enum RegisterIdentityFundingMethod {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TopUpIdentityFundingMethod {
     UseAssetLock(OutPoint),
-    FundWithWallet(Duffs, IdentityIndex, TopUpIndex),
+    FundWithWallet(Duffs, IdentityIndex),
 }
 
 #[derive(Debug, Clone)]

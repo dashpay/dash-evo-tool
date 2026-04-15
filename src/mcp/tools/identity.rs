@@ -92,7 +92,6 @@ impl AsyncTool<DashMcpService> for IdentityCreditsTopup {
         let wallet_arc = resolve::wallet_arc(&ctx, wallet_id)?;
 
         let identity_index = qi.wallet_index.unwrap_or(0);
-        let top_up_index = qi.top_ups.len() as u32;
         let identity_id_str = qi
             .identity
             .id()
@@ -104,7 +103,6 @@ impl AsyncTool<DashMcpService> for IdentityCreditsTopup {
             identity_funding_method: TopUpIdentityFundingMethod::FundWithWallet(
                 param.amount_duffs,
                 identity_index,
-                top_up_index,
             ),
         }));
 

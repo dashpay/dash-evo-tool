@@ -1478,7 +1478,6 @@ impl WalletSendScreen {
             })?;
 
         let identity_index = qualified_identity.wallet_index.unwrap_or(0);
-        let top_up_index = qualified_identity.top_ups.len() as u32;
 
         let wallet = self
             .selected_wallet
@@ -1494,7 +1493,6 @@ impl WalletSendScreen {
                 identity_funding_method: TopUpIdentityFundingMethod::FundWithWallet(
                     amount_duffs,
                     identity_index,
-                    top_up_index,
                 ),
             }),
         )))

@@ -34,8 +34,7 @@ async fn step_top_up(
         qualified_identity: si.qualified_identity.clone(),
         wallet: si.wallet_arc.clone(),
         identity_funding_method: TopUpIdentityFundingMethod::FundWithWallet(
-            500_000, 0, // identity_index
-            1, // topup_index — use 1 so it doesn't collide with registration
+            500_000, 0, // identity_index — top-up history index is now assigned by SQL
         ),
     };
 

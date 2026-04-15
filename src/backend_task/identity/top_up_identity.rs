@@ -21,7 +21,7 @@ impl AppContext {
             identity_funding_method,
         } = input;
 
-        let (out_point, identity_index, top_up_index) = match identity_funding_method {
+        let (out_point, identity_index, funded_amount) = match identity_funding_method {
             TopUpIdentityFundingMethod::UseAssetLock(out_point) => {
                 let _platform_wallet = {
                     let guard = wallet.read().map_err(TaskError::from)?;
@@ -33,7 +33,7 @@ impl AppContext {
 
                 (out_point, 0u32, None)
             }
-            TopUpIdentityFundingMethod::FundWithWallet(amount, identity_index, top_up_index) => {
+            TopUpIdentityFundingMethod::FundWithWallet(amount, identity_index) => {
                 let platform_wallet = {
                     let guard = wallet.read().map_err(TaskError::from)?;
                     guard
@@ -44,7 +44,9 @@ impl AppContext {
 
                 // Single call: builds asset lock TX, broadcasts, waits for
                 // finality proof (IS or CL), and returns the proof + key.
-                // The lock is tracked by AssetLockManager for later resumption.
+                // The on-chain top-up derivation index is owned by dashcore's
+                // AddressPool — callers do not pass it. The lock is tracked
+                // by AssetLockManager for later resumption.
                 let (_asset_lock_proof, _asset_lock_proof_private_key, out_point) = platform_wallet
                     .asset_locks()
                     .create_funded_asset_lock_proof(
@@ -58,7 +60,7 @@ impl AppContext {
                         detail: e.to_string(),
                     })?;
 
-                (out_point, identity_index, Some((amount, top_up_index)))
+                (out_point, identity_index, Some(amount))
             }
         };
 
@@ -134,7 +136,7 @@ impl AppContext {
 
         // Calculate and log actual fee paid
         // For top-ups, the "fee" is the difference between expected new balance and actual
-        let expected_credits_from_topup = if let Some((amount, _)) = top_up_index {
+        let expected_credits_from_topup = if let Some(amount) = funded_amount {
             // amount is in duffs, 1 duff = 1000 credits
             amount * 1000
         } else {
@@ -183,12 +185,11 @@ impl AppContext {
             qualified_identity.identity.id().as_bytes(),
         )?;
 
-        if let Some((amount, top_up_index)) = top_up_index {
-            self.db.insert_top_up(
-                qualified_identity.identity.id().as_bytes(),
-                top_up_index,
-                amount,
-            )?;
+        if let Some(amount) = funded_amount {
+            // Index is assigned atomically by SQL — no client-side
+            // race possible.
+            self.db
+                .insert_next_top_up(qualified_identity.identity.id().as_bytes(), amount)?;
         }
 
         // Calculate actual fee for the FeeResult

@@ -358,13 +358,6 @@ impl TopUpIdentityScreen {
                     identity_funding_method: TopUpIdentityFundingMethod::FundWithWallet(
                         amount,
                         self.identity.wallet_index.unwrap_or(u32::MAX >> 1),
-                        self.identity
-                            .top_ups
-                            .keys()
-                            .max()
-                            .cloned()
-                            .map(|i| i + 1)
-                            .unwrap_or_default(),
                     ),
                 };
 

@@ -25,8 +25,11 @@ impl AppContext {
     /// - `wallet_addresses` — HD derivation path metadata keyed by
     ///   derived address, needed so the UI can show which local wallet
     ///   owns each platform address.
-    /// - `platform_sync_info` — the `(timestamp, height)` watermark used
-    ///   to drive incremental sync on the next invocation.
+    ///
+    /// The incremental-sync watermark (`sync_height`, `sync_timestamp`)
+    /// now rides the [`PlatformAddressChangeSet`] produced by
+    /// `sync_balances`, so the persister writes it directly to the
+    /// `wallet` row — no separate update is needed here.
     pub(crate) async fn fetch_platform_address_balances(
         self: &Arc<Self>,
         wallet_id: WalletId,
@@ -60,20 +63,15 @@ impl AppContext {
                 source: Box::new(e),
             })?;
 
-        // Aggregate across accounts: evo-tool currently persists derivation
-        // path metadata for account 0 only (the primary HD platform payment
-        // account). Extending to multiple accounts requires schema work on
-        // `wallet_addresses` which is out of scope here.
+        // Write the evo-tool-owned derivation path metadata for each
+        // discovered address. Balance/nonce persistence and the
+        // sync watermark are handled by the platform-wallet persister.
         let mut total_found = 0usize;
         let mut total_absent = 0usize;
-        let mut max_new_sync_height = 0u64;
-        let mut max_new_sync_timestamp = 0u64;
 
         for (account_index, result) in &per_account {
             total_found += result.found.len();
             total_absent += result.absent.len();
-            max_new_sync_height = max_new_sync_height.max(result.new_sync_height);
-            max_new_sync_timestamp = max_new_sync_timestamp.max(result.new_sync_timestamp);
 
             for ((index, address), funds) in &result.found {
                 let derivation_path = DerivationPath::platform_payment_path(
@@ -103,15 +101,6 @@ impl AppContext {
             }
         }
 
-        // Persist the sync watermark — the max across accounts serves
-        // as the "earliest point at which no account is ahead".
-        if let Err(e) =
-            self.db
-                .set_platform_sync_info(&wallet_id, max_new_sync_timestamp, max_new_sync_height)
-        {
-            tracing::warn!("Failed to save platform sync info: {}", e);
-        }
-
         // Return the complete platform_address_info from DB. The
         // persister writes balances + nonces for addresses that changed;
         // unchanged rows still have valid nonces. Returning only
@@ -131,13 +120,11 @@ impl AppContext {
 
         tracing::info!(
             "Platform address sync complete: total_duration={:?}, \
-             accounts={}, found={}, absent={}, new_sync_height={}, new_sync_timestamp={}",
+             accounts={}, found={}, absent={}",
             start_time.elapsed(),
             per_account.len(),
             total_found,
             total_absent,
-            max_new_sync_height,
-            max_new_sync_timestamp,
         );
 
         Ok(BackendTaskSuccessResult::PlatformAddressBalances {

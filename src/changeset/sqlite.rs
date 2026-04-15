@@ -1004,6 +1004,31 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
             map
         };
 
+        // --- Load platform address sync watermark from `wallet` row ---
+        // Stored columns: `last_platform_sync_checkpoint` (height) and
+        // `last_platform_full_sync` (timestamp). Zero means "never
+        // synced" — return `None` so a fresh wallet doesn't inherit a
+        // bogus watermark.
+        let (pa_sync_height, pa_sync_timestamp) = {
+            use rusqlite::OptionalExtension;
+            let row: Option<(i64, i64)> = guard
+                .query_row(
+                    "SELECT last_platform_sync_checkpoint, last_platform_full_sync
+                     FROM wallet WHERE wallet_id = ?1",
+                    rusqlite::params![&wallet_id[..]],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+                )
+                .optional()
+                .map_err(sqlite_err)?;
+            match row {
+                Some((h, t)) => (
+                    if h > 0 { Some(h as u64) } else { None },
+                    if t > 0 { Some(t as u64) } else { None },
+                ),
+                None => (None, None),
+            }
+        };
+
         // --- Assemble the changeset ---
         let has_core = !per_account.is_empty();
         let has_asset_locks = !asset_lock_cs.asset_locks.is_empty();
@@ -1011,7 +1036,9 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
         let has_profiles = !profiles.is_empty();
         let has_payments = !payments_overlay.is_empty();
         let has_wallet_level_identity = primary_identity.is_some() || last_scanned_index.is_some();
-        let has_platform_addresses = !platform_addresses_map.is_empty();
+        let has_platform_addresses = !platform_addresses_map.is_empty()
+            || pa_sync_height.is_some()
+            || pa_sync_timestamp.is_some();
 
         if !has_core
             && !has_asset_locks
@@ -1051,6 +1078,8 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
             platform_addresses: if has_platform_addresses {
                 Some(platform_wallet::changeset::PlatformAddressChangeSet {
                     addresses: platform_addresses_map,
+                    sync_height: pa_sync_height,
+                    sync_timestamp: pa_sync_timestamp,
                 })
             } else {
                 None
@@ -1245,12 +1274,15 @@ impl SqliteWalletPersister {
         Ok(())
     }
 
-    /// Write platform address balance snapshots to
-    /// `platform_address_balances`. Each entry carries both the
-    /// credit balance and the anti-replay nonce, captured by the
-    /// sync / top-up / transfer / withdrawal paths inside
-    /// platform-wallet. This is the sole write path for the table —
-    /// callers never touch it directly.
+    /// Write platform address balance snapshots + incremental sync
+    /// watermark to `platform_address_balances` and `wallet`. Each
+    /// address entry carries both the credit balance and the
+    /// anti-replay nonce, captured by the sync / top-up / transfer /
+    /// withdrawal paths inside platform-wallet. The sync watermark
+    /// (`sync_height`, `sync_timestamp`) is stored as wallet-level
+    /// columns so that platform-wallet can resume incremental sync
+    /// after restart instead of forcing a full rescan. This is the
+    /// sole write path for both — callers never touch them directly.
     fn write_platform_addresses(
         tx: &rusqlite::Transaction,
         wallet_id: &WalletId,
@@ -1281,6 +1313,31 @@ impl SqliteWalletPersister {
                 funds.nonce as i64,
                 network,
             ])?;
+        }
+        drop(stmt);
+
+        // Sync watermark: monotonic-max update via COALESCE so stale
+        // flushes can't roll the watermark back. `NULL` in the
+        // changeset means "no change"; the COALESCE path degenerates
+        // to keeping the existing column.
+        if pa_cs.sync_height.is_some() || pa_cs.sync_timestamp.is_some() {
+            tx.execute(
+                "UPDATE wallet
+                 SET last_platform_sync_checkpoint = MAX(
+                         COALESCE(last_platform_sync_checkpoint, 0),
+                         COALESCE(?1, last_platform_sync_checkpoint, 0)
+                     ),
+                     last_platform_full_sync = MAX(
+                         COALESCE(last_platform_full_sync, 0),
+                         COALESCE(?2, last_platform_full_sync, 0)
+                     )
+                 WHERE wallet_id = ?3",
+                rusqlite::params![
+                    pa_cs.sync_height.map(|v| v as i64),
+                    pa_cs.sync_timestamp.map(|v| v as i64),
+                    &wallet_id[..],
+                ],
+            )?;
         }
         Ok(())
     }

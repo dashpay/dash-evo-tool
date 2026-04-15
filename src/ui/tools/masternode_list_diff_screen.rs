@@ -3558,7 +3558,7 @@ impl MasternodeListDiffScreen {
                 cycle_hash
             ));
         }
-        for (index, commitment) in cycle_quorums.iter().enumerate() {
+        for (index, (_, commitment)) in cycle_quorums.iter().enumerate() {
             // Determine the appropriate symbol based on verification status
             let verification_symbol = match commitment.verified {
                 LLMQEntryVerificationStatus::Verified => "✔", // Checkmark

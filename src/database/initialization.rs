@@ -1949,14 +1949,17 @@ impl Database {
                 last_platform_full_sync INTEGER DEFAULT 0,
                 last_platform_sync_checkpoint INTEGER DEFAULT 0,
                 last_terminal_block INTEGER DEFAULT 0,
-                core_wallet_name TEXT DEFAULT NULL
+                core_wallet_name TEXT DEFAULT NULL,
+                primary_identity_id BLOB,
+                last_scanned_identity_index INTEGER
              );
              INSERT INTO wallet_new
              SELECT wallet_id, encrypted_seed, salt, nonce,
                     master_ecdsa_bip44_account_0_epk, alias, is_main, uses_password,
                     password_hint, network, confirmed_balance, unconfirmed_balance,
                     total_balance, last_platform_full_sync, last_platform_sync_checkpoint,
-                    last_terminal_block, core_wallet_name
+                    last_terminal_block, core_wallet_name,
+                    NULL, NULL
              FROM wallet;
              DROP TABLE wallet;
              ALTER TABLE wallet_new RENAME TO wallet;
@@ -2023,6 +2026,9 @@ mod test {
         // wallet.wallet_id is now the PRIMARY KEY (v34); seed_hash is gone.
         assert_column_exists(conn, "wallet", "wallet_id");
         assert_column_not_exists(conn, "wallet", "seed_hash");
+        // v34 added persister-owned wallet-level identity fields.
+        assert_column_exists(conn, "wallet", "primary_identity_id");
+        assert_column_exists(conn, "wallet", "last_scanned_identity_index");
 
         // shielded_notes table (v29; v34 renames wallet_seed_hash → wallet_id).
         assert_table_exists(conn, "shielded_notes");

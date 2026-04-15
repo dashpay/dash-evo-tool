@@ -1953,5 +1953,4 @@ pub(crate) mod tests {
             "expected UnlockError::WrongPassword, got: {err:?}"
         );
     }
-
 }

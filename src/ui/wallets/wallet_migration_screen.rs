@@ -349,7 +349,9 @@ mod tests {
         let db = create_test_database().unwrap();
         let mut entry = WalletMigrationEntry::new(info);
         // Password not set — should return typed EmptyPassword variant.
-        let err = entry.try_unlock(&db).expect_err("must error on empty password");
+        let err = entry
+            .try_unlock(&db)
+            .expect_err("must error on empty password");
         assert!(
             matches!(err, UnlockError::EmptyPassword),
             "expected UnlockError::EmptyPassword, got: {err:?}"

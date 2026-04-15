@@ -77,6 +77,16 @@ pub enum SqlitePersistError {
     /// caller is willing to retry, but never the normal case.
     #[error("database mutex poisoned: {0}")]
     MutexPoisoned(String),
+    /// A load-only overlay field was populated on the write path.
+    /// `dashpay_profiles` and `dashpay_payments_overlay` exist on
+    /// [`PlatformWalletChangeSet`] solely so `load()` can return
+    /// profile/payment data to the caller; writes go through
+    /// `IdentityEntry.dashpay_profile` / `IdentityEntry.dashpay_payments`.
+    /// A non-empty overlay on a flush means a caller chose the
+    /// wrong field — fail loudly so the bug is visible immediately
+    /// rather than silently discarding data.
+    #[error("overlay field `{field}` emitted on write path — overlays are load-only")]
+    OverlayFieldOnWritePath { field: &'static str },
 }
 
 impl SqliteWalletPersister {
@@ -783,14 +793,11 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                     None => None,
                 };
                 let avatar_fingerprint = match avatar_fingerprint {
-                    Some(bytes) => {
-                        Some(<[u8; 8]>::try_from(bytes.as_slice()).map_err(|_| {
-                            Box::new(SqlitePersistError::Encode(
-                                "avatar_fingerprint must be 8 bytes".into(),
-                            ))
-                                as Box<dyn std::error::Error + Send + Sync>
-                        })?)
-                    }
+                    Some(bytes) => Some(<[u8; 8]>::try_from(bytes.as_slice()).map_err(|_| {
+                        Box::new(SqlitePersistError::Encode(
+                            "avatar_fingerprint must be 8 bytes".into(),
+                        )) as Box<dyn std::error::Error + Send + Sync>
+                    })?),
                     None => None,
                 };
                 profiles.insert(
@@ -891,14 +898,66 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
             }
         }
 
+        // --- Load wallet-level identity fields from `wallet` row ---
+        // `primary_identity_id` + `last_scanned_identity_index` are
+        // persisted via `write_wallet_level_identity_fields`. They
+        // flow into the returned changeset so `apply_changeset` can
+        // restore them on `IdentityManager`.
+        let (primary_identity_bytes, last_scanned_index) = {
+            use rusqlite::OptionalExtension;
+            let row: Option<(Option<Vec<u8>>, Option<i64>)> = guard
+                .query_row(
+                    "SELECT primary_identity_id, last_scanned_identity_index
+                     FROM wallet WHERE wallet_id = ?1",
+                    rusqlite::params![&wallet_id[..]],
+                    |row| {
+                        Ok((
+                            row.get::<_, Option<Vec<u8>>>(0)?,
+                            row.get::<_, Option<i64>>(1)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(sqlite_err)?;
+            row.unwrap_or((None, None))
+        };
+        let primary_identity: Option<dash_sdk::platform::Identifier> = match primary_identity_bytes
+        {
+            Some(bytes) => {
+                let arr = <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| {
+                    Box::new(SqlitePersistError::Encode(format!(
+                        "wallet.primary_identity_id must be 32 bytes, got {}",
+                        bytes.len()
+                    ))) as Box<dyn std::error::Error + Send + Sync>
+                })?;
+                Some(dash_sdk::platform::Identifier::from(arr))
+            }
+            None => None,
+        };
+        let last_scanned_index: Option<u32> = match last_scanned_index {
+            Some(v) => Some(u32::try_from(v).map_err(|_| {
+                Box::new(SqlitePersistError::Encode(format!(
+                    "wallet.last_scanned_identity_index out of u32 range: {v}"
+                ))) as Box<dyn std::error::Error + Send + Sync>
+            })?),
+            None => None,
+        };
+
         // --- Assemble the changeset ---
         let has_core = !per_account.is_empty();
         let has_asset_locks = !asset_lock_cs.asset_locks.is_empty();
         let has_contacts = !<platform_wallet::changeset::ContactChangeSet as platform_wallet::changeset::Merge>::is_empty(&contact_cs);
         let has_profiles = !profiles.is_empty();
         let has_payments = !payments_overlay.is_empty();
+        let has_wallet_level_identity = primary_identity.is_some() || last_scanned_index.is_some();
 
-        if !has_core && !has_asset_locks && !has_contacts && !has_profiles && !has_payments {
+        if !has_core
+            && !has_asset_locks
+            && !has_contacts
+            && !has_profiles
+            && !has_payments
+            && !has_wallet_level_identity
+        {
             return Ok(PlatformWalletChangeSet::default());
         }
 
@@ -906,6 +965,15 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
             core: if has_core {
                 Some(WalletChangeSet {
                     per_account,
+                    ..Default::default()
+                })
+            } else {
+                None
+            },
+            identities: if has_wallet_level_identity {
+                Some(platform_wallet::changeset::IdentityChangeSet {
+                    primary_identity,
+                    last_scanned_index,
                     ..Default::default()
                 })
             } else {
@@ -988,51 +1056,57 @@ impl SqliteWalletPersister {
                 "persister: dropping TokenBalanceChangeSet (backend tasks own token balance persistence)"
             );
         }
+        // Overlay fields on the write path are a caller bug. The
+        // fields exist on `PlatformWalletChangeSet` solely so
+        // `load()` can return profile / payment data back to the
+        // caller; every write path must use
+        // `IdentityEntry.dashpay_profile` /
+        // `IdentityEntry.dashpay_payments`. A non-empty overlay here
+        // means a caller synthesised one on the write side — fail
+        // loudly so the bug surfaces immediately.
         if dashpay_profiles.as_ref().map_or(false, |m| !m.is_empty()) {
-            tracing::debug!(
-                "persister: dropping dashpay_profiles overlay (load-only, written via identity subset)"
-            );
+            return Err(SqlitePersistError::OverlayFieldOnWritePath {
+                field: "dashpay_profiles",
+            });
         }
         if dashpay_payments_overlay
             .as_ref()
             .map_or(false, |m| !m.is_empty())
         {
-            tracing::debug!(
-                "persister: dropping dashpay_payments_overlay (load-only, written via identity subset)"
-            );
+            return Err(SqlitePersistError::OverlayFieldOnWritePath {
+                field: "dashpay_payments_overlay",
+            });
         }
 
-        // S3: log any IdentityChangeSet top-level fields
-        // (`removed` / `primary_identity` / `last_scanned_index`)
-        // that we silently drop. Previously this lived inside
-        // `write_identity_dashpay_subset` which only runs when
-        // `has_dashpay_identity_work` is true — so a changeset
-        // carrying ONLY these fields would be silently dropped
-        // without even the log firing. Moved out here so it
-        // always runs when the fields are present.
-        let has_identity_top_level_drops = identities
+        // `IdentityChangeSet.removed` is still persister-out-of-scope —
+        // deletion goes through `Database::delete_local_qualified_identity`
+        // (called from the UI "delete identity" flow). A non-empty
+        // `removed` on a changeset that reaches the persister means a
+        // mutation path emitted a deletion it expected the persister
+        // to handle; surface it at `warn` so it's visible in default
+        // logs rather than silently dropped. Lifting `removed` into
+        // the persister is a separate task (see REFACTOR_PLAN Stage 1
+        // category B / field #5 of the inventory).
+        if identities
             .as_ref()
-            .map(|id_cs| {
-                !id_cs.removed.is_empty()
-                    || id_cs.primary_identity.is_some()
-                    || id_cs.last_scanned_index.is_some()
-            })
-            .unwrap_or(false);
-        if has_identity_top_level_drops {
+            .map(|id_cs| !id_cs.removed.is_empty())
+            .unwrap_or(false)
+        {
             if let Some(id_cs) = identities.as_ref() {
-                tracing::debug!(
+                tracing::warn!(
                     removed = id_cs.removed.len(),
-                    has_primary = id_cs.primary_identity.is_some(),
-                    has_last_scanned_index = id_cs.last_scanned_index.is_some(),
-                    "persister: dropping IdentityChangeSet top-level fields (backend tasks own identity removal / primary tracking)"
+                    "persister: dropping IdentityChangeSet.removed — \
+                     deletion is owned by Database::delete_local_qualified_identity; \
+                     if this is a new emitter, extend the persister"
                 );
             }
         }
 
-        // Decide whether there's anything to write at all. We need a
-        // transaction iff `core` carries something OR the identities
-        // sub-changeset has at least one entry with a DashPay field
-        // (profile or payments).
+        // Decide whether there's anything to write at all. A
+        // transaction is needed iff `core` has work, asset-locks or
+        // contacts have work, any identity entry carries a DashPay
+        // field, OR the wallet-level identity fields (primary_identity /
+        // last_scanned_index) are set.
         let has_core_work = core
             .as_ref()
             .map(|c| !<_ as platform_wallet::changeset::Merge>::is_empty(c))
@@ -1046,27 +1120,16 @@ impl SqliteWalletPersister {
                     .any(|e| e.dashpay_profile.is_some() || !e.dashpay_payments.is_empty())
             })
             .unwrap_or(false);
-        if !has_core_work && !has_dashpay_identity_work && !has_asset_lock_work && !has_contact_work
+        let has_wallet_level_identity_work = identities
+            .as_ref()
+            .map(|id_cs| id_cs.primary_identity.is_some() || id_cs.last_scanned_index.is_some())
+            .unwrap_or(false);
+        if !has_core_work
+            && !has_dashpay_identity_work
+            && !has_asset_lock_work
+            && !has_contact_work
+            && !has_wallet_level_identity_work
         {
-            // S3 contract check: if the only "work" in the changeset
-            // was in the backend-task-owned identity top-level
-            // fields, we're about to return without opening a
-            // transaction — i.e. those fields are silently dropped.
-            // Today no mutation emits ONLY those fields without
-            // also touching a DashPay field or core, so this
-            // assertion should never fire. If it does, a new
-            // mutation has been added that needs either (a) the
-            // persister to grow ownership of these fields, or (b)
-            // a companion backend-task direct-write.
-            debug_assert!(
-                !has_identity_top_level_drops,
-                "persister: IdentityChangeSet emitted with only top-level \
-                 fields (removed/primary_identity/last_scanned_index) — \
-                 these are backend-task-owned and would be silently dropped. \
-                 Either have the emitting mutation also route through a \
-                 direct-write helper, or extend the persister's ownership. \
-                 See S3 from the holistic-review follow-up."
-            );
             return Ok(());
         }
 
@@ -1082,7 +1145,19 @@ impl SqliteWalletPersister {
             Self::write_core(&tx, &wallet_id, &self.network, core)?;
         }
         if let Some(id_cs) = identities {
+            // Wallet-level fields need to be read before we move
+            // `id_cs` into the DashPay subset writer.
+            let wallet_level_primary = id_cs.primary_identity;
+            let wallet_level_scan_index = id_cs.last_scanned_index;
             Self::write_identity_dashpay_subset(&tx, &wallet_id, &self.network, id_cs)?;
+            if wallet_level_primary.is_some() || wallet_level_scan_index.is_some() {
+                Self::write_wallet_level_identity_fields(
+                    &tx,
+                    &wallet_id,
+                    wallet_level_primary,
+                    wallet_level_scan_index,
+                )?;
+            }
         }
         if let Some(al_cs) = asset_locks
             && has_asset_lock_work
@@ -1219,10 +1294,54 @@ impl SqliteWalletPersister {
                 ])?;
             }
         }
-        // Identity top-level fields (`removed`, `primary_identity`,
-        // `last_scanned_index`) are logged at the flush_inner
-        // level so the drop is visible even when this function
-        // doesn't run (S3 fix in the holistic-review follow-up).
+        // Wallet-level identity fields (`primary_identity`,
+        // `last_scanned_index`) are persisted by
+        // `write_wallet_level_identity_fields`, invoked separately by
+        // `flush_inner` so wallets with only those fields set still
+        // open a transaction. `removed` remains persister-out-of-scope
+        // (deletion goes through `Database::delete_local_qualified_identity`).
+        Ok(())
+    }
+
+    /// Persist the wallet-scoped `IdentityChangeSet` top-level fields
+    /// (`primary_identity`, `last_scanned_index`) onto the `wallet`
+    /// row that owns the `IdentityManager`. Previously silently
+    /// dropped — without persistence, the user's primary-identity
+    /// selection was lost on restart and the HD identity scan
+    /// re-started from index 0 every launch.
+    ///
+    /// Skips the UPDATE if both fields are `None` (caller guard
+    /// already filters, but defend anyway). Uses COALESCE so a
+    /// changeset that sets only one field doesn't clobber the other.
+    fn write_wallet_level_identity_fields(
+        tx: &rusqlite::Transaction,
+        wallet_id: &WalletId,
+        primary_identity: Option<dash_sdk::platform::Identifier>,
+        last_scanned_index: Option<u32>,
+    ) -> Result<(), SqlitePersistError> {
+        if primary_identity.is_none() && last_scanned_index.is_none() {
+            return Ok(());
+        }
+        let rows = tx.execute(
+            "UPDATE wallet
+                SET primary_identity_id = COALESCE(?1, primary_identity_id),
+                    last_scanned_identity_index = COALESCE(?2, last_scanned_identity_index)
+             WHERE wallet_id = ?3",
+            rusqlite::params![
+                primary_identity.map(|id| id.to_buffer().to_vec()),
+                last_scanned_index.map(|idx| idx as i64),
+                &wallet_id[..],
+            ],
+        )?;
+        // The persister is the only writer of the wallet row; if 0
+        // rows match, the wallet row was never inserted. That's a
+        // caller bug — surface it rather than silently succeeding.
+        if rows == 0 {
+            return Err(SqlitePersistError::Encode(format!(
+                "write_wallet_level_identity_fields: no wallet row for wallet_id={}",
+                hex::encode(wallet_id)
+            )));
+        }
         Ok(())
     }
 
@@ -3068,5 +3187,151 @@ mod tests {
                 .expect("row must exist after successful retry")
         };
         assert_eq!(stored_txid, txid.as_byte_array().to_vec());
+    }
+
+    /// A caller that synthesises a `dashpay_profiles` overlay on the
+    /// write path must be rejected — the overlay is load-only. Silent
+    /// drops are forbidden (REFACTOR_PLAN Stage 1, field #3).
+    #[test]
+    fn test_flush_rejects_dashpay_profiles_overlay_on_write_path() {
+        use dash_sdk::platform::Identifier;
+        use platform_wallet::wallet::dashpay::DashPayProfile;
+
+        let db = Arc::new(create_test_database().expect("create test db"));
+        let persister = make_persister(db.clone());
+        insert_test_wallet_row(&db);
+
+        let owner = Identifier::from([0x01u8; 32]);
+        let mut profiles_overlay = std::collections::BTreeMap::new();
+        profiles_overlay.insert(
+            owner,
+            Some(DashPayProfile {
+                display_name: Some("should-not-reach-sql".into()),
+                ..Default::default()
+            }),
+        );
+        let cs = PlatformWalletChangeSet {
+            dashpay_profiles: Some(profiles_overlay),
+            ..Default::default()
+        };
+
+        let err = persister
+            .store(TEST_WALLET_ID, cs)
+            .expect_err("overlay on write path must be rejected");
+        let err_str = err.to_string();
+        assert!(
+            err_str.contains("dashpay_profiles"),
+            "error must name the offending overlay: {err_str}"
+        );
+        assert!(
+            err_str.contains("overlay") || err_str.contains("load-only"),
+            "error must explain why: {err_str}"
+        );
+    }
+
+    /// Same contract for the payments overlay.
+    #[test]
+    fn test_flush_rejects_dashpay_payments_overlay_on_write_path() {
+        use dash_sdk::platform::Identifier;
+        use platform_wallet::wallet::dashpay::{PaymentDirection, PaymentEntry, PaymentStatus};
+
+        let db = Arc::new(create_test_database().expect("create test db"));
+        let persister = make_persister(db.clone());
+        insert_test_wallet_row(&db);
+
+        let owner = Identifier::from([0x02u8; 32]);
+        let contact = Identifier::from([0x03u8; 32]);
+        let mut per_owner = std::collections::BTreeMap::new();
+        per_owner.insert(
+            "tx_overlay_write".to_string(),
+            PaymentEntry {
+                counterparty_id: contact,
+                amount_duffs: 1_000,
+                memo: None,
+                direction: PaymentDirection::Sent,
+                status: PaymentStatus::Pending,
+            },
+        );
+        let mut overlay = std::collections::BTreeMap::new();
+        overlay.insert(owner, per_owner);
+        let cs = PlatformWalletChangeSet {
+            dashpay_payments_overlay: Some(overlay),
+            ..Default::default()
+        };
+
+        let err = persister
+            .store(TEST_WALLET_ID, cs)
+            .expect_err("overlay on write path must be rejected");
+        let err_str = err.to_string();
+        assert!(
+            err_str.contains("dashpay_payments_overlay"),
+            "error must name the offending overlay: {err_str}"
+        );
+    }
+
+    /// Round-trip: wallet-level identity fields (primary_identity,
+    /// last_scanned_index) — emit via changeset, flush, load, assert
+    /// same values come back. These fields were previously silently
+    /// dropped by the persister, causing user's primary selection and
+    /// HD scan progress to be lost on every restart.
+    #[test]
+    fn test_wallet_level_identity_fields_round_trip() {
+        use dash_sdk::platform::Identifier;
+        use platform_wallet::changeset::IdentityChangeSet;
+
+        let db = Arc::new(create_test_database().expect("create test db"));
+        let persister = make_persister(db.clone());
+        insert_test_wallet_row(&db);
+
+        let primary = Identifier::from([0xEEu8; 32]);
+        let scanned = 42u32;
+
+        let id_cs = IdentityChangeSet {
+            primary_identity: Some(primary),
+            last_scanned_index: Some(scanned),
+            ..Default::default()
+        };
+        let cs = PlatformWalletChangeSet {
+            identities: Some(id_cs),
+            ..Default::default()
+        };
+        persister.store(TEST_WALLET_ID, cs).expect("store");
+        // store() flushes inline, but call flush explicitly too to
+        // prove the second call is a no-op with empty staged.
+        persister.flush(TEST_WALLET_ID).expect("flush");
+
+        let loaded = persister.load(TEST_WALLET_ID).expect("load");
+        let loaded_id_cs = loaded
+            .identities
+            .expect("identities sub-changeset must be populated");
+        assert_eq!(loaded_id_cs.primary_identity, Some(primary));
+        assert_eq!(loaded_id_cs.last_scanned_index, Some(scanned));
+
+        // Second flush with a changeset touching only one field must
+        // preserve the other via COALESCE.
+        let scanned_bumped = 100u32;
+        let id_cs2 = IdentityChangeSet {
+            last_scanned_index: Some(scanned_bumped),
+            ..Default::default()
+        };
+        persister
+            .store(
+                TEST_WALLET_ID,
+                PlatformWalletChangeSet {
+                    identities: Some(id_cs2),
+                    ..Default::default()
+                },
+            )
+            .expect("store");
+        persister.flush(TEST_WALLET_ID).expect("flush");
+
+        let loaded2 = persister.load(TEST_WALLET_ID).expect("load 2");
+        let loaded2_id_cs = loaded2.identities.expect("identities populated");
+        assert_eq!(
+            loaded2_id_cs.primary_identity,
+            Some(primary),
+            "COALESCE must preserve primary_identity when changeset doesn't set it"
+        );
+        assert_eq!(loaded2_id_cs.last_scanned_index, Some(scanned_bumped));
     }
 }

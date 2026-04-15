@@ -23,7 +23,7 @@ use dash_evo_tool::backend_task::error::TaskError;
 use dash_evo_tool::context::AppContext;
 use dash_evo_tool::context::connection_status::ConnectionStatus;
 use dash_evo_tool::database::test_helpers::create_database_at_path;
-use dash_evo_tool::model::wallet::WalletSeedHash;
+use dash_evo_tool::model::wallet::WalletId;
 use dash_evo_tool::spv::CoreBackendMode;
 use dash_evo_tool::utils::tasks::TaskManager;
 use dash_sdk::dpp::dashcore::Network;
@@ -66,7 +66,7 @@ pub async fn ctx() -> &'static BackendTestContext {
 /// Shared backend context for E2E tests.
 pub struct BackendTestContext {
     pub app_context: Arc<AppContext>,
-    pub framework_wallet_hash: WalletSeedHash,
+    pub framework_wallet_hash: WalletId,
     pub _workdir: PathBuf,
     /// Lock file held for the lifetime of the test process to prevent
     /// concurrent test runs from using the same workdir.
@@ -169,7 +169,7 @@ impl BackendTestContext {
         // SPV builds a bloom filter for every loaded wallet address — accumulated
         // test wallets from previous runs cause SPV sync to exceed the 600s timeout.
         {
-            let stale: Vec<WalletSeedHash> = {
+            let stale: Vec<WalletId> = {
                 let wallets = app_context.wallets().read().expect("wallets lock");
                 wallets
                     .keys()
@@ -358,7 +358,7 @@ impl BackendTestContext {
         &self,
         amount_duffs: u64,
     ) -> (
-        WalletSeedHash,
+        WalletId,
         Arc<std::sync::RwLock<dash_evo_tool::model::wallet::Wallet>>,
     ) {
         let app_context = &self.app_context;
@@ -406,7 +406,7 @@ impl BackendTestContext {
                     .expect("platform wallet must exist")
             };
             pw.core()
-                .next_receive_address()
+                .next_receive_address_for_account(0)
                 .await
                 .expect("Failed to get test wallet receive address")
                 .to_string()

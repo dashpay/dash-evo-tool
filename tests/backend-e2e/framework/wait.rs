@@ -1,7 +1,7 @@
 //! Polling helpers for waiting on async state changes.
 
 use dash_evo_tool::context::AppContext;
-use dash_evo_tool::model::wallet::WalletSeedHash;
+use dash_evo_tool::model::wallet::WalletId;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::timeout;
@@ -10,7 +10,7 @@ use tokio::time::timeout;
 /// polling every 2s. Triggers SPV reconciliation on each poll.
 pub async fn wait_for_balance(
     app_context: &Arc<AppContext>,
-    wallet_hash: WalletSeedHash,
+    wallet_hash: WalletId,
     min_balance: u64,
     wait_timeout: Duration,
 ) -> Result<u64, String> {
@@ -70,7 +70,7 @@ pub async fn wait_for_balance(
 /// Triggers SPV reconciliation on each poll.
 pub async fn wait_for_spendable_balance(
     app_context: &Arc<AppContext>,
-    wallet_hash: WalletSeedHash,
+    wallet_hash: WalletId,
     min_balance: u64,
     wait_timeout: Duration,
 ) -> Result<u64, String> {
@@ -142,7 +142,7 @@ pub async fn wait_for_spendable_balance(
 /// PlatformWalletManager, as indicated by the wallet being in the wallets map).
 pub async fn wait_for_wallet_in_spv(
     app_context: &Arc<AppContext>,
-    wallet_hash: WalletSeedHash,
+    wallet_hash: WalletId,
     wait_timeout: Duration,
 ) -> Result<(), String> {
     timeout(wait_timeout, async {

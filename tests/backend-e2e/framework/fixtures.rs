@@ -13,7 +13,7 @@ use dash_evo_tool::backend_task::identity::{IdentityTask, RegisterDpnsNameInput}
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_evo_tool::context::AppContext;
 use dash_evo_tool::model::qualified_identity::PrivateKeyTarget;
-use dash_evo_tool::model::wallet::{Wallet, WalletSeedHash};
+use dash_evo_tool::model::wallet::{Wallet, WalletId};
 use dash_sdk::dpp::data_contract::TokenContractPosition;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
@@ -37,7 +37,7 @@ static SHARED_IDENTITY: tokio::sync::OnceCell<SharedIdentity> = tokio::sync::Onc
 pub struct SharedIdentity {
     pub qualified_identity: dash_evo_tool::model::qualified_identity::QualifiedIdentity,
     pub wallet_arc: Arc<RwLock<Wallet>>,
-    pub wallet_seed_hash: WalletSeedHash,
+    pub wallet_seed_hash: WalletId,
     pub signing_key: IdentityPublicKey,
     pub signing_key_bytes: Vec<u8>,
 }
@@ -338,7 +338,7 @@ async fn create_dashpay_member(
     app_context: &Arc<AppContext>,
     ctx: &harness::BackendTestContext,
 ) -> (
-    WalletSeedHash,
+    WalletId,
     Arc<RwLock<Wallet>>,
     dash_evo_tool::model::qualified_identity::QualifiedIdentity,
     Vec<u8>,

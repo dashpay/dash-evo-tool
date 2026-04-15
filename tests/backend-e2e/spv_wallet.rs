@@ -52,7 +52,7 @@ async fn test_spv_sync_and_create_wallet() {
             .get_wallets(&Network::Testnet)
             .expect("DB query should succeed");
         assert!(
-            db_wallets.iter().any(|w| w.seed_hash() == seed_hash),
+            db_wallets.iter().any(|w| w.wallet_id() == seed_hash),
             "Wallet should be persisted in DB"
         );
     }

@@ -6,7 +6,7 @@ use crate::framework::task_runner::{run_task, run_task_with_nonce_retry};
 use dash_evo_tool::backend_task::core::CoreTask;
 use dash_evo_tool::backend_task::wallet::WalletTask;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
-use dash_evo_tool::model::wallet::WalletSeedHash;
+use dash_evo_tool::model::wallet::WalletId;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::identity::core_script::CoreScript;
 use std::collections::BTreeMap;
@@ -110,7 +110,7 @@ async fn tc_013_fetch_platform_address_balances_empty() {
 /// Fund a platform address from wallet UTXOs and return the seed hash.
 async fn step_fund_platform_address(
     ctx: &crate::framework::harness::BackendTestContext,
-) -> WalletSeedHash {
+) -> WalletId {
     tracing::info!("=== Step 1: Fund platform address from wallet UTXOs ===");
     let seed_hash = ctx.framework_wallet_hash;
 
@@ -168,7 +168,7 @@ async fn step_fund_platform_address(
 /// Fetch platform address balances and assert the address funded in step 1 has credits.
 async fn step_fetch_balances(
     ctx: &crate::framework::harness::BackendTestContext,
-    seed_hash: WalletSeedHash,
+    seed_hash: WalletId,
 ) {
     tracing::info!("=== Step 2: Fetch platform address balances after funding ===");
 
@@ -231,7 +231,7 @@ async fn step_fetch_balances(
 /// Transfer half the funded balance to a second platform address.
 async fn step_transfer_credits(
     ctx: &crate::framework::harness::BackendTestContext,
-    seed_hash: WalletSeedHash,
+    seed_hash: WalletId,
 ) {
     tracing::info!("=== Step 3: Transfer platform credits to a second address ===");
 
@@ -361,7 +361,7 @@ async fn step_transfer_credits(
 /// Fund a fresh platform address and withdraw its balance back to Core.
 async fn step_withdraw(
     ctx: &crate::framework::harness::BackendTestContext,
-    seed_hash: WalletSeedHash,
+    seed_hash: WalletId,
 ) {
     tracing::info!("=== Step 4: Withdraw from platform address back to Core ===");
 
@@ -677,7 +677,7 @@ async fn tc_019_wallet_task_error_unknown_seed_hash() {
     let ctx = harness::ctx().await;
 
     // Construct a seed hash that does not match any loaded wallet
-    let fake_seed_hash: WalletSeedHash = [
+    let fake_seed_hash: WalletId = [
         0xde, 0xad, 0xbe, 0xef, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa,
         0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a,
         0x0b, 0x0c,

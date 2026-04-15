@@ -10,7 +10,7 @@ use crate::framework::identity_helpers::build_identity_registration;
 use crate::framework::task_runner::run_task;
 use dash_evo_tool::backend_task::identity::IdentityTask;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
-use dash_evo_tool::model::wallet::{Wallet, WalletSeedHash};
+use dash_evo_tool::model::wallet::{Wallet, WalletId};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use std::sync::{Arc, RwLock};
 
@@ -28,7 +28,7 @@ use dash_evo_tool::model::qualified_identity::QualifiedIdentity;
 pub async fn create_dashpay_identity(
     app_context: &Arc<AppContext>,
     wallet_arc: &Arc<RwLock<Wallet>>,
-    wallet_seed_hash: WalletSeedHash,
+    wallet_seed_hash: WalletId,
 ) -> (QualifiedIdentity, Vec<u8>) {
     let (reg_info, master_key_bytes) =
         build_identity_registration(app_context, wallet_arc, wallet_seed_hash);

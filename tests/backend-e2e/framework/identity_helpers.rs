@@ -5,7 +5,7 @@ use dash_evo_tool::backend_task::identity::{
     IdentityKeys, IdentityRegistrationInfo, KeyInput, RegisterIdentityFundingMethod,
 };
 use dash_evo_tool::context::AppContext;
-use dash_evo_tool::model::wallet::{Wallet, WalletSeedHash};
+use dash_evo_tool::model::wallet::{Wallet, WalletId};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::KeyType;
 use std::sync::{Arc, RwLock};
@@ -24,7 +24,7 @@ use std::sync::{Arc, RwLock};
 pub fn build_identity_registration(
     app_context: &Arc<AppContext>,
     wallet_arc: &Arc<RwLock<Wallet>>,
-    wallet_seed_hash: WalletSeedHash,
+    wallet_seed_hash: WalletId,
 ) -> (IdentityRegistrationInfo, Vec<u8>) {
     let dashpay_contract_id = app_context.dashpay_contract_id();
     let key_specs = default_identity_key_specs(dashpay_contract_id);
@@ -105,7 +105,7 @@ pub async fn get_receive_address(
             .expect("platform wallet must exist")
     };
     pw.core()
-        .next_receive_address()
+        .next_receive_address_for_account(0)
         .await
         .expect("Failed to get receive address")
         .to_string()

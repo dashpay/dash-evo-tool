@@ -17,7 +17,7 @@ use dash_evo_tool::backend_task::shielded::ShieldedTask;
 use dash_evo_tool::backend_task::wallet::WalletTask;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_evo_tool::context::AppContext;
-use dash_evo_tool::model::wallet::WalletSeedHash;
+use dash_evo_tool::model::wallet::WalletId;
 use dash_sdk::dpp::dashcore::Network;
 use std::sync::Arc;
 
@@ -100,7 +100,7 @@ async fn step_warm_up_proving_key(app_context: &Arc<AppContext>) {
 /// Step 2 (TC-075): InitializeShieldedWallet
 ///
 /// Derives ZIP32 keys, loads commitment tree, and returns initial balance (likely 0).
-async fn step_init_wallet(app_context: &Arc<AppContext>, seed_hash: WalletSeedHash) {
+async fn step_init_wallet(app_context: &Arc<AppContext>, seed_hash: WalletId) {
     tracing::info!("=== Step 2: InitializeShieldedWallet ===");
 
     let task = BackendTask::ShieldedTask(ShieldedTask::InitializeShieldedWallet {
@@ -126,7 +126,7 @@ async fn step_init_wallet(app_context: &Arc<AppContext>, seed_hash: WalletSeedHa
 ///
 /// Trial-decrypts platform notes and updates the commitment tree.
 /// Returns `false` if the platform does not support shielded ops (caller should stop).
-async fn step_sync_notes(app_context: &Arc<AppContext>, seed_hash: WalletSeedHash) -> bool {
+async fn step_sync_notes(app_context: &Arc<AppContext>, seed_hash: WalletId) -> bool {
     tracing::info!("=== Step 3: SyncNotes ===");
 
     let task = BackendTask::ShieldedTask(ShieldedTask::SyncNotes { wallet_id: seed_hash });
@@ -159,7 +159,7 @@ async fn step_sync_notes(app_context: &Arc<AppContext>, seed_hash: WalletSeedHas
 /// Step 4 (TC-077): CheckNullifiers
 ///
 /// Checks the nullifier set to detect spent notes.
-async fn step_check_nullifiers(app_context: &Arc<AppContext>, seed_hash: WalletSeedHash) {
+async fn step_check_nullifiers(app_context: &Arc<AppContext>, seed_hash: WalletId) {
     tracing::info!("=== Step 4: CheckNullifiers ===");
 
     let task = BackendTask::ShieldedTask(ShieldedTask::CheckNullifiers {
@@ -187,7 +187,7 @@ async fn step_check_nullifiers(app_context: &Arc<AppContext>, seed_hash: WalletS
 /// Returns `false` if the platform does not support shielded ops (caller should stop).
 async fn step_shield_from_asset_lock(
     app_context: &Arc<AppContext>,
-    seed_hash: WalletSeedHash,
+    seed_hash: WalletId,
 ) -> bool {
     tracing::info!("=== Step 5: ShieldFromAssetLock ===");
 
@@ -248,7 +248,7 @@ async fn step_shield_from_asset_lock(
 ///
 /// Private transfer within the shielded pool (Type 16).
 /// Returns `false` if the platform does not support shielded ops.
-async fn step_shielded_transfer(app_context: &Arc<AppContext>, seed_hash: WalletSeedHash) -> bool {
+async fn step_shielded_transfer(app_context: &Arc<AppContext>, seed_hash: WalletId) -> bool {
     tracing::info!("=== Step 6: ShieldedTransfer ===");
 
     // Use the wallet's own default shielded address as recipient (self-transfer)
@@ -290,7 +290,7 @@ async fn step_shielded_transfer(app_context: &Arc<AppContext>, seed_hash: Wallet
 ///
 /// Unshield credits from the shielded pool to a platform address (Type 17).
 /// Returns `false` if the platform does not support shielded ops.
-async fn step_unshield(app_context: &Arc<AppContext>, seed_hash: WalletSeedHash) -> bool {
+async fn step_unshield(app_context: &Arc<AppContext>, seed_hash: WalletId) -> bool {
     tracing::info!("=== Step 7: UnshieldCredits ===");
 
     let platform_addr = {
@@ -357,7 +357,7 @@ async fn step_unshield(app_context: &Arc<AppContext>, seed_hash: WalletSeedHash)
 /// Step 8 (TC-082): ShieldedWithdrawal
 ///
 /// Withdraw from the shielded pool directly to a core L1 address (Type 19).
-async fn step_withdrawal(app_context: &Arc<AppContext>, seed_hash: WalletSeedHash) {
+async fn step_withdrawal(app_context: &Arc<AppContext>, seed_hash: WalletId) {
     tracing::info!("=== Step 8: ShieldedWithdrawal ===");
 
     let core_addr = {
@@ -519,7 +519,7 @@ async fn tc_083_error_uninitialized_wallet() {
     let app_context = &test_ctx.app_context;
 
     // Use a fake seed hash that has never been initialized
-    let fake_seed_hash: WalletSeedHash = [0xDE; 32];
+    let fake_seed_hash: WalletId = [0xDE; 32];
 
     let task = BackendTask::ShieldedTask(ShieldedTask::SyncNotes {
         wallet_id: fake_seed_hash,

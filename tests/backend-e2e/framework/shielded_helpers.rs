@@ -11,7 +11,7 @@ use dash_evo_tool::backend_task::shielded::ShieldedTask;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_evo_tool::context::AppContext;
 use dash_evo_tool::model::feature_gate::FeatureGate;
-use dash_evo_tool::model::wallet::WalletSeedHash;
+use dash_evo_tool::model::wallet::WalletId;
 use std::sync::Arc;
 
 /// Check whether the connected platform supports shielded operations
@@ -87,7 +87,7 @@ pub fn is_platform_shielded_unsupported(
 /// This ensures the proving key is downloaded/cached and the wallet's
 /// shielded state (ZIP32 keys, commitment tree) is initialized before
 /// any shielded operations.
-pub async fn warm_up_and_init(app_context: &Arc<AppContext>, seed_hash: WalletSeedHash) {
+pub async fn warm_up_and_init(app_context: &Arc<AppContext>, seed_hash: WalletId) {
     // Warm up proving key (may take 30-60s on first run)
     tracing::info!("shielded_helpers: warming up proving key...");
     let task = BackendTask::ShieldedTask(ShieldedTask::WarmUpProvingKey);

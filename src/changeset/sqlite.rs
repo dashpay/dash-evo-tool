@@ -943,6 +943,67 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
             None => None,
         };
 
+        // --- Load platform address balance snapshots ---
+        // Each row carries balance + nonce. They hydrate the
+        // PlatformAddressChangeSet so `apply_changeset` can restore
+        // the in-memory `ManagedPlatformAccount` balance map.
+        let platform_addresses_map: std::collections::BTreeMap<
+            dash_sdk::dpp::address_funds::PlatformAddress,
+            dash_sdk::platform::address_sync::AddressFunds,
+        > = {
+            use std::str::FromStr;
+            let network_enum =
+                dash_sdk::dpp::dashcore::Network::from_str(&self.network).map_err(|e| {
+                    Box::new(SqlitePersistError::Encode(format!(
+                        "invalid network string {:?}: {e}",
+                        self.network
+                    ))) as Box<dyn std::error::Error + Send + Sync>
+                })?;
+            let mut stmt = guard
+                .prepare_cached(
+                    "SELECT address, balance, nonce FROM platform_address_balances
+                     WHERE wallet_id = ?1 AND network = ?2",
+                )
+                .map_err(sqlite_err)?;
+            let rows = stmt
+                .query_map(rusqlite::params![&wallet_id[..], &self.network], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                })
+                .map_err(sqlite_err)?;
+            let mut map = std::collections::BTreeMap::new();
+            for row in rows {
+                let (address_str, balance, nonce) = row.map_err(sqlite_err)?;
+                let (addr, decoded_network) =
+                    dash_sdk::dpp::address_funds::PlatformAddress::from_bech32m_string(
+                        &address_str,
+                    )
+                    .map_err(|e| {
+                        Box::new(SqlitePersistError::Encode(format!(
+                            "invalid platform address {address_str:?}: {e}"
+                        ))) as Box<dyn std::error::Error + Send + Sync>
+                    })?;
+                if decoded_network != network_enum {
+                    return Err(Box::new(SqlitePersistError::Encode(format!(
+                        "platform address {address_str:?} encodes network {decoded_network:?} \
+                         but row is stored under network {network_enum:?}"
+                    )))
+                        as Box<dyn std::error::Error + Send + Sync>);
+                }
+                map.insert(
+                    addr,
+                    dash_sdk::platform::address_sync::AddressFunds {
+                        balance: balance as u64,
+                        nonce: nonce as u32,
+                    },
+                );
+            }
+            map
+        };
+
         // --- Assemble the changeset ---
         let has_core = !per_account.is_empty();
         let has_asset_locks = !asset_lock_cs.asset_locks.is_empty();
@@ -950,6 +1011,7 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
         let has_profiles = !profiles.is_empty();
         let has_payments = !payments_overlay.is_empty();
         let has_wallet_level_identity = primary_identity.is_some() || last_scanned_index.is_some();
+        let has_platform_addresses = !platform_addresses_map.is_empty();
 
         if !has_core
             && !has_asset_locks
@@ -957,6 +1019,7 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
             && !has_profiles
             && !has_payments
             && !has_wallet_level_identity
+            && !has_platform_addresses
         {
             return Ok(PlatformWalletChangeSet::default());
         }
@@ -985,6 +1048,13 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                 None
             },
             contacts: if has_contacts { Some(contact_cs) } else { None },
+            platform_addresses: if has_platform_addresses {
+                Some(platform_wallet::changeset::PlatformAddressChangeSet {
+                    addresses: platform_addresses_map,
+                })
+            } else {
+                None
+            },
             dashpay_profiles: if has_profiles { Some(profiles) } else { None },
             dashpay_payments_overlay: if has_payments {
                 Some(payments_overlay)
@@ -1034,15 +1104,10 @@ impl SqliteWalletPersister {
             .as_ref()
             .map(|c| !<_ as Merge>::is_empty(c))
             .unwrap_or(false);
-        if platform_addresses
+        let has_platform_address_work = platform_addresses
             .as_ref()
             .map(|c| !<_ as Merge>::is_empty(c))
-            .unwrap_or(false)
-        {
-            tracing::debug!(
-                "persister: dropping PlatformAddressChangeSet (backend tasks own platform address persistence)"
-            );
-        }
+            .unwrap_or(false);
         let has_asset_lock_work = asset_locks
             .as_ref()
             .map(|c| !<_ as Merge>::is_empty(c))
@@ -1129,6 +1194,7 @@ impl SqliteWalletPersister {
             && !has_asset_lock_work
             && !has_contact_work
             && !has_wallet_level_identity_work
+            && !has_platform_address_work
         {
             return Ok(());
         }
@@ -1169,8 +1235,53 @@ impl SqliteWalletPersister {
         {
             Self::write_contact_requests(&tx, &wallet_id, &self.network, ct_cs)?;
         }
+        if let Some(pa_cs) = platform_addresses
+            && has_platform_address_work
+        {
+            Self::write_platform_addresses(&tx, &wallet_id, &self.network, pa_cs)?;
+        }
 
         tx.commit()?;
+        Ok(())
+    }
+
+    /// Write platform address balance snapshots to
+    /// `platform_address_balances`. Each entry carries both the
+    /// credit balance and the anti-replay nonce, captured by the
+    /// sync / top-up / transfer / withdrawal paths inside
+    /// platform-wallet. This is the sole write path for the table —
+    /// callers never touch it directly.
+    fn write_platform_addresses(
+        tx: &rusqlite::Transaction,
+        wallet_id: &WalletId,
+        network: &str,
+        pa_cs: platform_wallet::changeset::PlatformAddressChangeSet,
+    ) -> Result<(), SqlitePersistError> {
+        use std::str::FromStr;
+        let network_enum = dash_sdk::dpp::dashcore::Network::from_str(network).map_err(|e| {
+            SqlitePersistError::Encode(format!("invalid network string {network:?}: {e}").into())
+        })?;
+
+        let mut stmt = tx.prepare_cached(
+            "INSERT INTO platform_address_balances
+                (wallet_id, address, balance, nonce, network, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, unixepoch())
+             ON CONFLICT(wallet_id, address, network) DO UPDATE SET
+                balance = excluded.balance,
+                nonce = excluded.nonce,
+                updated_at = excluded.updated_at",
+        )?;
+
+        for (addr, funds) in pa_cs.addresses {
+            let address_str = addr.to_bech32m_string(network_enum);
+            stmt.execute(rusqlite::params![
+                wallet_id,
+                address_str,
+                funds.balance as i64,
+                funds.nonce as i64,
+                network,
+            ])?;
+        }
         Ok(())
     }
 
@@ -1879,7 +1990,6 @@ mod tests {
                 last_updated_balance_block_time: None,
                 last_synced_keys_block_time: None,
                 dpns_names: Vec::new(),
-                top_ups: BTreeMap::new(),
                 status: Default::default(),
                 key_storage: BTreeMap::new(),
                 wallet_id: Some(TEST_WALLET_ID),
@@ -1950,7 +2060,6 @@ mod tests {
                 last_updated_balance_block_time: None,
                 last_synced_keys_block_time: None,
                 dpns_names: Vec::new(),
-                top_ups: BTreeMap::new(),
                 status: Default::default(),
                 key_storage: BTreeMap::new(),
                 wallet_id: Some(TEST_WALLET_ID),
@@ -2044,7 +2153,6 @@ mod tests {
             last_updated_balance_block_time: None,
             last_synced_keys_block_time: None,
             dpns_names: Vec::new(),
-            top_ups: BTreeMap::new(),
             status: Default::default(),
             key_storage: BTreeMap::new(),
             wallet_id: Some(TEST_WALLET_ID),
@@ -2149,7 +2257,6 @@ mod tests {
             last_updated_balance_block_time: None,
             last_synced_keys_block_time: None,
             dpns_names: Vec::new(),
-            top_ups: BTreeMap::new(),
             status: Default::default(),
             key_storage: BTreeMap::new(),
             wallet_id: Some(TEST_WALLET_ID),
@@ -2249,7 +2356,6 @@ mod tests {
             last_updated_balance_block_time: None,
             last_synced_keys_block_time: None,
             dpns_names: Vec::new(),
-            top_ups: BTreeMap::new(),
             status: Default::default(),
             key_storage: BTreeMap::new(),
             wallet_id: Some(TEST_WALLET_ID),
@@ -3003,7 +3109,6 @@ mod tests {
                 last_updated_balance_block_time: None,
                 last_synced_keys_block_time: None,
                 dpns_names: Vec::new(),
-                top_ups: std::collections::BTreeMap::new(),
                 status: Default::default(),
                 key_storage: std::collections::BTreeMap::new(),
                 wallet_id: Some(TEST_WALLET_ID),

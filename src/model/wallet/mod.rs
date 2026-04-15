@@ -12,6 +12,7 @@ use dash_sdk::dpp::key_wallet::bip32::{
     ChildNumber, DerivationPath, ExtendedPrivKey, ExtendedPubKey, KeyDerivationType,
 };
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+use async_trait::async_trait;
 use dash_sdk::platform::address_sync::{AddressFunds, AddressIndex, AddressProvider};
 
 use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
@@ -1529,6 +1530,7 @@ impl WalletAddressProvider {
     }
 }
 
+#[async_trait]
 impl AddressProvider for WalletAddressProvider {
     fn gap_limit(&self) -> AddressIndex {
         self.gap_limit
@@ -1542,7 +1544,7 @@ impl AddressProvider for WalletAddressProvider {
             .collect()
     }
 
-    fn on_address_found(
+    async fn on_address_found(
         &mut self,
         index: AddressIndex,
         address: &PlatformAddress,
@@ -1585,7 +1587,7 @@ impl AddressProvider for WalletAddressProvider {
         }
     }
 
-    fn on_address_absent(&mut self, index: AddressIndex, _address: &PlatformAddress) {
+    async fn on_address_absent(&mut self, index: AddressIndex, _address: &PlatformAddress) {
         self.resolved.insert(index);
     }
 

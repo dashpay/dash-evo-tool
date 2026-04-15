@@ -463,36 +463,16 @@ pub async fn shield_from_asset_lock(
             .ok_or(TaskError::WalletNotFound)?
     };
 
-    let (asset_lock_transaction, _asset_lock_private_key) = platform_wallet
+    // Steps 1–5: build, track, broadcast, and wait for finality proof
+    // (IS-lock or ChainLock). The manager handles the full lifecycle.
+    let (asset_lock_proof, asset_lock_private_key, _out_point) = platform_wallet
         .asset_locks()
-        .build_asset_lock_transaction(
+        .create_funded_asset_lock_proof(
             asset_lock_duffs,
             0,
             platform_wallet::AssetLockFundingType::IdentityRegistration,
             0,
         )
-        .await
-        .map_err(|e| shielded_build_error(e.to_string()))?;
-
-    let tx_id = asset_lock_transaction.txid();
-    let out_point = dash_sdk::dpp::dashcore::OutPoint::new(tx_id, 0);
-
-    // Step 2–5: Register with AssetLockManager, broadcast via DAPI, and wait
-    // for finality proof (IS-lock or ChainLock). The manager handles the full
-    // lifecycle internally via SPV event subscription.
-    platform_wallet.asset_locks().recover_asset_lock_blocking(
-        asset_lock_transaction.clone(),
-        asset_lock_duffs,
-        0,
-        platform_wallet::AssetLockFundingType::IdentityRegistration,
-        0,
-        out_point,
-        None,
-    );
-
-    let (asset_lock_proof, asset_lock_private_key) = platform_wallet
-        .asset_locks()
-        .resume_asset_lock(&out_point, Duration::from_secs(300))
         .await
         .map_err(|e| shielded_build_error(e.to_string()))?;
 

@@ -167,7 +167,7 @@ async fn tc_086_load_mn_voting_key_only() {
         payout_address_private_key_input: Secret::new(""),
         keys_input: vec![],
         derive_keys_from_wallets: false,
-        selected_wallet_id: None,
+        selected_wallet_seed_hash: None,
     };
 
     let result = run_task(
@@ -273,7 +273,7 @@ async fn tc_088_load_mn_invalid_protx() {
         payout_address_private_key_input: Secret::new(""),
         keys_input: vec![],
         derive_keys_from_wallets: false,
-        selected_wallet_id: None,
+        selected_wallet_seed_hash: None,
     };
 
     let result = run_task(
@@ -320,7 +320,7 @@ async fn tc_089_load_mn_wrong_voting_key() {
         payout_address_private_key_input: Secret::new(""),
         keys_input: vec![],
         derive_keys_from_wallets: false,
-        selected_wallet_id: None,
+        selected_wallet_seed_hash: None,
     };
 
     let result = run_task(

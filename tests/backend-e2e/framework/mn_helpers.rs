@@ -40,7 +40,7 @@ pub fn build_mn_identity_input(
         payout_address_private_key_input: Secret::new(creds.payout_key.as_deref().unwrap_or("")),
         keys_input: vec![],
         derive_keys_from_wallets: false,
-        selected_wallet_id: None,
+        selected_wallet_seed_hash: None,
     }
 }
 

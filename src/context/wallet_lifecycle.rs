@@ -959,13 +959,14 @@ impl AppContext {
                 "Updated identity in platform-wallet IdentityManager"
             );
         } else {
-            // Add new identity
-            // TODO: forward the returned changeset to the persister
-            // instead of relying on the in-memory mutation alone.
-            match manager
-                .identity_manager
-                .add_identity(qualified_identity.identity.clone(), identity_index)
-            {
+            // Add new identity — pass the per-wallet persister so the
+            // newly added managed-identity snapshot is persisted immediately.
+            let persister = platform_wallet.persister().clone();
+            match manager.identity_manager.add_identity(
+                qualified_identity.identity.clone(),
+                identity_index,
+                &persister,
+            ) {
                 Ok(_cs) => {
                     // Now set extra fields on the newly added managed identity
                     if let Some(managed) =

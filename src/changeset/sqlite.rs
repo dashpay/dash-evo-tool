@@ -744,7 +744,7 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
             let mut stmt = guard
                 .prepare(
                     "SELECT identity_id, display_name, bio, avatar_url, avatar_hash,
-                        avatar_fingerprint, avatar_bytes, public_message
+                        avatar_fingerprint, public_message
                  FROM dashpay_profiles
                  WHERE wallet_id = ?1 AND network = ?2",
                 )
@@ -759,8 +759,7 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                         row.get::<_, Option<String>>(3)?,
                         row.get::<_, Option<Vec<u8>>>(4)?,
                         row.get::<_, Option<Vec<u8>>>(5)?,
-                        row.get::<_, Option<Vec<u8>>>(6)?,
-                        row.get::<_, Option<String>>(7)?,
+                        row.get::<_, Option<String>>(6)?,
                     ))
                 })
                 .map_err(sqlite_err)?;
@@ -773,7 +772,6 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                     avatar_url,
                     avatar_hash,
                     avatar_fingerprint,
-                    avatar_bytes,
                     public_message,
                 ) = row.map_err(sqlite_err)?;
                 let id = match <[u8; 32]>::try_from(id_bytes.as_slice()) {
@@ -808,7 +806,6 @@ impl PlatformWalletPersistence for SqliteWalletPersister {
                         avatar_url,
                         avatar_hash,
                         avatar_fingerprint,
-                        avatar_bytes,
                         public_message,
                     }),
                 );
@@ -1363,7 +1360,8 @@ impl SqliteWalletPersister {
     ) -> Result<(), SqlitePersistError> {
         use platform_wallet::wallet::dashpay::{PaymentDirection, PaymentStatus};
 
-        // Profile upsert writes every column (including `avatar_bytes`)
+        // Profile upsert writes every column except `avatar_bytes`
+        // (which is evo-tool's local UI cache, not part of DashPayProfile)
         // so `None` values unambiguously clear what's in SQL — full
         // snapshot semantics (M1/M2 from the holistic data-integrity
         // review). `IdentityEntry::from_managed` always produces the
@@ -1372,8 +1370,8 @@ impl SqliteWalletPersister {
         let mut upsert_profile = tx.prepare_cached(
             "INSERT INTO dashpay_profiles
                 (identity_id, wallet_id, network, display_name, bio, avatar_url,
-                 avatar_hash, avatar_fingerprint, avatar_bytes, public_message, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, unixepoch())
+                 avatar_hash, avatar_fingerprint, public_message, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, unixepoch())
              ON CONFLICT(identity_id, network) DO UPDATE SET
                 wallet_id = COALESCE(excluded.wallet_id, wallet_id),
                 display_name = excluded.display_name,
@@ -1381,7 +1379,6 @@ impl SqliteWalletPersister {
                 avatar_url = excluded.avatar_url,
                 avatar_hash = excluded.avatar_hash,
                 avatar_fingerprint = excluded.avatar_fingerprint,
-                avatar_bytes = excluded.avatar_bytes,
                 public_message = excluded.public_message,
                 updated_at = unixepoch()",
         )?;
@@ -1425,7 +1422,6 @@ impl SqliteWalletPersister {
                         profile.avatar_url,
                         profile.avatar_hash,
                         profile.avatar_fingerprint,
-                        profile.avatar_bytes,
                         profile.public_message,
                     ])?;
                 }
@@ -2034,7 +2030,6 @@ mod tests {
             avatar_url: Some("https://example.com/avatar.png".into()),
             avatar_hash: Some([0xaa; 32]),
             avatar_fingerprint: Some([0xbb; 8]),
-            avatar_bytes: Some(vec![1, 2, 3, 4]),
             public_message: Some("hello world".into()),
         };
         let mut id_cs = platform_wallet::changeset::IdentityChangeSet::default();
@@ -2074,7 +2069,9 @@ mod tests {
             Some("https://example.com/avatar.png")
         );
         assert_eq!(stored.public_message.as_deref(), Some("hello world"));
-        assert_eq!(stored.avatar_bytes, Some(vec![1, 2, 3, 4]));
+        // avatar_bytes is the evo-tool UI cache, written only by
+        // save_dashpay_profile_avatar_bytes — not by the changeset flush.
+        assert_eq!(stored.avatar_bytes, None);
         assert_eq!(stored.avatar_hash, Some(vec![0xaa; 32]));
         assert_eq!(stored.avatar_fingerprint, Some(vec![0xbb; 8]));
     }
@@ -2224,7 +2221,6 @@ mod tests {
             avatar_url: Some("https://example.com/bob.png".into()),
             avatar_hash: None,
             avatar_fingerprint: None,
-            avatar_bytes: Some(vec![9, 9, 9]),
             public_message: None,
         };
         let mut id_cs = platform_wallet::changeset::IdentityChangeSet::default();
@@ -2285,11 +2281,13 @@ mod tests {
         );
     }
 
-    /// M2: clearing `avatar_bytes = None` on a profile (while
-    /// keeping other fields Some) must clear the SQL column, not
-    /// leave stale bytes.
+    /// M2: clearing `avatar_url = None` on a profile (while keeping
+    /// `display_name` Some) must clear the SQL column, not leave stale data.
+    /// (avatar_bytes is the evo-tool UI cache written by
+    /// save_dashpay_profile_avatar_bytes — it is not part of DashPayProfile
+    /// and not touched by the changeset flush.)
     #[test]
-    fn test_dashpay_profile_clears_avatar_bytes_on_none() {
+    fn test_dashpay_profile_clears_avatar_url_on_none() {
         use dash_sdk::dpp::identity::Identity;
         use dash_sdk::dpp::identity::v0::IdentityV0;
         use dash_sdk::platform::Identifier;
@@ -2307,7 +2305,7 @@ mod tests {
             balance: 0,
             revision: 0,
         });
-        let make_entry = |avatar: Option<Vec<u8>>| IdentityEntry {
+        let make_entry = |avatar_url: Option<String>| IdentityEntry {
             identity: identity.clone(),
             identity_index: 0,
             label: None,
@@ -2320,20 +2318,20 @@ mod tests {
             dashpay_profile: Some(DashPayProfile {
                 display_name: Some("carol".into()),
                 bio: None,
-                avatar_url: Some("https://example.com/carol.png".into()),
+                avatar_url,
                 avatar_hash: None,
                 avatar_fingerprint: None,
-                avatar_bytes: avatar,
                 public_message: None,
             }),
             dashpay_payments: BTreeMap::new(),
         };
 
-        // First flush: set avatar bytes.
+        // First flush: set avatar_url.
         let mut id_cs = platform_wallet::changeset::IdentityChangeSet::default();
-        id_cs
-            .identities
-            .insert(identity_id, make_entry(Some(vec![1, 2, 3, 4, 5])));
+        id_cs.identities.insert(
+            identity_id,
+            make_entry(Some("https://example.com/carol.png".into())),
+        );
         persister
             .store(
                 TEST_WALLET_ID,
@@ -2343,16 +2341,19 @@ mod tests {
                 },
             )
             .expect("store");
-        persister.flush(TEST_WALLET_ID).expect("flush with avatar");
+        persister
+            .flush(TEST_WALLET_ID)
+            .expect("flush with avatar_url");
         assert_eq!(
             db.load_dashpay_profile(&identity_id, "testnet")
                 .expect("load")
                 .expect("profile")
-                .avatar_bytes,
-            Some(vec![1, 2, 3, 4, 5])
+                .avatar_url
+                .as_deref(),
+            Some("https://example.com/carol.png")
         );
 
-        // Second flush: same profile, avatar_bytes = None.
+        // Second flush: same profile, avatar_url = None.
         let mut id_cs = platform_wallet::changeset::IdentityChangeSet::default();
         id_cs.identities.insert(identity_id, make_entry(None));
         persister
@@ -2366,14 +2367,14 @@ mod tests {
             .expect("store");
         persister
             .flush(TEST_WALLET_ID)
-            .expect("flush without avatar");
+            .expect("flush without avatar_url");
         assert_eq!(
             db.load_dashpay_profile(&identity_id, "testnet")
                 .expect("load")
                 .expect("profile")
-                .avatar_bytes,
+                .avatar_url,
             None,
-            "avatar_bytes must be cleared by full-snapshot upsert"
+            "avatar_url must be cleared by full-snapshot upsert"
         );
     }
 
@@ -2422,7 +2423,6 @@ mod tests {
                 avatar_url: None,
                 avatar_hash: None,
                 avatar_fingerprint: None,
-                avatar_bytes: None,
                 public_message: None,
             }),
             dashpay_payments: BTreeMap::new(),
@@ -3126,7 +3126,6 @@ mod tests {
             avatar_url: None,
             avatar_hash: None,
             avatar_fingerprint: None,
-            avatar_bytes: None,
             public_message: Some("hello".into()),
         };
         let mut profiles_map = std::collections::BTreeMap::new();

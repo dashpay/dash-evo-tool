@@ -111,7 +111,6 @@ pub async fn load_profile(
                 },
                 avatar_hash,
                 avatar_fingerprint,
-                avatar_bytes: None,
                 public_message: None,
             }),
         )
@@ -284,7 +283,6 @@ pub async fn update_profile(
                 avatar_url: avatar_url_for_db.clone(),
                 avatar_hash: avatar_hash_for_db,
                 avatar_fingerprint: avatar_fingerprint_for_db,
-                avatar_bytes: None,
                 public_message: None,
             }),
         )
@@ -361,7 +359,6 @@ pub async fn update_profile(
                 avatar_url: avatar_url_for_db.clone(),
                 avatar_hash: avatar_hash_for_db,
                 avatar_fingerprint: avatar_fingerprint_for_db,
-                avatar_bytes: None,
                 public_message: None,
             }),
         )

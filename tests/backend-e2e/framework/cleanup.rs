@@ -18,10 +18,7 @@ use std::time::Duration;
 ///
 /// Best-effort: logs errors but does not panic — funds may already be spent
 /// or UTXOs may not yet be spendable.
-pub async fn cleanup_test_wallets(
-    app_context: &Arc<AppContext>,
-    framework_wallet_hash: WalletId,
-) {
+pub async fn cleanup_test_wallets(app_context: &Arc<AppContext>, framework_wallet_hash: WalletId) {
     // Framework wallet receive address — extract Arc before awaiting to avoid
     // holding std::sync::RwLock across .await (deadlocks with SPV's tokio lock).
     let framework_wallet = {

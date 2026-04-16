@@ -21,7 +21,9 @@ async fn tc_012_generate_receive_address() {
     let ctx = harness::ctx().await;
     let seed_hash = ctx.framework_wallet_hash;
 
-    let task1 = BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { wallet_id: seed_hash });
+    let task1 = BackendTask::WalletTask(WalletTask::GenerateReceiveAddress {
+        wallet_id: seed_hash,
+    });
     let result1 = run_task(&ctx.app_context, task1)
         .await
         .expect("TC-012: first GenerateReceiveAddress failed");
@@ -46,7 +48,9 @@ async fn tc_012_generate_receive_address() {
     );
 
     // Second call should produce a different address (key derivation advances)
-    let task2 = BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { wallet_id: seed_hash });
+    let task2 = BackendTask::WalletTask(WalletTask::GenerateReceiveAddress {
+        wallet_id: seed_hash,
+    });
     let result2 = run_task(&ctx.app_context, task2)
         .await
         .expect("TC-012: second GenerateReceiveAddress failed");
@@ -359,10 +363,7 @@ async fn step_transfer_credits(
 }
 
 /// Fund a fresh platform address and withdraw its balance back to Core.
-async fn step_withdraw(
-    ctx: &crate::framework::harness::BackendTestContext,
-    seed_hash: WalletId,
-) {
+async fn step_withdraw(ctx: &crate::framework::harness::BackendTestContext, seed_hash: WalletId) {
     tracing::info!("=== Step 4: Withdraw from platform address back to Core ===");
 
     let wallet_arc = {
@@ -461,8 +462,9 @@ async fn step_withdraw(
     );
 
     // Get a Core receive address for the withdrawal output
-    let receive_addr_task =
-        BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { wallet_id: seed_hash });
+    let receive_addr_task = BackendTask::WalletTask(WalletTask::GenerateReceiveAddress {
+        wallet_id: seed_hash,
+    });
     let receive_result = run_task(&ctx.app_context, receive_addr_task)
         .await
         .expect("step_withdraw: GenerateReceiveAddress failed");

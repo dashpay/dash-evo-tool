@@ -129,7 +129,9 @@ async fn step_init_wallet(app_context: &Arc<AppContext>, seed_hash: WalletId) {
 async fn step_sync_notes(app_context: &Arc<AppContext>, seed_hash: WalletId) -> bool {
     tracing::info!("=== Step 3: SyncNotes ===");
 
-    let task = BackendTask::ShieldedTask(ShieldedTask::SyncNotes { wallet_id: seed_hash });
+    let task = BackendTask::ShieldedTask(ShieldedTask::SyncNotes {
+        wallet_id: seed_hash,
+    });
     let result = run_task(app_context, task).await;
 
     match result {
@@ -185,10 +187,7 @@ async fn step_check_nullifiers(app_context: &Arc<AppContext>, seed_hash: WalletI
 ///
 /// Shields core DASH into the shielded pool via an asset lock (Type 18).
 /// Returns `false` if the platform does not support shielded ops (caller should stop).
-async fn step_shield_from_asset_lock(
-    app_context: &Arc<AppContext>,
-    seed_hash: WalletId,
-) -> bool {
+async fn step_shield_from_asset_lock(app_context: &Arc<AppContext>, seed_hash: WalletId) -> bool {
     tracing::info!("=== Step 5: ShieldFromAssetLock ===");
 
     let amount_duffs = 500_000; // 0.005 DASH
@@ -221,7 +220,9 @@ async fn step_shield_from_asset_lock(
     }
 
     // Verify: SyncNotes should show increased balance
-    let sync_task = BackendTask::ShieldedTask(ShieldedTask::SyncNotes { wallet_id: seed_hash });
+    let sync_task = BackendTask::ShieldedTask(ShieldedTask::SyncNotes {
+        wallet_id: seed_hash,
+    });
     let sync_result = run_task(app_context, sync_task).await;
 
     match sync_result {

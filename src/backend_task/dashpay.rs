@@ -15,7 +15,6 @@ pub mod encryption_tests;
 pub mod errors;
 pub mod incoming_payments;
 pub mod payments;
-pub mod platform_wallet_cache;
 pub mod profile;
 pub mod validation;
 
@@ -102,16 +101,99 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         match task {
             DashPayTask::LoadProfile { identity } => {
-                Ok(profile::load_profile(self, sdk, identity).await?)
+                let identity_id = identity.identity.id();
+                let pw = self
+                    .platform_wallet_for_identity(&identity)
+                    .map_err(|_| TaskError::WalletNotFound)?;
+                // Sync fetches the profile from Platform and caches it
+                // on ManagedIdentity. Return the cached result.
+                pw.dashpay()
+                    .sync_profiles()
+                    .await
+                    .map_err(|e| TaskError::PlatformWallet {
+                        source: Box::new(e),
+                    })?;
+                let profile = {
+                    let state = pw.state().await;
+                    state
+                        .identity_manager
+                        .managed_identity(&identity_id)
+                        .and_then(|m| m.dashpay_profile.clone())
+                };
+                let result = profile.and_then(|p| {
+                    Some((
+                        p.display_name.unwrap_or_default(),
+                        p.bio.unwrap_or_default(),
+                        p.avatar_url.unwrap_or_default(),
+                    ))
+                });
+                Ok(BackendTaskSuccessResult::DashPayProfile(result))
             }
             DashPayTask::UpdateProfile {
                 identity,
                 display_name,
                 bio,
                 avatar_url,
-            } => Ok(
-                profile::update_profile(self, sdk, identity, display_name, bio, avatar_url).await?,
-            ),
+            } => {
+                use platform_wallet::wallet::dashpay::ProfileUpdate;
+
+                let identity_id = identity.identity.id();
+                let pw = self
+                    .platform_wallet_for_identity(&identity)
+                    .map_err(|_| TaskError::WalletNotFound)?;
+
+                // Download avatar bytes if URL provided (app-layer HTTP fetch)
+                let avatar_bytes = if let Some(ref url) = avatar_url {
+                    if !url.is_empty() {
+                        match super::dashpay::avatar_processing::fetch_image_bytes(url).await {
+                            Ok(bytes) => Some(bytes),
+                            Err(e) => {
+                                tracing::warn!("Could not fetch avatar: {e}");
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                let input = ProfileUpdate {
+                    display_name: display_name.clone(),
+                    public_message: bio.clone(),
+                    avatar_url: avatar_url.clone(),
+                    avatar_bytes,
+                };
+
+                // Check if profile exists to decide create vs update
+                let has_profile = {
+                    let state = pw.state().await;
+                    state
+                        .identity_manager
+                        .managed_identity(&identity_id)
+                        .and_then(|m| m.dashpay_profile.as_ref())
+                        .is_some()
+                };
+
+                if has_profile {
+                    pw.dashpay()
+                        .update_profile(&identity_id, input)
+                        .await
+                        .map_err(|e| TaskError::PlatformWallet {
+                            source: Box::new(e),
+                        })?;
+                } else {
+                    pw.dashpay()
+                        .create_profile(&identity_id, input)
+                        .await
+                        .map_err(|e| TaskError::PlatformWallet {
+                            source: Box::new(e),
+                        })?;
+                }
+
+                Ok(BackendTaskSuccessResult::DashPayProfileUpdated(identity_id))
+            }
             DashPayTask::LoadContacts { identity } => {
                 Ok(contacts::load_contacts(self, sdk, identity).await?)
             }

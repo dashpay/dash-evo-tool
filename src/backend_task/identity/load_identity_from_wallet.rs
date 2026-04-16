@@ -301,8 +301,6 @@ impl AppContext {
             wallet_id = wallet.wallet_id();
             wallet
                 .identity_authentication_ecdsa_public_keys_data_map(
-                    self,
-                    true,
                     self.network,
                     identity_index,
                     0..top_bound,

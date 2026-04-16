@@ -210,7 +210,6 @@ impl AddNewIdentityScreen {
 
             let mut wallet = wallet_lock.write().expect("wallet lock failed");
             let master_key = wallet.identity_authentication_ecdsa_private_key(
-                app_context,
                 app_context.network,
                 identity_id_number,
                 0,
@@ -223,7 +222,6 @@ impl AddNewIdentityScreen {
                     |(i, (key_type, purpose, security_level, contract_bounds))| {
                         Ok((
                             wallet.identity_authentication_ecdsa_private_key(
-                                app_context,
                                 app_context.network,
                                 identity_id_number,
                                 (i + 1).try_into().expect("key index must fit u32"), // key index 0 is the master key
@@ -970,7 +968,6 @@ impl AddNewIdentityScreen {
             // Update the master private key and keys input from the wallet
             self.identity_keys.master_private_key =
                 Some(wallet.identity_authentication_ecdsa_private_key(
-                    &self.app_context,
                     self.app_context.network,
                     identity_index,
                     0,
@@ -986,7 +983,6 @@ impl AddNewIdentityScreen {
                     |(key_index, (_, key_type, purpose, security_level, contract_bounds))| {
                         Ok((
                             wallet.identity_authentication_ecdsa_private_key(
-                                &self.app_context,
                                 self.app_context.network,
                                 identity_index,
                                 key_index as u32 + 1,
@@ -1020,7 +1016,6 @@ impl AddNewIdentityScreen {
             self.identity_keys.keys_input.push((
                 wallet
                     .identity_authentication_ecdsa_private_key(
-                        &self.app_context,
                         self.app_context.network,
                         self.identity_id_number,
                         new_key_index,

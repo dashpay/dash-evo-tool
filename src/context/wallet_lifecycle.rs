@@ -622,15 +622,15 @@ impl AppContext {
         &self,
         wallet: &Arc<RwLock<Wallet>>,
         address: Address,
-        derivation_path: DerivationPath,
-        path_type: DerivationPathType,
-        path_reference: DerivationPathReference,
+        _derivation_path: DerivationPath,
+        _path_type: DerivationPathType,
+        _path_reference: DerivationPathReference,
     ) -> Result<bool, TaskError> {
         // Extract what we need from the wallet under a short-lived sync lock,
         // then drop the guard before any async work.
-        let (platform_wallet, wallet_id) = {
+        let platform_wallet = {
             let guard = wallet.read()?;
-            (guard.platform_wallet.clone(), guard.wallet_id())
+            guard.platform_wallet.clone()
         };
 
         // Check address ownership via PlatformWallet's async state
@@ -649,19 +649,6 @@ impl AppContext {
                 return Ok(false);
             }
         }
-
-        let (path_reference, path_type) =
-            self.classify_derivation_metadata(&derivation_path, path_reference, path_type);
-
-        self.db.add_address_if_not_exists(
-            &wallet_id,
-            &address,
-            &self.network,
-            &derivation_path,
-            path_reference,
-            path_type,
-            None,
-        )?;
 
         Ok(true)
     }

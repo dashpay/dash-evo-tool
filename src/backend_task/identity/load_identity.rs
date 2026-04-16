@@ -407,8 +407,6 @@ impl AppContext {
         for candidate_index in 0..MAX_IDENTITY_INDEX {
             let (public_key_map, public_key_hash_map) = wallet
                 .identity_authentication_ecdsa_public_keys_data_map(
-                    self,
-                    false,
                     self.network,
                     candidate_index,
                     0..top_bound,
@@ -425,8 +423,6 @@ impl AppContext {
 
             let (public_key_map, public_key_hash_map) = wallet
                 .identity_authentication_ecdsa_public_keys_data_map(
-                    self,
-                    true,
                     self.network,
                     candidate_index,
                     0..top_bound,

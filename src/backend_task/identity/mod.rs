@@ -479,12 +479,7 @@ pub(crate) fn build_identity_registration(
     let mut wallet = wallet_arc.write()?;
 
     let (master_private_key, master_derivation_path) = wallet
-        .identity_authentication_ecdsa_private_key(
-            app_context,
-            app_context.network,
-            identity_index,
-            0,
-        )
+        .identity_authentication_ecdsa_private_key(app_context.network, identity_index, 0)
         .map_err(|e| TaskError::WalletKeyDerivationFailed { source: e.into() })?;
 
     let mut keys_input: Vec<KeyInput> = Vec::new();
@@ -494,7 +489,6 @@ pub(crate) fn build_identity_registration(
         let key_index = (i + 1) as u32;
         let (private_key, derivation_path) = wallet
             .identity_authentication_ecdsa_private_key(
-                app_context,
                 app_context.network,
                 identity_index,
                 key_index,

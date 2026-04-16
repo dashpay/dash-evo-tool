@@ -15,9 +15,9 @@ use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interfac
 
 use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
 use dash_sdk::dpp::dashcore::{
-    Address, BlockHash, Network, OutPoint, PrivateKey, PublicKey, Transaction, TxOut, Txid,
+    Address, BlockHash, Network, PrivateKey, PublicKey, Transaction, Txid,
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::ops::Range;
 use std::sync::{Arc, RwLock};
@@ -244,7 +244,6 @@ impl DerivationPathHelpers for DerivationPath {
 
 use crate::context::AppContext;
 use bitflags::bitflags;
-use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use zeroize::Zeroize;
 
@@ -959,8 +958,6 @@ impl Wallet {
     #[allow(clippy::type_complexity)]
     pub fn identity_authentication_ecdsa_public_keys_data_map(
         &mut self,
-        app_context: &AppContext,
-        register_addresses: bool,
         network: Network,
         identity_index: u32,
         key_index_range: Range<u32>,
@@ -984,15 +981,6 @@ impl Wallet {
                 key_index,
             );
             public_key_hash_result_map.insert(public_key.pubkey_hash().to_byte_array(), key_index);
-            if register_addresses {
-                self.register_address_from_public_key(
-                    &public_key,
-                    &derivation_path,
-                    DerivationPathType::SINGLE_USER_AUTHENTICATION,
-                    DerivationPathReference::BlockchainIdentities,
-                    app_context,
-                )?;
-            }
         }
 
         Ok((public_key_result_map, public_key_hash_result_map))
@@ -1000,7 +988,6 @@ impl Wallet {
 
     pub fn identity_authentication_ecdsa_private_key(
         &mut self,
-        app_context: &AppContext,
         network: Network,
         identity_index: u32,
         key_index: u32,
@@ -1022,98 +1009,11 @@ impl Wallet {
             .expect("derivation should not be able to fail");
 
         let private_key = extended_public_key.to_priv();
-        self.register_address_from_private_key(
-            &private_key,
-            &derivation_path,
-            DerivationPathType::SINGLE_USER_AUTHENTICATION,
-            DerivationPathReference::BlockchainIdentities,
-            app_context,
-        )?;
-
         Ok((private_key, derivation_path))
-    }
-
-    fn register_address_from_private_key(
-        &mut self,
-        private_key: &PrivateKey,
-        derivation_path: &DerivationPath,
-        path_type: DerivationPathType,
-        path_reference: DerivationPathReference,
-        app_context: &AppContext,
-    ) -> Result<(), String> {
-        let secp = Secp256k1::new();
-        let address = Address::p2pkh(&private_key.public_key(&secp), app_context.network);
-        self.register_address(
-            address,
-            derivation_path,
-            path_type,
-            path_reference,
-            app_context,
-        )
-    }
-
-    fn register_address_from_public_key(
-        &mut self,
-        public_key: &PublicKey,
-        derivation_path: &DerivationPath,
-        path_type: DerivationPathType,
-        path_reference: DerivationPathReference,
-        app_context: &AppContext,
-    ) -> Result<(), String> {
-        let address = Address::p2pkh(public_key, app_context.network);
-        self.register_address(
-            address,
-            derivation_path,
-            path_type,
-            path_reference,
-            app_context,
-        )
-    }
-    fn register_address(
-        &mut self,
-        address: Address,
-        derivation_path: &DerivationPath,
-        path_type: DerivationPathType,
-        path_reference: DerivationPathReference,
-        app_context: &AppContext,
-    ) -> Result<(), String> {
-        if !address.network().eq(&app_context.network) {
-            return Err(format!(
-                "address {} network {} does not match wallet network {}",
-                address,
-                address.network(),
-                app_context.network
-            ));
-        }
-
-        app_context
-            .db
-            .add_address_if_not_exists(
-                &self.wallet_id(),
-                &address,
-                &app_context.network,
-                derivation_path,
-                path_reference,
-                path_type,
-                None,
-            )
-            .map_err(|e| e.to_string())?;
-
-        if app_context.core_backend_mode() == crate::spv::CoreBackendMode::Rpc {
-            app_context.try_import_address(&address, self.core_wallet_name.as_deref(), None);
-        }
-
-        tracing::trace!(
-            address = ?&address,
-            network = &address.network().to_string(),
-            "registered new address"
-        );
-        Ok(())
     }
 
     pub fn identity_top_up_ecdsa_private_key(
         &mut self,
-        app_context: &AppContext,
         network: Network,
         identity_index: u32,
         top_up_index: u32,
@@ -1123,22 +1023,12 @@ impl Wallet {
         let extended_private_key = derivation_path
             .derive_priv_ecdsa_for_master_seed(self.seed_bytes()?, network)
             .expect("derivation should not be able to fail");
-        let private_key = extended_private_key.to_priv();
-
-        self.register_address_from_private_key(
-            &private_key,
-            &derivation_path,
-            DerivationPathType::CREDIT_FUNDING,
-            DerivationPathReference::BlockchainIdentityCreditRegistrationFunding,
-            app_context,
-        )?;
-        Ok(private_key)
+        Ok(extended_private_key.to_priv())
     }
 
     /// Generate Core key for identity registration
     pub fn identity_registration_ecdsa_private_key(
         &mut self,
-        app_context: &AppContext,
         network: Network,
         index: u32,
     ) -> Result<PrivateKey, String> {
@@ -1146,16 +1036,7 @@ impl Wallet {
         let extended_private_key = derivation_path
             .derive_priv_ecdsa_for_master_seed(self.seed_bytes()?, network)
             .expect("derivation should not be able to fail");
-        let private_key = extended_private_key.to_priv();
-
-        self.register_address_from_private_key(
-            &private_key,
-            &derivation_path,
-            DerivationPathType::CREDIT_FUNDING,
-            DerivationPathReference::BlockchainIdentityCreditRegistrationFunding,
-            app_context,
-        )?;
-        Ok(private_key)
+        Ok(extended_private_key.to_priv())
     }
 
     pub fn receive_address(
@@ -1236,46 +1117,6 @@ impl Wallet {
         Ok(Address::p2pkh(&public_key, network))
     }
 
-    pub fn update_address_balance(
-        &self,
-        address: &Address,
-        new_balance: Duffs,
-        context: &AppContext,
-    ) -> Result<(), String> {
-        context
-            .db
-            .update_address_balance(&self.wallet_id(), address, new_balance)
-            .map_err(|e| e.to_string())
-    }
-
-    fn recalculate_affected_address_balances_with_db(
-        &self,
-        used_utxos: &BTreeMap<OutPoint, (TxOut, Address)>,
-        db: &Database,
-    ) -> Result<(), String> {
-        let wallet_id = self.wallet_id();
-        let affected_addresses: BTreeSet<_> =
-            used_utxos.values().map(|(_, addr)| addr.clone()).collect();
-        for address in affected_addresses {
-            let new_balance = self.address_balance(&address);
-            db.update_address_balance(&wallet_id, &address, new_balance)
-                .map_err(|e| e.to_string())?;
-        }
-        Ok(())
-    }
-
-    pub fn update_address_total_received(
-        &self,
-        address: &Address,
-        total_received: Duffs,
-        context: &AppContext,
-    ) -> Result<(), String> {
-        context
-            .db
-            .update_address_total_received(&self.wallet_id(), address, total_received)
-            .map_err(|e| e.to_string())
-    }
-
     /// Get the private key for a Platform address
     #[allow(clippy::result_large_err)]
     pub fn get_platform_address_private_key(
@@ -1311,6 +1152,7 @@ impl Wallet {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dash_sdk::dpp::dashcore::OutPoint;
     use dash_sdk::dpp::dashcore::hashes::Hash;
     use dash_sdk::dpp::key_wallet::bip32::{ExtendedPrivKey, ExtendedPubKey};
 

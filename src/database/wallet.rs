@@ -4,7 +4,7 @@ use crate::model::wallet::{
     ClosedKeyItem, DerivationPathReference, DerivationPathType, OpenWalletSeed, Wallet, WalletSeed,
 };
 use dash_sdk::dashcore_rpc::dashcore::Address;
-use dash_sdk::dpp::dashcore::address::{NetworkChecked, NetworkUnchecked};
+use dash_sdk::dpp::dashcore::address::NetworkUnchecked;
 use dash_sdk::dpp::dashcore::{self, Network};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, ExtendedPubKey};
@@ -19,14 +19,12 @@ impl Database {
         self.store_wallet_with_addresses(wallet, network, &[])
     }
 
-    /// Atomically persist a wallet row and its known addresses in a single
-    /// database transaction. Prevents partial persistence where the wallet
-    /// is stored but addresses are lost on failure.
+    /// Atomically persist a wallet row in a database transaction.
     pub fn store_wallet_with_addresses(
         &self,
         wallet: &Wallet,
         network: &Network,
-        addresses: &[(
+        _addresses: &[(
             &Address,
             &DerivationPath,
             DerivationPathReference,
@@ -61,23 +59,6 @@ impl Database {
                 wallet.core_wallet_name.as_deref(),
             ],
         )?;
-
-        let wallet_id = wallet.wallet_id();
-        for (address, derivation_path, path_reference, path_type) in addresses {
-            let checked_addr = check_address_for_network(address.as_unchecked().clone(), network)?;
-            tx.execute(
-                "INSERT OR IGNORE INTO wallet_addresses
-                 (wallet_id, address, derivation_path, path_reference, path_type, balance)
-                 VALUES (?, ?, ?, ?, ?, NULL)",
-                params![
-                    wallet_id,
-                    checked_addr.to_string(),
-                    derivation_path.to_string(),
-                    *path_reference as u32,
-                    path_type.bits(),
-                ],
-            )?;
-        }
 
         tx.commit()
     }
@@ -123,29 +104,18 @@ impl Database {
 
     /// Remove a wallet and all associated records from the database.
     ///
-    /// This clears dependent records (addresses, utxos, asset locks, identity links)
-    /// to keep the database consistent before deleting the wallet itself.
+    /// This clears dependent records (identity links, FK-cascaded tables)
+    /// and deletes the wallet row. Tables with FK `ON DELETE CASCADE`
+    /// pointing at `wallet(wallet_id)` are cleaned up automatically
+    /// (platform_address_balances, top_up, etc.).
+    ///
+    /// UTXOs are not cascade-deleted here — the `utxos` table has no
+    /// `wallet_id` FK. Orphaned UTXO rows are harmless (they're a
+    /// cache rebuilt from chain on each SPV sync).
     pub fn remove_wallet(&self, wallet_id: &[u8; 32], network: &Network) -> rusqlite::Result<()> {
         let network_str = network.to_string();
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
-
-        let mut address_stmt =
-            tx.prepare("SELECT address FROM wallet_addresses WHERE wallet_id = ?")?;
-        let address_rows =
-            address_stmt.query_map(params![wallet_id], |row| row.get::<_, String>(0))?;
-        let mut addresses = Vec::new();
-        for address in address_rows {
-            addresses.push(address?);
-        }
-        drop(address_stmt);
-
-        for address in addresses {
-            tx.execute(
-                "DELETE FROM utxos WHERE address = ? AND network = ?",
-                params![address, &network_str],
-            )?;
-        }
 
         tx.execute(
             "UPDATE identity SET wallet = NULL, wallet_index = NULL WHERE wallet = ? AND network = ?",
@@ -173,92 +143,6 @@ impl Database {
             params![new_alias, is_main as i32, wallet_id],
         )?;
         Ok(())
-    }
-
-    /// Add a new address to a wallet with optional balance.
-    /// If the address already exists, it does nothing.
-    #[allow(clippy::too_many_arguments)]
-    pub fn add_address_if_not_exists(
-        &self,
-        wallet_id: &[u8; 32],
-        address: &Address,
-        network: &Network,
-        derivation_path: &DerivationPath,
-        path_reference: DerivationPathReference,
-        path_type: DerivationPathType,
-        balance: Option<u64>,
-    ) -> rusqlite::Result<()> {
-        let conn = self.conn.lock().unwrap();
-
-        let address = check_address_for_network(address.as_unchecked().clone(), network)?;
-
-        // Step 1: Check if the address already exists for the given wallet.
-        let mut stmt = conn.prepare(
-            "SELECT COUNT(1) FROM wallet_addresses
-         WHERE wallet_id = ? AND address = ?",
-        )?;
-        let count: u32 =
-            stmt.query_row(params![wallet_id, address.to_string()], |row| row.get(0))?;
-
-        // Step 2: If the address doesn't exist, insert it.
-        if count == 0 {
-            conn.execute(
-                "INSERT INTO wallet_addresses
-             (wallet_id, address, derivation_path, path_reference, path_type, balance)
-             VALUES (?, ?, ?, ?, ?, ?)",
-                params![
-                    wallet_id,
-                    address.to_string(),
-                    derivation_path.to_string(),
-                    path_reference as u32,
-                    path_type.bits(),
-                    balance,
-                ],
-            )?;
-        }
-        Ok(())
-    }
-
-    /// Update the balance of an existing address.
-    pub fn update_address_balance(
-        &self,
-        wallet_id: &[u8; 32],
-        address: &Address,
-        new_balance: u64,
-    ) -> rusqlite::Result<()> {
-        let rows_affected = self.execute(
-            "UPDATE wallet_addresses
-         SET balance = ?
-         WHERE wallet_id = ? AND address = ?",
-            params![new_balance, wallet_id, address.to_string()],
-        )?;
-
-        if rows_affected == 0 {
-            Err(rusqlite::Error::QueryReturnedNoRows)
-        } else {
-            Ok(())
-        }
-    }
-
-    /// Add a balance to an existing address.
-    pub fn add_to_address_balance(
-        &self,
-        wallet_id: &[u8; 32],
-        address: &Address,
-        additional_balance: u64,
-    ) -> rusqlite::Result<()> {
-        let rows_affected = self.execute(
-            "UPDATE wallet_addresses
-         SET balance = balance + ?
-         WHERE wallet_id = ? AND address = ?",
-            params![additional_balance, wallet_id, address.to_string()],
-        )?;
-
-        if rows_affected == 0 {
-            Err(rusqlite::Error::QueryReturnedNoRows)
-        } else {
-            Ok(())
-        }
     }
 
     /// Migration: Add balance columns to wallet table (version 16).
@@ -304,6 +188,8 @@ impl Database {
     }
 
     /// Migration: Add total_received column to wallet_addresses table.
+    ///
+    /// Retained for backward compatibility with the v17 migration chain in initialization.rs.
     pub fn add_address_total_received_column(&self, conn: &Connection) -> rusqlite::Result<()> {
         // Check if total_received column exists
         let column_exists: bool = conn.query_row(
@@ -325,17 +211,6 @@ impl Database {
     /// Ensures all required columns exist in wallet-related tables.
     /// This handles the case where old tables exist with missing columns.
     pub fn ensure_wallet_columns_exist(&self, conn: &Connection) -> rusqlite::Result<()> {
-        // Check if wallet_addresses table exists before trying to add columns
-        let wallet_addresses_exists: bool = conn.query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='wallet_addresses'",
-            [],
-            |row| row.get::<_, i32>(0).map(|count| count > 0),
-        )?;
-
-        if wallet_addresses_exists {
-            self.add_address_total_received_column(conn)?;
-        }
-
         // Check if wallet table exists and add balance columns if needed
         let wallet_exists: bool = conn.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='wallet'",
@@ -347,20 +222,6 @@ impl Database {
             self.add_wallet_balance_columns(conn)?;
         }
 
-        Ok(())
-    }
-
-    /// Update the total_received for an address.
-    pub fn update_address_total_received(
-        &self,
-        wallet_id: &[u8; 32],
-        address: &Address,
-        total_received: u64,
-    ) -> rusqlite::Result<()> {
-        self.execute(
-            "UPDATE wallet_addresses SET total_received = ? WHERE wallet_id = ? AND address = ?",
-            params![total_received as i64, wallet_id, address.to_string()],
-        )?;
         Ok(())
     }
 
@@ -706,28 +567,14 @@ impl Database {
         )
     }
 
-    /// Clear ALL Platform addresses entirely for a network (developer tool)
-    /// This removes both the addresses from wallet_addresses and their balances from platform_address_balances
+    /// Clear ALL Platform addresses entirely for a network (developer tool).
+    /// Deletes balances from platform_address_balances.
     pub fn clear_all_platform_addresses(&self, network: &Network) -> rusqlite::Result<usize> {
         let network_str = network.to_string();
-        let conn = self.conn.lock().unwrap();
-
-        // Delete from platform_address_balances
-        conn.execute(
+        self.execute(
             "DELETE FROM platform_address_balances WHERE network = ?",
             params![network_str],
-        )?;
-
-        // Delete platform addresses from wallet_addresses (path_reference = 16 is PlatformPayment)
-        // We need to join with wallet table to filter by network
-        let deleted = conn.execute(
-            "DELETE FROM wallet_addresses
-             WHERE path_reference = 16
-             AND wallet_id IN (SELECT wallet_id FROM wallet WHERE network = ?)",
-            params![network_str],
-        )?;
-
-        Ok(deleted)
+        )
     }
 
     /// Get the last platform sync timestamp and sync height for a wallet.
@@ -927,50 +774,6 @@ impl LockedWalletInfo {
     }
 }
 
-/// Ensure the address is valid for the given network and
-/// update its network if necessary.
-///
-/// Consumes the address and returns a new Address with the correct network.
-fn check_address_for_network(
-    address_unchecked: Address<NetworkUnchecked>,
-    network: &Network,
-) -> Result<Address<NetworkChecked>, WalletError> {
-    let address_checked = address_unchecked
-        .require_network(*network)
-        .inspect_err(|e| {
-            tracing::error!("address is not valid for the network: {}", e);
-        })?;
-
-    // For devnet/regtest addresses, require_network() accepts testnet addresses; we need to overwrite it here in case there is
-    // a mismatch to match the network we are using.
-    //
-    // See also logic in [`Address::is_valid_for_network()`].
-    match address_checked.network() {
-        // When the address is correct, do nothing
-        address_network if network == address_network => Ok(address_checked),
-        // For devnet/regtest addresses, address type can default to testnet, require_network() accepts this;
-        //  we need to overwrite it with correct network.
-        Network::Testnet if network == &Network::Devnet || network == &Network::Regtest => {
-            Ok(Address::new(*network, address_checked.payload().clone()))
-        }
-        // other cases, like mainnet or testnet, return an error on mismatch
-        address_network => {
-            tracing::error!(address = ?address_checked,
-            network = address_network.to_string(),
-            required_network = network.to_string(),
-            "address has invalid network set");
-
-            Err(WalletError::AddressError(
-                dashcore::address::Error::NetworkValidation {
-                    required: *network,
-                    found: *address_checked.network(),
-                    address: address_checked.as_unchecked().clone(),
-                },
-            ))
-        }
-    }
-}
-
 #[derive(thiserror::Error, Debug)]
 /// Error type for wallet operations.
 pub enum WalletError {
@@ -1010,7 +813,6 @@ pub(crate) mod tests {
     use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
     use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
     use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, ExtendedPrivKey};
-    use std::str::FromStr;
 
     fn create_test_address(network: Network) -> Address {
         let pubkey_bytes = [0x02; 33];
@@ -1476,116 +1278,6 @@ pub(crate) mod tests {
             )
             .expect("Failed to query alias");
         assert!(alias.is_none());
-    }
-
-    #[test]
-    fn test_address_balance_operations() {
-        let db = create_test_database().expect("Failed to create test database");
-        let network = Network::Testnet;
-        let wallet_id = create_test_wallet_id();
-        let address = create_test_address(network);
-        let derivation_path = DerivationPath::from_str("m/44'/1'/0'/0/0").unwrap();
-
-        // Insert test wallet first
-        {
-            let conn = db.conn.lock().unwrap();
-            conn.execute(
-                "INSERT INTO wallet (wallet_id, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, uses_password, network)
-                 VALUES (?, ?, ?, ?, ?, 0, 'testnet')",
-                rusqlite::params![
-                    wallet_id.as_slice(),
-                    vec![0u8; 64],
-                    vec![0u8; 16],
-                    vec![0u8; 12],
-                    vec![0u8; 78],
-                ],
-            )
-            .expect("Failed to insert test wallet");
-        }
-
-        // Add address
-        db.add_address_if_not_exists(
-            &wallet_id,
-            &address,
-            &network,
-            &derivation_path,
-            DerivationPathReference::BIP44,
-            DerivationPathType::CLEAR_FUNDS,
-            Some(1_000_000),
-        )
-        .expect("Failed to add address");
-
-        // Update address balance
-        db.update_address_balance(&wallet_id, &address, 2_000_000)
-            .expect("Failed to update address balance");
-
-        // Add to address balance
-        db.add_to_address_balance(&wallet_id, &address, 500_000)
-            .expect("Failed to add to address balance");
-
-        // Verify final balance
-        let conn = db.conn.lock().unwrap();
-        let balance: i64 = conn
-            .query_row(
-                "SELECT balance FROM wallet_addresses WHERE wallet_id = ? AND address = ?",
-                rusqlite::params![wallet_id.as_slice(), address.to_string()],
-                |row| row.get(0),
-            )
-            .expect("Failed to query balance");
-        assert_eq!(balance, 2_500_000);
-    }
-
-    #[test]
-    fn test_update_address_total_received() {
-        let db = create_test_database().expect("Failed to create test database");
-        let network = Network::Testnet;
-        let wallet_id = create_test_wallet_id();
-        let address = create_test_address(network);
-        let derivation_path = DerivationPath::from_str("m/44'/1'/0'/0/0").unwrap();
-
-        // Insert test wallet first
-        {
-            let conn = db.conn.lock().unwrap();
-            conn.execute(
-                "INSERT INTO wallet (wallet_id, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, uses_password, network)
-                 VALUES (?, ?, ?, ?, ?, 0, 'testnet')",
-                rusqlite::params![
-                    wallet_id.as_slice(),
-                    vec![0u8; 64],
-                    vec![0u8; 16],
-                    vec![0u8; 12],
-                    vec![0u8; 78],
-                ],
-            )
-            .expect("Failed to insert test wallet");
-        }
-
-        // Add address
-        db.add_address_if_not_exists(
-            &wallet_id,
-            &address,
-            &network,
-            &derivation_path,
-            DerivationPathReference::BIP44,
-            DerivationPathType::CLEAR_FUNDS,
-            None,
-        )
-        .expect("Failed to add address");
-
-        // Update total received
-        db.update_address_total_received(&wallet_id, &address, 10_000_000)
-            .expect("Failed to update total received");
-
-        // Verify
-        let conn = db.conn.lock().unwrap();
-        let total_received: i64 = conn
-            .query_row(
-                "SELECT total_received FROM wallet_addresses WHERE wallet_id = ? AND address = ?",
-                rusqlite::params![wallet_id.as_slice(), address.to_string()],
-                |row| row.get(0),
-            )
-            .expect("Failed to query total_received");
-        assert_eq!(total_received, 10_000_000);
     }
 
     // =========================================================================

@@ -522,6 +522,54 @@ impl BackendTestContext {
 
         (seed_hash, wallet_arc)
     }
+
+    /// Create a new wallet registered with SPV but NOT funded.
+    ///
+    /// Generates a fresh BIP-39 mnemonic, registers the wallet in AppContext,
+    /// waits for SPV to pick it up, and waits for the bloom filter rebuild tick.
+    /// Returns the seed hash and wallet arc — caller is responsible for funding.
+    pub async fn create_empty_test_wallet(
+        &self,
+    ) -> (
+        WalletSeedHash,
+        Arc<std::sync::RwLock<dash_evo_tool::model::wallet::Wallet>>,
+    ) {
+        let app_context = &self.app_context;
+
+        let mnemonic =
+            Mnemonic::generate_in(Language::English, 12).expect("Mnemonic generation failed");
+        let seed = mnemonic.to_seed("");
+
+        let wallet = dash_evo_tool::model::wallet::Wallet::new_from_seed(
+            seed,
+            Network::Testnet,
+            Some("E2E Test Wallet (unfunded)".to_string()),
+            None,
+        )
+        .expect("Failed to create test wallet");
+
+        let (seed_hash, wallet_arc) = app_context
+            .register_wallet(wallet)
+            .expect("Failed to register test wallet");
+        tracing::trace!(
+            seed_hash = ?&seed_hash[..4],
+            "create_empty_test_wallet: registered new wallet"
+        );
+
+        wait::wait_for_wallet_in_spv(app_context, seed_hash, Duration::from_secs(30))
+            .await
+            .expect("Test wallet not picked up by SPV");
+
+        // Allow mempool manager tick to detect wallet address change
+        // and rebuild bloom filter before any broadcast targets this wallet.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        tracing::trace!(
+            seed_hash = ?&seed_hash[..4],
+            "create_empty_test_wallet: ready (SPV synced, bloom filter rebuilt)"
+        );
+
+        (seed_hash, wallet_arc)
+    }
 }
 
 /// Pick a deterministic workdir, acquiring an exclusive lock file.

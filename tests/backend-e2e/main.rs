@@ -17,6 +17,7 @@ mod cleanup_only;
 mod fetch_contract;
 mod identity_create;
 mod identity_withdraw;
+mod multi_output_payment;
 mod register_dpns;
 mod send_funds;
 mod spv_wallet;

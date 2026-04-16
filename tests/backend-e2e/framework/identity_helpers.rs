@@ -95,3 +95,4 @@ pub fn get_receive_address(app_context: &AppContext, wallet_arc: &Arc<RwLock<Wal
         .expect("Failed to get receive address")
         .to_string()
 }
+

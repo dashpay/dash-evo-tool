@@ -370,25 +370,6 @@ pub async fn update_profile(
     }
 }
 
-pub async fn send_payment(
-    app_context: &Arc<AppContext>,
-    sdk: &Sdk,
-    from_identity: QualifiedIdentity,
-    to_contact_id: Identifier,
-    amount_dash: f64,
-    memo: Option<String>,
-) -> Result<BackendTaskSuccessResult, TaskError> {
-    super::payments::send_payment_to_contact(
-        app_context,
-        sdk,
-        from_identity,
-        to_contact_id,
-        amount_dash,
-        memo,
-    )
-    .await
-}
-
 pub async fn load_payment_history(
     app_context: &Arc<AppContext>,
     _sdk: &Sdk,

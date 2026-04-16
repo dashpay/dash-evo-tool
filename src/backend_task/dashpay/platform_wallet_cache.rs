@@ -1,18 +1,19 @@
 //! Transitional helpers for DashPay mutations that haven't moved into
 //! platform-wallet's DashPayWallet yet.
 //!
-//! **Received payments** are now handled internally by
-//! [`DashPayWallet::try_record_incoming_payment`] — no helper needed.
+//! **Payments** are now handled internally:
+//! - Received: [`DashPayWallet::try_record_incoming_payment`]
+//! - Sent: [`DashPayWallet::send_payment`]
 //!
-//! **Sent payments** still need this helper because `send_payment` hasn't
-//! moved into DashPayWallet yet (requires CoreWallet integration).
-//! Once DashPayWallet owns the send flow, this file can be deleted.
+//! **Profiles** still need this helper — profile.rs load/create/update
+//! haven't been rewired to DashPayWallet methods yet (Phase 3).
+//! Once they are, this file can be deleted.
 
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use platform_wallet::PlatformWallet;
-use platform_wallet::wallet::dashpay::PaymentEntry;
+use platform_wallet::wallet::dashpay::DashPayProfile;
 use std::sync::Arc;
 
 /// Resolve the `PlatformWallet` for a `QualifiedIdentity`.
@@ -33,15 +34,14 @@ fn resolve_platform_wallet(
     }
 }
 
-/// Record a sent payment on the owner's ManagedIdentity.
+/// Cache a DashPay profile on the owner's ManagedIdentity.
 ///
-/// TODO: Remove once DashPayWallet::send_payment() owns the full
-/// send flow (address derivation + CoreWallet tx + record).
-pub(crate) async fn cache_payment(
+/// TODO: Remove once profile.rs uses DashPayWallet::sync() /
+/// create_profile() / update_profile() directly.
+pub(crate) async fn cache_profile(
     app_context: &AppContext,
     identity: &QualifiedIdentity,
-    tx_id: String,
-    entry: PaymentEntry,
+    profile: Option<DashPayProfile>,
 ) {
     let Some(pw) = resolve_platform_wallet(app_context, identity) else {
         return;
@@ -56,5 +56,5 @@ pub(crate) async fn cache_payment(
         );
         return;
     };
-    managed.record_dashpay_payment(tx_id, entry, &persister);
+    managed.set_dashpay_profile(profile, &persister);
 }

@@ -225,15 +225,26 @@ impl AppContext {
                 amount_dash,
                 memo,
             } => {
-                payments::send_payment_to_contact_impl(
-                    self,
-                    sdk,
-                    identity,
-                    contact_id,
-                    amount_dash,
-                    memo,
-                )
-                .await
+                let amount_duffs = (amount_dash * 100_000_000.0).round() as u64;
+                let from_identity_id = identity.identity.id();
+                let pw = self
+                    .platform_wallet_for_identity(&identity)
+                    .map_err(|_| TaskError::WalletNotFound)?;
+                let (txid, _entry) = pw
+                    .dashpay()
+                    .send_payment(&from_identity_id, &contact_id, amount_duffs, memo.clone())
+                    .await
+                    .map_err(|e| TaskError::PlatformWallet {
+                        source: Box::new(e),
+                    })?;
+                let amount_display = amount_duffs as f64 / 100_000_000.0;
+                Ok(BackendTaskSuccessResult::DashPayPaymentSent(
+                    contact_id.to_string(
+                        dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
+                    ),
+                    txid.to_string(),
+                    amount_display,
+                ))
             }
             DashPayTask::UpdateContactInfo {
                 identity,

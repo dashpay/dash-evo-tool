@@ -7,6 +7,8 @@ pub mod funding;
 pub mod harness;
 pub mod identity_helpers;
 #[allow(dead_code)]
+pub mod mn_helpers;
+#[allow(dead_code)]
 pub mod mnlist_helpers;
 #[allow(dead_code)]
 pub mod shielded_helpers;

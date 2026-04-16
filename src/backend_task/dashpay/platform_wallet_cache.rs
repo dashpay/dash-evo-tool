@@ -1,43 +1,21 @@
-//! Helpers for routing DashPay mutations through the platform-wallet
-//! changeset flow.
+//! Transitional helpers for DashPay mutations that haven't moved into
+//! platform-wallet's DashPayWallet yet.
 //!
-//! DashPay backend tasks write state through mutation methods that
-//! persist immediately via the [`WalletPersister`] rather than
-//! emitting a changeset for the caller to queue. Every helper follows
-//! the same shape: resolve the owner's `PlatformWallet`, acquire its
-//! state-mut guard, call the mutation on `ManagedIdentity` passing
-//! `pw.persister()`, and return.
+//! **Received payments** are now handled internally by
+//! [`DashPayWallet::try_record_incoming_payment`] — no helper needed.
 //!
-//! Silent no-op (with a `tracing::warn!` / `tracing::debug!`) if the
-//! owner identity isn't present in the platform-wallet's
-//! `IdentityManager` — losing the cache is not worth failing the
-//! outer operation.
-//!
-//! The `_with_pw_blocking` variants take an already-resolved
-//! `&PlatformWallet` and are called from
-//! `context::transaction_processing`, which holds a write guard on
-//! the owning evo-tool `Wallet` on the egui main thread (ZMQ tx
-//! finality path). Going through `AppContext` there would re-acquire
-//! a read guard on that same wallet and deadlock deterministically on
-//! `std::sync::RwLock`. They cannot use `state_mut_blocking()`
-//! either, because the main thread is inside the tokio runtime and
-//! `tokio::sync::RwLock::blocking_write` panics in that context.
-//! Instead they dispatch the mutation to a `tokio::spawn`ed task that
-//! runs on a worker thread and uses the async `state_mut().await`
-//! path. Mutations are fire-and-forget — the persister catches the
-//! changeset on the next flush.
+//! **Sent payments** still need this helper because `send_payment` hasn't
+//! moved into DashPayWallet yet (requires CoreWallet integration).
+//! Once DashPayWallet owns the send flow, this file can be deleted.
 
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::platform::Identifier;
 use platform_wallet::PlatformWallet;
-use platform_wallet::wallet::dashpay::{DashPayProfile, PaymentEntry};
+use platform_wallet::wallet::dashpay::PaymentEntry;
 use std::sync::Arc;
 
-/// Resolve the `PlatformWallet` for a `QualifiedIdentity`. Shared by
-/// all async cache helpers — logs a `tracing::warn!` and returns
-/// `None` when the owner has no platform wallet (treat as no-op).
+/// Resolve the `PlatformWallet` for a `QualifiedIdentity`.
 fn resolve_platform_wallet(
     app_context: &AppContext,
     identity: &QualifiedIdentity,
@@ -55,33 +33,10 @@ fn resolve_platform_wallet(
     }
 }
 
-/// Route a `ManagedIdentity::set_dashpay_profile` mutation through
-/// the platform-wallet persister. Replaces the direct
-/// `db.save_dashpay_profile` call.
-pub(crate) async fn cache_profile(
-    app_context: &AppContext,
-    identity: &QualifiedIdentity,
-    profile: Option<DashPayProfile>,
-) {
-    let Some(pw) = resolve_platform_wallet(app_context, identity) else {
-        return;
-    };
-    let owner_id = identity.identity.id();
-    let persister = pw.persister().clone();
-    let mut state = pw.state_mut().await;
-    let Some(managed) = state.identity_manager.managed_identity_mut(&owner_id) else {
-        tracing::debug!(
-            identity = %owner_id,
-            "platform-wallet cache: identity not in IdentityManager"
-        );
-        return;
-    };
-    managed.set_dashpay_profile(profile, &persister);
-}
-
-/// Route a `ManagedIdentity::record_dashpay_payment` mutation through
-/// the platform-wallet persister. Replaces the direct
-/// `db.save_payment` call.
+/// Record a sent payment on the owner's ManagedIdentity.
+///
+/// TODO: Remove once DashPayWallet::send_payment() owns the full
+/// send flow (address derivation + CoreWallet tx + record).
 pub(crate) async fn cache_payment(
     app_context: &AppContext,
     identity: &QualifiedIdentity,
@@ -102,50 +57,4 @@ pub(crate) async fn cache_payment(
         return;
     };
     managed.record_dashpay_payment(tx_id, entry, &persister);
-}
-
-// --- Deferred variants (called from main-thread ZMQ tx finality) ---
-//
-// Take an already-resolved `&PlatformWallet` so they can be called from
-// `context::transaction_processing`, which holds a write guard on the
-// owning evo-tool `Wallet` on the egui main thread. Going through
-// `AppContext` there would re-acquire a read guard on the same wallet
-// and deadlock. Cannot use `state_mut_blocking()` either, because the
-// main thread is inside the tokio runtime and
-// `tokio::sync::RwLock::blocking_write` panics in that context. Instead
-// they dispatch the mutation to a `tokio::spawn`ed task that runs on a
-// worker thread and uses the async `state_mut().await` path.
-// Fire-and-forget — the persister persists immediately on the worker thread.
-
-/// Payment-cache helper called from the main thread on ZMQ tx
-/// finality. Records a DashPay payment entry on the owner's
-/// `ManagedIdentity` and persists it immediately. Takes an
-/// already-resolved `&PlatformWallet` to avoid deadlocking against a
-/// held write guard on the owning evo-tool `Wallet`.
-///
-/// Mutation runs in a `tokio::spawn`ed task — the main thread cannot
-/// take the wallet-manager write lock directly (tokio's
-/// `blocking_write` panics inside the runtime context). Fire-and-
-/// forget: the persister stores the changeset immediately on the
-/// worker thread.
-pub(crate) fn cache_payment_with_pw_blocking(
-    pw: &PlatformWallet,
-    owner_id: &Identifier,
-    tx_id: String,
-    entry: PaymentEntry,
-) {
-    let pw = pw.clone();
-    let persister = pw.persister().clone();
-    let owner_id = *owner_id;
-    tokio::spawn(async move {
-        let mut state = pw.state_mut().await;
-        let Some(managed) = state.identity_manager.managed_identity_mut(&owner_id) else {
-            tracing::debug!(
-                identity = %owner_id,
-                "platform-wallet cache: identity not in IdentityManager"
-            );
-            return;
-        };
-        managed.record_dashpay_payment(tx_id, entry, &persister);
-    });
 }

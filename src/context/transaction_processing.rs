@@ -57,46 +57,30 @@ impl AppContext {
                 // separate "bump contact highest receive index" call
                 // is needed.
                 if let Some(pw) = wallet.platform_wallet.as_ref() {
-                    let dashpay_match =
-                        match pw.dashpay().try_match_incoming_dashpay_address(&address) {
-                            Ok(m) => m,
-                            Err(()) => {
-                                tracing::debug!(
-                                    %address,
-                                    "DashPay address match skipped: wallet busy. \
-                                     Will be picked up on a future tx or refresh."
-                                );
-                                None
-                            }
-                        };
+                    let dashpay_match = match pw.dashpay().try_record_incoming_payment(
+                        &address,
+                        tx.txid().to_string(),
+                        tx_out.value,
+                    ) {
+                        Ok(m) => m,
+                        Err(()) => {
+                            tracing::debug!(
+                                %address,
+                                "DashPay address match skipped: wallet busy. \
+                                 Will be picked up on a future tx or refresh."
+                            );
+                            None
+                        }
+                    };
                     if let Some(m) = dashpay_match {
-                        let owner_id = m.user_identity_id;
-                        let contact_id = m.friend_identity_id;
-                        let address_index = m.address_index;
-
-                        // Record the received payment via the platform
-                        // wallet — persister catches the changeset and
-                        // writes to `dashpay_payments` on flush
-                        //.
-                        crate::backend_task::dashpay::platform_wallet_cache::cache_payment_with_pw_blocking(
-                            pw,
-                            &owner_id,
-                            tx.txid().to_string(),
-                            platform_wallet::wallet::dashpay::PaymentEntry::new_received(
-                                contact_id,
-                                tx_out.value,
-                                None,
-                            ),
-                        );
-
                         tracing::info!(
                             "DashPay payment received: {} duffs from contact {} to address {} (index {})",
                             tx_out.value,
-                            contact_id.to_string(
+                            m.friend_identity_id.to_string(
                                 dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58
                             ),
                             address,
-                            address_index
+                            m.address_index
                         );
                     }
                 }

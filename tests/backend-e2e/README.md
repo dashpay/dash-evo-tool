@@ -36,7 +36,6 @@ cargo test --test backend-e2e --all-features -- --ignored --nocapture test_creat
 | `E2E_MN_PROTX_HASH` | No | Hex ProRegTx hash (64 chars) of a registered testnet masternode/evonode. Required for TC-084 to TC-090 (except TC-088). Tests skip gracefully when unset. |
 | `E2E_MN_VOTING_KEY` | No | WIF private key for the MN's voting address. Required for voting tests (TC-086, TC-090). |
 | `E2E_MN_OWNER_KEY` | No | WIF private key for the MN's owner address. |
-| `E2E_MN_PAYOUT_KEY` | No | WIF private key for the MN's payout address. |
 
 ### `.env` file handling
 

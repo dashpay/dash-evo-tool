@@ -81,7 +81,7 @@ async fn tc_084_load_masternode_identity() {
                     "TC-084: private_keys should contain PrivateKeyOnVoterIdentity entry"
                 );
             }
-            if creds.owner_key.is_some() || creds.payout_key.is_some() {
+            if creds.owner_key.is_some() {
                 let has_main_key = qi
                     .private_keys
                     .private_keys
@@ -163,7 +163,6 @@ async fn tc_086_load_mn_voting_key_only() {
         protx_hash: creds.protx_hash.clone(),
         voting_key: creds.voting_key.clone(),
         owner_key: None,
-        payout_key: None,
     };
     let input = build_mn_identity_input(&voting_only_creds, IdentityType::Masternode);
 

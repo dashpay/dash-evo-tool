@@ -2,7 +2,7 @@
 
 use crate::framework::harness::ctx;
 use crate::framework::identity_helpers::build_identity_registration;
-use crate::framework::mn_helpers::{build_mn_identity_input, load_mn_credentials};
+use crate::framework::mn_helpers::{MnCredentials, build_mn_identity_input, load_mn_credentials};
 use crate::framework::task_runner::{run_task, run_task_with_nonce_retry};
 use dash_evo_tool::backend_task::contested_names::ContestedResourceTask;
 use dash_evo_tool::backend_task::identity::{
@@ -152,23 +152,20 @@ async fn tc_086_load_mn_voting_key_only() {
         tracing::warn!("Skipping TC-086: E2E_MN_PROTX_HASH not set");
         return;
     };
-    let Some(ref _voting_key) = creds.voting_key else {
+    if creds.voting_key.is_none() {
         tracing::warn!("Skipping TC-086: E2E_MN_VOTING_KEY not set");
         return;
     };
     let ctx = ctx().await;
 
-    let input = IdentityInputToLoad {
-        identity_id_input: creds.protx_hash.clone(),
-        identity_type: IdentityType::Masternode,
-        alias_input: String::new(),
-        voting_private_key_input: Secret::new(creds.voting_key.as_deref().unwrap_or("")),
-        owner_private_key_input: Secret::new(""),
-        payout_address_private_key_input: Secret::new(""),
-        keys_input: vec![],
-        derive_keys_from_wallets: false,
-        selected_wallet_seed_hash: None,
+    // Build input with only voting key — strip owner/payout to test partial load.
+    let voting_only_creds = MnCredentials {
+        protx_hash: creds.protx_hash.clone(),
+        voting_key: creds.voting_key.clone(),
+        owner_key: None,
+        payout_key: None,
     };
+    let input = build_mn_identity_input(&voting_only_creds, IdentityType::Masternode);
 
     let result = run_task(
         &ctx.app_context,
@@ -287,7 +284,7 @@ async fn tc_088_load_mn_invalid_protx() {
         "TC-088: loading identity with all-zeros ProTx should return an error, got: {:?}",
         result
     );
-    tracing::info!("TC-088: got expected error: {:?}", result.unwrap_err());
+    tracing::info!("TC-088: got expected error: {}", result.unwrap_err());
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -334,7 +331,7 @@ async fn tc_089_load_mn_wrong_voting_key() {
         "TC-089: loading MN with wrong voting key should return an error, got: {:?}",
         result
     );
-    tracing::info!("TC-089: got expected error: {:?}", result.unwrap_err());
+    tracing::info!("TC-089: got expected error: {}", result.unwrap_err());
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -376,7 +373,7 @@ async fn tc_090_vote_with_mn_voter() {
     };
 
     // Step 2: Register a short contested DPNS name (< 20 chars triggers contest).
-    let name = format!("e2emn{:06x}", rand::random::<u32>() % 0xFFFFFF);
+    let name = format!("e2emn{:08x}", rand::random::<u32>());
     tracing::info!("TC-090: registering contested DPNS name '{}'...", name);
 
     let dpns_result = run_task_with_nonce_retry(

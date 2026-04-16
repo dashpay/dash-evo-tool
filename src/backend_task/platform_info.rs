@@ -381,7 +381,7 @@ fn format_withdrawal_documents_to_bare_info(
 
 impl AppContext {
     pub async fn run_platform_info_task(
-        &self,
+        self: &Arc<Self>,
         request: PlatformInfoTaskRequestType,
         sdk: &Sdk,
     ) -> Result<BackendTaskSuccessResult, TaskError> {

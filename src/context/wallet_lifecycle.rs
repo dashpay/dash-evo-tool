@@ -2,6 +2,7 @@ use super::AppContext;
 use super::get_transaction_info;
 use crate::backend_task::error::TaskError;
 use crate::database::is_unique_constraint_violation;
+use crate::model::feature_gate::FeatureGate;
 use crate::model::wallet::{
     AddressInfo as WalletAddressInfo, DerivationPathHelpers, DerivationPathReference,
     DerivationPathType, TransactionStatus, Wallet, WalletSeedHash, WalletTransaction,
@@ -162,10 +163,10 @@ impl AppContext {
             // Core UTXO refresh is handled at startup in bootstrap_loaded_wallets.
 
             // Initialize shielded wallet state only when the network supports it
-            // (all shielded state transitions present in the platform version).
-            // On mainnet (which doesn't support shielded transactions yet), skip
-            // entirely to avoid unnecessary sync attempts and log noise.
-            if crate::model::feature_gate::FeatureGate::Shielded.is_available(self) {
+            // (all shielded state transitions present). On mainnet (which doesn't
+            // support shielded transactions yet), skip entirely to avoid
+            // unnecessary sync attempts and log noise.
+            if FeatureGate::Shielded.is_available(self) {
                 match self.initialize_shielded_wallet(seed_hash) {
                     Ok(_) => {
                         tracing::trace!(
@@ -193,6 +194,46 @@ impl AppContext {
             }
         };
         self.queue_spv_wallet_unload(seed_hash);
+    }
+
+    /// Initialize shielded state for unlocked wallets that were skipped
+    /// because the protocol version wasn't known at unlock time.
+    /// Called when the protocol version first crosses the shielded threshold.
+    pub(crate) fn init_missing_shielded_wallets(self: &Arc<Self>) {
+        // Collect candidate seed hashes while holding locks, then release
+        // before calling initialize_shielded_wallet (which re-acquires both).
+        let candidates: Vec<WalletSeedHash> = (|| {
+            let wallets = self.wallets.read().ok()?;
+            let existing = self.shielded_states.lock().ok()?;
+            Some(
+                wallets
+                    .iter()
+                    .filter(|(hash, wallet_arc)| {
+                        !existing.contains_key(*hash)
+                            && wallet_arc.read().ok().map(|w| w.is_open()).unwrap_or(false)
+                    })
+                    .map(|(hash, _)| *hash)
+                    .collect(),
+            )
+        })()
+        .unwrap_or_default();
+
+        for seed_hash in candidates {
+            match self.initialize_shielded_wallet(seed_hash) {
+                Ok(_) => {
+                    tracing::info!(
+                        seed = %hex::encode(seed_hash),
+                        "Shielded wallet initialized after protocol version update"
+                    );
+                    self.queue_shielded_sync(seed_hash);
+                }
+                Err(e) => tracing::debug!(
+                    seed = %hex::encode(seed_hash),
+                    error = %e,
+                    "Shielded wallet init failed after protocol version update"
+                ),
+            }
+        }
     }
 
     /// Queue async SyncNotes -> CheckNullifiers for an already-initialized
@@ -723,7 +764,8 @@ impl AppContext {
     /// Reconcile SPV wallet state into DET.
     pub async fn reconcile_spv_wallets(&self) -> Result<(), TaskError> {
         let wm_arc = self.spv_manager.wallet();
-        let wm = wm_arc.read().await;
+        let wm: tokio::sync::RwLockReadGuard<'_, dash_sdk::dpp::key_wallet_manager::WalletManager> =
+            wm_arc.read().await;
         let mapping = self.spv_manager.det_wallets_snapshot();
 
         // Take a snapshot of known addresses per wallet so we can scope DB updates
@@ -906,29 +948,21 @@ impl AppContext {
             let wallet_transactions: Vec<WalletTransaction> = history
                 .into_iter()
                 .map(|record| {
-                    let status = TransactionStatus::from_height(record.height);
+                    let height = record.height();
+                    let block_info = record.block_info();
+                    let status = TransactionStatus::from_height(height);
                     WalletTransaction {
                         txid: record.txid,
                         transaction: record.transaction.clone(),
-                        timestamp: record.timestamp,
-                        height: record.height,
-                        block_hash: record.block_hash,
+                        timestamp: block_info.map(|bi| bi.timestamp() as u64).unwrap_or(0),
+                        height,
+                        block_hash: block_info.map(|bi| bi.block_hash()),
                         net_amount: record.net_amount,
                         fee: record.fee,
-                        label: record.label.clone(),
+                        label: Some(record.label.clone()).filter(|s| !s.is_empty()),
                         // SPV transaction history is per-wallet — all entries
-                        // involve our addresses. Upstream sets is_ours only for
-                        // sends (net_amount < 0); we override to true for all.
-                        is_ours: {
-                            if !record.is_ours && record.net_amount >= 0 {
-                                tracing::debug!(
-                                    txid = %record.txid,
-                                    net_amount = record.net_amount,
-                                    "SPV: overriding is_ours to true for receive transaction"
-                                );
-                            }
-                            true
-                        },
+                        // involve our addresses, so is_ours is always true.
+                        is_ours: true,
                         status,
                     }
                 })

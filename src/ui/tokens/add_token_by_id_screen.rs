@@ -134,7 +134,7 @@ impl AddTokenByIdScreen {
 
     fn render_add_button(&mut self, ui: &mut Ui) -> AppAction {
         if let (Some(contract), Some(tok)) = (&self.fetched_contract, &self.selected_token)
-            && ComponentStyles::add_primary_button(ui, "Add Token").clicked()
+            && ComponentStyles::add_primary_button(ui, "Import Token").clicked()
         {
             let insert_mode = InsertTokensToo::SomeTokensShouldBeAdded(vec![tok.token_position]);
 
@@ -313,7 +313,7 @@ impl ScreenLike for AddTokenByIdScreen {
             &self.app_context,
             vec![
                 ("Tokens", AppAction::GoToMainScreen),
-                ("Add Token", AppAction::None),
+                ("Import Token", AppAction::None),
             ],
             vec![],
         );
@@ -334,7 +334,7 @@ impl ScreenLike for AddTokenByIdScreen {
                 return self.show_success_screen(ui);
             }
 
-            ui.heading("Add Token");
+            ui.heading("Import Token");
             ui.add_space(10.0);
 
             ui.label("Enter either a Contract ID or Token ID to search for tokens.");

@@ -282,11 +282,11 @@ impl EventHandler for SpvEventHandler {
         // For MempoolManager-tracked txs this is a harmless no-op — the
         // WalletManager deduplicates via its instant_send_locks HashSet.
         if let SyncEvent::InstantLockReceived { instant_lock, .. } = event {
-            let txid = instant_lock.txid;
             let wallet = Arc::clone(&self.wallet);
+            let islock = instant_lock.clone();
             tokio::spawn(async move {
                 let mut wm = wallet.write().await;
-                wm.process_instant_send_lock(txid);
+                wm.process_instant_send_lock(islock);
             });
         }
 
@@ -1499,7 +1499,7 @@ async fn notify_wallet_after_broadcast(
 ) {
     {
         let mut wm = wallet.write().await;
-        let _ = wm.process_mempool_transaction(tx, false).await;
+        let _ = wm.process_mempool_transaction(tx, None).await;
     }
     if let Some(ch) = reconcile_tx {
         let _ = ch.try_send(());

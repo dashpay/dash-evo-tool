@@ -8,9 +8,8 @@ use crate::model::wallet::WalletSeedHash;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::platform_value::Value;
-use dash_sdk::dpp::util::strings::convert_to_homograph_safe_chars;
 use dash_sdk::drive::query::{WhereClause, WhereOperator};
-use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identifier, Identity};
+use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identity};
 
 impl AppContext {
     /// Load an identity by its DPNS name
@@ -20,8 +19,7 @@ impl AppContext {
         dpns_name: String,
         selected_wallet_seed_hash: Option<WalletSeedHash>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        // Normalize the name (convert to lowercase and handle homoglyphs)
-        let normalized_name = convert_to_homograph_safe_chars(&dpns_name);
+        let normalized_name = crate::model::dpns::normalize_dpns_label(&dpns_name);
 
         // Query the DPNS contract for the domain document
         let domain_query = DocumentQuery {
@@ -56,30 +54,7 @@ impl AppContext {
             .ok_or(TaskError::IdentityNotFound)?;
 
         // Extract the identity ID from the records.identity field
-        let identity_id = domain_doc
-            .get("records")
-            .and_then(|records| {
-                if let Value::Map(map) = records {
-                    map.iter()
-                        .find(|(k, _)| {
-                            if let Value::Text(key) = k {
-                                key == "identity"
-                            } else {
-                                false
-                            }
-                        })
-                        .map(|(_, v)| v.clone())
-                } else {
-                    None
-                }
-            })
-            .and_then(|id_value| {
-                if let Value::Identifier(id_bytes) = id_value {
-                    Some(Identifier::from(id_bytes))
-                } else {
-                    None
-                }
-            })
+        let identity_id = crate::model::dpns::extract_identity_id_from_dpns_document(domain_doc)
             .ok_or(TaskError::IdentityNotFound)?;
 
         // Fetch the identity

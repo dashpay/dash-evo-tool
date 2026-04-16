@@ -39,8 +39,14 @@ impl ContactInfoPrivateData {
         Self::default()
     }
 
+    /// Minimum plaintext size so that IV (16) + AES-CBC ciphertext ≥ 48 bytes
+    /// (the `privateData` field's `minItems` in the DashPay contract).
+    /// PKCS7 pads 16 bytes to 32 (adds a full padding block when input is
+    /// block-aligned), so 16 plaintext → 32 ciphertext → 48 with IV.
+    const MIN_PLAINTEXT_SIZE: usize = 16;
+
     // Serialize to bytes for encryption
-    pub fn serialize(&self) -> Vec<u8> {
+    pub fn serialize(&self) -> Result<Vec<u8>, DashPayError> {
         let mut bytes = Vec::new();
 
         // Version (4 bytes)
@@ -49,7 +55,13 @@ impl ContactInfoPrivateData {
         // Alias name (length + string)
         if let Some(alias) = &self.alias_name {
             let alias_bytes = alias.as_bytes();
-            bytes.push(alias_bytes.len() as u8);
+            let alias_len = alias_bytes.len();
+            if alias_len > u8::MAX as usize {
+                return Err(DashPayError::ContactInfoValidationFailed {
+                    errors: vec![format!("Nickname too long ({alias_len} bytes, max 255)")],
+                });
+            }
+            bytes.push(alias_len as u8);
             bytes.extend_from_slice(alias_bytes);
         } else {
             bytes.push(0u8);
@@ -58,7 +70,13 @@ impl ContactInfoPrivateData {
         // Note (length + string)
         if let Some(note) = &self.note {
             let note_bytes = note.as_bytes();
-            bytes.push(note_bytes.len() as u8);
+            let note_len = note_bytes.len();
+            if note_len > u8::MAX as usize {
+                return Err(DashPayError::ContactInfoValidationFailed {
+                    errors: vec![format!("Note too long ({note_len} bytes, max 255)")],
+                });
+            }
+            bytes.push(note_len as u8);
             bytes.extend_from_slice(note_bytes);
         } else {
             bytes.push(0u8);
@@ -68,12 +86,35 @@ impl ContactInfoPrivateData {
         bytes.push(if self.display_hidden { 1 } else { 0 });
 
         // Accepted accounts (length + array)
-        bytes.push(self.accepted_accounts.len() as u8);
+        let accounts_len = self.accepted_accounts.len();
+        if accounts_len > u8::MAX as usize {
+            return Err(DashPayError::ContactInfoValidationFailed {
+                errors: vec![format!(
+                    "Too many accepted accounts ({accounts_len}, max 255)"
+                )],
+            });
+        }
+        bytes.push(accounts_len as u8);
         for account in &self.accepted_accounts {
             bytes.extend_from_slice(&account.to_le_bytes());
         }
 
-        bytes
+        // Pad to minimum plaintext size so the encrypted output (IV + ciphertext)
+        // meets the DashPay contract's privateData minItems (48 bytes).
+        // First padding byte is 0x00 as a sentinel so deserializers can
+        // distinguish real data from padding. Remaining bytes are random.
+        if bytes.len() < Self::MIN_PLAINTEXT_SIZE {
+            use bip39::rand::RngCore;
+            bytes.push(0x00); // sentinel: marks start of padding
+            let remaining = Self::MIN_PLAINTEXT_SIZE - bytes.len();
+            if remaining > 0 {
+                let mut pad = vec![0u8; remaining];
+                StdRng::from_entropy().fill_bytes(&mut pad);
+                bytes.extend_from_slice(&pad);
+            }
+        }
+
+        Ok(bytes)
     }
 }
 
@@ -384,10 +425,24 @@ pub async fn create_or_update_contact_info(
     private_data.accepted_accounts = accepted_accounts;
 
     // Encrypt private data
-    let encrypted_private_data = encrypt_private_data(&private_data.serialize(), &private_data_key)
-        .map_err(|e| TaskError::EncryptionError { detail: e })?;
+    let encrypted_private_data =
+        encrypt_private_data(&private_data.serialize()?, &private_data_key)
+            .map_err(|e| TaskError::EncryptionError { detail: e })?;
 
-    // Get signing key
+    let validation = crate::backend_task::dashpay::validation::validate_contact_info_field_sizes(
+        &encrypted_user_id,
+        &encrypted_private_data,
+    );
+    if !validation.is_valid {
+        return Err(TaskError::DashPay(
+            DashPayError::ContactInfoValidationFailed {
+                errors: validation.errors,
+            },
+        ));
+    }
+
+    // Get signing key — accept any key type (BLS, ECDSA, EDDSA) since
+    // Platform accepts all for document state transitions.
     let signing_key = identity
         .identity
         .get_first_public_key_matching(
@@ -397,7 +452,7 @@ pub async fn create_or_update_contact_info(
                 SecurityLevel::HIGH,
                 SecurityLevel::MEDIUM,
             ]),
-            HashSet::from([KeyType::ECDSA_SECP256K1]),
+            KeyType::all_key_types().into(),
             false,
         )
         .ok_or_else(|| TaskError::DashPay(DashPayError::MissingAuthenticationKey))?;

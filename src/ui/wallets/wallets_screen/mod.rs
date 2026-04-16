@@ -470,6 +470,20 @@ impl WalletsBalancesScreen {
         self.pending_list_is_single_key = false;
     }
 
+    /// Clear all transient request/pending state that could fire against the
+    /// wrong context after a network switch.
+    pub(crate) fn reset_transient_state(&mut self) {
+        self.pending_platform_balance_refresh = None;
+        self.pending_refresh_after_unlock = false;
+        self.pending_asset_lock_search_after_unlock = false;
+        self.pending_wallet_refresh_on_switch = false;
+        self.pending_core_wallet_seed_hash = None;
+        self.pending_core_wallet_options = None;
+        self.core_wallet_dialog = None;
+        self.refreshing = false;
+        self.asset_lock_search_banner.take_and_clear();
+    }
+
     /// Reset all cached AddressInput widgets so they pick up the new network.
     pub(crate) fn invalidate_address_inputs(&mut self) {
         self.mine_dialog.address_input = None;
@@ -1172,8 +1186,7 @@ impl WalletsBalancesScreen {
             tabs.insert(0, AccountTab::Category(AccountCategory::Bip44, Some(0)));
         }
 
-        // Add the Shielded tab only when the connected network supports it
-        // (all shielded state transitions present in the platform version).
+        // Add the Shielded tab only when the connected network supports it.
         if FeatureGate::Shielded.is_available(&self.app_context) {
             tabs.push(AccountTab::Shielded);
         }
@@ -2875,16 +2888,27 @@ impl ScreenLike for WalletsBalancesScreen {
             crate::ui::BackendTaskSuccessResult::PlatformAddressBalances {
                 seed_hash,
                 balances,
+                network,
             } => {
                 self.refreshing = false;
+                // Skip stale results from a different network
+                if network != self.app_context.network {
+                    tracing::warn!(
+                        result_network = ?network,
+                        current_network = ?self.app_context.network,
+                        "Discarding PlatformAddressBalances from a previous network"
+                    );
+                    return;
+                }
                 // Update wallet's platform_address_info if this is for the selected wallet
                 if let Some(selected) = &self.selected_wallet
                     && let Ok(mut wallet) = selected.write()
                     && wallet.seed_hash() == seed_hash
                 {
-                    // Update balances in the wallet
-                    for (addr, (balance, nonce)) in balances {
-                        wallet.set_platform_address_info(addr, balance, nonce);
+                    // Convert PlatformAddress back to Core Address for wallet storage
+                    for (platform_addr, (balance, nonce)) in balances {
+                        let core_addr = platform_addr.to_address_with_network(network);
+                        wallet.set_platform_address_info(core_addr, balance, nonce);
                     }
                 }
                 self.refresh_platform_sync_info_cache(&seed_hash);

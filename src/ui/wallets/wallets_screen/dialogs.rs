@@ -653,18 +653,16 @@ impl WalletsBalancesScreen {
     }
 
     /// Generate a new Platform address for the wallet.
-    /// Returns the address in Bech32m format (e.g., tdash1k... for testnet per DIP-18)
+    /// Returns the address in Bech32m format (e.g., tdash1k... for testnet per DIP-18).
+    ///
+    /// Delegates entirely to platform-wallet's
+    /// [`PlatformAddressWallet::next_unused_receive_address`] which
+    /// drives dashcore's `AddressPool::next_unused` — no seed access,
+    /// derivation, or DB writes needed on the evo-tool side.
     pub(super) fn generate_platform_address(
         &self,
         wallet: &Arc<RwLock<Wallet>>,
     ) -> Result<String, String> {
-        use crate::model::wallet::{
-            DerivationPathHelpers, DerivationPathReference, DerivationPathType,
-        };
-        use dash_sdk::dpp::address_funds::PlatformAddress;
-        use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
-        use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
-
         let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
         let pw = wallet_guard
             .platform_wallet
@@ -672,59 +670,18 @@ impl WalletsBalancesScreen {
             .ok_or_else(|| "Wallet is locked".to_string())?;
         let network = self.app_context.network;
 
-        // Find the highest existing platform payment address index
-        let info = pw
-            .try_state()
-            .ok_or_else(|| "Wallet is busy, please try again".to_string())?;
-        let existing_indices: Vec<u32> =
-            crate::platform_wallet_bridge::CoreAddressInfo::all_from_wallet_info(&info.core_wallet)
-                .iter()
-                .filter(|a| a.derivation_path.is_platform_payment(network))
-                .filter_map(|a| {
-                    use dash_sdk::dpp::key_wallet::bip32::ChildNumber;
-                    a.derivation_path
-                        .as_ref()
-                        .last()
-                        .and_then(|child| match child {
-                            ChildNumber::Normal { index } | ChildNumber::Hardened { index } => {
-                                Some(*index)
-                            }
-                            _ => None,
-                        })
-                })
-                .collect();
+        let account_key =
+            dash_sdk::dpp::key_wallet::account::account_collection::PlatformPaymentAccountKey {
+                account: 0,
+                key_class: 0,
+            };
 
-        let next_index = existing_indices.iter().max().map(|m| m + 1).unwrap_or(0);
+        let platform_addr = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current()
+                .block_on(pw.platform().next_unused_receive_address(account_key))
+        })
+        .map_err(|e| format!("Could not generate platform address: {e}"))?;
 
-        // Derive a new platform payment address
-        let seed = *wallet_guard.seed_bytes().map_err(|e| e.to_string())?;
-        let secp = Secp256k1::new();
-        let derivation_path = DerivationPath::platform_payment_path(network, 0, 0, next_index);
-        let extended_private_key = derivation_path
-            .derive_priv_ecdsa_for_master_seed(&seed, network)
-            .map_err(|e| e.to_string())?;
-        let private_key = extended_private_key.to_priv();
-        let public_key = private_key.public_key(&secp);
-        let address = dash_sdk::dpp::dashcore::Address::p2pkh(&public_key, network);
-
-        // Persist to DB
-        let canonical = Wallet::canonical_address(&address, network);
-        self.app_context
-            .db
-            .add_address_if_not_exists(
-                &wallet_guard.wallet_id(),
-                &canonical,
-                &network,
-                &derivation_path,
-                DerivationPathReference::PlatformPayment,
-                DerivationPathType::CLEAR_FUNDS,
-                None,
-            )
-            .map_err(|e| e.to_string())?;
-
-        // Convert to PlatformAddress and encode as Bech32m per DIP-18
-        let platform_addr =
-            PlatformAddress::try_from(address).map_err(|e| format!("Invalid address: {}", e))?;
         Ok(platform_addr.to_bech32m_string(network))
     }
 

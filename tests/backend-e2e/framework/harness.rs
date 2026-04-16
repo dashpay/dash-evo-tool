@@ -89,13 +89,17 @@ impl BackendTestContext {
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
 
-        // Initialize tracing for test output
+        // Initialize tracing for test output.
+        // Span events are enabled so that `#[tracing::instrument]` on test
+        // functions tags every log line with the test name — essential for
+        // distinguishing interleaved output during parallel execution.
         let _ = tracing_subscriber::fmt()
             .with_env_filter(
                 tracing_subscriber::EnvFilter::try_from_default_env()
                     .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("backend_e2e=info")),
             )
             .with_target(false)
+            .with_span_events(tracing_subscriber::fmt::format::FmtSpan::ENTER)
             .try_init();
 
         // Load .env from the project root so E2E_WALLET_MNEMONIC is available.

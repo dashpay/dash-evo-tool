@@ -4,7 +4,7 @@
 //! network. They are marked `#[ignore]` and must be run explicitly:
 //!
 //! ```bash
-//! RUST_MIN_STACK=16777216 cargo test --test backend-e2e --all-features -- --ignored --nocapture --test-threads=1
+//! RUST_MIN_STACK=16777216 cargo test --test backend-e2e --all-features -- --ignored --nocapture
 //! ```
 //!
 //! The `RUST_MIN_STACK=16777216` (16 MB) is required because the Dash Platform SDK

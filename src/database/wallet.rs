@@ -92,6 +92,40 @@ impl Database {
         tx.commit()
     }
 
+    /// Count how many wallets are stored in the database for a given network.
+    pub fn wallet_count_for_network(&self, network: &Network) -> rusqlite::Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM wallet WHERE network = ?",
+            [network.to_string()],
+            |row| row.get(0),
+        )
+    }
+
+    /// Get the highest BIP44 external (receive) address index stored for a wallet.
+    /// Returns `None` if no BIP44 receive addresses are stored.
+    ///
+    /// BIP44 external addresses have derivation paths like `m/44'/X'/0'/0/N`
+    /// where N is the address index. This method parses the last path component
+    /// from all matching rows.
+    pub fn max_bip44_receive_index(&self, seed_hash: &[u8; 32]) -> rusqlite::Result<Option<u32>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT derivation_path FROM wallet_addresses
+             WHERE seed_hash = ? AND derivation_path LIKE 'm/44''/%''/0''/0/%'",
+        )?;
+        let rows = stmt.query_map([seed_hash.as_slice()], |row| row.get::<_, String>(0))?;
+        let mut max_index: Option<u32> = None;
+        for path in rows.flatten() {
+            if let Some(last) = path.rsplit('/').next()
+                && let Ok(idx) = last.parse::<u32>()
+            {
+                max_index = Some(max_index.map_or(idx, |m: u32| m.max(idx)));
+            }
+        }
+        Ok(max_index)
+    }
+
     /// Update the Dash Core wallet name for an HD wallet.
     ///
     /// Returns `Ok(true)` if exactly one row was updated, `Ok(false)` if no

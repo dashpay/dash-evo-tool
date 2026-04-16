@@ -14,7 +14,7 @@ use dash_sdk::dash_spv::sync::SyncState;
 use dash_sdk::dash_spv::types::ValidationMode;
 use dash_sdk::dash_spv::{ClientConfig, DashSpvClient, Hash, LLMQType, QuorumHash};
 use dash_sdk::dpp::dashcore::{Address, InstantLock, Network, Transaction, Txid};
-use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, ExtendedPrivKey};
+use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath, ExtendedPrivKey};
 use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::{
     ManagedWalletInfo, transaction_building::AccountTypePreference,
@@ -1026,6 +1026,49 @@ impl SpvManager {
             address,
             derivation_path,
         })
+    }
+
+    /// Extend the WalletManager's BIP44 receive address pool so that
+    /// at least `target_index` is covered. Used after wallet import to
+    /// sync the address pool with indices previously stored in the database.
+    ///
+    /// Each call to `next_bip44_receive_address` advances the internal
+    /// index by one, so we keep calling until the returned derivation
+    /// path's last component reaches `target_index`.
+    pub async fn ensure_bip44_receive_addresses_up_to(
+        &self,
+        seed_hash: WalletSeedHash,
+        target_index: u32,
+    ) -> Result<u32, String> {
+        let mut generated = 0u32;
+        loop {
+            let derived = self.next_bip44_receive_address(seed_hash, 0).await?;
+            let current_index = derived
+                .derivation_path
+                .as_ref()
+                .last()
+                .and_then(|c| match c {
+                    ChildNumber::Normal { index } => Some(*index),
+                    _ => None,
+                })
+                .unwrap_or(0);
+            generated += 1;
+            if current_index >= target_index {
+                break;
+            }
+            if generated > 1000 {
+                return Err("Address pool extension exceeded safety limit".to_string());
+            }
+        }
+        if generated > 0 {
+            tracing::info!(
+                seed = %hex::encode(seed_hash),
+                generated,
+                target_index,
+                "Extended SPV address pool to cover DB-known indices"
+            );
+        }
+        Ok(generated)
     }
 
     fn default_account_creation_options() -> WalletAccountCreationOptions {

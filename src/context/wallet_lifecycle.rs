@@ -69,6 +69,18 @@ impl AppContext {
                     .count()
             })
             .unwrap_or(0);
+        // Fallback: if no open wallets in memory yet but the database has
+        // wallets for this network, expect at least 1.
+        // bootstrap_loaded_wallets will load them shortly and the SPV wait
+        // loop will block until load completes.
+        let expected_wallets = if expected_wallets == 0 {
+            self.db
+                .wallet_count_for_network(&self.network)
+                .unwrap_or(0)
+                .min(1)
+        } else {
+            expected_wallets
+        };
         // Register reconcile channel BEFORE starting SPV so the event handlers
         // (spawned inside run_spv_loop) always capture a valid sender.
         self.spv_setup_reconcile_listener();
@@ -297,9 +309,38 @@ impl AppContext {
 
     fn queue_spv_wallet_load(self: &Arc<Self>, seed_hash: WalletSeedHash, seed_bytes: [u8; 64]) {
         let spv = Arc::clone(&self.spv_manager);
+        let db = Arc::clone(&self.db);
         self.subtasks.spawn_sync("spv_wallet_load", async move {
             if let Err(error) = spv.load_wallet_from_seed(seed_hash, seed_bytes).await {
                 tracing::error!(seed = %hex::encode(seed_hash), %error, "Failed to load SPV wallet from seed");
+                return;
+            }
+
+            // Extend the SPV address pool to cover all BIP44 receive addresses
+            // previously stored in the database. The default gap limit is 30, so
+            // only extend when the DB has indices beyond that.
+            match db.max_bip44_receive_index(&seed_hash) {
+                Ok(Some(max_index)) if max_index >= 30 => {
+                    if let Err(e) = spv
+                        .ensure_bip44_receive_addresses_up_to(seed_hash, max_index)
+                        .await
+                    {
+                        tracing::warn!(
+                            seed = %hex::encode(seed_hash),
+                            max_index,
+                            error = %e,
+                            "Failed to extend SPV address pool to cover DB-known indices"
+                        );
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!(
+                        seed = %hex::encode(seed_hash),
+                        error = %e,
+                        "Failed to query max BIP44 address index from database"
+                    );
+                }
             }
         });
     }

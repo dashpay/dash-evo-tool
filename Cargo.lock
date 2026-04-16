@@ -1961,7 +1961,7 @@ dependencies = [
 
 [[package]]
 name = "dash-evo-tool"
-version = "1.0.0-dev"
+version = "1.0.0-dev.1"
 dependencies = [
  "aes-gcm",
  "arboard",

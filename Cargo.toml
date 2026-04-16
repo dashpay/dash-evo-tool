@@ -1,6 +1,6 @@
 [package]
 name = "dash-evo-tool"
-version = "1.0.0-dev"
+version = "1.0.0-dev.1"
 license = "MIT"
 edition = "2024"
 default-run = "dash-evo-tool"

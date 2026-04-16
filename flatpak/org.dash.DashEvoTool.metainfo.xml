@@ -45,6 +45,6 @@
 
   <!-- Version and date are auto-synced from Cargo.toml by CI (flatpak.yml) -->
   <releases>
-    <release version="1.0.0-dev" date="2026-02-17" type="development" />
+    <release version="1.0.0-dev.1" date="2026-04-16" type="development" />
   </releases>
 </component>

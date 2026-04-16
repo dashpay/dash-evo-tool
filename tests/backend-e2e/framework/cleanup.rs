@@ -10,7 +10,7 @@ use crate::framework::wait;
 use dash_evo_tool::backend_task::BackendTask;
 use dash_evo_tool::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
 use dash_evo_tool::context::AppContext;
-use dash_evo_tool::model::wallet::WalletSeedHash;
+use dash_evo_tool::model::wallet::WalletId;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -20,7 +20,7 @@ use std::time::Duration;
 /// or UTXOs may not yet be spendable.
 pub async fn cleanup_test_wallets(
     app_context: &Arc<AppContext>,
-    framework_wallet_hash: WalletSeedHash,
+    framework_wallet_hash: WalletId,
 ) {
     // Framework wallet receive address — extract Arc before awaiting to avoid
     // holding std::sync::RwLock across .await (deadlocks with SPV's tokio lock).
@@ -34,7 +34,7 @@ pub async fn cleanup_test_wallets(
     let framework_address = get_receive_address(app_context, &framework_wallet).await;
 
     // Collect non-framework wallet hashes
-    let wallet_hashes: Vec<WalletSeedHash> = {
+    let wallet_hashes: Vec<WalletId> = {
         let wallets = app_context.wallets().read().expect("wallets lock");
         wallets
             .keys()

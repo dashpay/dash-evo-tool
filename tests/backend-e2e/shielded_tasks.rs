@@ -17,7 +17,7 @@ use dash_evo_tool::backend_task::shielded::ShieldedTask;
 use dash_evo_tool::backend_task::wallet::WalletTask;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_evo_tool::context::AppContext;
-use dash_evo_tool::model::wallet::WalletSeedHash;
+use dash_evo_tool::model::wallet::WalletId;
 use dash_sdk::dpp::dashcore::Network;
 use std::sync::Arc;
 
@@ -100,17 +100,19 @@ async fn step_warm_up_proving_key(app_context: &Arc<AppContext>) {
 /// Step 2 (TC-075): InitializeShieldedWallet
 ///
 /// Derives ZIP32 keys, loads commitment tree, and returns initial balance (likely 0).
-async fn step_init_wallet(app_context: &Arc<AppContext>, seed_hash: WalletSeedHash) {
+async fn step_init_wallet(app_context: &Arc<AppContext>, seed_hash: WalletId) {
     tracing::info!("=== Step 2: InitializeShieldedWallet ===");
 
-    let task = BackendTask::ShieldedTask(ShieldedTask::InitializeShieldedWallet { seed_hash });
+    let task = BackendTask::ShieldedTask(ShieldedTask::InitializeShieldedWallet {
+        wallet_id: seed_hash,
+    });
     let result = run_task(app_context, task)
         .await
         .expect("InitializeShieldedWallet should succeed");
 
     match result {
         BackendTaskSuccessResult::ShieldedInitialized {
-            seed_hash: sh,
+            wallet_id: sh,
             balance,
         } => {
             assert_eq!(sh, seed_hash, "seed_hash should match");
@@ -124,10 +126,10 @@ async fn step_init_wallet(app_context: &Arc<AppContext>, seed_hash: WalletSeedHa
 ///
 /// Trial-decrypts platform notes and updates the commitment tree.
 /// Returns `false` if the platform does not support shielded ops (caller should stop).
-async fn step_sync_notes(app_context: &Arc<AppContext>, seed_hash: WalletSeedHash) -> bool {
+async fn step_sync_notes(app_context: &Arc<AppContext>, seed_hash: WalletId) -> bool {
     tracing::info!("=== Step 3: SyncNotes ===");
 
-    let task = BackendTask::ShieldedTask(ShieldedTask::SyncNotes { seed_hash });
+    let task = BackendTask::ShieldedTask(ShieldedTask::SyncNotes { wallet_id: seed_hash });
     let result = run_task(app_context, task).await;
 
     match result {
@@ -137,7 +139,7 @@ async fn step_sync_notes(app_context: &Arc<AppContext>, seed_hash: WalletSeedHas
         }
         Err(e) => panic!("SyncNotes failed unexpectedly: {e:?}"),
         Ok(BackendTaskSuccessResult::ShieldedNotesSynced {
-            seed_hash: sh,
+            wallet_id: sh,
             new_notes,
             balance,
         }) => {
@@ -157,17 +159,19 @@ async fn step_sync_notes(app_context: &Arc<AppContext>, seed_hash: WalletSeedHas
 /// Step 4 (TC-077): CheckNullifiers
 ///
 /// Checks the nullifier set to detect spent notes.
-async fn step_check_nullifiers(app_context: &Arc<AppContext>, seed_hash: WalletSeedHash) {
+async fn step_check_nullifiers(app_context: &Arc<AppContext>, seed_hash: WalletId) {
     tracing::info!("=== Step 4: CheckNullifiers ===");
 
-    let task = BackendTask::ShieldedTask(ShieldedTask::CheckNullifiers { seed_hash });
+    let task = BackendTask::ShieldedTask(ShieldedTask::CheckNullifiers {
+        wallet_id: seed_hash,
+    });
     let result = run_task(app_context, task)
         .await
         .expect("CheckNullifiers should succeed");
 
     match result {
         BackendTaskSuccessResult::ShieldedNullifiersChecked {
-            seed_hash: sh,
+            wallet_id: sh,
             spent_count,
         } => {
             assert_eq!(sh, seed_hash, "seed_hash should match");
@@ -183,13 +187,13 @@ async fn step_check_nullifiers(app_context: &Arc<AppContext>, seed_hash: WalletS
 /// Returns `false` if the platform does not support shielded ops (caller should stop).
 async fn step_shield_from_asset_lock(
     app_context: &Arc<AppContext>,
-    seed_hash: WalletSeedHash,
+    seed_hash: WalletId,
 ) -> bool {
     tracing::info!("=== Step 5: ShieldFromAssetLock ===");
 
     let amount_duffs = 500_000; // 0.005 DASH
     let task = BackendTask::ShieldedTask(ShieldedTask::ShieldFromAssetLock {
-        seed_hash,
+        wallet_id: seed_hash,
         amount_duffs,
         source_address: None,
     });
@@ -202,7 +206,7 @@ async fn step_shield_from_asset_lock(
         }
         Err(e) => panic!("ShieldFromAssetLock failed unexpectedly: {e:?}"),
         Ok(BackendTaskSuccessResult::ShieldedFromAssetLock {
-            seed_hash: sh,
+            wallet_id: sh,
             amount,
         }) => {
             assert_eq!(sh, seed_hash, "seed_hash should match");
@@ -217,7 +221,7 @@ async fn step_shield_from_asset_lock(
     }
 
     // Verify: SyncNotes should show increased balance
-    let sync_task = BackendTask::ShieldedTask(ShieldedTask::SyncNotes { seed_hash });
+    let sync_task = BackendTask::ShieldedTask(ShieldedTask::SyncNotes { wallet_id: seed_hash });
     let sync_result = run_task(app_context, sync_task).await;
 
     match sync_result {
@@ -244,7 +248,7 @@ async fn step_shield_from_asset_lock(
 ///
 /// Private transfer within the shielded pool (Type 16).
 /// Returns `false` if the platform does not support shielded ops.
-async fn step_shielded_transfer(app_context: &Arc<AppContext>, seed_hash: WalletSeedHash) -> bool {
+async fn step_shielded_transfer(app_context: &Arc<AppContext>, seed_hash: WalletId) -> bool {
     tracing::info!("=== Step 6: ShieldedTransfer ===");
 
     // Use the wallet's own default shielded address as recipient (self-transfer)
@@ -256,7 +260,7 @@ async fn step_shielded_transfer(app_context: &Arc<AppContext>, seed_hash: Wallet
 
     let transfer_amount = 50_000;
     let task = BackendTask::ShieldedTask(ShieldedTask::ShieldedTransfer {
-        seed_hash,
+        wallet_id: seed_hash,
         amount: transfer_amount,
         recipient_address_bytes,
     });
@@ -269,7 +273,7 @@ async fn step_shielded_transfer(app_context: &Arc<AppContext>, seed_hash: Wallet
         }
         Err(e) => panic!("ShieldedTransfer failed unexpectedly: {e:?}"),
         Ok(BackendTaskSuccessResult::ShieldedTransferComplete {
-            seed_hash: sh,
+            wallet_id: sh,
             amount,
         }) => {
             assert_eq!(sh, seed_hash, "seed_hash should match");
@@ -286,7 +290,7 @@ async fn step_shielded_transfer(app_context: &Arc<AppContext>, seed_hash: Wallet
 ///
 /// Unshield credits from the shielded pool to a platform address (Type 17).
 /// Returns `false` if the platform does not support shielded ops.
-async fn step_unshield(app_context: &Arc<AppContext>, seed_hash: WalletSeedHash) -> bool {
+async fn step_unshield(app_context: &Arc<AppContext>, seed_hash: WalletId) -> bool {
     tracing::info!("=== Step 7: UnshieldCredits ===");
 
     let platform_addr = {
@@ -304,7 +308,7 @@ async fn step_unshield(app_context: &Arc<AppContext>, seed_hash: WalletSeedHash)
 
     let unshield_amount = 30_000;
     let task = BackendTask::ShieldedTask(ShieldedTask::UnshieldCredits {
-        seed_hash,
+        wallet_id: seed_hash,
         amount: unshield_amount,
         to_platform_address: platform_addr,
     });
@@ -317,7 +321,7 @@ async fn step_unshield(app_context: &Arc<AppContext>, seed_hash: WalletSeedHash)
         }
         Err(e) => panic!("UnshieldCredits failed unexpectedly: {e:?}"),
         Ok(BackendTaskSuccessResult::ShieldedCreditsUnshielded {
-            seed_hash: sh,
+            wallet_id: sh,
             amount,
         }) => {
             assert_eq!(sh, seed_hash, "seed_hash should match");
@@ -328,8 +332,9 @@ async fn step_unshield(app_context: &Arc<AppContext>, seed_hash: WalletSeedHash)
     }
 
     // Verify: platform address should show credits
-    let balance_task =
-        BackendTask::WalletTask(WalletTask::FetchPlatformAddressBalances { seed_hash });
+    let balance_task = BackendTask::WalletTask(WalletTask::FetchPlatformAddressBalances {
+        wallet_id: seed_hash,
+    });
     let balance_result = run_task(app_context, balance_task)
         .await
         .expect("FetchPlatformAddressBalances should succeed");
@@ -352,7 +357,7 @@ async fn step_unshield(app_context: &Arc<AppContext>, seed_hash: WalletSeedHash)
 /// Step 8 (TC-082): ShieldedWithdrawal
 ///
 /// Withdraw from the shielded pool directly to a core L1 address (Type 19).
-async fn step_withdrawal(app_context: &Arc<AppContext>, seed_hash: WalletSeedHash) {
+async fn step_withdrawal(app_context: &Arc<AppContext>, seed_hash: WalletId) {
     tracing::info!("=== Step 8: ShieldedWithdrawal ===");
 
     let core_addr = {
@@ -368,7 +373,7 @@ async fn step_withdrawal(app_context: &Arc<AppContext>, seed_hash: WalletSeedHas
 
     let withdrawal_amount = 20_000;
     let task = BackendTask::ShieldedTask(ShieldedTask::ShieldedWithdrawal {
-        seed_hash,
+        wallet_id: seed_hash,
         amount: withdrawal_amount,
         to_core_address: core_addr.clone(),
     });
@@ -380,7 +385,7 @@ async fn step_withdrawal(app_context: &Arc<AppContext>, seed_hash: WalletSeedHas
         }
         Err(e) => panic!("ShieldedWithdrawal failed unexpectedly: {e:?}"),
         Ok(BackendTaskSuccessResult::ShieldedWithdrawalComplete {
-            seed_hash: sh,
+            wallet_id: sh,
             amount,
         }) => {
             assert_eq!(sh, seed_hash, "seed_hash should match");
@@ -440,7 +445,7 @@ async fn tc_079_shield_credits() {
     // Fund the platform address
     let fund_amount = 1_000_000; // 1M duffs = 0.01 DASH
     let fund_task = BackendTask::WalletTask(WalletTask::FundPlatformAddressFromWalletUtxos {
-        seed_hash,
+        wallet_id: seed_hash,
         amount: fund_amount,
         destination: platform_addr,
         fee_deduct_from_output: true,
@@ -452,8 +457,9 @@ async fn tc_079_shield_credits() {
     tracing::info!("Platform address funded with {} duffs", fund_amount);
 
     // Fetch balances to confirm funding
-    let balance_task =
-        BackendTask::WalletTask(WalletTask::FetchPlatformAddressBalances { seed_hash });
+    let balance_task = BackendTask::WalletTask(WalletTask::FetchPlatformAddressBalances {
+        wallet_id: seed_hash,
+    });
     let balance_result = run_task(app_context, balance_task)
         .await
         .expect("FetchPlatformAddressBalances should succeed");
@@ -473,7 +479,7 @@ async fn tc_079_shield_credits() {
     // Shield a portion of the credits
     let shield_amount = available_credits / 2;
     let task = BackendTask::ShieldedTask(ShieldedTask::ShieldCredits {
-        seed_hash,
+        wallet_id: seed_hash,
         amount: shield_amount,
         from_address: platform_addr,
         nonce_override: None,
@@ -487,7 +493,7 @@ async fn tc_079_shield_credits() {
         }
         Err(e) => panic!("ShieldCredits failed unexpectedly: {e:?}"),
         Ok(BackendTaskSuccessResult::ShieldedCreditsShielded {
-            seed_hash: sh,
+            wallet_id: sh,
             amount,
         }) => {
             assert_eq!(sh, seed_hash, "seed_hash should match");
@@ -513,10 +519,10 @@ async fn tc_083_error_uninitialized_wallet() {
     let app_context = &test_ctx.app_context;
 
     // Use a fake seed hash that has never been initialized
-    let fake_seed_hash: WalletSeedHash = [0xDE; 32];
+    let fake_seed_hash: WalletId = [0xDE; 32];
 
     let task = BackendTask::ShieldedTask(ShieldedTask::SyncNotes {
-        seed_hash: fake_seed_hash,
+        wallet_id: fake_seed_hash,
     });
     let result = run_task(app_context, task).await;
 

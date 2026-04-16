@@ -52,19 +52,19 @@ async fn test_spv_sync_and_create_wallet() {
             .get_wallets(&Network::Testnet)
             .expect("DB query should succeed");
         assert!(
-            db_wallets.iter().any(|w| w.seed_hash() == seed_hash),
+            db_wallets.iter().any(|w| w.wallet_id() == seed_hash),
             "Wallet should be persisted in DB"
         );
     }
 
     // Verify in SPV (10s timeout) — wallet is registered with
-    // PlatformWalletManager, indicated by the wallet-ID mapping.
+    // PlatformWalletManager, indicated by its presence in the wallets map.
     let wallet_in_spv = timeout(Duration::from_secs(10), async {
         loop {
             let registered = app_context
-                .wallet_id_mapping()
-                .lock()
-                .map(|m| m.wallet_id_for_seed(&seed_hash).is_some())
+                .wallets()
+                .read()
+                .map(|w| w.contains_key(&seed_hash))
                 .unwrap_or(false);
             if registered {
                 return true;

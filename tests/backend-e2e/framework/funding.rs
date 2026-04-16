@@ -1,7 +1,7 @@
 //! Faucet HTTP client and balance verification for test wallets on testnet.
 
 use dash_evo_tool::context::AppContext;
-use dash_evo_tool::model::wallet::WalletSeedHash;
+use dash_evo_tool::model::wallet::WalletId;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,7 +13,7 @@ const MIN_BALANCE_DUFFS: u64 = 1_000_000_000; // 10 DASH
 ///
 /// If the balance is below the threshold, panics with the receive address
 /// and instructions for the user to fund it manually.
-pub async fn verify_framework_funded(app_context: &Arc<AppContext>, wallet_hash: WalletSeedHash) {
+pub async fn verify_framework_funded(app_context: &Arc<AppContext>, wallet_hash: WalletId) {
     // Read balance from lock-free atomics (no lock needed).
     let current_balance = {
         let wallets = app_context.wallets().read().expect("wallets lock");
@@ -46,7 +46,7 @@ pub async fn verify_framework_funded(app_context: &Arc<AppContext>, wallet_hash:
 /// Get the wallet's current total balance and receive address.
 async fn get_wallet_balance_and_address(
     app_context: &Arc<AppContext>,
-    wallet_hash: WalletSeedHash,
+    wallet_hash: WalletId,
 ) -> (u64, String) {
     // Extract balance and PlatformWallet under short sync lock, then drop
     // the guard before any .await to avoid holding std::sync::RwLock across
@@ -64,7 +64,7 @@ async fn get_wallet_balance_and_address(
 
     let address = pw
         .core()
-        .next_receive_address()
+        .next_receive_address_for_account(0)
         .await
         .expect("Failed to get receive address")
         .to_string();

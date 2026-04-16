@@ -6,7 +6,7 @@ use crate::framework::task_runner::{run_task, run_task_with_nonce_retry};
 use dash_evo_tool::backend_task::core::CoreTask;
 use dash_evo_tool::backend_task::wallet::WalletTask;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
-use dash_evo_tool::model::wallet::WalletSeedHash;
+use dash_evo_tool::model::wallet::WalletId;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::identity::core_script::CoreScript;
 use std::collections::BTreeMap;
@@ -21,14 +21,14 @@ async fn tc_012_generate_receive_address() {
     let ctx = harness::ctx().await;
     let seed_hash = ctx.framework_wallet_hash;
 
-    let task1 = BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { seed_hash });
+    let task1 = BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { wallet_id: seed_hash });
     let result1 = run_task(&ctx.app_context, task1)
         .await
         .expect("TC-012: first GenerateReceiveAddress failed");
 
     let address1 = match result1 {
         BackendTaskSuccessResult::GeneratedReceiveAddress {
-            seed_hash: sh,
+            wallet_id: sh,
             address,
         } => {
             assert_eq!(sh, seed_hash, "TC-012: seed_hash mismatch");
@@ -46,7 +46,7 @@ async fn tc_012_generate_receive_address() {
     );
 
     // Second call should produce a different address (key derivation advances)
-    let task2 = BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { seed_hash });
+    let task2 = BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { wallet_id: seed_hash });
     let result2 = run_task(&ctx.app_context, task2)
         .await
         .expect("TC-012: second GenerateReceiveAddress failed");
@@ -77,14 +77,16 @@ async fn tc_013_fetch_platform_address_balances_empty() {
     let ctx = harness::ctx().await;
     let seed_hash = ctx.framework_wallet_hash;
 
-    let task = BackendTask::WalletTask(WalletTask::FetchPlatformAddressBalances { seed_hash });
+    let task = BackendTask::WalletTask(WalletTask::FetchPlatformAddressBalances {
+        wallet_id: seed_hash,
+    });
     let result = run_task(&ctx.app_context, task)
         .await
         .expect("TC-013: FetchPlatformAddressBalances failed");
 
     match result {
         BackendTaskSuccessResult::PlatformAddressBalances {
-            seed_hash: sh,
+            wallet_id: sh,
             balances,
             network,
         } => {
@@ -108,7 +110,7 @@ async fn tc_013_fetch_platform_address_balances_empty() {
 /// Fund a platform address from wallet UTXOs and return the seed hash.
 async fn step_fund_platform_address(
     ctx: &crate::framework::harness::BackendTestContext,
-) -> WalletSeedHash {
+) -> WalletId {
     tracing::info!("=== Step 1: Fund platform address from wallet UTXOs ===");
     let seed_hash = ctx.framework_wallet_hash;
 
@@ -132,7 +134,7 @@ async fn step_fund_platform_address(
     );
 
     let task = BackendTask::WalletTask(WalletTask::FundPlatformAddressFromWalletUtxos {
-        seed_hash,
+        wallet_id: seed_hash,
         amount: 1_000_000, // 0.01 DASH in duffs
         destination: platform_addr,
         fee_deduct_from_output: true,
@@ -147,7 +149,7 @@ async fn step_fund_platform_address(
         .expect("step_fund_platform_address: FundPlatformAddressFromWalletUtxos failed");
 
     match result {
-        BackendTaskSuccessResult::PlatformAddressFunded { seed_hash: sh } => {
+        BackendTaskSuccessResult::PlatformAddressFunded { wallet_id: sh } => {
             assert_eq!(
                 sh, seed_hash,
                 "step_fund_platform_address: seed_hash mismatch"
@@ -166,7 +168,7 @@ async fn step_fund_platform_address(
 /// Fetch platform address balances and assert the address funded in step 1 has credits.
 async fn step_fetch_balances(
     ctx: &crate::framework::harness::BackendTestContext,
-    seed_hash: WalletSeedHash,
+    seed_hash: WalletId,
 ) {
     tracing::info!("=== Step 2: Fetch platform address balances after funding ===");
 
@@ -186,14 +188,16 @@ async fn step_fetch_balances(
         )
     };
 
-    let task = BackendTask::WalletTask(WalletTask::FetchPlatformAddressBalances { seed_hash });
+    let task = BackendTask::WalletTask(WalletTask::FetchPlatformAddressBalances {
+        wallet_id: seed_hash,
+    });
     let result = run_task(&ctx.app_context, task)
         .await
         .expect("step_fetch_balances: FetchPlatformAddressBalances failed");
 
     match result {
         BackendTaskSuccessResult::PlatformAddressBalances {
-            seed_hash: sh,
+            wallet_id: sh,
             balances,
             network,
         } => {
@@ -227,7 +231,7 @@ async fn step_fetch_balances(
 /// Transfer half the funded balance to a second platform address.
 async fn step_transfer_credits(
     ctx: &crate::framework::harness::BackendTestContext,
-    seed_hash: WalletSeedHash,
+    seed_hash: WalletId,
 ) {
     tracing::info!("=== Step 3: Transfer platform credits to a second address ===");
 
@@ -251,8 +255,9 @@ async fn step_transfer_credits(
         get_platform_address(&wallet_arc, dash_sdk::dpp::dashcore::Network::Testnet, true);
 
     // Fetch current platform address balances to get the funded amount.
-    let fetch_task =
-        BackendTask::WalletTask(WalletTask::FetchPlatformAddressBalances { seed_hash });
+    let fetch_task = BackendTask::WalletTask(WalletTask::FetchPlatformAddressBalances {
+        wallet_id: seed_hash,
+    });
     let fetch_result = run_task(&ctx.app_context, fetch_task)
         .await
         .expect("step_transfer_credits: pre-transfer FetchPlatformAddressBalances failed");
@@ -311,7 +316,7 @@ async fn step_transfer_credits(
     );
 
     let task = BackendTask::WalletTask(WalletTask::TransferPlatformCredits {
-        seed_hash,
+        wallet_id: seed_hash,
         inputs,
         outputs,
         fee_payer_index: 0,
@@ -322,7 +327,7 @@ async fn step_transfer_credits(
         .expect("step_transfer_credits: TransferPlatformCredits failed");
 
     match result {
-        BackendTaskSuccessResult::PlatformCreditsTransferred { seed_hash: sh } => {
+        BackendTaskSuccessResult::PlatformCreditsTransferred { wallet_id: sh } => {
             assert_eq!(sh, seed_hash, "step_transfer_credits: seed_hash mismatch");
             tracing::info!("step_transfer_credits: PlatformCreditsTransferred confirmed");
         }
@@ -333,8 +338,9 @@ async fn step_transfer_credits(
     }
 
     // Verify destination has credits after transfer
-    let verify_task =
-        BackendTask::WalletTask(WalletTask::FetchPlatformAddressBalances { seed_hash });
+    let verify_task = BackendTask::WalletTask(WalletTask::FetchPlatformAddressBalances {
+        wallet_id: seed_hash,
+    });
     let verify_result = run_task(&ctx.app_context, verify_task)
         .await
         .expect("step_transfer_credits: post-transfer FetchPlatformAddressBalances failed");
@@ -355,7 +361,7 @@ async fn step_transfer_credits(
 /// Fund a fresh platform address and withdraw its balance back to Core.
 async fn step_withdraw(
     ctx: &crate::framework::harness::BackendTestContext,
-    seed_hash: WalletSeedHash,
+    seed_hash: WalletId,
 ) {
     tracing::info!("=== Step 4: Withdraw from platform address back to Core ===");
 
@@ -381,7 +387,7 @@ async fn step_withdraw(
         get_platform_address(&wallet_arc, dash_sdk::dpp::dashcore::Network::Testnet, true);
 
     let fund_task = BackendTask::WalletTask(WalletTask::FundPlatformAddressFromWalletUtxos {
-        seed_hash,
+        wallet_id: seed_hash,
         amount: 500_000,
         destination: fresh_addr,
         fee_deduct_from_output: true,
@@ -405,8 +411,9 @@ async fn step_withdraw(
     }
 
     let (withdrawal_addr, withdrawal_balance) = loop {
-        let fetch_task =
-            BackendTask::WalletTask(WalletTask::FetchPlatformAddressBalances { seed_hash });
+        let fetch_task = BackendTask::WalletTask(WalletTask::FetchPlatformAddressBalances {
+            wallet_id: seed_hash,
+        });
         let fetch_result = run_task(&ctx.app_context, fetch_task)
             .await
             .expect("step_withdraw: FetchPlatformAddressBalances failed");
@@ -455,7 +462,7 @@ async fn step_withdraw(
 
     // Get a Core receive address for the withdrawal output
     let receive_addr_task =
-        BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { seed_hash });
+        BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { wallet_id: seed_hash });
     let receive_result = run_task(&ctx.app_context, receive_addr_task)
         .await
         .expect("step_withdraw: GenerateReceiveAddress failed");
@@ -481,7 +488,7 @@ async fn step_withdraw(
     inputs.insert(withdrawal_addr, withdrawal_balance);
 
     let task = BackendTask::WalletTask(WalletTask::WithdrawFromPlatformAddress {
-        seed_hash,
+        wallet_id: seed_hash,
         inputs,
         output_script,
         core_fee_per_byte: 1,
@@ -493,7 +500,7 @@ async fn step_withdraw(
         .expect("step_withdraw: WithdrawFromPlatformAddress failed");
 
     match result {
-        BackendTaskSuccessResult::PlatformAddressWithdrawal { seed_hash: sh } => {
+        BackendTaskSuccessResult::PlatformAddressWithdrawal { wallet_id: sh } => {
             assert_eq!(sh, seed_hash, "step_withdraw: seed_hash mismatch");
             tracing::info!("step_withdraw: PlatformAddressWithdrawal confirmed");
         }
@@ -504,8 +511,9 @@ async fn step_withdraw(
     }
 
     // Verify the source address balance is reduced
-    let verify_task =
-        BackendTask::WalletTask(WalletTask::FetchPlatformAddressBalances { seed_hash });
+    let verify_task = BackendTask::WalletTask(WalletTask::FetchPlatformAddressBalances {
+        wallet_id: seed_hash,
+    });
     let verify_result = run_task(&ctx.app_context, verify_task)
         .await
         .expect("step_withdraw: post-withdrawal FetchPlatformAddressBalances failed");
@@ -641,7 +649,7 @@ async fn tc_018_fund_platform_address_from_asset_lock() {
         platform_addr
     );
     let fund_task = BackendTask::WalletTask(WalletTask::FundPlatformAddressFromAssetLock {
-        seed_hash,
+        wallet_id: seed_hash,
         asset_lock_proof: Box::new(asset_lock_proof),
         asset_lock_address,
         outputs,
@@ -652,7 +660,7 @@ async fn tc_018_fund_platform_address_from_asset_lock() {
         .expect("TC-018: FundPlatformAddressFromAssetLock failed");
 
     match result {
-        BackendTaskSuccessResult::PlatformAddressFunded { seed_hash: sh } => {
+        BackendTaskSuccessResult::PlatformAddressFunded { wallet_id: sh } => {
             assert_eq!(sh, seed_hash, "TC-018: seed_hash mismatch");
             tracing::info!("TC-018 passed: PlatformAddressFunded confirmed");
         }
@@ -669,14 +677,14 @@ async fn tc_019_wallet_task_error_unknown_seed_hash() {
     let ctx = harness::ctx().await;
 
     // Construct a seed hash that does not match any loaded wallet
-    let fake_seed_hash: WalletSeedHash = [
+    let fake_seed_hash: WalletId = [
         0xde, 0xad, 0xbe, 0xef, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa,
         0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a,
         0x0b, 0x0c,
     ];
 
     let task = BackendTask::WalletTask(WalletTask::GenerateReceiveAddress {
-        seed_hash: fake_seed_hash,
+        wallet_id: fake_seed_hash,
     });
 
     let result = run_task(&ctx.app_context, task).await;

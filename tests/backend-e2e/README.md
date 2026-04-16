@@ -187,6 +187,74 @@ Located in `tests/backend-e2e/framework/`:
 | `identity_withdraw` | Identity credit withdrawal to a Core address |
 | `masternode_identity_tasks` | MN/Evonode identity loading, refresh, error cases, DPNS voting (TC-084 to TC-090) |
 
+## Test guidelines
+
+### Independence and parallel execution
+
+All tests **must** be independent and run in parallel. Never use
+`--test-threads=1` unless debugging a specific issue.
+
+- **No ordering dependencies.** Every test must pass regardless of which other
+  tests run (or don't run) and in any execution order.
+- **No cross-test shared mutable state.** The `BackendTestContext` singleton and
+  `OnceCell` fixtures (e.g., `shared_identity()`) are read-only after init —
+  they are safe to share. But one test must never rely on *another test* having
+  populated a fixture or modified state.
+- **Self-contained setup.** If a test needs a funded wallet, identity, or DPNS
+  name, it creates its own. Shared fixtures from `fixtures.rs` are acceptable
+  for expensive setup (identity registration, token deployment) because any test
+  can trigger their init via `OnceCell` — they don't depend on test ordering.
+- **Graceful skip, not panic.** When optional env vars (e.g., `E2E_MN_PROTX_HASH`)
+  are missing, log a warning and return — never `panic!` or `skip!`.
+
+### Tracing and log output
+
+Use `#[tracing::instrument]` on every test function. This creates a tracing span
+named after the function, so every log line in parallel output is tagged with the
+originating test:
+
+```
+2026-04-16T10:30:00Z  INFO tc_084_load_masternode_identity: loaded MN identity id=...
+2026-04-16T10:30:00Z  INFO tc_088_load_mn_invalid_protx: got expected error error=...
+```
+
+Use structured tracing fields instead of string-interpolated prefixes:
+
+```rust
+// Good — structured, grep-friendly
+tracing::info!(id = ?qi.identity.id(), identity_type = %qi.identity_type, "loaded identity");
+
+// Avoid — redundant with span name, harder to parse
+tracing::info!("TC-084: loaded identity {:?}, type={}", qi.identity.id(), qi.identity_type);
+```
+
+### State transitions and nonce handling
+
+Use `run_task_with_nonce_retry()` (not `run_task()`) for any task that submits a
+state transition to Platform. This includes identity registration, top-up, key
+addition, DPNS registration, token operations, DashPay mutations, and voting.
+
+Nonce conflicts are expected under parallel execution — the retry wrapper handles
+`IdentityNonceOverflow` and `IdentityNonceNotFound` with 3 retries and 2s delay.
+
+### Assertions
+
+- **Assert on specific tracked values**, not just "any match". If you registered
+  an identity in step 1, assert on *that* identity's ID in step 2 — don't just
+  check that *some* identity exists.
+- **Filter collections by known identifiers.** When checking incoming contact
+  requests, filter by sender `identity_id` instead of taking `[0]`.
+- **Use `FeatureGate`** for proactive feature support checks. If a Platform
+  feature may not be enabled on the current network, check before attempting the
+  operation — don't wait for a cryptic error.
+
+### Error path testing
+
+- **Log errors via Display (`{}`), not Debug (`{:?}`).** Debug output may include
+  raw key bytes or internal SDK state. Display is safe and user-facing.
+- **Error tests need no env vars when possible.** E.g., TC-088 uses a fake ProTx
+  hash and always runs — no credentials needed.
+
 ## Writing new tests
 
 ### Step 1: Create a test module
@@ -209,6 +277,7 @@ use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
+#[tracing::instrument]
 async fn test_my_feature() {
     let ctx = ctx().await;
     let app_context = &ctx.app_context;
@@ -240,10 +309,11 @@ Key points:
   that are bound to the runtime that created them. With `#[tokio::test]`, each test
   creates its own runtime; when the first test exits, its runtime drops and kills
   the SPV tasks, causing "channel closed" errors in later tests.
+- Always use `#[tracing::instrument]` for identifiable parallel log output.
 - Call `ctx().await` as the first line -- it initializes SPV and the framework
   wallet on first use.
-- Use `run_task()` to execute backend tasks. It creates a throwaway MPSC channel
-  and returns the `Result<BackendTaskSuccessResult, TaskError>` directly.
+- Use `run_task()` for read-only queries. Use `run_task_with_nonce_retry()` for
+  state transitions.
 - Match on the specific `BackendTaskSuccessResult` variant you expect. Panic on
   unexpected variants to get clear failure messages.
 

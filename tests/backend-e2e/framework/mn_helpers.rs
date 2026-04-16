@@ -12,7 +12,11 @@ pub struct MnCredentials {
 }
 
 /// Read `E2E_MN_*` env vars. Returns `None` if `E2E_MN_PROTX_HASH` is not set.
+///
+/// Loads the project root `.env` file first (idempotent) so that env vars
+/// defined there are visible even before `ctx().await` initializes the harness.
 pub fn load_mn_credentials() -> Option<MnCredentials> {
+    let _ = dotenvy::dotenv();
     let protx_hash = std::env::var("E2E_MN_PROTX_HASH").ok()?;
     if protx_hash.is_empty() {
         return None;

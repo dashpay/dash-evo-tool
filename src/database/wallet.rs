@@ -1918,4 +1918,130 @@ mod tests {
             .expect("Failed to query total_received");
         assert_eq!(total_received, 10_000_000);
     }
+
+    /// Insert a dummy wallet row for test purposes.
+    fn insert_test_wallet(db: &Database, seed_hash: &[u8; 32], network: Network) {
+        let network_str = network.to_string();
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO wallet (seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, uses_password, network)
+             VALUES (?, ?, ?, ?, ?, 0, ?)",
+            rusqlite::params![
+                seed_hash.as_slice(),
+                vec![0u8; 64],
+                vec![0u8; 16],
+                vec![0u8; 12],
+                vec![0u8; 78],
+                network_str,
+            ],
+        )
+        .expect("Failed to insert test wallet");
+    }
+
+    /// Derive a valid test address by walking a deterministic BIP32 chain.
+    /// This avoids the need for cryptographically valid pubkeys assembled
+    /// byte-by-byte (which fail secp256k1 parsing).
+    fn derive_test_address(network: Network, bump: u32) -> Address {
+        let seed = [42u8; 64];
+        let secp = Secp256k1::new();
+        let master = ExtendedPrivKey::new_master(network, &seed).expect("master key");
+        let path = DerivationPath::from(vec![ChildNumber::Normal { index: bump }]);
+        let derived = master.derive_priv(&secp, &path).expect("derive");
+        let pubkey = dash_sdk::dpp::dashcore::PublicKey::new(
+            ExtendedPubKey::from_priv(&secp, &derived).public_key,
+        );
+        Address::p2pkh(&pubkey, network)
+    }
+
+    fn insert_bip44_receive_row(db: &Database, seed_hash: &[u8; 32], network: Network, index: u32) {
+        let address = derive_test_address(network, index);
+        let path = format!("m/44'/1'/0'/0/{index}");
+        let derivation_path = DerivationPath::from_str(&path).unwrap();
+        db.add_address_if_not_exists(
+            seed_hash,
+            &address,
+            &network,
+            &derivation_path,
+            DerivationPathReference::BIP44,
+            DerivationPathType::CLEAR_FUNDS,
+            None,
+        )
+        .expect("add_address_if_not_exists");
+    }
+
+    #[test]
+    fn test_max_bip44_receive_index_none_when_empty() {
+        let db = create_test_database().expect("create db");
+        let seed_hash = create_test_seed_hash();
+        assert_eq!(
+            db.max_bip44_receive_index(&seed_hash).expect("query"),
+            None,
+            "no rows should yield None"
+        );
+    }
+
+    #[test]
+    fn test_max_bip44_receive_index_returns_highest() {
+        let db = create_test_database().expect("create db");
+        let seed_hash = create_test_seed_hash();
+        insert_test_wallet(&db, &seed_hash, Network::Testnet);
+        for index in [0, 1, 5, 31, 15] {
+            insert_bip44_receive_row(&db, &seed_hash, Network::Testnet, index);
+        }
+        assert_eq!(
+            db.max_bip44_receive_index(&seed_hash).expect("query"),
+            Some(31),
+            "should return the largest stored index"
+        );
+    }
+
+    #[test]
+    fn test_max_bip44_receive_index_ignores_change_chain() {
+        let db = create_test_database().expect("create db");
+        let seed_hash = create_test_seed_hash();
+        insert_test_wallet(&db, &seed_hash, Network::Testnet);
+        insert_bip44_receive_row(&db, &seed_hash, Network::Testnet, 0);
+        insert_bip44_receive_row(&db, &seed_hash, Network::Testnet, 10);
+        // Also inject a change-chain (m/.../1/99) row that should NOT count.
+        let address = derive_test_address(Network::Testnet, 999_999);
+        let derivation_path = DerivationPath::from_str("m/44'/1'/0'/1/99").unwrap();
+        db.add_address_if_not_exists(
+            &seed_hash,
+            &address,
+            &Network::Testnet,
+            &derivation_path,
+            DerivationPathReference::BIP44,
+            DerivationPathType::CLEAR_FUNDS,
+            None,
+        )
+        .expect("add change address");
+        assert_eq!(
+            db.max_bip44_receive_index(&seed_hash).expect("query"),
+            Some(10),
+            "change-chain (m/.../1/*) rows must not influence the receive-chain max"
+        );
+    }
+
+    #[test]
+    fn test_wallet_count_for_network_counts_per_network() {
+        let db = create_test_database().expect("create db");
+        let mut seed_a = create_test_seed_hash();
+        let mut seed_b = create_test_seed_hash();
+        seed_a[0] = 0xA0;
+        seed_b[0] = 0xB0;
+
+        insert_test_wallet(&db, &seed_a, Network::Testnet);
+        insert_test_wallet(&db, &seed_b, Network::Testnet);
+
+        assert_eq!(
+            db.wallet_count_for_network(&Network::Testnet)
+                .expect("count"),
+            2
+        );
+        assert_eq!(
+            db.wallet_count_for_network(&Network::Mainnet)
+                .expect("count"),
+            0
+        );
+    }
 }

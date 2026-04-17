@@ -573,7 +573,9 @@ impl ScreenLike for ImportMnemonicScreen {
 
                             // Check seed phrase validity whenever all words are filled
                             if self.seed_phrase_words.iter().all(|string| !string.is_empty()) {
-                                match Mnemonic::parse_normalized(self.seed_phrase_words.join(" ").as_str()) {
+                                let joined = self.seed_phrase_words.join(" ");
+                                let sanitized = crate::model::wallet::mnemonic::sanitize_mnemonic_input(&joined);
+                                match Mnemonic::parse_normalized(&sanitized) {
                                     Ok(mnemonic) => {
                                         self.seed_phrase = Some(mnemonic);
                                         // Clear any existing seed phrase error

@@ -2026,6 +2026,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tz-rs",
+ "unicode-normalization",
  "urlencoding",
  "which 8.0.2",
  "winres",

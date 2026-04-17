@@ -40,6 +40,7 @@ tokio = { version = "1.46.1", features = ["full"] }
 bincode = { version = "=2.0.1", features = ["serde"] }
 hex = { version = "0.4.3" }
 itertools = "0.14.0"
+unicode-normalization = "0.1.25"
 enum-iterator = "2.1.0"
 futures = "0.3.31"
 tracing = "0.1.41"

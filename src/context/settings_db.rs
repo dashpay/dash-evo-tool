@@ -1,6 +1,11 @@
 use super::{AppContext, SettingsCacheGuard};
+use crate::backend_task::error::TaskError;
+use crate::model::secret::Secret;
 use crate::model::settings::Settings;
+use crate::model::wallet::encryption::{DASH_SECRET_MESSAGE, derive_password_key};
 use crate::ui::RootScreenType;
+use aes_gcm::aead::Aead;
+use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use rusqlite::Result;
 
 impl AppContext {
@@ -51,6 +56,45 @@ impl AppContext {
         let mut guard = self.cached_settings.write().unwrap();
         *guard = None;
         guard
+    }
+
+    /// Whether the app has a main password configured.
+    ///
+    /// The main password is set once via the wallet creation/import UI and
+    /// protects wallet seeds at rest. Its presence is derived from whether
+    /// a `password_check` blob and its Argon2 salt / AES-GCM nonce have been
+    /// stored in the settings row.
+    pub fn has_main_password(&self) -> bool {
+        self.password_info.is_some()
+    }
+
+    /// Verify that the supplied password matches the app's main password.
+    ///
+    /// Fails with `MainPasswordMismatch` if no main password is set or the
+    /// supplied password does not decrypt the `password_check` blob back to
+    /// `DASH_SECRET_MESSAGE`. Argon2 + AES-GCM make this operation slow on
+    /// purpose — callers should not put it inside tight loops.
+    pub fn verify_main_password(&self, candidate: &Secret) -> std::result::Result<(), TaskError> {
+        let info = self
+            .password_info
+            .as_ref()
+            .ok_or(TaskError::MainPasswordMismatch)?;
+
+        let key = derive_password_key(candidate.expose_secret(), &info.salt)
+            .map_err(|_| TaskError::MainPasswordMismatch)?;
+
+        let cipher =
+            Aes256Gcm::new_from_slice(&key).map_err(|_| TaskError::MainPasswordMismatch)?;
+        let nonce = Nonce::from_slice(&info.nonce);
+        let plaintext = cipher
+            .decrypt(nonce, info.password_checker.as_slice())
+            .map_err(|_| TaskError::MainPasswordMismatch)?;
+
+        if plaintext.as_slice() == DASH_SECRET_MESSAGE.as_slice() {
+            Ok(())
+        } else {
+            Err(TaskError::MainPasswordMismatch)
+        }
     }
 
     /// Retrieves the current settings

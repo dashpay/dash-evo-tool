@@ -92,6 +92,38 @@ impl Database {
         tx.commit()
     }
 
+    /// List every network that currently stores a wallet with the given seed hash.
+    ///
+    /// A single mnemonic can be imported across multiple networks (mainnet + testnet
+    /// is the common case). This helper surfaces that information so callers can
+    /// warn the user that deleting a wallet on one network will not affect the
+    /// other network's copy. Returns the raw `network` column values as strings —
+    /// e.g. `"mainnet"`, `"testnet"`.
+    pub fn wallet_seed_hash_networks(&self, seed_hash: &[u8; 32]) -> rusqlite::Result<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt =
+            conn.prepare("SELECT network FROM wallet WHERE seed_hash = ? ORDER BY network")?;
+        let rows = stmt.query_map([seed_hash.as_slice()], |row| row.get::<_, String>(0))?;
+        rows.collect()
+    }
+
+    /// Count the local identities linked to a given wallet seed hash on a network.
+    ///
+    /// Used before deletion to warn the user how many identity records will be
+    /// removed alongside the wallet (CASCADE drops them automatically).
+    pub fn identity_count_for_wallet(
+        &self,
+        seed_hash: &[u8; 32],
+        network: &Network,
+    ) -> rusqlite::Result<u32> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM identity WHERE wallet = ? AND network = ?",
+            params![seed_hash.as_slice(), network.to_string()],
+            |row| row.get(0),
+        )
+    }
+
     /// Update the Dash Core wallet name for an HD wallet.
     ///
     /// Returns `Ok(true)` if exactly one row was updated, `Ok(false)` if no

@@ -3,6 +3,7 @@ use std::fmt;
 use std::ops::Range;
 
 use egui::TextBuffer;
+use serde::de::{Deserialize, Deserializer, Error as DeError, Visitor};
 use zeroize::{Zeroize, Zeroizing};
 
 /// Default pre-allocation capacity for `Secret` buffers.
@@ -270,6 +271,72 @@ impl From<&str> for Secret {
     }
 }
 
+// -- Deserialize -------------------------------------------------------------
+//
+// Secrets are accepted from JSON as plain strings. The intermediate `String`
+// created by the visitor is zeroized before the visitor returns so no
+// unprotected copy of the plaintext lingers on the stack. Callers should
+// arrange for the surrounding serde machinery to drop its copy promptly.
+
+struct SecretVisitor;
+
+impl<'de> Visitor<'de> for SecretVisitor {
+    type Value = Secret;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a string containing the secret value")
+    }
+
+    fn visit_str<E: DeError>(self, v: &str) -> Result<Self::Value, E> {
+        // `&str` is a borrow from the deserializer's buffer — wrap it in a
+        // Secret directly; there is no heap allocation of our own to wipe.
+        Ok(Secret::new(v))
+    }
+
+    fn visit_string<E: DeError>(self, mut v: String) -> Result<Self::Value, E> {
+        let secret = Secret::new(v.as_str());
+        // Wipe the interstitial owned String before it drops.
+        v.zeroize();
+        Ok(secret)
+    }
+}
+
+impl<'de> Deserialize<'de> for Secret {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_string(SecretVisitor)
+    }
+}
+
+// -- JsonSchema (for MCP tool parameters) ------------------------------------
+
+#[cfg(any(feature = "mcp", feature = "cli"))]
+const _: () = {
+    use rmcp::schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
+    use std::borrow::Cow;
+
+    impl JsonSchema for Secret {
+        fn schema_name() -> Cow<'static, str> {
+            Cow::Borrowed("Secret")
+        }
+
+        fn json_schema(_gen: &mut SchemaGenerator) -> Schema {
+            // Rendered as a plain JSON string. Callers must never log or echo
+            // the value — Secret's Debug impl redacts to "***".
+            json_schema!({
+                "type": "string",
+                "description": "Sensitive string value (e.g. password, mnemonic). Treated as a secret — never logged."
+            })
+        }
+
+        fn inline_schema() -> bool {
+            true
+        }
+    }
+};
+
 // -- Tests -------------------------------------------------------------------
 
 #[cfg(test)]
@@ -371,6 +438,26 @@ mod tests {
         let original = Secret::new("clone me");
         let cloned = original.clone();
         assert_eq!(original, cloned);
+    }
+
+    #[test]
+    fn test_deserialize_from_json_string() {
+        let s: Secret =
+            serde_json::from_str("\"correct-horse-battery-staple\"").expect("deserialize");
+        assert_eq!(s.expose_secret(), "correct-horse-battery-staple");
+    }
+
+    #[test]
+    fn test_deserialize_rejects_non_string() {
+        assert!(serde_json::from_str::<Secret>("123").is_err());
+        assert!(serde_json::from_str::<Secret>("null").is_err());
+        assert!(serde_json::from_str::<Secret>("{}").is_err());
+    }
+
+    #[test]
+    fn test_deserialize_preserves_unicode() {
+        let s: Secret = serde_json::from_str(r#""päzwörd""#).expect("deserialize");
+        assert_eq!(s.expose_secret(), "päzwörd");
     }
 
     #[test]

@@ -121,6 +121,8 @@ impl DashMcpService {
             .with_async_tool::<tools::network::NetworkReinitSdk>()
             .with_async_tool::<tools::network::NetworkSwitch>()
             .with_async_tool::<tools::wallet::ListWalletsTool>()
+            .with_async_tool::<tools::wallet::ImportWalletTool>()
+            .with_async_tool::<tools::wallet::DeleteWalletTool>()
             .with_async_tool::<tools::wallet::GenerateReceiveAddress>()
             .with_async_tool::<tools::wallet::WalletBalancesQuery>()
             .with_async_tool::<tools::wallet::FetchPlatformBalances>()

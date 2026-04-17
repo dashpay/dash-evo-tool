@@ -862,6 +862,13 @@ pub enum TaskError {
         source: Box<dyn std::error::Error + Send + Sync>,
     },
 
+    /// The supplied encryption password did not match the app's main password.
+    #[error(
+        "Provided encryption_password does not match the app's main password. \
+         Omit the field to import without at-rest encryption, or provide the correct existing password."
+    )]
+    MainPasswordMismatch,
+
     // ──────────────────────────────────────────────────────────────────────────
     // Shielded pool errors
     // ──────────────────────────────────────────────────────────────────────────

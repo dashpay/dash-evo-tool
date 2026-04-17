@@ -6,6 +6,8 @@ Reference guide for adding new MCP tools that expose existing `BackendTask` vari
 
 1. **Tools live in `src/mcp/tools/`** — never in the CLI binary (`src/bin/det_cli/`). The CLI discovers tools dynamically; it requires zero code changes when a tool is added.
 2. **Tools must not contain business logic.** A tool is a thin adapter: validate parameters, resolve context, dispatch a `BackendTask`, reshape the result. All domain logic stays in `BackendTask` handlers (e.g. `run_identity_task()`, `run_wallet_task()`).
+
+   *Exception:* administrative/provisioning tools that only mutate `AppContext` registrations (wallet lifecycle, settings) may call atomic `AppContext` methods directly when no `BackendTask` variant exists. Adding a `BackendTask` variant just to wrap a synchronous `AppContext` method adds boilerplate with no reuse benefit. `core_wallet_import` and `core_wallet_delete` are the reference examples — both dispatch to `AppContext::register_wallet` / `AppContext::remove_wallet` directly.
 3. **One tool struct = one `BackendTask` dispatch.** If a feature needs multiple backend calls, compose them in the backend layer, not in the tool.
 4. **Errors flow through `McpToolError`** — never return raw strings or SDK errors to the client. Use `McpToolError::TaskFailed(e)` for backend errors, `McpToolError::InvalidParam { message }` for input validation.
 5. **No GUI dependencies.** Tool code must not reference `egui`, screens, UI components, or `AppAction`. The only bridge to the app is `AppContext` + `BackendTask`.
@@ -112,6 +114,22 @@ This is the only registration step. The CLI, `list_tools`, and `tool_describe` p
 ### 7. Update `docs/MCP.md`
 
 Add the tool to the tool reference table with its name, parameters, and description.
+
+## Handling secret parameters
+
+Tools that accept passwords, mnemonics, API keys, or any other sensitive material must follow the rules below. These apply whether the secret is used once and discarded, forwarded to another subsystem, or held for the lifetime of the call.
+
+1. **Use `Secret`, never `String`.** The parameter type for any sensitive field is `crate::model::secret::Secret`. It zeroes its backing storage on drop, best-effort `mlock`s the page, and renders as `"***"` in `Debug`. `Secret` implements `Deserialize` and `JsonSchema` (rendered as `{"type": "string"}`) so JSON parameters just work.
+
+2. **Never derive `Debug` on a param struct that holds a `Secret`.** `#[derive(Debug)]` respects `Secret`'s redacted `Debug` impl, but the presence of the derived impl silently accepts any future field without review. Write a hand-rolled `impl fmt::Debug` that lists each field explicitly and redacts every secret. See `ImportWalletParams` in `src/mcp/tools/wallet.rs` for the pattern.
+
+3. **Never include secret values in error messages.** `McpToolError::InvalidParam { message }` is forwarded to the client verbatim. Do not echo the sanitized text, derived values, or any substring that could leak the original input. Refer to the offending category ("checksum rejected", "wrong word count"), not the content.
+
+4. **Never store secret material in `TaskError` variants.** `TaskError` variants end up in logs and JSON-RPC `data` payloads. If a new variant is needed, add one that contains only typed source errors and structured metadata — never a `String` derived from the secret.
+
+5. **Do not pass `Secret` contents into `tracing::` macros.** `tracing` formats arguments eagerly and may route them to distant subscribers. Log the category (e.g. `"wallet imported"`) and structured metadata (alias, hex seed hash) — never the mnemonic, passphrase, or at-rest password.
+
+6. **Drop secrets as soon as they are used.** Scope the binding narrowly: derive the seed, register the wallet, drop the `Secret`. Avoid holding `Secret` across long-lived awaits.
 
 ## Don'ts
 

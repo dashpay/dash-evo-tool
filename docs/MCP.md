@@ -71,6 +71,8 @@ Set these in the app's `.env` file (see `.env.example`) or as environment variab
 | `network_reinit_sdk` | `network` | `det-cli network-reinit-sdk` | Rebuild Core RPC client and Platform SDK with current config (use after changing credentials) |
 | `network_switch` | `network` | `det-cli network-switch` | Switch the active network (creates context if needed, may take a few seconds) |
 | `core_wallets_list` | `network`? | `det-cli core-wallets-list` | List wallets loaded in the app (alias + seed hash) |
+| `core_wallet_import` | `mnemonic`, `passphrase`?, `encryption_password`?, `alias`?, `core_wallet_name`?, `network` | `det-cli core-wallet-import` | Import a wallet from a BIP39 mnemonic (sanitises input, honours app main password) |
+| `core_wallet_delete` | `wallet_id`, `confirm_seed_hash`, `allow_delete_with_balance`?, `network` | `det-cli core-wallet-delete` | Delete a wallet from the local device (irreversible, network-scoped) |
 | `core_address_create` | `wallet_id`, `network`? | `det-cli core-address-create` | Generate a new receive address for a wallet |
 | `core_balances_get` | `wallet_id`, `network`? | `det-cli core-balances-get` | Show wallet balances (total, confirmed, unconfirmed) in duffs |
 | `platform_addresses_list` | `wallet_id`, `network`? | `det-cli platform-addresses-list` | Fetch platform address balances (credits and nonces) |
@@ -94,7 +96,18 @@ Parameters marked `?` are optional. The `det-cli` column shows the equivalent CL
 
 All wallet-facing tools wait for SPV to fully sync before executing. This includes both core-chain tools (`core_address_create`, `core_balances_get`, `core_funds_send`) and platform tools (`platform_addresses_list`, `identity_credits_topup`, `shielded_shield_from_core`). Even DAPI-only operations need SPV because the SDK verifies DAPI proofs against quorum and masternode list data from the synced chain. When another DET instance is already running, SPV falls back to a temporary directory and must sync from scratch.
 
-Only metadata tools that make no network calls (`core_wallets_list`, `network_info`, `tool_describe`) skip the SPV gate.
+Only metadata tools that make no network calls (`core_wallets_list`, `network_info`, `tool_describe`) skip the SPV gate. `core_wallet_import` and `core_wallet_delete` also skip the SPV gate — they operate on local metadata only.
+
+### **Wallet import/delete security model**
+
+`core_wallet_import` and `core_wallet_delete` handle the most sensitive operations the MCP server exposes. Read this section before exposing the server beyond your local machine.
+
+- **The MCP API key grants wallet-tier access.** Any caller with `MCP_API_KEY` can import a mnemonic, change which wallet is the active target of downstream tool calls, and delete wallet metadata. Treat the key as a password, not an API identifier — rotate it if it leaks.
+- **MCP HTTP must stay on loopback.** The default `MCP_LISTEN=127.0.0.1:9527` binds to localhost only. Do **not** change `MCP_LISTEN` to a non-loopback address: `core_wallet_import` accepts the mnemonic as a plaintext JSON field, so sending it over a non-loopback connection without TLS (there is no TLS terminator in the server today) would expose the seed to anyone on the path.
+- **`encryption_password` ≠ app main password.** If the app already has a main password configured, `encryption_password` must *match* it — importing with a different value is rejected. `core_wallet_import` never calls `update_main_password`; it cannot create, change, or remove the app's main password. Set the main password through the GUI before importing over MCP if you want wallet-at-rest encryption.
+- **`encryption_password` ≠ BIP39 passphrase.** The BIP39 passphrase (`passphrase` parameter) is part of the seed derivation — a different passphrase yields a different wallet. The at-rest password (`encryption_password`) only affects how the seed is stored on disk. Conflating them corrupts access; the tool docs call this out.
+- **`core_wallet_delete` is permanent and per-network.** Deletion removes the wallet from the selected network only. If the same mnemonic is imported on another network (e.g. mainnet + testnet), the other copy is untouched — the response's `other_networks_with_same_seed` field lists them so you can repeat the deletion explicitly. On-chain funds are not moved; access is lost unless you have the mnemonic backed up elsewhere.
+- **Back up mnemonics externally.** DET is not a recovery service. Before calling `core_wallet_delete`, confirm the mnemonic is safely stored outside the app. Before calling `core_wallet_import`, confirm the mnemonic is the correct one for the network — mistaken imports waste SPV sync time but are not dangerous; mistaken deletes are irreversible.
 
 ## CLI interface (det-cli)
 

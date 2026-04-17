@@ -132,6 +132,48 @@ det-cli tool-describe name=core_funds_send
 # Send 0.01 DASH (1,000,000 duffs) to an address (network is required)
 det-cli core-funds-send wallet-id=savings address=yXyz... amount-duffs=1000000 network=testnet
 
+# Import a wallet from a BIP39 mnemonic. Quote the phrase so the shell
+# does not split on whitespace. `network` is required.
+det-cli core-wallet-import \
+  mnemonic="abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about" \
+  alias="savings" \
+  network=testnet
+
+# Same import with a BIP39 passphrase ("25th word") and an at-rest
+# encryption password. If the app already has a main password set,
+# `encryption-password` MUST match it — mismatched passwords are rejected.
+det-cli core-wallet-import \
+  mnemonic="..." \
+  passphrase="trezor" \
+  encryption-password="the-existing-main-password" \
+  alias="primary" \
+  network=testnet
+
+# Delete a wallet by alias. `confirm-seed-hash` must match the target
+# wallet's hex seed_hash exactly — use `core-wallets-list` first to copy
+# the correct value. Deletion is permanent and scoped to the specified
+# network.
+det-cli core-wallet-delete \
+  wallet-id="savings" \
+  confirm-seed-hash=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+  network=testnet
+
+# Delete by passing the hex seed_hash as both the lookup id and the
+# confirmation — the confirmation is always required.
+det-cli core-wallet-delete \
+  wallet-id=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+  confirm-seed-hash=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+  network=testnet
+
+# Allow deleting a wallet that still holds a non-zero balance. Use only
+# when the mnemonic is backed up safely elsewhere; on-chain funds remain
+# but are inaccessible without the mnemonic.
+det-cli core-wallet-delete \
+  wallet-id="savings" \
+  confirm-seed-hash=... \
+  allow-delete-with-balance=true \
+  network=testnet
+
 # Run as stdio MCP server for Claude Desktop or Claude Code
 det-cli serve
 ```

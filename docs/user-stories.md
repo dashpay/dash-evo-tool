@@ -1027,8 +1027,20 @@ As a developer, I want to fund multiple addresses in one operation so that I can
 As a developer, I want to manage wallets via CLI so that I can automate deployment and testing operations.
 
 - List wallets, check balances, generate addresses, and send funds from the command line.
+- Import and delete wallets via MCP without touching the GUI.
 - CLI discovers tools dynamically via MCP protocol.
 - Shell completion for tool names and parameters.
+
+### MCP-003: Provision wallets via MCP [Implemented]
+**Persona:** Jordan
+
+As a developer / AI agent, I want to import and delete wallets through MCP so that I can fully automate wallet lifecycle without manual GUI steps.
+
+- Import a BIP39 mnemonic with optional passphrase, at-rest encryption password, alias, and Core wallet name (`core_wallet_import`).
+- Mnemonic input is sanitised (numbered lists, case, whitespace, fullwidth glyphs normalised; homoglyphs rejected) before BIP39 parsing.
+- At-rest encryption is refused if it does not match the app's existing main password — the tool cannot create or change the main password.
+- Delete a wallet by alias or hex seed hash, guarded by a mandatory `confirm_seed_hash` match and a balance-protection flag (`core_wallet_delete`).
+- Deletion surfaces orphaned-identity count and other networks where the same seed is still imported.
 
 ### MCP-002: MCP server access for AI agents [Implemented]
 **Persona:** Jordan

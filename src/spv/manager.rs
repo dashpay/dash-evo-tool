@@ -7,7 +7,7 @@ use dash_sdk::dash_spv::client::config::MempoolStrategy;
 use dash_sdk::dash_spv::client::event_handler::EventHandler;
 use dash_sdk::dash_spv::network::NetworkEvent;
 use dash_sdk::dash_spv::network::PeerNetworkManager;
-use dash_sdk::dash_spv::storage::DiskStorageManager;
+use dash_sdk::dash_spv::storage::{BlockHeaderStorage, DiskStorageManager};
 use dash_sdk::dash_spv::sync::SyncEvent;
 use dash_sdk::dash_spv::sync::SyncProgress as SpvSyncProgress;
 use dash_sdk::dash_spv::sync::SyncState;
@@ -695,6 +695,132 @@ impl SpvManager {
             tracing::debug!("SpvManager::stop(): no stop_token, setting Stopped immediately");
             let _ = self.write_status(SpvStatus::Stopped);
         }
+    }
+
+    /// Read the height at which the SPV filter scan was last committed for the
+    /// shared `WalletManager`. Returns `0` when no wallets are loaded or when
+    /// the scan has not yet advanced past genesis.
+    ///
+    /// Used by mid-session import handling to decide whether a full restart is
+    /// needed: when `filter_committed_height() > 0` the `FiltersManager` has
+    /// already scanned past heights where the newly-imported wallet may hold
+    /// historical UTXOs, so only a restart (which rebuilds `FiltersManager`)
+    /// will rescan those heights.
+    pub async fn filter_committed_height(&self) -> u32 {
+        let wm = self.wallet.read().await;
+        wm.filter_committed_height()
+    }
+
+    /// Non-blocking variant of `filter_committed_height`. Returns `None` when
+    /// the WalletManager lock is currently held elsewhere (e.g. a wallet load
+    /// is in flight). Callers on sync paths should treat `None` conservatively.
+    pub fn try_filter_committed_height(&self) -> Option<u32> {
+        self.wallet
+            .try_read()
+            .ok()
+            .map(|wm| wm.filter_committed_height())
+    }
+
+    /// Stop the running SPV loop, wait for it to exit cleanly, then start it
+    /// again with the given expected wallet count.
+    ///
+    /// The on-disk state (headers, filters, blocks) survives the restart — only
+    /// the in-memory `WalletManager`/`FiltersManager` derived state is rebuilt.
+    /// The filter scan re-reads persisted filters against the fresh wallet set
+    /// from genesis (or the earliest birth height), which is the whole point of
+    /// the mid-session import workaround.
+    ///
+    /// Returns once `start()` has been invoked; sync itself runs in the
+    /// background via the main loop task. The caller is expected to re-queue
+    /// wallet loads (e.g. via `bootstrap_loaded_wallets`) after this returns.
+    ///
+    /// Timing: `stop()` cancels the loop asynchronously — this method polls
+    /// the `stop_token` guard until the main loop clears it (see bottom of
+    /// `start()`'s spawned task). If the loop fails to exit within the timeout
+    /// we still try to start again; stale state is cleared by the normal
+    /// `run_spv_loop` setup path.
+    pub async fn restart(self: &Arc<Self>, expected_wallet_count: usize) -> SpvResult<()> {
+        const STOP_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+        const STOP_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
+
+        tracing::info!(
+            expected_wallet_count,
+            "SpvManager::restart() — stopping current run"
+        );
+        self.stop();
+
+        let deadline = tokio::time::Instant::now() + STOP_WAIT_TIMEOUT;
+        loop {
+            let still_running = self
+                .stop_token
+                .lock()
+                .map(|g| g.is_some())
+                .map_err(|_| SpvError::LockPoisoned("stop_token".into()))?;
+            if !still_running {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                tracing::warn!(
+                    "SpvManager::restart(): timed out waiting for previous run to exit; starting anyway"
+                );
+                // Clear the stop_token so the next start() isn't a no-op.
+                if let Ok(mut guard) = self.stop_token.lock() {
+                    *guard = None;
+                }
+                break;
+            }
+            tokio::time::sleep(STOP_POLL_INTERVAL).await;
+        }
+
+        // Determine the rescan floor: the earliest block header height stored on
+        // disk. FiltersManager can only iterate heights that have stored headers,
+        // so setting synced_height below this floor triggers missing-header panics.
+        // After stop() the storage Arc is still alive here (cleared in start() setup).
+        let rescan_floor: u32 = {
+            let storage_opt = self
+                .storage
+                .lock()
+                .ok()
+                .and_then(|guard| guard.as_ref().map(Arc::clone));
+            if let Some(storage_arc) = storage_opt {
+                let storage = storage_arc.lock().await;
+                storage.get_start_height().await.unwrap_or(0)
+            } else {
+                0
+            }
+        };
+        tracing::info!(
+            rescan_floor,
+            "SpvManager::restart() — rescan floor determined"
+        );
+
+        // Reset WalletManager's synced_height to the rescan floor so the next
+        // FiltersManager starts scanning from there instead of reading the
+        // pre-restart committed height and declaring itself "already synced".
+        // Using get_start_height() as the floor avoids missing-header panics
+        // that occur when iterating below the checkpoint (storage starts there).
+        // Matches clear_data_dir() pattern; see manager.rs:899-908.
+        {
+            let mut wm = self.wallet.write().await;
+            wm.update_synced_height(rescan_floor);
+            tracing::info!(
+                rescan_floor,
+                "SpvManager::restart() — reset WalletManager synced_height"
+            );
+        }
+
+        // Clear the seed→wallet_id map so bootstrap_loaded_wallets re-imports
+        // cleanly instead of hitting the "wallet already exists" branch.
+        if let Ok(mut wallet_map) = self.det_wallets.write() {
+            wallet_map.clear();
+        }
+
+        tracing::info!(
+            expected_wallet_count,
+            "SpvManager::restart() — starting fresh SPV run"
+        );
+        self.start(expected_wallet_count)
+            .map_err(SpvError::SyncFailed)
     }
 
     pub fn wallet(&self) -> Arc<AsyncRwLock<WalletManager<ManagedWalletInfo>>> {

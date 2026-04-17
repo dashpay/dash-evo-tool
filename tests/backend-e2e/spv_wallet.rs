@@ -75,3 +75,19 @@ async fn test_spv_sync_and_create_wallet() {
         "Wallet should appear in SPV within 10s"
     );
 }
+
+// TODO: Add a test that imports a wallet mid-session (after the shared SPV
+// has already synced past the wallet's historical UTXO heights) and asserts
+// the balance is discovered without a manual app restart.
+//
+// This exercises AppContext::restart_spv_for_new_wallet + SpvManager::restart,
+// which are the fix for users reporting zero balance after importing a wallet
+// into an already-synced SPV. The test needs:
+//   1. A wallet mnemonic known to have historical UTXOs on testnet at a height
+//      below the shared SPV's current tip (fixture — not trivial to keep fresh).
+//   2. Wait for the restart-triggered rescan to complete (status transitions
+//      through Starting -> Syncing -> Running).
+//   3. Assert the post-reconcile balance is > 0.
+//
+// Requires network access + funded fixture wallet + serial execution, matching
+// the rest of backend-e2e.

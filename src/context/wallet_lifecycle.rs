@@ -143,10 +143,106 @@ impl AppContext {
         // 3. Bootstrap any additional addresses and load into SPV
         self.bootstrap_wallet_addresses(&wallet_arc);
         if self.core_backend_mode() == CoreBackendMode::Spv {
-            self.handle_wallet_unlocked(&wallet_arc);
+            // Mid-session imports land here after the SPV loop has already
+            // advanced `filter_committed_height` past any historical heights
+            // where the new wallet may hold UTXOs. `FiltersManager` reads
+            // `earliest_required_height` and `filter_committed_height` at
+            // construction and never rewinds, so simply loading the wallet
+            // into the running WalletManager would leave those heights
+            // unscanned. Restart the SPV run instead — on-disk filters /
+            // headers / blocks are preserved, only the in-memory filter
+            // scanner is rebuilt against the new wallet set.
+            //
+            // Fresh app / first-import path: SPV hasn't scanned anything yet
+            // (filter_committed_height == 0) — the normal wallet-load path is
+            // correct and cheaper. Same for the case where SPV isn't running.
+            // Check filter_committed_height non-blockingly. When the lock is
+            // held (e.g. a concurrent wallet load is in flight) treat it as
+            // "already scanned" to be safe: the cost of an unnecessary restart
+            // is a short re-scan of persisted filters; the cost of skipping a
+            // needed restart is zero balance until the user restarts.
+            let filter_height = self
+                .spv_manager
+                .try_filter_committed_height()
+                .unwrap_or(u32::MAX);
+            let needs_restart = self.spv_manager.status().status.is_active() && filter_height > 0;
+            if needs_restart {
+                self.restart_spv_for_new_wallet();
+            } else {
+                self.handle_wallet_unlocked(&wallet_arc);
+            }
         }
 
         Ok((seed_hash, wallet_arc))
+    }
+
+    /// Restart the SPV run so the filter scanner is rebuilt with the current
+    /// wallet set, then re-queue every wallet load through the normal
+    /// bootstrap path. Called when a new wallet is imported mid-session and
+    /// the existing SPV run has already scanned past historical heights where
+    /// the new wallet may hold UTXOs.
+    ///
+    /// Spawned as a subtask so the caller (sync `register_wallet`) returns
+    /// immediately — the UI continues to render while SPV winds down and
+    /// starts again.
+    pub(crate) fn restart_spv_for_new_wallet(self: &Arc<Self>) {
+        let expected_wallets = self
+            .wallets
+            .read()
+            .map(|guard| {
+                guard
+                    .values()
+                    .filter(|w| {
+                        w.read()
+                            .ok()
+                            .is_some_and(|g| g.is_open() && g.seed_bytes().is_ok())
+                    })
+                    .count()
+            })
+            .unwrap_or(0);
+
+        let progress_banner = crate::ui::components::message_banner::MessageBanner::set_global(
+            self.egui_ctx(),
+            "Restarting background sync to discover this wallet's history.",
+            crate::ui::MessageType::Info,
+        );
+
+        let ctx = Arc::clone(self);
+        self.subtasks
+            .spawn_sync("spv_restart_for_import", async move {
+                let outcome = ctx.spv_manager.restart(expected_wallets).await;
+                // Always clear the progress banner — both paths replace it
+                // with a concrete result message.
+                progress_banner.clear();
+                match outcome {
+                    Ok(()) => {
+                        tracing::info!(
+                            expected_wallets,
+                            "SPV restart completed after wallet import; re-bootstrapping wallets"
+                        );
+                        ctx.connection_status
+                            .set_spv_status(ctx.spv_manager.status().status);
+                        ctx.connection_status.refresh_state();
+                        // `bootstrap_loaded_wallets` re-queues every open wallet via
+                        // `handle_wallet_unlocked -> queue_spv_wallet_load`, which is
+                        // exactly what the restarted SPV's wait loop is blocking on.
+                        ctx.bootstrap_loaded_wallets();
+                    }
+                    Err(err) => {
+                        let task_err = TaskError::SpvRestartFailed { source: err };
+                        tracing::error!(
+                            error = %task_err,
+                            "SPV restart after wallet import failed; newly imported wallet may show a zero balance until the application is restarted"
+                        );
+                        crate::ui::components::message_banner::MessageBanner::set_global(
+                            ctx.egui_ctx(),
+                            &task_err,
+                            crate::ui::MessageType::Error,
+                        )
+                        .with_details(&task_err);
+                    }
+                }
+            });
     }
 
     pub fn bootstrap_wallet_addresses(&self, wallet: &Arc<RwLock<Wallet>>) {
@@ -321,9 +417,9 @@ impl AppContext {
         //     indices generated in prior sessions via `GenerateReceiveAddress`
         //     and the initial bootstrap), and
         //   - a lookahead slack so a wallet with a single historical UTXO at
-        //     an index beyond the default gap limit (e.g. shumkov's reference
-        //     wallet with outputs at indices 32-40) is discovered in a single
-        //     SPV scan instead of requiring repeated app restarts.
+        //     an index beyond the default gap limit (e.g. a reference testnet
+        //     wallet with historical UTXOs at indices 32-40) is discovered in
+        //     a single SPV scan instead of requiring repeated app restarts.
         const LOOKAHEAD_SLACK: u32 = 100;
         let min_receive_index = self
             .db

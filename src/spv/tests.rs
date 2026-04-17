@@ -637,3 +637,108 @@ async fn test_live_testnet_sync_and_shutdown() {
 
     let _ = task_manager.shutdown();
 }
+
+// ── Restart API (mid-session wallet import) ──────────────────────
+
+/// Given an idle SpvManager with no wallets loaded,
+/// When reading filter_committed_height(),
+/// Then it returns 0 (no scan has occurred).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_filter_committed_height_idle_is_zero() {
+    let (manager, _tm, _tmp_dir) = create_test_manager();
+    let height = manager.filter_committed_height().await;
+    assert_eq!(
+        height, 0,
+        "Idle manager with no wallets should report filter_committed_height == 0"
+    );
+}
+
+/// Given an idle SpvManager that has never been started,
+/// When calling restart(0),
+/// Then the call completes without deadlock and the manager transitions back
+/// through Starting.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_restart_when_idle_succeeds() {
+    let (manager, tm, _tmp_dir) = create_test_manager();
+
+    let result = timeout(DEADLOCK_TIMEOUT, async { manager.restart(0).await }).await;
+    assert!(
+        result.is_ok(),
+        "restart() should complete within timeout (no deadlock)"
+    );
+    assert!(
+        result.unwrap().is_ok(),
+        "restart() from idle should succeed"
+    );
+
+    // Wind down cleanly so the test doesn't leak tasks.
+    manager.stop();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let _ = tm.shutdown();
+}
+
+/// Given a running SpvManager,
+/// When calling restart(0),
+/// Then the previous loop terminates, a new loop is started, and status
+/// returns to an active state.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_restart_when_running_rebuilds_loop() {
+    let (manager, tm, _tmp_dir) = create_test_manager();
+
+    manager.start(0).expect("initial start() should succeed");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let result = timeout(DEADLOCK_TIMEOUT, async { manager.restart(0).await }).await;
+    assert!(
+        result.is_ok(),
+        "restart() should complete within timeout (no deadlock)"
+    );
+    assert!(result.unwrap().is_ok(), "restart() should return Ok");
+
+    // After restart, status should be active again (Starting/Syncing) — it
+    // may not reach Running without real peers, but it must not be Stopped.
+    let status_after = manager.status().status;
+    assert!(
+        status_after.is_active() || status_after == SpvStatus::Error,
+        "After restart(), status should be active or Error (no peers), got: {:?}",
+        status_after
+    );
+
+    // The restart must reset synced_height to 0 so the next FiltersManager
+    // re-scans from genesis instead of declaring itself "already synced".
+    let height = manager.filter_committed_height().await;
+    assert_eq!(
+        height, 0,
+        "After restart(), filter_committed_height must be 0 (reset for rescan)"
+    );
+
+    manager.stop();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let _ = tm.shutdown();
+}
+
+/// Given a running SpvManager,
+/// When calling restart(0),
+/// Then the det_wallets map is cleared so subsequent wallet loads start fresh.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_restart_clears_det_wallets_map() {
+    let (manager, tm, _tmp_dir) = create_test_manager();
+
+    manager.start(0).expect("initial start() should succeed");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let result = timeout(DEADLOCK_TIMEOUT, async { manager.restart(0).await }).await;
+    assert!(result.is_ok(), "restart() should complete within timeout");
+    assert!(result.unwrap().is_ok(), "restart() should return Ok");
+
+    let wallets = manager.det_wallets_snapshot();
+    assert!(
+        wallets.is_empty(),
+        "After restart(), det_wallets map must be empty; found {} entries",
+        wallets.len()
+    );
+
+    manager.stop();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let _ = tm.shutdown();
+}

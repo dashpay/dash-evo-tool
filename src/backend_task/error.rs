@@ -667,6 +667,19 @@ pub enum TaskError {
     #[error("Could not broadcast the transaction. Please check your connection and retry.")]
     SpvBroadcastFailed { detail: String },
 
+    /// The SPV client could not be restarted after a mid-session wallet import.
+    ///
+    /// Mid-session imports require a restart so the filter scan can re-cover
+    /// historical heights below the current sync tip. If the restart fails the
+    /// newly imported wallet may show zero balance until the app is restarted.
+    #[error(
+        "Could not restart background sync to discover this wallet's history. Please restart the application to pick up the new wallet."
+    )]
+    SpvRestartFailed {
+        #[source]
+        source: crate::spv::SpvError,
+    },
+
     // ──────────────────────────────────────────────────────────────────────────
     // UTXO / asset-lock transaction build errors
     // ──────────────────────────────────────────────────────────────────────────

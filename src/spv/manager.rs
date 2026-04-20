@@ -14,7 +14,7 @@ use dash_sdk::dash_spv::sync::SyncState;
 use dash_sdk::dash_spv::types::ValidationMode;
 use dash_sdk::dash_spv::{ClientConfig, DashSpvClient, Hash, LLMQType, QuorumHash};
 use dash_sdk::dpp::dashcore::{Address, InstantLock, Network, Transaction, Txid};
-use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, ExtendedPrivKey};
+use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath, ExtendedPrivKey};
 use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::{
     ManagedWalletInfo, transaction_building::AccountTypePreference,
@@ -923,6 +923,7 @@ impl SpvManager {
         &self,
         seed_hash: WalletSeedHash,
         mut seed_bytes: [u8; 64],
+        min_bip44_receive_index: u32,
     ) -> Result<WalletId, String> {
         let existing_wallet_id = {
             let map = self.det_wallets.read().map_err(|e| e.to_string())?;
@@ -935,6 +936,21 @@ impl SpvManager {
             if let Some(wallet) = wm.get_wallet(&wallet_id)
                 && wallet.can_sign()
             {
+                // Still extend the pool atomically under the write lock so the
+                // monitored address set reflects the DB-known max index before
+                // the SPV filter scan observes the wallet.
+                if let Err(e) = Self::extend_bip44_receive_pool_locked(
+                    &mut wm,
+                    wallet_id,
+                    min_bip44_receive_index,
+                ) {
+                    tracing::warn!(
+                        seed = %hex::encode(seed_hash),
+                        target = min_bip44_receive_index,
+                        error = %e,
+                        "Failed to extend BIP44 receive pool on already-loaded wallet"
+                    );
+                }
                 seed_bytes.zeroize();
                 return Ok(wallet_id);
             }
@@ -972,12 +988,89 @@ impl SpvManager {
             }
         };
 
+        // Extend the BIP44 receive pool BEFORE releasing the write lock. This
+        // guarantees the monitored address set is populated before any other
+        // observer (notably `run_spv_loop`'s wait-for-wallets loop) sees
+        // `wallet_count` increment. Without this, the SPV filter scan can
+        // start with only the default gap-limit pool and miss historical UTXOs
+        // at higher indices — requiring multiple app restarts to converge.
+        if let Err(e) =
+            Self::extend_bip44_receive_pool_locked(&mut wm, wallet_id, min_bip44_receive_index)
+        {
+            tracing::warn!(
+                seed = %hex::encode(seed_hash),
+                target = min_bip44_receive_index,
+                error = %e,
+                "Failed to extend BIP44 receive pool during wallet import"
+            );
+        }
+
         drop(wm);
 
         let mut map = self.det_wallets.write().map_err(|e| e.to_string())?;
         map.insert(seed_hash, wallet_id);
 
         Ok(wallet_id)
+    }
+
+    /// Extend the BIP44 receive address pool for `wallet_id` so at least
+    /// `target_index` is covered. Must be called with the caller already
+    /// holding the `self.wallet` write lock.
+    ///
+    /// Each iteration marks the generated address as used, which advances
+    /// the pool's `highest_used` and triggers gap-limit refill. The caller
+    /// supplies a target that includes desired lookahead slack.
+    fn extend_bip44_receive_pool_locked(
+        wm: &mut WalletManager<ManagedWalletInfo>,
+        wallet_id: WalletId,
+        target_index: u32,
+    ) -> Result<u32, String> {
+        const MAX_ITERATIONS: u32 = 2_000;
+        let mut generated = 0u32;
+        loop {
+            let result = wm
+                .get_receive_address(&wallet_id, 0, AccountTypePreference::BIP44, true)
+                .map_err(|e| format!("get_receive_address failed: {e}"))?;
+            let address = result
+                .address
+                .ok_or_else(|| "wallet manager returned no address".to_string())?;
+            let info = wm
+                .get_wallet_info(&wallet_id)
+                .ok_or_else(|| "wallet info missing".to_string())?;
+            let path = info
+                .accounts()
+                .standard_bip44_accounts
+                .get(&0)
+                .and_then(|acc| acc.get_address_info(&address))
+                .map(|meta| meta.path.clone())
+                .ok_or_else(|| "address metadata unavailable".to_string())?;
+            let current_index = path
+                .as_ref()
+                .last()
+                .and_then(|c| match c {
+                    ChildNumber::Normal { index } => Some(*index),
+                    _ => None,
+                })
+                .unwrap_or(0);
+            generated += 1;
+            if current_index >= target_index {
+                break;
+            }
+            if generated >= MAX_ITERATIONS {
+                return Err(format!(
+                    "address pool extension exceeded safety limit of {MAX_ITERATIONS}"
+                ));
+            }
+        }
+        if generated > 0 {
+            tracing::info!(
+                wallet = %hex::encode(wallet_id),
+                generated,
+                target_index,
+                "Extended SPV BIP44 receive pool"
+            );
+        }
+        Ok(generated)
     }
 
     pub async fn next_bip44_receive_address(

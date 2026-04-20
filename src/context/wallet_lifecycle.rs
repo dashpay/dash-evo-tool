@@ -297,8 +297,41 @@ impl AppContext {
 
     fn queue_spv_wallet_load(self: &Arc<Self>, seed_hash: WalletSeedHash, seed_bytes: [u8; 64]) {
         let spv = Arc::clone(&self.spv_manager);
+        // Compute the BIP44 receive pool target *before* spawning so the
+        // target is bound to the current DB state. The pool is extended
+        // atomically inside `load_wallet_from_seed` while it still holds the
+        // WalletManager write lock, closing the race where the SPV filter
+        // scan could observe the imported wallet before lookahead addresses
+        // were registered.
+        //
+        // The target combines:
+        //   - the highest BIP44 receive index already persisted in DB (covers
+        //     indices generated in prior sessions via `GenerateReceiveAddress`
+        //     and the initial bootstrap), and
+        //   - a lookahead slack so a wallet with a single historical UTXO at
+        //     an index beyond the default gap limit (e.g. a reference testnet
+        //     wallet with historical UTXOs at indices 32-40) is discovered in
+        //     a single SPV scan instead of requiring repeated app restarts.
+        const LOOKAHEAD_SLACK: u32 = 100;
+        let min_receive_index = self
+            .db
+            .max_bip44_receive_index(&seed_hash)
+            .map_err(|e| {
+                tracing::warn!(
+                    seed = %hex::encode(seed_hash),
+                    error = %e,
+                    "Failed to query max BIP44 address index from database; using lookahead slack only"
+                );
+            })
+            .ok()
+            .flatten()
+            .unwrap_or(0)
+            .saturating_add(LOOKAHEAD_SLACK);
         self.subtasks.spawn_sync("spv_wallet_load", async move {
-            if let Err(error) = spv.load_wallet_from_seed(seed_hash, seed_bytes).await {
+            if let Err(error) = spv
+                .load_wallet_from_seed(seed_hash, seed_bytes, min_receive_index)
+                .await
+            {
                 tracing::error!(seed = %hex::encode(seed_hash), %error, "Failed to load SPV wallet from seed");
             }
         });

@@ -92,6 +92,16 @@ impl Database {
         tx.commit()
     }
 
+    /// Count how many wallets are stored in the database for a given network.
+    pub fn wallet_count_for_network(&self, network: &Network) -> rusqlite::Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM wallet WHERE network = ?",
+            [network.to_string()],
+            |row| row.get(0),
+        )
+    }
+
     /// Update the Dash Core wallet name for an HD wallet.
     ///
     /// Returns `Ok(true)` if exactly one row was updated, `Ok(false)` if no
@@ -1883,5 +1893,46 @@ mod tests {
             )
             .expect("Failed to query total_received");
         assert_eq!(total_received, 10_000_000);
+    }
+
+    fn insert_test_wallet(db: &Database, seed_hash: &[u8; 32], network: Network) {
+        let network_str = network.to_string();
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO wallet (seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, uses_password, network)
+             VALUES (?, ?, ?, ?, ?, 0, ?)",
+            rusqlite::params![
+                seed_hash.as_slice(),
+                vec![0u8; 64],
+                vec![0u8; 16],
+                vec![0u8; 12],
+                vec![0u8; 78],
+                network_str,
+            ],
+        )
+        .expect("Failed to insert test wallet");
+    }
+
+    #[test]
+    fn test_wallet_count_for_network_counts_per_network() {
+        let db = create_test_database().expect("create db");
+        let mut seed_a = create_test_seed_hash();
+        let mut seed_b = create_test_seed_hash();
+        seed_a[0] = 0xA0;
+        seed_b[0] = 0xB0;
+
+        insert_test_wallet(&db, &seed_a, Network::Testnet);
+        insert_test_wallet(&db, &seed_b, Network::Testnet);
+
+        assert_eq!(
+            db.wallet_count_for_network(&Network::Testnet)
+                .expect("count"),
+            2
+        );
+        assert_eq!(
+            db.wallet_count_for_network(&Network::Mainnet)
+                .expect("count"),
+            0
+        );
     }
 }

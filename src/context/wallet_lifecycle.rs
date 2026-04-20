@@ -69,6 +69,18 @@ impl AppContext {
                     .count()
             })
             .unwrap_or(0);
+        // Fallback: if no open wallets in memory yet but the database has
+        // wallets for this network, expect at least 1.
+        // bootstrap_loaded_wallets will load them shortly and the SPV wait
+        // loop will block until load completes.
+        let expected_wallets = if expected_wallets == 0 {
+            self.db
+                .wallet_count_for_network(&self.network)
+                .unwrap_or(0)
+                .min(1)
+        } else {
+            expected_wallets
+        };
         // Register reconcile channel BEFORE starting SPV so the event handlers
         // (spawned inside run_spv_loop) always capture a valid sender.
         self.spv_setup_reconcile_listener();

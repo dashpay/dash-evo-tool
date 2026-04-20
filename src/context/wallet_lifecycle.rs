@@ -420,7 +420,7 @@ impl AppContext {
         //     an index beyond the default gap limit (e.g. a reference testnet
         //     wallet with historical UTXOs at indices 32-40) is discovered in
         //     a single SPV scan instead of requiring repeated app restarts.
-        const LOOKAHEAD_SLACK: u32 = 100;
+        const LOOKAHEAD_SLACK: u32 = 0;
         let min_receive_index = self
             .db
             .max_bip44_receive_index(&seed_hash)

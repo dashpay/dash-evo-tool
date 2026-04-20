@@ -74,10 +74,7 @@ impl AppContext {
         // bootstrap_loaded_wallets will load them shortly and the SPV wait
         // loop will block until load completes.
         let expected_wallets = if expected_wallets == 0 {
-            self.db
-                .wallet_count_for_network(&self.network)
-                .unwrap_or(0)
-                .min(1)
+            self.db.wallet_count_for_network(&self.network)?.min(1)
         } else {
             expected_wallets
         };

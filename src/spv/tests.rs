@@ -5,6 +5,7 @@ use crate::spv::SpvStatus;
 use crate::spv::manager::SpvManager;
 use crate::utils::tasks::TaskManager;
 use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::key_wallet_manager::WalletInterface;
 use std::sync::{Arc, RwLock};
 use tokio::time::{Duration, timeout};
 
@@ -704,13 +705,88 @@ async fn test_restart_when_running_rebuilds_loop() {
         status_after
     );
 
-    // The restart must reset synced_height to 0 so the next FiltersManager
+    // The restart must reset filter_committed_height to 0 so the next FiltersManager
     // re-scans from genesis instead of declaring itself "already synced".
     let height = manager.filter_committed_height().await;
     assert_eq!(
         height, 0,
         "After restart(), filter_committed_height must be 0 (reset for rescan)"
     );
+
+    manager.stop();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let _ = tm.shutdown();
+}
+
+/// Regression test for rust-dashcore 309fac8 field split.
+///
+/// Before the fix, restart() called `update_synced_height(rescan_floor)`.
+/// After 309fac8, WalletManager gained an independent `filter_committed_height`
+/// field; `update_synced_height` no longer affects it. `FiltersManager::new()`
+/// reads `filter_committed_height()` for its "already synced" guard, so the old
+/// call left the field at its stale value and caused rescan to be skipped.
+///
+/// Given an SpvManager where filter_committed_height has been set above the rescan floor,
+/// When restart() is called with a rescan_floor lower than the current synced_height,
+/// Then filter_committed_height is reset to rescan_floor AND synced_height is NOT lowered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_restart_resets_filter_committed_height_not_synced_height() {
+    let (manager, tm, _tmp_dir) = create_test_manager();
+
+    // Pre-seed a high filter_committed_height and synced_height to simulate
+    // a session that has already scanned some blocks.
+    const PRESEED_HEIGHT: u32 = 5_000;
+    let wallet_arc = manager.wallet();
+    {
+        let mut wm = wallet_arc.write().await;
+        // update_filter_committed_height also bumps synced_height when going up.
+        wm.update_filter_committed_height(PRESEED_HEIGHT);
+    }
+
+    // Verify the pre-condition: both heights are at PRESEED_HEIGHT.
+    {
+        let wm = wallet_arc.read().await;
+        assert_eq!(
+            wm.filter_committed_height(),
+            PRESEED_HEIGHT,
+            "pre-condition: filter_committed_height should be PRESEED_HEIGHT"
+        );
+        assert_eq!(
+            wm.synced_height(),
+            PRESEED_HEIGHT,
+            "pre-condition: synced_height should be PRESEED_HEIGHT (bumped by filter setter)"
+        );
+    }
+
+    manager.start(0).expect("initial start() should succeed");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // restart(0) will use get_start_height() as rescan_floor (0 when no headers stored).
+    let result = timeout(DEADLOCK_TIMEOUT, async { manager.restart(0).await }).await;
+    assert!(
+        result.is_ok(),
+        "restart() should complete within timeout (no deadlock)"
+    );
+    assert!(result.unwrap().is_ok(), "restart() should return Ok");
+
+    // filter_committed_height must be lowered to the rescan floor.
+    let fch = manager.filter_committed_height().await;
+    assert_eq!(
+        fch, 0,
+        "After restart(), filter_committed_height must equal rescan_floor (0), got {}",
+        fch
+    );
+
+    // synced_height must NOT be lowered by the filter_committed_height setter
+    // because update_filter_committed_height() only bumps synced_height upward.
+    {
+        let wm = wallet_arc.read().await;
+        let sh = wm.synced_height();
+        assert!(
+            sh >= fch,
+            "synced_height ({sh}) must be >= filter_committed_height ({fch}) after restart"
+        );
+    }
 
     manager.stop();
     tokio::time::sleep(Duration::from_millis(200)).await;

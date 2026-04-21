@@ -842,6 +842,16 @@ pub enum TaskError {
     )]
     NoVotingIdentity { identity_id: String },
 
+    /// No open vote poll was found on Platform for the given DPNS name.
+    ///
+    /// Surfaced by the pre-flight existence check in `vote_on_dpns_name`,
+    /// before any state transition is broadcast. Short-circuits a ~70 s
+    /// retry chain that would otherwise expire with an opaque timeout.
+    #[error(
+        "The contested name \"{name}\" is not currently open for voting. It may have been resolved or may not exist. Refresh the contested names list and try again."
+    )]
+    VotePollNotFound { name: String },
+
     /// The identity does not have an authentication key required to sign documents.
     #[error(
         "This identity does not have a key for signing documents. Please add an authentication key."

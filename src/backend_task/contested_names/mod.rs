@@ -73,7 +73,7 @@ impl AppContext {
                                 platform_results
                             }
                             Err(det_err) => {
-                                vec![(name.clone(), *vote_choice, Err(det_err.to_string()))]
+                                vec![(name.clone(), *vote_choice, Err(Arc::new(det_err)))]
                             }
                             Ok(_) => {
                                 vec![(name.clone(), *vote_choice, Ok(()))]

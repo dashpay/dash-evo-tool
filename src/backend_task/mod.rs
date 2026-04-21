@@ -155,7 +155,10 @@ pub enum BackendTaskSuccessResult {
     ToppedUpIdentity(QualifiedIdentity, FeeResult),
     #[allow(dead_code)] // May be used for reporting successful votes
     SuccessfulVotes(Vec<Vote>),
-    DPNSVoteResults(Vec<(String, ResourceVoteChoice, Result<(), String>)>),
+    // Per-vote errors are wrapped in `Arc` because `BackendTaskSuccessResult`
+    // derives `Clone` for UI fan-out (see `dashpay_screen::display_task_result`),
+    // while `TaskError` intentionally does not implement `Clone`.
+    DPNSVoteResults(Vec<(String, ResourceVoteChoice, Result<(), Arc<TaskError>>)>),
     CastScheduledVote(ScheduledDPNSVote),
     FetchedContract(DataContract),
     FetchedContractWithTokenPosition(

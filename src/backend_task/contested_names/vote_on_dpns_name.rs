@@ -21,14 +21,14 @@ use dash_sdk::platform::transition::vote::PutVote;
 use dash_sdk::query_types::ContestedResource;
 use std::sync::Arc;
 
-/// Build `[Value::from("dash"), Value::Text(normalized_label)]` for a DPNS vote poll.
+/// Build `[Value::from("dash"), Value::Text(normalized_label.to_owned())]` for a DPNS vote poll.
 ///
-/// Label is normalized via `convert_to_homograph_safe_chars` (`alice` → `a11ce`);
-/// Platform indexes polls under the normalized form.
-fn dpns_vote_poll_index_values(name: &str) -> Vec<Value> {
+/// Caller must pre-normalize the label via `convert_to_homograph_safe_chars`
+/// (`alice` → `a11ce`); Platform indexes polls under the normalized form.
+fn dpns_vote_poll_index_values(normalized_label: &str) -> Vec<Value> {
     vec![
         Value::from("dash"),
-        Value::Text(convert_to_homograph_safe_chars(name)),
+        Value::Text(normalized_label.to_owned()),
     ]
 }
 
@@ -58,7 +58,7 @@ impl AppContext {
         };
 
         let normalized_label = convert_to_homograph_safe_chars(name);
-        let index_values = dpns_vote_poll_index_values(name);
+        let index_values = dpns_vote_poll_index_values(&normalized_label);
 
         let vote_poll = ContestedDocumentResourceVotePoll {
             index_name: contested_index.name.clone(),
@@ -134,29 +134,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn index_values_normalizes_homograph_chars() {
-        // Given: a label containing i/l/o homograph characters.
-        let label = "alice";
+    fn index_values_uses_the_given_normalized_label() {
+        // Given: a pre-normalized DPNS label (homographs already substituted).
+        let normalized = "a11ce";
 
         // When: constructing the vote poll index values.
-        let values = dpns_vote_poll_index_values(label);
+        let values = dpns_vote_poll_index_values(normalized);
 
-        // Then: first element is always the `"dash"` parent, second is the
-        // normalized label (i/l → 1, o → 0).
+        // Then: first element is the `"dash"` parent, second is the label as-given.
         assert_eq!(values.len(), 2);
         assert_eq!(values[0], Value::from("dash"));
         assert_eq!(values[1], Value::Text("a11ce".to_owned()));
     }
 
     #[test]
-    fn index_values_preserve_non_homograph_label() {
-        // Given: a label with no homograph characters (e.g. `bar22`).
-        let label = "bar22";
+    fn index_values_do_not_renormalize_the_label() {
+        // Given: a label that still contains homograph characters.
+        let not_yet_normalized = "alice";
 
-        // When: constructing the vote poll index values.
-        let values = dpns_vote_poll_index_values(label);
+        // When: passing it directly to the helper (violating the contract).
+        let values = dpns_vote_poll_index_values(not_yet_normalized);
 
-        // Then: normalization leaves it unchanged.
-        assert_eq!(values[1], Value::Text("bar22".to_owned()));
+        // Then: the helper does NOT renormalize — the raw label is returned as-is.
+        // (Caller is responsible for normalizing before calling.)
+        assert_eq!(values[1], Value::Text("alice".to_owned()));
+    }
+
+    #[test]
+    fn convert_to_homograph_safe_chars_maps_alice_to_a11ce() {
+        // Given: the canonical DPNS homograph substitutions (i/l → 1, o → 0).
+        // When: normalizing a label with i/l/o.
+        let normalized = convert_to_homograph_safe_chars("alice");
+
+        // Then: the result matches the constant used by the vote poll tests.
+        assert_eq!(normalized, "a11ce");
     }
 }

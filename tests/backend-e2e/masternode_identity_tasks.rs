@@ -499,6 +499,20 @@ async fn tc_090_vote_with_mn_voter() {
     )
     .await;
 
+    // Step 2c: Re-confirm the contest is still live immediately before voting.
+    // Step 2b proves the poll was ever created; this second, short check
+    // (single query, 5 s cap) catches poll cleanup between registration and
+    // voting — e.g. on testnets with short voting windows, or if an earlier
+    // vote already resolved the contest. Cheap belt-and-suspenders against
+    // opaque vote timeouts.
+    tracing::info!(name = %name, "re-confirming contest is live before voting");
+    wait_for_dpns_contest(
+        &ctx.app_context.sdk(),
+        &name,
+        std::time::Duration::from_secs(5),
+    )
+    .await;
+
     // Step 3: Vote Lock on the contested name using the MN voter identity.
     tracing::info!(name = %name, "voting Lock with MN voter");
 

@@ -21,16 +21,10 @@ use dash_sdk::platform::transition::vote::PutVote;
 use dash_sdk::query_types::ContestedResource;
 use std::sync::Arc;
 
-/// Build the DPNS contested-index values for a vote poll.
+/// Build `[Value::from("dash"), Value::Text(normalized_label)]` for a DPNS vote poll.
 ///
-/// Platform stores the vote poll under the homograph-safe **normalized** label,
-/// not the raw user input (e.g. `"alice"` → `"a11ce"`, with `i`→`1`, `l`→`1`,
-/// `o`→`0`, and `to_lowercase`). Any caller that constructs a vote poll with
-/// the raw label hits `VotePollNotFoundError` at `PrepareProposal`, which
-/// surfaces as an opaque ~70 s timeout.
-///
-/// Pure helper — no `AppContext`/`Sdk` dependency, trivially unit-testable.
-/// Returns `[Value::from("dash"), Value::Text(normalized_label)]`.
+/// Label is normalized via `convert_to_homograph_safe_chars` (`alice` → `a11ce`);
+/// Platform indexes polls under the normalized form.
 fn dpns_vote_poll_index_values(name: &str) -> Vec<Value> {
     vec![
         Value::from("dash"),
@@ -73,11 +67,8 @@ impl AppContext {
             contract_id: data_contract.id(),
         };
 
-        // Pre-flight existence check. Confirm Platform actually has an open
-        // vote poll for `(dash, normalized_label)` before broadcasting any
-        // signed vote state transitions. This short-circuits the ~70 s
-        // retry chain triggered by `VotePollNotFoundError` at
-        // `PrepareProposal` when the poll is missing or already resolved.
+        // Pre-flight: confirm Platform has an open poll for this label before
+        // broadcasting — avoids the ~70 s retry chain on a missing poll.
         let existence_query = VotePollsByDocumentTypeQuery {
             contract_id: data_contract.id(),
             document_type_name: document_type.name().to_string(),
@@ -142,22 +133,30 @@ impl AppContext {
 mod tests {
     use super::*;
 
-    /// Homograph substitutions must apply — Platform indexes the poll under
-    /// the normalized label, so a raw label produces a `VotePollNotFound`
-    /// mismatch at `PrepareProposal` time.
     #[test]
     fn index_values_normalizes_homograph_chars() {
-        let values = dpns_vote_poll_index_values("alice");
+        // Given: a label containing i/l/o homograph characters.
+        let label = "alice";
+
+        // When: constructing the vote poll index values.
+        let values = dpns_vote_poll_index_values(label);
+
+        // Then: first element is always the `"dash"` parent, second is the
+        // normalized label (i/l → 1, o → 0).
         assert_eq!(values.len(), 2);
         assert_eq!(values[0], Value::from("dash"));
         assert_eq!(values[1], Value::Text("a11ce".to_owned()));
     }
 
-    /// Labels that contain no homograph characters must round-trip unchanged —
-    /// except for `to_lowercase`, which is part of the normalization pipeline.
     #[test]
     fn index_values_preserve_non_homograph_label() {
-        let values = dpns_vote_poll_index_values("bar22");
+        // Given: a label with no homograph characters (e.g. `bar22`).
+        let label = "bar22";
+
+        // When: constructing the vote poll index values.
+        let values = dpns_vote_poll_index_values(label);
+
+        // Then: normalization leaves it unchanged.
         assert_eq!(values[1], Value::Text("bar22".to_owned()));
     }
 }

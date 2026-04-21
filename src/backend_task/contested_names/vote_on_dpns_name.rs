@@ -68,7 +68,7 @@ impl AppContext {
         };
 
         // Pre-flight: confirm Platform has an open poll for this label before
-        // broadcasting — avoids the ~70 s retry chain on a missing poll.
+        // broadcasting — fails fast with VotePollNotFound if it doesn't.
         let existence_query = VotePollsByDocumentTypeQuery {
             contract_id: data_contract.id(),
             document_type_name: document_type.name().to_string(),

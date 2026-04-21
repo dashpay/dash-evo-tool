@@ -15,8 +15,15 @@ use dash_evo_tool::backend_task::identity::{
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_evo_tool::model::qualified_identity::{IdentityType, PrivateKeyTarget, QualifiedIdentity};
 use dash_evo_tool::model::secret::Secret;
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::platform_value::Value;
+use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
+use dash_sdk::dpp::util::strings::convert_to_homograph_safe_chars;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
+use dash_sdk::drive::query::vote_polls_by_document_type_query::VotePollsByDocumentTypeQuery;
+use dash_sdk::platform::FetchMany;
+use dash_sdk::query_types::ContestedResource;
 
 /// Load a masternode identity from env credentials. Returns `None` if creds missing.
 #[tracing::instrument(skip_all, fields(identity_type = %identity_type))]
@@ -31,6 +38,85 @@ async fn load_mn_from_env(identity_type: IdentityType) -> Option<QualifiedIdenti
     match result {
         BackendTaskSuccessResult::LoadedIdentity(qi) => Some(qi),
         other => panic!("expected LoadedIdentity, got: {:?}", other),
+    }
+}
+
+/// Generate a DPNS label that is guaranteed to match the contested-resource
+/// regex `^[a-zA-Z01-]{3,19}$` — i.e. 3–19 chars drawn only from
+/// `[a-zA-Z01-]`. Only names matching this regex trigger a vote contest;
+/// length alone (< 20 chars) is not sufficient.
+///
+/// Prefix is a recognisable tag so humans browsing testnet state can tell
+/// these are test-generated names; suffix is random from `[a-z01]`.
+fn generate_contested_dpns_name() -> String {
+    // `e0emn` replaces the previous `e2emn` — `2` is not in the contested
+    // alphabet, so the old prefix slipped names past the regex.
+    const PREFIX: &str = "e0emn";
+    const POOL: &[u8] = b"abcdefghijklmnopqrstuvwxyz01";
+    const SUFFIX_LEN: usize = 8;
+    let suffix: String = (0..SUFFIX_LEN)
+        .map(|_| POOL[rand::random::<u8>() as usize % POOL.len()] as char)
+        .collect();
+    // 5 + 8 = 13 chars, comfortably within the 3..=19 bound.
+    format!("{PREFIX}{suffix}")
+}
+
+/// Poll Platform until the vote poll for `(dash, normalized_label)` exists on
+/// the DPNS contract, up to `timeout`. Panics with a diagnostic message if the
+/// contest does not appear in time — this catches regressions where the
+/// generator produces a name that silently registers as an uncontested domain
+/// document, which would otherwise surface as an opaque voting timeout.
+async fn wait_for_dpns_contest(sdk: &dash_sdk::Sdk, label: &str, timeout: std::time::Duration) {
+    let platform_version = sdk.version();
+    let dpns_contract = load_system_data_contract(SystemDataContract::DPNS, platform_version)
+        .expect("load DPNS system contract");
+    let normalized = convert_to_homograph_safe_chars(label);
+    let poll_interval = std::time::Duration::from_secs(2);
+    let start = std::time::Instant::now();
+
+    loop {
+        let query = VotePollsByDocumentTypeQuery {
+            contract_id: dpns_contract.id(),
+            document_type_name: "domain".to_string(),
+            index_name: "parentNameAndLabel".to_string(),
+            // Start exactly at our normalized label (inclusive) so a single
+            // returned row is enough to confirm the contest exists.
+            start_at_value: Some((Value::Text(normalized.clone()), true)),
+            start_index_values: vec!["dash".into()],
+            end_index_values: vec![],
+            limit: Some(1),
+            order_ascending: true,
+        };
+
+        match ContestedResource::fetch_many(sdk, query).await {
+            Ok(resources) => {
+                let found = resources
+                    .0
+                    .iter()
+                    .any(|r| r.0.as_str() == Some(&normalized));
+                if found {
+                    tracing::info!(
+                        elapsed_ms = start.elapsed().as_millis(),
+                        label = label,
+                        normalized = normalized.as_str(),
+                        "contested vote poll is live",
+                    );
+                    return;
+                }
+            }
+            Err(e) => {
+                tracing::warn!("contested-resource query failed (will retry): {}", e);
+            }
+        }
+
+        if start.elapsed() >= timeout {
+            panic!(
+                "DPNS name {label} registered but did not enter contest state within {:?} — \
+                 check that the name matches regex ^[a-zA-Z01-]{{3,19}}$",
+                timeout,
+            );
+        }
+        tokio::time::sleep(poll_interval).await;
     }
 }
 
@@ -377,8 +463,11 @@ async fn tc_090_vote_with_mn_voter() {
         other => panic!("expected RegisteredIdentity, got: {:?}", other),
     };
 
-    // Step 2: Register a short contested DPNS name (< 20 chars triggers contest).
-    let name = format!("e2emn{:08x}", rand::random::<u32>());
+    // Step 2: Register a short DPNS name composed only of [a-zA-Z01-] so the
+    // normalizedLabel matches the contested regex ^[a-zA-Z01-]{3,19}$ and a
+    // masternode vote contest is triggered. Both length AND alphabet must
+    // match — < 20 chars alone is not sufficient.
+    let name = generate_contested_dpns_name();
     tracing::info!(name = %name, "registering contested DPNS name");
 
     let dpns_result = run_task_with_nonce_retry(
@@ -396,6 +485,19 @@ async fn tc_090_vote_with_mn_voter() {
         "expected RegisteredDpnsName, got: {:?}",
         dpns_result
     );
+
+    // Step 2b: Precheck — wait until the vote poll actually exists on
+    // Platform before attempting to vote. DPNS registration → contest state
+    // can take a block or two; failing fast here (instead of waiting out the
+    // opaque vote timeout) makes regressions in the name generator or
+    // registration path obvious.
+    tracing::info!(name = %name, "waiting for DPNS contest to go live");
+    wait_for_dpns_contest(
+        &ctx.app_context.sdk(),
+        &name,
+        std::time::Duration::from_secs(30),
+    )
+    .await;
 
     // Step 3: Vote Lock on the contested name using the MN voter identity.
     tracing::info!(name = %name, "voting Lock with MN voter");

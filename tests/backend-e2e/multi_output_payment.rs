@@ -183,9 +183,14 @@ async fn test_multi_output_single_wallet_spendable() {
     );
 
     // 4. Wait for source to have spendable funds
-    wait_for_spendable_balance(app_context, source_hash, total_expected, MAX_TEST_TIMEOUT / 3)
-        .await
-        .expect("Source wallet funds should be spendable");
+    wait_for_spendable_balance(
+        app_context,
+        source_hash,
+        total_expected,
+        MAX_TEST_TIMEOUT / 3,
+    )
+    .await
+    .expect("Source wallet funds should be spendable");
 
     // 5. Send ONE transaction with 3 outputs to the same wallet's addresses
     let recipients: Vec<PaymentRecipient> = addresses

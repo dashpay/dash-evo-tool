@@ -1,6 +1,5 @@
 use crate::app::AppAction;
 use crate::spv::CoreBackendMode;
-use crate::ui::components::MessageBanner;
 use crate::ui::components::component_trait::Component;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenType};
@@ -61,19 +60,22 @@ impl WalletsBalancesScreen {
                     // below; this banner is the "why" users otherwise wouldn't
                     // see from a silent disable.
                     //
-                    // We construct the `MessageBanner` as a fresh local each
-                    // frame on purpose: this is a persistent state notice
-                    // (bound to the SPV backend mode), not a transient task
-                    // result, so we want it visible the whole time the mode
-                    // is active. A fresh instance every frame means the
-                    // auto-dismiss timer never fires and the banner is shown
-                    // consistently; rendering is cheap and egui handles the
-                    // repainting.
+                    // The banner lives on the screen struct so its state is
+                    // constructed once and then re-rendered each frame. Setting
+                    // the message via the struct field (instead of a fresh
+                    // local) means `BannerState::logged` is preserved, so the
+                    // underlying tracing log fires once on mode entry — not 60
+                    // times a second while the screen is visible.
                     if !is_rpc_mode {
-                        let mut banner = MessageBanner::new();
-                        banner.set_message(SINGLE_KEY_REQUIRES_CORE, MessageType::Warning);
-                        banner.show(ui);
+                        if !self.sk_spv_warning_banner.has_message() {
+                            self.sk_spv_warning_banner
+                                .set_message(SINGLE_KEY_REQUIRES_CORE, MessageType::Warning)
+                                .disable_auto_dismiss();
+                        }
+                        self.sk_spv_warning_banner.show(ui);
                         ui.add_space(10.0);
+                    } else if self.sk_spv_warning_banner.has_message() {
+                        self.sk_spv_warning_banner.clear();
                     }
 
                     // Action buttons for SK wallet

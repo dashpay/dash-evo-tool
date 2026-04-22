@@ -14,7 +14,7 @@ use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::{ComponentStyles, DashColors};
-use crate::ui::wallets::wallets_screen::single_key_view::SINGLE_KEY_REQUIRES_CORE;
+use crate::ui::wallets::wallets_screen::SINGLE_KEY_REQUIRES_CORE;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::fee::FeeRate;
 use eframe::egui::{self, Context, RichText, Ui};
@@ -73,6 +73,12 @@ pub struct SingleKeyWalletSendScreen {
 
     // Advanced options toggle
     show_advanced_options: bool,
+
+    /// Persistent warning banner rendered when the app is running on the SPV
+    /// backend. Stored on the screen (rather than constructed fresh each
+    /// frame) so the underlying tracing log fires once on mode entry instead
+    /// of every repaint.
+    spv_warning_banner: MessageBanner,
 }
 
 impl SingleKeyWalletSendScreen {
@@ -88,6 +94,7 @@ impl SingleKeyWalletSendScreen {
             password_input: PasswordInput::new().with_hint_text("Enter password"),
             fee_dialog: FeeConfirmationDialog::default(),
             show_advanced_options: false,
+            spv_warning_banner: MessageBanner::new(),
         }
     }
 
@@ -878,14 +885,20 @@ impl ScreenLike for SingleKeyWalletSendScreen {
             egui::ScrollArea::vertical()
                 .auto_shrink([true; 2])
                 .show(ui, |ui| {
-                    // Persistent warning banner for the SPV backend. Constructed
-                    // fresh each frame on purpose (see `single_key_view.rs` for
-                    // the rationale): it is a state notice, not a task result.
+                    // Persistent warning banner for the SPV backend. Stored on
+                    // the screen so the underlying tracing log fires once on
+                    // mode entry instead of every repaint — see the matching
+                    // note in `single_key_view.rs`.
                     if !is_rpc_mode {
-                        let mut banner = MessageBanner::new();
-                        banner.set_message(SINGLE_KEY_REQUIRES_CORE, MessageType::Warning);
-                        banner.show(ui);
+                        if !self.spv_warning_banner.has_message() {
+                            self.spv_warning_banner
+                                .set_message(SINGLE_KEY_REQUIRES_CORE, MessageType::Warning)
+                                .disable_auto_dismiss();
+                        }
+                        self.spv_warning_banner.show(ui);
                         ui.add_space(10.0);
+                    } else if self.spv_warning_banner.has_message() {
+                        self.spv_warning_banner.clear();
                     }
 
                     // Heading with Advanced Options checkbox

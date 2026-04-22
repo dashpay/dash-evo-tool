@@ -1,7 +1,9 @@
 mod address_table;
 mod asset_locks;
 mod dialogs;
-pub(crate) mod single_key_view;
+mod single_key_view;
+
+pub(crate) use single_key_view::SINGLE_KEY_REQUIRES_CORE;
 
 use crate::app::{AppAction, BackendTasksExecutionMode, DesiredAppAction};
 use crate::backend_task::BackendTask;
@@ -163,6 +165,11 @@ pub struct WalletsBalancesScreen {
     /// Transaction count at the time `cached_tx_indices` was last built.
     /// Used to detect list growth that doesn't make existing indices OOB.
     cached_tx_source_len: Option<usize>,
+    /// Persistent warning banner rendered on the single-key wallet detail
+    /// view when the app is running on the SPV backend. Stored on the screen
+    /// (rather than constructed fresh each frame) so the underlying tracing
+    /// log fires once on mode entry instead of every repaint.
+    pub(crate) sk_spv_warning_banner: crate::ui::components::MessageBanner,
 }
 
 impl WalletsBalancesScreen {
@@ -273,6 +280,7 @@ impl WalletsBalancesScreen {
             pending_list_is_single_key: false,
             cached_tx_indices: None,
             cached_tx_source_len: None,
+            sk_spv_warning_banner: crate::ui::components::MessageBanner::new(),
         }
     }
 

@@ -44,29 +44,18 @@ struct V34EnvSnapshot {
     has_any_rpc_password: bool,
 }
 
-/// Parse `<data_dir>/.env` just enough to decide the v34 migration outcome.
-///
-/// Intentionally independent of `Config::load_from()` — that helper mutates
-/// the process environment via `dotenvy::from_path_override`, which is not
-/// appropriate inside a migration (parallel test runs, other tools may race).
+/// Parse `<data_dir>/.env` via `dotenvy::from_path_iter` to decide the v34
+/// migration outcome. The iterator API does not mutate process env (unlike
+/// `Config::load_from` / `dotenvy::from_path_override`), so this is safe to
+/// call from inside the migration transaction and from parallel test runs.
 fn read_env_file_for_v34_migration(data_dir: &Path) -> std::io::Result<V34EnvSnapshot> {
     let env_path = data_dir.join(".env");
-    let contents = std::fs::read_to_string(&env_path)?;
+    let iter = dotenvy::from_path_iter(&env_path).map_err(std::io::Error::other)?;
 
     let mut developer_mode = false;
     let mut has_any_rpc_password = false;
-
-    for raw_line in contents.lines() {
-        let line = raw_line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-        let key = key.trim();
-        let value = parse_env_value(value);
-
+    for item in iter {
+        let (key, value) = item.map_err(std::io::Error::other)?;
         if key.eq_ignore_ascii_case("DEVELOPER_MODE") {
             developer_mode = matches!(value.to_ascii_lowercase().as_str(), "true" | "1" | "yes");
         } else if key.ends_with("core_rpc_password") && !value.is_empty() {
@@ -78,52 +67,6 @@ fn read_env_file_for_v34_migration(data_dir: &Path) -> std::io::Result<V34EnvSna
         developer_mode,
         has_any_rpc_password,
     })
-}
-
-/// Parse the RHS of a `KEY=...` line the way dotenvy does, minus features we
-/// don't need (variable substitution, backslash escapes). Specifically:
-///
-/// * leading whitespace is stripped
-/// * if the value starts with `'` or `"`, the matching closing quote ends the
-///   value and inner content (including `#`) is preserved verbatim
-/// * outside of quotes, the first whitespace-then-`#` sequence starts an
-///   inline comment and is dropped (e.g. `value # note` → `value`)
-/// * a `#` with no preceding whitespace is a literal character, matching
-///   dotenvy (`value#nohash` → `value#nohash`)
-/// * trailing whitespace is trimmed
-///
-/// Backslash escapes are intentionally not interpreted — the v34 migration only
-/// looks at a boolean flag and whether a password is non-empty, so the cost of
-/// a full escape-aware parser isn't worth it.
-fn parse_env_value(raw: &str) -> String {
-    let trimmed = raw.trim_start();
-
-    // Quoted value — mirror dotenvy: inside quotes, `#` is a literal character.
-    if let Some(rest) = trimmed.strip_prefix('"') {
-        if let Some(end) = rest.find('"') {
-            return rest[..end].to_string();
-        }
-        // Unterminated quote — fall back to the naive strip so we don't lose data.
-        return rest.to_string();
-    }
-    if let Some(rest) = trimmed.strip_prefix('\'') {
-        if let Some(end) = rest.find('\'') {
-            return rest[..end].to_string();
-        }
-        return rest.to_string();
-    }
-
-    // Unquoted value — strip the first whitespace-then-`#` inline comment.
-    let mut end = trimmed.len();
-    let mut prev_ws = false;
-    for (i, c) in trimmed.char_indices() {
-        if c == '#' && prev_ws {
-            end = i;
-            break;
-        }
-        prev_ws = c.is_whitespace();
-    }
-    trimmed[..end].trim_end().to_string()
 }
 
 pub const DEFAULT_NETWORK: &str = "mainnet";
@@ -188,13 +131,6 @@ impl Database {
                 // network's `core_rpc_password` set) keep their existing mode;
                 // everyone else is pinned to SPV. No new persisted flag — the
                 // DB version bump itself is the one-shot gate.
-                //
-                // We parse `.env` directly instead of going through
-                // `Config::load_from()`: the latter uses `dotenvy::from_path_override`
-                // which mutates the process environment and is therefore unfit
-                // for migrations that may run in parallel with other tests /
-                // tools (and more importantly, we have no business leaking
-                // one-shot migration state into the live process env).
                 let migrate_to_spv = match data_dir {
                     Some(dir) => match read_env_file_for_v34_migration(dir) {
                         Ok(env_snapshot) => {
@@ -2547,10 +2483,9 @@ mod test {
 
     // ── v34 migration: SPV-default backend ──────────────────────────
     //
-    // The migration parses `.env` directly (see `read_env_file_for_v34_migration`)
-    // instead of going through `Config::load_from`, so these tests are
-    // self-contained: they do not touch the process environment and can run in
-    // parallel with each other and with anything else in the test suite.
+    // The migration reads `.env` via `dotenvy::from_path_iter`, which does
+    // not mutate the process environment, so these tests are self-contained
+    // and can run in parallel with each other and the rest of the suite.
     mod v34 {
         fn write_env(dir: &std::path::Path, contents: &str) {
             std::fs::write(dir.join(".env"), contents).expect("write .env");
@@ -2664,46 +2599,6 @@ mod test {
                 "try_perform_migration should report no migration needed"
             );
             assert_eq!(db.db_schema_version().unwrap(), 34);
-        }
-
-        // ── parse_env_value: dotenvy-style inline comment + quote handling ──
-        //
-        // These exercise the helper directly so regressions show up as unit
-        // failures with a clear message, not as mysterious migration behaviour.
-        use super::super::parse_env_value;
-
-        #[test]
-        fn parse_env_value_strips_inline_comment() {
-            assert_eq!(parse_env_value("value # trailing note"), "value");
-            assert_eq!(parse_env_value("value\t# tab then hash"), "value");
-            // Whitespace between value and `#` is what enables the comment.
-            assert_eq!(parse_env_value("hunter2  # password comment"), "hunter2");
-        }
-
-        #[test]
-        fn parse_env_value_preserves_hash_inside_quotes() {
-            // Double quotes preserve the `#` and inner whitespace verbatim.
-            assert_eq!(
-                parse_env_value("\"value # with hash\""),
-                "value # with hash"
-            );
-            // Single quotes behave the same.
-            assert_eq!(parse_env_value("'value # with hash'"), "value # with hash");
-            // And content before/after the quoted region is not our concern —
-            // dotenvy only supports a single quoted span for the value.
-            assert_eq!(parse_env_value(" \"quoted\" "), "quoted");
-        }
-
-        #[test]
-        fn parse_env_value_hash_without_whitespace_is_literal() {
-            // Matches dotenvy: a `#` with no preceding whitespace stays in the value.
-            assert_eq!(parse_env_value("value#nohash"), "value#nohash");
-            assert_eq!(
-                parse_env_value("hunter2#still-password"),
-                "hunter2#still-password"
-            );
-            // And a plain unquoted value trims trailing whitespace only.
-            assert_eq!(parse_env_value("  plain  "), "plain");
         }
     }
 }

@@ -448,6 +448,23 @@ impl AppContext {
     }
 
     fn set_core_backend_mode_inner(self: &Arc<Self>, mode: CoreBackendMode, persist: bool) {
+        // TODO: mid-session mode switches here do not manage ZMQ listener
+        // lifecycle.
+        //   - RPC → SPV: any listener spawned at startup or on the last
+        //     network switch keeps running, burning a socket + retry loop
+        //     against a Core node that is no longer in use (pre-existing
+        //     bug, predates the SPV-default flip).
+        //   - SPV → RPC: no listener is spawned here, so Expert users
+        //     toggling to Local Dash Core node mid-session lose ZMQ
+        //     real-time events until restart or network switch (the
+        //     FeatureGate::RpcBackend gate in spawn_zmq_listener blocks
+        //     the startup spawn while in SPV mode).
+        // Fixing this requires an AppContext → AppState signal so the
+        // listener map (owned by AppState) can be torn down or spawned
+        // in response to mode changes. Cross-module refactor, deliberately
+        // scoped out of PR #836.
+        // Ref: CR-1 on dashpay/dash-evo-tool#836.
+
         // Switch SDK context provider to match the selected backend.
         // Only store/persist the mode after binding succeeds — otherwise the app
         // would report the new mode while still wired to the old provider.

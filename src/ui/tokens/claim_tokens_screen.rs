@@ -211,11 +211,14 @@ impl ClaimTokensScreen {
             .distribution_type
             .unwrap_or(TokenDistributionType::Perpetual);
 
+        let claim_all = self.claim_all;
         let dialog = self.confirmation_dialog.get_or_insert_with(|| {
-            ConfirmationDialog::new(
-                "Confirm Claim".to_string(),
-                "Are you sure you want to claim tokens for this contract?".to_string(),
-            )
+            let message = if claim_all {
+                "Claim all will submit as many claims as needed to collect every available token. Each claim is a separate transaction with its own fee. Continue?".to_string()
+            } else {
+                "Are you sure you want to claim tokens for this contract?".to_string()
+            };
+            ConfirmationDialog::new("Confirm Claim".to_string(), message)
         });
 
         match dialog.show(ui).inner.dialog_response {
@@ -574,6 +577,11 @@ impl ScreenLike for ClaimTokensScreen {
                 let estimated_fee = fee_estimator.estimate_document_batch(1); // Token operations are document batch transitions
 
                 let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let fee_label = if self.claim_all {
+                    "Estimated fee per claim:"
+                } else {
+                    "Estimated fee:"
+                };
                 Frame::new()
                     .fill(DashColors::surface(dark_mode))
                     .inner_margin(Margin::symmetric(10, 8))
@@ -581,7 +589,7 @@ impl ScreenLike for ClaimTokensScreen {
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.label(
-                                RichText::new("Estimated fee:")
+                                RichText::new(fee_label)
                                     .color(DashColors::text_secondary(dark_mode))
                                     .size(14.0),
                             );
@@ -591,6 +599,15 @@ impl ScreenLike for ClaimTokensScreen {
                                     .size(14.0),
                             );
                         });
+                        if self.claim_all {
+                            ui.label(
+                                RichText::new(
+                                    "Claim all may submit several transactions, each charged the fee above.",
+                                )
+                                .color(DashColors::text_secondary(dark_mode))
+                                .size(12.0),
+                            );
+                        }
                     });
 
                 ui.add_space(10.0);
@@ -605,9 +622,14 @@ impl ScreenLike for ClaimTokensScreen {
                         self.status = ClaimTokensStatus::Error;
                         return;
                     } else if self.confirmation_dialog.is_none() {
+                        let message = if self.claim_all {
+                            "Claim all will submit as many claims as needed to collect every available token. Each claim is a separate transaction with its own fee. Continue?".to_string()
+                        } else {
+                            "Are you sure you want to claim tokens for this contract?".to_string()
+                        };
                         self.confirmation_dialog = Some(ConfirmationDialog::new(
                             "Confirm Claim".to_string(),
-                            "Are you sure you want to claim tokens for this contract?".to_string(),
+                            message,
                         ));
                     }
                 }

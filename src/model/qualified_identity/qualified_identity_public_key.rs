@@ -56,7 +56,7 @@ impl QualifiedIdentityPublicKey {
 
                     let address = Address::new(network, Payload::PubkeyHash(pubkey_hash));
 
-                    let testnet_address = if network != Network::Dash {
+                    let testnet_address = if network != Network::Mainnet {
                         Some(Address::new(
                             Network::Testnet,
                             Payload::PubkeyHash(pubkey_hash),
@@ -100,7 +100,7 @@ impl QualifiedIdentityPublicKey {
 
                     let address = Address::p2pkh(&pubkey, network);
 
-                    let testnet_address = if network != Network::Dash {
+                    let testnet_address = if network != Network::Mainnet {
                         Some(Address::p2pkh(&pubkey, Network::Testnet))
                     } else {
                         None
@@ -147,7 +147,7 @@ impl QualifiedIdentityPublicKey {
 
                 let address = Address::new(network, Payload::PubkeyHash(pubkey_hash));
 
-                let testnet_address = if network != Network::Dash {
+                let testnet_address = if network != Network::Mainnet {
                     Some(Address::new(
                         Network::Testnet,
                         Payload::PubkeyHash(pubkey_hash),

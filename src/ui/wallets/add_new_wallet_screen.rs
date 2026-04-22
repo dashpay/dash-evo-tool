@@ -1,56 +1,29 @@
 use crate::app::AppAction;
+use crate::backend_task::BackendTask;
+use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::core::CoreTask;
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use crate::model::wallet::Wallet;
 use crate::model::wallet::encryption::{DASH_SECRET_MESSAGE, encrypt_message};
-use crate::model::wallet::{
-    AddressInfo as WalletAddressInfo, ClosedKeyItem, DerivationPathReference, DerivationPathType,
-    OpenWalletSeed, Wallet, WalletSeed,
-};
 use crate::ui::components::entropy_grid::U256EntropyGrid;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::helpers::clicked_outside_window;
 use crate::ui::identities::add_new_identity_screen::AddNewIdentityScreen;
 use crate::ui::identities::funding_common::generate_qr_code_image;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{RootScreenType, Screen, ScreenLike};
 use bip39::{Language, Mnemonic};
-use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dpp::dashcore::Address;
-use dash_sdk::dpp::dashcore::Network;
-use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
-use dash_sdk::dpp::key_wallet::bip32::{ExtendedPrivKey, ExtendedPubKey};
 use eframe::egui::{Context, TextureHandle, TextureOptions};
 use eframe::emath::Align;
 use egui::load::SizedTexture;
-use egui::{Color32, ComboBox, Frame, Grid, Layout, Margin, RichText, Stroke, Ui, Vec2};
-use std::sync::atomic::Ordering;
-use std::sync::{Arc, RwLock};
-use tracing::error;
+use egui::{ComboBox, Frame, Grid, Layout, Margin, RichText, Stroke, Ui, Vec2};
+use std::sync::Arc;
 use zxcvbn::zxcvbn;
-
-// Constants for feature purposes and sub-features
-pub const BIP44_PURPOSE: u32 = 44;
-pub const DASH_COIN_TYPE: u32 = 5;
-pub const DASH_TESTNET_COIN_TYPE: u32 = 1;
-pub const DASH_BIP44_ACCOUNT_0_PATH_MAINNET: [ChildNumber; 3] = [
-    ChildNumber::Hardened {
-        index: BIP44_PURPOSE,
-    },
-    ChildNumber::Hardened {
-        index: DASH_COIN_TYPE,
-    },
-    ChildNumber::Hardened { index: 0 },
-];
-
-pub const DASH_BIP44_ACCOUNT_0_PATH_TESTNET: [ChildNumber; 3] = [
-    ChildNumber::Hardened {
-        index: BIP44_PURPOSE,
-    },
-    ChildNumber::Hardened {
-        index: DASH_TESTNET_COIN_TYPE,
-    },
-    ChildNumber::Hardened { index: 0 },
-];
 
 /// Word count options for BIP39 mnemonic seed phrases
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,7 +55,7 @@ impl WordCount {
 
 pub struct AddNewWalletScreen {
     seed_phrase: Option<Mnemonic>,
-    password: String,
+    password_input: PasswordInput,
     entropy_grid: U256EntropyGrid,
     selected_language: Language,
     selected_word_count: WordCount,
@@ -101,13 +74,19 @@ pub struct AddNewWalletScreen {
     receive_qr_texture: Option<TextureHandle>,
     show_receive_popup: bool,
     funds_received: bool,
+    /// Cached list of Core wallets (fetched asynchronously via backend task)
+    core_wallets: Option<Vec<String>>,
+    /// Whether the backend task to fetch Core wallets has been dispatched
+    core_wallets_loading: bool,
+    /// Index of selected Core wallet in the ComboBox
+    selected_core_wallet_index: usize,
 }
 
 impl AddNewWalletScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         Self {
             seed_phrase: None,
-            password: String::new(),
+            password_input: PasswordInput::new().with_hint_text("Optional password"),
             entropy_grid: U256EntropyGrid::new(),
             selected_language: Language::English,
             selected_word_count: WordCount::Words24, // Default to 24 words for maximum security
@@ -125,7 +104,15 @@ impl AddNewWalletScreen {
             receive_qr_texture: None,
             show_receive_popup: false,
             funds_received: false,
+            core_wallets: None,
+            core_wallets_loading: false,
+            selected_core_wallet_index: 0,
         }
+    }
+
+    pub fn reset_core_wallets_cache(&mut self) {
+        self.core_wallets = None;
+        self.core_wallets_loading = false;
     }
 
     /// Generate a new seed phrase based on the selected language and word count
@@ -144,90 +131,20 @@ impl AddNewWalletScreen {
         if let Some(mnemonic) = &self.seed_phrase {
             let seed = mnemonic.to_seed("");
 
-            let (encrypted_seed, salt, nonce, uses_password) = if self.password.is_empty() {
-                (seed.to_vec(), vec![], vec![], false)
-            } else {
-                // Encrypt the seed to obtain encrypted_seed, salt, and nonce
-                let (encrypted_seed, salt, nonce) =
-                    ClosedKeyItem::encrypt_seed(&seed, self.password.as_str())?;
-                if self.use_password_for_app {
-                    let (encrypted_message, salt, nonce) =
-                        encrypt_message(DASH_SECRET_MESSAGE, self.password.as_str())?;
-                    self.app_context
-                        .update_main_password(&salt, &nonce, &encrypted_message)
-                        .map_err(|e| e.to_string())?;
-                }
-                (encrypted_seed, salt, nonce, true)
-            };
-
-            // Generate master ECDSA extended private key
-            let master_ecdsa_extended_private_key =
-                ExtendedPrivKey::new_master(self.app_context.network, &seed)
-                    .expect("Failed to create master ECDSA extended private key");
-            let bip44_root_derivation_path: DerivationPath = match self.app_context.network {
-                Network::Dash => DerivationPath::from(DASH_BIP44_ACCOUNT_0_PATH_MAINNET.as_slice()),
-                _ => DerivationPath::from(DASH_BIP44_ACCOUNT_0_PATH_TESTNET.as_slice()),
-            };
-            let secp = Secp256k1::new();
-            let master_bip44_ecdsa_extended_public_key = master_ecdsa_extended_private_key
-                .derive_priv(&secp, &bip44_root_derivation_path)
-                .map_err(|e| e.to_string())?;
-
-            let master_bip44_ecdsa_extended_public_key =
-                ExtendedPubKey::from_priv(&secp, &master_bip44_ecdsa_extended_public_key);
-
-            // Compute the seed hash
-            let seed_hash = ClosedKeyItem::compute_seed_hash(&seed);
-
-            // Generate the first receive address BEFORE creating wallet (no locks needed)
-            let address_path_extension = DerivationPath::from(
-                [
-                    ChildNumber::Normal { index: 0 }, // receive (not change)
-                    ChildNumber::Normal { index: 0 }, // first address
-                ]
-                .as_slice(),
-            );
-            let first_address = master_bip44_ecdsa_extended_public_key
-                .derive_pub(&secp, &address_path_extension)
-                .ok()
-                .map(|pk| Address::p2pkh(&pk.to_pub(), self.app_context.network));
-
-            // Build known_addresses and watched_addresses with the first address
-            let mut known_addresses = std::collections::BTreeMap::new();
-            let mut watched_addresses = std::collections::BTreeMap::new();
-
-            if let Some(ref address) = first_address {
-                let full_derivation_path = DerivationPath::from(match self.app_context.network {
-                    Network::Dash => [
-                        DASH_BIP44_ACCOUNT_0_PATH_MAINNET[0],
-                        DASH_BIP44_ACCOUNT_0_PATH_MAINNET[1],
-                        DASH_BIP44_ACCOUNT_0_PATH_MAINNET[2],
-                        ChildNumber::Normal { index: 0 },
-                        ChildNumber::Normal { index: 0 },
-                    ]
-                    .as_slice(),
-                    _ => [
-                        DASH_BIP44_ACCOUNT_0_PATH_TESTNET[0],
-                        DASH_BIP44_ACCOUNT_0_PATH_TESTNET[1],
-                        DASH_BIP44_ACCOUNT_0_PATH_TESTNET[2],
-                        ChildNumber::Normal { index: 0 },
-                        ChildNumber::Normal { index: 0 },
-                    ]
-                    .as_slice(),
-                });
-                known_addresses.insert(address.clone(), full_derivation_path.clone());
-                watched_addresses.insert(
-                    full_derivation_path,
-                    WalletAddressInfo {
-                        address: address.clone(),
-                        path_type: DerivationPathType::CLEAR_FUNDS,
-                        path_reference: DerivationPathReference::BIP44,
-                    },
-                );
-
-                self.receive_address_string = Some(address.to_string());
-                self.receive_address = Some(address.clone());
+            // Handle app-level password encryption (UI concern, separate from wallet)
+            if !self.password_input.is_empty() && self.use_password_for_app {
+                let (encrypted_message, salt, nonce) =
+                    encrypt_message(DASH_SECRET_MESSAGE, self.password_input.text())?;
+                self.app_context
+                    .update_main_password(&salt, &nonce, &encrypted_message)
+                    .map_err(|e| e.to_string())?;
             }
+
+            let password = if self.password_input.is_empty() {
+                None
+            } else {
+                Some(self.password_input.secret().clone())
+            };
 
             // Generate default wallet name if none provided
             let wallet_alias = if self.alias_input.trim().is_empty() {
@@ -242,90 +159,33 @@ impl AddNewWalletScreen {
                 self.alias_input.clone()
             };
 
-            let wallet = Wallet {
-                wallet_seed: WalletSeed::Open(OpenWalletSeed {
-                    seed,
-                    wallet_info: ClosedKeyItem {
-                        seed_hash,
-                        encrypted_seed,
-                        salt,
-                        nonce,
-                        password_hint: None,
-                    },
-                }),
-                uses_password,
-                master_bip44_ecdsa_extended_public_key,
-                address_balances: Default::default(),
-                address_total_received: Default::default(),
-                known_addresses,
-                watched_addresses,
-                unused_asset_locks: Default::default(),
-                alias: Some(wallet_alias),
-                identities: Default::default(),
-                utxos: Default::default(),
-                transactions: Vec::new(),
-                is_main: true,
-                confirmed_balance: 0,
-                unconfirmed_balance: 0,
-                total_balance: 0,
-                platform_address_info: Default::default(),
-            };
+            let mut wallet = Wallet::new_from_seed(
+                seed,
+                self.app_context.network,
+                Some(wallet_alias),
+                password.as_ref(),
+            )
+            .map_err(|e| e.to_string())?;
 
-            self.app_context
-                .db
-                .store_wallet(&wallet, &self.app_context.network)
-                .map_err(|e| e.to_string())?;
+            wallet.core_wallet_name = self
+                .core_wallets
+                .as_ref()
+                .and_then(|ws| ws.get(self.selected_core_wallet_index).cloned());
 
-            let new_wallet_seed_hash = wallet.seed_hash();
-            let wallet_arc = Arc::new(RwLock::new(wallet));
-
-            // Acquire a write lock and add the new wallet
-            if let Ok(mut wallets) = self.app_context.wallets.write() {
-                wallets.insert(new_wallet_seed_hash, wallet_arc.clone());
-                self.app_context.has_wallet.store(true, Ordering::Relaxed);
-            } else {
-                error!("Failed to acquire write lock on wallets");
+            // Extract first receive address for display before registering
+            if let Some((address, _)) = wallet.known_addresses.first_key_value() {
+                self.receive_address_string = Some(address.to_string());
+                self.receive_address = Some(address.clone());
             }
+
+            let (new_wallet_seed_hash, _wallet_arc) = self
+                .app_context
+                .register_wallet(wallet)
+                .map_err(|e| e.to_string())?;
 
             // Set pending wallet selection so the wallet screen auto-selects this wallet
             if let Ok(mut pending) = self.app_context.pending_wallet_selection.lock() {
                 *pending = Some(new_wallet_seed_hash);
-            }
-
-            // Save the first address to database
-            if let Some(ref address) = first_address {
-                let full_derivation_path = DerivationPath::from(match self.app_context.network {
-                    Network::Dash => [
-                        DASH_BIP44_ACCOUNT_0_PATH_MAINNET[0],
-                        DASH_BIP44_ACCOUNT_0_PATH_MAINNET[1],
-                        DASH_BIP44_ACCOUNT_0_PATH_MAINNET[2],
-                        ChildNumber::Normal { index: 0 },
-                        ChildNumber::Normal { index: 0 },
-                    ]
-                    .as_slice(),
-                    _ => [
-                        DASH_BIP44_ACCOUNT_0_PATH_TESTNET[0],
-                        DASH_BIP44_ACCOUNT_0_PATH_TESTNET[1],
-                        DASH_BIP44_ACCOUNT_0_PATH_TESTNET[2],
-                        ChildNumber::Normal { index: 0 },
-                        ChildNumber::Normal { index: 0 },
-                    ]
-                    .as_slice(),
-                });
-                let _ = self.app_context.db.add_address_if_not_exists(
-                    &new_wallet_seed_hash,
-                    address,
-                    &self.app_context.network,
-                    &full_derivation_path,
-                    DerivationPathReference::BIP44,
-                    DerivationPathType::CLEAR_FUNDS,
-                    None,
-                );
-            }
-
-            // Load SPV wallet in background
-            if self.app_context.core_backend_mode() == crate::spv::CoreBackendMode::Spv {
-                self.app_context.handle_wallet_unlocked(&wallet_arc);
             }
 
             self.created_wallet_seed_hash = Some(new_wallet_seed_hash);
@@ -496,7 +356,7 @@ impl AddNewWalletScreen {
         }
 
         let mut open = self.show_receive_popup;
-        egui::Window::new("Fund Wallet")
+        let window_response = egui::Window::new("Fund Wallet")
             .collapsible(false)
             .resizable(false)
             .open(&mut open)
@@ -518,7 +378,7 @@ impl AddNewWalletScreen {
                     if let Some(address) = &self.receive_address_string {
                         ui.label(address);
                         ui.add_space(4.0);
-                        if ui.button("Copy Address").clicked()
+                        if ComponentStyles::add_primary_button(ui, "Copy Address").clicked()
                             && let Err(err) = crate::ui::helpers::copy_text_to_clipboard(address)
                         {
                             tracing::warn!("Failed to copy address: {}", err);
@@ -530,6 +390,12 @@ impl AddNewWalletScreen {
                     ui.label("Waiting for funds...");
                 });
             });
+
+        if let Some(ref resp) = window_response
+            && clicked_outside_window(ctx, resp.response.rect)
+        {
+            open = false;
+        }
 
         self.show_receive_popup = open;
         AppAction::None
@@ -627,17 +493,7 @@ impl AddNewWalletScreen {
 
                 ui.add_space(10.0);
 
-                let generate_button = egui::Button::new(
-                    RichText::new("Generate")
-                        .strong()
-                        .size(12.0)
-                        .color(Color32::WHITE),
-                )
-                .min_size(Vec2::new(100.0, 20.0))
-                .fill(DashColors::ACTION_BUTTON_BLUE) // Blue background
-                .corner_radius(5.0);
-
-                if ui.add(generate_button).clicked() {
+                if ComponentStyles::add_primary_button(ui, "Generate").clicked() {
                     self.generate_seed_phrase();
                 }
             });
@@ -707,7 +563,34 @@ impl AddNewWalletScreen {
 }
 
 impl ScreenLike for AddNewWalletScreen {
+    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
+        if let BackendTaskSuccessResult::CoreWalletsList(wallets) = backend_task_success_result {
+            self.selected_core_wallet_index = self
+                .selected_core_wallet_index
+                .min(wallets.len().saturating_sub(1));
+            self.core_wallets = Some(wallets);
+        }
+    }
+
+    fn display_task_error(&mut self, _error: &TaskError) -> bool {
+        self.core_wallets_loading = false;
+        self.core_wallets = Some(vec![]);
+        false
+    }
+
     fn ui(&mut self, ctx: &Context) -> AppAction {
+        let mut pending_action = AppAction::None;
+        if self.core_wallets.is_none() && !self.core_wallets_loading {
+            // SPV mode has no Dash Core RPC — skip listing Core wallets entirely.
+            if self.app_context.core_backend_mode() == crate::spv::CoreBackendMode::Spv {
+                self.core_wallets = Some(vec![]);
+            } else {
+                self.core_wallets_loading = true;
+                pending_action =
+                    AppAction::BackendTask(BackendTask::CoreTask(CoreTask::ListCoreWallets));
+            }
+        }
+
         let mut action = add_top_panel(
             ctx,
             &self.app_context,
@@ -799,9 +682,10 @@ impl ScreenLike for AddNewWalletScreen {
 
                     ui.horizontal(|ui| {
                         ui.label("Optional Password:");
-                        if ui.text_edit_singleline(&mut self.password).changed() {
-                            if !self.password.is_empty() {
-                                let estimate = zxcvbn(&self.password, &[]);
+                        let pw_response = self.password_input.show(ui);
+                        if pw_response.changed {
+                            if !self.password_input.is_empty() {
+                                let estimate = zxcvbn(self.password_input.text(), &[]);
 
                                 // Convert Score to u8
                                 let score_u8 = u8::from(estimate.score());
@@ -858,21 +742,50 @@ impl ScreenLike for AddNewWalletScreen {
                     ui.separator();
                     ui.add_space(10.0);
 
-                    ui.heading("6. Save the wallet.");
+                    let save_step = if self
+                        .core_wallets
+                        .as_ref()
+                        .is_some_and(|w| w.len() > 1)
+                    {
+                        let core_wallets = self.core_wallets.as_ref().unwrap();
+                        ui.heading(
+                            "6. Select the Dash Core wallet to use for RPC operations.",
+                        );
+                        ui.add_space(8.0);
+
+                        ui.horizontal(|ui| {
+                            ui.label("Dash Core Wallet:");
+                            let selected_name =
+                                &core_wallets[self.selected_core_wallet_index];
+                            ComboBox::from_id_salt("core_wallet_selector")
+                                .selected_text(selected_name.as_str())
+                                .show_ui(ui, |ui| {
+                                    for (i, name) in core_wallets.iter().enumerate() {
+                                        ui.selectable_value(
+                                            &mut self.selected_core_wallet_index,
+                                            i,
+                                            name,
+                                        );
+                                    }
+                                });
+                        });
+
+                        ui.add_space(10.0);
+                        ui.separator();
+                        ui.add_space(10.0);
+                        "7"
+                    } else {
+                        "6"
+                    };
+
+                    ui.heading(format!("{save_step}. Save the wallet."));
                     ui.add_space(10.0);
 
                     // Save Wallet button styled like Load Identity button
                     let mut new_style = (**ui.style()).clone();
                     new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
                     ui.set_style(new_style);
-                    let save_button = egui::Button::new(
-                        RichText::new("Save Wallet").color(Color32::WHITE),
-                    )
-                        .fill(DashColors::ACTION_BUTTON_BLUE)
-                        .frame(true)
-                        .corner_radius(3.0);
-
-                    if ui.add(save_button).clicked() {
+                    if ComponentStyles::add_primary_button(ui, "Save Wallet").clicked() {
                         match self.save_wallet() {
                             Ok(save_wallet_action) => {
                                 inner_action = save_wallet_action;
@@ -897,12 +810,14 @@ impl ScreenLike for AddNewWalletScreen {
                 .show(ctx, |ui| {
                     ui.label(error_message);
                     ui.add_space(10.0);
-                    if ui.button("Close").clicked() {
-                        self.error = None; // Clear the error to close the popup
+                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    if ComponentStyles::add_secondary_button(ui, "Close", dark_mode).clicked() {
+                        self.error = None;
                     }
                 });
         }
 
+        action |= pending_action;
         action
     }
 }

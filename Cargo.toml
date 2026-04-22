@@ -16,9 +16,9 @@ egui_commonmark = "0.22.0"
 rfd = "0.17.2"
 qrcode = "0.14.1"
 nix = { version = "0.31.1", features = ["signal"] }
-eframe = { version = "0.33.3", features = ["persistence"] }
+eframe = { version = "0.33.3", features = ["persistence", "wgpu"] }
 base64 = "0.22.1"
-dash-sdk = { git = "https://github.com/dashpay/platform", rev = "d6f4eb9ac9feafaa914f06e1b78eb66beceef3b7", features = [
+dash-sdk = { git = "https://github.com/dashpay/platform", rev = "9d799d339f961bed5aa21d3e3e3efe9374b7929c", features = [
     "core_key_wallet",
     "core_key_wallet_manager",
     "core_bincode",
@@ -26,7 +26,10 @@ dash-sdk = { git = "https://github.com/dashpay/platform", rev = "d6f4eb9ac9feafa
     "core_verification",
     "core_rpc_client",
     "core_spv",
+    "shielded",
 ] }
+rs-sdk-trusted-context-provider = { git = "https://github.com/dashpay/platform", rev = "9d799d339f961bed5aa21d3e3e3efe9374b7929c" }
+zip32 = "0.2.0"
 grovestark = { git = "https://www.github.com/dashpay/grovestark", rev = "5b9e289cca54c79b1305d5f4f40bf1148f1eb0e3" }
 rayon = "1.8"
 thiserror = "2.0.18"
@@ -52,7 +55,7 @@ arboard = { version = "3.6.0", default-features = false, features = [
     "windows-sys",
 ] }
 directories = "6.0.0"
-rusqlite = { version = "0.38.0", features = ["functions", "fallible_uint"] }
+rusqlite = { version = "0.38.0", features = ["bundled", "functions", "fallible_uint"] }
 dark-light = "2.0.0"
 image = { version = "0.25.6", default-features = false, features = [
     "png",
@@ -74,6 +77,13 @@ which = { version = "8.0.0" }
 tz-rs = { version = "0.7.0" }
 tempfile = "3.20.0"
 arc-swap = "1"
+urlencoding = "2"
+region = "3.0.2"
+rmcp = { version = "1.2", optional = true, default-features = false }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"], optional = true }
+subtle = { version = "2.6", optional = true }
+clap = { version = "4", features = ["derive"], optional = true }
+clap_complete = { version = "4", optional = true }
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 zmq = "0.10.0"
@@ -81,30 +91,42 @@ zmq = "0.10.0"
 [target.'cfg(target_os = "windows")'.dependencies]
 zeromq = "0.4.1"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+
 [target.'cfg(any(target_arch = "x86", target_arch = "x86_64"))'.dependencies]
 native-dialog = "0.9.0"
 raw-cpuid = "11.5.0"
 
+[features]
+testing = []
+mcp = ["dep:rmcp", "rmcp/server", "rmcp/macros", "rmcp/transport-streamable-http-server", "dep:axum", "dep:subtle"]
+cli = ["dep:rmcp", "rmcp/server", "rmcp/macros", "rmcp/client", "rmcp/transport-io", "rmcp/transport-streamable-http-client-reqwest", "dep:clap", "dep:clap_complete"]
+headless = ["cli", "mcp"]
+
 [dev-dependencies]
 egui_kittest = { version = "0.33.3", features = ["eframe"] }
+tokio-shared-rt = "=0.1.0"
+
+[[bin]]
+name = "det-cli"
+path = "src/bin/det_cli/main.rs"
+required-features = ["cli"]
 
 [build-dependencies]
 winres = "0.1"
 
-[patch."https://github.com/dashpay/rust-dashcore"]
-dash-network = { git = "https://www.github.com/dashpay/rust-dashcore", rev = "6affdaa5db30c04f533cfac4a81b9939d1cf2545" }
-dash-spv = { git = "https://www.github.com/dashpay/rust-dashcore", rev = "6affdaa5db30c04f533cfac4a81b9939d1cf2545" }
-dashcore = { git = "https://www.github.com/dashpay/rust-dashcore", rev = "6affdaa5db30c04f533cfac4a81b9939d1cf2545" }
-dashcore-private = { git = "https://www.github.com/dashpay/rust-dashcore", rev = "6affdaa5db30c04f533cfac4a81b9939d1cf2545" }
-dashcore-rpc = { git = "https://www.github.com/dashpay/rust-dashcore", rev = "6affdaa5db30c04f533cfac4a81b9939d1cf2545" }
-dashcore-rpc-json = { git = "https://www.github.com/dashpay/rust-dashcore", rev = "6affdaa5db30c04f533cfac4a81b9939d1cf2545" }
-dashcore_hashes = { git = "https://www.github.com/dashpay/rust-dashcore", rev = "6affdaa5db30c04f533cfac4a81b9939d1cf2545" }
-key-wallet = { git = "https://www.github.com/dashpay/rust-dashcore", rev = "6affdaa5db30c04f533cfac4a81b9939d1cf2545" }
-key-wallet-manager = { git = "https://www.github.com/dashpay/rust-dashcore", rev = "6affdaa5db30c04f533cfac4a81b9939d1cf2545" }
+# Keep full debuginfo for our code, but only line tables for dependencies.
+# This shrinks DWARF from ~790MB to a fraction, letting gimli (std's backtrace
+# symbolizer) actually resolve panic backtraces instead of printing <unknown>.
+[profile.dev.package."*"]
+debug = "line-tables-only"
 
 [lints.rust.unexpected_cfgs]
 level = "warn"
-check-cfg = ["cfg(tokio_unstable)"]
+check-cfg = ["cfg(tokio_unstable)", "cfg(feature, values(\"testing\", \"mcp\", \"cli\", \"headless\"))"]
+
 
 [lints.clippy]
 uninlined_format_args = "allow"
+

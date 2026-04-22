@@ -12,6 +12,8 @@
 //! performed by Platform. For accurate fees, use Platform's EstimateStateTransitionFee
 //! endpoint (when available).
 
+use crate::model::amount::Amount;
+use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use dash_sdk::dpp::version::PlatformVersion;
 
 /// Storage fee constants from FEE_STORAGE_VERSION1 in rs-platform-version.
@@ -264,6 +266,21 @@ impl PlatformFeeEstimator {
         let fee_duffs = base_fee_credits / 1000; // Convert credits to duffs
         // Add 50% buffer and ensure minimum of 10,000 duffs based on observed behavior
         fee_duffs.saturating_add(fee_duffs / 2).max(10_000)
+    }
+
+    /// Estimate fees (in duffs) for a shield-from-core asset lock operation.
+    ///
+    /// Returns `(platform_fee_duffs, l1_tx_fee_duffs)`:
+    /// - Platform fee: `address_funding_asset_lock_cost` with fee multiplier applied,
+    ///   converted to duffs, plus 20% buffer
+    /// - L1 tx fee: flat estimate covering Core minimum relay fee (~3000 duffs)
+    pub fn estimate_shield_from_core_fees_duffs(&self) -> (u64, u64) {
+        let platform_fee_credits =
+            self.apply_multiplier(self.min_fees.address_funding_asset_lock_cost);
+        let platform_fee_duffs =
+            (platform_fee_credits / CREDITS_PER_DUFF).saturating_mul(120) / 100;
+        let l1_tx_fee_duffs = 3_000_u64;
+        (platform_fee_duffs, l1_tx_fee_duffs)
     }
 
     /// Estimate fee for identity update (adding/disabling keys)
@@ -637,8 +654,7 @@ pub const CREDITS_PER_DASH: u64 = 100_000_000_000;
 
 /// Format credits as DASH for display
 pub fn format_credits_as_dash(credits: u64) -> String {
-    let dash = credits as f64 / CREDITS_PER_DASH as f64;
-    format!("{:.8} DASH", dash)
+    Amount::dash_from_credits(credits).to_string()
 }
 
 /// Format credits for display (with both credits and DASH)
@@ -649,6 +665,15 @@ pub fn format_credits(credits: u64) -> String {
     } else {
         format!("{} credits ({:.10} DASH)", credits, dash)
     }
+}
+
+/// Compute the exact shielded fee for a given number of Orchard actions.
+///
+/// Wraps `compute_minimum_shielded_fee` from `dpp`. Use this to calculate
+/// the fee after note selection, when the action count is known.
+pub fn shielded_fee_for_actions(num_actions: usize, platform_version: &PlatformVersion) -> u64 {
+    use dash_sdk::dpp::shielded::compute_minimum_shielded_fee;
+    compute_minimum_shielded_fee(num_actions, platform_version)
 }
 
 #[cfg(test)]
@@ -684,7 +709,7 @@ mod tests {
         let fee = estimator.calculate_storage_fee(500);
         assert_eq!(fee, 500 * 27_000);
         // 13,500,000 credits = 0.000135 DASH (at 100 billion credits per DASH)
-        assert_eq!(format_credits_as_dash(fee), "0.00013500 DASH");
+        assert_eq!(format_credits_as_dash(fee), "0.000135 DASH");
     }
 
     #[test]
@@ -730,8 +755,43 @@ mod tests {
     #[test]
     fn test_format_credits() {
         // 1 DASH = 100,000,000,000 credits
-        assert_eq!(format_credits_as_dash(100_000_000_000), "1.00000000 DASH");
-        assert_eq!(format_credits_as_dash(100_000_000), "0.00100000 DASH");
-        assert_eq!(format_credits_as_dash(100_000), "0.00000100 DASH");
+        assert_eq!(format_credits_as_dash(100_000_000_000), "1 DASH");
+        assert_eq!(format_credits_as_dash(100_000_000), "0.001 DASH");
+        assert_eq!(format_credits_as_dash(100_000), "0.000001 DASH");
+    }
+
+    #[test]
+    fn test_shielded_fee_for_actions() {
+        let platform_version = PlatformVersion::latest();
+
+        let fee_2 = shielded_fee_for_actions(2, platform_version);
+        let fee_3 = shielded_fee_for_actions(3, platform_version);
+        let fee_5 = shielded_fee_for_actions(5, platform_version);
+        let fee_10 = shielded_fee_for_actions(10, platform_version);
+
+        // Fees should be positive and increase with action count
+        assert!(fee_2 > 0, "fee for 2 actions should be positive");
+        assert!(fee_3 > fee_2, "fee for 3 actions should exceed fee for 2");
+        assert!(fee_5 > fee_3, "fee for 5 actions should exceed fee for 3");
+        assert!(fee_10 > fee_5, "fee for 10 actions should exceed fee for 5");
+
+        // Sanity bounds: fee for 2 actions should be in a reasonable range
+        assert!(
+            fee_2 > 50_000_000,
+            "fee for 2 actions should be at least 50M credits"
+        );
+        assert!(
+            fee_2 < 1_000_000_000,
+            "fee for 2 actions should be under 1B credits"
+        );
+
+        // Fee growth should be roughly linear (per-action cost is constant)
+        let per_action_cost_low = (fee_5 - fee_2) / 3;
+        let per_action_cost_high = (fee_10 - fee_5) / 5;
+        let ratio = per_action_cost_low as f64 / per_action_cost_high as f64;
+        assert!(
+            (0.8..=1.2).contains(&ratio),
+            "per-action cost should be roughly constant, got ratio {ratio}"
+        );
     }
 }

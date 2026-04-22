@@ -13,18 +13,6 @@ use dash_sdk::dpp::identity::core_script::CoreScript;
 use dash_sdk::dpp::prelude::AssetLockProof;
 use std::collections::BTreeMap;
 
-/// Controls how Platform address balance sync is performed
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum PlatformSyncMode {
-    /// Automatically decide based on time since last full sync
-    #[default]
-    Auto,
-    /// Force a full sync (queries all addresses)
-    ForceFull,
-    /// Only do terminal sync using stored checkpoint (fails if no checkpoint exists)
-    TerminalOnly,
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum WalletTask {
     GenerateReceiveAddress {
@@ -33,7 +21,6 @@ pub enum WalletTask {
     /// Fetch Platform address balances and nonces from Platform for a wallet
     FetchPlatformAddressBalances {
         seed_hash: WalletSeedHash,
-        sync_mode: PlatformSyncMode,
     },
     /// Transfer credits between Platform addresses
     TransferPlatformCredits {

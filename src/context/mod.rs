@@ -2,19 +2,23 @@ pub mod connection_status;
 mod contract_token_db;
 mod identity_db;
 mod settings_db;
+pub mod shielded;
 mod transaction_processing;
 mod wallet_lifecycle;
 
 pub(crate) use transaction_processing::get_transaction_info;
 
 use crate::app_dir::core_cookie_path;
+use crate::backend_task::error::{TaskError, is_rpc_connection_error};
 use crate::components::core_zmq_listener::ZMQConnectionEvent;
 use crate::config::{Config, NetworkConfig};
 use crate::context_provider::Provider as RpcProvider;
 use crate::context_provider_spv::SpvProvider;
 use crate::database::Database;
+use crate::model::feature_gate::FeatureGate;
 use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::password_info::PasswordInfo;
+use crate::model::proof_log_item::RequestType;
 use crate::model::wallet::single_key::{SingleKeyHash, SingleKeyWallet};
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::sdk_wrapper::initialize_sdk;
@@ -24,8 +28,11 @@ use arc_swap::ArcSwap;
 use connection_status::ConnectionStatus;
 use crossbeam_channel::{Receiver, Sender};
 use dash_sdk::Sdk;
-use dash_sdk::dashcore_rpc::{Auth, Client};
-use dash_sdk::dpp::dashcore::{Network, Txid};
+use dash_sdk::dapi_client::AddressList;
+use dash_sdk::dashcore_rpc::{Auth, Client, RpcApi};
+use dash_sdk::dpp::dashcore::{Address, Network, Txid};
+#[cfg(any(test, feature = "testing"))]
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::prelude::AssetLockProof;
 use dash_sdk::dpp::state_transition::StateTransitionSigningOptions;
 use dash_sdk::dpp::state_transition::batch_transition::methods::StateTransitionCreationOptions;
@@ -33,9 +40,13 @@ use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::dpp::version::v11::PLATFORM_V11;
 use dash_sdk::platform::DataContract;
+#[cfg(any(test, feature = "testing"))]
+use dash_sdk::platform::Identifier;
 use egui::Context;
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::path::PathBuf;
+use std::str::FromStr as _;
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
 
 use crate::model::settings::Settings;
@@ -50,10 +61,9 @@ pub(crate) type SettingsCacheGuard<'a> = RwLockWriteGuard<'a, Option<Settings>>;
 
 #[derive(Debug)]
 pub struct AppContext {
+    pub(crate) data_dir: PathBuf,
     pub(crate) network: Network,
     developer_mode: AtomicBool,
-    #[allow(dead_code)] // May be used for devnet identification
-    pub(crate) devnet_name: Option<String>,
     pub(crate) db: Arc<Database>,
     pub(crate) sdk: ArcSwap<Sdk>,
     // Context providers for SDK, so we can switch when backend mode changes
@@ -98,17 +108,33 @@ pub struct AppContext {
     /// Cached fee multiplier permille from current epoch (1000 = 1x, 2000 = 2x)
     /// Updated when epoch info is fetched from Platform
     fee_multiplier_permille: AtomicU64,
+    /// Cached protocol version from the current epoch on the connected network.
+    /// Updated alongside fee_multiplier when epoch info is fetched.
+    /// 0 means not yet fetched from the network.
+    platform_protocol_version: AtomicU32,
+    /// Per-wallet shielded state (initialized lazily, keyed by wallet seed hash)
+    pub(crate) shielded_states: Mutex<
+        std::collections::HashMap<
+            WalletSeedHash,
+            crate::model::wallet::shielded::ShieldedWalletState,
+        >,
+    >,
+    /// The egui context, stored for use in non-UI code paths (e.g. display_task_result).
+    /// Clone is O(1) — egui::Context is Arc-backed and the same instance for the app lifetime.
+    egui_ctx: egui::Context,
 }
 
 impl AppContext {
     pub fn new(
+        data_dir: PathBuf,
         network: Network,
         db: Arc<Database>,
         password_info: Option<PasswordInfo>,
         subtasks: Arc<TaskManager>,
         connection_status: Arc<ConnectionStatus>,
+        egui_ctx: egui::Context,
     ) -> Option<Arc<Self>> {
-        let config = match Config::load() {
+        let config = match Config::load_from(&data_dir) {
             Ok(config) => config,
             Err(e) => {
                 tracing::error!("Failed to load config: {e}");
@@ -121,74 +147,140 @@ impl AppContext {
         let (sx_zmq_status, rx_zmq_status) = crossbeam_channel::unbounded();
 
         // Create both providers; bind to app context later (post construction) due to circularity
-        let spv_provider =
-            SpvProvider::new(db.clone(), network).expect("Failed to initialize SPV provider");
-        let rpc_provider = RpcProvider::new(db.clone(), network, &network_config)
-            .expect("Failed to initialize RPC provider");
+        let spv_provider = match SpvProvider::new(db.clone(), network) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::error!(?network, "Failed to initialize SPV provider: {e}");
+                return None;
+            }
+        };
+        let rpc_provider = match RpcProvider::new(db.clone(), network, &network_config) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::error!(?network, "Failed to initialize RPC provider: {e}");
+                return None;
+            }
+        };
+
+        // Parse configured DAPI addresses directly (no auto-discovery at startup)
+        let address_list = match &network_config.dapi_addresses {
+            Some(addrs) if !addrs.trim().is_empty() => match AddressList::from_str(addrs.trim()) {
+                Ok(list) => list,
+                Err(e) => {
+                    tracing::error!(
+                        ?network,
+                        error = %e,
+                        "Failed to parse configured DAPI addresses"
+                    );
+                    return None;
+                }
+            },
+            _ => {
+                tracing::error!(
+                    ?network,
+                    "No DAPI addresses configured. Use Refresh DAPI endpoints in Network Settings or add addresses to .env."
+                );
+                return None;
+            }
+        };
 
         // Default to SPV provider initially; UI can switch backend after
-        let sdk = initialize_sdk(&network_config, network, spv_provider.clone());
+        let sdk = match initialize_sdk(address_list, network, spv_provider.clone()) {
+            Ok(sdk) => sdk,
+            Err(e) => {
+                tracing::error!("Failed to initialize SDK: {e}");
+                return None;
+            }
+        };
         let platform_version = sdk.version();
 
-        let dpns_contract = load_system_data_contract(SystemDataContract::DPNS, platform_version)
-            .expect("expected to load dpns contract");
+        let dpns_contract =
+            match load_system_data_contract(SystemDataContract::DPNS, platform_version) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::error!(?network, "Failed to load DPNS contract: {e}");
+                    return None;
+                }
+            };
 
         let withdrawal_contract =
-            load_system_data_contract(SystemDataContract::Withdrawals, platform_version)
-                .expect("expected to get withdrawal contract");
+            match load_system_data_contract(SystemDataContract::Withdrawals, platform_version) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::error!(?network, "Failed to load Withdrawals contract: {e}");
+                    return None;
+                }
+            };
 
         let token_history_contract =
-            load_system_data_contract(SystemDataContract::TokenHistory, platform_version)
-                .expect("expected to get token history contract");
+            match load_system_data_contract(SystemDataContract::TokenHistory, platform_version) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::error!(?network, "Failed to load TokenHistory contract: {e}");
+                    return None;
+                }
+            };
 
         let keyword_search_contract =
-            load_system_data_contract(SystemDataContract::KeywordSearch, platform_version)
-                .expect("expected to get keyword search contract");
+            match load_system_data_contract(SystemDataContract::KeywordSearch, platform_version) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::error!(?network, "Failed to load KeywordSearch contract: {e}");
+                    return None;
+                }
+            };
 
         let dashpay_contract =
-            load_system_data_contract(SystemDataContract::Dashpay, platform_version)
-                .expect("expected to get dashpay contract");
+            match load_system_data_contract(SystemDataContract::Dashpay, platform_version) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::error!(?network, "Failed to load Dashpay contract: {e}");
+                    return None;
+                }
+            };
 
         let addr = format!(
             "http://{}:{}",
-            network_config.core_host, network_config.core_rpc_port
+            network_config.rpc_host(),
+            network_config.rpc_port(network)
         );
-        let cookie_path = core_cookie_path(network, &network_config.devnet_name)
-            .expect("expected to get cookie path");
+        let core_client = match Self::create_core_rpc_client(
+            &addr,
+            network,
+            &network_config.devnet_name,
+            &network_config,
+        ) {
+            Ok(client) => client,
+            Err(e) => {
+                tracing::error!(?network, "Failed to create CoreClient: {e}");
+                return None;
+            }
+        };
 
-        // Try cookie authentication first
-        let core_client = match Client::new(&addr, Auth::CookieFile(cookie_path.clone())) {
-            Ok(client) => Ok(client),
-            Err(_) => {
-                // If cookie auth fails, try user/password authentication
-                tracing::info!(
-                    "Failed to authenticate using .cookie file at {:?}, falling back to user/pass",
-                    cookie_path,
-                );
-                Client::new(
-                    &addr,
-                    Auth::UserPass(
-                        network_config.core_rpc_user.to_string(),
-                        network_config.core_rpc_password.to_string(),
-                    ),
-                )
+        let wallets: BTreeMap<_, _> = match db.get_wallets(&network) {
+            Ok(w) => w,
+            Err(e) => {
+                tracing::error!(?network, "Failed to load wallets from database: {e}");
+                return None;
             }
         }
-        .expect("Failed to create CoreClient");
+        .into_iter()
+        .map(|w| (w.seed_hash(), Arc::new(RwLock::new(w))))
+        .collect();
 
-        let wallets: BTreeMap<_, _> = db
-            .get_wallets(&network)
-            .expect("expected to get wallets")
-            .into_iter()
-            .map(|w| (w.seed_hash(), Arc::new(RwLock::new(w))))
-            .collect();
-
-        let single_key_wallets: BTreeMap<_, _> = db
-            .get_single_key_wallets(network)
-            .expect("expected to get single key wallets")
-            .into_iter()
-            .map(|w| (w.key_hash(), Arc::new(RwLock::new(w))))
-            .collect();
+        let single_key_wallets: BTreeMap<_, _> = match db.get_single_key_wallets(network) {
+            Ok(w) => w,
+            Err(e) => {
+                tracing::error!(
+                    ?network,
+                    "Failed to load single key wallets from database: {e}"
+                );
+                return None;
+            }
+        }
+        .into_iter()
+        .map(|w| (w.key_hash(), Arc::new(RwLock::new(w))))
+        .collect();
 
         let developer_mode_enabled = config.developer_mode.unwrap_or(false);
 
@@ -200,8 +292,12 @@ impl AppContext {
             false => AtomicBool::new(true), // Animations are enabled by default
         };
 
-        let spv_manager = match SpvManager::new(network, Arc::clone(&config_lock), subtasks.clone())
-        {
+        let spv_manager = match SpvManager::new(
+            &data_dir,
+            network,
+            Arc::clone(&config_lock),
+            subtasks.clone(),
+        ) {
             Ok(manager) => manager,
             Err(err) => {
                 tracing::error!(?err, ?network, "Failed to initialize SPV manager");
@@ -212,6 +308,9 @@ impl AppContext {
         // Load the use_local_spv_node setting and apply to SPV manager
         let use_local_spv_node = db.get_use_local_spv_node().unwrap_or(false);
         spv_manager.set_use_local_node(use_local_spv_node);
+
+        // Wire up push-based SPV status updates to ConnectionStatus
+        spv_manager.set_connection_status(Arc::clone(&connection_status));
 
         // Load the core backend mode from settings, defaulting to RPC if not set
         let saved_core_backend_mode = db
@@ -238,9 +337,9 @@ impl AppContext {
             saved_single_key_hash.filter(|h| single_key_wallets.contains_key(h));
 
         let app_context = AppContext {
+            data_dir,
             network,
             developer_mode: AtomicBool::new(developer_mode_enabled),
-            devnet_name: None,
             db,
             sdk: ArcSwap::from_pointee(sdk),
             spv_context_provider: spv_provider.into(),
@@ -271,6 +370,9 @@ impl AppContext {
             fee_multiplier_permille: AtomicU64::new(
                 PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE,
             ),
+            platform_protocol_version: AtomicU32::new(0),
+            shielded_states: Mutex::new(std::collections::HashMap::new()),
+            egui_ctx,
         };
 
         let app_context = Arc::new(app_context);
@@ -279,34 +381,23 @@ impl AppContext {
         if let Err(e) = app_context
             .spv_context_provider
             .read()
-            .map_err(|_| "SPV provider lock poisoned".to_string())
+            .map_err(|e| e.to_string())
             .and_then(|provider| provider.bind_app_context(app_context.clone()))
         {
             tracing::error!("Failed to bind SPV provider: {}", e);
             return None;
         }
 
-        // If defaulting to RPC is desired, swap provider after binding.
-        if app_context.core_backend_mode() == CoreBackendMode::Rpc {
-            if let Err(e) = app_context
+        // If defaulting to RPC, rebind the RPC provider (overrides SPV registration above).
+        if app_context.core_backend_mode() == CoreBackendMode::Rpc
+            && let Err(e) = app_context
                 .rpc_context_provider
                 .read()
-                .map_err(|_| "RPC provider lock poisoned".to_string())
+                .map_err(|e| e.to_string())
                 .and_then(|provider| provider.bind_app_context(app_context.clone()))
-            {
-                tracing::error!("Failed to bind RPC provider: {}", e);
-                return None;
-            }
-        } else {
-            // Ensure SDK uses the SPV provider
-            let provider = match app_context.spv_context_provider.read() {
-                Ok(p) => p.clone(),
-                Err(_) => {
-                    tracing::error!("SPV provider lock poisoned");
-                    return None;
-                }
-            };
-            app_context.sdk.load().set_context_provider(provider);
+        {
+            tracing::error!("Failed to bind RPC provider: {}", e);
+            return None;
         }
 
         app_context.bootstrap_loaded_wallets();
@@ -327,6 +418,14 @@ impl AppContext {
         self.enable_animations(!enable);
     }
 
+    pub fn data_dir(&self) -> &std::path::Path {
+        &self.data_dir
+    }
+
+    pub fn network(&self) -> Network {
+        self.network
+    }
+
     pub fn core_backend_mode(&self) -> CoreBackendMode {
         self.core_backend_mode.load(Ordering::Relaxed).into()
     }
@@ -335,43 +434,58 @@ impl AppContext {
         &self.connection_status
     }
 
+    pub fn egui_ctx(&self) -> &egui::Context {
+        &self.egui_ctx
+    }
+
     pub fn set_core_backend_mode(self: &Arc<Self>, mode: CoreBackendMode) {
-        self.core_backend_mode
-            .store(mode.as_u8(), Ordering::Relaxed);
+        self.set_core_backend_mode_inner(mode, true);
+    }
 
-        // Persist the mode to the database (hold the guard to ensure cache invalidation)
-        let _guard = self.invalidate_settings_cache();
-        if let Err(e) = self.db.update_core_backend_mode(mode.as_u8()) {
-            tracing::error!("Failed to persist core backend mode: {}", e);
-        }
+    /// Switch the backend mode in-memory only, without persisting to the DB.
+    /// Used by headless (MCP/CLI) mode to force SPV without overwriting the
+    /// GUI's saved preference.
+    pub fn set_core_backend_mode_volatile(self: &Arc<Self>, mode: CoreBackendMode) {
+        self.set_core_backend_mode_inner(mode, false);
+    }
 
-        // Switch SDK context provider to match the selected backend
+    fn set_core_backend_mode_inner(self: &Arc<Self>, mode: CoreBackendMode, persist: bool) {
+        // Switch SDK context provider to match the selected backend.
+        // Only store/persist the mode after binding succeeds — otherwise the app
+        // would report the new mode while still wired to the old provider.
+        #[allow(clippy::needless_return)]
         match mode {
             CoreBackendMode::Spv => {
-                // Clone the SPV provider and bind app context on the clone
-                let provider = match self.spv_context_provider.read() {
-                    Ok(p) => p.clone(),
-                    Err(_) => {
-                        tracing::error!("SPV provider lock poisoned");
-                        return;
-                    }
-                };
-                if let Err(e) = provider.bind_app_context(Arc::clone(self)) {
+                if let Err(e) = self
+                    .spv_context_provider
+                    .read()
+                    .map_err(|e| e.to_string())
+                    .and_then(|provider| provider.bind_app_context(Arc::clone(self)))
+                {
                     tracing::error!("Failed to bind SPV provider: {}", e);
                     return;
                 }
-                self.sdk.load().set_context_provider(provider);
             }
             CoreBackendMode::Rpc => {
-                // RPC provider binding also sets itself on the SDK
                 if let Err(e) = self
                     .rpc_context_provider
                     .read()
-                    .map_err(|_| "RPC provider lock poisoned".to_string())
+                    .map_err(|e| e.to_string())
                     .and_then(|provider| provider.bind_app_context(Arc::clone(self)))
                 {
                     tracing::error!("Failed to bind RPC provider: {}", e);
+                    return;
                 }
+            }
+        }
+
+        self.core_backend_mode
+            .store(mode.as_u8(), Ordering::Relaxed);
+
+        if persist {
+            let _guard = self.invalidate_settings_cache();
+            if let Err(e) = self.db.update_core_backend_mode(mode.as_u8()) {
+                tracing::error!("Failed to persist core backend mode: {}", e);
             }
         }
     }
@@ -385,6 +499,28 @@ impl AppContext {
     pub fn set_fee_multiplier_permille(&self, multiplier: u64) {
         self.fee_multiplier_permille
             .store(multiplier, Ordering::Relaxed);
+    }
+
+    /// Get the cached platform protocol version from the connected network.
+    /// Returns 0 if not yet fetched from the network.
+    pub fn platform_protocol_version(&self) -> u32 {
+        self.platform_protocol_version.load(Ordering::Relaxed)
+    }
+
+    /// Update the cached platform protocol version from epoch info.
+    ///
+    /// When the version crosses the shielded threshold for the first time,
+    /// retroactively initializes shielded wallets that were unlocked before
+    /// the protocol version was known.
+    pub fn set_platform_protocol_version(self: &Arc<Self>, version: u32) {
+        let was_shielded = FeatureGate::Shielded.is_available(self);
+
+        self.platform_protocol_version
+            .swap(version, Ordering::Relaxed);
+
+        if !was_shielded && FeatureGate::Shielded.is_available(self) {
+            self.init_missing_shielded_wallets();
+        }
     }
 
     /// Get a fee estimator configured with the cached fee multiplier.
@@ -430,83 +566,286 @@ impl AppContext {
 
     /// Rebuild both the Dash RPC `core_client` and the `Sdk` using the
     /// updated `NetworkConfig` from `self.config`.
-    pub fn reinit_core_client_and_sdk(self: Arc<Self>) -> Result<(), String> {
+    pub fn reinit_core_client_and_sdk(self: Arc<Self>) -> Result<(), TaskError> {
         // 1. Grab a fresh snapshot of your NetworkConfig
         let cfg = {
-            let cfg_lock = self
-                .config
-                .read()
-                .map_err(|_| "Config lock poisoned".to_string())?;
+            let cfg_lock = self.config.read()?;
             cfg_lock.clone()
         };
 
         // Note: developer_mode is now global and managed separately
 
-        // 2. Rebuild the RPC client with the new password
-        let addr = format!("http://{}:{}", cfg.core_host, cfg.core_rpc_port);
-        let new_client = Client::new(
-            &addr,
-            Auth::UserPass(cfg.core_rpc_user.clone(), cfg.core_rpc_password.clone()),
-        )
-        .map_err(|e| format!("Failed to create new Core RPC client: {e}"))?;
+        // 2. Rebuild the RPC client with the new credentials (cookie auth first, then user/pass).
+        let addr = format!("http://{}:{}", cfg.rpc_host(), cfg.rpc_port(self.network));
+        let new_client = Self::create_core_rpc_client(&addr, self.network, &cfg.devnet_name, &cfg)?;
 
-        // 3. Rebuild the Sdk with the updated config and current backend mode
-        let new_sdk = match self.core_backend_mode() {
-            CoreBackendMode::Spv => {
-                // Reuse existing SPV provider (rebinding below to ensure context is set)
-                let provider = self
-                    .spv_context_provider
-                    .read()
-                    .map_err(|_| "SPV provider lock poisoned".to_string())?
-                    .clone();
-                initialize_sdk(&cfg, self.network, provider)
-            }
-            CoreBackendMode::Rpc => {
-                // Create a fresh RPC provider with the new config
-                let rpc_provider = RpcProvider::new(self.db.clone(), self.network, &cfg)
-                    .map_err(|e| format!("Failed to init RPC provider: {e}"))?;
-                // Swap in the updated RPC provider for future switches
-                {
-                    let mut guard = self
-                        .rpc_context_provider
-                        .write()
-                        .map_err(|_| "RPC provider lock poisoned".to_string())?;
-                    *guard = rpc_provider.clone();
-                }
-                initialize_sdk(&cfg, self.network, rpc_provider)
+        // 3. Parse DAPI addresses from config and rebuild the SDK
+        let address_list = match &cfg.dapi_addresses {
+            Some(addrs) if !addrs.trim().is_empty() => AddressList::from_str(addrs.trim())
+                .map_err(|source| {
+                    crate::backend_task::dapi_discovery::DapiDiscoveryError::InvalidAddresses {
+                        source,
+                    }
+                })?,
+            _ => {
+                return Err(
+                    crate::backend_task::dapi_discovery::DapiDiscoveryError::AddressesRequired {
+                        network: self.network,
+                    }
+                    .into(),
+                );
             }
         };
 
-        // 4. Swap them in
+        let new_sdk = match self.core_backend_mode() {
+            CoreBackendMode::Spv => {
+                let provider = self.spv_context_provider.read()?.clone();
+                initialize_sdk(address_list, self.network, provider)
+                    .map_err(|e| TaskError::SdkInitializationFailed { detail: e })?
+            }
+            CoreBackendMode::Rpc => {
+                let rpc_provider = RpcProvider::new(self.db.clone(), self.network, &cfg)
+                    .map_err(|e| TaskError::RpcProviderCreationFailed { detail: e })?;
+                {
+                    let mut guard = self.rpc_context_provider.write()?;
+                    *guard = rpc_provider.clone();
+                }
+                initialize_sdk(address_list, self.network, rpc_provider)
+                    .map_err(|e| TaskError::SdkInitializationFailed { detail: e })?
+            }
+        };
+
+        // 4. Swap in the new SDK and client
         {
-            let mut client_lock = self
-                .core_client
-                .write()
-                .map_err(|_| "Core client lock poisoned".to_string())?;
+            let mut client_lock = self.core_client.write()?;
             *client_lock = new_client;
         }
         self.sdk.store(Arc::new(new_sdk));
 
-        // Rebind providers to ensure they hold the new AppContext reference
+        // Rebind providers to ensure they hold the new AppContext reference.
+        // bind_app_context also registers the provider with the SDK, so the
+        // active provider (last bound) wins.
         self.spv_context_provider
-            .read()
-            .map_err(|_| "SPV provider lock poisoned".to_string())?
-            .bind_app_context(self.clone())?;
+            .read()?
+            .bind_app_context(self.clone())
+            .map_err(|e| TaskError::SdkInitializationFailed { detail: e })?;
         if self.core_backend_mode() == CoreBackendMode::Rpc {
             self.rpc_context_provider
-                .read()
-                .map_err(|_| "RPC provider lock poisoned".to_string())?
-                .bind_app_context(self.clone())?;
-        } else {
-            let provider = self
-                .spv_context_provider
-                .read()
-                .map_err(|_| "SPV provider lock poisoned".to_string())?
-                .clone();
-            self.sdk.load().set_context_provider(provider);
+                .read()?
+                .bind_app_context(self.clone())
+                .map_err(|e| TaskError::SdkInitializationFailed { detail: e })?;
         }
 
         Ok(())
+    }
+
+    /// Create a Core RPC client for the given URL, trying cookie authentication
+    /// first and falling back to user/password credentials.
+    fn create_core_rpc_client(
+        url: &str,
+        network: Network,
+        devnet_name: &Option<String>,
+        cfg: &NetworkConfig,
+    ) -> Result<Client, TaskError> {
+        if let Ok(cookie_path) = core_cookie_path(network, devnet_name) {
+            if let Ok(client) = Client::new(url, Auth::CookieFile(cookie_path.clone())) {
+                return Ok(client);
+            }
+            tracing::trace!(
+                "Cookie auth unavailable at {:?}, using user/pass",
+                cookie_path,
+            );
+        }
+        Client::new(
+            url,
+            Auth::UserPass(
+                cfg.core_rpc_user.clone().unwrap_or_default(),
+                cfg.core_rpc_password.clone().unwrap_or_default(),
+            ),
+        )
+        .map_err(|e| TaskError::CoreRpc { source: e })
+    }
+
+    /// Build an RPC client targeting a specific Core wallet by name.
+    /// Returns the base (no-wallet) client if `wallet_name` is `None`.
+    pub fn core_client_for_wallet(&self, wallet_name: Option<&str>) -> Result<Client, TaskError> {
+        let cfg = self.config.read().map_err(|_| TaskError::LockPoisoned {
+            resource: "NetworkConfig",
+        })?;
+        let base = format!("http://{}:{}", cfg.rpc_host(), cfg.rpc_port(self.network));
+        let url = match wallet_name {
+            Some(name) if !name.is_empty() => {
+                if name.contains("..") {
+                    return Err(TaskError::InvalidCoreWalletName {
+                        name: name.to_string(),
+                    });
+                }
+                let encoded = urlencoding::encode(name);
+                format!("{}/wallet/{}", base, encoded)
+            }
+            _ => base,
+        };
+        Self::create_core_rpc_client(&url, self.network, &cfg.devnet_name, &cfg)
+    }
+
+    /// Import an address into the correct Core wallet if it's not already known.
+    /// Uses `core_wallet_name` to target the right wallet on multi-wallet nodes.
+    /// No-op if the address is already watched/mine.
+    pub fn ensure_address_imported(
+        &self,
+        address: &Address,
+        core_wallet_name: Option<&str>,
+        label: Option<&str>,
+    ) -> Result<(), TaskError> {
+        let client = self.core_client_for_wallet(core_wallet_name)?;
+        let info = client
+            .get_address_info(address)
+            .map_err(|e| self.rpc_error_with_url(e))?;
+        if !(info.is_watchonly || info.is_mine) {
+            client
+                .import_address(address, label, Some(false))
+                .map_err(|e| self.rpc_error_with_url(e))?;
+        }
+        Ok(())
+    }
+
+    /// Import address into Core, ignoring errors. For best-effort registration.
+    pub fn try_import_address(
+        &self,
+        address: &Address,
+        core_wallet_name: Option<&str>,
+        label: Option<&str>,
+    ) {
+        if let Ok(client) = self.core_client_for_wallet(core_wallet_name) {
+            let _ = client.import_address(address, label, Some(false));
+        }
+    }
+
+    /// Convert an RPC error to `TaskError`, enriching connection failures with
+    /// the configured host:port so the user knows which address was unreachable.
+    pub(crate) fn rpc_error_with_url(&self, e: dash_sdk::dashcore_rpc::Error) -> TaskError {
+        if is_rpc_connection_error(&e) {
+            let url = self
+                .config
+                .read()
+                .ok()
+                .map(|c| format!("{}:{}", c.rpc_host(), c.rpc_port(self.network)))
+                .unwrap_or_else(|| "unknown".to_string());
+            TaskError::CoreRpcConnectionFailed {
+                url,
+                source: Some(Box::new(e)),
+            }
+        } else {
+            TaskError::from(e)
+        }
+    }
+
+    /// List wallets currently loaded in Dash Core.
+    pub fn list_core_wallets(&self) -> Result<Vec<String>, TaskError> {
+        let client = self.core_client_for_wallet(None)?;
+        client
+            .list_wallets()
+            .map_err(|e| self.rpc_error_with_url(e))
+    }
+
+    /// Try to detect which loaded Core wallet owns the given address.
+    ///
+    /// Returns `Ok(Some(name))` if exactly one wallet recognizes it,
+    /// `Ok(None)` if ambiguous (0 or >1 matches).
+    pub fn try_detect_core_wallet_for_address(
+        &self,
+        address: &Address,
+    ) -> Result<Option<String>, TaskError> {
+        let core_wallets = self.list_core_wallets()?;
+        if core_wallets.is_empty() {
+            return Err(TaskError::NoCoreWalletsLoaded);
+        }
+        if core_wallets.len() == 1 {
+            return Ok(Some(core_wallets.into_iter().next().unwrap()));
+        }
+        // Multiple wallets — check which one recognizes the address
+        let mut matches = Vec::new();
+        for wallet_name in &core_wallets {
+            let client = self.core_client_for_wallet(Some(wallet_name))?;
+            match client.get_address_info(address) {
+                Ok(info) if info.is_mine || info.is_watchonly => {
+                    matches.push(wallet_name.clone());
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::debug!(?e, wallet_name, "get_address_info failed");
+                }
+            }
+        }
+        match matches.len() {
+            1 => Ok(Some(matches.into_iter().next().unwrap())),
+            _ => Ok(None), // 0 or >1 matches — ambiguous
+        }
+    }
+
+    /// Convert an SDK error to a [`TaskError`], with special handling for
+    /// [`dash_sdk::Error::DriveProofError`]: logs the proof data to the database
+    /// and returns [`TaskError::ProofError`] with the SDK error preserved as the source.
+    ///
+    /// All other SDK errors are converted via [`TaskError::from`].
+    pub(crate) fn log_drive_proof_error(
+        &self,
+        e: dash_sdk::Error,
+        request_type: RequestType,
+    ) -> TaskError {
+        use crate::model::proof_log_item::ProofLogItem;
+        match e {
+            dash_sdk::Error::DriveProofError(proof_error, proof_bytes, block_info) => {
+                if let Err(db_err) = self.db.insert_proof_log_item(ProofLogItem {
+                    request_type,
+                    request_bytes: vec![],
+                    verification_path_query_bytes: vec![],
+                    height: block_info.height,
+                    time_ms: block_info.time_ms,
+                    proof_bytes: proof_bytes.clone(),
+                    error: Some(proof_error.to_string()),
+                }) {
+                    tracing::warn!(
+                        height = block_info.height,
+                        proof_error = %proof_error,
+                        "Failed to persist proof log entry for {request_type:?}: {}",
+                        db_err
+                    );
+                }
+                TaskError::ProofError {
+                    source_error: Box::new(dash_sdk::Error::DriveProofError(
+                        proof_error,
+                        proof_bytes,
+                        block_info,
+                    )),
+                }
+            }
+            e => TaskError::from(e),
+        }
+    }
+}
+
+/// Test-only accessors for fields that are normally `pub(crate)`.
+#[cfg(any(test, feature = "testing"))]
+impl AppContext {
+    /// Returns a clone of the current SDK instance.
+    pub fn sdk(&self) -> Sdk {
+        self.sdk.load().as_ref().clone()
+    }
+
+    /// Returns a reference to the database.
+    pub fn db(&self) -> &Arc<Database> {
+        &self.db
+    }
+
+    /// Returns a reference to the wallets map.
+    pub fn wallets(&self) -> &RwLock<BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>> {
+        &self.wallets
+    }
+
+    /// Returns the DashPay contract identifier.
+    pub fn dashpay_contract_id(&self) -> Identifier {
+        self.dashpay_contract.id()
     }
 }
 
@@ -514,10 +853,23 @@ impl AppContext {
 pub(crate) const fn default_platform_version(network: &Network) -> &'static PlatformVersion {
     // TODO: Ideally use sdk.load().version() but this is a free function with no sdk access
     match network {
-        Network::Dash => &PLATFORM_V11,
+        Network::Mainnet => &PLATFORM_V11,
         Network::Testnet => &PLATFORM_V11,
         Network::Devnet => &PLATFORM_V11,
         Network::Regtest => &PLATFORM_V11,
-        _ => panic!("unsupported network"),
+        _ => panic!("Unsupported network for default_platform_version"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn wallet_name_with_spaces_is_url_encoded() {
+        let base = "http://127.0.0.1:9998";
+        let name = "my test wallet";
+        let encoded = urlencoding::encode(name);
+        let url = format!("{}/wallet/{}", base, encoded);
+        assert_eq!(url, "http://127.0.0.1:9998/wallet/my%20test%20wallet");
+        assert!(!url.contains(' '));
     }
 }

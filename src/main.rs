@@ -55,12 +55,15 @@ async fn start(app_data_dir: &std::path::Path) -> Result<(), eframe::Error> {
         viewport: egui::ViewportBuilder::default()
             .with_icon(icon_data)
             .with_app_id("org.dash.DashEvoTool"),
+        // Use wgpu instead of glow (OpenGL) to avoid platform-specific rendering
+        // issues, e.g. NSOpenGLContext idle/sleep crashes on macOS (#629)
+        renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
 
     eframe::run_native(
         &format!("Dash Evo Tool v{}", VERSION),
         native_options,
-        Box::new(|cc| Ok(Box::new(crate::app::AppState::new(cc.egui_ctx.clone())))),
+        Box::new(|cc| Ok(Box::new(crate::app::AppState::new(cc.egui_ctx.clone())?))),
     )
 }

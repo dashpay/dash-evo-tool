@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, HashSet};
-use chrono::Utc;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::{TokenConfigurationPreset, TokenConfigurationPresetFeatures};
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationPresetFeatures::{MostRestrictive, WithAllAdvancedActions, WithExtremeActions, WithMintingAndBurningActions, WithOnlyEmergencyAction};
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::TokenDistributionRules;
@@ -21,6 +20,8 @@ use crate::ui::components::styled::{StyledCheckbox};
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::Component;
 use crate::ui::components::identity_selector::IdentitySelector;
+use crate::ui::components::MessageBanner;
+use crate::ui::MessageType;
 use crate::ui::helpers::{add_identity_key_chooser, TransactionType};
 use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
@@ -283,12 +284,12 @@ impl TokensScreen {
                                         if crate::ui::helpers::info_icon_button(ui,
                                             "An optional description explaining what your token is for.\n\n\
                                             This helps users understand the purpose of your token.\n\n\
-                                            Maximum 100 characters.").clicked() {
+                                            3–100 characters, or leave blank.").clicked() {
                                             self.show_pop_up_info = Some(
                                                 "Description\n\n\
                                                 An optional description explaining what your token is for.\n\n\
                                                 This helps users understand the purpose of your token.\n\n\
-                                                Maximum 100 characters.".to_string()
+                                                3–100 characters, or leave blank.".to_string()
                                             );
                                         }
                                     });
@@ -426,11 +427,10 @@ impl TokensScreen {
                                     match self.parse_token_build_args() {
                                         Ok(args) => {
                                             self.cached_build_args = Some(args);
-                                            self.token_creator_error_message = None;
                                             self.show_token_creator_confirmation_popup = true;
                                         }
                                         Err(err_msg) => {
-                                            self.token_creator_error_message = Some(err_msg);
+                                            MessageBanner::set_global(context, &err_msg, MessageType::Error);
                                         }
                                     }
                                 }
@@ -556,7 +556,7 @@ impl TokensScreen {
                                 ui.end_row();
 
                                 // Row 5: Token Description
-                                ui.label("Token Description (max 100 chars):");
+                                ui.label("Token Description (3–100 chars):");
                                 ui.text_edit_singleline(&mut self.token_description_input);
                                 ui.end_row();
                             });
@@ -869,11 +869,10 @@ impl TokensScreen {
                                         // If success, show the "confirmation popup"
                                         // Or skip the popup entirely and dispatch tasks right now
                                         self.cached_build_args = Some(args);
-                                        self.token_creator_error_message = None;
                                         self.show_token_creator_confirmation_popup = true;
                                     },
                                     Err(err) => {
-                                        self.token_creator_error_message = Some(err);
+                                        MessageBanner::set_global(context, &err, MessageType::Error);
                                     }
                                 }
                             }
@@ -922,7 +921,7 @@ impl TokensScreen {
                                         ) {
                                             Ok(dc) => dc,
                                             Err(e) => {
-                                                self.token_creator_error_message = Some(format!("Error building contract V1: {e}"));
+                                                MessageBanner::set_global(context, format!("Error building contract V1: {e}"), MessageType::Error);
                                                 return;
                                             }
                                         };
@@ -932,7 +931,7 @@ impl TokensScreen {
                                         self.json_popup_text = serde_json::to_string_pretty(&data_contract_json).expect("Expected to serialize json");
                                     },
                                     Err(err_msg) => {
-                                        self.token_creator_error_message = Some(err_msg);
+                                        MessageBanner::set_global(context, &err_msg, MessageType::Error);
                                     },
                                 }
                             }
@@ -954,40 +953,7 @@ impl TokensScreen {
             self.render_data_contract_json_popup(ui);
         }
 
-        // 8) If we are waiting, show spinner / time elapsed
-        if let TokenCreatorStatus::WaitingForResult(start_time) = self.token_creator_status {
-            let now = Utc::now().timestamp() as u64;
-            let elapsed = now - start_time;
-            ui.add_space(10.0);
-            ui.horizontal(|ui| {
-                ui.label(format!(
-                    "Registering token contract... elapsed {}s",
-                    elapsed
-                ));
-                ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
-            });
-        }
-
-        // Show an error if we have one
-        if let Some(err_msg) = self.token_creator_error_message.clone() {
-            ui.add_space(10.0);
-            let error_color = DashColors::ERROR;
-            Frame::new()
-                .fill(error_color.gamma_multiply(0.1))
-                .inner_margin(Margin::symmetric(10, 8))
-                .corner_radius(5.0)
-                .stroke(egui::Stroke::new(1.0, error_color))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(format!("Error: {}", err_msg)).color(error_color));
-                        ui.add_space(10.0);
-                        if ui.small_button("Dismiss").clicked() {
-                            self.token_creator_error_message = None;
-                        }
-                    });
-                });
-            ui.add_space(10.0);
-        }
+        // Elapsed display for token creation is handled by the global MessageBanner
 
             }); // Close the ScrollArea from line 40
 
@@ -1003,12 +969,20 @@ impl TokensScreen {
 
     fn update_selected_wallet(&mut self) {
         if let (Some(qid), Some(key)) = (&self.selected_identity, &self.selected_key) {
-            self.selected_wallet = crate::ui::identities::get_selected_wallet(
-                qid,
-                None,
-                Some(key),
-                &mut self.token_creator_error_message,
-            );
+            let new_wallet = crate::ui::identities::get_selected_wallet(qid, None, Some(key))
+                .unwrap_or_else(|e| {
+                    MessageBanner::set_global(self.app_context.egui_ctx(), &e, MessageType::Error);
+                    None
+                });
+            let wallet_changed = match (&self.selected_wallet, &new_wallet) {
+                (Some(a), Some(b)) => !std::sync::Arc::ptr_eq(a, b),
+                (None, None) => false,
+                _ => true,
+            };
+            if wallet_changed {
+                self.wallet_open_attempted = false;
+            }
+            self.selected_wallet = new_wallet;
         }
     }
 
@@ -1018,8 +992,11 @@ impl TokensScreen {
                 try_open_wallet_no_password, wallet_needs_unlock,
             };
 
-            if let Err(e) = try_open_wallet_no_password(wallet) {
-                self.token_creator_error_message = Some(e);
+            if !self.wallet_open_attempted {
+                if let Err(e) = try_open_wallet_no_password(wallet) {
+                    MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                }
+                self.wallet_open_attempted = true;
             }
 
             if wallet_needs_unlock(wallet) {
@@ -1115,6 +1092,13 @@ impl TokensScreen {
         let token_names = self.parse_token_names(&mut contract_keywords)?;
 
         let token_description = if !self.token_description_input.is_empty() {
+            let len = self.token_description_input.chars().count();
+            if !(3..=100).contains(&len) {
+                return Err(
+                    "Token description must be either empty or between 3 and 100 characters long"
+                        .to_string(),
+                );
+            }
             Some(self.token_description_input.clone())
         } else {
             None
@@ -1476,7 +1460,7 @@ impl TokensScreen {
                             match self.parse_token_build_args() {
                                 Ok(a) => a,
                                 Err(err) => {
-                                    self.token_creator_error_message = Some(err);
+                                    MessageBanner::set_global(ui.ctx(), &err, MessageType::Error);
                                     self.close_token_creator_confirmation_popup();
                                     return AppAction::None;
                                 }
@@ -1489,8 +1473,11 @@ impl TokensScreen {
                         match (&self.selected_identity, &self.selected_key) {
                             (Some(id), Some(key)) => (id.clone(), key.clone()),
                             _ => {
-                                self.token_creator_error_message =
-                                    Some("Please select an identity and signing key.".to_string());
+                                MessageBanner::set_global(
+                                    ui.ctx(),
+                                    "Please select an identity and signing key.",
+                                    MessageType::Error,
+                                );
                                 self.close_token_creator_confirmation_popup();
                                 return AppAction::None;
                             }
@@ -1535,8 +1522,14 @@ impl TokensScreen {
                     ];
 
                     action = AppAction::BackendTasks(tasks, BackendTasksExecutionMode::Sequential);
-                    let now = Utc::now().timestamp() as u64;
-                    self.token_creator_status = TokenCreatorStatus::WaitingForResult(now);
+                    self.token_creator_status = TokenCreatorStatus::WaitingForResult;
+                    let handle = MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        "Creating token...",
+                        MessageType::Info,
+                    );
+                    handle.with_elapsed();
+                    self.operation_banner = Some(handle);
                     self.close_token_creator_confirmation_popup();
                 }
                 ConfirmationStatus::Canceled => {

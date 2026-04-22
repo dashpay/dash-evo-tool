@@ -1,4 +1,5 @@
-use crate::ui::theme::{ComponentStyles, DashColors, Shape};
+use crate::ui::helpers::clicked_outside_window;
+use crate::ui::theme::{ComponentStyles, DashColors};
 use egui::{InnerResponse, Ui, WidgetText};
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 
@@ -132,24 +133,7 @@ impl InfoPopup {
                 // Close button
                 ui.horizontal(|ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let close_label = if let WidgetText::RichText(rich_text) = &self.close_text
-                        {
-                            rich_text.clone()
-                        } else {
-                            egui::RichText::new(self.close_text.text())
-                                .color(ComponentStyles::primary_button_text())
-                                .into()
-                        };
-
-                        let close_button = egui::Button::new(close_label)
-                            .fill(ComponentStyles::primary_button_fill())
-                            .stroke(ComponentStyles::primary_button_stroke())
-                            .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-                            .min_size(egui::Vec2::new(80.0, 32.0));
-
-                        if ui
-                            .add(close_button)
-                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        if ComponentStyles::add_primary_button(ui, self.close_text.clone())
                             .clicked()
                         {
                             was_closed = true;
@@ -165,6 +149,19 @@ impl InfoPopup {
 
         // Handle Escape key press
         if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            was_closed = true;
+        }
+
+        // Handle Enter key press — no focus guard needed since InfoPopup has no input fields
+        if !was_closed && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            was_closed = true;
+        }
+
+        // Handle click outside window
+        if let Some(ref wr) = window_response
+            && !was_closed
+            && clicked_outside_window(ui.ctx(), wr.response.rect)
+        {
             was_closed = true;
         }
 

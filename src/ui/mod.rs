@@ -1,11 +1,13 @@
 use crate::app::AppAction;
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::qualified_identity::encrypted_key_storage::{
     PrivateKeyData, WalletDerivationPath,
 };
 use crate::model::wallet::Wallet;
+use crate::model::wallet::WalletSeedHash;
 use crate::model::wallet::single_key::SingleKeyWallet;
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
 use crate::ui::contracts_documents::document_action_screen::{
@@ -76,6 +78,9 @@ use tokens::unfreeze_tokens_screen::UnfreezeTokensScreen;
 use tokens::update_token_config::UpdateTokenConfigScreen;
 use tools::transition_visualizer_screen::TransitionVisualizerScreen;
 use wallets::add_new_wallet_screen::AddNewWalletScreen;
+use wallets::shield_screen::ShieldScreen;
+use wallets::shielded_send_screen::ShieldedSendScreen;
+use wallets::unshield_credits_screen::UnshieldCreditsScreen;
 
 pub mod components;
 pub mod contracts_documents;
@@ -301,6 +306,11 @@ pub enum ScreenType {
     AssetLockDetail([u8; 32], usize),
     CreateAssetLock(Arc<RwLock<Wallet>>),
 
+    // Shielded screens
+    ShieldScreen(WalletSeedHash),
+    ShieldedSendScreen(WalletSeedHash),
+    UnshieldCreditsScreen(WalletSeedHash),
+
     // DashPay Screens
     DashPayContacts,
     DashPayProfile,
@@ -416,6 +426,10 @@ impl PartialEq for ScreenType {
             ) => a1 == b1 && a2 == b2,
             (ScreenType::DashPayQRGenerator, ScreenType::DashPayQRGenerator) => true,
             (ScreenType::DashPayProfileSearch, ScreenType::DashPayProfileSearch) => true,
+            // Shielded screens
+            (ScreenType::ShieldScreen(a), ScreenType::ShieldScreen(b)) => a == b,
+            (ScreenType::ShieldedSendScreen(a), ScreenType::ShieldedSendScreen(b)) => a == b,
+            (ScreenType::UnshieldCreditsScreen(a), ScreenType::UnshieldCreditsScreen(b)) => a == b,
             _ => false,
         }
     }
@@ -671,6 +685,16 @@ impl ScreenType {
             ScreenType::DashPayProfileSearch => {
                 Screen::DashPayProfileSearchScreen(ProfileSearchScreen::new(app_context.clone()))
             }
+            // Shielded screens
+            ScreenType::ShieldScreen(seed_hash) => {
+                Screen::ShieldScreen(ShieldScreen::new(*seed_hash, app_context))
+            }
+            ScreenType::ShieldedSendScreen(seed_hash) => {
+                Screen::ShieldedSendScreen(ShieldedSendScreen::new(*seed_hash, app_context))
+            }
+            ScreenType::UnshieldCreditsScreen(seed_hash) => {
+                Screen::UnshieldCreditsScreen(UnshieldCreditsScreen::new(*seed_hash, app_context))
+            }
         }
     }
 }
@@ -729,6 +753,11 @@ pub enum Screen {
     AssetLockDetailScreen(AssetLockDetailScreen),
     CreateAssetLockScreen(CreateAssetLockScreen),
 
+    // Shielded Screens
+    ShieldScreen(ShieldScreen),
+    ShieldedSendScreen(ShieldedSendScreen),
+    UnshieldCreditsScreen(UnshieldCreditsScreen),
+
     // DashPay Screens
     DashPayScreen(DashPayScreen),
     DashPayAddContactScreen(AddContactScreen),
@@ -742,87 +771,180 @@ pub enum Screen {
 
 impl Screen {
     pub fn change_context(&mut self, app_context: Arc<AppContext>) {
+        /// Assigns `app_context` for the majority of screen variants that simply
+        /// store it as a field.  Only screens with additional side-effects are
+        /// handled in the explicit match arms below.
+        ///
+        /// Every `Screen` variant must appear in exactly one of the two lists
+        /// (`set` or `skip`) so the compiler catches new additions.
+        macro_rules! set_ctx {
+            (set: $($variant:ident),+ $(,)?; skip: $($skip:ident),* $(,)?) => {
+                match self {
+                    $(Screen::$variant(screen) => screen.app_context = app_context,)+
+                    // Handled by the explicit match above (side-effects + return).
+                    $(Screen::$skip(_) => {},)*
+                }
+            }
+        }
+
+        // Screens with side-effects on context change are handled first.
+        // Everything else falls through to the macro default assignment.
         match self {
-            Screen::IdentitiesScreen(screen) => screen.app_context = app_context,
-            Screen::DPNSScreen(screen) => screen.app_context = app_context,
-            Screen::AddExistingIdentityScreen(screen) => screen.app_context = app_context,
-            Screen::KeyInfoScreen(screen) => screen.app_context = app_context,
-            Screen::KeysScreen(screen) => screen.app_context = app_context,
-            Screen::WithdrawalScreen(screen) => screen.app_context = app_context,
-            Screen::TransitionVisualizerScreen(screen) => screen.app_context = app_context,
-            Screen::ContractVisualizerScreen(screen) => screen.app_context = app_context,
-            Screen::NetworkChooserScreen(screen) => screen.current_network = app_context.network,
-            Screen::AddKeyScreen(screen) => screen.app_context = app_context,
-            Screen::DocumentQueryScreen(screen) => screen.app_context = app_context,
-            Screen::AddNewIdentityScreen(screen) => screen.app_context = app_context,
-            Screen::RegisterDpnsNameScreen(screen) => screen.app_context = app_context,
-            Screen::RegisterDataContractScreen(screen) => screen.app_context = app_context,
-            Screen::UpdateDataContractScreen(screen) => screen.app_context = app_context,
-            Screen::DocumentActionScreen(screen) => screen.app_context = app_context,
-            Screen::GroupActionsScreen(screen) => screen.app_context = app_context,
-            Screen::AddNewWalletScreen(screen) => screen.app_context = app_context,
-            Screen::TransferScreen(screen) => screen.app_context = app_context,
-            Screen::TopUpIdentityScreen(screen) => screen.app_context = app_context,
+            Screen::NetworkChooserScreen(screen) => {
+                let network = app_context.network;
+                screen.network_contexts.insert(network, app_context);
+                screen.current_network = network;
+                return;
+            }
+            Screen::AddNewWalletScreen(screen) => {
+                screen.app_context = app_context;
+                screen.reset_core_wallets_cache();
+                return;
+            }
+            Screen::TransferScreen(screen) => {
+                screen.app_context = app_context;
+                screen.invalidate_address_input();
+                return;
+            }
             Screen::WalletsBalancesScreen(screen) => {
                 screen.app_context = app_context;
+                screen.reset_pending_list_state();
                 screen.update_selected_wallet_for_network();
+                screen.invalidate_address_inputs();
+                screen.reset_transient_state();
+                return;
             }
-            Screen::ImportMnemonicScreen(screen) => screen.app_context = app_context,
-            Screen::WalletSendScreen(screen) => screen.app_context = app_context,
-            Screen::SingleKeyWalletSendScreen(screen) => screen.app_context = app_context,
-            Screen::ProofLogScreen(screen) => screen.app_context = app_context,
-            Screen::AddContractsScreen(screen) => screen.app_context = app_context,
-            Screen::ProofVisualizerScreen(screen) => screen.app_context = app_context,
+            Screen::ImportMnemonicScreen(screen) => {
+                screen.app_context = app_context;
+                screen.reset_core_wallets_cache();
+                return;
+            }
+            Screen::WalletSendScreen(screen) => {
+                screen.app_context = app_context;
+                screen.invalidate_address_input();
+                // Clear wallet reference — it belongs to the old network
+                screen.selected_wallet = None;
+                return;
+            }
+            Screen::SingleKeyWalletSendScreen(screen) => {
+                screen.app_context = app_context;
+                // Clear wallet reference — it belongs to the old network
+                screen.selected_wallet = None;
+                return;
+            }
+            Screen::CreateAssetLockScreen(screen) => {
+                screen.app_context = app_context;
+                // Clear wallet reference — it belongs to the old network
+                screen.selected_wallet = None;
+                return;
+            }
             Screen::MasternodeListDiffScreen(screen) => {
                 let old_net = screen.app_context.network;
                 if old_net != app_context.network {
-                    // Switch context and clear state to avoid cross-network bleed
                     screen.app_context = app_context.clone();
                     screen.clear();
                 } else {
                     screen.app_context = app_context;
                 }
+                return;
             }
-            Screen::DocumentVisualizerScreen(screen) => screen.app_context = app_context,
-            Screen::PlatformInfoScreen(screen) => screen.app_context = app_context,
-            Screen::GroveSTARKScreen(screen) => screen.app_context = app_context,
-            Screen::AddressBalanceScreen(screen) => screen.app_context = app_context,
-
-            // Token Screens
-            Screen::TokensScreen(screen) => screen.app_context = app_context,
-            Screen::TransferTokensScreen(screen) => screen.app_context = app_context,
-            Screen::MintTokensScreen(screen) => screen.app_context = app_context,
-            Screen::BurnTokensScreen(screen) => screen.app_context = app_context,
-            Screen::DestroyFrozenFundsScreen(screen) => screen.app_context = app_context,
-            Screen::FreezeTokensScreen(screen) => screen.app_context = app_context,
-            Screen::UnfreezeTokensScreen(screen) => screen.app_context = app_context,
-            Screen::PauseTokensScreen(screen) => screen.app_context = app_context,
-            Screen::ResumeTokensScreen(screen) => screen.app_context = app_context,
-            Screen::ClaimTokensScreen(screen) => screen.app_context = app_context,
-            Screen::ViewTokenClaimsScreen(screen) => screen.app_context = app_context,
-            Screen::UpdateTokenConfigScreen(screen) => screen.app_context = app_context,
-            Screen::AddTokenById(screen) => screen.app_context = app_context,
-            Screen::PurchaseTokenScreen(screen) => screen.app_context = app_context,
-            Screen::SetTokenPriceScreen(screen) => screen.app_context = app_context,
-            Screen::AssetLockDetailScreen(screen) => screen.app_context = app_context,
-            Screen::CreateAssetLockScreen(screen) => screen.app_context = app_context,
-
-            // DashPay Screens
+            Screen::AddressBalanceScreen(screen) => {
+                screen.app_context = app_context;
+                screen.invalidate_address_input();
+                return;
+            }
             Screen::DashPayScreen(screen) => {
                 screen.app_context = app_context.clone();
                 screen.contacts_list.app_context = app_context.clone();
                 screen.contacts_list.contact_requests.app_context = app_context.clone();
                 screen.profile_screen.app_context = app_context.clone();
                 screen.payment_history.app_context = app_context;
+                return;
             }
-            Screen::DashPayAddContactScreen(screen) => screen.app_context = app_context,
-            Screen::DashPayContactDetailsScreen(screen) => screen.app_context = app_context,
-            Screen::DashPayContactProfileViewerScreen(screen) => screen.app_context = app_context,
-            Screen::DashPaySendPaymentScreen(screen) => screen.app_context = app_context,
-            Screen::DashPayContactInfoEditorScreen(screen) => screen.app_context = app_context,
-            Screen::DashPayQRGeneratorScreen(screen) => screen.app_context = app_context,
-            Screen::DashPayProfileSearchScreen(screen) => screen.app_context = app_context,
+            Screen::ShieldScreen(screen) => {
+                screen.app_context = app_context;
+                screen.invalidate_address_input();
+                return;
+            }
+            Screen::ShieldedSendScreen(screen) => {
+                screen.app_context = app_context;
+                screen.invalidate_address_input();
+                return;
+            }
+            Screen::UnshieldCreditsScreen(screen) => {
+                screen.app_context = app_context;
+                screen.invalidate_address_input();
+                return;
+            }
+            _ => {}
         }
+
+        // Simple context assignment for all remaining screens.
+        // The `skip` list must exactly match the explicit match arms above.
+        set_ctx!(
+            set:
+            IdentitiesScreen,
+            DPNSScreen,
+            AddExistingIdentityScreen,
+            KeyInfoScreen,
+            KeysScreen,
+            WithdrawalScreen,
+            TransitionVisualizerScreen,
+            ContractVisualizerScreen,
+            AddKeyScreen,
+            DocumentQueryScreen,
+            AddNewIdentityScreen,
+            RegisterDpnsNameScreen,
+            RegisterDataContractScreen,
+            UpdateDataContractScreen,
+            DocumentActionScreen,
+            GroupActionsScreen,
+            TopUpIdentityScreen,
+            ProofLogScreen,
+            AddContractsScreen,
+            ProofVisualizerScreen,
+            DocumentVisualizerScreen,
+            PlatformInfoScreen,
+            GroveSTARKScreen,
+            TokensScreen,
+            TransferTokensScreen,
+            MintTokensScreen,
+            BurnTokensScreen,
+            DestroyFrozenFundsScreen,
+            FreezeTokensScreen,
+            UnfreezeTokensScreen,
+            PauseTokensScreen,
+            ResumeTokensScreen,
+            ClaimTokensScreen,
+            ViewTokenClaimsScreen,
+            UpdateTokenConfigScreen,
+            AddTokenById,
+            PurchaseTokenScreen,
+            SetTokenPriceScreen,
+            AssetLockDetailScreen,
+            DashPayAddContactScreen,
+            DashPayContactDetailsScreen,
+            DashPayContactProfileViewerScreen,
+            DashPaySendPaymentScreen,
+            DashPayContactInfoEditorScreen,
+            DashPayQRGeneratorScreen,
+            DashPayProfileSearchScreen;
+            skip:
+            NetworkChooserScreen,
+            AddNewWalletScreen,
+            TransferScreen,
+            WalletsBalancesScreen,
+            ImportMnemonicScreen,
+            WalletSendScreen,
+            SingleKeyWalletSendScreen,
+            CreateAssetLockScreen,
+            MasternodeListDiffScreen,
+            AddressBalanceScreen,
+            DashPayScreen,
+            ShieldScreen,
+            ShieldedSendScreen,
+            UnshieldCreditsScreen,
+        );
     }
 }
 
@@ -830,6 +952,7 @@ impl Screen {
 pub enum MessageType {
     Success,
     Info,
+    Warning,
     Error,
 }
 
@@ -839,9 +962,28 @@ pub trait ScreenLike {
         self.refresh()
     }
     fn ui(&mut self, ctx: &Context) -> AppAction;
+    /// Called by `AppState` **after** the global banner has already been set.
+    ///
+    /// Override **only for side-effects** such as clearing a progress banner
+    /// (`self.refresh_banner.take_and_clear()`) or updating an internal status enum.
+    /// Do **not** set your own banner here — `AppState` already did that.
     fn display_message(&mut self, _message: &str, _message_type: MessageType) {}
-    fn display_task_result(&mut self, _backend_task_success_result: BackendTaskSuccessResult) {
-        self.display_message("Success", MessageType::Success)
+
+    /// Called by `AppState` when a backend task completes successfully.
+    ///
+    /// Global success/error banners are handled centrally by `AppState::update()`.
+    /// Override this to perform screen-specific side-effects (e.g., storing a
+    /// result, transitioning status, clearing a progress banner).
+    /// The default is a **no-op** — screens that dispatch backend tasks should
+    /// override this for their expected result variants.
+    fn display_task_result(&mut self, _backend_task_success_result: BackendTaskSuccessResult) {}
+
+    /// Called by `AppState` when a backend task fails with a typed error.
+    ///
+    /// Override to handle specific error variants (e.g., `CoreWalletNotConfigured`).
+    /// Return `true` to suppress the default error banner in `AppState`.
+    fn display_task_error(&mut self, _error: &TaskError) -> bool {
+        false
     }
 
     fn pop_on_success(&mut self) {}
@@ -1020,6 +1162,10 @@ impl Screen {
             }
             Screen::DashPayQRGeneratorScreen(_) => ScreenType::DashPayQRGenerator,
             Screen::DashPayProfileSearchScreen(_) => ScreenType::DashPayProfileSearch,
+            // Shielded screens
+            Screen::ShieldScreen(s) => ScreenType::ShieldScreen(s.seed_hash),
+            Screen::ShieldedSendScreen(s) => ScreenType::ShieldedSendScreen(s.seed_hash),
+            Screen::UnshieldCreditsScreen(s) => ScreenType::UnshieldCreditsScreen(s.seed_hash),
         }
     }
 }
@@ -1088,6 +1234,10 @@ impl ScreenLike for Screen {
             Screen::DashPayContactInfoEditorScreen(screen) => screen.refresh(),
             Screen::DashPayQRGeneratorScreen(_) => {}
             Screen::DashPayProfileSearchScreen(screen) => screen.refresh(),
+            // Shielded screens
+            Screen::ShieldScreen(screen) => screen.refresh(),
+            Screen::ShieldedSendScreen(screen) => screen.refresh(),
+            Screen::UnshieldCreditsScreen(screen) => screen.refresh(),
         }
     }
 
@@ -1154,6 +1304,10 @@ impl ScreenLike for Screen {
             Screen::DashPayContactInfoEditorScreen(screen) => screen.refresh_on_arrival(),
             Screen::DashPayQRGeneratorScreen(_) => {}
             Screen::DashPayProfileSearchScreen(screen) => screen.refresh_on_arrival(),
+            // Shielded screens
+            Screen::ShieldScreen(screen) => screen.refresh_on_arrival(),
+            Screen::ShieldedSendScreen(screen) => screen.refresh_on_arrival(),
+            Screen::UnshieldCreditsScreen(screen) => screen.refresh_on_arrival(),
         }
     }
 
@@ -1220,6 +1374,10 @@ impl ScreenLike for Screen {
             Screen::DashPayContactInfoEditorScreen(screen) => screen.ui(ctx),
             Screen::DashPayQRGeneratorScreen(screen) => screen.ui(ctx),
             Screen::DashPayProfileSearchScreen(screen) => screen.ui(ctx),
+            // Shielded screens
+            Screen::ShieldScreen(screen) => screen.ui(ctx),
+            Screen::ShieldedSendScreen(screen) => screen.ui(ctx),
+            Screen::UnshieldCreditsScreen(screen) => screen.ui(ctx),
         }
     }
 
@@ -1320,6 +1478,10 @@ impl ScreenLike for Screen {
             Screen::DashPayProfileSearchScreen(screen) => {
                 screen.display_message(message, message_type)
             }
+            // Shielded screens
+            Screen::ShieldScreen(screen) => screen.display_message(message, message_type),
+            Screen::ShieldedSendScreen(screen) => screen.display_message(message, message_type),
+            Screen::UnshieldCreditsScreen(screen) => screen.display_message(message, message_type),
         }
     }
 
@@ -1490,6 +1652,85 @@ impl ScreenLike for Screen {
             Screen::DashPayProfileSearchScreen(screen) => {
                 screen.display_task_result(backend_task_success_result)
             }
+            // Shielded screens
+            Screen::ShieldScreen(screen) => screen.display_task_result(backend_task_success_result),
+            Screen::ShieldedSendScreen(screen) => {
+                screen.display_task_result(backend_task_success_result)
+            }
+            Screen::UnshieldCreditsScreen(screen) => {
+                screen.display_task_result(backend_task_success_result)
+            }
+        }
+    }
+
+    fn display_task_error(&mut self, error: &TaskError) -> bool {
+        match self {
+            Screen::IdentitiesScreen(screen) => screen.display_task_error(error),
+            Screen::DPNSScreen(screen) => screen.display_task_error(error),
+            Screen::DocumentQueryScreen(screen) => screen.display_task_error(error),
+            Screen::AddNewWalletScreen(screen) => screen.display_task_error(error),
+            Screen::ImportMnemonicScreen(screen) => screen.display_task_error(error),
+            Screen::AddNewIdentityScreen(screen) => screen.display_task_error(error),
+            Screen::TopUpIdentityScreen(screen) => screen.display_task_error(error),
+            Screen::AddExistingIdentityScreen(screen) => screen.display_task_error(error),
+            Screen::KeyInfoScreen(screen) => screen.display_task_error(error),
+            Screen::KeysScreen(screen) => screen.display_task_error(error),
+            Screen::RegisterDpnsNameScreen(screen) => screen.display_task_error(error),
+            Screen::RegisterDataContractScreen(screen) => screen.display_task_error(error),
+            Screen::UpdateDataContractScreen(screen) => screen.display_task_error(error),
+            Screen::DocumentActionScreen(screen) => screen.display_task_error(error),
+            Screen::GroupActionsScreen(screen) => screen.display_task_error(error),
+            Screen::WithdrawalScreen(screen) => screen.display_task_error(error),
+            Screen::TransferScreen(screen) => screen.display_task_error(error),
+            Screen::AddKeyScreen(screen) => screen.display_task_error(error),
+            Screen::TransitionVisualizerScreen(screen) => screen.display_task_error(error),
+            Screen::NetworkChooserScreen(screen) => screen.display_task_error(error),
+            Screen::WalletsBalancesScreen(screen) => screen.display_task_error(error),
+            Screen::WalletSendScreen(screen) => screen.display_task_error(error),
+            Screen::SingleKeyWalletSendScreen(screen) => screen.display_task_error(error),
+            Screen::ProofLogScreen(screen) => screen.display_task_error(error),
+            Screen::AddContractsScreen(screen) => screen.display_task_error(error),
+            Screen::ProofVisualizerScreen(screen) => screen.display_task_error(error),
+            Screen::MasternodeListDiffScreen(screen) => screen.display_task_error(error),
+            Screen::DocumentVisualizerScreen(screen) => screen.display_task_error(error),
+            Screen::ContractVisualizerScreen(screen) => screen.display_task_error(error),
+            Screen::PlatformInfoScreen(screen) => screen.display_task_error(error),
+            Screen::GroveSTARKScreen(screen) => screen.display_task_error(error),
+            Screen::AddressBalanceScreen(screen) => screen.display_task_error(error),
+
+            // Token Screens
+            Screen::TokensScreen(screen) => screen.display_task_error(error),
+            Screen::TransferTokensScreen(screen) => screen.display_task_error(error),
+            Screen::MintTokensScreen(screen) => screen.display_task_error(error),
+            Screen::BurnTokensScreen(screen) => screen.display_task_error(error),
+            Screen::DestroyFrozenFundsScreen(screen) => screen.display_task_error(error),
+            Screen::FreezeTokensScreen(screen) => screen.display_task_error(error),
+            Screen::UnfreezeTokensScreen(screen) => screen.display_task_error(error),
+            Screen::PauseTokensScreen(screen) => screen.display_task_error(error),
+            Screen::ResumeTokensScreen(screen) => screen.display_task_error(error),
+            Screen::ClaimTokensScreen(screen) => screen.display_task_error(error),
+            Screen::ViewTokenClaimsScreen(screen) => screen.display_task_error(error),
+            Screen::UpdateTokenConfigScreen(screen) => screen.display_task_error(error),
+            Screen::AddTokenById(screen) => screen.display_task_error(error),
+            Screen::PurchaseTokenScreen(screen) => screen.display_task_error(error),
+            Screen::SetTokenPriceScreen(screen) => screen.display_task_error(error),
+            Screen::AssetLockDetailScreen(screen) => screen.display_task_error(error),
+            Screen::CreateAssetLockScreen(screen) => screen.display_task_error(error),
+
+            // DashPay Screens
+            Screen::DashPayScreen(screen) => screen.display_task_error(error),
+            Screen::DashPayAddContactScreen(screen) => screen.display_task_error(error),
+            Screen::DashPayContactDetailsScreen(screen) => screen.display_task_error(error),
+            Screen::DashPayContactProfileViewerScreen(screen) => screen.display_task_error(error),
+            Screen::DashPaySendPaymentScreen(screen) => screen.display_task_error(error),
+            Screen::DashPayContactInfoEditorScreen(screen) => screen.display_task_error(error),
+            Screen::DashPayQRGeneratorScreen(screen) => screen.display_task_error(error),
+            Screen::DashPayProfileSearchScreen(screen) => screen.display_task_error(error),
+
+            // Shielded Screens
+            Screen::ShieldScreen(screen) => screen.display_task_error(error),
+            Screen::ShieldedSendScreen(screen) => screen.display_task_error(error),
+            Screen::UnshieldCreditsScreen(screen) => screen.display_task_error(error),
         }
     }
 
@@ -1556,6 +1797,10 @@ impl ScreenLike for Screen {
             Screen::DashPayContactInfoEditorScreen(_) => {}
             Screen::DashPayQRGeneratorScreen(_) => {}
             Screen::DashPayProfileSearchScreen(_) => {}
+            // Shielded screens
+            Screen::ShieldScreen(_) => {}
+            Screen::ShieldedSendScreen(_) => {}
+            Screen::UnshieldCreditsScreen(_) => {}
         }
     }
 }

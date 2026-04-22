@@ -48,61 +48,42 @@ pub mod withdraw_screen;
 ///   DPNS contract. When present, DPNS logic is used to find the public key.
 /// - `selected_key`: An optional reference to a chosen [`IdentityPublicKey`].
 ///   When `app_context` is not provided, this is required to get the wallet.
-/// - `error_message`: A mutable optional string where any error message will
-///   be written if the function fails to retrieve a wallet.
 ///
 /// # Returns
 ///
-/// Returns `Some(Arc<RwLock<Wallet>>)` if a matching wallet is found, or `None`
-/// otherwise. If an error is encountered, an explanatory message is placed in
-/// `error_message`.
+/// Returns `Ok(Some(Arc<RwLock<Wallet>>))` if a matching wallet is found,
+/// `Ok(None)` if no wallet is associated with the key, or `Err(String)` if
+/// an error is encountered.
 ///
 /// # Errors
 ///
 /// - If the DPNS document type can't be found or the identity is missing the
 ///   required DPNS signing key (when `app_context` is provided).
 /// - If no `selected_key` is provided (when `app_context` is `None`).
-/// - If the derived wallet derivation path is missing from the
-///   [`QualifiedIdentity`].
 pub fn get_selected_wallet(
     qualified_identity: &QualifiedIdentity,
-    app_context: Option<&AppContext>, // Used for DPNS-based logic (the first scenario).
-    selected_key: Option<&IdentityPublicKey>, // Used for direct-key logic (the fallback scenario).
-    error_message: &mut Option<String>,
-) -> Option<Arc<RwLock<Wallet>>> {
+    app_context: Option<&AppContext>,
+    selected_key: Option<&IdentityPublicKey>,
+) -> Result<Option<Arc<RwLock<Wallet>>>, String> {
     // If `app_context` is provided, use the DPNS-based approach.
     let public_key = if let Some(context) = app_context {
         let dpns_contract = &context.dpns_contract;
 
         // Attempt to fetch the `preorder` document type from the DPNS contract.
-        let preorder_document_type = match dpns_contract.document_type_for_name("preorder") {
-            Ok(doc_type) => doc_type,
-            Err(e) => {
-                *error_message = Some(format!("DPNS preorder document type not found: {}", e));
-                return None;
-            }
-        };
+        let preorder_document_type = dpns_contract
+            .document_type_for_name("preorder")
+            .map_err(|e| format!("DPNS preorder document type not found: {}", e))?;
 
         // Attempt to retrieve the public key from the identity.
-        match qualified_identity.document_signing_key(&preorder_document_type) {
-            Some(key) => key,
-            None => {
-                *error_message = Some(
-                    "Identity doesn't have an authentication key for signing document transitions"
-                        .to_string(),
-                );
-                return None;
-            }
-        }
+        qualified_identity
+            .document_signing_key(&preorder_document_type)
+            .ok_or_else(|| {
+                "Identity doesn't have an authentication key for signing document transitions"
+                    .to_string()
+            })?
     } else {
         // Fallback: directly use the provided selected key.
-        match selected_key {
-            Some(key) => key,
-            None => {
-                *error_message = Some("No key provided when getting selected wallet".to_string());
-                return None;
-            }
-        }
+        selected_key.ok_or_else(|| "No key provided when getting selected wallet".to_string())?
     };
 
     // Once we have the public key (either from DPNS or directly), look up
@@ -115,11 +96,11 @@ pub fn get_selected_wallet(
             .get(&key_lookup)
     {
         // If found, return the associated wallet (cloned to preserve Arc).
-        qualified_identity
+        Ok(qualified_identity
             .associated_wallets
             .get(&wallet_derivation_path.wallet_seed_hash)
-            .cloned()
+            .cloned())
     } else {
-        None
+        Ok(None)
     }
 }

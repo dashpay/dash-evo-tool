@@ -1,4 +1,5 @@
 use crate::app::TaskResult;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::contract::ContractTask;
 use crate::backend_task::core::{CoreItem, CoreTask};
@@ -9,8 +10,9 @@ use crate::backend_task::platform_info::{PlatformInfoTaskRequestType, PlatformIn
 use crate::backend_task::system_task::SystemTask;
 use crate::backend_task::wallet::WalletTask;
 use crate::context::AppContext;
-use dash_sdk::dpp::dashcore::Address;
-use dash_sdk::dpp::dashcore::address::NetworkChecked;
+use crate::spv::CoreBackendMode;
+use dash_sdk::dpp::address_funds::PlatformAddress;
+use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::dashcore::bls_sig_utils::BLSSignature;
 use dash_sdk::dpp::dashcore::network::message_qrinfo::QRInfo;
 use dash_sdk::dpp::dashcore::BlockHash;
@@ -37,6 +39,7 @@ use dash_sdk::query_types::{Documents, IndexMap};
 use futures::future::join_all;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use shielded::ShieldedTask;
 use tokens::TokenTask;
 use grovestark::GroveSTARKTask;
 
@@ -44,13 +47,16 @@ pub mod broadcast_state_transition;
 pub mod contested_names;
 pub mod contract;
 pub mod core;
+pub mod dapi_discovery;
 pub mod dashpay;
 pub mod document;
+pub mod error;
 pub mod grovestark;
 pub mod identity;
 pub mod mnlist;
 pub mod platform_info;
 pub mod register_contract;
+pub mod shielded;
 pub mod system_task;
 pub mod tokens;
 pub mod update_data_contract;
@@ -92,17 +98,46 @@ pub enum BackendTask {
     PlatformInfo(PlatformInfoTaskRequestType),
     GroveSTARKTask(GroveSTARKTask),
     WalletTask(WalletTask),
+    ShieldedTask(ShieldedTask),
+    /// Rebuild the Core RPC client and SDK on the current network context.
+    /// Dispatched when the user saves a new RPC password so the reinit
+    /// (which includes DAPI discovery) runs off the UI thread.
+    ReinitCoreClientAndSdk,
+    /// Create a new network context and switch to it.
+    /// Dispatched to `AppContext::run_backend_task`, which creates the new `AppContext`
+    /// and optionally starts SPV sync when `start_spv` is true.
+    SwitchNetwork {
+        network: Network,
+        start_spv: bool,
+    },
+    /// Discover DAPI nodes from the DCG-operated HTTPS service.
+    DiscoverDapiNodes {
+        network: Network,
+    },
     None,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
 pub enum BackendTaskSuccessResult {
     // General results
     None,
     Refresh,
-    Message(String), // Used for: progress messages during long operations, placeholder messages for
+    Message(String), // Used for: placeholder messages for
     // not-yet-implemented functionality, and DashPay operations that would need their own typed variants.
+    /// Progress updates during long-running operations (e.g. batch identity search).
+    /// By convention, the app routes `Progress` results to the visible screen's
+    /// `display_task_result` without creating a global banner at the app level
+    /// (unlike `Message`). Screens may create a banner handle on first receipt
+    /// and update it in-place on subsequent updates to avoid stacking.
+    Progress {
+        /// Human-readable progress message
+        message: String,
+        /// Current step (1-based)
+        current: u32,
+        /// Total steps
+        total: u32,
+    },
     WalletPayment {
         txid: String,
         /// List of (address, amount) pairs for each recipient
@@ -175,8 +210,10 @@ pub enum BackendTaskSuccessResult {
     /// Platform address balances fetched from Platform
     PlatformAddressBalances {
         seed_hash: WalletSeedHash,
-        /// Map of address to (balance, nonce)
-        balances: BTreeMap<Address<NetworkChecked>, (u64, u32)>,
+        /// Map of platform address to (balance, nonce)
+        balances: BTreeMap<PlatformAddress, (u64, u32)>,
+        /// Network the balances were fetched from
+        network: Network,
     },
     /// Platform credits transferred between addresses
     PlatformCreditsTransferred {
@@ -249,6 +286,10 @@ pub enum BackendTaskSuccessResult {
     ContractNotFound,
     TokenNotFound,
     ProofErrorLogged,
+    /// Contract was saved to the local database despite a proof verification error.
+    /// Sent by `register_data_contract` / `update_data_contract` when the contract was
+    /// successfully fetched from Platform and stored after a `DriveProofError`.
+    ContractSavedAfterProofError,
 
     // Wallet operation results (replacing string messages)
     RefreshedWallet {
@@ -267,6 +308,65 @@ pub enum BackendTaskSuccessResult {
 
     // Broadcast results
     BroadcastedStateTransition,
+
+    // Mining results (dev mode, Regtest/Devnet only)
+    MineBlocksSuccess(u64),
+
+    // Core wallet list (async fetch of loaded Core wallets)
+    CoreWalletsList(Vec<String>),
+
+    // Shielded pool results
+    ShieldedInitialized {
+        seed_hash: WalletSeedHash,
+        balance: u64,
+    },
+    ShieldedNotesSynced {
+        seed_hash: WalletSeedHash,
+        new_notes: u32,
+        balance: u64,
+    },
+    ShieldedCreditsShielded {
+        seed_hash: WalletSeedHash,
+        amount: u64,
+    },
+    ShieldedTransferComplete {
+        seed_hash: WalletSeedHash,
+        amount: u64,
+    },
+    ShieldedCreditsUnshielded {
+        seed_hash: WalletSeedHash,
+        amount: u64,
+    },
+    ShieldedNullifiersChecked {
+        seed_hash: WalletSeedHash,
+        spent_count: u32,
+    },
+    ShieldedFromAssetLock {
+        seed_hash: WalletSeedHash,
+        amount: u64,
+    },
+    ShieldedWithdrawalComplete {
+        seed_hash: WalletSeedHash,
+        amount: u64,
+    },
+    ProvingKeyReady,
+
+    /// Core RPC client and SDK were successfully rebuilt (e.g. after password change).
+    CoreClientReinitialized,
+
+    /// A new network context was created asynchronously during a network switch.
+    NetworkContextCreated {
+        network: Network,
+        context: Arc<AppContext>,
+        spv_started: bool,
+    },
+
+    /// Fresh DAPI node addresses discovered from the DCG service.
+    DapiNodesDiscovered {
+        network: Network,
+        count: usize,
+        addresses_csv: String,
+    },
 }
 
 impl BackendTaskSuccessResult {}
@@ -277,7 +377,7 @@ impl AppContext {
         self: &Arc<Self>,
         tasks: Vec<BackendTask>,
         sender: SenderAsync<TaskResult>,
-    ) -> Vec<Result<BackendTaskSuccessResult, String>> {
+    ) -> Vec<Result<BackendTaskSuccessResult, TaskError>> {
         let mut results = Vec::new();
         for task in tasks {
             match self.run_backend_task(task, sender.clone()).await {
@@ -293,7 +393,7 @@ impl AppContext {
         self: &Arc<Self>,
         tasks: Vec<BackendTask>,
         sender: SenderAsync<TaskResult>,
-    ) -> Vec<Result<BackendTaskSuccessResult, String>> {
+    ) -> Vec<Result<BackendTaskSuccessResult, TaskError>> {
         let futures = tasks
             .into_iter()
             .map(|task| {
@@ -311,44 +411,118 @@ impl AppContext {
         self: &Arc<Self>,
         task: BackendTask,
         sender: SenderAsync<TaskResult>,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         let sdk = self.sdk.load().as_ref().clone();
         match task {
             BackendTask::ContractTask(contract_task) => {
-                self.run_contract_task(*contract_task, &sdk, sender).await
+                Ok(self.run_contract_task(*contract_task, &sdk, sender).await?)
             }
-            BackendTask::ContestedResourceTask(contested_resource_task) => {
-                self.run_contested_resource_task(contested_resource_task, &sdk, sender)
-                    .await
-            }
+            BackendTask::ContestedResourceTask(contested_resource_task) => Ok(self
+                .run_contested_resource_task(contested_resource_task, &sdk, sender)
+                .await?),
             BackendTask::IdentityTask(identity_task) => {
-                self.run_identity_task(identity_task, &sdk, sender).await
+                Ok(self.run_identity_task(identity_task, &sdk, sender).await?)
             }
             BackendTask::DocumentTask(document_task) => {
-                self.run_document_task(*document_task, &sdk).await
+                Ok(self.run_document_task(*document_task, &sdk).await?)
             }
-            BackendTask::CoreTask(core_task) => self.run_core_task(core_task).await,
+            BackendTask::CoreTask(core_task) => Ok(self.run_core_task(core_task).await?),
             BackendTask::DashPayTask(dashpay_task) => {
-                self.run_dashpay_task(*dashpay_task, &sdk).await
+                Ok(self.run_dashpay_task(*dashpay_task, &sdk).await?)
             }
-            BackendTask::BroadcastStateTransition(state_transition) => {
-                self.broadcast_state_transition(state_transition, &sdk)
-                    .await
-            }
+            BackendTask::BroadcastStateTransition(state_transition) => Ok(self
+                .broadcast_state_transition(state_transition, &sdk)
+                .await?),
             BackendTask::TokenTask(token_task) => {
-                self.run_token_task(*token_task, &sdk, sender).await
+                Ok(self.run_token_task(*token_task, &sdk, sender).await?)
             }
-            BackendTask::SystemTask(system_task) => self.run_system_task(system_task, sender).await,
+            BackendTask::SystemTask(system_task) => {
+                Ok(self.run_system_task(system_task, sender).await?)
+            }
             BackendTask::MnListTask(mnlist_task) => {
-                mnlist::run_mnlist_task(self, mnlist_task).await
+                Ok(mnlist::run_mnlist_task(self, mnlist_task).await?)
             }
-            BackendTask::PlatformInfo(platform_info_task) => {
-                self.run_platform_info_task(platform_info_task, &sdk).await
-            }
+            BackendTask::PlatformInfo(platform_info_task) => Ok(self
+                .run_platform_info_task(platform_info_task, &sdk)
+                .await?),
             BackendTask::GroveSTARKTask(grovestark_task) => {
-                grovestark::run_grovestark_task(grovestark_task, &sdk).await
+                Ok(grovestark::run_grovestark_task(grovestark_task, &sdk).await?)
             }
-            BackendTask::WalletTask(wallet_task) => self.run_wallet_task(wallet_task).await,
+            BackendTask::WalletTask(wallet_task) => Ok(self.run_wallet_task(wallet_task).await?),
+            BackendTask::ShieldedTask(shielded_task) => {
+                Ok(self.run_shielded_task(shielded_task).await?)
+            }
+            BackendTask::ReinitCoreClientAndSdk => {
+                Arc::clone(self).reinit_core_client_and_sdk()?;
+                Ok(BackendTaskSuccessResult::CoreClientReinitialized)
+            }
+            BackendTask::SwitchNetwork { network, start_spv } => {
+                // Create a new AppContext for the target network, reusing shared
+                // resources (db, subtasks, connection_status) from the current context.
+                // Wrapped in block_in_place because AppContext::new() does DB init
+                // and file I/O which would block the async runtime.
+                let data_dir = self.data_dir.clone();
+                let db = self.db.clone();
+                let password_info = self.password_info.clone();
+                let subtasks = self.subtasks.clone();
+                let connection_status = self.connection_status.clone();
+                let egui_ctx = self.egui_ctx().clone();
+                let new_ctx = tokio::task::block_in_place(|| {
+                    AppContext::new(
+                        data_dir,
+                        network,
+                        db,
+                        password_info,
+                        subtasks,
+                        connection_status,
+                        egui_ctx,
+                    )
+                })
+                .ok_or(TaskError::NetworkContextCreationFailed {
+                    network,
+                    detail: "AppContext::new() returned None".into(),
+                })?;
+
+                let spv_started = if start_spv {
+                    if new_ctx.core_backend_mode() != CoreBackendMode::Spv {
+                        new_ctx.set_core_backend_mode_volatile(CoreBackendMode::Spv);
+                    }
+                    match new_ctx.start_spv() {
+                        Ok(()) => {
+                            tracing::info!(?network, "SPV started after network switch");
+                            true
+                        }
+                        Err(e) => {
+                            tracing::warn!(?network, "SPV start failed after network switch: {e}");
+                            false
+                        }
+                    }
+                } else {
+                    false
+                };
+                Ok(BackendTaskSuccessResult::NetworkContextCreated {
+                    network,
+                    context: new_ctx,
+                    spv_started,
+                })
+            }
+            BackendTask::DiscoverDapiNodes { network } => {
+                let devnet_name = self
+                    .config
+                    .read()
+                    .map_err(|_| TaskError::LockPoisoned {
+                        resource: "NetworkConfig",
+                    })?
+                    .devnet_name
+                    .clone();
+                let (count, addresses_csv) =
+                    dapi_discovery::discover_and_format(network, devnet_name.as_deref()).await?;
+                Ok(BackendTaskSuccessResult::DapiNodesDiscovered {
+                    network,
+                    count,
+                    addresses_csv,
+                })
+            }
             BackendTask::None => Ok(BackendTaskSuccessResult::None),
         }
     }
@@ -356,17 +530,13 @@ impl AppContext {
     async fn run_wallet_task(
         self: &Arc<Self>,
         task: WalletTask,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         match task {
             WalletTask::GenerateReceiveAddress { seed_hash } => {
                 self.generate_receive_address(seed_hash).await
             }
-            WalletTask::FetchPlatformAddressBalances {
-                seed_hash,
-                sync_mode,
-            } => {
-                self.fetch_platform_address_balances(seed_hash, sync_mode)
-                    .await
+            WalletTask::FetchPlatformAddressBalances { seed_hash } => {
+                self.fetch_platform_address_balances(seed_hash).await
             }
             WalletTask::TransferPlatformCredits {
                 seed_hash,

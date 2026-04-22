@@ -4,6 +4,8 @@ use crate::backend_task::identity::IdentityTask;
 use crate::model::amount::Amount;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::wallet::WalletSeedHash;
+use crate::ui::MessageType;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::identities::funding_common::WalletFundedScreenStep;
@@ -199,7 +201,7 @@ impl TopUpIdentityScreen {
                         action = top_up_action;
                     }
                     Err(e) => {
-                        self.error_message = Some(e);
+                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
                     }
                 }
             }

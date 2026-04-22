@@ -1,7 +1,7 @@
 use crate::app::AppAction;
 use crate::model::wallet::DerivationPathHelpers;
 use crate::ui::ScreenType;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{DashColors, ResponseExt};
 use eframe::egui::{self, Ui};
 use egui::{Color32, Frame, Margin, RichText};
 use egui_extras::{Column, TableBuilder};
@@ -33,7 +33,7 @@ impl WalletsBalancesScreen {
                                     ScreenType::CreateAssetLock(arc_wallet.clone()).create_screen(&self.app_context)
                                 );
                             }
-                            if ui.button("Search for Unused").on_hover_text("Scan Core wallet for untracked asset locks").clicked() {
+                            if ui.button("Search for Unused").clickable_tooltip("Scan Core wallet for untracked asset locks").clicked() {
                                 recover_asset_locks_clicked = true;
                             }
                         });
@@ -123,7 +123,7 @@ impl WalletsBalancesScreen {
                                         ui.label(status);
                                     });
                                     row.col(|ui| {
-                                        if ui.small_button("View").on_hover_text("View full asset lock details").clicked() {
+                                        if ui.small_button("View").clickable_tooltip("View full asset lock details").clicked() {
                                             app_action = AppAction::AddScreen(
                                                 ScreenType::AssetLockDetail(
                                                     wallet.seed_hash(),
@@ -132,7 +132,7 @@ impl WalletsBalancesScreen {
                                             );
                                         }
                                         if proof.is_some()
-                                            && ui.small_button("Fund").on_hover_text("Fund a Platform address with this asset lock").clicked() {
+                                            && ui.small_button("Fund").clickable_tooltip("Fund a Platform address with this asset lock").clicked() {
                                                 open_fund_dialog_for_idx = Some((index, platform_addresses.clone()));
                                             }
                                     });

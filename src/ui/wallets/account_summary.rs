@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
 use dash_sdk::dpp::balances::credits::Credits;
+use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 
 use crate::model::wallet::{DerivationPathHelpers, DerivationPathReference, Wallet};
 
@@ -51,9 +53,10 @@ impl AccountCategory {
 
     pub fn label(&self, index: Option<u32>) -> String {
         match self {
-            AccountCategory::Bip44 => match index.unwrap_or(0) {
-                0 => "Main Account".to_string(),
-                idx => format!("BIP44 Account #{}", idx),
+            AccountCategory::Bip44 => match index {
+                Some(0) => "Dash Core".to_string(),
+                Some(idx) => format!("BIP44 Account #{}", idx),
+                None => "BIP44 Account".to_string(),
             },
             AccountCategory::Bip32 => match index {
                 Some(idx) if idx > 0 => format!("Legacy BIP32 Account #{}", idx),
@@ -68,7 +71,7 @@ impl AccountCategory {
             AccountCategory::ProviderOwner => "Provider Owner".to_string(),
             AccountCategory::ProviderOperator => "Provider Operator".to_string(),
             AccountCategory::ProviderPlatform => "Provider Platform".to_string(),
-            AccountCategory::PlatformPayment => "Platform Account".to_string(),
+            AccountCategory::PlatformPayment => "Platform".to_string(),
             AccountCategory::Other(reference) => format!("{:?}", reference),
         }
     }
@@ -133,27 +136,69 @@ impl AccountCategory {
         }
     }
 
-    /// Returns true if this account category is for key derivation/proofs only
-    /// and does not hold funds (balance is always N/A).
-    pub fn is_key_only(&self) -> bool {
+    /// Returns a short label suitable for tab headers.
+    pub fn tab_label(&self, index: Option<u32>) -> &'static str {
+        match self {
+            AccountCategory::Bip44 => match index {
+                Some(0) => "Dash Core",
+                _ => "BIP44",
+            },
+            AccountCategory::Bip32 => "Legacy BIP32",
+            AccountCategory::CoinJoin => "CoinJoin",
+            AccountCategory::IdentityRegistration => "Identity Registration",
+            AccountCategory::IdentitySystem => "Identity System",
+            AccountCategory::IdentityTopup => "Identity Top-up",
+            AccountCategory::IdentityInvitation => "Identity Invitation",
+            AccountCategory::ProviderVoting
+            | AccountCategory::ProviderOwner
+            | AccountCategory::ProviderOperator
+            | AccountCategory::ProviderPlatform => "Provider",
+            AccountCategory::PlatformPayment => "Platform",
+            AccountCategory::Other(_) => "Other",
+        }
+    }
+
+    /// Whether this account tab is visible in default (non-developer) mode.
+    pub fn is_visible_in_default_mode(&self) -> bool {
         matches!(
             self,
-            AccountCategory::IdentityRegistration
-                | AccountCategory::IdentityTopup
-                | AccountCategory::IdentityInvitation
-                | AccountCategory::IdentitySystem
-                | AccountCategory::ProviderVoting
-                | AccountCategory::ProviderOwner
-                | AccountCategory::ProviderOperator
-                | AccountCategory::ProviderPlatform
+            AccountCategory::Bip44 | AccountCategory::PlatformPayment
         )
     }
+
+    /// Returns true if this is a "system" account category shown only in
+    /// developer mode under the consolidated System tab.
+    pub fn is_system_category(&self) -> bool {
+        !self.is_visible_in_default_mode()
+    }
+}
+
+pub(crate) fn categorize_account_path(
+    path: &DerivationPath,
+    network: Network,
+    reference: DerivationPathReference,
+) -> (AccountCategory, Option<u32>) {
+    // Derivation path shape is authoritative over stored metadata.
+    // This prevents stale/misclassified references from surfacing wrong account labels.
+    let category = if path.is_bip32() {
+        AccountCategory::Bip32
+    } else if path.is_bip44(network) {
+        AccountCategory::Bip44
+    } else {
+        AccountCategory::from_reference(reference)
+    };
+
+    let index = match category {
+        AccountCategory::Bip44 | AccountCategory::Bip32 => path.bip44_account_index(),
+        _ => None,
+    };
+
+    (category, index)
 }
 
 #[derive(Clone, Debug)]
 pub struct AccountSummary {
     pub category: AccountCategory,
-    pub label: String,
     pub index: Option<u32>,
     pub confirmed_balance: u64,
     /// Platform credits balance for Platform Payment addresses
@@ -187,11 +232,8 @@ impl AccountSummaryBuilder {
     }
 
     fn build(self) -> AccountSummary {
-        let label = self.key.category.label(self.key.index);
-
         AccountSummary {
             category: self.key.category,
-            label,
             index: self.key.index,
             confirmed_balance: self.confirmed_balance,
             platform_credits: self.platform_credits,
@@ -199,15 +241,11 @@ impl AccountSummaryBuilder {
     }
 }
 
-pub fn collect_account_summaries(wallet: &Wallet) -> Vec<AccountSummary> {
+pub fn collect_account_summaries(wallet: &Wallet, network: Network) -> Vec<AccountSummary> {
     let mut builders: BTreeMap<AccountKey, AccountSummaryBuilder> = BTreeMap::new();
 
     for (path, info) in &wallet.watched_addresses {
-        let category = AccountCategory::from_reference(info.path_reference);
-        let index = match category {
-            AccountCategory::Bip44 | AccountCategory::Bip32 => path.bip44_account_index(),
-            _ => None,
-        };
+        let (category, index) = categorize_account_path(path, network, info.path_reference);
 
         let balance = wallet
             .address_balances
@@ -242,4 +280,60 @@ pub fn collect_account_summaries(wallet: &Wallet) -> Vec<AccountSummary> {
     });
 
     summaries
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dash_sdk::dpp::key_wallet::bip32::ChildNumber;
+
+    #[test]
+    fn bip44_without_account_index_is_not_dash_core() {
+        assert_eq!(AccountCategory::Bip44.label(None), "BIP44 Account");
+    }
+
+    #[test]
+    fn legacy_path_overrides_incorrect_bip44_reference() {
+        let path = DerivationPath::from(vec![
+            ChildNumber::Hardened { index: 0 },
+            ChildNumber::Normal { index: 1 },
+            ChildNumber::Normal { index: 3 },
+        ]);
+
+        let (category, index) =
+            categorize_account_path(&path, Network::Testnet, DerivationPathReference::BIP44);
+        assert_eq!(category, AccountCategory::Bip32);
+        assert_eq!(index, None);
+    }
+
+    #[test]
+    fn bip44_path_overrides_incorrect_bip32_reference() {
+        let path = DerivationPath::from(vec![
+            ChildNumber::Hardened { index: 44 },
+            ChildNumber::Hardened { index: 1 },
+            ChildNumber::Hardened { index: 0 },
+            ChildNumber::Normal { index: 0 },
+            ChildNumber::Normal { index: 1 },
+        ]);
+
+        let (category, index) =
+            categorize_account_path(&path, Network::Testnet, DerivationPathReference::BIP32);
+        assert_eq!(category, AccountCategory::Bip44);
+        assert_eq!(index, Some(0));
+    }
+
+    #[test]
+    fn bip44_requires_matching_coin_type_for_network() {
+        let path = DerivationPath::from(vec![
+            ChildNumber::Hardened { index: 44 },
+            ChildNumber::Hardened { index: 5 },
+            ChildNumber::Hardened { index: 0 },
+            ChildNumber::Normal { index: 0 },
+            ChildNumber::Normal { index: 1 },
+        ]);
+
+        let (category, _) =
+            categorize_account_path(&path, Network::Testnet, DerivationPathReference::Unknown);
+        assert_ne!(category, AccountCategory::Bip44);
+    }
 }

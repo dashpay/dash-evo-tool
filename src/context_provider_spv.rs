@@ -1,10 +1,10 @@
 use crate::context::AppContext;
+use crate::context_provider::{resolve_data_contract, resolve_token_configuration};
 use crate::database::Database;
 use dash_sdk::dpp::dashcore::Network;
-use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::error::ContextProviderError;
-use dash_sdk::platform::{ContextProvider, DataContract};
+use dash_sdk::platform::{ContextProvider, DataContract, Identifier};
 use std::sync::{Arc, Mutex};
 
 /// SPV-based ContextProvider for the Dash SDK.
@@ -27,15 +27,26 @@ impl SpvProvider {
         })
     }
 
-    /// Attach the `AppContext` so we can access SpvManager and settings.
+    /// Attach the `AppContext` and register this provider with the SDK.
+    ///
+    /// Mirrors [`Provider::bind_app_context`](crate::context_provider::Provider::bind_app_context)
+    /// — after this call, the SDK
+    /// uses this provider for proof verification and quorum key resolution.
     ///
     /// Returns an error if the lock is poisoned (indicates a prior panic).
+    ///
+    /// # Thread safety
+    /// Called during init and mode-switch only — not on hot paths.
     pub fn bind_app_context(&self, app_context: Arc<AppContext>) -> Result<(), String> {
+        let cloned = app_context.clone();
         let mut ac = self
             .app_context
             .lock()
             .map_err(|_| "SpvProvider app_context lock poisoned".to_string())?;
-        ac.replace(app_context);
+        ac.replace(cloned);
+        drop(ac);
+
+        app_context.sdk.load().set_context_provider(self.clone());
         Ok(())
     }
 }
@@ -43,53 +54,36 @@ impl SpvProvider {
 impl ContextProvider for SpvProvider {
     fn get_data_contract(
         &self,
-        data_contract_id: &dash_sdk::platform::Identifier,
+        data_contract_id: &Identifier,
         _platform_version: &PlatformVersion,
     ) -> Result<Option<Arc<DataContract>>, ContextProviderError> {
-        let app_ctx_guard = self
+        let guard = self
             .app_context
             .lock()
             .map_err(|_| ContextProviderError::Config("SpvProvider lock poisoned".to_string()))?;
-        let app_ctx = app_ctx_guard
+        let app_ctx = guard
             .as_ref()
-            .ok_or(ContextProviderError::Config("no app context".to_string()))?;
-
-        if data_contract_id == &app_ctx.dpns_contract.id() {
-            Ok(Some(app_ctx.dpns_contract.clone()))
-        } else if data_contract_id == &app_ctx.token_history_contract.id() {
-            Ok(Some(app_ctx.token_history_contract.clone()))
-        } else if data_contract_id == &app_ctx.withdraws_contract.id() {
-            Ok(Some(app_ctx.withdraws_contract.clone()))
-        } else if data_contract_id == &app_ctx.keyword_search_contract.id() {
-            Ok(Some(app_ctx.keyword_search_contract.clone()))
-        } else {
-            let dc = self
-                .db
-                .get_contract_by_id(*data_contract_id, app_ctx.as_ref())
-                .map_err(|e| ContextProviderError::Generic(e.to_string()))?;
-
-            drop(app_ctx_guard);
-
-            Ok(dc.map(|qc| Arc::new(qc.contract)))
-        }
+            .ok_or(ContextProviderError::Config("no app context".to_string()))?
+            .clone();
+        drop(guard);
+        resolve_data_contract(&app_ctx, &self.db, data_contract_id)
     }
 
     fn get_token_configuration(
         &self,
-        token_id: &dash_sdk::platform::Identifier,
+        token_id: &Identifier,
     ) -> Result<Option<dash_sdk::dpp::data_contract::TokenConfiguration>, ContextProviderError>
     {
-        let app_ctx_guard = self
+        let guard = self
             .app_context
             .lock()
             .map_err(|_| ContextProviderError::Config("SpvProvider lock poisoned".to_string()))?;
-        let app_ctx = app_ctx_guard
+        let app_ctx = guard
             .as_ref()
-            .ok_or(ContextProviderError::Config("no app context".to_string()))?;
-
-        self.db
-            .get_token_config_for_id(token_id, app_ctx)
-            .map_err(|e| ContextProviderError::Generic(e.to_string()))
+            .ok_or(ContextProviderError::Config("no app context".to_string()))?
+            .clone();
+        drop(guard);
+        resolve_token_configuration(&app_ctx, &self.db, token_id)
     }
 
     fn get_quorum_public_key(

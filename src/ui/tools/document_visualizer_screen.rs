@@ -194,10 +194,10 @@ impl DocumentVisualizerScreen {
 // ======================= 2.  ScreenLike impl =======================
 
 impl crate::ui::ScreenLike for DocumentVisualizerScreen {
-    fn display_message(&mut self, msg: &str, t: crate::ui::MessageType) {
-        if matches!(t, crate::ui::MessageType::Error) {
-            self.parse_status = DocumentParseStatus::Error(msg.to_owned());
-        }
+    fn display_message(&mut self, _msg: &str, _t: crate::ui::MessageType) {
+        // INTENTIONAL: These screens perform only local synchronous parsing.
+        // No backend tasks are dispatched, so no error/success messages arrive here.
+        // Local parse errors are set directly via self.parse_status.
     }
     fn display_task_result(&mut self, _r: BackendTaskSuccessResult) {}
     fn ui(&mut self, ctx: &Context) -> AppAction {

@@ -10,7 +10,10 @@ pub mod context_provider_spv;
 pub mod cpu_compatibility;
 pub mod database;
 pub mod logging;
+#[cfg(any(feature = "mcp", feature = "cli"))]
+pub mod mcp;
 pub mod model;
+pub mod platform;
 pub mod sdk_wrapper;
 pub mod spv;
 pub mod ui;

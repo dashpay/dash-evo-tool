@@ -9,7 +9,9 @@ fn test_network_chooser_renders() {
 
     // Create a test harness for the egui app
     let mut harness = Harness::builder().with_max_steps(100).build_eframe(|ctx| {
-        dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone()).with_animations(false)
+        dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+            .expect("Failed to create AppState")
+            .with_animations(false)
     });
 
     // Set the window size
@@ -26,7 +28,9 @@ fn test_app_handles_frame_stepping() {
     let _guard = rt.enter();
 
     let mut harness = Harness::builder().with_max_steps(50).build_eframe(|ctx| {
-        dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone()).with_animations(false)
+        dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+            .expect("Failed to create AppState")
+            .with_animations(false)
     });
 
     harness.set_size(egui::vec2(800.0, 600.0));
@@ -51,7 +55,9 @@ fn test_app_renders_at_various_sizes() {
 
     for size in sizes {
         let mut harness = Harness::builder().with_max_steps(50).build_eframe(|ctx| {
-            dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone()).with_animations(false)
+            dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+                .expect("Failed to create AppState")
+                .with_animations(false)
         });
 
         harness.set_size(size);

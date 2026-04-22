@@ -8,10 +8,13 @@ use crate::app::AppAction;
 use crate::backend_task::core::CoreItem;
 use crate::backend_task::identity::{
     IdentityKeys, IdentityRegistrationInfo, IdentityTask, RegisterIdentityFundingMethod,
+    default_identity_key_specs,
 };
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
+use crate::model::secret::Secret;
 use crate::model::wallet::Wallet;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
@@ -28,7 +31,6 @@ use dash_sdk::dpp::dashcore::secp256k1::hashes::hex::DisplayHex;
 use dash_sdk::dpp::dashcore::{OutPoint, Transaction, TxOut};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::prelude::AssetLockProof;
 use dash_sdk::platform::Identifier;
@@ -84,8 +86,8 @@ pub struct AddNewIdentityScreen {
     alias_input: String,
     copied_to_clipboard: Option<Option<String>>,
     identity_keys: IdentityKeys,
-    error_message: Option<String>,
     wallet_unlock_popup: WalletUnlockPopup,
+    wallet_open_attempted: bool,
     show_pop_up_info: Option<String>,
     in_key_selection_advanced_mode: bool,
     pub app_context: Arc<AppContext>,
@@ -150,8 +152,8 @@ impl AddNewIdentityScreen {
                 master_private_key_type: KeyType::ECDSA_HASH160,
                 keys_input: vec![],
             },
-            error_message: None,
             wallet_unlock_popup: WalletUnlockPopup::new(),
+            wallet_open_attempted: false,
             show_pop_up_info: None,
             in_key_selection_advanced_mode: false,
             app_context: app_context.clone(),
@@ -212,10 +214,10 @@ impl AddNewIdentityScreen {
 
             let mut wallet = wallet_lock.write().expect("wallet lock failed");
             let master_key = wallet.identity_authentication_ecdsa_private_key(
+                app_context,
                 app_context.network,
                 identity_id_number,
                 0,
-                Some(app_context),
             )?;
 
             let other_keys = default_keys
@@ -225,10 +227,10 @@ impl AddNewIdentityScreen {
                     |(i, (key_type, purpose, security_level, contract_bounds))| {
                         Ok((
                             wallet.identity_authentication_ecdsa_private_key(
+                                app_context,
                                 app_context.network,
                                 identity_id_number,
                                 (i + 1).try_into().expect("key index must fit u32"), // key index 0 is the master key
-                                Some(app_context),
                             )?,
                             key_type,
                             purpose,
@@ -394,6 +396,7 @@ impl AddNewIdentityScreen {
         let is_open = wallet.read().expect("wallet lock poisoned").is_open();
 
         self.selected_wallet = Some(wallet);
+        self.wallet_open_attempted = false;
         self.identity_id_number = self.next_identity_id();
 
         if is_open {
@@ -430,6 +433,7 @@ impl AddNewIdentityScreen {
 
         ComboBox::from_id_salt("funding_method")
             .selected_text(format!("{}", *funding_method))
+            .height(200.0)
             .show_ui(ui, |ui| {
                 if ui
                     .selectable_value(
@@ -617,7 +621,10 @@ impl AddNewIdentityScreen {
                                 ui.label("Master Key");
                             });
                             row.col(|ui| {
-                                ui.label(master_key.to_wif());
+                                let wif = Secret::new(master_key.to_wif());
+                                // INTENTIONAL(CODE-003): WIF displayed as plaintext label — user-initiated key view.
+                                // Secret wrapper provides zeroize-on-drop for the Rust-side variable.
+                                ui.label(wif.expose_secret());
                             });
                             row.col(|_ui| {
                                 // No purpose for master key
@@ -661,7 +668,10 @@ impl AddNewIdentityScreen {
                                 ui.label(format!("Key {}", i + 1));
                             });
                             row.col(|ui| {
-                                ui.label(key.to_wif());
+                                let wif = Secret::new(key.to_wif());
+                                // INTENTIONAL(CODE-003): WIF displayed as plaintext label — user-initiated key view.
+                                // Secret wrapper provides zeroize-on-drop for the Rust-side variable.
+                                ui.label(wif.expose_secret());
                             });
                             row.col(|ui| {
                                 ui.vertical(|ui| {
@@ -861,12 +871,20 @@ impl AddNewIdentityScreen {
                 // Get selected Platform address and amount from the input fields
                 let Some((platform_addr, amount)) = self.selected_platform_address_for_funding
                 else {
-                    self.error_message = Some("Please select a Platform address".to_string());
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        "Please select a Platform address",
+                        MessageType::Error,
+                    );
                     return AppAction::None;
                 };
 
                 if amount == 0 {
-                    self.error_message = Some("Amount must be greater than 0".to_string());
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        "Amount must be greater than 0",
+                        MessageType::Error,
+                    );
                     return AppAction::None;
                 }
 
@@ -947,10 +965,10 @@ impl AddNewIdentityScreen {
             // Update the master private key and keys input from the wallet
             self.identity_keys.master_private_key =
                 Some(wallet.identity_authentication_ecdsa_private_key(
+                    &self.app_context,
                     self.app_context.network,
                     identity_index,
                     0,
-                    Some(&self.app_context),
                 )?);
 
             // Update the additional keys input (preserving contract bounds)
@@ -963,10 +981,10 @@ impl AddNewIdentityScreen {
                     |(key_index, (_, key_type, purpose, security_level, contract_bounds))| {
                         Ok((
                             wallet.identity_authentication_ecdsa_private_key(
+                                &self.app_context,
                                 self.app_context.network,
                                 identity_index,
                                 key_index as u32 + 1,
-                                Some(&self.app_context),
                             )?,
                             *key_type,
                             *purpose,
@@ -997,10 +1015,10 @@ impl AddNewIdentityScreen {
             self.identity_keys.keys_input.push((
                 wallet
                     .identity_authentication_ecdsa_private_key(
+                        &self.app_context,
                         self.app_context.network,
                         self.identity_id_number,
                         new_key_index,
-                        Some(&self.app_context),
                     )
                     .expect("expected to have decrypted wallet"),
                 key_type,
@@ -1013,14 +1031,12 @@ impl AddNewIdentityScreen {
 }
 
 impl ScreenLike for AddNewIdentityScreen {
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
-        if message_type == MessageType::Error {
-            self.error_message = Some(format!("Error registering identity: {}", message));
-            // Reset step so we stop showing "Waiting for Platform acknowledgement"
+    fn display_message(&mut self, _message: &str, message_type: MessageType) {
+        if matches!(message_type, MessageType::Error | MessageType::Warning) {
+            // Reset step so we stop showing "Waiting for Platform acknowledgement".
+            // The error itself is displayed by the global MessageBanner.
             let mut step = self.step.write().unwrap();
             *step = WalletFundedScreenStep::ReadyToCreate;
-        } else {
-            self.error_message = Some(message.to_string());
         }
     }
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
@@ -1101,29 +1117,6 @@ impl ScreenLike for AddNewIdentityScreen {
         action |= island_central_panel(ctx, |ui| {
             let mut inner_action = AppAction::None;
 
-            // Display error message at the top, outside of scroll area
-            if let Some(error_message) = self.error_message.clone() {
-                let message_color = DashColors::ERROR;
-
-                ui.horizontal(|ui| {
-                    egui::Frame::new()
-                        .fill(message_color.gamma_multiply(0.1))
-                        .inner_margin(egui::Margin::symmetric(10, 8))
-                        .corner_radius(5.0)
-                        .stroke(egui::Stroke::new(1.0, message_color))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new(&error_message).color(message_color));
-                                ui.add_space(10.0);
-                                if ui.small_button("Dismiss").clicked() {
-                                    self.error_message = None;
-                                }
-                            });
-                        });
-                });
-                ui.add_space(10.0);
-            }
-
             ScrollArea::vertical().show(ui, |ui| {
                 let step = {*self.step.read().unwrap()};
                 if step == WalletFundedScreenStep::Success {
@@ -1156,8 +1149,11 @@ impl ScreenLike for AddNewIdentityScreen {
                 let wallet = self.selected_wallet.as_ref().unwrap();
 
                 // Try to open wallet without password if it doesn't use one
-                if let Err(e) = try_open_wallet_no_password(wallet) {
-                    self.error_message = Some(e);
+                if !self.wallet_open_attempted {
+                    if let Err(e) = try_open_wallet_no_password(wallet) {
+                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                    }
+                    self.wallet_open_attempted = true;
                 }
 
                 // If wallet needs password unlock
@@ -1342,248 +1338,5 @@ impl ScreenLike for AddNewIdentityScreen {
         }
 
         action
-    }
-}
-
-/// Returns the default key specifications for a new identity.
-///
-/// The returned vector contains tuples of (KeyType, Purpose, SecurityLevel, Option<ContractBounds>):
-/// - AUTHENTICATION CRITICAL: General platform operations (actions should require PIN)
-/// - AUTHENTICATION HIGH: General platform operations
-/// - TRANSFER CRITICAL: Credit transfers
-/// - ENCRYPTION MEDIUM with DashPay contactRequest bounds: For contact requests per DIP-15
-/// - DECRYPTION MEDIUM with DashPay contactRequest bounds: For contact requests per DIP-15
-///
-/// Note: ENCRYPTION and DECRYPTION keys must use `SingleContractDocumentType` with "contactRequest"
-/// document type, not just `SingleContract`. The platform requires encryption key bounds to specify
-/// the exact document type for proper validation.
-pub fn default_identity_key_specs(
-    dashpay_contract_id: Identifier,
-) -> Vec<(KeyType, Purpose, SecurityLevel, Option<ContractBounds>)> {
-    let dashpay_bounds = Some(ContractBounds::SingleContractDocumentType {
-        id: dashpay_contract_id,
-        document_type_name: "contactRequest".to_string(),
-    });
-
-    vec![
-        (
-            KeyType::ECDSA_HASH160,
-            Purpose::AUTHENTICATION,
-            SecurityLevel::CRITICAL,
-            None,
-        ),
-        (
-            KeyType::ECDSA_HASH160,
-            Purpose::AUTHENTICATION,
-            SecurityLevel::HIGH,
-            None,
-        ),
-        (
-            KeyType::ECDSA_HASH160,
-            Purpose::TRANSFER,
-            SecurityLevel::CRITICAL,
-            None,
-        ),
-        (
-            KeyType::ECDSA_SECP256K1, // ECDH requires secp256k1
-            Purpose::ENCRYPTION,
-            SecurityLevel::MEDIUM, // Platform enforces MEDIUM for ENCRYPTION
-            dashpay_bounds.clone(),
-        ),
-        (
-            KeyType::ECDSA_SECP256K1, // ECDH requires secp256k1
-            Purpose::DECRYPTION,
-            SecurityLevel::MEDIUM,
-            dashpay_bounds,
-        ),
-    ]
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Test that the default identity keys include the correct number of keys
-    #[test]
-    fn test_default_identity_keys_count() {
-        let contract_id = Identifier::random();
-        let keys = default_identity_key_specs(contract_id);
-        assert_eq!(keys.len(), 5, "Should have 5 default keys");
-    }
-
-    /// Test that AUTHENTICATION keys have correct configuration
-    #[test]
-    fn test_authentication_keys_configuration() {
-        let contract_id = Identifier::random();
-        let keys = default_identity_key_specs(contract_id);
-
-        // First key: AUTHENTICATION CRITICAL
-        let (key_type, purpose, security_level, contract_bounds) = &keys[0];
-        assert_eq!(*key_type, KeyType::ECDSA_HASH160);
-        assert_eq!(*purpose, Purpose::AUTHENTICATION);
-        assert_eq!(*security_level, SecurityLevel::CRITICAL);
-        assert!(
-            contract_bounds.is_none(),
-            "AUTHENTICATION keys should have no contract bounds"
-        );
-
-        // Second key: AUTHENTICATION HIGH
-        let (key_type, purpose, security_level, contract_bounds) = &keys[1];
-        assert_eq!(*key_type, KeyType::ECDSA_HASH160);
-        assert_eq!(*purpose, Purpose::AUTHENTICATION);
-        assert_eq!(*security_level, SecurityLevel::HIGH);
-        assert!(
-            contract_bounds.is_none(),
-            "AUTHENTICATION keys should have no contract bounds"
-        );
-    }
-
-    /// Test that TRANSFER key has correct configuration
-    #[test]
-    fn test_transfer_key_configuration() {
-        let contract_id = Identifier::random();
-        let keys = default_identity_key_specs(contract_id);
-
-        // Third key: TRANSFER CRITICAL
-        let (key_type, purpose, security_level, contract_bounds) = &keys[2];
-        assert_eq!(*key_type, KeyType::ECDSA_HASH160);
-        assert_eq!(*purpose, Purpose::TRANSFER);
-        assert_eq!(*security_level, SecurityLevel::CRITICAL);
-        assert!(
-            contract_bounds.is_none(),
-            "TRANSFER keys should have no contract bounds"
-        );
-    }
-
-    /// Test that ENCRYPTION key uses SingleContractDocumentType with contactRequest
-    ///
-    /// This is critical for DashPay compatibility - the platform requires encryption keys
-    /// to specify the exact document type (contactRequest) not just the contract ID.
-    /// Using SingleContract instead of SingleContractDocumentType will cause:
-    /// "key bounds expected but not present error: expected encryption key bounds for encryption"
-    #[test]
-    fn test_encryption_key_uses_single_contract_document_type() {
-        let contract_id = Identifier::random();
-        let keys = default_identity_key_specs(contract_id);
-
-        // Fourth key: ENCRYPTION MEDIUM
-        let (key_type, purpose, security_level, contract_bounds) = &keys[3];
-        assert_eq!(
-            *key_type,
-            KeyType::ECDSA_SECP256K1,
-            "ENCRYPTION key must use ECDSA_SECP256K1 for ECDH"
-        );
-        assert_eq!(*purpose, Purpose::ENCRYPTION);
-        assert_eq!(
-            *security_level,
-            SecurityLevel::MEDIUM,
-            "Platform enforces MEDIUM for ENCRYPTION"
-        );
-
-        // Verify contract bounds uses SingleContractDocumentType, NOT SingleContract
-        match contract_bounds {
-            Some(ContractBounds::SingleContractDocumentType {
-                id,
-                document_type_name,
-            }) => {
-                assert_eq!(
-                    *id, contract_id,
-                    "Contract ID should match DashPay contract"
-                );
-                assert_eq!(
-                    document_type_name, "contactRequest",
-                    "Document type must be 'contactRequest' for DashPay"
-                );
-            }
-            Some(ContractBounds::SingleContract { .. }) => {
-                panic!(
-                    "ENCRYPTION key must use SingleContractDocumentType, not SingleContract. \
-                       Using SingleContract causes 'key bounds expected but not present' error."
-                );
-            }
-            None => {
-                panic!("ENCRYPTION key must have DashPay contract bounds for contactRequest");
-            }
-        }
-    }
-
-    /// Test that DECRYPTION key uses SingleContractDocumentType with contactRequest
-    ///
-    /// This is critical for DashPay compatibility - the platform requires decryption keys
-    /// to specify the exact document type (contactRequest) not just the contract ID.
-    #[test]
-    fn test_decryption_key_uses_single_contract_document_type() {
-        let contract_id = Identifier::random();
-        let keys = default_identity_key_specs(contract_id);
-
-        // Fifth key: DECRYPTION MEDIUM
-        let (key_type, purpose, security_level, contract_bounds) = &keys[4];
-        assert_eq!(
-            *key_type,
-            KeyType::ECDSA_SECP256K1,
-            "DECRYPTION key must use ECDSA_SECP256K1 for ECDH"
-        );
-        assert_eq!(*purpose, Purpose::DECRYPTION);
-        assert_eq!(*security_level, SecurityLevel::MEDIUM);
-
-        // Verify contract bounds uses SingleContractDocumentType, NOT SingleContract
-        match contract_bounds {
-            Some(ContractBounds::SingleContractDocumentType {
-                id,
-                document_type_name,
-            }) => {
-                assert_eq!(
-                    *id, contract_id,
-                    "Contract ID should match DashPay contract"
-                );
-                assert_eq!(
-                    document_type_name, "contactRequest",
-                    "Document type must be 'contactRequest' for DashPay"
-                );
-            }
-            Some(ContractBounds::SingleContract { .. }) => {
-                panic!(
-                    "DECRYPTION key must use SingleContractDocumentType, not SingleContract. \
-                       Using SingleContract causes 'key bounds expected but not present' error."
-                );
-            }
-            None => {
-                panic!("DECRYPTION key must have DashPay contract bounds for contactRequest");
-            }
-        }
-    }
-
-    /// Test that encryption and decryption keys have matching contract bounds
-    #[test]
-    fn test_encryption_decryption_keys_have_matching_bounds() {
-        let contract_id = Identifier::random();
-        let keys = default_identity_key_specs(contract_id);
-
-        let encryption_bounds = &keys[3].3;
-        let decryption_bounds = &keys[4].3;
-
-        assert_eq!(
-            encryption_bounds, decryption_bounds,
-            "ENCRYPTION and DECRYPTION keys should have identical contract bounds"
-        );
-    }
-
-    /// Test that the contract ID is correctly propagated to key bounds
-    #[test]
-    fn test_contract_id_propagation() {
-        let contract_id = Identifier::random();
-        let keys = default_identity_key_specs(contract_id);
-
-        for (i, (_, purpose, _, contract_bounds)) in keys.iter().enumerate() {
-            if (*purpose == Purpose::ENCRYPTION || *purpose == Purpose::DECRYPTION)
-                && let Some(ContractBounds::SingleContractDocumentType { id, .. }) = contract_bounds
-            {
-                assert_eq!(
-                    *id, contract_id,
-                    "Key {} contract bounds should use the provided contract ID",
-                    i
-                );
-            }
-        }
     }
 }

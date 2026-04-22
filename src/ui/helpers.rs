@@ -1,19 +1,18 @@
-use dash_sdk::dpp::address_funds::{PLATFORM_HRP_MAINNET, PLATFORM_HRP_TESTNET};
+use crate::ui::theme::ResponseExt;
 use std::sync::Arc;
 
-/// Checks if a string looks like a Platform address (bech32m with dash/tdash HRP per DIP-18).
-///
-/// This checks whether the string starts with a known Platform HRP followed by the
-/// bech32 separator '1'. It does NOT fully validate the address — use
-/// `PlatformAddress::from_bech32m_string()` for that.
-pub fn is_platform_address_string(s: &str) -> bool {
-    let s = s.to_lowercase();
-    for hrp in [PLATFORM_HRP_MAINNET, PLATFORM_HRP_TESTNET] {
-        if s.starts_with(hrp) && s.get(hrp.len()..hrp.len() + 1) == Some("1") {
-            return true;
-        }
-    }
-    false
+// Re-export from the model layer so existing callers don't break.
+pub use crate::model::address::is_platform_address_string;
+
+/// Returns true if the user left-clicked outside the given window rect this frame.
+/// Use after painting a modal overlay and showing the dialog window.
+pub fn clicked_outside_window(ctx: &egui::Context, window_rect: egui::Rect) -> bool {
+    ctx.input(|i| {
+        i.pointer.primary_pressed()
+            && i.pointer
+                .interact_pos()
+                .is_some_and(|pos| !window_rect.contains(pos))
+    })
 }
 
 use crate::{
@@ -251,9 +250,7 @@ pub fn info_icon_button(ui: &mut egui::Ui, hover_text: &str) -> Response {
         );
     }
 
-    response
-        .on_hover_text(hover_text)
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
+    response.clickable_tooltip(hover_text)
 }
 
 pub fn copy_text_to_clipboard(text: &str) -> Result<(), String> {
@@ -1115,3 +1112,19 @@ pub fn show_group_token_success_screen_with_fee(
     });
     action
 }
+
+/// Check if a string looks like a Platform Bech32m address.
+///
+/// Delegates to [`is_platform_address_string`] which uses the canonical
+/// HRP constants and case-insensitive comparison.
+pub fn is_platform_address(s: &str) -> bool {
+    is_platform_address_string(s)
+}
+
+/// Human-readable hint for Platform address input fields.
+pub const PLATFORM_ADDRESS_HINT: &str =
+    "Enter a Platform address starting with \"dash1\" or \"tdash1\".";
+
+/// Example Platform address prefixes for error messages.
+pub const PLATFORM_ADDRESS_EXAMPLES: &str =
+    "Valid prefixes are \"dash1\" for mainnet and \"tdash1\" for testnet.";

@@ -3,6 +3,7 @@ use dash_sdk::{
     platform::transition::broadcast::BroadcastStateTransition,
 };
 
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 
 use super::BackendTaskSuccessResult;
@@ -12,10 +13,11 @@ impl AppContext {
         &self,
         state_transition: StateTransition,
         sdk: &Sdk,
-    ) -> Result<BackendTaskSuccessResult, String> {
-        match state_transition.broadcast(sdk, None).await {
-            Ok(_) => Ok(BackendTaskSuccessResult::BroadcastedStateTransition),
-            Err(e) => Err(format!("Error broadcasting state transition: {}", e)),
-        }
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
+        state_transition
+            .broadcast(sdk, None)
+            .await
+            .map(|_| BackendTaskSuccessResult::BroadcastedStateTransition)
+            .map_err(TaskError::from)
     }
 }

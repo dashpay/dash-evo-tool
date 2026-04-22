@@ -1,8 +1,9 @@
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::fee_estimation::PlatformFeeEstimator;
-use crate::model::proof_log_item::{ProofLogItem, RequestType};
+use crate::model::proof_log_item::RequestType;
 use crate::model::qualified_identity::QualifiedIdentity;
+use dash_sdk::Sdk;
 use dash_sdk::dpp::data_contract::document_type::DocumentType;
 use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
 use dash_sdk::dpp::document::{DocumentV0Getters, DocumentV0Setters};
@@ -26,7 +27,6 @@ use dash_sdk::platform::{
     DataContract, Document, DocumentQuery, Fetch, FetchMany, Identifier, IdentityPublicKey,
 };
 use dash_sdk::query_types::IndexMap;
-use dash_sdk::{Error, Sdk};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -92,13 +92,15 @@ impl AppContext {
         &self,
         task: DocumentTask,
         sdk: &Sdk,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, crate::backend_task::error::TaskError> {
+        use crate::backend_task::error::TaskError;
+
         match task {
             DocumentTask::FetchDocuments(document_query) => {
                 Document::fetch_many(sdk, document_query)
                     .await
                     .map(BackendTaskSuccessResult::Documents)
-                    .map_err(|e| format!("Error fetching documents: {}", e))
+                    .map_err(TaskError::from)
             }
             DocumentTask::FetchDocumentsPage(mut document_query) => {
                 // Set the limit for each page
@@ -110,7 +112,7 @@ impl AppContext {
                 // Fetch a single page
                 let docs_batch_result = Document::fetch_many(sdk, document_query)
                     .await
-                    .map_err(|e| format!("Error fetching documents: {}", e))?;
+                    .map_err(TaskError::from)?;
 
                 let batch_len = docs_batch_result.len();
 
@@ -165,25 +167,8 @@ impl AppContext {
                 let result = sdk
                     .document_create(builder, &identity_key, &qualified_identity)
                     .await
-                    .map_err(|e| match e {
-                        Error::DriveProofError(proof_error, proof_bytes, block_info) => {
-                            self.db
-                                .insert_proof_log_item(ProofLogItem {
-                                    request_type: RequestType::BroadcastStateTransition,
-                                    request_bytes: vec![],
-                                    verification_path_query_bytes: vec![],
-                                    height: block_info.height,
-                                    time_ms: block_info.time_ms,
-                                    proof_bytes,
-                                    error: Some(proof_error.to_string()),
-                                })
-                                .ok();
-                            format!(
-                                "Error broadcasting document: {}, proof error logged",
-                                proof_error
-                            )
-                        }
-                        e => format!("Error broadcasting document: {}", e),
+                    .map_err(|e| {
+                        self.log_drive_proof_error(e, RequestType::BroadcastStateTransition)
                     })?;
 
                 // Handle the result - DocumentCreateResult contains the created document
@@ -220,25 +205,8 @@ impl AppContext {
                 let result = sdk
                     .document_delete(builder, &identity_key, &qualified_identity)
                     .await
-                    .map_err(|e| match e {
-                        Error::DriveProofError(proof_error, proof_bytes, block_info) => {
-                            self.db
-                                .insert_proof_log_item(ProofLogItem {
-                                    request_type: RequestType::BroadcastStateTransition,
-                                    request_bytes: vec![],
-                                    verification_path_query_bytes: vec![],
-                                    height: block_info.height,
-                                    time_ms: block_info.time_ms,
-                                    proof_bytes,
-                                    error: Some(proof_error.to_string()),
-                                })
-                                .ok();
-                            format!(
-                                "Error deleting document: {}, proof error logged",
-                                proof_error
-                            )
-                        }
-                        e => format!("Error deleting document: {}", e),
+                    .map_err(|e| {
+                        self.log_drive_proof_error(e, RequestType::BroadcastStateTransition)
                     })?;
 
                 // Handle the result - DocumentDeleteResult contains the deleted document ID
@@ -276,25 +244,8 @@ impl AppContext {
                 let result = sdk
                     .document_replace(builder, &identity_key, &qualified_identity)
                     .await
-                    .map_err(|e| match e {
-                        Error::DriveProofError(proof_error, proof_bytes, block_info) => {
-                            self.db
-                                .insert_proof_log_item(ProofLogItem {
-                                    request_type: RequestType::BroadcastStateTransition,
-                                    request_bytes: vec![],
-                                    verification_path_query_bytes: vec![],
-                                    height: block_info.height,
-                                    time_ms: block_info.time_ms,
-                                    proof_bytes,
-                                    error: Some(proof_error.to_string()),
-                                })
-                                .ok();
-                            format!(
-                                "Error replacing document: {}, proof error logged",
-                                proof_error
-                            )
-                        }
-                        e => format!("Error replacing document: {}", e),
+                    .map_err(|e| {
+                        self.log_drive_proof_error(e, RequestType::BroadcastStateTransition)
                     })?;
 
                 // Handle the result - DocumentReplaceResult contains the replaced document
@@ -327,8 +278,8 @@ impl AppContext {
                 let query_with_id = DocumentQuery::with_document_id(document_query, &document_id);
                 let mut document = Document::fetch(sdk, query_with_id)
                     .await
-                    .map_err(|e| format!("Error fetching document: {}", e))?
-                    .ok_or_else(|| "Document not found".to_string())?;
+                    .map_err(TaskError::from)?
+                    .ok_or_else(|| TaskError::DocumentNotFound)?;
                 document.bump_revision();
 
                 let mut builder = DocumentTransferTransitionBuilder::new(
@@ -350,25 +301,8 @@ impl AppContext {
                 let result = sdk
                     .document_transfer(builder, &identity_key, &qualified_identity)
                     .await
-                    .map_err(|e| match e {
-                        Error::DriveProofError(proof_error, proof_bytes, block_info) => {
-                            self.db
-                                .insert_proof_log_item(ProofLogItem {
-                                    request_type: RequestType::BroadcastStateTransition,
-                                    request_bytes: vec![],
-                                    verification_path_query_bytes: vec![],
-                                    height: block_info.height,
-                                    time_ms: block_info.time_ms,
-                                    proof_bytes,
-                                    error: Some(proof_error.to_string()),
-                                })
-                                .ok();
-                            format!(
-                                "Error transferring document: {}, proof error logged",
-                                proof_error
-                            )
-                        }
-                        e => format!("Error transferring document: {}", e),
+                    .map_err(|e| {
+                        self.log_drive_proof_error(e, RequestType::BroadcastStateTransition)
                     })?;
 
                 // Handle the result - DocumentTransferResult contains the transferred document
@@ -401,8 +335,8 @@ impl AppContext {
                 let query_with_id = DocumentQuery::with_document_id(document_query, &document_id);
                 let mut document = Document::fetch(sdk, query_with_id)
                     .await
-                    .map_err(|e| format!("Error fetching document: {}", e))?
-                    .ok_or_else(|| "Document not found".to_string())?;
+                    .map_err(TaskError::from)?
+                    .ok_or_else(|| TaskError::DocumentNotFound)?;
                 document.bump_revision();
 
                 let mut builder = DocumentPurchaseTransitionBuilder::new(
@@ -425,25 +359,8 @@ impl AppContext {
                 let result = sdk
                     .document_purchase(builder, &identity_key, &qualified_identity)
                     .await
-                    .map_err(|e| match e {
-                        Error::DriveProofError(proof_error, proof_bytes, block_info) => {
-                            self.db
-                                .insert_proof_log_item(ProofLogItem {
-                                    request_type: RequestType::BroadcastStateTransition,
-                                    request_bytes: vec![],
-                                    verification_path_query_bytes: vec![],
-                                    height: block_info.height,
-                                    time_ms: block_info.time_ms,
-                                    proof_bytes,
-                                    error: Some(proof_error.to_string()),
-                                })
-                                .ok();
-                            format!(
-                                "Error purchasing document: {}, proof error logged",
-                                proof_error
-                            )
-                        }
-                        e => format!("Error purchasing document: {}", e),
+                    .map_err(|e| {
+                        self.log_drive_proof_error(e, RequestType::BroadcastStateTransition)
                     })?;
 
                 // Handle the result - DocumentPurchaseResult contains the purchased document
@@ -476,8 +393,8 @@ impl AppContext {
                 let query_with_id = DocumentQuery::with_document_id(document_query, &document_id);
                 let mut document = Document::fetch(sdk, query_with_id)
                     .await
-                    .map_err(|e| format!("Error fetching document: {}", e))?
-                    .ok_or_else(|| "Document not found".to_string())?;
+                    .map_err(TaskError::from)?
+                    .ok_or_else(|| TaskError::DocumentNotFound)?;
                 document.bump_revision();
 
                 let mut builder = DocumentSetPriceTransitionBuilder::new(
@@ -499,25 +416,8 @@ impl AppContext {
                 let result = sdk
                     .document_set_price(builder, &identity_key, &qualified_identity)
                     .await
-                    .map_err(|e| match e {
-                        Error::DriveProofError(proof_error, proof_bytes, block_info) => {
-                            self.db
-                                .insert_proof_log_item(ProofLogItem {
-                                    request_type: RequestType::BroadcastStateTransition,
-                                    request_bytes: vec![],
-                                    verification_path_query_bytes: vec![],
-                                    height: block_info.height,
-                                    time_ms: block_info.time_ms,
-                                    proof_bytes,
-                                    error: Some(proof_error.to_string()),
-                                })
-                                .ok();
-                            format!(
-                                "Error setting document price: {}, proof error logged",
-                                proof_error
-                            )
-                        }
-                        e => format!("Error setting document price: {}", e),
+                    .map_err(|e| {
+                        self.log_drive_proof_error(e, RequestType::BroadcastStateTransition)
                     })?;
 
                 // Handle the result - DocumentSetPriceResult contains the document with updated price

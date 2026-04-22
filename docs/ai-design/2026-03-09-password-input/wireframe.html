@@ -1,0 +1,836 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PasswordInput Component -- Interactive Wireframe</title>
+<style>
+  :root {
+    /* Dash Evo Tool design tokens */
+    --dash-blue: #008de4;
+    --dash-blue-hover: #0079c4;
+    --error: #eb5757;
+    --success: #27ae60;
+    --warning: #f1c40f;
+
+    /* Light mode */
+    --bg: #f5f5f5;
+    --surface: #ffffff;
+    --input-bg: #f8f9fa;
+    --text-primary: #1a1a2e;
+    --text-secondary: #6b7280;
+    --text-disabled: #b0b0b0;
+    --border: #d1d5db;
+    --border-focus: var(--dash-blue);
+    --validation-warning: #eb5757;
+
+    /* Spacing */
+    --sp-xxs: 2px;
+    --sp-xs: 4px;
+    --sp-sm: 8px;
+    --sp-md: 16px;
+    --sp-lg: 24px;
+    --sp-xl: 32px;
+
+    /* Typography */
+    --font-sm: 14px;
+    --font-base: 16px;
+    --font-xs: 12px;
+
+    /* Borders */
+    --radius-sm: 6px;
+    --radius-md: 12px;
+  }
+
+  .dark-mode {
+    --bg: #1a1a2e;
+    --surface: #262640;
+    --input-bg: #2a2a44;
+    --text-primary: #e8e8f0;
+    --text-secondary: #8888a0;
+    --text-disabled: #555566;
+    --border: #3a3a55;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Noto Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    background: var(--bg);
+    color: var(--text-primary);
+    padding: 32px;
+    transition: background 0.2s, color 0.2s;
+  }
+
+  h1 {
+    font-size: 24px;
+    font-weight: 600;
+    margin-bottom: 8px;
+    color: var(--text-primary);
+  }
+
+  h2 {
+    font-size: 18px;
+    font-weight: 600;
+    margin-bottom: 16px;
+    color: var(--text-primary);
+  }
+
+  h3 {
+    font-size: var(--font-base);
+    font-weight: 600;
+    margin-bottom: 8px;
+    color: var(--text-secondary);
+  }
+
+  .subtitle {
+    font-size: var(--font-sm);
+    color: var(--text-secondary);
+    margin-bottom: 32px;
+  }
+
+  .theme-toggle {
+    position: fixed;
+    top: 16px;
+    right: 16px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+    padding: 8px 16px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-size: var(--font-sm);
+    z-index: 100;
+  }
+
+  .theme-toggle:hover {
+    border-color: var(--dash-blue);
+  }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: var(--sp-lg);
+    margin-bottom: var(--sp-lg);
+  }
+
+  /* Password Input Component */
+  .password-input-group {
+    margin-bottom: var(--sp-md);
+  }
+
+  .password-label {
+    display: block;
+    font-size: var(--font-sm);
+    font-weight: 500;
+    color: var(--text-primary);
+    margin-bottom: var(--sp-xs);
+  }
+
+  .password-input-wrapper {
+    position: relative;
+    display: flex;
+    align-items: center;
+  }
+
+  .password-input {
+    width: 100%;
+    height: 32px;
+    padding: 4px 40px 4px 8px; /* 40px right padding for eye icon */
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--input-bg);
+    color: var(--text-primary);
+    font-size: var(--font-base);
+    font-family: inherit;
+    outline: none;
+    transition: border-color 0.15s, border-width 0.05s;
+    letter-spacing: 0;
+  }
+
+  .password-input::placeholder {
+    color: var(--text-secondary);
+    letter-spacing: 0;
+  }
+
+  .password-input:focus {
+    border: 2px solid var(--border-focus);
+    padding: 3px 39px 3px 7px; /* Adjust padding to compensate for 2px border */
+  }
+
+  .password-input.error {
+    border: 2px solid var(--error);
+    padding: 3px 39px 3px 7px;
+  }
+
+  .password-input.monospace {
+    font-family: 'Noto Sans Mono', 'Courier New', monospace;
+    font-size: var(--font-sm);
+  }
+
+  .password-input:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    background: var(--input-bg);
+  }
+
+  /* Eye icon button */
+  .eye-icon-btn {
+    position: absolute;
+    right: 4px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    border: none;
+    background: transparent;
+    padding: 0;
+    border-radius: 4px;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  .eye-icon-btn:hover .eye-icon {
+    color: var(--dash-blue);
+  }
+
+  .eye-icon-btn:active .eye-icon {
+    color: var(--dash-blue);
+  }
+
+  .eye-icon-btn.disabled {
+    cursor: not-allowed;
+    pointer-events: none;
+  }
+
+  .eye-icon-btn.disabled .eye-icon {
+    color: var(--text-disabled);
+  }
+
+  .eye-icon {
+    color: var(--text-secondary);
+    transition: color 0.1s;
+    display: block;
+  }
+
+  .eye-icon svg {
+    width: 16px;
+    height: 16px;
+    display: block;
+  }
+
+  /* Error message below input */
+  .error-message {
+    font-size: var(--font-sm);
+    color: var(--validation-warning);
+    margin-top: var(--sp-xs);
+  }
+
+  /* Demo sections */
+  .demo-section {
+    margin-bottom: 32px;
+  }
+
+  .demo-row {
+    display: flex;
+    gap: 24px;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+  }
+
+  .demo-item {
+    flex: 1;
+    min-width: 280px;
+    max-width: 400px;
+  }
+
+  .state-label {
+    font-size: var(--font-xs);
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 8px;
+    font-weight: 600;
+  }
+
+  .section-divider {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 32px 0;
+  }
+
+  /* Eye icon geometry annotation */
+  .icon-spec {
+    display: flex;
+    gap: 32px;
+    align-items: center;
+    padding: 16px;
+  }
+
+  .icon-large {
+    width: 64px;
+    height: 64px;
+    border: 1px dashed var(--border);
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+
+  .icon-large svg {
+    width: 48px;
+    height: 48px;
+  }
+
+  .icon-description {
+    font-size: var(--font-sm);
+    color: var(--text-secondary);
+    line-height: 1.5;
+  }
+
+  .icon-description code {
+    background: var(--input-bg);
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-size: var(--font-xs);
+    font-family: 'Courier New', monospace;
+  }
+
+  /* Dynamic list demo */
+  .key-list-item {
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+
+  .key-list-item .password-input-group {
+    flex: 1;
+    margin-bottom: 0;
+  }
+
+  .remove-btn {
+    width: 32px;
+    height: 32px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+
+  .remove-btn:hover {
+    border-color: var(--error);
+    color: var(--error);
+  }
+
+  .add-key-btn {
+    background: transparent;
+    border: 1px dashed var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--dash-blue);
+    padding: 6px 12px;
+    cursor: pointer;
+    font-size: var(--font-sm);
+    font-family: inherit;
+  }
+
+  .add-key-btn:hover {
+    border-color: var(--dash-blue);
+    background: rgba(0, 141, 228, 0.05);
+  }
+
+  .instructions {
+    background: var(--input-bg);
+    border-radius: var(--radius-sm);
+    padding: 12px 16px;
+    margin-bottom: 24px;
+    font-size: var(--font-sm);
+    color: var(--text-secondary);
+    line-height: 1.6;
+  }
+
+  .instructions strong {
+    color: var(--text-primary);
+  }
+</style>
+</head>
+<body>
+
+<button class="theme-toggle" onclick="toggleTheme()">Toggle Dark/Light</button>
+
+<h1>PasswordInput Component</h1>
+<p class="subtitle">Interactive wireframe -- Dash Evo Tool design system</p>
+
+<div class="instructions">
+  <strong>How to interact:</strong> Hold down the mouse button on the eye icon to reveal the password.
+  Release the mouse button or move the cursor away from the icon to re-mask.
+  This is a hold-to-reveal pattern, not a toggle.
+</div>
+
+<!-- SECTION 1: Basic States -->
+<div class="card">
+  <h2>1. All Component States</h2>
+
+  <div class="demo-row">
+    <div class="demo-item">
+      <div class="state-label">Default (empty with hint)</div>
+      <div class="password-input-group">
+        <label class="password-label">Password</label>
+        <div class="password-input-wrapper">
+          <input type="password" class="password-input" placeholder="Enter wallet password" data-pw="true">
+          <button class="eye-icon-btn" title="Hold to reveal">
+            <span class="eye-icon">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+                <path d="M1 8 Q8 3 15 8"/>
+                <path d="M1 8 Q8 13 15 8"/>
+                <line x1="3" y1="3" x2="13" y2="13"/>
+              </svg>
+            </span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="demo-item">
+      <div class="state-label">With value (masked)</div>
+      <div class="password-input-group">
+        <label class="password-label">Password</label>
+        <div class="password-input-wrapper">
+          <input type="password" class="password-input" value="mySecretPassword123" data-pw="true" data-real="mySecretPassword123">
+          <button class="eye-icon-btn" title="Hold to reveal">
+            <span class="eye-icon">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+                <path d="M1 8 Q8 3 15 8"/>
+                <path d="M1 8 Q8 13 15 8"/>
+                <line x1="3" y1="3" x2="13" y2="13"/>
+              </svg>
+            </span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="demo-row">
+    <div class="demo-item">
+      <div class="state-label">Error state</div>
+      <div class="password-input-group">
+        <label class="password-label">Password</label>
+        <div class="password-input-wrapper">
+          <input type="password" class="password-input error" value="wrongpassword" data-pw="true" data-real="wrongpassword">
+          <button class="eye-icon-btn" title="Hold to reveal">
+            <span class="eye-icon">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+                <path d="M1 8 Q8 3 15 8"/>
+                <path d="M1 8 Q8 13 15 8"/>
+                <line x1="3" y1="3" x2="13" y2="13"/>
+              </svg>
+            </span>
+          </button>
+        </div>
+        <div class="error-message">Incorrect password</div>
+      </div>
+    </div>
+
+    <div class="demo-item">
+      <div class="state-label">Disabled</div>
+      <div class="password-input-group">
+        <label class="password-label">Password</label>
+        <div class="password-input-wrapper">
+          <input type="password" class="password-input" value="disabled" disabled data-pw="true">
+          <button class="eye-icon-btn disabled" title="Hold to reveal">
+            <span class="eye-icon">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+                <path d="M1 8 Q8 3 15 8"/>
+                <path d="M1 8 Q8 13 15 8"/>
+                <line x1="3" y1="3" x2="13" y2="13"/>
+              </svg>
+            </span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<hr class="section-divider">
+
+<!-- SECTION 2: Use Cases -->
+<div class="card">
+  <h2>2. Use Case: Wallet Unlock</h2>
+  <p class="subtitle" style="margin-bottom: 16px;">Persona: Alex (everyday user) unlocking a wallet to send Dash.</p>
+
+  <div class="demo-item" style="max-width: 400px;">
+    <div class="password-input-group">
+      <label class="password-label">Wallet Password</label>
+      <div class="password-input-wrapper">
+        <input type="password" class="password-input" placeholder="Enter password" data-pw="true">
+        <button class="eye-icon-btn" title="Hold to reveal">
+          <span class="eye-icon">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+              <path d="M1 8 Q8 3 15 8"/>
+              <path d="M1 8 Q8 13 15 8"/>
+              <line x1="3" y1="3" x2="13" y2="13"/>
+            </svg>
+          </span>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>3. Use Case: Private Key Input (monospace)</h2>
+  <p class="subtitle" style="margin-bottom: 16px;">Persona: Priya (power user) importing a private key in WIF format.</p>
+
+  <div class="demo-item" style="max-width: 500px;">
+    <div class="password-input-group">
+      <label class="password-label">Private Key</label>
+      <div class="password-input-wrapper">
+        <input type="password" class="password-input monospace" placeholder="WIF (51-52 chars) or hex (64 chars)" data-pw="true" data-real="5HueCGU8rMjxEXxiPuD5BDku4MkFqeZyd4dZ1jvhTVqvbTLvyTJ" value="5HueCGU8rMjxEXxiPuD5BDku4MkFqeZyd4dZ1jvhTVqvbTLvyTJ">
+        <button class="eye-icon-btn" title="Hold to reveal">
+          <span class="eye-icon">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+              <path d="M1 8 Q8 3 15 8"/>
+              <path d="M1 8 Q8 13 15 8"/>
+              <line x1="3" y1="3" x2="13" y2="13"/>
+            </svg>
+          </span>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>4. Use Case: Dynamic Key List (Add Existing Identity)</h2>
+  <p class="subtitle" style="margin-bottom: 16px;">Persona: Jordan (developer) adding multiple private keys to an identity. Each key input has its own eye icon.</p>
+
+  <div id="key-list" style="max-width: 500px;">
+    <div class="key-list-item">
+      <div class="password-input-group">
+        <label class="password-label">Private Key 1 (Hex or WIF)</label>
+        <div class="password-input-wrapper">
+          <input type="password" class="password-input monospace" placeholder="Enter private key" data-pw="true" data-real="cVBZ3AhXkebe2JDBBnE8PqZmQPYZAhQrJxNSTSvPvBCqxh3vA6PK" value="cVBZ3AhXkebe2JDBBnE8PqZmQPYZAhQrJxNSTSvPvBCqxh3vA6PK">
+          <button class="eye-icon-btn" title="Hold to reveal">
+            <span class="eye-icon">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+                <path d="M1 8 Q8 3 15 8"/>
+                <path d="M1 8 Q8 13 15 8"/>
+                <line x1="3" y1="3" x2="13" y2="13"/>
+              </svg>
+            </span>
+          </button>
+        </div>
+      </div>
+      <button class="remove-btn" onclick="removeKey(this)" title="Remove key">-</button>
+    </div>
+    <div class="key-list-item">
+      <div class="password-input-group">
+        <label class="password-label">Private Key 2 (Hex or WIF)</label>
+        <div class="password-input-wrapper">
+          <input type="password" class="password-input monospace" placeholder="Enter private key" data-pw="true">
+          <button class="eye-icon-btn" title="Hold to reveal">
+            <span class="eye-icon">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+                <path d="M1 8 Q8 3 15 8"/>
+                <path d="M1 8 Q8 13 15 8"/>
+                <line x1="3" y1="3" x2="13" y2="13"/>
+              </svg>
+            </span>
+          </button>
+        </div>
+      </div>
+      <button class="remove-btn" onclick="removeKey(this)" title="Remove key">-</button>
+    </div>
+  </div>
+  <button class="add-key-btn" onclick="addKey()" style="margin-top: 8px;">+ Add key manually</button>
+</div>
+
+<hr class="section-divider">
+
+<!-- SECTION 3: Eye Icon Specification -->
+<div class="card">
+  <h2>5. Eye Icon Geometry (painter primitives)</h2>
+  <p class="subtitle" style="margin-bottom: 16px;">Both icons are drawn with egui's ui.painter() using quadratic bezier arcs and lines. No image assets.</p>
+
+  <div class="icon-spec">
+    <div class="icon-large">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" style="color: var(--text-secondary);">
+        <path d="M1 8 Q8 3 15 8"/>
+        <path d="M1 8 Q8 13 15 8"/>
+        <line x1="3" y1="3" x2="13" y2="13"/>
+      </svg>
+    </div>
+    <div class="icon-description">
+      <strong>Closed Eye (masked, default)</strong><br>
+      Upper lid: quadratic bezier from <code>(1, 8)</code> to <code>(15, 8)</code> with control point <code>(8, 3)</code><br>
+      Lower lid: quadratic bezier from <code>(1, 8)</code> to <code>(15, 8)</code> with control point <code>(8, 13)</code><br>
+      Slash: diagonal line from <code>(3, 3)</code> to <code>(13, 13)</code><br>
+      Stroke: 1.5px, <code>text_secondary</code> color (hover: <code>DASH_BLUE</code>)
+    </div>
+  </div>
+
+  <div class="icon-spec" style="margin-top: 16px;">
+    <div class="icon-large">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" style="color: var(--dash-blue);">
+        <path d="M1 8 Q8 3 15 8"/>
+        <path d="M1 8 Q8 13 15 8"/>
+        <circle cx="8" cy="8" r="2.5" fill="currentColor" stroke="none"/>
+      </svg>
+    </div>
+    <div class="icon-description">
+      <strong>Open Eye (revealed, while held)</strong><br>
+      Upper lid: same bezier arc as closed<br>
+      Lower lid: same bezier arc as closed<br>
+      Pupil: filled circle at <code>(8, 8)</code>, radius <code>2.5</code><br>
+      No slash line<br>
+      Color: <code>DASH_BLUE</code> (#008de4)
+    </div>
+  </div>
+
+  <div class="icon-spec" style="margin-top: 16px; border-top: 1px solid var(--border); padding-top: 16px;">
+    <div class="icon-large">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" style="color: var(--text-secondary);">
+        <circle cx="8" cy="8" r="6"/>
+        <line x1="3" y1="3" x2="13" y2="13"/>
+      </svg>
+    </div>
+    <div class="icon-description">
+      <strong>Simplified Alternative: Closed (circle + slash)</strong><br>
+      If bezier curves are awkward in egui's painter API.<br>
+      Circle outline: center <code>(8, 8)</code>, radius <code>6</code>, stroke 1.5px<br>
+      Slash: line from <code>(3, 3)</code> to <code>(13, 13)</code>
+    </div>
+  </div>
+
+  <div class="icon-spec" style="margin-top: 8px;">
+    <div class="icon-large">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" style="color: var(--dash-blue);">
+        <circle cx="8" cy="8" r="6"/>
+        <circle cx="8" cy="8" r="2.5" fill="currentColor" stroke="none"/>
+      </svg>
+    </div>
+    <div class="icon-description">
+      <strong>Simplified Alternative: Open (circle + pupil)</strong><br>
+      Circle outline: same as above<br>
+      Pupil: filled circle at <code>(8, 8)</code>, radius <code>2.5</code><br>
+      No slash line
+    </div>
+  </div>
+</div>
+
+<hr class="section-divider">
+
+<!-- SECTION 4: Interaction diagram -->
+<div class="card">
+  <h2>6. Interaction State Machine</h2>
+  <pre style="font-family: 'Courier New', monospace; font-size: 13px; color: var(--text-secondary); line-height: 1.6; overflow-x: auto;">
+  +-------------------+
+  |  DEFAULT (masked)  |
+  |  eye = closed      |
+  |  color = secondary |
+  +--------+----------+
+           |
+    pointer enters eye rect
+           |
+           v
+  +-------------------+
+  |  HOVER             |
+  |  eye = closed      |
+  |  color = DASH_BLUE |
+  |  cursor = pointer  |
+  |  tooltip shown     |
+  +--------+----------+
+           |
+    mouse button down on eye
+           |
+           v
+  +-------------------+
+  |  REVEALING         |
+  |  eye = open        |
+  |  color = DASH_BLUE |
+  |  text = plain      |
+  +--------+----------+
+           |
+    mouse up OR pointer leaves eye rect
+           |
+           v
+  +-------------------+
+  |  DEFAULT (masked)  |  (returns to start)
+  +-------------------+
+  </pre>
+</div>
+
+<script>
+  // Theme toggle
+  function toggleTheme() {
+    document.body.classList.toggle('dark-mode');
+  }
+
+  // Hold-to-reveal interaction for all password inputs
+  document.querySelectorAll('.eye-icon-btn:not(.disabled)').forEach(btn => {
+    const wrapper = btn.closest('.password-input-wrapper');
+    const input = wrapper.querySelector('.password-input');
+    const iconSpan = btn.querySelector('.eye-icon');
+
+    const closedSVG = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+      <path d="M1 8 Q8 3 15 8"/>
+      <path d="M1 8 Q8 13 15 8"/>
+      <line x1="3" y1="3" x2="13" y2="13"/>
+    </svg>`;
+
+    const openSVG = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+      <path d="M1 8 Q8 3 15 8"/>
+      <path d="M1 8 Q8 13 15 8"/>
+      <circle cx="8" cy="8" r="2.5" fill="currentColor" stroke="none"/>
+    </svg>`;
+
+    function reveal() {
+      input.type = 'text';
+      iconSpan.innerHTML = openSVG;
+      iconSpan.style.color = 'var(--dash-blue)';
+    }
+
+    function mask() {
+      input.type = 'password';
+      iconSpan.innerHTML = closedSVG;
+      iconSpan.style.color = '';
+    }
+
+    // Mouse down on eye = reveal
+    btn.addEventListener('mousedown', (e) => {
+      e.preventDefault(); // prevent focus steal from input
+      reveal();
+    });
+
+    // Mouse up anywhere = mask
+    document.addEventListener('mouseup', () => {
+      mask();
+    });
+
+    // Mouse leaves eye icon while held = mask
+    btn.addEventListener('mouseleave', () => {
+      mask();
+    });
+
+    // Hover color
+    btn.addEventListener('mouseenter', () => {
+      if (input.type === 'password') {
+        iconSpan.style.color = 'var(--dash-blue)';
+      }
+    });
+
+    btn.addEventListener('mouseleave', () => {
+      if (input.type === 'password') {
+        iconSpan.style.color = '';
+      }
+    });
+
+    // Prevent context menu on long press
+    btn.addEventListener('contextmenu', (e) => e.preventDefault());
+  });
+
+  // Dynamic key list
+  let keyCount = 2;
+
+  function addKey() {
+    keyCount++;
+    const list = document.getElementById('key-list');
+    const item = document.createElement('div');
+    item.className = 'key-list-item';
+    item.innerHTML = `
+      <div class="password-input-group">
+        <label class="password-label">Private Key ${keyCount} (Hex or WIF)</label>
+        <div class="password-input-wrapper">
+          <input type="password" class="password-input monospace" placeholder="Enter private key" data-pw="true">
+          <button class="eye-icon-btn" title="Hold to reveal">
+            <span class="eye-icon">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+                <path d="M1 8 Q8 3 15 8"/>
+                <path d="M1 8 Q8 13 15 8"/>
+                <line x1="3" y1="3" x2="13" y2="13"/>
+              </svg>
+            </span>
+          </button>
+        </div>
+      </div>
+      <button class="remove-btn" onclick="removeKey(this)" title="Remove key">-</button>
+    `;
+    list.appendChild(item);
+
+    // Re-bind the eye icon interaction for the new item
+    bindEyeIcon(item.querySelector('.eye-icon-btn'));
+  }
+
+  function removeKey(btn) {
+    const item = btn.closest('.key-list-item');
+    item.remove();
+    // Re-number labels
+    document.querySelectorAll('#key-list .key-list-item').forEach((item, i) => {
+      item.querySelector('.password-label').textContent = `Private Key ${i + 1} (Hex or WIF)`;
+    });
+    keyCount = document.querySelectorAll('#key-list .key-list-item').length;
+  }
+
+  function bindEyeIcon(btn) {
+    const wrapper = btn.closest('.password-input-wrapper');
+    const input = wrapper.querySelector('.password-input');
+    const iconSpan = btn.querySelector('.eye-icon');
+
+    const closedSVG = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+      <path d="M1 8 Q8 3 15 8"/>
+      <path d="M1 8 Q8 13 15 8"/>
+      <line x1="3" y1="3" x2="13" y2="13"/>
+    </svg>`;
+
+    const openSVG = `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+      <path d="M1 8 Q8 3 15 8"/>
+      <path d="M1 8 Q8 13 15 8"/>
+      <circle cx="8" cy="8" r="2.5" fill="currentColor" stroke="none"/>
+    </svg>`;
+
+    function reveal() {
+      input.type = 'text';
+      iconSpan.innerHTML = openSVG;
+      iconSpan.style.color = 'var(--dash-blue)';
+    }
+
+    function mask() {
+      input.type = 'password';
+      iconSpan.innerHTML = closedSVG;
+      iconSpan.style.color = '';
+    }
+
+    btn.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      reveal();
+    });
+
+    document.addEventListener('mouseup', () => { mask(); });
+    btn.addEventListener('mouseleave', () => { mask(); });
+
+    btn.addEventListener('mouseenter', () => {
+      if (input.type === 'password') iconSpan.style.color = 'var(--dash-blue)';
+    });
+    btn.addEventListener('mouseleave', () => {
+      if (input.type === 'password') iconSpan.style.color = '';
+    });
+    btn.addEventListener('contextmenu', (e) => e.preventDefault());
+  }
+</script>
+
+</body>
+</html>

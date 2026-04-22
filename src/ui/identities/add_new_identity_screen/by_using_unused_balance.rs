@@ -88,14 +88,12 @@ impl AddNewIdentityScreen {
             .frame(true)
             .corner_radius(3.0);
         if ui.add(button).clicked() {
-            self.error_message = None;
             action = self.register_identity_clicked(FundingMethod::UseWalletBalance);
         }
 
         ui.add_space(20.0);
 
-        // Only show status messages if there's no error
-        if self.error_message.is_none() {
+        {
             ui.vertical_centered(|ui| match step {
                 WalletFundedScreenStep::WaitingForAssetLock => {
                     ui.heading(

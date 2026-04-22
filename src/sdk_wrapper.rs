@@ -1,18 +1,16 @@
-use crate::config::NetworkConfig;
 use crate::context::default_platform_version;
+use dash_sdk::dapi_client::AddressList;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::platform::ContextProvider;
-use dash_sdk::{RequestSettings, Sdk, SdkBuilder}; // Adjust imports
+use dash_sdk::{RequestSettings, Sdk, SdkBuilder};
 use std::time::Duration;
 use tracing::info;
 
 pub fn initialize_sdk<P: ContextProvider + 'static>(
-    config: &NetworkConfig,
+    address_list: AddressList,
     network: Network,
     context_provider: P,
-) -> Sdk {
-    // Setup Platform SDK
-    let address_list = config.dapi_address_list();
+) -> Result<Sdk, String> {
     let request_settings = RequestSettings {
         connect_timeout: Some(Duration::from_secs(1)),
         timeout: Some(Duration::from_secs(10)),
@@ -28,7 +26,7 @@ pub fn initialize_sdk<P: ContextProvider + 'static>(
         .with_context_provider(context_provider)
         .with_settings(request_settings)
         .build()
-        .expect("Failed to build SDK");
+        .map_err(|e| format!("Failed to build SDK: {e}"))?;
 
     info!(
         ?network,
@@ -36,5 +34,5 @@ pub fn initialize_sdk<P: ContextProvider + 'static>(
         "SDK initialized successfully"
     );
 
-    sdk
+    Ok(sdk)
 }

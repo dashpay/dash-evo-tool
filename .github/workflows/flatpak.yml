@@ -8,6 +8,7 @@ on:
     types:
       - published
   workflow_dispatch:
+  workflow_call:
 
 concurrency:
   group: flatpak-${{ github.ref }}
@@ -26,12 +27,8 @@ jobs:
         include:
           - arch: x86_64
             runs-on: ubuntu-latest
-            protoc-zip: protoc-25.2-linux-x86_64.zip
-            protoc-sha256: 78ab9c3288919bdaa6cfcec6127a04813cf8a0ce406afa625e48e816abee2878
           - arch: aarch64
             runs-on: ubuntu-24.04-arm
-            protoc-zip: protoc-25.2-linux-aarch_64.zip
-            protoc-sha256: 07683afc764e4efa3fa969d5f049fbc2bdfc6b4e7786a0b233413ac0d8753f6b
 
     runs-on: ${{ matrix.runs-on }}
     timeout-minutes: 20
@@ -39,6 +36,33 @@ jobs:
     steps:
       - name: Check out code
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Install Rust toolchain (for cargo metadata)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Sync metainfo version from Cargo.toml
+        run: |
+          VERSION=$(cargo metadata --format-version=1 --no-deps | jq -r '.packages[] | select(.name == "dash-evo-tool") | .version')
+          if [ -z "$VERSION" ]; then
+            echo "::error::Failed to extract version from Cargo.toml"
+            exit 1
+          fi
+          # Use release published date when available, tag commit date for tag pushes, current date otherwise
+          if [ -n "${{ github.event.release.published_at }}" ]; then
+            DATE=$(echo "${{ github.event.release.published_at }}" | cut -dT -f1)
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            DATE=$(git log -1 --format=%cs "${{ github.ref }}")
+          else
+            DATE=$(date +%Y-%m-%d)
+          fi
+          sed -i "s|<release version=\"[^\"]*\" date=\"[^\"]*\"|<release version=\"${VERSION}\" date=\"${DATE}\"|" \
+            flatpak/org.dash.DashEvoTool.metainfo.xml
+          # Verify replacement applied
+          if ! grep -q "version=\"${VERSION}\" date=\"${DATE}\"" flatpak/org.dash.DashEvoTool.metainfo.xml; then
+            echo "::error::Failed to update metainfo.xml with version ${VERSION} and date ${DATE}"
+            exit 1
+          fi
+          echo "Metainfo version set to ${VERSION}, date ${DATE}"
 
       - name: Install Flatpak and Flatpak Builder
         run: |
@@ -58,11 +82,6 @@ jobs:
             org.freedesktop.Sdk.Extension.llvm21//25.08
           echo "=== Disk space after SDK install ==="
           df -h
-
-      - name: Patch manifest for architecture
-        run: |
-          sed -i "s|protoc-25.2-linux-x86_64.zip|${{ matrix.protoc-zip }}|g" flatpak/org.dash.DashEvoTool.yml
-          sed -i "s|sha256: 78ab9c3288919bdaa6cfcec6127a04813cf8a0ce406afa625e48e816abee2878|sha256: ${{ matrix.protoc-sha256 }}|" flatpak/org.dash.DashEvoTool.yml
 
       - name: Prepare Cargo cache
         run: mkdir -p cargo-cache/registry cargo-cache/git cargo-target
@@ -98,6 +117,27 @@ jobs:
         run: |
           flatpak-builder --force-clean --repo=flatpak-repo build-dir flatpak/org.dash.DashEvoTool.yml
 
+
+      - name: Verify Flatpak binary dependencies
+        run: |
+          BINARY="build-dir/files/bin/dash-evo-tool"
+          if [ ! -f "$BINARY" ]; then
+            echo "::error::Binary not found at $BINARY"
+            exit 1
+          fi
+          echo "Checking shared library dependencies inside Flatpak sandbox..."
+          # Run ldd inside the Flatpak build environment so libraries resolve
+          # against the Flatpak runtime (/usr) and app (/app), not the host.
+          DEPS=$(flatpak build build-dir ldd /app/bin/dash-evo-tool 2>&1 || true)
+          echo "$DEPS"
+          # Fail on missing libraries (not found = will crash at runtime)
+          if echo "$DEPS" | grep -q "not found"; then
+            echo "::error::Binary has missing shared library dependencies"
+            echo "$DEPS" | grep "not found"
+            exit 1
+          fi
+          echo "✅ Flatpak binary dependencies look clean"
+
       - name: Create Flatpak bundle
         run: |
           flatpak build-bundle flatpak-repo dash-evo-tool-linux-${{ matrix.arch }}.flatpak org.dash.DashEvoTool
@@ -122,6 +162,7 @@ jobs:
         with:
           name: dash-evo-tool-linux-${{ matrix.arch }}-flatpak
           path: dash-evo-tool-linux-${{ matrix.arch }}.flatpak
+          retention-days: 14
 
       - name: Attach bundle to release
         if: github.event_name == 'release'

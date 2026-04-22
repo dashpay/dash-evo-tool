@@ -1,14 +1,18 @@
 mod asset_lock_transaction;
 pub mod encryption;
+pub mod shielded;
 pub mod single_key;
 mod utxos;
 
+use crate::backend_task::error::TaskError;
+use crate::database::{Database, WalletError};
+use crate::model::secret::Secret;
 use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::address_funds::{AddressWitness, PlatformAddress};
 use dash_sdk::dpp::identity::signer::Signer;
 use dash_sdk::dpp::key_wallet::account::AccountType;
 use dash_sdk::dpp::key_wallet::bip32::{
-    ChildNumber, DerivationPath, ExtendedPubKey, KeyDerivationType,
+    ChildNumber, DerivationPath, ExtendedPrivKey, ExtendedPubKey, KeyDerivationType,
 };
 use dash_sdk::dpp::key_wallet::psbt::serialize::Serialize;
 use dash_sdk::dpp::prelude::AddressNonce;
@@ -27,12 +31,46 @@ use std::fmt::Debug;
 use std::ops::Range;
 use std::sync::{Arc, RwLock};
 
+// BIP44 derivation path constants for Dash HD wallets.
+// Mainnet: m/44'/5'/0'   Testnet/Devnet/Regtest: m/44'/1'/0'
+
+/// BIP44 purpose index (standard for HD wallets).
+pub const BIP44_PURPOSE: u32 = 44;
+
+/// Dash mainnet coin type (registered in SLIP-0044).
+pub const DASH_COIN_TYPE: u32 = 5;
+
+/// Testnet coin type (shared across all testnet-like networks).
+pub const DASH_TESTNET_COIN_TYPE: u32 = 1;
+
+/// BIP44 account 0 path for Dash mainnet: `m/44'/5'/0'`.
+pub const DASH_BIP44_ACCOUNT_0_PATH_MAINNET: [ChildNumber; 3] = [
+    ChildNumber::Hardened {
+        index: BIP44_PURPOSE,
+    },
+    ChildNumber::Hardened {
+        index: DASH_COIN_TYPE,
+    },
+    ChildNumber::Hardened { index: 0 },
+];
+
+/// BIP44 account 0 path for Dash testnet/devnet/regtest: `m/44'/1'/0'`.
+pub const DASH_BIP44_ACCOUNT_0_PATH_TESTNET: [ChildNumber; 3] = [
+    ChildNumber::Hardened {
+        index: BIP44_PURPOSE,
+    },
+    ChildNumber::Hardened {
+        index: DASH_TESTNET_COIN_TYPE,
+    },
+    ChildNumber::Hardened { index: 0 },
+];
+
 /// Check if two networks use the same address format.
 /// Testnet, Devnet, and Regtest all use testnet-style addresses.
-fn networks_address_compatible(a: &Network, b: &Network) -> bool {
+pub(crate) fn networks_address_compatible(a: &Network, b: &Network) -> bool {
     matches!(
         (a, b),
-        (Network::Dash, Network::Dash)
+        (Network::Mainnet, Network::Mainnet)
             | (
                 Network::Testnet | Network::Devnet | Network::Regtest,
                 Network::Testnet | Network::Devnet | Network::Regtest,
@@ -112,16 +150,20 @@ pub trait DerivationPathHelpers {
     ) -> DerivationPath;
 }
 
+pub(crate) fn is_bip44_path(path: &DerivationPath, network: Network) -> bool {
+    let coin_type = match network {
+        Network::Mainnet => 5,
+        _ => 1,
+    };
+    let components = path.as_ref();
+    components.len() >= 4
+        && components[0] == ChildNumber::Hardened { index: 44 }
+        && components[1] == ChildNumber::Hardened { index: coin_type }
+}
+
 impl DerivationPathHelpers for DerivationPath {
     fn is_bip44(&self, network: Network) -> bool {
-        let coin_type = match network {
-            Network::Dash => 5,
-            _ => 1,
-        };
-        let components = self.as_ref();
-        components.len() >= 4
-            && components[0] == ChildNumber::Hardened { index: 44 }
-            && components[1] == ChildNumber::Hardened { index: coin_type }
+        is_bip44_path(self, network)
     }
 
     fn is_bip44_external(&self, network: Network) -> bool {
@@ -147,7 +189,7 @@ impl DerivationPathHelpers for DerivationPath {
 
     fn is_asset_lock_funding(&self, network: Network) -> bool {
         let coin_type = match network {
-            Network::Dash => 5,
+            Network::Mainnet => 5,
             _ => 1,
         };
         let components = self.as_ref();
@@ -176,7 +218,7 @@ impl DerivationPathHelpers for DerivationPath {
     /// Check if this path is a DIP-17 Platform payment path: m/9'/coin_type'/17'/account'/key_class'/index
     fn is_platform_payment(&self, network: Network) -> bool {
         let coin_type = match network {
-            Network::Dash => 5,
+            Network::Mainnet => 5,
             _ => 1,
         };
         let components = self.as_ref();
@@ -195,7 +237,7 @@ impl DerivationPathHelpers for DerivationPath {
         index: u32,
     ) -> DerivationPath {
         let coin_type = match network {
-            Network::Dash => 5,
+            Network::Mainnet => 5,
             _ => 1,
         };
         DerivationPath::from(vec![
@@ -211,7 +253,6 @@ impl DerivationPathHelpers for DerivationPath {
 
 use crate::context::AppContext;
 use bitflags::bitflags;
-use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::fee::Credits;
@@ -294,10 +335,6 @@ impl PartialEq for WalletArcRef {
 pub struct PlatformAddressInfo {
     pub balance: Credits,
     pub nonce: AddressNonce,
-    /// Balance recorded at the last sync checkpoint. Updated by `set_platform_address_info_from_sync`
-    /// during both full and terminal syncs; preserved by `set_platform_address_info` during internal
-    /// updates (e.g., after transfers) to avoid double-counting AddToCredits on subsequent syncs.
-    pub last_full_sync_balance: Option<Credits>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -326,8 +363,217 @@ pub struct Wallet {
     pub confirmed_balance: u64,
     pub unconfirmed_balance: u64,
     pub total_balance: u64,
+    /// True once SPV has reported balances at least once; distinguishes synced
+    /// zero-balance from not-yet-synced.
+    pub spv_balance_known: bool,
     /// DIP-17: Platform address balances and nonces (keyed by Core Address for lookup)
     pub platform_address_info: BTreeMap<Address, PlatformAddressInfo>,
+    /// Dash Core wallet name for multi-wallet RPC calls
+    pub core_wallet_name: Option<String>,
+}
+
+impl Wallet {
+    /// Create a new HD wallet from a BIP39 seed.
+    ///
+    /// This is a pure construction method with no side effects — it does not
+    /// touch the database or register the wallet anywhere. It derives the
+    /// master BIP44 public key, computes the seed hash, optionally encrypts
+    /// the seed, and populates the first receive address.
+    ///
+    /// Use [`AppContext::register_wallet()`] to persist and activate the wallet.
+    pub fn new_from_seed(
+        seed: [u8; 64],
+        network: Network,
+        alias: Option<String>,
+        password: Option<&Secret>,
+    ) -> Result<Self, TaskError> {
+        // Encrypt seed or store plaintext
+        let (encrypted_seed, salt, nonce, uses_password) = match password {
+            Some(pw) if !pw.is_empty() => {
+                let (enc, s, n) = ClosedKeyItem::encrypt_seed(&seed, pw.expose_secret())
+                    .map_err(|e| TaskError::EncryptionError { detail: e })?;
+                (enc, s, n, true)
+            }
+            _ => (seed.to_vec(), vec![], vec![], false),
+        };
+
+        let seed_hash = ClosedKeyItem::compute_seed_hash(&seed);
+
+        // Derive master BIP44 extended public key
+        let master_priv = ExtendedPrivKey::new_master(network, &seed).map_err(|e| {
+            TaskError::WalletKeyDerivationFailed {
+                source: Box::new(e),
+            }
+        })?;
+        let bip44_path = Self::bip44_account0_path(network);
+        let secp = Secp256k1::new();
+        let account_priv = master_priv.derive_priv(&secp, &bip44_path).map_err(|e| {
+            TaskError::WalletKeyDerivationFailed {
+                source: Box::new(e),
+            }
+        })?;
+        let master_bip44_ecdsa_extended_public_key =
+            ExtendedPubKey::from_priv(&secp, &account_priv);
+
+        // Derive the first receive address (m/44'/coin'/0'/0/0)
+        let (known_addresses, watched_addresses) =
+            Self::derive_first_address(&master_bip44_ecdsa_extended_public_key, network, &secp)
+                .map_err(|e| TaskError::WalletKeyDerivationFailed { source: e.into() })?;
+
+        Ok(Wallet {
+            wallet_seed: WalletSeed::Open(OpenWalletSeed {
+                seed,
+                wallet_info: ClosedKeyItem {
+                    seed_hash,
+                    encrypted_seed,
+                    salt,
+                    nonce,
+                    password_hint: None,
+                },
+            }),
+            uses_password,
+            master_bip44_ecdsa_extended_public_key,
+            address_balances: Default::default(),
+            address_total_received: Default::default(),
+            known_addresses,
+            watched_addresses,
+            unused_asset_locks: Default::default(),
+            alias,
+            identities: Default::default(),
+            utxos: Default::default(),
+            transactions: Vec::new(),
+            is_main: true,
+            confirmed_balance: 0,
+            unconfirmed_balance: 0,
+            total_balance: 0,
+            spv_balance_known: false,
+            platform_address_info: Default::default(),
+            core_wallet_name: None,
+        })
+    }
+
+    /// Returns the BIP44 account 0 derivation path for the given network.
+    fn bip44_account0_path(network: Network) -> DerivationPath {
+        match network {
+            Network::Mainnet => DerivationPath::from(DASH_BIP44_ACCOUNT_0_PATH_MAINNET.as_slice()),
+            _ => DerivationPath::from(DASH_BIP44_ACCOUNT_0_PATH_TESTNET.as_slice()),
+        }
+    }
+
+    /// Derive the first receive address (index 0) and return populated
+    /// `known_addresses` and `watched_addresses` maps.
+    #[allow(clippy::type_complexity)]
+    fn derive_first_address(
+        master_pub: &ExtendedPubKey,
+        network: Network,
+        secp: &Secp256k1<dash_sdk::dpp::dashcore::secp256k1::All>,
+    ) -> Result<
+        (
+            BTreeMap<Address, DerivationPath>,
+            BTreeMap<DerivationPath, AddressInfo>,
+        ),
+        String,
+    > {
+        let mut known_addresses = BTreeMap::new();
+        let mut watched_addresses = BTreeMap::new();
+
+        let address_path = DerivationPath::from(
+            [
+                ChildNumber::Normal { index: 0 }, // receive (not change)
+                ChildNumber::Normal { index: 0 }, // first address
+            ]
+            .as_slice(),
+        );
+
+        let pk = master_pub
+            .derive_pub(secp, &address_path)
+            .map_err(|e| format!("Failed to derive first receive address: {e}"))?;
+        let address = Address::p2pkh(&pk.to_pub(), network);
+        let bip44 = match network {
+            Network::Mainnet => &DASH_BIP44_ACCOUNT_0_PATH_MAINNET,
+            _ => &DASH_BIP44_ACCOUNT_0_PATH_TESTNET,
+        };
+        let full_path = DerivationPath::from(
+            [
+                bip44[0],
+                bip44[1],
+                bip44[2],
+                ChildNumber::Normal { index: 0 },
+                ChildNumber::Normal { index: 0 },
+            ]
+            .as_slice(),
+        );
+        known_addresses.insert(address.clone(), full_path.clone());
+        watched_addresses.insert(
+            full_path,
+            AddressInfo {
+                address,
+                path_type: DerivationPathType::CLEAR_FUNDS,
+                path_reference: DerivationPathReference::BIP44,
+            },
+        );
+
+        Ok((known_addresses, watched_addresses))
+    }
+}
+
+/// Transaction lifecycle status.
+///
+/// Tracks the progression: Unconfirmed → InstantSendLocked → Confirmed → ChainLocked.
+/// Currently only Unconfirmed and Confirmed can be inferred from upstream data;
+/// InstantSendLocked and ChainLocked require upstream changes (rust-dashcore#569).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(u8)]
+pub enum TransactionStatus {
+    /// In mempool, no InstantSend lock
+    Unconfirmed = 0,
+    /// InstantSend-locked but not yet mined (requires rust-dashcore#569)
+    InstantSendLocked = 1,
+    /// Mined in a block
+    Confirmed = 2,
+    /// In a chain-locked block (highest finality, requires rust-dashcore#569)
+    ChainLocked = 3,
+}
+
+impl TransactionStatus {
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            0 => Self::Unconfirmed,
+            1 => Self::InstantSendLocked,
+            2 => Self::Confirmed,
+            3 => Self::ChainLocked,
+            _ => {
+                tracing::warn!("Unknown TransactionStatus value {v}, defaulting to Unconfirmed");
+                Self::Unconfirmed
+            }
+        }
+    }
+
+    /// Infer status from block height presence.
+    /// This is a best-effort heuristic until upstream provides richer context.
+    pub fn from_height(height: Option<u32>) -> Self {
+        if height.is_some() {
+            Self::Confirmed
+        } else {
+            Self::Unconfirmed
+        }
+    }
+
+    /// User-facing label for UI display.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Unconfirmed => "Unconfirmed",
+            Self::InstantSendLocked => "InstantSend",
+            Self::Confirmed => "Confirmed",
+            Self::ChainLocked => "ChainLocked",
+        }
+    }
+}
+
+impl std::fmt::Display for TransactionStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -341,6 +587,7 @@ pub struct WalletTransaction {
     pub fee: Option<u64>,
     pub label: Option<String>,
     pub is_ours: bool,
+    pub status: TransactionStatus,
 }
 
 impl WalletTransaction {
@@ -353,7 +600,10 @@ impl WalletTransaction {
     }
 
     pub fn is_confirmed(&self) -> bool {
-        self.height.is_some()
+        matches!(
+            self.status,
+            TransactionStatus::Confirmed | TransactionStatus::ChainLocked
+        )
     }
 
     pub fn amount_abs(&self) -> u64 {
@@ -507,6 +757,18 @@ impl Wallet {
         }
     }
 
+    /// Returns the SPV-reported confirmed balance, or `None` if SPV hasn't
+    /// synced balance data yet. Unlike `confirmed_balance_duffs()`, this
+    /// never falls back to `max_balance()` — callers that need certainty
+    /// (e.g., test waiters) should use this and retry on `None`.
+    pub fn spv_confirmed_balance(&self) -> Option<u64> {
+        if self.spv_balance_known {
+            Some(self.confirmed_balance)
+        } else {
+            None
+        }
+    }
+
     pub fn unconfirmed_balance_duffs(&self) -> u64 {
         self.unconfirmed_balance
     }
@@ -523,6 +785,7 @@ impl Wallet {
         self.confirmed_balance = confirmed;
         self.unconfirmed_balance = unconfirmed;
         self.total_balance = total;
+        self.spv_balance_known = true;
     }
 
     pub fn bootstrap_known_addresses(&mut self, app_context: &AppContext) {
@@ -638,7 +901,7 @@ impl Wallet {
                 // Attempt to derive the private key using the provided derivation path
                 let extended_private_key = derivation_path
                     .derive_priv_ecdsa_for_master_seed(wallet_ref.seed_bytes()?, network)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
                 return Ok(Some(extended_private_key.private_key.secret_bytes()));
             }
         }
@@ -653,7 +916,7 @@ impl Wallet {
     ) -> Result<PrivateKey, String> {
         let extended_private_key = derivation_path
             .derive_priv_ecdsa_for_master_seed(self.seed_bytes()?, network)
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
         Ok(extended_private_key.to_priv())
     }
 
@@ -668,7 +931,7 @@ impl Wallet {
                 derivation_path
                     .derive_priv_ecdsa_for_master_seed(self.seed_bytes()?, network)
                     .map(|extended_private_key| extended_private_key.to_priv())
-                    .map_err(|e| e.to_string())
+                    .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())
             })
             .transpose()
     }
@@ -717,7 +980,7 @@ impl Wallet {
                     let public_key = self
                         .master_bip44_ecdsa_extended_public_key
                         .derive_pub(&secp, &derivation_path_extension)
-                        .map_err(|e| e.to_string())?
+                        .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?
                         .to_pub();
                     known_public_key = Some(public_key);
                     break;
@@ -731,28 +994,20 @@ impl Wallet {
                 let public_key = self
                     .master_bip44_ecdsa_extended_public_key
                     .derive_pub(&secp, &derivation_path_extension)
-                    .map_err(|e| e.to_string())?
+                    .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?
                     .to_pub();
                 known_public_key = Some(public_key);
                 if let Some(app_context) = register {
                     let address = Address::p2pkh(&public_key, network);
-                    app_context
-                        .core_client
-                        .read()
-                        .expect("Core client lock was poisoned")
-                        .import_address(
-                            &address,
-                            Some(
-                                format!(
-                                    "Managed by Dash Evo Tool {} {}",
-                                    self.alias.clone().unwrap_or_default(),
-                                    derivation_path
-                                )
-                                .as_str(),
-                            ),
-                            Some(false),
-                        )
-                        .map_err(|e| e.to_string())?;
+                    app_context.try_import_address(
+                        &address,
+                        self.core_wallet_name.as_deref(),
+                        Some(&format!(
+                            "Managed by Dash Evo Tool {} {}",
+                            self.alias.clone().unwrap_or_default(),
+                            derivation_path
+                        )),
+                    );
 
                     self.register_address(
                         address,
@@ -786,17 +1041,18 @@ impl Wallet {
         );
         let extended_public_key = derivation_path
             .derive_pub_ecdsa_for_master_seed(self.seed_bytes()?, network)
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
         Ok(extended_public_key.to_pub())
     }
 
     #[allow(clippy::type_complexity)]
     pub fn identity_authentication_ecdsa_public_keys_data_map(
         &mut self,
+        app_context: &AppContext,
+        register_addresses: bool,
         network: Network,
         identity_index: u32,
         key_index_range: Range<u32>,
-        register_addresses: Option<&AppContext>,
     ) -> Result<(BTreeMap<Vec<u8>, u32>, BTreeMap<[u8; 20], u32>), String> {
         let mut public_key_result_map = BTreeMap::new();
         let mut public_key_hash_result_map = BTreeMap::new();
@@ -809,7 +1065,7 @@ impl Wallet {
             );
             let extended_public_key = derivation_path
                 .derive_pub_ecdsa_for_master_seed(self.seed_bytes()?, network)
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
 
             let public_key = extended_public_key.to_pub();
             public_key_result_map.insert(
@@ -817,7 +1073,7 @@ impl Wallet {
                 key_index,
             );
             public_key_hash_result_map.insert(public_key.pubkey_hash().to_byte_array(), key_index);
-            if let Some(app_context) = register_addresses {
+            if register_addresses {
                 self.register_address_from_public_key(
                     &public_key,
                     &derivation_path,
@@ -833,10 +1089,10 @@ impl Wallet {
 
     pub fn identity_authentication_ecdsa_private_key(
         &mut self,
+        app_context: &AppContext,
         network: Network,
         identity_index: u32,
         key_index: u32,
-        register_addresses: Option<&AppContext>,
     ) -> Result<(PrivateKey, DerivationPath), String> {
         let derivation_path = DerivationPath::identity_authentication_path(
             network,
@@ -855,15 +1111,13 @@ impl Wallet {
             .expect("derivation should not be able to fail");
 
         let private_key = extended_public_key.to_priv();
-        if let Some(app_context) = register_addresses {
-            self.register_address_from_private_key(
-                &private_key,
-                &derivation_path,
-                DerivationPathType::SINGLE_USER_AUTHENTICATION,
-                DerivationPathReference::BlockchainIdentities,
-                app_context,
-            )?;
-        }
+        self.register_address_from_private_key(
+            &private_key,
+            &derivation_path,
+            DerivationPathType::SINGLE_USER_AUTHENTICATION,
+            DerivationPathReference::BlockchainIdentities,
+            app_context,
+        )?;
 
         Ok((private_key, derivation_path))
     }
@@ -944,10 +1198,8 @@ impl Wallet {
             },
         );
 
-        if app_context.core_backend_mode() == crate::spv::CoreBackendMode::Rpc
-            && let Ok(client) = app_context.core_client.read()
-        {
-            let _ = client.import_address(&address, None, Some(false));
+        if app_context.core_backend_mode() == crate::spv::CoreBackendMode::Rpc {
+            app_context.try_import_address(&address, self.core_wallet_name.as_deref(), None);
         }
 
         tracing::trace!(
@@ -979,7 +1231,7 @@ impl Wallet {
                 let derived = self
                     .master_bip44_ecdsa_extended_public_key
                     .derive_pub(&secp, &child_path)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
                 let dash_public_key = PublicKey::from_slice(&derived.public_key.serialize())
                     .map_err(|e| e.to_string())?;
                 let derivation_path = DerivationPath::from(vec![
@@ -1017,7 +1269,7 @@ impl Wallet {
                 ]);
                 let extended_private_key = derivation_path
                     .derive_priv_ecdsa_for_master_seed(&seed, network)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
                 let private_key = extended_private_key.to_priv();
                 self.register_address_from_private_key(
                     &private_key,
@@ -1045,7 +1297,7 @@ impl Wallet {
                 let derivation_path = DerivationPath::from(components);
                 let extended_private_key = derivation_path
                     .derive_priv_ecdsa_for_master_seed(&seed, network)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
                 let private_key = extended_private_key.to_priv();
                 self.register_address_from_private_key(
                     &private_key,
@@ -1086,7 +1338,7 @@ impl Wallet {
             let derivation_path = DerivationPath::identity_registration_path(network, index);
             let extended_private_key = derivation_path
                 .derive_priv_ecdsa_for_master_seed(&seed, network)
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
             let private_key = extended_private_key.to_priv();
             self.register_address_from_private_key(
                 &private_key,
@@ -1109,7 +1361,7 @@ impl Wallet {
             let derivation_path = DerivationPath::identity_invitation_path(network, index);
             let extended_private_key = derivation_path
                 .derive_priv_ecdsa_for_master_seed(&seed, network)
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
             let private_key = extended_private_key.to_priv();
             self.register_address_from_private_key(
                 &private_key,
@@ -1135,7 +1387,7 @@ impl Wallet {
                     DerivationPath::identity_top_up_path(network, registration_index, top_up_index);
                 let extended_private_key = derivation_path
                     .derive_priv_ecdsa_for_master_seed(&seed, network)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
                 let private_key = extended_private_key.to_priv();
                 self.register_address_from_private_key(
                     &private_key,
@@ -1164,7 +1416,7 @@ impl Wallet {
             let derivation_path = DerivationPath::from(components);
             let extended_private_key = derivation_path
                 .derive_priv_ecdsa_for_master_seed(seed, network)
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
             let private_key = extended_private_key.to_priv();
             self.register_address_from_private_key(
                 &private_key,
@@ -1217,7 +1469,7 @@ impl Wallet {
             let derivation_path = DerivationPath::from(components);
             let extended_private_key = derivation_path
                 .derive_priv_ecdsa_for_master_seed(&seed, network)
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
             let private_key = extended_private_key.to_priv();
             self.register_address_from_private_key(
                 &private_key,
@@ -1247,7 +1499,7 @@ impl Wallet {
                 DerivationPath::platform_payment_path(network, account, key_class, index);
             let extended_private_key = derivation_path
                 .derive_priv_ecdsa_for_master_seed(&seed, network)
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
             let private_key = extended_private_key.to_priv();
 
             // Create a P2PKH address for platform payment
@@ -1315,17 +1567,17 @@ impl Wallet {
 
     fn coin_type(network: Network) -> u32 {
         match network {
-            Network::Dash => 5,
+            Network::Mainnet => 5,
             _ => 1,
         }
     }
 
     pub fn identity_top_up_ecdsa_private_key(
         &mut self,
+        app_context: &AppContext,
         network: Network,
         identity_index: u32,
         top_up_index: u32,
-        register_addresses: Option<&AppContext>,
     ) -> Result<PrivateKey, String> {
         let derivation_path =
             DerivationPath::identity_top_up_path(network, identity_index, top_up_index);
@@ -1334,24 +1586,22 @@ impl Wallet {
             .expect("derivation should not be able to fail");
         let private_key = extended_private_key.to_priv();
 
-        if let Some(app_context) = register_addresses {
-            self.register_address_from_private_key(
-                &private_key,
-                &derivation_path,
-                DerivationPathType::CREDIT_FUNDING,
-                DerivationPathReference::BlockchainIdentityCreditRegistrationFunding,
-                app_context,
-            )?;
-        }
+        self.register_address_from_private_key(
+            &private_key,
+            &derivation_path,
+            DerivationPathType::CREDIT_FUNDING,
+            DerivationPathReference::BlockchainIdentityCreditRegistrationFunding,
+            app_context,
+        )?;
         Ok(private_key)
     }
 
     /// Generate Core key for identity registration
     pub fn identity_registration_ecdsa_private_key(
         &mut self,
+        app_context: &AppContext,
         network: Network,
         index: u32,
-        register_addresses: Option<&AppContext>,
     ) -> Result<PrivateKey, String> {
         let derivation_path = DerivationPath::identity_registration_path(network, index);
         let extended_private_key = derivation_path
@@ -1359,15 +1609,13 @@ impl Wallet {
             .expect("derivation should not be able to fail");
         let private_key = extended_private_key.to_priv();
 
-        if let Some(app_context) = register_addresses {
-            self.register_address_from_private_key(
-                &private_key,
-                &derivation_path,
-                DerivationPathType::CREDIT_FUNDING,
-                DerivationPathReference::BlockchainIdentityCreditRegistrationFunding,
-                app_context,
-            )?;
-        }
+        self.register_address_from_private_key(
+            &private_key,
+            &derivation_path,
+            DerivationPathType::CREDIT_FUNDING,
+            DerivationPathReference::BlockchainIdentityCreditRegistrationFunding,
+            app_context,
+        )?;
         Ok(private_key)
     }
 
@@ -1480,7 +1728,7 @@ impl Wallet {
             DerivationPath::platform_payment_path(network, account, key_class, next_index);
         let extended_private_key = derivation_path
             .derive_priv_ecdsa_for_master_seed(&seed, network)
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
         let private_key = extended_private_key.to_priv();
         let public_key = private_key.public_key(&secp);
 
@@ -1531,19 +1779,19 @@ impl Wallet {
         let public_key = self
             .master_bip44_ecdsa_extended_public_key
             .derive_pub(&secp, &path_extension)
-            .map_err(|e| e.to_string())?
+            .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?
             .to_pub();
         Ok(Address::p2pkh(&public_key, network))
     }
 
     pub fn build_standard_payment_transaction(
         &mut self,
+        app_context: &AppContext,
         network: Network,
         recipient: &Address,
         amount: u64,
         fee: u64,
         subtract_fee_from_amount: bool,
-        register_addresses: Option<&AppContext>,
     ) -> Result<Transaction, String> {
         if !networks_address_compatible(recipient.network(), &network) {
             return Err(format!(
@@ -1553,8 +1801,11 @@ impl Wallet {
             ));
         }
 
+        // Select UTXOs without removing them yet — UTXOs are only removed after
+        // the transaction is fully built and signed, so that a failure at any later
+        // step cannot permanently drop UTXOs from the wallet.
         let (utxos, change_option) = self
-            .take_unspent_utxos_for(amount, fee, subtract_fee_from_amount)
+            .select_unspent_utxos_for(amount, fee, subtract_fee_from_amount, None)
             .ok_or_else(|| "Insufficient funds".to_string())?;
 
         let send_value = if change_option.is_none() && subtract_fee_from_amount {
@@ -1576,7 +1827,7 @@ impl Wallet {
         }];
 
         if let Some(change) = change_option {
-            let change_address = self.change_address(network, register_addresses)?;
+            let change_address = self.change_address(network, Some(app_context))?;
             outputs.push(TxOut {
                 value: change,
                 script_pubkey: change_address.script_pubkey(),
@@ -1614,7 +1865,13 @@ impl Wallet {
                     .clone();
                 cache
                     .legacy_signature_hash(i, &script_pubkey, sighash_flag)
-                    .map_err(|e| format!("failed to compute sighash: {}", e))
+                    .map_err(|source| {
+                        WalletError::Sighash {
+                            input_index: i,
+                            source,
+                        }
+                        .to_string()
+                    })
             })
             .collect::<Result<Vec<_>, String>>()?;
 
@@ -1645,17 +1902,20 @@ impl Wallet {
                 Ok::<(), String>(())
             })?;
 
+        // Transaction is fully built and signed; commit the UTXO removals now.
+        self.remove_selected_utxos(&utxos, &app_context.db, network)?;
+
         Ok(tx)
     }
 
     /// Build a transaction with multiple recipients
     pub fn build_multi_recipient_payment_transaction(
         &mut self,
+        app_context: &AppContext,
         network: Network,
         recipients: &[(Address, u64)],
         fee: u64,
         subtract_fee_from_amount: bool,
-        register_addresses: Option<&AppContext>,
     ) -> Result<Transaction, String> {
         if recipients.is_empty() {
             return Err("No recipients specified".to_string());
@@ -1675,8 +1935,11 @@ impl Wallet {
         // Calculate total amount needed
         let total_amount: u64 = recipients.iter().map(|(_, amount)| *amount).sum();
 
+        // Select UTXOs without removing them yet — UTXOs are only removed after
+        // the transaction is fully built and signed, so that a failure at any later
+        // step cannot permanently drop UTXOs from the wallet.
         let (utxos, change_option) = self
-            .take_unspent_utxos_for(total_amount, fee, subtract_fee_from_amount)
+            .select_unspent_utxos_for(total_amount, fee, subtract_fee_from_amount, None)
             .ok_or_else(|| "Insufficient funds".to_string())?;
 
         // Build outputs for each recipient
@@ -1717,7 +1980,7 @@ impl Wallet {
 
         // Add change output if needed
         if let Some(change) = change_option {
-            let change_address = self.change_address(network, register_addresses)?;
+            let change_address = self.change_address(network, Some(app_context))?;
             outputs.push(TxOut {
                 value: change,
                 script_pubkey: change_address.script_pubkey(),
@@ -1755,7 +2018,13 @@ impl Wallet {
                     .clone();
                 cache
                     .legacy_signature_hash(i, &script_pubkey, sighash_flag)
-                    .map_err(|e| format!("failed to compute sighash: {}", e))
+                    .map_err(|source| {
+                        WalletError::Sighash {
+                            input_index: i,
+                            source,
+                        }
+                        .to_string()
+                    })
             })
             .collect::<Result<Vec<_>, String>>()?;
 
@@ -1785,6 +2054,9 @@ impl Wallet {
                 input.script_sig = ScriptBuf::from_bytes(script_sig);
                 Ok::<(), String>(())
             })?;
+
+        // Transaction is fully built and signed; commit the UTXO removals now.
+        self.remove_selected_utxos(&utxos, &app_context.db, network)?;
 
         Ok(tx)
     }
@@ -1822,10 +2094,37 @@ impl Wallet {
         used_utxos: &BTreeMap<OutPoint, (TxOut, Address)>,
         context: &AppContext,
     ) -> Result<(), String> {
+        self.recalculate_affected_address_balances_with_db(used_utxos, &context.db)
+    }
+
+    /// Core implementation: recalculate and persist balances for addresses affected
+    /// by spent UTXOs, using the database directly.
+    ///
+    /// Prefer [`Self::recalculate_affected_address_balances`] when an `AppContext`
+    /// is available.  This variant is used by [`Self::remove_selected_utxos`] which
+    /// already receives `&Database` directly.
+    fn recalculate_affected_address_balances_with_db(
+        &mut self,
+        used_utxos: &BTreeMap<OutPoint, (TxOut, Address)>,
+        db: &Database,
+    ) -> Result<(), String> {
+        let seed_hash = self.seed_hash();
         let affected_addresses: BTreeSet<_> =
             used_utxos.values().map(|(_, addr)| addr.clone()).collect();
         for address in affected_addresses {
-            self.recalculate_address_balance(&address, context)?;
+            let new_balance: u64 = self
+                .utxos
+                .get(&address)
+                .map(|utxo_map| utxo_map.values().map(|tx_out| tx_out.value).sum())
+                .unwrap_or(0);
+            if let Some(current) = self.address_balances.get(&address)
+                && *current == new_balance
+            {
+                continue;
+            }
+            self.address_balances.insert(address.clone(), new_balance);
+            db.update_address_balance(&seed_hash, &address, new_balance)
+                .map_err(|e| e.to_string())?;
         }
         Ok(())
     }
@@ -1916,97 +2215,42 @@ impl Wallet {
         None
     }
 
-    /// Update Platform address info (balance and nonce)
+    /// Update Platform address info (balance and nonce).
     ///
-    /// This method handles the case where the same platform address may be represented
-    /// by different Address objects. It normalizes by comparing PlatformAddress bytes
-    /// and removes any duplicate entries before inserting.
+    /// Handles canonical address deduplication: if the same platform address is
+    /// stored under a different `Address` key, the duplicate is removed first.
     pub fn set_platform_address_info(
         &mut self,
         address: Address,
         balance: Credits,
         nonce: AddressNonce,
     ) {
-        // Convert the incoming address to PlatformAddress for canonical comparison
-        let (keys_to_remove, last_full_sync_balance) =
-            if let Ok(platform_addr) = PlatformAddress::try_from(address.clone()) {
-                let canonical_bytes = platform_addr.to_bytes();
+        // Remove duplicate entries for the same canonical platform address
+        if let Ok(platform_addr) = PlatformAddress::try_from(address.clone()) {
+            let canonical_bytes = platform_addr.to_bytes();
+            let keys_to_remove: Vec<Address> = self
+                .platform_address_info
+                .keys()
+                .filter(|existing_addr| {
+                    if let Ok(existing_platform) =
+                        PlatformAddress::try_from((*existing_addr).clone())
+                    {
+                        existing_platform.to_bytes() == canonical_bytes
+                            && *existing_addr != &address
+                    } else {
+                        false
+                    }
+                })
+                .cloned()
+                .collect();
 
-                // First, find last_full_sync_balance from any canonical-equivalent entry
-                // (must be done BEFORE removing duplicates)
-                let last_full_sync_balance =
-                    self.platform_address_info
-                        .iter()
-                        .find_map(|(existing_addr, info)| {
-                            if let Ok(existing_platform) =
-                                PlatformAddress::try_from(existing_addr.clone())
-                                && existing_platform.to_bytes() == canonical_bytes
-                            {
-                                return info.last_full_sync_balance;
-                            }
-                            None
-                        });
-
-                // Find duplicate entries to remove (same platform address, different key)
-                let keys_to_remove: Vec<Address> = self
-                    .platform_address_info
-                    .keys()
-                    .filter(|existing_addr| {
-                        if let Ok(existing_platform) =
-                            PlatformAddress::try_from((*existing_addr).clone())
-                        {
-                            existing_platform.to_bytes() == canonical_bytes
-                                && *existing_addr != &address
-                        } else {
-                            false
-                        }
-                    })
-                    .cloned()
-                    .collect();
-
-                (keys_to_remove, last_full_sync_balance)
-            } else {
-                // Fallback: try direct lookup if canonical conversion fails
-                let last_full_sync_balance = self
-                    .platform_address_info
-                    .get(&address)
-                    .and_then(|info| info.last_full_sync_balance);
-                (vec![], last_full_sync_balance)
-            };
-
-        // Remove duplicate entries
-        for key in keys_to_remove {
-            self.platform_address_info.remove(&key);
+            for key in keys_to_remove {
+                self.platform_address_info.remove(&key);
+            }
         }
 
-        self.platform_address_info.insert(
-            address,
-            PlatformAddressInfo {
-                balance,
-                nonce,
-                last_full_sync_balance,
-            },
-        );
-    }
-
-    /// Set platform address info from a sync operation.
-    /// Always updates `last_full_sync_balance` to the current balance, as this becomes
-    /// the baseline for pre-population in the next terminal sync.
-    pub fn set_platform_address_info_from_sync(
-        &mut self,
-        address: Address,
-        balance: Credits,
-        nonce: AddressNonce,
-    ) {
-        self.platform_address_info.insert(
-            address,
-            PlatformAddressInfo {
-                balance,
-                nonce,
-                // Always update to current balance - this is the baseline for next sync
-                last_full_sync_balance: Some(balance),
-            },
-        );
+        self.platform_address_info
+            .insert(address, PlatformAddressInfo { balance, nonce });
     }
 
     /// Get the private key for a Platform address
@@ -2070,7 +2314,7 @@ impl Signer<PlatformAddress> for Wallet {
         // 3. get_platform_address_private_key will only succeed for the correct network
         // 4. Only one network's derivation will match the wallet's seed
         let private_key = self
-            .get_platform_address_private_key(platform_address, Network::Dash)
+            .get_platform_address_private_key(platform_address, Network::Mainnet)
             .or_else(|_| self.get_platform_address_private_key(platform_address, Network::Testnet))
             .or_else(|_| self.get_platform_address_private_key(platform_address, Network::Devnet))
             .or_else(|_| {
@@ -2099,7 +2343,7 @@ impl Signer<PlatformAddress> for Wallet {
         // The Signer trait doesn't pass network info, so we try each network.
         // This is safe - see comment in sign() above for explanation.
         let private_key = self
-            .get_platform_address_private_key(platform_address, Network::Dash)
+            .get_platform_address_private_key(platform_address, Network::Mainnet)
             .or_else(|_| self.get_platform_address_private_key(platform_address, Network::Testnet))
             .or_else(|_| self.get_platform_address_private_key(platform_address, Network::Devnet))
             .or_else(|_| {
@@ -2123,7 +2367,7 @@ impl Signer<PlatformAddress> for Wallet {
         }
 
         // Check if we have the private key for this address
-        self.get_platform_address_private_key(platform_address, Network::Dash)
+        self.get_platform_address_private_key(platform_address, Network::Mainnet)
             .or_else(|_| self.get_platform_address_private_key(platform_address, Network::Testnet))
             .or_else(|_| self.get_platform_address_private_key(platform_address, Network::Devnet))
             .or_else(|_| self.get_platform_address_private_key(platform_address, Network::Regtest))
@@ -2143,7 +2387,7 @@ const DEFAULT_GAP_LIMIT: AddressIndex = 20;
 /// # Usage
 /// ```ignore
 /// let mut provider = WalletAddressProvider::new(&wallet, network)?;
-/// let result = sdk.sync_address_balances(&mut provider, None).await?;
+/// let result = sdk.sync_address_balances(&mut provider, None, None).await?;
 /// provider.apply_results_to_wallet(&mut wallet);
 /// ```
 pub struct WalletAddressProvider {
@@ -2165,6 +2409,10 @@ pub struct WalletAddressProvider {
     highest_found: Option<AddressIndex>,
     /// Results: address -> balance for addresses found with balance
     found_balances: BTreeMap<Address, AddressFunds>,
+    /// Known balances from previous sync for incremental catch-up
+    stored_balances: Vec<(AddressIndex, AddressKey, AddressFunds)>,
+    /// Last sync height from previous sync for incremental catch-up
+    stored_sync_height: u64,
 }
 
 impl WalletAddressProvider {
@@ -2200,6 +2448,8 @@ impl WalletAddressProvider {
             resolved: BTreeSet::new(),
             highest_found: None,
             found_balances: BTreeMap::new(),
+            stored_balances: Vec::new(),
+            stored_sync_height: 0,
         };
 
         // Bootstrap initial addresses (0 to gap_limit - 1)
@@ -2276,12 +2526,8 @@ impl WalletAddressProvider {
         for (address, funds) in &self.found_balances {
             let canonical_address = Wallet::canonical_address(address, self.network);
 
-            // Update wallet with synced balance (also updates last_full_sync_balance for next sync)
-            wallet.set_platform_address_info_from_sync(
-                canonical_address.clone(),
-                funds.balance,
-                funds.nonce,
-            );
+            // Update wallet with synced balances
+            wallet.set_platform_address_info(canonical_address.clone(), funds.balance, funds.nonce);
 
             // Also register in known_addresses and watched_addresses if not already present
             if !wallet.known_addresses.contains_key(&canonical_address)
@@ -2310,6 +2556,41 @@ impl WalletAddressProvider {
         }
     }
 
+    /// Populate stored balances and sync height from a wallet's known state.
+    ///
+    /// Call this after construction to enable incremental catch-up.
+    /// The SDK uses `current_balances()` as the baseline and `last_sync_height()`
+    /// as the starting block for applying delta operations.
+    pub fn with_stored_state(
+        mut self,
+        wallet: &Wallet,
+        network: Network,
+        last_sync_height: u64,
+    ) -> Self {
+        self.stored_sync_height = last_sync_height;
+
+        // Populate stored_balances from wallet's known platform addresses
+        for (core_addr, info) in &wallet.platform_address_info {
+            // Find the matching pending address to get the index and key
+            for (index, (key, pending_addr)) in &self.pending {
+                let canonical = Wallet::canonical_address(pending_addr, network);
+                if &canonical == core_addr {
+                    self.stored_balances.push((
+                        *index,
+                        key.clone(),
+                        AddressFunds {
+                            balance: info.balance,
+                            nonce: info.nonce,
+                        },
+                    ));
+                    break;
+                }
+            }
+        }
+
+        self
+    }
+
     /// Derive a Platform address at the given index.
     fn derive_address_at_index(
         &self,
@@ -2324,7 +2605,7 @@ impl WalletAddressProvider {
 
         let extended_private_key = derivation_path
             .derive_priv_ecdsa_for_master_seed(&self.seed, self.network)
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
 
         let secp = Secp256k1::new();
         let private_key = extended_private_key.to_priv();
@@ -2430,6 +2711,14 @@ impl AddressProvider for WalletAddressProvider {
     fn highest_found_index(&self) -> Option<AddressIndex> {
         self.highest_found
     }
+
+    fn current_balances(&self) -> Vec<(AddressIndex, AddressKey, AddressFunds)> {
+        self.stored_balances.clone()
+    }
+
+    fn last_sync_height(&self) -> u64 {
+        self.stored_sync_height
+    }
 }
 
 #[cfg(test)]
@@ -2489,7 +2778,9 @@ mod tests {
             confirmed_balance: 0,
             unconfirmed_balance: 0,
             total_balance: 0,
+            spv_balance_known: false,
             platform_address_info: BTreeMap::new(),
+            core_wallet_name: None,
         }
     }
 
@@ -2510,6 +2801,14 @@ mod tests {
         let mut txid_bytes = [0u8; 32];
         txid_bytes[0] = tx_index;
         OutPoint::new(Txid::from_slice(&txid_bytes).unwrap(), vout)
+    }
+
+    /// Helper: create a test wallet pre-loaded with a single UTXO of the given value.
+    fn test_wallet_with_utxo(value: u64) -> Wallet {
+        let mut wallet = test_wallet();
+        let addr = test_address(1);
+        add_utxo(&mut wallet, &addr, 1, 0, value);
+        wallet
     }
 
     /// Helper: add a UTXO to a wallet
@@ -2624,53 +2923,67 @@ mod tests {
         assert_eq!(wallet.total_balance, 150);
     }
 
+    #[test]
+    fn test_spv_confirmed_balance_none_before_sync() {
+        let wallet = test_wallet();
+        // Before any SPV sync, spv_confirmed_balance must return None regardless
+        // of the UTXO state — callers cannot distinguish synced-zero from unsynced.
+        assert_eq!(wallet.spv_confirmed_balance(), None);
+    }
+
+    #[test]
+    fn test_spv_confirmed_balance_zero_after_sync() {
+        let mut wallet = test_wallet();
+        // After SPV reports zero balance, Some(0) must be returned — not None.
+        wallet.update_spv_balances(0, 0, 0);
+        assert_eq!(wallet.spv_confirmed_balance(), Some(0));
+    }
+
+    #[test]
+    fn test_spv_confirmed_balance_nonzero_after_sync() {
+        let mut wallet = test_wallet();
+        wallet.update_spv_balances(75_000, 5_000, 80_000);
+        assert_eq!(wallet.spv_confirmed_balance(), Some(75_000));
+    }
+
     // ========================================================================
-    // take_unspent_utxos_for tests
+    // select_unspent_utxos_for / remove_selected_utxos tests
     // ========================================================================
 
     #[test]
-    fn test_take_utxos_exact_amount() {
-        let mut wallet = test_wallet();
-        let addr = test_address(1);
-        add_utxo(&mut wallet, &addr, 1, 0, 100_000);
+    fn test_select_utxos_exact_amount() {
+        let wallet = test_wallet_with_utxo(100_000);
 
-        let result = wallet.take_unspent_utxos_for(90_000, 10_000, false);
+        let result = wallet.select_unspent_utxos_for(90_000, 10_000, false, None);
         assert!(result.is_some());
         let (utxos, change) = result.unwrap();
         assert_eq!(utxos.len(), 1);
         assert!(change.is_none()); // exact amount, no change
-        // UTXO should be removed from wallet
-        assert!(wallet.utxos.is_empty());
-    }
-
-    #[test]
-    fn test_take_utxos_with_change() {
-        let mut wallet = test_wallet();
-        let addr = test_address(1);
-        add_utxo(&mut wallet, &addr, 1, 0, 200_000);
-
-        let result = wallet.take_unspent_utxos_for(90_000, 10_000, false);
-        assert!(result.is_some());
-        let (utxos, change) = result.unwrap();
-        assert_eq!(utxos.len(), 1);
-        assert_eq!(change, Some(100_000)); // 200k - 90k - 10k = 100k change
-        assert!(wallet.utxos.is_empty());
-    }
-
-    #[test]
-    fn test_take_utxos_insufficient_funds() {
-        let mut wallet = test_wallet();
-        let addr = test_address(1);
-        add_utxo(&mut wallet, &addr, 1, 0, 50_000);
-
-        let result = wallet.take_unspent_utxos_for(90_000, 10_000, false);
-        assert!(result.is_none());
-        // UTXOs should NOT be removed on failure
+        // Selection is non-mutating — wallet UTXOs unchanged
         assert!(!wallet.utxos.is_empty());
     }
 
     #[test]
-    fn test_take_utxos_multiple_utxos_needed() {
+    fn test_select_utxos_with_change() {
+        let wallet = test_wallet_with_utxo(200_000);
+
+        let result = wallet.select_unspent_utxos_for(90_000, 10_000, false, None);
+        assert!(result.is_some());
+        let (utxos, change) = result.unwrap();
+        assert_eq!(utxos.len(), 1);
+        assert_eq!(change, Some(100_000)); // 200k - 90k - 10k = 100k change
+    }
+
+    #[test]
+    fn test_select_utxos_insufficient_funds() {
+        let wallet = test_wallet_with_utxo(50_000);
+
+        let result = wallet.select_unspent_utxos_for(90_000, 10_000, false, None);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_select_utxos_multiple_utxos_needed() {
         let mut wallet = test_wallet();
         let addr1 = test_address(1);
         let addr2 = test_address(2);
@@ -2678,10 +2991,9 @@ mod tests {
         add_utxo(&mut wallet, &addr2, 2, 0, 40_000);
         add_utxo(&mut wallet, &addr1, 3, 0, 50_000);
 
-        let result = wallet.take_unspent_utxos_for(100_000, 10_000, false);
+        let result = wallet.select_unspent_utxos_for(100_000, 10_000, false, None);
         assert!(result.is_some());
         let (utxos, change) = result.unwrap();
-        // Should have collected enough UTXOs to cover 110_000
         let total_collected: u64 = utxos.values().map(|(tx_out, _)| tx_out.value).sum();
         assert!(total_collected >= 110_000);
         if let Some(change_amount) = change {
@@ -2690,73 +3002,105 @@ mod tests {
     }
 
     #[test]
-    fn test_take_utxos_allow_take_fee_from_amount() {
-        let mut wallet = test_wallet();
-        let addr = test_address(1);
-        // Wallet has exactly enough for the amount but not the fee
-        add_utxo(&mut wallet, &addr, 1, 0, 100_000);
+    fn test_select_utxos_allow_take_fee_from_amount() {
+        let wallet = test_wallet_with_utxo(100_000);
 
         // Request 100k amount + 10k fee = 110k total, but only 100k available
         // With allow_take_fee_from_amount=true, should still succeed since total >= amount
-        let result = wallet.take_unspent_utxos_for(100_000, 10_000, true);
+        let result = wallet.select_unspent_utxos_for(100_000, 10_000, true, None);
         assert!(result.is_some());
         let (_utxos, change) = result.unwrap();
         assert!(change.is_none());
     }
 
     #[test]
-    fn test_take_utxos_allow_take_fee_but_not_enough_for_amount() {
-        let mut wallet = test_wallet();
-        let addr = test_address(1);
-        add_utxo(&mut wallet, &addr, 1, 0, 50_000);
+    fn test_select_utxos_allow_take_fee_but_not_enough_for_amount() {
+        let wallet = test_wallet_with_utxo(50_000);
 
         // Request 100k amount + 10k fee = 110k, only 50k available
         // Even with take_fee_from_amount, 50k < 100k amount, so should fail
-        let result = wallet.take_unspent_utxos_for(100_000, 10_000, true);
+        let result = wallet.select_unspent_utxos_for(100_000, 10_000, true, None);
         assert!(result.is_none());
     }
 
     #[test]
-    fn test_take_utxos_zero_amount() {
-        let mut wallet = test_wallet();
-        let addr = test_address(1);
-        add_utxo(&mut wallet, &addr, 1, 0, 50_000);
+    fn test_select_utxos_zero_amount() {
+        let wallet = test_wallet_with_utxo(50_000);
 
-        let result = wallet.take_unspent_utxos_for(0, 0, false);
+        let result = wallet.select_unspent_utxos_for(0, 0, false, None);
         assert!(result.is_some());
         let (utxos, change) = result.unwrap();
         assert!(utxos.is_empty());
         assert!(change.is_none());
     }
 
+    /// Helper: register a wallet address in the test database so that
+    /// `update_address_balance` can find the row.
+    /// Caller must store the wallet first via `db.store_wallet()`.
+    fn register_test_address(db: &Database, wallet: &Wallet, address: &Address) {
+        let seed_hash = wallet.seed_hash();
+        let path = DerivationPath::from(vec![
+            ChildNumber::Hardened { index: 44 },
+            ChildNumber::Hardened { index: 1 },
+            ChildNumber::Hardened { index: 0 },
+            ChildNumber::Normal { index: 0 },
+            ChildNumber::Normal { index: 0 },
+        ]);
+        db.add_address_if_not_exists(
+            &seed_hash,
+            address,
+            &Network::Testnet,
+            &path,
+            DerivationPathReference::BIP44,
+            DerivationPathType::CLEAR_FUNDS,
+            Some(0),
+        )
+        .expect("register test address");
+    }
+
     #[test]
-    fn test_take_utxos_removes_from_wallet() {
+    fn test_remove_utxos_removes_from_wallet() {
+        use crate::database::test_helpers::create_test_database;
+
         let mut wallet = test_wallet();
         let addr = test_address(1);
         add_utxo(&mut wallet, &addr, 1, 0, 100_000);
         add_utxo(&mut wallet, &addr, 2, 0, 200_000);
-
         assert_eq!(wallet.max_balance(), 300_000);
 
-        // Take only enough for 100k
-        let result = wallet.take_unspent_utxos_for(90_000, 10_000, false);
-        assert!(result.is_some());
+        let db = create_test_database().expect("test db");
+        db.store_wallet(&wallet, &Network::Testnet)
+            .expect("store test wallet");
+        register_test_address(&db, &wallet, &addr);
+        let (selected, _) = wallet
+            .select_unspent_utxos_for(90_000, 10_000, false, None)
+            .unwrap();
+        wallet
+            .remove_selected_utxos(&selected, &db, Network::Testnet)
+            .unwrap();
 
-        // Remaining wallet should have reduced UTXOs
-        let remaining_balance = wallet.max_balance();
-        assert!(remaining_balance < 300_000);
+        assert!(wallet.max_balance() < 300_000);
     }
 
     #[test]
-    fn test_take_utxos_cleans_empty_address_entries() {
+    fn test_remove_utxos_cleans_empty_address_entries() {
+        use crate::database::test_helpers::create_test_database;
+
         let mut wallet = test_wallet();
         let addr = test_address(1);
         add_utxo(&mut wallet, &addr, 1, 0, 100_000);
 
-        let result = wallet.take_unspent_utxos_for(90_000, 10_000, false);
-        assert!(result.is_some());
+        let db = create_test_database().expect("test db");
+        db.store_wallet(&wallet, &Network::Testnet)
+            .expect("store test wallet");
+        register_test_address(&db, &wallet, &addr);
+        let (selected, _) = wallet
+            .select_unspent_utxos_for(90_000, 10_000, false, None)
+            .unwrap();
+        wallet
+            .remove_selected_utxos(&selected, &db, Network::Testnet)
+            .unwrap();
 
-        // The address entry should be removed since it has no more UTXOs
         assert!(!wallet.utxos.contains_key(&addr));
     }
 
@@ -2781,7 +3125,6 @@ mod tests {
             PlatformAddressInfo {
                 balance: 1_000_000,
                 nonce: 0,
-                last_full_sync_balance: None,
             },
         );
         wallet.platform_address_info.insert(
@@ -2789,7 +3132,6 @@ mod tests {
             PlatformAddressInfo {
                 balance: 2_000_000,
                 nonce: 1,
-                last_full_sync_balance: None,
             },
         );
 
@@ -2797,33 +3139,17 @@ mod tests {
     }
 
     #[test]
-    fn test_set_platform_address_info_from_sync() {
+    fn test_set_platform_address_info_update() {
         let mut wallet = test_wallet();
         let addr = test_address(1);
 
-        wallet.set_platform_address_info_from_sync(addr.clone(), 500_000, 3);
+        wallet.set_platform_address_info(addr.clone(), 500_000, 3);
 
-        let info = wallet.platform_address_info.get(&addr).unwrap();
-        assert_eq!(info.balance, 500_000);
-        assert_eq!(info.nonce, 3);
-        assert_eq!(info.last_full_sync_balance, Some(500_000));
-    }
-
-    #[test]
-    fn test_set_platform_address_info_preserves_sync_balance() {
-        let mut wallet = test_wallet();
-        let addr = test_address(1);
-
-        // First set via sync (establishes last_full_sync_balance)
-        wallet.set_platform_address_info_from_sync(addr.clone(), 500_000, 3);
-
-        // Then update via non-sync (should preserve last_full_sync_balance)
         wallet.set_platform_address_info(addr.clone(), 600_000, 4);
 
         let info = wallet.platform_address_info.get(&addr).unwrap();
         assert_eq!(info.balance, 600_000);
         assert_eq!(info.nonce, 4);
-        assert_eq!(info.last_full_sync_balance, Some(500_000));
     }
 
     #[test]
@@ -2836,7 +3162,6 @@ mod tests {
             PlatformAddressInfo {
                 balance: 100_000,
                 nonce: 1,
-                last_full_sync_balance: None,
             },
         );
 
@@ -2874,6 +3199,7 @@ mod tests {
             fee: Some(226),
             label: None,
             is_ours: true,
+            status: TransactionStatus::Confirmed,
         };
 
         assert!(tx.is_incoming());
@@ -2900,6 +3226,7 @@ mod tests {
             fee: Some(226),
             label: None,
             is_ours: true,
+            status: TransactionStatus::Unconfirmed,
         };
 
         assert!(!tx.is_incoming());
@@ -2926,6 +3253,7 @@ mod tests {
             fee: None,
             label: None,
             is_ours: false,
+            status: TransactionStatus::Unconfirmed,
         };
 
         assert!(!tx.is_incoming());
@@ -2993,7 +3321,7 @@ mod tests {
             ChildNumber::Normal { index: 0 },
             ChildNumber::Normal { index: 0 },
         ]);
-        assert!(path.is_bip44(Network::Dash));
+        assert!(path.is_bip44(Network::Mainnet));
         assert!(!path.is_bip44(Network::Testnet));
     }
 
@@ -3008,7 +3336,7 @@ mod tests {
         ]);
         assert!(path.is_bip44(Network::Testnet));
         assert!(path.is_bip44(Network::Devnet));
-        assert!(!path.is_bip44(Network::Dash));
+        assert!(!path.is_bip44(Network::Mainnet));
     }
 
     #[test]
@@ -3047,7 +3375,7 @@ mod tests {
             ChildNumber::Normal { index: 0 },
         ]);
         assert!(path.is_asset_lock_funding(Network::Testnet));
-        assert!(!path.is_asset_lock_funding(Network::Dash));
+        assert!(!path.is_asset_lock_funding(Network::Mainnet));
     }
 
     #[test]
@@ -3061,7 +3389,7 @@ mod tests {
             ChildNumber::Normal { index: 0 },
         ]);
         assert!(path.is_platform_payment(Network::Testnet));
-        assert!(!path.is_platform_payment(Network::Dash));
+        assert!(!path.is_platform_payment(Network::Mainnet));
     }
 
     #[test]
@@ -3140,7 +3468,10 @@ mod tests {
 
     #[test]
     fn test_networks_address_compatible() {
-        assert!(networks_address_compatible(&Network::Dash, &Network::Dash));
+        assert!(networks_address_compatible(
+            &Network::Mainnet,
+            &Network::Mainnet
+        ));
         assert!(networks_address_compatible(
             &Network::Testnet,
             &Network::Testnet
@@ -3154,12 +3485,12 @@ mod tests {
             &Network::Regtest
         ));
         assert!(!networks_address_compatible(
-            &Network::Dash,
+            &Network::Mainnet,
             &Network::Testnet
         ));
         assert!(!networks_address_compatible(
             &Network::Testnet,
-            &Network::Dash
+            &Network::Mainnet
         ));
     }
 

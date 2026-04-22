@@ -2,13 +2,19 @@ use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
 use crate::backend_task::wallet::WalletTask;
+use crate::model::address::{AddressKind, ValidatedAddress};
 use crate::model::amount::Amount;
+use crate::model::secret::Secret;
 use crate::model::wallet::{DerivationPathHelpers, Wallet};
+use crate::ui::MessageType;
+use crate::ui::components::MessageBanner;
+use crate::ui::components::address_input::AddressInput;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
+use crate::ui::helpers::clicked_outside_window;
 use crate::ui::helpers::copy_text_to_clipboard;
 use crate::ui::identities::funding_common::generate_qr_code_image;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors};
 use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
 use dash_sdk::dashcore_rpc::dashcore::{Address, Network};
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
@@ -80,6 +86,16 @@ pub(super) struct FundPlatformAddressDialogState {
     pub pending_fund_after_unlock: bool,
 }
 
+/// State for the Mine Blocks dialog (dev mode, Regtest/Devnet only)
+#[derive(Default)]
+pub(super) struct MineDialogState {
+    pub is_open: bool,
+    pub address_input: Option<AddressInput>,
+    pub validated_address: Option<ValidatedAddress>,
+    pub block_count_str: String,
+    pub error: Option<String>,
+}
+
 /// State for the Private Key dialog
 #[derive(Default)]
 pub(super) struct PrivateKeyDialogState {
@@ -87,7 +103,7 @@ pub(super) struct PrivateKeyDialogState {
     /// The address being displayed
     pub address: String,
     /// The private key in WIF format
-    pub private_key_wif: String,
+    pub private_key_wif: Secret,
     /// Whether to show the private key (hidden by default)
     pub show_key: bool,
     /// Pending derivation path (when wallet needs unlock first)
@@ -129,13 +145,17 @@ impl WalletsBalancesScreen {
 
         let mut action = AppAction::None;
         let mut open = self.send_dialog.is_open;
+
+        // Draw dark overlay behind the dialog
+        Self::draw_modal_overlay(ctx, "send_dialog_overlay");
+
         egui::Window::new("Send Dash")
             .collapsible(false)
             .resizable(false)
             .open(&mut open)
             .show(ctx, |ui| {
                 ui.label("Recipient Address");
-                let hint = if self.app_context.network == Network::Dash {
+                let hint = if self.app_context.network == Network::Mainnet {
                     "Enter Core address (X.../7...)"
                 } else {
                     "Enter Core address (y.../8...)"
@@ -213,10 +233,10 @@ impl WalletsBalancesScreen {
                 }
 
                 ui.add_space(8.0);
+                let dark_mode = ui.ctx().style().visuals.dark_mode;
                 ui.horizontal(|ui| {
                     let has_address_error = self.send_dialog.address_error.is_some();
-                    if ui
-                        .add_enabled(!has_address_error, egui::Button::new("Send"))
+                    if ComponentStyles::add_primary_button_enabled(ui, !has_address_error, "Send")
                         .clicked()
                     {
                         match self.prepare_send_action() {
@@ -226,6 +246,9 @@ impl WalletsBalancesScreen {
                             }
                             Err(err) => self.send_dialog.error = Some(err),
                         }
+                    }
+                    if ComponentStyles::add_secondary_button(ui, "Cancel", dark_mode).clicked() {
+                        self.send_dialog = SendDialogState::default();
                     }
                 });
             });
@@ -302,7 +325,7 @@ impl WalletsBalancesScreen {
             Self::draw_modal_overlay(ctx, "receive_dialog_overlay");
         }
 
-        egui::Window::new("Receive")
+        let window_response = egui::Window::new("Receive")
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
@@ -424,7 +447,9 @@ impl WalletsBalancesScreen {
                                 let mut generate_new = false;
 
                                 ui.horizontal(|ui| {
-                                    if ui.button("Copy Address").clicked() {
+                                    if ComponentStyles::add_primary_button(ui, "Copy Address")
+                                        .clicked()
+                                    {
                                         if let Err(err) = copy_text_to_clipboard(&address) {
                                             copy_status = Some(format!("Error: {}", err));
                                         } else {
@@ -432,7 +457,13 @@ impl WalletsBalancesScreen {
                                         }
                                     }
 
-                                    if ui.button("New Address").clicked() {
+                                    if ComponentStyles::add_secondary_button(
+                                        ui,
+                                        "New Address",
+                                        dark_mode,
+                                    )
+                                    .clicked()
+                                    {
                                         generate_new = true;
                                     }
                                 });
@@ -543,7 +574,9 @@ impl WalletsBalancesScreen {
                                 let mut new_addr_result: Option<Result<String, String>> = None;
 
                                 ui.horizontal(|ui| {
-                                    if ui.button("Copy Address").clicked() {
+                                    if ComponentStyles::add_primary_button(ui, "Copy Address")
+                                        .clicked()
+                                    {
                                         if let Err(err) = copy_text_to_clipboard(&address) {
                                             copy_status = Some(format!("Error: {}", err));
                                         } else {
@@ -553,7 +586,12 @@ impl WalletsBalancesScreen {
 
                                     // Button to add new Platform address
                                     if let Some(wallet) = &self.selected_wallet
-                                        && ui.button("New Address").clicked()
+                                        && ComponentStyles::add_secondary_button(
+                                            ui,
+                                            "New Address",
+                                            dark_mode,
+                                        )
+                                        .clicked()
                                     {
                                         new_addr_result = Some(self.generate_platform_address(wallet));
                                     }
@@ -603,6 +641,12 @@ impl WalletsBalancesScreen {
                     }
                 });
             });
+
+        if let Some(ref resp) = window_response
+            && clicked_outside_window(ctx, resp.response.rect)
+        {
+            open = false;
+        }
 
         self.receive_dialog.is_open = open;
         if !self.receive_dialog.is_open {
@@ -660,7 +704,7 @@ impl WalletsBalancesScreen {
         // Draw dark overlay behind the popup
         Self::draw_modal_overlay(ctx, "fund_platform_dialog_overlay");
 
-        egui::Window::new("Fund Platform Address from Asset Lock")
+        let window_response = egui::Window::new("Fund Platform Address from Asset Lock")
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
@@ -750,38 +794,32 @@ impl WalletsBalancesScreen {
                             && !self.fund_platform_dialog.is_processing;
 
                         // Cancel button
-                        let cancel_button = egui::Button::new(
-                            RichText::new("Cancel").color(DashColors::text_primary(dark_mode)),
-                        )
-                        .fill(egui::Color32::TRANSPARENT)
-                        .stroke(egui::Stroke::new(1.0, DashColors::text_secondary(dark_mode)))
-                        .corner_radius(egui::CornerRadius::same(4))
-                        .min_size(egui::Vec2::new(80.0, 32.0));
-
-                        if ui.add(cancel_button).clicked() {
+                        if ComponentStyles::add_secondary_button(ui, "Cancel", dark_mode)
+                            .clicked()
+                        {
                             self.fund_platform_dialog.is_open = false;
                         }
 
                         ui.add_space(8.0);
 
                         // Fund button
-                        let fund_button = egui::Button::new(
-                            RichText::new(if self.fund_platform_dialog.is_processing {
-                                "Funding..."
-                            } else {
-                                "Fund Address"
-                            })
-                            .color(egui::Color32::WHITE),
-                        )
-                        .fill(if can_fund {
-                            DashColors::DASH_BLUE
+                        let fund_label = if self.fund_platform_dialog.is_processing {
+                            "Funding..."
                         } else {
-                            DashColors::text_secondary(dark_mode)
-                        })
-                        .corner_radius(egui::CornerRadius::same(4))
-                        .min_size(egui::Vec2::new(100.0, 32.0));
+                            "Fund Address"
+                        };
+                        let fund_button = ComponentStyles::primary_button(fund_label)
+                            .fill(if can_fund {
+                                ComponentStyles::primary_button_fill()
+                            } else {
+                                DashColors::text_secondary(dark_mode)
+                            });
 
-                        if ui.add_enabled(can_fund, fund_button).clicked() {
+                        if ui
+                            .add_enabled(can_fund, fund_button)
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .clicked()
+                        {
                             // Check if wallet is locked
                             let is_locked = self
                                 .selected_wallet
@@ -811,6 +849,12 @@ impl WalletsBalancesScreen {
                     );
                 });
             });
+
+        if let Some(ref resp) = window_response
+            && clicked_outside_window(ctx, resp.response.rect)
+        {
+            open = false;
+        }
 
         // Only update from `open` if we didn't manually close via cancel button
         if self.fund_platform_dialog.is_open {
@@ -865,7 +909,9 @@ impl WalletsBalancesScreen {
                     ui.add_space(5.0);
 
                     // Copy address button
-                    if ui.button("Copy Address").clicked() {
+                    if ComponentStyles::add_secondary_button(ui, "Copy Address", dark_mode)
+                        .clicked()
+                    {
                         let _ = copy_text_to_clipboard(&self.private_key_dialog.address);
                     }
 
@@ -884,7 +930,7 @@ impl WalletsBalancesScreen {
                     // Private key value (hidden by default)
                     if self.private_key_dialog.show_key {
                         ui.label(
-                            RichText::new(&self.private_key_dialog.private_key_wif)
+                            RichText::new(self.private_key_dialog.private_key_wif.expose_secret())
                                 .monospace()
                                 .color(DashColors::text_primary(dark_mode)),
                         );
@@ -900,20 +946,21 @@ impl WalletsBalancesScreen {
 
                     // Show/Hide and Copy buttons
                     ui.horizontal(|ui| {
-                        if ui
-                            .button(if self.private_key_dialog.show_key {
-                                "Hide Key"
-                            } else {
-                                "Show Key"
-                            })
+                        let toggle_label = if self.private_key_dialog.show_key {
+                            "Hide Key"
+                        } else {
+                            "Show Key"
+                        };
+                        if ComponentStyles::add_secondary_button(ui, toggle_label, dark_mode)
                             .clicked()
                         {
                             self.private_key_dialog.show_key = !self.private_key_dialog.show_key;
                         }
 
-                        if ui.button("Copy Key").clicked() {
-                            let _ =
-                                copy_text_to_clipboard(&self.private_key_dialog.private_key_wif);
+                        if ComponentStyles::add_primary_button(ui, "Copy Key").clicked() {
+                            let _ = copy_text_to_clipboard(
+                                self.private_key_dialog.private_key_wif.expose_secret(),
+                            );
                         }
                     });
 
@@ -982,7 +1029,10 @@ impl WalletsBalancesScreen {
                 match PlatformAddress::from_bech32m_string(selected_addr) {
                     Ok((addr, network)) => {
                         // Validate that address network matches app network
-                        if network != self.app_context.network {
+                        if !crate::model::wallet::networks_address_compatible(
+                            &network,
+                            &self.app_context.network,
+                        ) {
                             self.fund_platform_dialog.status = Some(format!(
                                 "Address network mismatch: address is for {:?} but app is on {:?}",
                                 network, self.app_context.network
@@ -1118,19 +1168,14 @@ impl WalletsBalancesScreen {
         AppAction::None
     }
 
-    /// Load Core addresses into the receive dialog
-    fn load_core_addresses_for_receive(&mut self, wallet: &Arc<RwLock<Wallet>>) {
-        let wallet_guard = match wallet.read() {
-            Ok(guard) => guard,
-            Err(err) => {
-                self.receive_dialog.status = Some(err.to_string());
-                return;
-            }
-        };
-
-        // Collect all BIP44 external (receive) addresses with their balances
+    /// Load BIP44 external addresses with balances from a wallet.
+    fn load_bip44_external_addresses(
+        &self,
+        wallet: &Arc<RwLock<Wallet>>,
+    ) -> Result<Vec<(String, u64)>, String> {
+        let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
         let network = self.app_context.network;
-        let core_addresses: Vec<(String, u64)> = wallet_guard
+        let addresses: Vec<(String, u64)> = wallet_guard
             .watched_addresses
             .iter()
             .filter(|(path, _)| path.is_bip44_external(network))
@@ -1143,24 +1188,31 @@ impl WalletsBalancesScreen {
                 (info.address.to_string(), balance)
             })
             .collect();
+        Ok(addresses)
+    }
 
-        drop(wallet_guard);
-
-        if core_addresses.is_empty() {
-            // Generate a new Core address if none exists
-            match self.generate_new_core_receive_address(wallet) {
-                Ok((address, balance)) => {
-                    self.receive_dialog.core_addresses = vec![(address, balance)];
-                    self.receive_dialog.selected_core_index = 0;
-                }
-                Err(err) => {
-                    self.receive_dialog.status = Some(err);
-                    self.receive_dialog.core_addresses.clear();
+    /// Load Core addresses into the receive dialog
+    fn load_core_addresses_for_receive(&mut self, wallet: &Arc<RwLock<Wallet>>) {
+        match self.load_bip44_external_addresses(wallet) {
+            Ok(addresses) if addresses.is_empty() => {
+                match self.generate_new_core_receive_address(wallet) {
+                    Ok((address, balance)) => {
+                        self.receive_dialog.core_addresses = vec![(address, balance)];
+                        self.receive_dialog.selected_core_index = 0;
+                    }
+                    Err(err) => {
+                        self.receive_dialog.status = Some(err);
+                        self.receive_dialog.core_addresses.clear();
+                    }
                 }
             }
-        } else {
-            self.receive_dialog.core_addresses = core_addresses;
-            self.receive_dialog.selected_core_index = 0;
+            Ok(addresses) => {
+                self.receive_dialog.core_addresses = addresses;
+                self.receive_dialog.selected_core_index = 0;
+            }
+            Err(err) => {
+                self.receive_dialog.status = Some(err);
+            }
         }
     }
 
@@ -1210,7 +1262,7 @@ impl WalletsBalancesScreen {
         }
     }
 
-    pub(super) fn derive_private_key_wif(&self, path: &DerivationPath) -> Result<String, String> {
+    pub(super) fn derive_private_key_wif(&self, path: &DerivationPath) -> Result<Secret, String> {
         let wallet_arc = self
             .selected_wallet
             .clone()
@@ -1220,6 +1272,172 @@ impl WalletsBalancesScreen {
             return Err("Unlock this wallet to view private keys.".to_string());
         }
         let private_key = wallet.private_key_at_derivation_path(path, self.app_context.network)?;
-        Ok(private_key.to_wif())
+        Ok(Secret::new(private_key.to_wif()))
+    }
+
+    pub(super) fn open_mine_dialog(&mut self) {
+        let Some(wallet) = self.selected_wallet.clone() else {
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "Select a wallet first",
+                MessageType::Error,
+            );
+            return;
+        };
+
+        let address_input = AddressInput::new(self.app_context.network)
+            .with_label("Mine to address:")
+            .with_address_kinds(&[AddressKind::Core])
+            .with_wallets(&[wallet])
+            .with_selection_only(true)
+            .with_full_addresses(true);
+
+        self.mine_dialog = MineDialogState {
+            is_open: true,
+            address_input: Some(address_input),
+            validated_address: None,
+            block_count_str: "1".to_string(),
+            error: None,
+        };
+    }
+
+    pub(super) fn render_mine_dialog(&mut self, ctx: &Context) -> AppAction {
+        if !self.mine_dialog.is_open {
+            return AppAction::None;
+        }
+
+        let mut action = AppAction::None;
+        let mut open = self.mine_dialog.is_open;
+        let dark_mode = ctx.style().visuals.dark_mode;
+
+        Self::draw_modal_overlay(ctx, "mine_dialog_overlay");
+
+        let window_response = egui::Window::new("Mine Blocks")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .open(&mut open)
+            .frame(Self::modal_frame(ctx))
+            .show(ctx, |ui| {
+                ui.set_min_width(350.0);
+                ui.vertical(|ui| {
+                    ui.label(
+                        RichText::new("Mine blocks to a wallet address:")
+                            .color(DashColors::text_primary(dark_mode)),
+                    );
+                    ui.add_space(10.0);
+
+                    // Address selector using AddressInput component
+                    if let Some(address_input) = self.mine_dialog.address_input.as_mut() {
+                        let resp = address_input.show(ui);
+                        resp.inner.update(&mut self.mine_dialog.validated_address);
+                    }
+
+                    ui.add_space(10.0);
+
+                    // Block count input
+                    ui.label("Number of blocks:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.mine_dialog.block_count_str)
+                            .hint_text("1")
+                            .desired_width(100.0),
+                    );
+                    self.mine_dialog
+                        .block_count_str
+                        .retain(|c| c.is_ascii_digit());
+
+                    // Error display
+                    if let Some(error) = self.mine_dialog.error.clone() {
+                        ui.add_space(8.0);
+                        let error_color = DashColors::ERROR;
+                        Frame::new()
+                            .fill(error_color.gamma_multiply(0.1))
+                            .inner_margin(Margin::symmetric(10, 8))
+                            .corner_radius(5.0)
+                            .stroke(egui::Stroke::new(1.0, error_color))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new(format!("Error: {}", error))
+                                            .color(error_color),
+                                    );
+                                    ui.add_space(10.0);
+                                    if ui.small_button("Dismiss").clicked() {
+                                        self.mine_dialog.error = None;
+                                    }
+                                });
+                            });
+                    }
+
+                    ui.add_space(15.0);
+
+                    // Buttons
+                    ui.horizontal(|ui| {
+                        if ComponentStyles::add_secondary_button(ui, "Cancel", dark_mode).clicked()
+                        {
+                            self.mine_dialog = MineDialogState::default();
+                        }
+
+                        ui.add_space(8.0);
+
+                        if ComponentStyles::add_primary_button(ui, "Mine").clicked() {
+                            const MAX_MINE_BLOCKS: u64 = 1_000;
+                            let block_count: u64 =
+                                match self.mine_dialog.block_count_str.trim().parse() {
+                                    Ok(n) if n > 0 && n <= MAX_MINE_BLOCKS => n,
+                                    Ok(n) if n > MAX_MINE_BLOCKS => {
+                                        self.mine_dialog.error = Some(format!(
+                                            "Maximum {} blocks at a time",
+                                            MAX_MINE_BLOCKS
+                                        ));
+                                        return;
+                                    }
+                                    _ => {
+                                        self.mine_dialog.error = Some(
+                                            "Enter a valid number of blocks (> 0)".to_string(),
+                                        );
+                                        return;
+                                    }
+                                };
+
+                            let Some(validated) = &self.mine_dialog.validated_address else {
+                                self.mine_dialog.error =
+                                    Some("Select an address first".to_string());
+                                return;
+                            };
+
+                            let Some(address) = validated.as_core().cloned() else {
+                                self.mine_dialog.error = Some("Select a Core address".to_string());
+                                return;
+                            };
+
+                            let Some(wallet) = self.selected_wallet.clone() else {
+                                self.mine_dialog.error = Some("No wallet selected".to_string());
+                                return;
+                            };
+
+                            action = AppAction::BackendTask(BackendTask::CoreTask(
+                                CoreTask::MineBlocks {
+                                    block_count,
+                                    address,
+                                    wallet,
+                                },
+                            ));
+                            self.mine_dialog = MineDialogState::default();
+                        }
+                    });
+                });
+            });
+
+        if let Some(ref resp) = window_response
+            && clicked_outside_window(ctx, resp.response.rect)
+        {
+            open = false;
+        }
+
+        if !open || !self.mine_dialog.is_open {
+            self.mine_dialog = MineDialogState::default();
+        }
+        action
     }
 }

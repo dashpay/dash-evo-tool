@@ -39,6 +39,8 @@ pub struct SingleKeyWallet {
     pub total_balance: u64,
     /// UTXOs for this address
     pub utxos: HashMap<OutPoint, TxOut>,
+    /// Dash Core wallet name for multi-wallet RPC calls
+    pub core_wallet_name: Option<String>,
 }
 
 /// Private key data - either open (decrypted) or closed (encrypted)
@@ -258,6 +260,7 @@ impl SingleKeyWallet {
             unconfirmed_balance: 0,
             total_balance: 0,
             utxos: HashMap::new(),
+            core_wallet_name: None,
         })
     }
 

@@ -8,6 +8,7 @@ use dash_sdk::{
 use tokio::time::sleep;
 
 use super::{BackendTaskSuccessResult, FeeResult};
+use crate::backend_task::error::TaskError;
 use crate::backend_task::update_data_contract::extract_contract_id_from_error;
 use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::{
@@ -29,7 +30,7 @@ impl AppContext {
         signing_key: IdentityPublicKey,
         sdk: &Sdk,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         // Estimate fee for contract creation
         let estimated_fee = PlatformFeeEstimator::new().estimate_contract_create_base();
 
@@ -42,19 +43,18 @@ impl AppContext {
                     true => None,
                     false => Some(alias),
                 };
-                self.db
-                    .insert_contract_if_not_exists(
-                        &returned_contract,
-                        optional_alias.as_deref(),
-                        AllTokensShouldBeAdded,
-                        self,
-                    )
-                    .map_err(|e| format!("Error inserting contract into the database: {}", e))?;
+                self.db.insert_contract_if_not_exists(
+                    &returned_contract,
+                    optional_alias.as_deref(),
+                    AllTokensShouldBeAdded,
+                    self,
+                )?;
                 let fee_result = FeeResult::new(estimated_fee, estimated_fee);
                 Ok(BackendTaskSuccessResult::RegisteredContract(fee_result))
             }
             Err(e) => match e {
                 Error::DriveProofError(proof_error, proof_bytes, block_info) => {
+                    let proof_error_str = proof_error.to_string();
                     // Log the proof error first, before any other operations
                     self.db
                         .insert_proof_log_item(ProofLogItem {
@@ -63,22 +63,25 @@ impl AppContext {
                             verification_path_query_bytes: vec![],
                             height: block_info.height,
                             time_ms: block_info.time_ms,
-                            proof_bytes,
-                            error: Some(proof_error.to_string()),
+                            proof_bytes: proof_bytes.clone(),
+                            error: Some(proof_error_str.clone()),
                         })
                         .ok();
+
+                    // Reconstruct the SDK error to preserve as source
+                    let source_error =
+                        Box::new(Error::DriveProofError(proof_error, proof_bytes, block_info));
 
                     sender
                         .send(TaskResult::Success(Box::new(
                             BackendTaskSuccessResult::ProofErrorLogged,
                         )))
                         .await
-                        .map_err(|e| format!("Failed to send message: {}", e))?;
+                        .map_err(|_| TaskError::InternalSendError)?;
 
                     // Try to extract contract ID and fetch the contract if it exists
                     // This handles the case where the contract was actually created despite the proof error
-                    if let Ok(id) = extract_contract_id_from_error(proof_error.to_string().as_str())
-                    {
+                    if let Ok(id) = extract_contract_id_from_error(&proof_error_str) {
                         match self.network {
                             Network::Regtest => sleep(Duration::from_secs(3)).await,
                             _ => sleep(Duration::from_secs(10)).await,
@@ -99,22 +102,13 @@ impl AppContext {
                                 )
                                 .ok();
 
-                            return Err(format!(
-                                "Error broadcasting Register Contract transition: {}, proof error logged, contract inserted into the database",
-                                proof_error
-                            ));
+                            return Ok(BackendTaskSuccessResult::ContractSavedAfterProofError);
                         }
                     }
 
-                    Err(format!(
-                        "Error broadcasting Register Contract transition: {}, proof error logged",
-                        proof_error
-                    ))
+                    Err(TaskError::ProofError { source_error })
                 }
-                e => Err(format!(
-                    "Error broadcasting Register Contract transition: {}",
-                    e
-                )),
+                e => Err(TaskError::from(e)),
             },
         }
     }

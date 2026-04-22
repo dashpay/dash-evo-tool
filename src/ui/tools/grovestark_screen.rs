@@ -3,13 +3,14 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::grovestark::GroveSTARKTask;
 use crate::context::AppContext;
 use crate::model::qualified_identity::{PrivateKeyTarget, QualifiedIdentity};
-use crate::ui::RootScreenType;
 use crate::ui::ScreenLike;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::{DashColors, Shape, Spacing, Typography};
+use crate::ui::{MessageType, RootScreenType};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{
@@ -69,10 +70,6 @@ pub struct GroveSTARKScreen {
     proof_text: String,
     is_verifying: bool,
     verification_result: Option<VerificationResult>,
-
-    // Error handling
-    gen_error_message: Option<String>,
-    verify_error_message: Option<String>,
 }
 
 impl GroveSTARKScreen {
@@ -151,8 +148,6 @@ impl GroveSTARKScreen {
             proof_text: String::new(),
             is_verifying: false,
             verification_result: None,
-            gen_error_message: None,
-            verify_error_message: None,
         }
     }
 
@@ -270,9 +265,10 @@ impl GroveSTARKScreen {
 
     fn generate_proof(&mut self, app_context: &AppContext) -> AppAction {
         if cfg!(debug_assertions) {
-            self.gen_error_message = Some(
-                "GroveSTARK proof generation requires a release build (cargo run --release)."
-                    .to_string(),
+            MessageBanner::set_global(
+                app_context.egui_ctx(),
+                "GroveSTARK proof generation requires a release build (cargo run --release).",
+                MessageType::Error,
             );
             self.is_generating = false;
             return AppAction::None;
@@ -280,7 +276,6 @@ impl GroveSTARKScreen {
 
         // Reset any prior messages/results before starting a new generation
         self.is_generating = true;
-        self.gen_error_message = None;
         self.generated_proof = None;
         self.proof_size = None;
         self.generation_time = None;
@@ -297,7 +292,11 @@ impl GroveSTARKScreen {
                 id.clone()
             }
             None => {
-                self.gen_error_message = Some("No identity selected".to_string());
+                MessageBanner::set_global(
+                    app_context.egui_ctx(),
+                    "No identity selected",
+                    MessageType::Error,
+                );
                 self.is_generating = false;
                 return AppAction::None;
             }
@@ -306,7 +305,11 @@ impl GroveSTARKScreen {
         let selected_key = match &self.selected_key {
             Some(key) => key,
             None => {
-                self.gen_error_message = Some("No key selected".to_string());
+                MessageBanner::set_global(
+                    app_context.egui_ctx(),
+                    "No key selected",
+                    MessageType::Error,
+                );
                 self.is_generating = false;
                 return AppAction::None;
             }
@@ -322,7 +325,11 @@ impl GroveSTARKScreen {
                 id.clone()
             }
             None => {
-                self.gen_error_message = Some("No contract selected".to_string());
+                MessageBanner::set_global(
+                    app_context.egui_ctx(),
+                    "No contract selected",
+                    MessageType::Error,
+                );
                 self.is_generating = false;
                 return AppAction::None;
             }
@@ -334,7 +341,11 @@ impl GroveSTARKScreen {
                 doc_type.clone()
             }
             None => {
-                self.gen_error_message = Some("No document type selected".to_string());
+                MessageBanner::set_global(
+                    app_context.egui_ctx(),
+                    "No document type selected",
+                    MessageType::Error,
+                );
                 self.is_generating = false;
                 return AppAction::None;
             }
@@ -350,7 +361,11 @@ impl GroveSTARKScreen {
                 id.clone()
             }
             None => {
-                self.gen_error_message = Some("No document selected".to_string());
+                MessageBanner::set_global(
+                    app_context.egui_ctx(),
+                    "No document selected",
+                    MessageType::Error,
+                );
                 self.is_generating = false;
                 return AppAction::None;
             }
@@ -374,20 +389,31 @@ impl GroveSTARKScreen {
                 ) {
                     Ok(Some((_, private_key_bytes))) => private_key_bytes,
                     Ok(None) => {
-                        self.gen_error_message =
-                            Some("Private key not found in storage".to_string());
+                        MessageBanner::set_global(
+                            app_context.egui_ctx(),
+                            "Private key not found in storage",
+                            MessageType::Error,
+                        );
                         self.is_generating = false;
                         return AppAction::None;
                     }
                     Err(e) => {
-                        self.gen_error_message = Some(format!("Failed to get private key: {}", e));
+                        MessageBanner::set_global(
+                            app_context.egui_ctx(),
+                            format!("Failed to get private key: {}", e),
+                            MessageType::Error,
+                        );
                         self.is_generating = false;
                         return AppAction::None;
                     }
                 }
             }
             None => {
-                self.gen_error_message = Some("Qualified identity not found".to_string());
+                MessageBanner::set_global(
+                    app_context.egui_ctx(),
+                    "Qualified identity not found",
+                    MessageType::Error,
+                );
                 self.is_generating = false;
                 return AppAction::None;
             }
@@ -416,18 +442,18 @@ impl GroveSTARKScreen {
         AppAction::BackendTask(task)
     }
 
-    fn verify_proof(&mut self, _app_context: &AppContext) -> AppAction {
+    fn verify_proof(&mut self, app_context: &AppContext) -> AppAction {
         if cfg!(debug_assertions) {
-            self.verify_error_message = Some(
-                "GroveSTARK proof verification requires a release build (cargo run --release)."
-                    .to_string(),
+            MessageBanner::set_global(
+                app_context.egui_ctx(),
+                "GroveSTARK proof verification requires a release build (cargo run --release).",
+                MessageType::Error,
             );
             self.is_verifying = false;
             return AppAction::None;
         }
 
         self.is_verifying = true;
-        self.verify_error_message = None;
         self.verification_result = None; // Clear any previous results
 
         // Parse the proof from pasted text
@@ -448,7 +474,11 @@ impl GroveSTARKScreen {
                 AppAction::BackendTask(task)
             }
             Err(e) => {
-                self.verify_error_message = Some(format!("Failed to parse proof: {}", e));
+                MessageBanner::set_global(
+                    app_context.egui_ctx(),
+                    format!("Failed to parse proof: {}", e),
+                    MessageType::Error,
+                );
                 self.is_verifying = false;
                 AppAction::None
             }
@@ -804,25 +834,7 @@ impl GroveSTARKScreen {
             return action;
         }
 
-        // Error Display
-        if let Some(error) = &self.gen_error_message {
-            let error_color = DashColors::ERROR;
-            let error = error.clone();
-            Frame::new()
-                .fill(error_color.gamma_multiply(0.1))
-                .inner_margin(Margin::symmetric(10, 8))
-                .corner_radius(5.0)
-                .stroke(egui::Stroke::new(1.0, error_color))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(format!("Error: {}", error)).color(error_color));
-                        ui.add_space(10.0);
-                        if ui.small_button("Dismiss").clicked() {
-                            self.gen_error_message = None;
-                        }
-                    });
-                });
-        }
+        // Error display is handled by the global MessageBanner.
 
         // Success Display
         if let Some(_proof) = &self.generated_proof {
@@ -884,25 +896,7 @@ impl GroveSTARKScreen {
 
         ui.separator();
 
-        // Error Display (above the button)
-        if let Some(error) = &self.verify_error_message {
-            let error_color = DashColors::ERROR;
-            let error = error.clone();
-            Frame::new()
-                .fill(error_color.gamma_multiply(0.1))
-                .inner_margin(Margin::symmetric(10, 8))
-                .corner_radius(5.0)
-                .stroke(egui::Stroke::new(1.0, error_color))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(format!("Error: {}", error)).color(error_color));
-                        ui.add_space(10.0);
-                        if ui.small_button("Dismiss").clicked() {
-                            self.verify_error_message = None;
-                        }
-                    });
-                });
-        }
+        // Error display is handled by the global MessageBanner.
 
         // Verify Button
         let can_verify = !self.proof_text.is_empty();
@@ -1000,13 +994,12 @@ impl ScreenLike for GroveSTARKScreen {
         self.refresh_contracts(&app_context);
     }
 
-    fn display_message(&mut self, message: &str, message_type: crate::ui::MessageType) {
-        // Only record errors and scope them to the active mode
-        if message_type == crate::ui::MessageType::Error {
-            match self.mode {
-                ProofMode::Generate => self.gen_error_message = Some(message.to_string()),
-                ProofMode::Verify => self.verify_error_message = Some(message.to_string()),
-            }
+    fn display_message(&mut self, _message: &str, message_type: crate::ui::MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
+        if matches!(
+            message_type,
+            crate::ui::MessageType::Error | crate::ui::MessageType::Warning
+        ) {
             self.is_generating = false;
             self.is_verifying = false;
         }
@@ -1034,7 +1027,6 @@ impl ScreenLike for GroveSTARKScreen {
                 self.generation_time = Some(std::time::Duration::from_millis(
                     proof_data.metadata.generation_time_ms,
                 ));
-                self.gen_error_message = None;
             }
             BackendTaskSuccessResult::VerifiedZKProof(is_valid, proof_data) => {
                 self.is_verifying = false;
@@ -1058,7 +1050,6 @@ impl ScreenLike for GroveSTARKScreen {
                         if is_valid { "VALID" } else { "INVALID" }
                     ),
                 });
-                self.verify_error_message = None;
             }
             _ => {}
         }

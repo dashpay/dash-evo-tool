@@ -5,7 +5,7 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{DashColors, ResponseExt};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::drive::grovedb::operations::proof::GroveDBProof;
 use dash_sdk::drive::query::PathQuery;
@@ -118,7 +118,7 @@ impl ProofLogScreen {
                         // Table headers with sorting
                         if ui
                             .button("Request Type")
-                            .on_hover_text("Click to sort by Request Type")
+                            .clickable_tooltip("Click to sort by Request Type")
                             .clicked()
                         {
                             self.sort_column = ProofLogColumn::RequestType;
@@ -127,7 +127,7 @@ impl ProofLogScreen {
                         }
                         if ui
                             .button("Height")
-                            .on_hover_text("Click to sort by Height")
+                            .clickable_tooltip("Click to sort by Height")
                             .clicked()
                         {
                             self.sort_column = ProofLogColumn::Height;
@@ -136,7 +136,7 @@ impl ProofLogScreen {
                         }
                         if ui
                             .button("Time")
-                            .on_hover_text("Click to sort by Time")
+                            .clickable_tooltip("Click to sort by Time")
                             .clicked()
                         {
                             self.sort_column = ProofLogColumn::Time;
@@ -145,7 +145,7 @@ impl ProofLogScreen {
                         }
                         if ui
                             .button("Error")
-                            .on_hover_text("Click to sort by Error")
+                            .clickable_tooltip("Click to sort by Error")
                             .clicked()
                         {
                             self.sort_column = ProofLogColumn::Error;
@@ -183,7 +183,7 @@ impl ProofLogScreen {
                                     }
                                 });
                             ui.label(error_text)
-                                .on_hover_text(item.error.as_deref().unwrap_or("No Error"));
+                                .info_tooltip(item.error.as_deref().unwrap_or("No Error"));
 
                             ui.end_row();
                         }

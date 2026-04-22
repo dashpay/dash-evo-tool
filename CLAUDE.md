@@ -28,12 +28,24 @@ cargo test --test kittest --all-features           # UI integration tests (egui_
 cargo test --test e2e --all-features               # End-to-end tests
 ```
 
+### Backend E2E tests (network-dependent)
+
+Tests that exercise backend tasks against a live Dash testnet via SPV (no GUI). Marked `#[ignore]` — require network access, a funded wallet, and serial execution. See `tests/backend-e2e/README.md` for run commands, architecture, and writing guide.
+
 Test locations:
 - Unit tests: inline in source files (`#[test]`)
 - UI integration: `tests/kittest/`
 - E2E: `tests/e2e/`
+- Backend E2E: `tests/backend-e2e/` (network-dependent, `#[ignore]`)
 
 Always run `cargo clippy` and `cargo +nightly fmt` when finalizing your work.
+
+### User stories catalog
+
+When a PR adds or significantly changes user-facing features, check `docs/user-stories.md`:
+- If a new feature matches no existing story, add one following the existing format (ID, persona, description, acceptance criteria, `[Implemented]` tag).
+- If a `[Gap]` story is now implemented, flip its tag to `[Implemented]`.
+- Skip user-story updates for non-functional changes (CI, docs, formatting, refactoring).
 
 ## CI: Safe Cargo Wrapper
 
@@ -46,13 +58,39 @@ scripts/safe-cargo.sh clippy --all-features --all-targets -- -D warnings
 scripts/safe-cargo.sh +nightly fmt --all
 ```
 
+
+## Coding Conventions
+
+### General rules
+
+* When a method takes `&AppContext` (or `Option<&AppContext>`), place it as the first parameter after `self`.
+* Screen constructors handle errors internally via `MessageBanner` and return `Self` with degraded state. Keep `create_screen()` clean — no error handling at callsites.
+* **i18n-ready strings**: All user-facing strings (labels, messages, tooltips, errors) must be simple, complete sentences. Avoid concatenating fragments, positional assumptions, or grammar that breaks in other languages. Each string should be extractable as a single translation unit with named placeholders for dynamic values and no logic in the text itself. Current code uses standard Rust format specifiers (`{name}`, `{max}`). When i18n extraction happens later, these will become Fluent-style placeholders (`{ $name }`, `{ $max }`).
+* **Never parse error strings** to extract information. Always use the typed error chain (downcast, match on variants, access structured fields). If no typed variant exists for the information you need, define a new `TaskError` variant or extend the existing error type. String parsing is fragile, breaks on message changes, and bypasses the type system.
+* **Validation placement**: Pure input validation (format, length, character sets) lives in `model/` as stateless functions — single source of truth, unit-testable, no dependencies on `AppContext` or `Sdk`. Backend tasks are the authoritative enforcement layer: they call model validators for format checks AND perform stateful validation that requires network or database (existence checks, uniqueness, business rules). UI screens may call model validators for instant user feedback, but must never implement their own validation logic — always delegate to the model function.
+
+### Error messages
+
+User-facing error messages (shown in `MessageBanner` via `Display`) must follow these rules:
+
+1. **Audience**: Write for the Everyday User persona (`docs/personas/everyday-user.md`). No jargon — no "consensus error", "nonce", "state transition", "SDK", "RPC", or error codes.
+2. **Structure**: *What happened* + *what to do*. Every message must include a concrete action the user can take themselves: retry, wait, try a different approach. Never redirect to "contact support" — users must be able to self-resolve.
+3. **Tone**: Calm, direct, brief. Not apologetic ("Sorry!"), not alarming ("Something went wrong!"), not vague ("An error occurred").
+4. **Technical details**: Never in the message itself — no raw error strings, stack traces, SDK internals, or error codes. Attach via `BannerHandle::with_details(e)` — the `Debug` repr goes to the collapsible details panel and logs. Never refer users to "details" or "details panel" — these are not visible in basic mode. Exception: Base58 identifiers (see rule 6) are not technical details — they are user-meaningful handles.
+5. **Reference implementation**: `sdk_error_user_message()` in `src/backend_task/error.rs` demonstrates the pattern for SDK errors. New `TaskError` variants should follow the same style.
+6. **Base58 IDs are allowed in messages**: Contract IDs, identity IDs, document IDs, and similar Base58-encoded identifiers may appear in user-facing messages when they help the user identify which object is involved (e.g., *"This key conflicts with an existing key bound to contract `Abc123…`."*). They are not jargon — they are opaque-but-copyable handles the user can look up.
+7. **Use dedicated `TaskError` variants**: Every error should get a dedicated `TaskError` variant with a `#[source]` field that preserves the error chain, enables structural matching, and keeps `Display` / `Debug` separation explicit. For `#[source]` fields in SDK-originated error variants, use `Box<SdkError>` — convert upstream types (e.g. `ProtocolError`) via `SdkError::Protocol(e)`. Use the concrete domain type directly for non-SDK errors (e.g. `rusqlite::Error`). Omit `#[source]` entirely when the upstream error carries no useful diagnostic information (e.g. a channel `SendError`). **Never store user-facing strings in error variants** — error variants must not contain `String` fields that hold messages for the user. The `#[error("...")]` attribute on the variant provides the user-facing message; `String` fields (regardless of name) break this separation. Instead, create a dedicated variant with typed `#[source]` fields, or a fieldless variant if no upstream error exists. When encountering existing variants that store stringified errors, replace them with properly typed variants as part of the change.
+
 ## Architecture Overview
 
 **Dash Evo Tool** is a cross-platform GUI application (Rust + egui) for interacting with Dash Evolution. It enables DPNS username registration, contest voting, state transition viewing, wallet management, and identity operations across Mainnet/Testnet/Devnet.
 
 ## Documentation
 
-- **docs/ai-design** should contain architecture and technical design files, grouped in subdirectories prefixed with ISO-formatted date
+- **docs/ai-design** should contain architecture, technical design and manual testing scenarios files, grouped in subdirectories prefixed with ISO-formatted date. Exception: `docs/user-stories.md` is a living document maintained at the top level — not date-grouped.
+- **docs/personas** contains user personas (Everyday User, Power User, Platform Developer) that define the three target user archetypes and the progressive disclosure model for UI complexity. Consult these when making UX decisions about what to show/hide or how to structure wallet features.
+- **docs/user-stories.md** catalogs user stories across feature areas, tagged by persona and marked `[Implemented]` or `[Gap]`. Reference when planning new features or verifying coverage.
+- **docs/ux-design-patterns.md** is the UI/UX reference card — explains **when and how** to use design tokens, buttons, dialogs, forms, accessibility rules, and progressive disclosure. For exact values (sizes, colors, padding), refer to source files (`src/ui/theme.rs`, `src/ui/components/`). Consult when building or reviewing UI.
 - end-user documentation is in a separate repo: https://github.com/dashpay/docs/tree/HEAD/docs/user/network/dash-evo-tool , published at https://docs.dash.org/en/stable/docs/user/network/dash-evo-tool/
 
 ### Core Module Structure
@@ -60,11 +98,25 @@ scripts/safe-cargo.sh +nightly fmt --all
 - **app.rs** - `AppState`: owns all screens, polls task results each frame, dispatches to visible screen
 - **ui/** - Screens and reusable components (`ui/components/`)
 - **backend_task/** - Async business logic, one submodule per domain (identity, wallet, contract, etc.)
-- **model/** - Data types (amounts, fees, settings, wallet/identity models)
+- **model/** - Data types (amounts, fees, settings, wallet/identity models). **All fee estimation logic must be centralized in `model/fee_estimation.rs`** — both platform state transition fees and shielded fee calculations. Never inline fee math in UI or backend task code.
 - **database/** - SQLite persistence (rusqlite), one module per domain
 - **context/** - `AppContext`: network config, SDK client, database, wallets, settings cache (split into submodules: `identity_db.rs`, `wallet_lifecycle.rs`, `settings_db.rs`, etc.)
 - **spv/** - Simplified Payment Verification for light wallet support
 - **components/core_zmq_listener** - Real-time Dash Core event listening via ZMQ
+
+### MCP Server & CLI (`src/mcp/`, `src/bin/det_cli/`)
+
+- **Dual transport**: HTTP (`mcp` feature, embedded in GUI via ArcSwap) and stdio (`cli` feature, lazy-init standalone). `headless` combines both.
+- **CLI ≠ MCP**: `src/bin/det_cli/` is a separate client that talks to the MCP server — it must work over HTTP too, not just in-process. Never put tool logic in the CLI binary; tools live in `src/mcp/tools/` and the CLI discovers them dynamically via `tools/list`.
+- **Tool architecture**: each tool is a struct implementing `ToolBase` (metadata) + `AsyncTool<DashMcpService>` (invocation). Adding a tool requires only the struct + registering in `tool_router()` — zero CLI changes.
+- **Tool naming**: `{domain}_{object}_{action}` — e.g. `core_address_create`, `platform_withdrawals_get`, `tool_describe`. CLI converts underscores to hyphens.
+- **Context provider**: `ContextHolder::Shared(ArcSwap)` for HTTP mode (follows GUI network switches), `ContextHolder::Standalone(ArcSwapOption)` for stdio (init on first tool call).
+- **Network safety**: tools accept optional `network` param — request fails if it doesn't match the active network. Exempt: `network_info`, `tool_describe`.
+- **SPV sync**: wallet tools call `resolve::ensure_spv_synced()` before operating — polls SPV status with 1s interval, 10min timeout.
+- **Backend dispatch**: tools reuse the app's `BackendTask` system via `dispatch::dispatch_task()` — creates a throwaway channel, calls `app_context.run_backend_task()`.
+- **Schema quirk**: `schemars` v1 derives bare `true` for `serde_json::Value` fields — some MCP clients reject this. Use `#[schemars(transform)]` to override.
+- **Error type**: `McpToolError` enum (InvalidParam, WalletNotFound, SpvSyncFailed, TaskFailed, Internal) converts to `rmcp::ErrorData` via `From`.
+- **Docs**: `docs/MCP.md` (server config, tool reference), `docs/CLI.md` (usage, examples), `docs/MCP_TOOL_DEVELOPMENT.md` (checklist for adding new MCP tools).
 
 ### Key Dependencies
 
@@ -102,6 +154,8 @@ Screen::ui() → AppAction::BackendTask(task)
 
 **Backend task enums**: `BackendTask` has variants like `IdentityTask(IdentityTask)`, `WalletTask(WalletTask)`, `TokenTask(Box<TokenTask>)`, etc. Each sub-enum has its own variants and corresponding `run_*_task()` method. Results are `BackendTaskSuccessResult` with 50+ typed variants.
 
+**Error handling**: Backend tasks return `Result<T, TaskError>` (`src/backend_task/error.rs`). `TaskError` is a typed error envelope — `Display` produces user-friendly text for `MessageBanner`, `Debug` provides technical details for logs. Domain errors (`DashPayError`, `SpvError`, etc.) are wired as `#[from]` variants for automatic conversion via `?`. When adding new backend error types, add a dedicated `TaskError` variant rather than converting to `String`.
+
 ## Screen Pattern
 
 All screens implement the `ScreenLike` trait:
@@ -127,9 +181,15 @@ Screens hold `Arc<AppContext>` and manage their own UI state.
 - `connection_status`, `developer_mode`, `fee_multiplier_permille`
 - Per-network instances (mainnet always present, others created on demand)
 
+### ConnectionStatus (single source of truth for connection health)
+
+`ConnectionStatus` (`src/context/connection_status.rs`) is the **single source of truth** for all high-level connection health state — RPC, ZMQ, SPV, and DAPI. For connection health (status, peer counts, errors, overall state), always read from `ConnectionStatus`, not directly from `SpvManager` or other subsystems.
+
+SPV status is **push-based**: `SpvManager` event handlers write directly to `ConnectionStatus` atomics (status, peer count, errors) as events arrive. The UI frame loop calls `refresh_state()` to recompute `overall_state` from these atomics, but does not poll SPV for health. This means `ConnectionStatus` is up-to-date in both GUI and headless/test contexts. Detailed SPV sync progress (heights, phase summaries used by tooltips) may still be read directly from `SpvManager.status()` until that progress reporting is migrated into `ConnectionStatus`.
+
 ## UI Component Pattern
 
-Components follow a lazy initialization pattern (see `doc/COMPONENT_DESIGN_PATTERN.md`):
+Components follow a lazy initialization pattern (see `docs/COMPONENT_DESIGN_PATTERN.md`):
 
 ```rust
 struct MyScreen {
@@ -152,9 +212,28 @@ response.inner.update(&mut self.amount);
 
 **Anti-patterns:** public mutable fields, eager initialization, not clearing invalid data
 
+### UI Components Catalog
+
+See `src/ui/components/README.md` for a complete reference of available components, their APIs, and usage patterns. **Always consult this file before creating new UI elements** to avoid duplicating existing components.
+
+## Message Display
+
+User-facing messages (errors, warnings, success, infos) use `MessageBanner` (`src/ui/components/message_banner.rs`). Global banners are rendered centrally by `island_central_panel()` — `AppState::update()` sets them automatically for backend task results. When using `MessageBanner::set_global()`, no guard is needed — it is idempotent and automatically logs at the appropriate level (error/warn/debug). Screens only override `display_message()` for side-effects. See the component's doc comments and `docs/ai-design/2026-02-17-unified-messages/` for details.
+
+**BannerHandle lifecycle**: Screens that run backend tasks typically store a `refresh_banner: Option<BannerHandle>` field. On task dispatch, set it via `MessageBanner::set_global()` with an info/progress message. In `display_message()` (called as a side-effect by AppState), dismiss the progress banner via `self.refresh_banner.take_and_clear()` (from `OptionBannerExt`). Simply setting the field to `None` would leak the banner — `take_and_clear()` removes it from the egui context. AppState handles displaying the actual result banner.
+
+**Logging**: MessageBanner logs all displayed messages (with details) automatically. Additional logging is unnecessary.
+
+**Error banners**: Never expose raw backend/database errors to users. Use a user-friendly message in the banner and attach technical details via `BannerHandle::with_details()`. When the error implements `Display` and its text is user-appropriate, pass it directly to `set_global`; otherwise write a descriptive, actionable message:
+```rust
+MessageBanner::set_global(ctx, "Failed to load token balances", MessageType::Error)
+    .with_details(e);
+```
+Consider whether a repeated or reused message belongs in a dedicated `TaskError` variant instead of being written as a string literal at the callsite. A variant centralises the wording, keeps `Display` / `Debug` separation clean, and makes the error testable. This is a soft guideline — a one-off screen-level message that wraps no upstream error is fine as a literal; errors that originate in backend tasks should generally live in `TaskError`.
+
 ## Database
 
-Single SQLite connection wrapped in `Mutex<Connection>`. Schema initialized in `database/initialization.rs`. Domain modules provide typed CRUD methods. Backend task errors are `Result<T, String>` — string errors display directly to users.
+Single SQLite connection wrapped in `Mutex<Connection>`. Schema initialized in `database/initialization.rs`. Domain modules provide typed CRUD methods. Backend task errors use `TaskError` (`src/backend_task/error.rs`) — see App Task System section above.
 
 ## Platform Targets
 

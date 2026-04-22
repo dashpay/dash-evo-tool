@@ -10,7 +10,9 @@ fn test_app_startup() {
 
     // Create a test harness for the egui app
     let mut harness = Harness::builder().with_max_steps(100).build_eframe(|ctx| {
-        dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone()).with_animations(false)
+        dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+            .expect("Failed to create AppState")
+            .with_animations(false)
     });
 
     // Set the window size

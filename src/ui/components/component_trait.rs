@@ -69,7 +69,7 @@ pub trait ComponentResponse: Clone {
 ///
 /// # See also
 ///
-/// See `doc/COMPONENT_DESIGN_PATTERN.md` for detailed design pattern documentation.
+/// See `docs/COMPONENT_DESIGN_PATTERN.md` for detailed design pattern documentation.
 pub trait Component {
     /// The domain object type that this component is designed to handle.
     /// This type represents the data this component is designed to handle,

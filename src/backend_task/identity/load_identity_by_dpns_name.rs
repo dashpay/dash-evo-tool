@@ -1,4 +1,5 @@
 use super::BackendTaskSuccessResult;
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::qualified_identity::{
     DPNSNameInfo, IdentityStatus, IdentityType, QualifiedIdentity,
@@ -7,9 +8,8 @@ use crate::model::wallet::WalletSeedHash;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::platform_value::Value;
-use dash_sdk::dpp::util::strings::convert_to_homograph_safe_chars;
 use dash_sdk::drive::query::{WhereClause, WhereOperator};
-use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identifier, Identity};
+use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identity};
 
 impl AppContext {
     /// Load an identity by its DPNS name
@@ -18,9 +18,8 @@ impl AppContext {
         sdk: &Sdk,
         dpns_name: String,
         selected_wallet_seed_hash: Option<WalletSeedHash>,
-    ) -> Result<BackendTaskSuccessResult, String> {
-        // Normalize the name (convert to lowercase and handle homoglyphs)
-        let normalized_name = convert_to_homograph_safe_chars(&dpns_name);
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
+        let normalized_name = crate::model::dpns::normalize_dpns_label(&dpns_name);
 
         // Query the DPNS contract for the domain document
         let domain_query = DocumentQuery {
@@ -45,49 +44,24 @@ impl AppContext {
 
         let documents = Document::fetch_many(sdk, domain_query)
             .await
-            .map_err(|e| format!("Error querying DPNS: {}", e))?;
+            .map_err(TaskError::from)?;
 
         // Get the first (and should be only) document
         let domain_doc = documents
             .values()
             .filter_map(|maybe_doc| maybe_doc.as_ref())
             .next()
-            .ok_or_else(|| format!("No identity found with DPNS name '{}.dash'", dpns_name))?;
+            .ok_or(TaskError::IdentityNotFound)?;
 
         // Extract the identity ID from the records.identity field
-        let identity_id = domain_doc
-            .get("records")
-            .and_then(|records| {
-                if let Value::Map(map) = records {
-                    map.iter()
-                        .find(|(k, _)| {
-                            if let Value::Text(key) = k {
-                                key == "identity"
-                            } else {
-                                false
-                            }
-                        })
-                        .map(|(_, v)| v.clone())
-                } else {
-                    None
-                }
-            })
-            .and_then(|id_value| {
-                if let Value::Identifier(id_bytes) = id_value {
-                    Some(Identifier::from(id_bytes))
-                } else {
-                    None
-                }
-            })
-            .ok_or_else(|| {
-                "DPNS domain document does not contain a valid identity reference".to_string()
-            })?;
+        let identity_id = crate::model::dpns::extract_identity_id_from_dpns_document(domain_doc)
+            .ok_or(TaskError::IdentityNotFound)?;
 
         // Fetch the identity
         let identity = match Identity::fetch_by_identifier(sdk, identity_id).await {
             Ok(Some(identity)) => identity,
-            Ok(None) => return Err("Identity referenced by DPNS name not found".to_string()),
-            Err(e) => return Err(format!("Error fetching identity: {}", e)),
+            Ok(None) => return Err(TaskError::IdentityNotFound),
+            Err(e) => return Err(TaskError::from(e)),
         };
 
         // Get the label from the document for display
@@ -136,9 +110,9 @@ impl AppContext {
                     })
                     .collect::<Vec<DPNSNameInfo>>()
             })
-            .map_err(|e| format!("Error fetching DPNS names: {}", e))?;
+            .map_err(TaskError::from)?;
 
-        let wallets = self.wallets.read().unwrap().clone();
+        let wallets = self.wallets.read().map_err(TaskError::from)?.clone();
 
         // Try to derive keys from wallets if requested
         let mut encrypted_private_keys = std::collections::BTreeMap::new();
@@ -162,18 +136,22 @@ impl AppContext {
             dpns_names: owned_dpns_names,
             associated_wallets: wallets
                 .values()
-                .map(|wallet| (wallet.read().unwrap().seed_hash(), wallet.clone()))
-                .collect(),
+                .map(|wallet| {
+                    let w = wallet.read()?;
+                    Ok::<_, TaskError>((w.seed_hash(), wallet.clone()))
+                })
+                .collect::<Result<_, _>>()?,
             wallet_index: None,
             top_ups: Default::default(),
             status: IdentityStatus::Active,
             network: self.network,
         };
-        let wallet_info = qualified_identity.determine_wallet_info()?;
+        let wallet_info = qualified_identity
+            .determine_wallet_info()
+            .map_err(|e| TaskError::WalletInfoDeterminationFailed { detail: e })?;
 
         // Insert qualified identity into the database
-        self.insert_local_qualified_identity(&qualified_identity, &wallet_info)
-            .map_err(|e| format!("Database error: {}", e))?;
+        self.insert_local_qualified_identity(&qualified_identity, &wallet_info)?;
 
         Ok(BackendTaskSuccessResult::LoadedIdentity(qualified_identity))
     }

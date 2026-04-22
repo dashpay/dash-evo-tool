@@ -8,20 +8,25 @@ impl AppContext {
     pub(crate) async fn generate_receive_address(
         self: &Arc<Self>,
         seed_hash: WalletSeedHash,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, crate::backend_task::error::TaskError> {
         let wallet_arc = {
-            let wallets = self.wallets.read().unwrap();
+            let wallets = self.wallets.read()?;
             wallets
                 .get(&seed_hash)
                 .cloned()
-                .ok_or_else(|| "Wallet not found".to_string())?
+                .ok_or(crate::backend_task::error::TaskError::WalletNotFound)?
         };
 
         let address_string = if self.core_backend_mode() == CoreBackendMode::Spv {
             let derived = self
                 .spv_manager
                 .next_bip44_receive_address(seed_hash, 0)
-                .await?;
+                .await
+                .map_err(|e| {
+                    crate::backend_task::error::TaskError::WalletAddressDerivationFailed {
+                        detail: e,
+                    }
+                })?;
 
             let _ = self.register_spv_address(
                 &wallet_arc,
@@ -33,9 +38,14 @@ impl AppContext {
 
             derived.address.to_string()
         } else {
-            let mut wallet = wallet_arc.write().map_err(|e| e.to_string())?;
+            let mut wallet = wallet_arc.write()?;
             wallet
-                .receive_address(self.network, true, Some(self))?
+                .receive_address(self.network, true, Some(self))
+                .map_err(|e| {
+                    crate::backend_task::error::TaskError::WalletAddressDerivationFailed {
+                        detail: e,
+                    }
+                })?
                 .to_string()
         };
 

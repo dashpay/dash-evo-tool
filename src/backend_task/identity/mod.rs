@@ -11,12 +11,13 @@ mod top_up_identity;
 mod transfer;
 mod withdraw_from_identity;
 
-use super::{BackendTaskSuccessResult, FeeResult};
+use super::{BackendTaskSuccessResult, FeeResult, TaskError};
 use crate::app::TaskResult;
 use crate::context::AppContext;
 use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, WalletDerivationPath};
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::qualified_identity::{IdentityType, PrivateKeyTarget, QualifiedIdentity};
+use crate::model::secret::Secret;
 use crate::model::wallet::{Wallet, WalletArcRef, WalletSeedHash};
 use dash_sdk::Sdk;
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
@@ -25,6 +26,7 @@ use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{OutPoint, Transaction};
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
@@ -42,10 +44,10 @@ pub struct IdentityInputToLoad {
     pub identity_id_input: String,
     pub identity_type: IdentityType,
     pub alias_input: String,
-    pub voting_private_key_input: String,
-    pub owner_private_key_input: String,
-    pub payout_address_private_key_input: String,
-    pub keys_input: Vec<String>,
+    pub voting_private_key_input: Secret,
+    pub owner_private_key_input: Secret,
+    pub payout_address_private_key_input: Secret,
+    pub keys_input: Vec<Secret>,
     pub derive_keys_from_wallets: bool,
     pub selected_wallet_seed_hash: Option<WalletSeedHash>,
 }
@@ -68,6 +70,18 @@ pub struct IdentityKeys {
 }
 
 impl IdentityKeys {
+    pub fn new(
+        master_private_key: Option<(PrivateKey, DerivationPath)>,
+        master_private_key_type: KeyType,
+        keys_input: Vec<KeyInput>,
+    ) -> Self {
+        Self {
+            master_private_key,
+            master_private_key_type,
+            keys_input,
+        }
+    }
+
     pub fn to_key_storage(&self, wallet_seed_hash: WalletSeedHash) -> KeyStorage {
         let Self {
             master_private_key,
@@ -78,6 +92,15 @@ impl IdentityKeys {
         let mut key_map = BTreeMap::new();
 
         if let Some((master_private_key, master_private_key_derivation_path)) = master_private_key {
+            let data = match master_private_key_type {
+                KeyType::ECDSA_HASH160 => master_private_key
+                    .public_key(&secp)
+                    .pubkey_hash()
+                    .to_byte_array()
+                    .to_vec()
+                    .into(),
+                _ => master_private_key.public_key(&secp).to_bytes().into(),
+            };
             let key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
                 id: 0,
                 purpose: Purpose::AUTHENTICATION,
@@ -85,7 +108,7 @@ impl IdentityKeys {
                 contract_bounds: None,
                 key_type: *master_private_key_type,
                 read_only: false,
-                data: master_private_key.public_key(&secp).to_bytes().into(),
+                data,
                 disabled_at: None,
             });
 
@@ -116,6 +139,15 @@ impl IdentityKeys {
                 ),
             )| {
                 let id = (i + 1) as KeyID;
+                let data = match key_type {
+                    KeyType::ECDSA_HASH160 => private_key
+                        .public_key(&secp)
+                        .pubkey_hash()
+                        .to_byte_array()
+                        .to_vec()
+                        .into(),
+                    _ => private_key.public_key(&secp).to_bytes().into(),
+                };
                 let identity_public_key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
                     id,
                     purpose: *purpose,
@@ -123,7 +155,7 @@ impl IdentityKeys {
                     contract_bounds: contract_bounds.clone(),
                     key_type: *key_type,
                     read_only: false,
-                    data: private_key.public_key(&secp).to_bytes().into(),
+                    data,
                     disabled_at: None,
                 });
 
@@ -349,14 +381,14 @@ pub enum IdentityTask {
 }
 
 fn verify_key_input(
-    untrimmed_private_key: String,
+    untrimmed_private_key: Secret,
     type_key: &str,
 ) -> Result<Option<[u8; 32]>, String> {
-    let private_key = untrimmed_private_key.trim().to_string();
+    let private_key = untrimmed_private_key.expose_secret().trim();
     match private_key.len() {
         64 => {
             // hex
-            match hex::decode(private_key.as_str()) {
+            match hex::decode(private_key) {
                 Ok(decoded) => Ok(Some(decoded.try_into().unwrap())),
                 Err(_) => Err(format!(
                     "{} key is the size of a hex key but isn't hex",
@@ -366,7 +398,7 @@ fn verify_key_input(
         }
         51 | 52 => {
             // wif
-            match PrivateKey::from_wif(private_key.as_str()) {
+            match PrivateKey::from_wif(private_key) {
                 Ok(key) => Ok(Some(key.inner.secret_bytes())),
                 Err(_) => Err(format!(
                     "{} key is the length of a WIF key but is invalid",
@@ -377,6 +409,139 @@ fn verify_key_input(
         0 => Ok(None),
         _ => Err(format!("{} key is of incorrect size", type_key)),
     }
+}
+
+/// Returns the default key specifications for a new identity.
+///
+/// The returned vector contains tuples of (KeyType, Purpose, SecurityLevel, Option<ContractBounds>):
+/// - AUTHENTICATION CRITICAL: General platform operations (actions should require PIN)
+/// - AUTHENTICATION HIGH: General platform operations
+/// - TRANSFER CRITICAL: Credit transfers
+/// - ENCRYPTION MEDIUM with DashPay contactRequest bounds: For contact requests per DIP-15
+/// - DECRYPTION MEDIUM with DashPay contactRequest bounds: For contact requests per DIP-15
+///
+/// Note: ENCRYPTION and DECRYPTION keys must use `SingleContractDocumentType` with "contactRequest"
+/// document type, not just `SingleContract`. The platform requires encryption key bounds to specify
+/// the exact document type for proper validation.
+pub fn default_identity_key_specs(
+    dashpay_contract_id: Identifier,
+) -> Vec<(KeyType, Purpose, SecurityLevel, Option<ContractBounds>)> {
+    let dashpay_bounds = Some(ContractBounds::SingleContractDocumentType {
+        id: dashpay_contract_id,
+        document_type_name: "contactRequest".to_string(),
+    });
+
+    vec![
+        (
+            KeyType::ECDSA_HASH160,
+            Purpose::AUTHENTICATION,
+            SecurityLevel::CRITICAL,
+            None,
+        ),
+        (
+            KeyType::ECDSA_HASH160,
+            Purpose::AUTHENTICATION,
+            SecurityLevel::HIGH,
+            None,
+        ),
+        (
+            KeyType::ECDSA_HASH160,
+            Purpose::TRANSFER,
+            SecurityLevel::CRITICAL,
+            None,
+        ),
+        (
+            KeyType::ECDSA_SECP256K1, // ECDH requires secp256k1
+            Purpose::ENCRYPTION,
+            SecurityLevel::MEDIUM, // Platform enforces MEDIUM for ENCRYPTION
+            dashpay_bounds.clone(),
+        ),
+        (
+            KeyType::ECDSA_SECP256K1, // ECDH requires secp256k1
+            Purpose::DECRYPTION,
+            SecurityLevel::MEDIUM,
+            dashpay_bounds,
+        ),
+    ]
+}
+
+/// Build an [`IdentityRegistrationInfo`] for a wallet-funded identity.
+///
+/// Derives the master key and additional keys from the wallet at the given
+/// `identity_index`. This is the canonical way to prepare identity
+/// registration data from a wallet — used by both UI screens and tests.
+#[allow(dead_code)] // Used by backend-e2e tests via pub(crate) visibility
+pub(crate) fn build_identity_registration(
+    app_context: &Arc<AppContext>,
+    wallet_arc: &Arc<RwLock<Wallet>>,
+    identity_index: u32,
+    funding_amount: Duffs,
+) -> Result<IdentityRegistrationInfo, TaskError> {
+    let dashpay_contract_id = app_context.dashpay_contract.id();
+    let key_specs = default_identity_key_specs(dashpay_contract_id);
+
+    let mut wallet = wallet_arc.write()?;
+
+    let (master_private_key, master_derivation_path) = wallet
+        .identity_authentication_ecdsa_private_key(
+            app_context,
+            app_context.network,
+            identity_index,
+            0,
+        )
+        .map_err(|e| TaskError::WalletKeyDerivationFailed { source: e.into() })?;
+
+    let mut keys_input: Vec<KeyInput> = Vec::new();
+    for (i, (key_type, purpose, security_level, contract_bounds)) in
+        key_specs.into_iter().enumerate()
+    {
+        let key_index = (i + 1) as u32;
+        let (private_key, derivation_path) = wallet
+            .identity_authentication_ecdsa_private_key(
+                app_context,
+                app_context.network,
+                identity_index,
+                key_index,
+            )
+            .map_err(|e| TaskError::WalletKeyDerivationFailed { source: e.into() })?;
+        keys_input.push((
+            (private_key, derivation_path),
+            key_type,
+            purpose,
+            security_level,
+            contract_bounds,
+        ));
+    }
+
+    drop(wallet);
+
+    Ok(IdentityRegistrationInfo {
+        alias_input: String::new(),
+        keys: IdentityKeys::new(
+            Some((master_private_key, master_derivation_path)),
+            KeyType::ECDSA_HASH160,
+            keys_input,
+        ),
+        wallet: wallet_arc.clone(),
+        wallet_identity_index: identity_index,
+        identity_funding_method: RegisterIdentityFundingMethod::FundWithWallet(
+            funding_amount,
+            identity_index,
+        ),
+    })
+}
+
+/// Get a receive address string from a wallet.
+#[allow(dead_code)] // Used by backend-e2e tests via pub(crate) visibility
+pub(crate) fn get_receive_address(
+    app_context: &AppContext,
+    wallet_arc: &Arc<RwLock<Wallet>>,
+) -> Result<String, TaskError> {
+    let mut wallet = wallet_arc.write()?;
+    wallet
+        .receive_address(app_context.network, false, Some(app_context))
+        .map(|addr| addr.to_string())
+        .map_err(|e| TaskError::WalletAddressDerivationFailed { detail: e })
 }
 
 impl AppContext {
@@ -529,42 +694,42 @@ impl AppContext {
         task: IdentityTask,
         sdk: &Sdk,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         match task {
-            IdentityTask::LoadIdentity(input) => self.load_identity(sdk, input).await,
+            IdentityTask::LoadIdentity(input) => Ok(self.load_identity(sdk, input).await?),
             IdentityTask::WithdrawFromIdentity(qualified_identity, to_address, credits, id) => {
-                self.withdraw_from_identity(qualified_identity, to_address, credits, id)
-                    .await
+                Ok(self
+                    .withdraw_from_identity(qualified_identity, to_address, credits, id)
+                    .await?)
             }
             IdentityTask::AddKeyToIdentity(qualified_identity, public_key_to_add, private_key) => {
                 self.add_key_to_identity(sdk, qualified_identity, public_key_to_add, private_key)
                     .await
             }
             IdentityTask::RegisterIdentity(registration_info) => {
-                self.register_identity(registration_info).await
+                Ok(self.register_identity(registration_info).await?)
             }
-            IdentityTask::RegisterDpnsName(input) => self.register_dpns_name(sdk, input).await,
-            IdentityTask::RefreshIdentity(qualified_identity) => self
-                .refresh_identity(sdk, qualified_identity, sender)
-                .await
-                .map_err(|e| format!("Error refreshing identity: {}", e)),
-            IdentityTask::Transfer(qualified_identity, to_identifier, credits, id) => {
-                self.transfer_to_identity(qualified_identity, to_identifier, credits, id)
-                    .await
+            IdentityTask::RegisterDpnsName(input) => {
+                Ok(self.register_dpns_name(sdk, input).await?)
             }
-            IdentityTask::SearchIdentityFromWallet(wallet, identity_index) => {
-                self.load_user_identity_from_wallet(sdk, wallet, identity_index, sender)
-                    .await
+            IdentityTask::RefreshIdentity(qualified_identity) => {
+                self.refresh_identity(sdk, qualified_identity, sender).await
             }
-            IdentityTask::SearchIdentitiesUpToIndex(wallet, max_identity_index) => {
-                self.load_user_identities_up_to_index(sdk, wallet, max_identity_index, sender)
-                    .await
+            IdentityTask::Transfer(qualified_identity, to_identifier, credits, id) => Ok(self
+                .transfer_to_identity(qualified_identity, to_identifier, credits, id)
+                .await?),
+            IdentityTask::SearchIdentityFromWallet(wallet, identity_index) => Ok(self
+                .load_user_identity_from_wallet(sdk, wallet, identity_index, sender)
+                .await?),
+            IdentityTask::SearchIdentitiesUpToIndex(wallet, max_identity_index) => Ok(self
+                .load_user_identities_up_to_index(sdk, wallet, max_identity_index, sender)
+                .await?),
+            IdentityTask::SearchIdentityByDpnsName(dpns_name, wallet_seed_hash) => Ok(self
+                .load_identity_by_dpns_name(sdk, dpns_name, wallet_seed_hash)
+                .await?),
+            IdentityTask::TopUpIdentity(top_up_info) => {
+                Ok(self.top_up_identity(top_up_info).await?)
             }
-            IdentityTask::SearchIdentityByDpnsName(dpns_name, wallet_seed_hash) => {
-                self.load_identity_by_dpns_name(sdk, dpns_name, wallet_seed_hash)
-                    .await
-            }
-            IdentityTask::TopUpIdentity(top_up_info) => self.top_up_identity(top_up_info).await,
             IdentityTask::TopUpIdentityFromPlatformAddresses {
                 identity,
                 inputs,
@@ -587,7 +752,7 @@ impl AppContext {
                     .await
             }
             IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames => {
-                self.refresh_loaded_identities_dpns_names(sender).await
+                Ok(self.refresh_loaded_identities_dpns_names(sender).await?)
             }
         }
     }
@@ -599,7 +764,7 @@ impl AppContext {
         qualified_identity: QualifiedIdentity,
         inputs: BTreeMap<dash_sdk::dpp::address_funds::PlatformAddress, Credits>,
         wallet_seed_hash: WalletSeedHash,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         use crate::model::fee_estimation::PlatformFeeEstimator;
         use dash_sdk::platform::transition::top_up_identity_from_addresses::TopUpIdentityFromAddresses;
 
@@ -615,18 +780,18 @@ impl AppContext {
         // Get the wallet for signing - clone it to avoid holding guard across await
         let wallet_clone = {
             let wallet = {
-                let wallets = self.wallets.read().unwrap();
+                let wallets = self.wallets.read()?;
                 wallets
                     .get(&wallet_seed_hash)
                     .cloned()
-                    .ok_or_else(|| "Wallet not found".to_string())?
+                    .ok_or(TaskError::WalletNotFound)?
             };
 
-            let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
+            let wallet_guard = wallet.read()?;
 
             // Ensure wallet is open
             if !wallet_guard.is_open() {
-                return Err("Wallet must be unlocked to sign Platform transactions".to_string());
+                return Err(TaskError::WalletLocked);
             }
 
             wallet_guard.clone()
@@ -640,11 +805,7 @@ impl AppContext {
         // Execute the top-up
         let (address_infos, new_balance) = identity
             .top_up_from_addresses(sdk, inputs, &wallet_clone, None)
-            .await
-            .map_err(|e| {
-                tracing::error!("top_up_from_addresses failed: {}", e);
-                format!("Failed to top up identity from Platform addresses: {}", e)
-            })?;
+            .await?;
 
         tracing::info!(
             "top_up_from_addresses succeeded, new_balance={}",
@@ -664,7 +825,7 @@ impl AppContext {
 
         // Store the updated identity (use update to preserve wallet association)
         self.update_local_qualified_identity(&updated_identity)
-            .map_err(|e| format!("Failed to store updated identity: {}", e))?;
+            .map_err(|e| TaskError::Database { source: e })?;
 
         let fee_result = FeeResult::new(estimated_fee, estimated_fee);
         Ok(BackendTaskSuccessResult::ToppedUpIdentity(
@@ -680,7 +841,7 @@ impl AppContext {
         qualified_identity: QualifiedIdentity,
         outputs: BTreeMap<dash_sdk::dpp::address_funds::PlatformAddress, Credits>,
         key_id: Option<KeyID>,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         use crate::model::fee_estimation::PlatformFeeEstimator;
         use dash_sdk::platform::transition::transfer_to_addresses::TransferToAddresses;
 
@@ -704,13 +865,12 @@ impl AppContext {
                 &qualified_identity,
                 None,
             )
-            .await
-            .map_err(|e| format!("Failed to transfer credits to Platform addresses: {}", e))?;
+            .await?;
 
         // Update destination address balances in any wallets that contain them
         // (using proof-verified data from the SDK response)
         {
-            let wallets = self.wallets.read().unwrap();
+            let wallets = self.wallets.read()?;
             for (seed_hash, wallet_arc) in wallets.iter() {
                 if let Err(e) =
                     self.update_wallet_platform_address_info_from_sdk(*seed_hash, &address_infos)
@@ -748,9 +908,198 @@ impl AppContext {
 
         // Store the updated identity (use update to preserve wallet association)
         self.update_local_qualified_identity(&updated_identity)
-            .map_err(|e| format!("Failed to store updated identity: {}", e))?;
+            .map_err(|e| TaskError::Database { source: e })?;
 
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
         Ok(BackendTaskSuccessResult::TransferredCredits(fee_result))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Test that the default identity keys include the correct number of keys
+    #[test]
+    fn test_default_identity_keys_count() {
+        let contract_id = Identifier::random();
+        let keys = default_identity_key_specs(contract_id);
+        assert_eq!(keys.len(), 5, "Should have 5 default keys");
+    }
+
+    /// Test that AUTHENTICATION keys have correct configuration
+    #[test]
+    fn test_authentication_keys_configuration() {
+        let contract_id = Identifier::random();
+        let keys = default_identity_key_specs(contract_id);
+
+        // First key: AUTHENTICATION CRITICAL
+        let (key_type, purpose, security_level, contract_bounds) = &keys[0];
+        assert_eq!(*key_type, KeyType::ECDSA_HASH160);
+        assert_eq!(*purpose, Purpose::AUTHENTICATION);
+        assert_eq!(*security_level, SecurityLevel::CRITICAL);
+        assert!(
+            contract_bounds.is_none(),
+            "AUTHENTICATION keys should have no contract bounds"
+        );
+
+        // Second key: AUTHENTICATION HIGH
+        let (key_type, purpose, security_level, contract_bounds) = &keys[1];
+        assert_eq!(*key_type, KeyType::ECDSA_HASH160);
+        assert_eq!(*purpose, Purpose::AUTHENTICATION);
+        assert_eq!(*security_level, SecurityLevel::HIGH);
+        assert!(
+            contract_bounds.is_none(),
+            "AUTHENTICATION keys should have no contract bounds"
+        );
+    }
+
+    /// Test that TRANSFER key has correct configuration
+    #[test]
+    fn test_transfer_key_configuration() {
+        let contract_id = Identifier::random();
+        let keys = default_identity_key_specs(contract_id);
+
+        // Third key: TRANSFER CRITICAL
+        let (key_type, purpose, security_level, contract_bounds) = &keys[2];
+        assert_eq!(*key_type, KeyType::ECDSA_HASH160);
+        assert_eq!(*purpose, Purpose::TRANSFER);
+        assert_eq!(*security_level, SecurityLevel::CRITICAL);
+        assert!(
+            contract_bounds.is_none(),
+            "TRANSFER keys should have no contract bounds"
+        );
+    }
+
+    /// Test that ENCRYPTION key uses SingleContractDocumentType with contactRequest
+    ///
+    /// This is critical for DashPay compatibility - the platform requires encryption keys
+    /// to specify the exact document type (contactRequest) not just the contract ID.
+    /// Using SingleContract instead of SingleContractDocumentType will cause:
+    /// "key bounds expected but not present error: expected encryption key bounds for encryption"
+    #[test]
+    fn test_encryption_key_uses_single_contract_document_type() {
+        let contract_id = Identifier::random();
+        let keys = default_identity_key_specs(contract_id);
+
+        // Fourth key: ENCRYPTION MEDIUM
+        let (key_type, purpose, security_level, contract_bounds) = &keys[3];
+        assert_eq!(
+            *key_type,
+            KeyType::ECDSA_SECP256K1,
+            "ENCRYPTION key must use ECDSA_SECP256K1 for ECDH"
+        );
+        assert_eq!(*purpose, Purpose::ENCRYPTION);
+        assert_eq!(
+            *security_level,
+            SecurityLevel::MEDIUM,
+            "Platform enforces MEDIUM for ENCRYPTION"
+        );
+
+        // Verify contract bounds uses SingleContractDocumentType, NOT SingleContract
+        match contract_bounds {
+            Some(ContractBounds::SingleContractDocumentType {
+                id,
+                document_type_name,
+            }) => {
+                assert_eq!(
+                    *id, contract_id,
+                    "Contract ID should match DashPay contract"
+                );
+                assert_eq!(
+                    document_type_name, "contactRequest",
+                    "Document type must be 'contactRequest' for DashPay"
+                );
+            }
+            Some(ContractBounds::SingleContract { .. }) => {
+                panic!(
+                    "ENCRYPTION key must use SingleContractDocumentType, not SingleContract. \
+                       Using SingleContract causes 'key bounds expected but not present' error."
+                );
+            }
+            None => {
+                panic!("ENCRYPTION key must have DashPay contract bounds for contactRequest");
+            }
+        }
+    }
+
+    /// Test that DECRYPTION key uses SingleContractDocumentType with contactRequest
+    ///
+    /// This is critical for DashPay compatibility - the platform requires decryption keys
+    /// to specify the exact document type (contactRequest) not just the contract ID.
+    #[test]
+    fn test_decryption_key_uses_single_contract_document_type() {
+        let contract_id = Identifier::random();
+        let keys = default_identity_key_specs(contract_id);
+
+        // Fifth key: DECRYPTION MEDIUM
+        let (key_type, purpose, security_level, contract_bounds) = &keys[4];
+        assert_eq!(
+            *key_type,
+            KeyType::ECDSA_SECP256K1,
+            "DECRYPTION key must use ECDSA_SECP256K1 for ECDH"
+        );
+        assert_eq!(*purpose, Purpose::DECRYPTION);
+        assert_eq!(*security_level, SecurityLevel::MEDIUM);
+
+        // Verify contract bounds uses SingleContractDocumentType, NOT SingleContract
+        match contract_bounds {
+            Some(ContractBounds::SingleContractDocumentType {
+                id,
+                document_type_name,
+            }) => {
+                assert_eq!(
+                    *id, contract_id,
+                    "Contract ID should match DashPay contract"
+                );
+                assert_eq!(
+                    document_type_name, "contactRequest",
+                    "Document type must be 'contactRequest' for DashPay"
+                );
+            }
+            Some(ContractBounds::SingleContract { .. }) => {
+                panic!(
+                    "DECRYPTION key must use SingleContractDocumentType, not SingleContract. \
+                       Using SingleContract causes 'key bounds expected but not present' error."
+                );
+            }
+            None => {
+                panic!("DECRYPTION key must have DashPay contract bounds for contactRequest");
+            }
+        }
+    }
+
+    /// Test that encryption and decryption keys have matching contract bounds
+    #[test]
+    fn test_encryption_decryption_keys_have_matching_bounds() {
+        let contract_id = Identifier::random();
+        let keys = default_identity_key_specs(contract_id);
+
+        let encryption_bounds = &keys[3].3;
+        let decryption_bounds = &keys[4].3;
+
+        assert_eq!(
+            encryption_bounds, decryption_bounds,
+            "ENCRYPTION and DECRYPTION keys should have identical contract bounds"
+        );
+    }
+
+    /// Test that the contract ID is correctly propagated to key bounds
+    #[test]
+    fn test_contract_id_propagation() {
+        let contract_id = Identifier::random();
+        let keys = default_identity_key_specs(contract_id);
+
+        for (i, (_, purpose, _, contract_bounds)) in keys.iter().enumerate() {
+            if (*purpose == Purpose::ENCRYPTION || *purpose == Purpose::DECRYPTION)
+                && let Some(ContractBounds::SingleContractDocumentType { id, .. }) = contract_bounds
+            {
+                assert_eq!(
+                    *id, contract_id,
+                    "Key {} contract bounds should use the provided contract ID",
+                    i
+                );
+            }
+        }
     }
 }

@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MessageBanner Component Mockup - Dash Evo Tool</title>
+<style>
+  /* ===== CSS Variables for Light/Dark Mode ===== */
+  :root {
+    /* Light mode (default) */
+    --page-bg: #fafafa;
+    --panel-bg: #ffffff;
+    --header-bg: #1a73e8;
+    --header-text: #ffffff;
+    --sidebar-bg: #f0f0f0;
+    --sidebar-border: #ddd;
+    --content-text: #333;
+    --content-text-secondary: #666;
+    --border-default: #ddd;
+
+    /* Error */
+    --error-bg: rgba(235, 87, 87, 0.08);
+    --error-border: rgb(235, 87, 87);
+    --error-text: #8b0000; /* DARK_RED */
+
+    /* Warning */
+    --warning-bg: rgba(241, 196, 15, 0.08);
+    --warning-border: rgb(241, 196, 15);
+    --warning-text: rgb(180, 130, 0);
+
+    /* Success */
+    --success-bg: rgba(39, 174, 96, 0.08);
+    --success-border: rgb(39, 174, 96);
+    --success-text: #006400; /* DARK_GREEN */
+
+    /* Info */
+    --info-bg: rgba(52, 152, 219, 0.08);
+    --info-border: rgb(52, 152, 219);
+    --info-text: rgb(0, 60, 140); /* DEEP_BLUE approx */
+  }
+
+  [data-theme="dark"] {
+    --page-bg: #1a1a2e;
+    --panel-bg: #242442;
+    --header-bg: #16213e;
+    --header-text: #e0e0e0;
+    --sidebar-bg: #1f1f38;
+    --sidebar-border: #3a3a5c;
+    --content-text: #e0e0e0;
+    --content-text-secondary: #aaa;
+    --border-default: #3a3a5c;
+
+    /* Error - dark */
+    --error-bg: rgba(255, 100, 100, 0.12);
+    --error-border: rgb(255, 100, 100);
+    --error-text: rgb(255, 100, 100);
+
+    /* Warning - dark */
+    --warning-bg: rgba(255, 200, 100, 0.12);
+    --warning-border: rgb(255, 200, 100);
+    --warning-text: rgb(255, 200, 100);
+
+    /* Success - dark */
+    --success-bg: rgba(80, 200, 120, 0.12);
+    --success-border: rgb(80, 200, 120);
+    --success-text: rgb(80, 200, 120);
+
+    /* Info - dark */
+    --info-bg: rgba(100, 180, 255, 0.12);
+    --info-border: rgb(100, 180, 255);
+    --info-text: rgb(100, 180, 255);
+  }
+
+  /* ===== Reset & Base ===== */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 16px;
+    line-height: 1.5;
+    background: var(--page-bg);
+    color: var(--content-text);
+    transition: background 0.2s, color 0.2s;
+  }
+
+  /* ===== App Shell ===== */
+  .app-shell {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  .top-panel {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--header-bg);
+    color: var(--header-text);
+    padding: 10px 20px;
+    font-size: 15px;
+    flex-shrink: 0;
+  }
+
+  .top-panel-title {
+    font-weight: 700;
+    font-size: 16px;
+    letter-spacing: 0.5px;
+  }
+
+  .theme-toggle {
+    background: rgba(255,255,255,0.15);
+    border: 1px solid rgba(255,255,255,0.25);
+    color: var(--header-text);
+    padding: 5px 14px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+    font-family: inherit;
+    transition: background 0.15s;
+  }
+  .theme-toggle:hover { background: rgba(255,255,255,0.25); }
+
+  .main-area {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  .sidebar {
+    width: 200px;
+    background: var(--sidebar-bg);
+    border-right: 1px solid var(--sidebar-border);
+    padding: 16px 12px;
+    flex-shrink: 0;
+    transition: background 0.2s;
+  }
+
+  .sidebar-item {
+    padding: 8px 10px;
+    border-radius: 4px;
+    font-size: 14px;
+    color: var(--content-text-secondary);
+    cursor: default;
+    margin-bottom: 2px;
+  }
+  .sidebar-item.active {
+    background: var(--info-bg);
+    color: var(--info-text);
+    font-weight: 600;
+  }
+
+  .content-area {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--panel-bg);
+    transition: background 0.2s;
+  }
+
+  /* ===== Banner Area (above scroll) ===== */
+  .banner-area {
+    padding: 12px 16px 0 16px;
+    flex-shrink: 0;
+  }
+
+  /* ===== Scroll Area (below banners) ===== */
+  .scroll-area {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+  }
+
+  .scroll-area .placeholder-line {
+    height: 16px;
+    background: var(--sidebar-bg);
+    border-radius: 3px;
+    margin-bottom: 10px;
+    opacity: 0.6;
+  }
+  .scroll-area .placeholder-line:nth-child(odd) { width: 90%; }
+  .scroll-area .placeholder-line:nth-child(even) { width: 70%; }
+
+  /* ===== MessageBanner Component ===== */
+  .message-banner {
+    display: flex;
+    align-items: flex-start;
+    border: 1px solid;
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin-bottom: 10px;
+    transition: opacity 0.15s, background 0.2s, border-color 0.2s, color 0.2s;
+  }
+
+  .message-banner.hidden {
+    display: none;
+  }
+
+  /* Severity variants */
+  .message-banner.error {
+    background: var(--error-bg);
+    border-color: var(--error-border);
+    color: var(--error-text);
+  }
+  .message-banner.warning {
+    background: var(--warning-bg);
+    border-color: var(--warning-border);
+    color: var(--warning-text);
+  }
+  .message-banner.success {
+    background: var(--success-bg);
+    border-color: var(--success-border);
+    color: var(--success-text);
+  }
+  .message-banner.info {
+    background: var(--info-bg);
+    border-color: var(--info-border);
+    color: var(--info-text);
+  }
+
+  /* Icon */
+  .banner-icon {
+    font-size: 16px;
+    font-weight: 700;
+    flex-shrink: 0;
+    width: 20px;
+    text-align: center;
+    line-height: 1.5;
+  }
+
+  /* Gap */
+  .banner-gap {
+    width: 4px;
+    flex-shrink: 0;
+  }
+
+  /* Message text */
+  .banner-text {
+    flex: 1;
+    font-size: 16px;
+    line-height: 1.5;
+    word-break: break-word;
+  }
+
+  /* Countdown */
+  .banner-countdown {
+    font-size: 14px;
+    opacity: 0.7;
+    flex-shrink: 0;
+    margin-left: 12px;
+    line-height: 1.7;
+    white-space: nowrap;
+  }
+
+  /* Dismiss button */
+  .banner-dismiss {
+    background: none;
+    border: 1px solid transparent;
+    color: inherit;
+    cursor: pointer;
+    font-size: 14px;
+    font-family: inherit;
+    padding: 0 4px;
+    margin-left: 8px;
+    border-radius: 3px;
+    line-height: 1.7;
+    opacity: 0.7;
+    flex-shrink: 0;
+    transition: opacity 0.1s, background 0.1s;
+  }
+  .banner-dismiss:hover {
+    opacity: 1;
+    background: rgba(128, 128, 128, 0.15);
+  }
+
+  /* ===== Annotation Labels ===== */
+  .section-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--content-text-secondary);
+    margin: 4px 0 6px 0;
+    opacity: 0.6;
+  }
+
+  /* ===== Footer Note ===== */
+  .spec-note {
+    font-size: 12px;
+    color: var(--content-text-secondary);
+    padding: 12px 16px;
+    border-top: 1px solid var(--border-default);
+    flex-shrink: 0;
+  }
+</style>
+</head>
+<body>
+
+<div class="app-shell">
+  <!-- Top Panel / Header -->
+  <div class="top-panel">
+    <span class="top-panel-title">Dash Evo Tool</span>
+    <div>
+      <button class="theme-toggle" onclick="toggleTheme()">Switch to Dark Mode</button>
+    </div>
+  </div>
+
+  <div class="main-area">
+    <!-- Sidebar -->
+    <div class="sidebar">
+      <div class="sidebar-item">Wallets</div>
+      <div class="sidebar-item active">Identities</div>
+      <div class="sidebar-item">DPNS</div>
+      <div class="sidebar-item">Contracts</div>
+      <div class="sidebar-item">Tokens</div>
+      <div class="sidebar-item">Transitions</div>
+    </div>
+
+    <!-- Content Area -->
+    <div class="content-area">
+      <!-- Banner Area: above the scroll area -->
+      <div class="banner-area">
+        <div class="section-label">MessageBanner placement -- above ScrollArea, per UX spec Section 4</div>
+
+        <!-- Error Banner -->
+        <div class="message-banner error" id="banner-error">
+          <span class="banner-icon">!</span>
+          <span class="banner-gap"></span>
+          <span class="banner-text">Failed to top up identity: insufficient wallet balance (required 0.005 DASH, available 0.002 DASH).</span>
+          <button class="banner-dismiss" onclick="dismiss('banner-error')" title="Dismiss">x</button>
+        </div>
+
+        <!-- Warning Banner -->
+        <div class="message-banner warning" id="banner-warning">
+          <span class="banner-icon">!</span>
+          <span class="banner-gap"></span>
+          <span class="banner-text">Network is in degraded state. Some operations may be slow or fail.</span>
+          <button class="banner-dismiss" onclick="dismiss('banner-warning')" title="Dismiss">x</button>
+        </div>
+
+        <!-- Success Banner (with countdown) -->
+        <div class="message-banner success" id="banner-success">
+          <span class="banner-icon">&#10003;</span>
+          <span class="banner-gap"></span>
+          <span class="banner-text">Identity top-up completed successfully. 0.01 DASH transferred.</span>
+          <span class="banner-countdown" id="countdown-success">(5s)</span>
+          <button class="banner-dismiss" onclick="dismiss('banner-success')" title="Dismiss">x</button>
+        </div>
+
+        <!-- Info Banner (with countdown) -->
+        <div class="message-banner info" id="banner-info">
+          <span class="banner-icon">i</span>
+          <span class="banner-gap"></span>
+          <span class="banner-text">Wallet balance refreshed from network.</span>
+          <span class="banner-countdown" id="countdown-info">(3s)</span>
+          <button class="banner-dismiss" onclick="dismiss('banner-info')" title="Dismiss">x</button>
+        </div>
+
+        <!-- Long text example (Error) -->
+        <div class="message-banner error" id="banner-long">
+          <span class="banner-icon">!</span>
+          <span class="banner-gap"></span>
+          <span class="banner-text">State transition broadcast failed after 3 retries. The platform returned error code -32603: Internal JSON-RPC error. This may indicate that the masternode processing the request is temporarily unavailable. Please check your network connection, verify the selected network endpoint is responsive, and try again. If the problem persists, consider switching to a different DAPI endpoint in Settings or contacting support with the full error log.</span>
+          <button class="banner-dismiss" onclick="dismiss('banner-long')" title="Dismiss">x</button>
+        </div>
+
+      </div>
+
+      <!-- Scroll Area: screen content -->
+      <div class="scroll-area">
+        <div class="section-label">ScrollArea -- screen content below</div>
+        <div class="placeholder-line" style="width:60%;height:22px;margin-bottom:16px;opacity:0.3"></div>
+        <div class="placeholder-line"></div>
+        <div class="placeholder-line"></div>
+        <div class="placeholder-line"></div>
+        <div class="placeholder-line" style="width:50%"></div>
+        <div class="placeholder-line"></div>
+        <div class="placeholder-line"></div>
+        <div class="placeholder-line" style="width:80%"></div>
+        <div class="placeholder-line"></div>
+        <div class="placeholder-line" style="width:65%"></div>
+        <div class="placeholder-line"></div>
+        <div class="placeholder-line"></div>
+        <div class="placeholder-line" style="width:40%"></div>
+        <div class="placeholder-line"></div>
+        <div class="placeholder-line"></div>
+        <div class="placeholder-line"></div>
+        <div class="placeholder-line" style="width:55%"></div>
+        <div class="placeholder-line"></div>
+        <div class="placeholder-line"></div>
+        <div class="placeholder-line" style="width:75%"></div>
+      </div>
+
+      <!-- Footer note -->
+      <div class="spec-note">
+        Mockup reference for MessageBanner component. Spec: message-banner-ux-spec.md | Corner radius: 6px | Padding: 10px h, 8px v | Border: 1px | Gap between icon and text: 4px
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  // Theme toggle
+  function toggleTheme() {
+    var html = document.documentElement;
+    var btn = document.querySelector('.theme-toggle');
+    if (html.getAttribute('data-theme') === 'dark') {
+      html.removeAttribute('data-theme');
+      btn.textContent = 'Switch to Dark Mode';
+    } else {
+      html.setAttribute('data-theme', 'dark');
+      btn.textContent = 'Switch to Light Mode';
+    }
+  }
+
+  // Dismiss a banner
+  function dismiss(id) {
+    var el = document.getElementById(id);
+    if (el) el.classList.add('hidden');
+  }
+
+  // Countdown timers for Success and Info banners
+  var countdowns = [
+    { id: 'banner-success', labelId: 'countdown-success', remaining: 5 },
+    { id: 'banner-info',    labelId: 'countdown-info',    remaining: 3 }
+  ];
+
+  setInterval(function() {
+    countdowns.forEach(function(c) {
+      if (c.remaining <= 0) return;
+      c.remaining--;
+      var label = document.getElementById(c.labelId);
+      if (label) {
+        if (c.remaining > 0) {
+          label.textContent = '(' + c.remaining + 's)';
+        } else {
+          dismiss(c.id);
+        }
+      }
+    });
+  }, 1000);
+</script>
+
+</body>
+</html>

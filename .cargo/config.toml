@@ -10,6 +10,7 @@ rustflags = ["-C", "target-feature=-crt-static", "-C", "target-cpu=x86-64"]
 [target.x86_64-pc-windows-gnu]
 linker = "x86_64-w64-mingw32-gcc-posix"
 ar = "x86_64-w64-mingw32-ar"
+rustflags = ["-C", "link-args=-static-libgcc -static-libstdc++ -Wl,-Bstatic -lpthread -Wl,-Bdynamic"]
 
 [env]
 CC_x86_64_pc_windows_gnu = "x86_64-w64-mingw32-gcc-posix"

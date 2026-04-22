@@ -1,7 +1,12 @@
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::FeeResult;
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
-use crate::model::proof_log_item::{ProofLogItem, RequestType};
+use crate::model::fee_estimation::PlatformFeeEstimator;
+use crate::model::proof_log_item::RequestType;
 use crate::model::qualified_identity::QualifiedIdentity;
+use dash_sdk::Error as SdkError;
+use dash_sdk::Sdk;
 use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::consensus::ConsensusError;
 use dash_sdk::dpp::consensus::state::state_error::StateError;
@@ -13,18 +18,19 @@ use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::platform::tokens::builders::claim::TokenClaimTransitionBuilder;
 use dash_sdk::platform::tokens::transitions::ClaimResult;
 use dash_sdk::platform::{DataContract, Identifier, IdentityPublicKey};
-use dash_sdk::{Error, Sdk};
 use std::sync::Arc;
 
 impl AppContext {
-    /// Claim all pending token claims matching the provided parameters.
+    /// Claim tokens for a single distribution cycle.
     ///
-    /// This method iterates until all tokens are claimed or no more claims are available.
+    /// On success returns [`BackendTaskSuccessResult::ClaimedTokens`] with fee info.
     ///
-    /// If no tokens are available to claim, it returns `TokensClaimed(0)`
-    /// (in contrary to the [AppContext::claim_token()] method which returns error).
+    /// If the platform reports that the identity has no current rewards to
+    /// claim ([`StateError::InvalidTokenClaimNoCurrentRewards`]), this returns
+    /// [`TaskError::NoTokensToClaim`] so callers (like [`Self::claim_all_tokens`])
+    /// can match on it structurally.
     #[allow(clippy::too_many_arguments)]
-    pub async fn claim_all_tokens(
+    pub async fn claim_tokens(
         &self,
         data_contract: Arc<DataContract>,
         token_position: u16,
@@ -33,71 +39,7 @@ impl AppContext {
         signing_key: IdentityPublicKey,
         public_note: Option<String>,
         sdk: &Sdk,
-    ) -> Result<BackendTaskSuccessResult, String> {
-        let mut total_claimed = 0;
-        loop {
-            let result = self
-                .claim_token(
-                    data_contract.clone(),
-                    token_position,
-                    actor_identity,
-                    distribution_type,
-                    signing_key.clone(),
-                    public_note.clone(),
-                    sdk,
-                )
-                .await;
-
-            match result {
-                Ok(BackendTaskSuccessResult::TokensClaimed(0)) => {
-                    // If no tokens were claimed, we can exit the loop
-                    break;
-                }
-                Ok(BackendTaskSuccessResult::TokensClaimed(amount)) => {
-                    total_claimed += amount;
-                    // Continue to check for more tokens to claim
-                }
-                Err(dash_sdk::Error::Protocol(ProtocolError::ConsensusError(ce)))
-                    if matches!(
-                        *ce,
-                        ConsensusError::StateError(StateError::InvalidTokenClaimNoCurrentRewards(
-                            _
-                        )),
-                    ) =>
-                {
-                    // No more rewards available, exit the loop
-                    break;
-                }
-                // any other result we propagate
-                Ok(x) => return Ok(x),
-                Err(e) => {
-                    return Err(format!(
-                        "Error claiming tokens: {}; claimed so far: {}",
-                        e, total_claimed
-                    ));
-                }
-            }
-        }
-
-        // Return the total claimed amount.
-        Ok(BackendTaskSuccessResult::TokensClaimed(total_claimed))
-    }
-
-    /// Execute single token claim.
-    ///
-    /// This method will return error if no tokens were available to claim.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn claim_token(
-        &self,
-        data_contract: Arc<DataContract>,
-        token_position: u16,
-        actor_identity: &QualifiedIdentity,
-        distribution_type: TokenDistributionType,
-        signing_key: IdentityPublicKey,
-        public_note: Option<String>,
-        sdk: &Sdk,
-    ) -> Result<BackendTaskSuccessResult, dash_sdk::Error> {
-        // Build
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         let mut builder = TokenClaimTransitionBuilder::new(
             data_contract.clone(),
             token_position,
@@ -117,27 +59,15 @@ impl AppContext {
         let result = sdk
             .token_claim(builder, &signing_key, actor_identity)
             .await
-            .inspect_err(|e|{ match e {
-                Error::DriveProofError(proof_error, proof_bytes, block_info) => {
-                    self.db
-                        .insert_proof_log_item(ProofLogItem {
-                            request_type: RequestType::BroadcastStateTransition,
-                            request_bytes: vec![],
-                            verification_path_query_bytes: vec![],
-                            height: block_info.height,
-                            time_ms: block_info.time_ms,
-                            proof_bytes: proof_bytes.clone(),
-                            error: Some(proof_error.to_string()),
-                        })
-                        .ok();
-                    tracing::error!(error=?proof_error, "Error broadcasting ClaimTokens transition, proof error logged");
+            .map_err(|e| {
+                if is_no_current_rewards_error(&e) {
+                    TaskError::NoTokensToClaim
+                } else {
+                    self.log_drive_proof_error(e, RequestType::BroadcastStateTransition)
                 }
-                e => tracing::error!(error=?e, "Error broadcasting ClaimTokens transition"),
-            };
-        })?;
+            })?;
 
         // Using the result, update the balance of the claimer identity
-        let mut claimed_amount = 0;
         if let Some(token_id) = data_contract.token_id(token_position) {
             match result {
                 // Standard claim result - extract claimer and amount from document
@@ -146,16 +76,14 @@ impl AppContext {
                         (document.get("claimerId"), document.get("amount"))
                         && let (Value::Identifier(claimer_bytes), Value::U64(amount)) =
                             (claimer_value, amount_value)
+                        && let Ok(claimer_id) = Identifier::from_bytes(claimer_bytes)
+                        && let Err(e) =
+                            self.insert_token_identity_balance(&token_id, &claimer_id, *amount)
                     {
-                        claimed_amount = *amount;
-                        if let Ok(claimer_id) = Identifier::from_bytes(claimer_bytes)
-                            && let Err(e) =
-                                self.insert_token_identity_balance(&token_id, &claimer_id, *amount)
-                        {
-                            tracing::error!(error=?e, identity=?claimer_id, token_id=?token_id,
-                                "Failed to update token balance from claim document",
-                            );
-                        }
+                        tracing::error!(
+                            "Failed to update token balance from claim document: {}",
+                            e
+                        );
                     }
                 }
 
@@ -165,22 +93,92 @@ impl AppContext {
                         (document.get("claimerId"), document.get("amount"))
                         && let (Value::Identifier(claimer_bytes), Value::U64(amount)) =
                             (claimer_value, amount_value)
+                        && let Ok(claimer_id) = Identifier::from_bytes(claimer_bytes)
+                        && let Err(e) =
+                            self.insert_token_identity_balance(&token_id, &claimer_id, *amount)
                     {
-                        claimed_amount = *amount;
-                        if let Ok(claimer_id) = Identifier::from_bytes(claimer_bytes)
-                            && let Err(e) =
-                                self.insert_token_identity_balance(&token_id, &claimer_id, *amount)
-                        {
-                            tracing::error!(error=?e, identity=?claimer_id, token_id=?token_id,
-                                "Failed to update token balance from group action document",
-                            );
-                        }
+                        tracing::error!(
+                            "Failed to update token balance from group action document: {}",
+                            e
+                        );
                     }
                 }
             }
         }
 
-        // Return success
-        Ok(BackendTaskSuccessResult::TokensClaimed(claimed_amount))
+        // Return success with fee result
+        let estimated_fee = PlatformFeeEstimator::new().estimate_document_batch(1);
+        let fee_result = FeeResult::new(estimated_fee, estimated_fee);
+        Ok(BackendTaskSuccessResult::ClaimedTokens(fee_result))
     }
+
+    /// Repeatedly claim tokens until the distribution has no rewards left.
+    ///
+    /// Calls [`Self::claim_tokens`] in a loop, accumulating fees across
+    /// iterations. Stops cleanly when the platform reports
+    /// [`TaskError::NoTokensToClaim`]. If no iteration succeeded (the very
+    /// first call reported nothing to claim), the error is propagated so the
+    /// user gets a proper "nothing to claim" banner instead of a silent
+    /// success.
+    ///
+    /// Any other error short-circuits the loop and is returned as-is.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn claim_all_tokens(
+        &self,
+        data_contract: Arc<DataContract>,
+        token_position: u16,
+        actor_identity: &QualifiedIdentity,
+        distribution_type: TokenDistributionType,
+        signing_key: IdentityPublicKey,
+        public_note: Option<String>,
+        sdk: &Sdk,
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
+        let mut iterations: usize = 0;
+        loop {
+            let outcome = self
+                .claim_tokens(
+                    data_contract.clone(),
+                    token_position,
+                    actor_identity,
+                    distribution_type,
+                    signing_key.clone(),
+                    public_note.clone(),
+                    sdk,
+                )
+                .await;
+
+            match outcome {
+                Ok(BackendTaskSuccessResult::ClaimedTokens(_)) => {
+                    iterations = iterations.saturating_add(1);
+                }
+                // Any other success variant is unexpected — propagate verbatim.
+                Ok(other) => return Ok(other),
+                Err(TaskError::NoTokensToClaim) => {
+                    if iterations == 0 {
+                        return Err(TaskError::NoTokensToClaim);
+                    }
+                    break;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
+        let total_fee = PlatformFeeEstimator::new().estimate_document_batch(iterations);
+        Ok(BackendTaskSuccessResult::ClaimedTokens(FeeResult::new(
+            total_fee, total_fee,
+        )))
+    }
+}
+
+/// Returns `true` when the SDK error is the platform's
+/// `InvalidTokenClaimNoCurrentRewards` consensus state error.
+fn is_no_current_rewards_error(e: &SdkError) -> bool {
+    matches!(
+        e,
+        SdkError::Protocol(ProtocolError::ConsensusError(ce))
+            if matches!(
+                ce.as_ref(),
+                ConsensusError::StateError(StateError::InvalidTokenClaimNoCurrentRewards(_))
+            )
+    )
 }

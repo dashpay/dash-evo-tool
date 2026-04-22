@@ -44,7 +44,7 @@ impl AppContext {
         task: ContractTask,
         sdk: &Sdk,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, crate::backend_task::error::TaskError> {
         match task {
             ContractTask::FetchContracts(identifiers) => {
                 match DataContract::fetch_many(sdk, identifiers).await {
@@ -52,16 +52,12 @@ impl AppContext {
                         let mut results = vec![];
                         for data_contract in data_contracts {
                             if let Some(contract) = &data_contract.1 {
-                                self.db
-                                    .insert_contract_if_not_exists(
-                                        contract,
-                                        None,
-                                        NoTokensShouldBeAdded,
-                                        self,
-                                    )
-                                    .map_err(|e| {
-                                        format!("Error inserting contract into the database: {}", e)
-                                    })?;
+                                self.db.insert_contract_if_not_exists(
+                                    contract,
+                                    None,
+                                    NoTokensShouldBeAdded,
+                                    self,
+                                )?;
                                 results.push(Some(contract.clone()));
                             } else {
                                 results.push(None);
@@ -69,7 +65,7 @@ impl AppContext {
                         }
                         Ok(BackendTaskSuccessResult::FetchedContracts(results))
                     }
-                    Err(e) => Err(format!("Error fetching contracts: {}", e)),
+                    Err(e) => Err(crate::backend_task::error::TaskError::from(e)),
                 }
             }
             ContractTask::FetchContractsWithDescriptions(identifiers) => {
@@ -96,13 +92,24 @@ impl AppContext {
                                 };
                                 let document_option = Document::fetch(sdk, document_query)
                                     .await
-                                    .map_err(|e| format!("Error fetching description: {}", e))?;
+                                    .map_err(crate::backend_task::error::TaskError::from)?;
 
                                 let mut token_infos = vec![];
                                 for token in contract.tokens() {
-                                    let token_configuration = contract
+                                    let token_configuration = match contract
                                         .expected_token_configuration(*token.0)
-                                        .expect("Expected to get token configuration");
+                                    {
+                                        Ok(config) => config,
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                "Skipping token at position {} in contract {}: {}",
+                                                token.0,
+                                                contract.id(),
+                                                e
+                                            );
+                                            continue;
+                                        }
+                                    };
                                     let token_name = {
                                         let TokenConfigurationConvention::V0(conventions) =
                                             &token_configuration.conventions();
@@ -141,7 +148,7 @@ impl AppContext {
                         }
                         Ok(BackendTaskSuccessResult::ContractsWithDescriptions(results))
                     }
-                    Err(e) => Err(format!("Error fetching contracts: {}", e)),
+                    Err(e) => Err(crate::backend_task::error::TaskError::from(e)),
                 }
             }
             ContractTask::FetchActiveGroupActions(contract, identity) => {
@@ -165,7 +172,7 @@ impl AppContext {
 
                     let group_actions = GroupAction::fetch_many(sdk, query)
                         .await
-                        .map_err(|e| format!("Error fetching group actions: {}", e))?;
+                        .map_err(crate::backend_task::error::TaskError::from)?;
 
                     for group_action in group_actions {
                         if let Some(action) = &group_action.1 {
@@ -202,16 +209,14 @@ impl AppContext {
             ContractTask::RemoveContract(identifier) => self
                 .remove_contract(&identifier)
                 .map(|_| BackendTaskSuccessResult::RemovedContract)
-                .map_err(|e| format!("Error removing contract: {}", e)),
+                .map_err(crate::backend_task::error::TaskError::from),
             ContractTask::SaveDataContract(data_contract, alias, insert_tokens_too) => {
-                self.db
-                    .insert_contract_if_not_exists(
-                        &data_contract,
-                        alias.as_deref(),
-                        insert_tokens_too,
-                        self,
-                    )
-                    .map_err(|e| format!("Error inserting contract into the database: {}", e))?;
+                self.db.insert_contract_if_not_exists(
+                    &data_contract,
+                    alias.as_deref(),
+                    insert_tokens_too,
+                    self,
+                )?;
                 Ok(BackendTaskSuccessResult::SavedContract)
             }
         }

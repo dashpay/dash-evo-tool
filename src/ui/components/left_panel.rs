@@ -1,8 +1,9 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
+use crate::model::feature_gate::FeatureGate;
 use crate::ui::RootScreenType;
 use crate::ui::components::styled::GradientButton;
-use crate::ui::theme::{DashColors, Shadow, Shape, Spacing};
+use crate::ui::theme::{DashColors, ResponseExt, Shadow, Shape, Spacing};
 use dash_sdk::dashcore_rpc::dashcore::Network;
 use eframe::epaint::Margin;
 use egui::{Context, Frame, Image, RichText, SidePanel, TextureHandle};
@@ -115,42 +116,51 @@ pub fn add_left_panel(
 ) -> AppAction {
     let mut action = AppAction::None;
 
-    // Define the button details directly in this function
-    let buttons = [
+    // Define the button details directly in this function.
+    // The optional FeatureGate controls visibility — entries where the gate
+    // evaluates to false are filtered out before rendering.
+    let buttons: &[(&str, RootScreenType, &str, Option<FeatureGate>)] = &[
         (
             "Dashpay",
             RootScreenType::RootScreenDashPayProfile,
             "dashpay.png",
+            Some(FeatureGate::DashPay),
         ),
         (
             "Identities",
             RootScreenType::RootScreenIdentities,
             "identity.png",
+            None,
         ),
         (
             "Contracts",
             RootScreenType::RootScreenDocumentQuery,
             "doc.png",
+            None,
         ),
         (
             "Tokens",
             RootScreenType::RootScreenMyTokenBalances,
             "tokens.png",
+            None,
         ),
         (
             "Wallets",
             RootScreenType::RootScreenWalletsBalances,
             "wallet.png",
+            None,
         ),
         (
             "Tools",
             RootScreenType::RootScreenToolsPlatformInfoScreen,
             "tools.png",
+            None,
         ),
         (
             "Settings",
             RootScreenType::RootScreenNetworkChooser,
             "config.png",
+            None,
         ),
     ];
 
@@ -177,7 +187,7 @@ pub fn add_left_panel(
                     // Reserve a fixed area at the bottom for the logo and labels,
                     // and make the button list above it vertically scrollable.
                     let mut bottom_reserved = Spacing::SM + 20.0; // spacing + logo height
-                    if app_context.network != Network::Dash {
+                    if app_context.network != Network::Mainnet {
                         bottom_reserved += 22.0; // network label + spacing
                     }
                     if app_context.is_developer_mode() {
@@ -195,7 +205,13 @@ pub fn add_left_panel(
                                     .auto_shrink([false, false])
                                     .show(ui, |ui| {
                                         ui.vertical_centered(|ui| {
-                                            for (label, screen_type, icon_path) in buttons.iter() {
+                                            for (label, screen_type, icon_path, gate) in buttons.iter() {
+                                                // Skip entries whose feature gate is not available
+                                                if let Some(gate) = gate
+                                                    && !gate.is_available(app_context)
+                                                {
+                                                    continue;
+                                                }
                                                 let texture: Option<TextureHandle> = load_icon(ctx, icon_path);
                                                 // Check if this button's category is selected
                                                 let is_selected = match *screen_type {
@@ -250,6 +266,8 @@ pub fn add_left_panel(
                                                     .frame(false);
 
                                                     let added = ui.add(button);
+                                                    // Provide an accessible name for the image-only button
+                                                    added.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, is_selected, *label));
                                                     if added.clicked() {
                                                         action = AppAction::SetMainScreenThenGoToMainScreen(
                                                             *screen_type,
@@ -271,12 +289,12 @@ pub fn add_left_panel(
                                                 } else {
                                                     // Fallback button if texture not available
                                                     if is_selected {
-                                                        if GradientButton::new(*label, app_context)
+                                                        let response = GradientButton::new(*label, app_context)
                                                             .min_width(60.0)
                                                             .glow()
-                                                            .show(ui)
-                                                            .clicked()
-                                                        {
+                                                            .show(ui);
+                                                        response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, is_selected, *label));
+                                                        if response.clicked() {
                                                             action = AppAction::SetMainScreen(*screen_type);
                                                         }
                                                     } else {
@@ -291,7 +309,9 @@ pub fn add_left_panel(
                                                             ))
                                                             .min_size(egui::vec2(60.0, 60.0));
 
-                                                        if ui.add(button).clicked() {
+                                                        let response = ui.add(button);
+                                                        response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, is_selected, *label));
+                                                        if response.clicked() {
                                                             action = AppAction::SetMainScreen(*screen_type);
                                                         }
                                                     }
@@ -311,7 +331,7 @@ pub fn add_left_panel(
                                         // Dash logo at the very bottom
                                         // Use 100x40 for rendering (2x for crisp display), then scale down
                                         if let Some(dash_texture) = load_svg_icon(ctx, "dashlogo.svg", 100, 40) {
-                                            if app_context.network == Network::Dash {
+                                            if app_context.network == Network::Mainnet {
                                                 ui.add_space(Spacing::SM);
                                             }
                                             let logo_size = egui::vec2(50.0, 20.0);
@@ -334,7 +354,7 @@ pub fn add_left_panel(
                                         }
 
                                         // Network label (if not on mainnet)
-                                        if app_context.network != Network::Dash {
+                                        if app_context.network != Network::Mainnet {
                                             let (network_name, network_color) = match app_context.network {
                                                 Network::Testnet => (
                                                     "Testnet",
@@ -362,11 +382,11 @@ pub fn add_left_panel(
 
                                         // Dev mode label (below network label if present)
                                         if app_context.is_developer_mode() {
-                                            ui.add_space(2.0);
-                                            let dev_label = egui::RichText::new("🔧 Dev Mode")
+                                            ui.add_space(5.0);
+                                            let dev_label = egui::RichText::new("🔧 Expert")
                                                 .color(DashColors::GRADIENT_PURPLE)
                                                 .size(12.0);
-                                            if ui.label(dev_label).clicked() {
+                                            if ui.label(dev_label).clickable_tooltip("Expert mode is enabled — shows advanced options").clicked() {
                                                 action = AppAction::SetMainScreenThenGoToMainScreen(
                                                     RootScreenType::RootScreenNetworkChooser,
                                                 );

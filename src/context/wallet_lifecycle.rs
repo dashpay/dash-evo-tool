@@ -1,8 +1,11 @@
 use super::AppContext;
 use super::get_transaction_info;
+use crate::backend_task::error::TaskError;
+use crate::database::is_unique_constraint_violation;
+use crate::model::feature_gate::FeatureGate;
 use crate::model::wallet::{
     AddressInfo as WalletAddressInfo, DerivationPathHelpers, DerivationPathReference,
-    DerivationPathType, Wallet, WalletSeedHash, WalletTransaction,
+    DerivationPathType, TransactionStatus, Wallet, WalletSeedHash, WalletTransaction,
 };
 use crate::spv::{AssetLockFinalityEvent, CoreBackendMode, SpvManager};
 use dash_sdk::dpp::dashcore::hashes::Hash;
@@ -21,14 +24,14 @@ impl AppContext {
         &self.spv_manager
     }
 
-    pub fn clear_spv_data(&self) -> rusqlite::Result<(), String> {
-        self.spv_manager.clear_data_dir()
+    pub fn clear_spv_data(&self) -> Result<(), TaskError> {
+        self.spv_manager
+            .clear_data_dir()
+            .map_err(|e| TaskError::SpvClearDataFailed { detail: e })
     }
 
-    pub fn clear_network_database(&self) -> rusqlite::Result<(), String> {
-        self.db
-            .clear_network_data(self.network)
-            .map_err(|e| e.to_string())?;
+    pub fn clear_network_database(&self) -> Result<(), TaskError> {
+        self.db.clear_network_data(self.network)?;
 
         if let Ok(mut wallets) = self.wallets.write() {
             wallets.clear();
@@ -43,7 +46,7 @@ impl AppContext {
         Ok(())
     }
 
-    pub fn start_spv(self: &Arc<Self>) -> Result<(), String> {
+    pub fn start_spv(self: &Arc<Self>) -> Result<(), TaskError> {
         // Skip if SPV is already active — avoids orphaned listener tasks from
         // re-registering channels while existing handlers still hold old senders.
         if self.spv_manager.status().status.is_active() {
@@ -70,22 +73,86 @@ impl AppContext {
         // (spawned inside run_spv_loop) always capture a valid sender.
         self.spv_setup_reconcile_listener();
         self.spv_setup_finality_listener();
-        self.spv_manager.start(expected_wallets)?;
+        self.spv_manager
+            .start(expected_wallets)
+            .map_err(|e| TaskError::SpvStartFailed { detail: e })?;
         // Immediately reflect the new SPV status in ConnectionStatus so the
         // UI sees the change on the next frame instead of waiting for the
         // next throttled trigger_refresh() cycle (2-10 seconds).
         self.connection_status
             .set_spv_status(self.spv_manager.status().status);
-        self.connection_status.refresh_overall();
+        self.connection_status.refresh_state();
         Ok(())
     }
 
+    /// Persist a wallet to the database, register it in the in-memory map,
+    /// save its known addresses, and load it into SPV if applicable.
+    ///
+    /// This is the single entry point for adding a wallet to the system.
+    /// UI screens should call this after constructing a [`Wallet`] via
+    /// [`Wallet::new_from_seed()`].
+    pub fn register_wallet(
+        self: &Arc<Self>,
+        wallet: Wallet,
+    ) -> Result<(WalletSeedHash, Arc<RwLock<Wallet>>), TaskError> {
+        // 1. Persist wallet and known addresses atomically
+        let addresses: Vec<_> = wallet
+            .known_addresses
+            .iter()
+            .map(|(address, path)| {
+                (
+                    address,
+                    path,
+                    DerivationPathReference::BIP44,
+                    DerivationPathType::CLEAR_FUNDS,
+                )
+            })
+            .collect();
+
+        self.db
+            .store_wallet_with_addresses(&wallet, &self.network, &addresses)
+            .map_err(|e| {
+                if is_unique_constraint_violation(&e) {
+                    TaskError::WalletAlreadyImported
+                } else {
+                    TaskError::Database { source: e }
+                }
+            })?;
+
+        let seed_hash = wallet.seed_hash();
+
+        // 2. Register in-memory
+        let wallet_arc = Arc::new(RwLock::new(wallet));
+        let mut wallets = self.wallets.write()?;
+        wallets.insert(seed_hash, wallet_arc.clone());
+        self.has_wallet.store(true, Ordering::Relaxed);
+        drop(wallets);
+
+        // 3. Bootstrap any additional addresses and load into SPV
+        self.bootstrap_wallet_addresses(&wallet_arc);
+        if self.core_backend_mode() == CoreBackendMode::Spv {
+            self.handle_wallet_unlocked(&wallet_arc);
+        }
+
+        Ok((seed_hash, wallet_arc))
+    }
+
     pub fn bootstrap_wallet_addresses(&self, wallet: &Arc<RwLock<Wallet>>) {
-        if let Ok(mut guard) = wallet.write()
-            && guard.known_addresses.is_empty()
-        {
-            tracing::info!(wallet = %hex::encode(guard.seed_hash()), "Bootstrapping wallet addresses");
-            guard.bootstrap_known_addresses(self);
+        if let Ok(mut guard) = wallet.write() {
+            // Bootstrap when no addresses exist (fresh wallet) or when
+            // platform payment addresses haven't been derived yet (wallet
+            // created with only a Core address via new_from_seed).
+            // INTENTIONAL(CODE-006): Bootstrap checks only PlatformPayment address type.
+            // Other platform address types may trigger redundant re-derivation, but
+            // bootstrap_known_addresses() is idempotent so this is safe.
+            let has_platform_addresses = guard.watched_addresses.values().any(|info| {
+                info.path_reference
+                    == crate::model::wallet::DerivationPathReference::PlatformPayment
+            });
+            if guard.known_addresses.is_empty() || !has_platform_addresses {
+                tracing::info!(wallet = %hex::encode(guard.seed_hash()), "Bootstrapping wallet addresses");
+                guard.bootstrap_known_addresses(self);
+            }
         }
     }
 
@@ -94,6 +161,27 @@ impl AppContext {
             self.queue_spv_wallet_load(seed_hash, seed_bytes);
             // Note: Platform address sync is not done here.
             // Core UTXO refresh is handled at startup in bootstrap_loaded_wallets.
+
+            // Initialize shielded wallet state only when the network supports it
+            // (all shielded state transitions present). On mainnet (which doesn't
+            // support shielded transactions yet), skip entirely to avoid
+            // unnecessary sync attempts and log noise.
+            if FeatureGate::Shielded.is_available(self) {
+                match self.initialize_shielded_wallet(seed_hash) {
+                    Ok(_) => {
+                        tracing::trace!(
+                            seed = %hex::encode(seed_hash),
+                            "Shielded wallet state initialized on unlock"
+                        );
+                        self.queue_shielded_sync(seed_hash);
+                    }
+                    Err(e) => tracing::debug!(
+                        seed = %hex::encode(seed_hash),
+                        error = %e,
+                        "Shielded wallet init skipped on unlock"
+                    ),
+                }
+            }
         }
     }
 
@@ -106,6 +194,90 @@ impl AppContext {
             }
         };
         self.queue_spv_wallet_unload(seed_hash);
+    }
+
+    /// Initialize shielded state for unlocked wallets that were skipped
+    /// because the protocol version wasn't known at unlock time.
+    /// Called when the protocol version first crosses the shielded threshold.
+    pub(crate) fn init_missing_shielded_wallets(self: &Arc<Self>) {
+        // Collect candidate seed hashes while holding locks, then release
+        // before calling initialize_shielded_wallet (which re-acquires both).
+        let candidates: Vec<WalletSeedHash> = (|| {
+            let wallets = self.wallets.read().ok()?;
+            let existing = self.shielded_states.lock().ok()?;
+            Some(
+                wallets
+                    .iter()
+                    .filter(|(hash, wallet_arc)| {
+                        !existing.contains_key(*hash)
+                            && wallet_arc.read().ok().map(|w| w.is_open()).unwrap_or(false)
+                    })
+                    .map(|(hash, _)| *hash)
+                    .collect(),
+            )
+        })()
+        .unwrap_or_default();
+
+        for seed_hash in candidates {
+            match self.initialize_shielded_wallet(seed_hash) {
+                Ok(_) => {
+                    tracing::info!(
+                        seed = %hex::encode(seed_hash),
+                        "Shielded wallet initialized after protocol version update"
+                    );
+                    self.queue_shielded_sync(seed_hash);
+                }
+                Err(e) => tracing::debug!(
+                    seed = %hex::encode(seed_hash),
+                    error = %e,
+                    "Shielded wallet init failed after protocol version update"
+                ),
+            }
+        }
+    }
+
+    /// Queue async SyncNotes -> CheckNullifiers for an already-initialized
+    /// shielded wallet. Tracked via `subtasks` so it participates in graceful
+    /// shutdown and cancellation.
+    ///
+    /// Uses `spawn_blocking(block_on(...))` because the async methods on
+    /// `Arc<Self>` produce futures that borrow `self`, which the compiler
+    /// cannot prove are `'static` (rust-lang/rust#100013). The trampoline
+    /// resolves the futures synchronously on a blocking thread, satisfying
+    /// the `'static` bound required by `spawn_sync`.
+    fn queue_shielded_sync(self: &Arc<Self>, seed_hash: WalletSeedHash) {
+        let ctx = Arc::clone(self);
+        self.subtasks.spawn_sync("shielded_sync", async move {
+            let handle = tokio::runtime::Handle::current();
+            let result = tokio::task::spawn_blocking(move || {
+                handle.block_on(async {
+                    match ctx.sync_shielded_notes(seed_hash).await {
+                        Ok(_) => {
+                            if let Err(e) = ctx.check_nullifiers_task(seed_hash).await {
+                                tracing::debug!(
+                                    seed = %hex::encode(seed_hash),
+                                    error = %e,
+                                    "Shielded nullifier check after init failed"
+                                );
+                            }
+                        }
+                        Err(e) => tracing::debug!(
+                            seed = %hex::encode(seed_hash),
+                            error = %e,
+                            "Shielded note sync after init failed"
+                        ),
+                    }
+                })
+            })
+            .await;
+            if let Err(e) = result {
+                tracing::debug!(
+                    seed = %hex::encode(seed_hash),
+                    error = %e,
+                    "Shielded sync task panicked"
+                );
+            }
+        });
     }
 
     fn wallet_seed_snapshot(wallet: &Arc<RwLock<Wallet>>) -> Option<(WalletSeedHash, [u8; 64])> {
@@ -183,13 +355,19 @@ impl AppContext {
                 let ctx = Arc::clone(self);
                 self.subtasks
                     .spawn_sync("refresh_wallet_utxos", async move {
-                        if let Err(e) =
+                        let result =
                             tokio::task::spawn_blocking(move || ctx.refresh_wallet_info(wallet))
-                                .await
-                                .map_err(|e| format!("Task join error: {}", e))
-                                .and_then(|r| r.map(|_| ()))
-                        {
-                            tracing::warn!("Failed to auto-refresh wallet UTXOs on startup: {}", e);
+                                .await;
+                        match result {
+                            Err(e) => tracing::warn!(
+                                "Failed to auto-refresh wallet UTXOs on startup: {}",
+                                e
+                            ),
+                            Ok(Err(e)) => tracing::warn!(
+                                "Failed to auto-refresh wallet UTXOs on startup: {}",
+                                e
+                            ),
+                            Ok(Ok(_)) => {}
                         }
                     });
             }
@@ -202,17 +380,20 @@ impl AppContext {
                 let ctx = Arc::clone(self);
                 self.subtasks
                     .spawn_sync("refresh_single_key_wallet_utxos", async move {
-                        if let Err(e) = tokio::task::spawn_blocking(move || {
+                        let result = tokio::task::spawn_blocking(move || {
                             ctx.refresh_single_key_wallet_info(wallet)
                         })
-                        .await
-                        .map_err(|e| format!("Task join error: {}", e))
-                        .and_then(|r| r)
-                        {
-                            tracing::warn!(
+                        .await;
+                        match result {
+                            Err(e) => tracing::warn!(
                                 "Failed to auto-refresh single key wallet UTXOs on startup: {}",
                                 e
-                            );
+                            ),
+                            Ok(Err(e)) => tracing::warn!(
+                                "Failed to auto-refresh single key wallet UTXOs on startup: {}",
+                                e
+                            ),
+                            Ok(Ok(())) => {}
                         }
                     });
             }
@@ -225,16 +406,16 @@ impl AppContext {
         &self,
         seed_hash: WalletSeedHash,
         address_infos: &dash_sdk::query_types::AddressInfos,
-    ) -> Result<(), String> {
+    ) -> Result<(), TaskError> {
         let wallet_arc = {
-            let wallets = self.wallets.read().unwrap();
+            let wallets = self.wallets.read()?;
             wallets
                 .get(&seed_hash)
                 .cloned()
-                .ok_or_else(|| "Wallet not found".to_string())?
+                .ok_or(TaskError::WalletNotFound)?
         };
 
-        let mut wallet = wallet_arc.write().map_err(|e| e.to_string())?;
+        let mut wallet = wallet_arc.write()?;
 
         for (platform_addr, maybe_info) in address_infos.iter() {
             if let Some(info) = maybe_info {
@@ -244,15 +425,13 @@ impl AppContext {
                 // Update in-memory wallet state
                 wallet.set_platform_address_info(core_addr.clone(), info.balance, info.nonce);
 
-                // Update database (not a sync operation - preserve last_full_sync_balance
-                // so the next terminal sync can correctly apply any pending AddToCredits)
+                // Update database
                 if let Err(e) = self.db.set_platform_address_info(
                     &seed_hash,
                     &core_addr,
                     info.balance,
                     info.nonce,
                     &self.network,
-                    false, // Not a sync operation
                 ) {
                     tracing::warn!("Failed to store Platform address info in database: {}", e);
                 }
@@ -276,8 +455,8 @@ impl AppContext {
         derivation_path: DerivationPath,
         path_type: DerivationPathType,
         path_reference: DerivationPathReference,
-    ) -> Result<bool, String> {
-        let mut guard = wallet.write().map_err(|e| e.to_string())?;
+    ) -> Result<bool, TaskError> {
+        let mut guard = wallet.write()?;
         if guard.known_addresses.contains_key(&address) {
             return Ok(false);
         }
@@ -287,17 +466,15 @@ impl AppContext {
 
         let seed_hash = guard.seed_hash();
 
-        self.db
-            .add_address_if_not_exists(
-                &seed_hash,
-                &address,
-                &self.network,
-                &derivation_path,
-                path_reference,
-                path_type,
-                None,
-            )
-            .map_err(|e| e.to_string())?;
+        self.db.add_address_if_not_exists(
+            &seed_hash,
+            &address,
+            &self.network,
+            &derivation_path,
+            path_reference,
+            path_type,
+            None,
+        )?;
 
         guard
             .known_addresses
@@ -316,11 +493,17 @@ impl AppContext {
 
     pub(crate) fn wallet_network_key(&self) -> WalletNetwork {
         match self.network {
-            Network::Dash => WalletNetwork::Dash,
+            Network::Mainnet => WalletNetwork::Mainnet,
             Network::Testnet => WalletNetwork::Testnet,
             Network::Devnet => WalletNetwork::Devnet,
             Network::Regtest => WalletNetwork::Regtest,
-            _ => WalletNetwork::Dash,
+            other => {
+                tracing::debug!(
+                    ?other,
+                    "Unknown Network variant, defaulting to Mainnet wallet key"
+                );
+                WalletNetwork::Mainnet
+            }
         }
     }
 
@@ -381,6 +564,27 @@ impl AppContext {
                 DerivationPathReference::BIP44,
                 DerivationPathType::CLEAR_FUNDS,
             )),
+            AccountType::ProviderVotingKeys => Some((
+                DerivationPathReference::ProviderVotingKeys,
+                DerivationPathType::CLEAR_FUNDS,
+            )),
+            AccountType::ProviderOwnerKeys => Some((
+                DerivationPathReference::ProviderOwnerKeys,
+                DerivationPathType::CLEAR_FUNDS,
+            )),
+            AccountType::ProviderOperatorKeys => Some((
+                DerivationPathReference::ProviderOperatorKeys,
+                DerivationPathType::CLEAR_FUNDS,
+            )),
+            AccountType::ProviderPlatformKeys => Some((
+                DerivationPathReference::ProviderPlatformNodeKeys,
+                DerivationPathType::CLEAR_FUNDS,
+            )),
+            // BlockchainIdentities addresses are bootstrapped by DET directly
+            // (not via SDK WalletManager accounts) and registered with SPV
+            // through register_spv_address() during wallet bootstrap. Other
+            // account types (CoinJoin, DashPay, PlatformPayment, AssetLock*)
+            // are either not yet supported or operate off-chain.
             _ => None,
         }
     }
@@ -404,6 +608,14 @@ impl AppContext {
                     DerivationPathType::SINGLE_USER_AUTHENTICATION,
                 );
             }
+        }
+
+        if derivation_path.is_bip32() {
+            return (DerivationPathReference::BIP32, default_type);
+        }
+
+        if derivation_path.is_bip44(self.network) {
+            return (DerivationPathReference::BIP44, default_type);
         }
 
         (default_ref, default_type)
@@ -439,12 +651,15 @@ impl AppContext {
             });
     }
 
-    async fn handle_spv_finality_event(&self, event: AssetLockFinalityEvent) -> Result<(), String> {
+    async fn handle_spv_finality_event(
+        &self,
+        event: AssetLockFinalityEvent,
+    ) -> Result<(), TaskError> {
         match event {
             AssetLockFinalityEvent::InstantLock { txid, instant_lock } => {
                 // Check if this txid is pending in transactions_waiting_for_finality
                 let is_pending = {
-                    let transactions = self.transactions_waiting_for_finality.lock().unwrap();
+                    let transactions = self.transactions_waiting_for_finality.lock()?;
                     matches!(transactions.get(&txid), Some(None))
                 };
                 if !is_pending {
@@ -454,19 +669,17 @@ impl AppContext {
                 // Retrieve the full transaction from the database
                 let (tx, ..) = self
                     .db
-                    .get_asset_lock_transaction(txid.as_byte_array())
-                    .map_err(|e| format!("DB error: {}", e))?
-                    .ok_or_else(|| "Asset lock transaction not found in DB".to_string())?;
+                    .get_asset_lock_transaction(txid.as_byte_array())?
+                    .ok_or(TaskError::AssetLockTransactionNotFoundInDatabase)?;
 
-                self.received_asset_lock_finality(&tx, Some(*instant_lock), None)
-                    .map_err(|e| format!("Finality processing error: {}", e))?;
+                self.received_asset_lock_finality(&tx, Some(*instant_lock), None)?;
             }
             AssetLockFinalityEvent::ChainLock {
                 height: _height, ..
             } => {
                 // Get all pending txids (where proof is None)
                 let pending_txids: Vec<dash_sdk::dpp::dashcore::Txid> = {
-                    let transactions = self.transactions_waiting_for_finality.lock().unwrap();
+                    let transactions = self.transactions_waiting_for_finality.lock()?;
                     transactions
                         .iter()
                         .filter_map(
@@ -549,19 +762,20 @@ impl AppContext {
     }
 
     /// Reconcile SPV wallet state into DET.
-    pub async fn reconcile_spv_wallets(&self) -> Result<(), String> {
+    pub async fn reconcile_spv_wallets(&self) -> Result<(), TaskError> {
         let wm_arc = self.spv_manager.wallet();
-        let wm = wm_arc.read().await;
+        let wm: tokio::sync::RwLockReadGuard<'_, dash_sdk::dpp::key_wallet_manager::WalletManager> =
+            wm_arc.read().await;
         let mapping = self.spv_manager.det_wallets_snapshot();
 
         // Take a snapshot of known addresses per wallet so we can scope DB updates
-        let wallets_guard = self.wallets.read().unwrap();
+        let wallets_guard = self.wallets.read()?;
 
         for (seed_hash, wallet_id) in mapping.iter() {
             // Log total balance for visibility
             let balance = wm
                 .get_wallet_balance(wallet_id)
-                .map_err(|e| format!("get_wallet_balance failed: {e}"))?;
+                .map_err(|e| crate::spv::SpvError::WalletError(e.to_string()))?;
             tracing::debug!(wallet = %hex::encode(seed_hash), spendable = balance.spendable(), unconfirmed = balance.unconfirmed(), total = balance.total(), "SPV balance snapshot");
 
             let Some(wallet_info) = wm.get_wallet_info(wallet_id) else {
@@ -593,7 +807,7 @@ impl AppContext {
 
             // Get the wallet's known addresses (only update those to avoid cross-wallet churn)
             let mut known_addresses: std::collections::BTreeSet<Address> = {
-                let w = wallet_arc.read().unwrap();
+                let w = wallet_arc.read()?;
                 w.known_addresses.keys().cloned().collect()
             };
 
@@ -608,7 +822,7 @@ impl AppContext {
             // Read current UTXOs from SPV and re-insert, registering unknown addresses if derivation metadata is available
             let utxos = wm
                 .wallet_utxos(wallet_id)
-                .map_err(|e| format!("wallet_utxos failed: {e}"))?;
+                .map_err(|e| crate::spv::SpvError::WalletError(e.to_string()))?;
 
             let mut per_address_sum: std::collections::BTreeMap<Address, u64> = Default::default();
             // Build in-memory UTXO map to update wallet model
@@ -693,16 +907,14 @@ impl AppContext {
                 }
 
                 // Insert UTXO row into DB
-                self.db
-                    .insert_utxo(
-                        outpoint.txid.as_ref(),
-                        outpoint.vout,
-                        &address,
-                        tx_out.value,
-                        &tx_out.script_pubkey.to_bytes(),
-                        self.network,
-                    )
-                    .map_err(|e| e.to_string())?;
+                self.db.insert_utxo(
+                    outpoint.txid.as_ref(),
+                    outpoint.vout,
+                    &address,
+                    tx_out.value,
+                    &tx_out.script_pubkey.to_bytes(),
+                    self.network,
+                )?;
             }
 
             // Write per-address balances and UTXOs into wallet model
@@ -712,27 +924,47 @@ impl AppContext {
                 // Update in-memory UTXOs map
                 w.utxos = new_utxos;
 
+                // Zero out balances for known addresses that no longer have any UTXOs.
+                // Without this, spent addresses retain stale non-zero balances because
+                // per_address_sum only contains addresses with current UTXOs.
+                for addr in &known_addresses {
+                    if !w.utxos.contains_key(addr)
+                        && let Err(e) = w.update_address_balance(addr, 0, self)
+                    {
+                        tracing::debug!(address = %addr, error = %e, "Failed to zero spent address balance");
+                    }
+                }
+
                 for (addr, sum) in per_address_sum.into_iter() {
-                    // Update wallet and DB through model helper
-                    let _ = w.update_address_balance(&addr, sum, self);
+                    if let Err(e) = w.update_address_balance(&addr, sum, self) {
+                        tracing::debug!(address = %addr, error = %e, "Failed to update address balance");
+                    }
                 }
             }
 
             let history = wm
                 .wallet_transaction_history(wallet_id)
-                .map_err(|e| format!("wallet_transaction_history failed: {e}"))?;
+                .map_err(|e| crate::spv::SpvError::WalletError(e.to_string()))?;
             let wallet_transactions: Vec<WalletTransaction> = history
                 .into_iter()
-                .map(|record| WalletTransaction {
-                    txid: record.txid,
-                    transaction: record.transaction.clone(),
-                    timestamp: record.timestamp,
-                    height: record.height,
-                    block_hash: record.block_hash,
-                    net_amount: record.net_amount,
-                    fee: record.fee,
-                    label: record.label.clone(),
-                    is_ours: record.is_ours,
+                .map(|record| {
+                    let height = record.height();
+                    let block_info = record.block_info();
+                    let status = TransactionStatus::from_height(height);
+                    WalletTransaction {
+                        txid: record.txid,
+                        transaction: record.transaction.clone(),
+                        timestamp: block_info.map(|bi| bi.timestamp() as u64).unwrap_or(0),
+                        height,
+                        block_hash: block_info.map(|bi| bi.block_hash()),
+                        net_amount: record.net_amount,
+                        fee: record.fee,
+                        label: Some(record.label.clone()).filter(|s| !s.is_empty()),
+                        // SPV transaction history is per-wallet — all entries
+                        // involve our addresses, so is_ours is always true.
+                        is_ours: true,
+                        status,
+                    }
                 })
                 .collect();
 
@@ -747,9 +979,11 @@ impl AppContext {
             // Only replace transactions if SPV returned some, to avoid wiping
             // previously persisted history when SPV hasn't populated history yet.
             if !wallet_transactions.is_empty() {
-                self.db
-                    .replace_wallet_transactions(seed_hash, &self.network, &wallet_transactions)
-                    .map_err(|e| e.to_string())?;
+                self.db.replace_wallet_transactions(
+                    seed_hash,
+                    &self.network,
+                    &wallet_transactions,
+                )?;
             }
 
             if let Some(wref) = wallets_guard.get(seed_hash)
@@ -770,7 +1004,7 @@ impl AppContext {
         // next throttled trigger_refresh() cycle (2-10 seconds).
         self.connection_status
             .set_spv_status(self.spv_manager.status().status);
-        self.connection_status.refresh_overall();
+        self.connection_status.refresh_state();
         // Reset the throttle timer so trigger_refresh() starts polling
         // at 200ms intervals and picks up the Stopped transition quickly.
         self.connection_status.reset_timer();

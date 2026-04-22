@@ -429,7 +429,6 @@ pub async fn shield_from_asset_lock(
     amount_duffs: u64,
     source_address: Option<&Address>,
 ) -> Result<u64, TaskError> {
-    use dash_sdk::dashcore_rpc::RpcApi;
     use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
     use dash_sdk::dpp::prelude::AssetLockProof;
     use dash_sdk::dpp::shielded::builder::build_shield_from_asset_lock_transition;
@@ -493,14 +492,18 @@ pub async fn shield_from_asset_lock(
         proofs.insert(tx_id, None);
     }
 
-    // Step 3: Broadcast the transaction
-    app_context
-        .core_client
-        .read()
-        .map_err(|_| TaskError::LockPoisoned {
-            resource: "core_client",
-        })?
-        .send_raw_transaction(&asset_lock_transaction)?;
+    // Step 3: Broadcast the transaction (routes through SPV or RPC per
+    // `core_backend_mode()`). On failure, drop the finality tracking entry
+    // we just inserted so it does not leak across retries.
+    if let Err(e) = app_context
+        .broadcast_raw_transaction(&asset_lock_transaction)
+        .await
+    {
+        if let Ok(mut proofs) = app_context.transactions_waiting_for_finality.lock() {
+            proofs.remove(&tx_id);
+        }
+        return Err(e);
+    }
 
     // Step 4: Remove used UTXOs from wallet
     {

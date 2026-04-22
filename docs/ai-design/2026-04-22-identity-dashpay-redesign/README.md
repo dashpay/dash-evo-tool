@@ -37,14 +37,15 @@ stack (system-ui / Segoe UI / Helvetica) takes over — the layout is unaffected
 
 | # | Caption |
 |---|---|
-| 1 | App chrome zoom — Alex (subdued wallet pill) and Priya (interactive wallet pill) |
+| 1 | App chrome zoom — Alex (subdued wallet pill) and Priya (interactive wallet pill), one-row switcher layout |
 | 2 | Onboarding empty state |
-| 3 | Identity Home — Alex, social profile set |
-| 4 | Identity Home — Priya, no social profile |
-| 5 | Contacts tab — gated state (no social profile) |
-| 6 | Activity tab |
-| 7 | Send sheet — compose step |
-| 8 | Settings — Priya, Advanced expanded |
+| 3 | Identity picker — grid shown when ≥ 2 identities are loaded (4 cards + add-new card) |
+| 4 | Identity Home — Alex, social profile set |
+| 5 | Identity Home — Priya, no social profile |
+| 6 | Contacts tab — gated state (no social profile) |
+| 7 | Activity tab |
+| 8 | Send sheet — compose step |
+| 9 | Settings — Priya, Advanced expanded |
 
 ## Placeholder token legend
 
@@ -79,7 +80,7 @@ npx playwright screenshot \
 
 For individual frames at 1280x800, use the Playwright Node API targeting each
 `section[aria-labelledby]` element, iterating over personas `alex`, `priya`, `jordan` and
-themes `light`, `dark`. This produces up to 48 PNGs (8 frames x 3 personas x 2 themes).
+themes `light`, `dark`. This produces up to 54 PNGs (9 frames x 3 personas x 2 themes).
 
 ## Design decisions recorded since initial commit
 
@@ -93,6 +94,10 @@ themes `light`, `dark`. This produces up to 48 PNGs (8 frames x 3 personas x 2 t
   in Settings — not deprecated. See design-spec.md §G7.
 - **Identity pill dropdown ordering**: Local nickname → DPNS username → shortened ID.
   Search activates at 7+ identities. Drag-reorder deferred. See design-spec.md §G6.
+- **One-row switcher**: wallet pill and identity pill are displayed side by side (`flex-direction: row; flex-wrap: wrap`) rather than stacked. Degrades to two rows via `flex-wrap: wrap` at narrow widths. The picker page (F3) has no switcher — the grid itself is the selector.
+- **Identity picker card heading hierarchy**: display name preferred over DPNS handle, which is preferred over shortened Identity ID. This matches the priority order already established for the pill dropdown (see §A.3 / §G6) and avoids a separate rule set.
+- **Picker avatar sizing**: 72×72 px chosen as a midpoint between the 40 px contact list avatar and the 96 px hero avatar, giving enough surface for a legible monogram glyph without dominating the card at ≥ 260 px width.
+- **Picker card hover elevation**: shadow increases from `--shadow-small` to `--shadow-medium` on hover — same elevation step used by all other interactive cards in the design. No border-color change on standard cards (the add-new card switches from dashed to solid Dash Blue instead, since that border is its defining visual element).
 
 ## Known limitations
 

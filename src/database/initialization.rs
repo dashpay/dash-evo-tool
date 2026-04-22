@@ -58,7 +58,7 @@ fn read_env_file_for_v34_migration(data_dir: &Path) -> std::io::Result<V34EnvSna
         let (key, value) = item.map_err(std::io::Error::other)?;
         if key.eq_ignore_ascii_case("DEVELOPER_MODE") {
             developer_mode = matches!(value.to_ascii_lowercase().as_str(), "true" | "1" | "yes");
-        } else if key.ends_with("core_rpc_password") && !value.is_empty() {
+        } else if key.to_ascii_lowercase().ends_with("core_rpc_password") && !value.is_empty() {
             has_any_rpc_password = true;
         }
     }
@@ -2534,6 +2534,27 @@ mod test {
             assert!(result.is_ok(), "migration failed: {:?}", result.err());
             assert_eq!(db.db_schema_version().unwrap(), 34);
             // Mode preserved as RPC (0) — user's existing choice respected.
+            assert_eq!(read_core_backend_mode(&db), 0);
+        }
+
+        /// Same as `v34_preserves_mode_when_local_core_configured`, but the
+        /// password key is fully uppercase (`MAINNET_CORE_RPC_PASSWORD`). The
+        /// suffix match must be case-insensitive so these users are not
+        /// silently flipped to SPV during the v34 migration.
+        #[test]
+        fn v34_preserves_mode_with_uppercase_password_key() {
+            let tmp = tempfile::tempdir().unwrap();
+            let db = fresh_v33_db(tmp.path());
+            write_env(
+                tmp.path(),
+                "DEVELOPER_MODE=true\n\
+                 MAINNET_CORE_RPC_PASSWORD=hunter2\n",
+            );
+
+            let result = db.try_perform_migration(33, 34, Some(tmp.path()));
+            assert!(result.is_ok(), "migration failed: {:?}", result.err());
+            assert_eq!(db.db_schema_version().unwrap(), 34);
+            // Mode preserved as RPC (0) — uppercase password key must count.
             assert_eq!(read_core_backend_mode(&db), 0);
         }
 

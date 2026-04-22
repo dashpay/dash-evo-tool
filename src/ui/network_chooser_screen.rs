@@ -524,7 +524,7 @@ impl NetworkChooserScreen {
             let current_backend_mode = *self
                 .backend_modes
                 .entry(self.current_network)
-                .or_insert(CoreBackendMode::Rpc);
+                .or_insert(CoreBackendMode::Spv);
 
             let ctx = self.current_app_context().clone();
             let status = ctx.connection_status();

@@ -67,15 +67,16 @@ Wallets). Network color stripe behavior is unchanged.
 
 ### A.3 Wallet + Identity switching
 
-Two stacked pills sit directly under the breadcrumb on every tab:
+Both pills sit side by side on a single row directly under the breadcrumb on every tab (except
+the Identity Picker — see §A.4):
 
 ```
 Breadcrumb:  Identities
-             ┌────────────────────────────────────────┐
-             │  Main Wallet                      ▾    │  ← Wallet pill
-             │  @alex.dash                       ▾    │  ← Identity pill
-             └────────────────────────────────────────┘
+  [💼 Main Wallet]   [👤 @alex.dash ▾]
 ```
+
+At viewport widths ≤ 1024 px the row wraps so each pill occupies its own line — same visual
+result as the previous column layout, but the default on wider screens is horizontal.
 
 **Wallet pill (top)**: icon + wallet alias + chevron. Dropdown lists every loaded wallet on
 the current network plus footer "Set up another wallet" (deep-links to Wallets).
@@ -105,6 +106,23 @@ identities. Drag-to-reorder is intentionally deferred to a later iteration (see 
 **Jordan dev-mode dropdown footer**: the identity pill dropdown contains a `+ New throwaway
 wallet + identity` footer entry in Developer Mode (catalog §D entry #6). This Jordan-only
 path chains wallet creation → funding → identity registration in one step.
+
+### A.4 Default landing for the Identities nav
+
+When the user clicks **Identities** in the left nav the app decides what to show based on
+how many identities are loaded for the active network:
+
+| Loaded identities | Landing |
+|---|---|
+| 0 | Onboarding empty state (F2) |
+| 1 | Identity Home for that identity directly (F4 if social profile set, F5 if not) |
+| ≥ 2 | Identity Picker grid (F3) |
+
+**Navigation from the picker**: clicking a card selects that identity in the breadcrumb
+switcher and navigates to Identity Home. The identity pill on Home becomes the route back
+to the picker — clicking it opens the same identity list as a dropdown. Navigating to the
+`Identities` breadcrumb link also returns to the picker. Both affordances use the same
+behaviour so there is only one mental model.
 
 ---
 
@@ -138,7 +156,7 @@ stacked vertically. Muted footer band in Developer Mode.
   yet. Add at least {amount} to continue.` [Go to Receive]
 - No wallet: `You need a wallet before you can create an identity.` [Set up a wallet]
 
-### B.2 Identity Home — Alex, social profile set (Frame 3)
+### B.2 Identity Home — Alex, social profile set (Frame 4)
 
 The default tab landing once at least one identity exists, showing the social-profile-set
 state.
@@ -206,7 +224,7 @@ These three buttons enter the Add funds wizard (§B.9), the Send to wallet flow,
 Send sheet (§B.7) with pre-configured recipient mode respectively. All are visible for all
 personas; no `.adv` gating.
 
-### B.3 Identity Home — Priya, no social profile (Frame 4)
+### B.3 Identity Home — Priya, no social profile (Frame 5)
 
 Same layout as B.2 but with the social-profile-not-set state.
 
@@ -227,7 +245,7 @@ checklist):
 > Add a display name, bio, and avatar so people can find you on DashPay. This is optional
 > — you can still use every other feature without it.
 
-### B.4 Contacts tab — gated state (Frame 5)
+### B.4 Contacts tab — gated state (Frame 6)
 
 Shown when the current identity has no social profile. Contacts require a social profile to
 be discoverable.
@@ -250,7 +268,7 @@ content is a centered gate card.
 > Set up a social profile first. Contacts need a display name and avatar so people can find
 > you.
 
-### B.5 Contacts tab — populated (referenced from Frame 5 context)
+### B.5 Contacts tab — populated (referenced from Frame 6 context)
 
 **Layout zones**:
 1. Tab header (Contacts title + right-aligned: Add by username, Scan QR, Show my QR).
@@ -278,7 +296,7 @@ Collapsible sections: About · Private notes · Payment history · Advanced.
 Empty state: `You have not added any contacts yet. Add someone by their username to send and
 receive Dash without typing an address.`
 
-### B.6 Activity tab (Frame 6)
+### B.6 Activity tab (Frame 7)
 
 Unified timeline.
 
@@ -302,7 +320,7 @@ Dev mode JSON dump.
 Empty state: `No activity yet. Your payments, additions, and identity changes will appear
 here.`
 
-### B.7 Send sheet (Frame 7)
+### B.7 Send sheet (Frame 8)
 
 Modal sheet, RADIUS_LG, elevated shadow, modal_overlay backdrop. Width 560 px desktop.
 Escape = cancel.
@@ -344,7 +362,7 @@ so future payments are one click away?` [Add as contact] [Not now]
 **Step 3 — Failed**: Heading `Payment could not be sent`. Body: `Your balance is unchanged.
 Check your connection and try again, or try a smaller amount.` Actions: Back · Try again.
 
-### B.8 Settings tab — Priya, Advanced expanded (Frame 8)
+### B.8 Settings tab — Priya, Advanced expanded (Frame 9)
 
 **Layout**: two-column on >= 1024 px; single column otherwise. Left: social profile section.
 Right: username and aliases section. Full-width Advanced expander below.
@@ -514,6 +532,72 @@ Accessible from: Home hero `Pick a username` link (when no DPNS name), Settings 
 - Failed (contested, vote lost): `The vote on @{handle} did not go your way. Your contest
   fee was returned. You can try a different username or wait and try again.`
 
+### B.14 Identity picker (Frame 3)
+
+Shown when the user clicks Identities in the left nav and two or more identities are loaded
+on the current network (see §A.4 for the routing rules).
+
+**Layout**: island central panel. No switcher row — the picker itself is the selector.
+
+- Page heading: `Pick an identity` (heading_large / text-xxl)
+- Sub-heading (body_small, text_secondary): `Each identity has its own balance, keys, and
+  optional social profile. Choose one to open it, or add a new identity.`
+- CSS grid: `grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: var(--sp-md);`
+
+**Identity card** (`.card .identity-card`, `RADIUS_LG`):
+
+- Whole card is a `role="button"` / `tabindex="0"` target. Focus ring on `:focus-visible`.
+  Hover elevates shadow from `--shadow-small` to `--shadow-medium`.
+- 72×72 circular avatar at the top of the card. If a social profile exists: Dash-blue
+  fill with the first letter of the display name. If no social profile: monogram glyph
+  (User = person silhouette, Masternode = diamond, Evonode = diamond) in
+  `--bg-dark` / `--text-secondary`.
+- Identity-type badge pill (`badge--user` / `badge--masternode` / `badge--evonode`) anchored
+  to the top-right corner of the card.
+- Display name (heading_small / fw-600). When no display name: DPNS handle. When neither:
+  shortened Identity ID in monospace (e.g. `Fx1Kj…9Tt`).
+- Sub-line (body_small, text_secondary): DPNS handle if not already the heading, otherwise
+  the identity-type label string (`User identity` / `Masternode identity` / `Evonode identity`).
+- Balance (body_small, fw-600, tabular numerals): `{amount} DASH`. Fiat equivalent
+  (text_xs, text_secondary) on the line below when available.
+- Static wireframe callout (not a real implementation artifact): `Opens Identity Home →`
+  rendered in a small info-colored chip at the card bottom.
+- `aria-label="Open {display_name_or_handle}"`.
+- Tooltip (tt-78x): `Open this identity. You can switch between identities anytime from
+  the pill under the breadcrumb.`
+
+**"Add a new identity" card** (`.identity-card.identity-card--add`):
+
+- Same grid cell, same dimensions. Visual treatment: dashed border (`2px dashed var(--border)`)
+  with hover switching to solid Dash Blue.
+- 72×72 circle with `+` glyph (Dash Blue on transparent background).
+- Heading: `Add a new identity`. Sub-line: `Create a new identity or load one you already own.`
+- `role="button"`, `tabindex="0"`, `aria-label="Add a new identity"`.
+- Tooltip (tt-78y): `Create a new identity or load one you already own.`
+
+**Card set rendered in the wireframe** (Priya / multi-identity context):
+
+| # | Card | Type | DPNS | Balance |
+|---|---|---|---|---|
+| 1 | Alex Torres (social profile) | User | @alex.dash | 0.75 DASH ≈ 45.25 USD |
+| 2 | Priya Nakamura (social profile) | User | @priya.dash | 12.5 DASH |
+| 3 | No social profile — monogram | Masternode | mn-east-01.dash | 0.10 DASH |
+| 4 | Testing — no DPNS (`.dev` gated) | User | *(none)* — shows `Fx1Kj…9Tt` | 0.01 DASH |
+| 5 | Add a new identity | — | — | — |
+
+Card 4 carries the `.dev` class and is hidden for Alex and Priya — Jordan only.
+
+**Card states**:
+
+- Default: `--shadow-small` border `1px solid var(--border)`.
+- Hover: `--shadow-medium` (no border color change on standard cards).
+- Focus-visible: 3 px Dash-blue outline with 2 px offset.
+- Currently-selected identity (future real implementation): `border-color: var(--dash-blue)`
+  with a small `Selected` indicator — not shown in the static wireframe.
+
+**Empty state**: not applicable — the picker is only shown when ≥ 2 identities exist. When
+0 or 1 identity exist the routing rule in §A.4 applies instead.
+
 ---
 
 ## C. Wording Audit
@@ -666,6 +750,8 @@ All tooltips: complete sentences, named placeholders, no concatenation. Variant 
 | 84 | Home secondary action `Send to wallet` | Convert your identity balance back to spendable Dash in your wallet. | clickable | All |
 | 85 | Home secondary action `Send to another identity` | Transfer Dash directly from this identity to another identity. | clickable | All |
 | 86 | Topbar `Refresh identity data` icon-button | Fetch the latest identity data from the network. | clickable | All |
+| tt-78x | Identity picker card (each identity card) | Open this identity. You can switch between identities anytime from the pill under the breadcrumb. | clickable | All |
+| tt-78y | Identity picker "Add a new identity" card | Create a new identity or load one you already own. | clickable | All |
 
 ---
 
@@ -704,18 +790,19 @@ the existing evonode icon in the codebase. All three render at 40 px within a 96
 
 ## F. Wireframe Reference
 
-`wireframe.html` renders 8 sequential frames on one scrolling page:
+`wireframe.html` renders 9 sequential frames on one scrolling page:
 
 | Frame | Caption | Subtitle |
 |---|---|---|
-| 1 | App chrome zoom | Left nav, network indicator, and the two-pill Wallet + Identity switcher — shown in Alex's subdued state (A) and Priya's interactive state (B). Nav label is unchanged from today; what moved is DashPay under Identities. |
+| 1 | App chrome zoom | Left nav, network indicator, and the one-row Wallet + Identity switcher — shown in Alex's subdued state (A) and Priya's interactive state (B). Nav label is unchanged from today; what moved is DashPay under Identities. |
 | 2 | Onboarding empty state | First-time welcome with two primary CTAs and a Developer Mode footer band. |
-| 3 | Identity Home — Alex, social profile set | Hero with avatar and display name, quick actions, onboarding checklist, recent activity. |
-| 4 | Identity Home — Priya, no social profile | Type-glyph monogram hero and the inline "Set up your social profile" card. |
-| 5 | Contacts tab — gated state | Gate card shown when the current identity has no social profile. |
-| 6 | Activity tab | Unified timeline: one expanded row, one failed row, ten normal rows across all three filter categories. |
-| 7 | Send sheet — compose step | Username resolution in progress, amount input, memo expander, fee preview card. Rendered over a dimmed Identity Home backdrop. |
-| 8 | Settings — Priya, Advanced expanded | Social profile section, aliases, keys table, danger zone. |
+| 3 | Identity picker | Grid of identity cards shown when ≥ 2 identities are loaded. Four identity cards plus an "Add a new identity" card. Clicking a card navigates to Home. |
+| 4 | Identity Home — Alex, social profile set | Hero with avatar and display name, quick actions, onboarding checklist, recent activity. |
+| 5 | Identity Home — Priya, no social profile | Type-glyph monogram hero and the inline "Set up your social profile" card. |
+| 6 | Contacts tab — gated state | Gate card shown when the current identity has no social profile. |
+| 7 | Activity tab | Unified timeline: one expanded row, one failed row, ten normal rows across all three filter categories. |
+| 8 | Send sheet — compose step | Username resolution in progress, amount input, memo expander, fee preview card. Rendered over a dimmed Identity Home backdrop. |
+| 9 | Settings — Priya, Advanced expanded | Social profile section, aliases, keys table, danger zone. |
 
 CSS custom properties in `wireframe.html` mirror `src/ui/theme.rs` line-for-line. Every
 variable maps to its Rust constant in comments. Exception: shadow alpha values are

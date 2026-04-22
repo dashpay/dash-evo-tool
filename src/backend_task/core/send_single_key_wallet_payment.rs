@@ -5,7 +5,6 @@ use crate::backend_task::core::WalletPaymentRequest;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::wallet::single_key::SingleKeyWallet;
-use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dashcore_rpc::dashcore::{Address, OutPoint, ScriptBuf, Transaction, TxIn, TxOut};
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::sighash::SighashCache;
@@ -15,17 +14,17 @@ use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 
 impl AppContext {
-    /// Send a payment from a single key wallet
+    /// Send a payment from a single key wallet.
+    ///
+    /// Builds and signs the transaction locally from the wallet's cached
+    /// UTXO set, then dispatches the broadcast to the configured Core
+    /// backend (RPC or SPV) via [`AppContext::broadcast_raw_transaction`].
+    ///
+    /// Note that single-key wallets rely on Core RPC for UTXO discovery
+    /// (`refresh_single_key_wallet_info`). SPV mode can still broadcast
+    /// the resulting transaction but cannot populate UTXOs — callers
+    /// running in SPV mode must use an HD wallet for end-to-end flows.
     pub async fn send_single_key_wallet_payment(
-        &self,
-        wallet: Arc<RwLock<SingleKeyWallet>>,
-        request: WalletPaymentRequest,
-    ) -> Result<BackendTaskSuccessResult, TaskError> {
-        self.send_single_key_wallet_payment_via_rpc(wallet, request)
-            .await
-    }
-
-    async fn send_single_key_wallet_payment_via_rpc(
         &self,
         wallet: Arc<RwLock<SingleKeyWallet>>,
         request: WalletPaymentRequest,
@@ -174,11 +173,7 @@ impl AppContext {
             tx.input[i].script_sig = ScriptBuf::from_bytes(script_sig);
         }
 
-        let txid = self
-            .core_client
-            .read()?
-            .send_raw_transaction(&tx)
-            .map_err(TaskError::from)?;
+        let txid = self.broadcast_raw_transaction(&tx).await?;
 
         {
             let mut wallet_guard = wallet.write()?;

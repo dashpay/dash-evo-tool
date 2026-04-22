@@ -81,6 +81,19 @@ For individual frames at 1280x800, use the Playwright Node API targeting each
 `section[aria-labelledby]` element, iterating over personas `alex`, `priya`, `jordan` and
 themes `light`, `dark`. This produces up to 48 PNGs (8 frames x 3 personas x 2 themes).
 
+## Design decisions recorded since initial commit
+
+- **Shadow alphas**: wireframe shadow CSS values (`0.08`–`0.30`) are intentionally brighter
+  than `theme.rs` egui alpha bytes (`8`–`30` / 255 ≈ `0.031`–`0.118`). The wireframe is the
+  visual target; `theme.rs` needs updating in the implementation PR. See design-spec.md §E.
+- **Secondary Home actions**: Add funds / Send to wallet / Send to another identity are
+  visible to all personas, no `.adv` gate. Persona-specific funding paths are inside the
+  wizard, not on the Home row. See design-spec.md §G9.
+- **Local nickname vs. DPNS aliases**: `QualifiedIdentity.alias` is renamed `Local nickname`
+  in Settings — not deprecated. See design-spec.md §G7.
+- **Identity pill dropdown ordering**: Local nickname → DPNS username → shortened ID.
+  Search activates at 7+ identities. Drag-reorder deferred. See design-spec.md §G6.
+
 ## Known limitations
 
 - Static visual reference only — not a clickable prototype.

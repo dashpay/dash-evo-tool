@@ -42,6 +42,7 @@ use zeroize::Zeroize;
 /// match the DB column default and the runtime default in `AppContext` — they
 /// must be kept in sync to avoid silent contradictions at startup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(u8)]
 pub enum CoreBackendMode {
     Rpc = 0,
     #[default]

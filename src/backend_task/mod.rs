@@ -256,7 +256,6 @@ pub enum BackendTaskSuccessResult {
     SetTokenPrice(FeeResult),
     DestroyedFrozenFunds(FeeResult),
     ClaimedTokens(FeeResult),
-    TokensClaimed(TokenAmount),
     UpdatedTokenConfig(String, FeeResult), // The config item that was updated
     FetchedTokenBalances,
     SavedToken,

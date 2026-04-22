@@ -129,20 +129,15 @@ impl Database {
 
         let network = app_context.network.to_string();
 
-        // Check if the identity already exists
-        let conn = self.conn.lock().unwrap();
-        let mut stmt =
-            conn.prepare("SELECT COUNT(*) FROM identity WHERE id = ? AND network = ?")?;
-        let count: i64 = stmt.query_row(params![id, network], |row| row.get(0))?;
-
-        // If the identity doesn't exist, insert it
-        if count == 0 {
-            self.execute(
-                "INSERT INTO identity (id, data, is_local, alias, identity_type, network)
+        // Use a single atomic INSERT OR IGNORE statement so we don't acquire
+        // the connection mutex twice (previously: SELECT under `self.conn.lock()`
+        // then `self.execute()` tried to lock it again, causing a deadlock).
+        // INSERT OR IGNORE also closes the TOCTOU window between check and insert.
+        self.execute(
+            "INSERT OR IGNORE INTO identity (id, data, is_local, alias, identity_type, network)
              VALUES (?, ?, 0, ?, ?, ?)",
-                params![id, data, alias, identity_type, network],
-            )?;
-        }
+            params![id, data, alias, identity_type, network],
+        )?;
 
         Ok(())
     }

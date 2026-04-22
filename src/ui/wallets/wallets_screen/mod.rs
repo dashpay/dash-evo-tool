@@ -1,7 +1,7 @@
 mod address_table;
 mod asset_locks;
 mod dialogs;
-pub(crate) mod single_key_view;
+mod single_key_view;
 
 use crate::app::{AppAction, BackendTasksExecutionMode, DesiredAppAction};
 use crate::backend_task::BackendTask;

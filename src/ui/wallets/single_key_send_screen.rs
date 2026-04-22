@@ -8,13 +8,14 @@ use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::wallet::single_key::SingleKeyWallet;
 use crate::spv::CoreBackendMode;
 use crate::ui::components::MessageBanner;
-use crate::ui::components::component_trait::Component;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::{ComponentStyles, DashColors};
-use crate::ui::wallets::wallets_screen::single_key_view::SINGLE_KEY_REQUIRES_CORE;
+use crate::ui::wallets::{
+    SINGLE_KEY_REQUIRES_CORE_MESSAGE, render_single_key_requires_core_banner,
+};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::fee::FeeRate;
 use eframe::egui::{self, Context, RichText, Ui};
@@ -834,7 +835,7 @@ impl SingleKeyWalletSendScreen {
 
             let mut response = ui.add_enabled(button_enabled, send_button);
             if !is_rpc_mode {
-                response = response.on_disabled_hover_text(SINGLE_KEY_REQUIRES_CORE);
+                response = response.on_disabled_hover_text(SINGLE_KEY_REQUIRES_CORE_MESSAGE);
             }
             if response.clicked() {
                 match self.validate_and_send() {
@@ -878,13 +879,11 @@ impl ScreenLike for SingleKeyWalletSendScreen {
             egui::ScrollArea::vertical()
                 .auto_shrink([true; 2])
                 .show(ui, |ui| {
-                    // Persistent warning banner for the SPV backend. Constructed
-                    // fresh each frame on purpose (see `single_key_view.rs` for
-                    // the rationale): it is a state notice, not a task result.
+                    // Persistent warning banner for the SPV backend. See
+                    // `ui::wallets::render_single_key_requires_core_banner`
+                    // for the rationale on constructing it fresh each frame.
                     if !is_rpc_mode {
-                        let mut banner = MessageBanner::new();
-                        banner.set_message(SINGLE_KEY_REQUIRES_CORE, MessageType::Warning);
-                        banner.show(ui);
+                        render_single_key_requires_core_banner(ui);
                         ui.add_space(10.0);
                     }
 

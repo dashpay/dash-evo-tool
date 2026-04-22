@@ -573,8 +573,12 @@ pub enum TaskError {
     },
 
     /// The requested operation requires Dash Core (RPC) and cannot run in light-wallet (SPV) mode.
+    ///
+    /// The `operation` field is kept for debug/log context only — the user-facing
+    /// `Display` message is a static, complete sentence so it remains translatable
+    /// and cannot pick up grammar bugs from the callsite-provided fragment.
     #[error(
-        "{operation} is only available when connected to Dash Core. Switch to Dash Core in Settings and retry."
+        "This action is only available when connected to Dash Core. Switch to Dash Core in Settings and retry."
     )]
     OperationRequiresDashCore { operation: &'static str },
 

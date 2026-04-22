@@ -1,18 +1,14 @@
 use crate::app::AppAction;
 use crate::spv::CoreBackendMode;
-use crate::ui::components::MessageBanner;
-use crate::ui::components::component_trait::Component;
+use crate::ui::ScreenType;
 use crate::ui::theme::DashColors;
-use crate::ui::{MessageType, ScreenType};
+use crate::ui::wallets::{
+    SINGLE_KEY_REQUIRES_CORE_MESSAGE, render_single_key_requires_core_banner,
+};
 use eframe::egui;
 use egui::{Frame, Margin, RichText, Ui};
 
 use super::WalletsBalancesScreen;
-
-/// Shown as a disabled-button tooltip and in the in-screen warning banner for
-/// any single-key-wallet action that depends on Dash Core RPC. Exported so the
-/// dedicated send screen can reuse the same copy.
-pub(crate) const SINGLE_KEY_REQUIRES_CORE: &str = "Single-key wallets do not yet support SPV. Open Settings, switch to Expert mode, and select Local Dash Core node to use this wallet.";
 
 impl WalletsBalancesScreen {
     /// Render the detail view for a selected single key wallet
@@ -60,19 +56,8 @@ impl WalletsBalancesScreen {
                     // are unavailable. The actions themselves are greyed out
                     // below; this banner is the "why" users otherwise wouldn't
                     // see from a silent disable.
-                    //
-                    // We construct the `MessageBanner` as a fresh local each
-                    // frame on purpose: this is a persistent state notice
-                    // (bound to the SPV backend mode), not a transient task
-                    // result, so we want it visible the whole time the mode
-                    // is active. A fresh instance every frame means the
-                    // auto-dismiss timer never fires and the banner is shown
-                    // consistently; rendering is cheap and egui handles the
-                    // repainting.
                     if !is_rpc_mode {
-                        let mut banner = MessageBanner::new();
-                        banner.set_message(SINGLE_KEY_REQUIRES_CORE, MessageType::Warning);
-                        banner.show(ui);
+                        render_single_key_requires_core_banner(ui);
                         ui.add_space(10.0);
                     }
 
@@ -92,7 +77,7 @@ impl WalletsBalancesScreen {
                         let send_response = if is_rpc_mode {
                             send_response
                         } else {
-                            send_response.on_disabled_hover_text(SINGLE_KEY_REQUIRES_CORE)
+                            send_response.on_disabled_hover_text(SINGLE_KEY_REQUIRES_CORE_MESSAGE)
                         };
                         if send_response.clicked() {
                             action = AppAction::AddScreen(

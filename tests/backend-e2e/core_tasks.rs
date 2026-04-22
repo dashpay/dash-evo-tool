@@ -68,10 +68,10 @@ async fn test_tc002_refresh_wallet_info_core_and_platform() {
 
 // TC-003: RefreshSingleKeyWalletInfo
 //
-// Single-key wallets require Dash Core (RPC) for UTXO discovery — SPV tracks
-// HD wallet-derived addresses only. The backend now returns a typed
-// `OperationRequiresDashCore` error in SPV mode; the test asserts that
-// mode-specific outcome rather than an unconditional success.
+// The backend-e2e harness always runs in SPV mode (see tests/backend-e2e/README.md).
+// Single-key wallets depend on Dash Core for UTXO discovery — SPV only tracks
+// HD wallet-derived addresses — so the backend returns a typed
+// `OperationRequiresDashCore` error here. This test asserts that outcome.
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn test_tc003_refresh_single_key_wallet_info() {
@@ -95,35 +95,18 @@ async fn test_tc003_refresh_single_key_wallet_info() {
 
     let skw_arc = Arc::new(RwLock::new(skw));
 
-    let task = BackendTask::CoreTask(CoreTask::RefreshSingleKeyWalletInfo(skw_arc.clone()));
-    let result = run_task(app_context, task).await;
-
-    // Single-key wallets require Dash Core for UTXO discovery. In SPV mode
-    // the backend returns a typed `OperationRequiresDashCore` error; in RPC
-    // mode the refresh should succeed.
-    match app_context.core_backend_mode() {
-        dash_evo_tool::spv::CoreBackendMode::Spv => {
-            let err = result
-                .expect_err("RefreshSingleKeyWalletInfo must fail in SPV mode with a typed error");
-            assert!(
-                matches!(
-                    err,
-                    dash_evo_tool::backend_task::error::TaskError::OperationRequiresDashCore { .. }
-                ),
-                "Expected OperationRequiresDashCore in SPV mode, got: {:?}",
-                err
-            );
-        }
-        dash_evo_tool::spv::CoreBackendMode::Rpc => {
-            let result = result.expect("RefreshSingleKeyWalletInfo should succeed in RPC mode");
-            match result {
-                BackendTaskSuccessResult::RefreshedWallet { .. } => {}
-                other => panic!("Expected RefreshedWallet, got: {:?}", other),
-            }
-            // Balance may be 0 for a fresh key — just verify the read succeeds
-            let _balance = skw_arc.read().expect("skw lock").total_balance_duffs();
-        }
-    }
+    let task = BackendTask::CoreTask(CoreTask::RefreshSingleKeyWalletInfo(skw_arc));
+    let err = run_task(app_context, task)
+        .await
+        .expect_err("RefreshSingleKeyWalletInfo must fail in SPV mode with a typed error");
+    assert!(
+        matches!(
+            err,
+            dash_evo_tool::backend_task::error::TaskError::OperationRequiresDashCore { .. }
+        ),
+        "Expected OperationRequiresDashCore in SPV mode, got: {:?}",
+        err
+    );
 }
 
 // TC-004: CreateRegistrationAssetLock

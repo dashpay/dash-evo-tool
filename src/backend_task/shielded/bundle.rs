@@ -499,11 +499,21 @@ pub async fn shield_from_asset_lock(
         .broadcast_raw_transaction(&asset_lock_transaction)
         .await
     {
-        match app_context.transactions_waiting_for_finality.lock() {
+        // Use `try_lock` on the error return path so a contended mutex never
+        // blocks us here. Matches the timeout-path cleanup below and the
+        // existing pattern in `src/context/transaction_processing.rs`.
+        match app_context.transactions_waiting_for_finality.try_lock() {
             Ok(mut proofs) => {
                 proofs.remove(&tx_id);
             }
-            Err(poisoned) => {
+            Err(std::sync::TryLockError::WouldBlock) => {
+                tracing::debug!(
+                    %tx_id,
+                    "transactions_waiting_for_finality lock is contended after broadcast failure; \
+                     finality tracking entry not cleared"
+                );
+            }
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => {
                 tracing::warn!(
                     %tx_id,
                     "transactions_waiting_for_finality lock is poisoned after broadcast failure; \
@@ -553,26 +563,26 @@ pub async fn shield_from_asset_lock(
     loop {
         tokio::select! {
             _ = &mut timeout => {
-                match app_context.transactions_waiting_for_finality.try_lock() {
-                    Ok(mut proofs) => {
-                        proofs.remove(&tx_id);
-                    }
-                    Err(std::sync::TryLockError::WouldBlock) => {
-                        tracing::debug!(
-                            %tx_id,
-                            "transactions_waiting_for_finality lock is contended on timeout; \
-                             finality tracking entry not cleared"
-                        );
-                    }
-                    Err(std::sync::TryLockError::Poisoned(poisoned)) => {
-                        tracing::warn!(
-                            %tx_id,
-                            "transactions_waiting_for_finality lock is poisoned on timeout; \
-                             recovering through poisoned guard so the entry is cleared"
-                        );
-                        let mut proofs = poisoned.into_inner();
-                        proofs.remove(&tx_id);
-                    }
+                // Guarantee the finality-tracking entry is removed before we
+                // return `ShieldedAssetLockTimeout`. Use a blocking `lock()`
+                // with poison recovery (not `try_lock`) so a contended mutex
+                // can't cause the entry to leak across retries.
+                {
+                    let mut proofs = match app_context
+                        .transactions_waiting_for_finality
+                        .lock()
+                    {
+                        Ok(guard) => guard,
+                        Err(poisoned) => {
+                            tracing::warn!(
+                                %tx_id,
+                                "transactions_waiting_for_finality lock is poisoned on timeout; \
+                                 recovering through poisoned guard so the entry is cleared"
+                            );
+                            poisoned.into_inner()
+                        }
+                    };
+                    proofs.remove(&tx_id);
                 }
 
                 if app_context.core_backend_mode() == crate::spv::CoreBackendMode::Rpc

@@ -65,8 +65,7 @@ fn read_env_file_for_v34_migration(data_dir: &Path) -> std::io::Result<V34EnvSna
             continue;
         };
         let key = key.trim();
-        // Strip surrounding single or double quotes but keep inner content as-is.
-        let value = value.trim().trim_matches(|c| c == '"' || c == '\'');
+        let value = parse_env_value(value);
 
         if key.eq_ignore_ascii_case("DEVELOPER_MODE") {
             developer_mode = matches!(value.to_ascii_lowercase().as_str(), "true" | "1" | "yes");
@@ -79,6 +78,52 @@ fn read_env_file_for_v34_migration(data_dir: &Path) -> std::io::Result<V34EnvSna
         developer_mode,
         has_any_rpc_password,
     })
+}
+
+/// Parse the RHS of a `KEY=...` line the way dotenvy does, minus features we
+/// don't need (variable substitution, backslash escapes). Specifically:
+///
+/// * leading whitespace is stripped
+/// * if the value starts with `'` or `"`, the matching closing quote ends the
+///   value and inner content (including `#`) is preserved verbatim
+/// * outside of quotes, the first whitespace-then-`#` sequence starts an
+///   inline comment and is dropped (e.g. `value # note` → `value`)
+/// * a `#` with no preceding whitespace is a literal character, matching
+///   dotenvy (`value#nohash` → `value#nohash`)
+/// * trailing whitespace is trimmed
+///
+/// Backslash escapes are intentionally not interpreted — the v34 migration only
+/// looks at a boolean flag and whether a password is non-empty, so the cost of
+/// a full escape-aware parser isn't worth it.
+fn parse_env_value(raw: &str) -> String {
+    let trimmed = raw.trim_start();
+
+    // Quoted value — mirror dotenvy: inside quotes, `#` is a literal character.
+    if let Some(rest) = trimmed.strip_prefix('"') {
+        if let Some(end) = rest.find('"') {
+            return rest[..end].to_string();
+        }
+        // Unterminated quote — fall back to the naive strip so we don't lose data.
+        return rest.to_string();
+    }
+    if let Some(rest) = trimmed.strip_prefix('\'') {
+        if let Some(end) = rest.find('\'') {
+            return rest[..end].to_string();
+        }
+        return rest.to_string();
+    }
+
+    // Unquoted value — strip the first whitespace-then-`#` inline comment.
+    let mut end = trimmed.len();
+    let mut prev_ws = false;
+    for (i, c) in trimmed.char_indices() {
+        if c == '#' && prev_ws {
+            end = i;
+            break;
+        }
+        prev_ws = c.is_whitespace();
+    }
+    trimmed[..end].trim_end().to_string()
 }
 
 pub const DEFAULT_NETWORK: &str = "mainnet";
@@ -1711,6 +1756,21 @@ mod test {
             .unwrap();
         assert_eq!(version, DEFAULT_DB_VERSION);
 
+        // Fresh installs must land on SPV (core_backend_mode = 1). This is the
+        // user-visible contract of the v34 default-flip: non-Expert users never
+        // see an RPC config UI, so anything other than SPV here would strand them.
+        let core_backend_mode: u8 = conn
+            .query_row(
+                "SELECT core_backend_mode FROM settings WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            core_backend_mode, 1,
+            "fresh install must default to SPV (core_backend_mode = 1)"
+        );
+
         assert_v33_schema(&conn);
     }
 
@@ -2604,6 +2664,46 @@ mod test {
                 "try_perform_migration should report no migration needed"
             );
             assert_eq!(db.db_schema_version().unwrap(), 34);
+        }
+
+        // ── parse_env_value: dotenvy-style inline comment + quote handling ──
+        //
+        // These exercise the helper directly so regressions show up as unit
+        // failures with a clear message, not as mysterious migration behaviour.
+        use super::super::parse_env_value;
+
+        #[test]
+        fn parse_env_value_strips_inline_comment() {
+            assert_eq!(parse_env_value("value # trailing note"), "value");
+            assert_eq!(parse_env_value("value\t# tab then hash"), "value");
+            // Whitespace between value and `#` is what enables the comment.
+            assert_eq!(parse_env_value("hunter2  # password comment"), "hunter2");
+        }
+
+        #[test]
+        fn parse_env_value_preserves_hash_inside_quotes() {
+            // Double quotes preserve the `#` and inner whitespace verbatim.
+            assert_eq!(
+                parse_env_value("\"value # with hash\""),
+                "value # with hash"
+            );
+            // Single quotes behave the same.
+            assert_eq!(parse_env_value("'value # with hash'"), "value # with hash");
+            // And content before/after the quoted region is not our concern —
+            // dotenvy only supports a single quoted span for the value.
+            assert_eq!(parse_env_value(" \"quoted\" "), "quoted");
+        }
+
+        #[test]
+        fn parse_env_value_hash_without_whitespace_is_literal() {
+            // Matches dotenvy: a `#` with no preceding whitespace stays in the value.
+            assert_eq!(parse_env_value("value#nohash"), "value#nohash");
+            assert_eq!(
+                parse_env_value("hunter2#still-password"),
+                "hunter2#still-password"
+            );
+            // And a plain unquoted value trims trailing whitespace only.
+            assert_eq!(parse_env_value("  plain  "), "plain");
         }
     }
 }

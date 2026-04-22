@@ -5,6 +5,7 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::config::Config;
 use crate::context::AppContext;
 use crate::context::connection_status::{ConnectionStatus, OverallConnectionState};
+use crate::model::feature_gate::FeatureGate;
 use crate::model::wallet::DerivationPathHelpers;
 use crate::spv::{CoreBackendMode, SpvStatus, SpvStatusSnapshot};
 use crate::ui::components::component_trait::Component;
@@ -653,10 +654,7 @@ impl NetworkChooserScreen {
                 }
             });
 
-            // TODO: SPV sync progress is hidden when developer mode is OFF.
-            // Remove the developer_mode check once SPV is production-ready.
-            if self.developer_mode
-                && current_backend_mode == CoreBackendMode::Spv
+            if FeatureGate::SpvBackend.is_available(self.current_app_context())
                 && let Some(snap) = snapshot.as_ref()
                 && (snap.status == SpvStatus::Syncing || snap.status == SpvStatus::Starting)
             {
@@ -1215,8 +1213,8 @@ impl NetworkChooserScreen {
                     );
                 });
 
-                // TODO: SPV settings are hidden when developer mode is OFF.
-                // Remove the developer_mode checks once SPV is production-ready.
+                // Advanced SPV peer source configuration is Expert-only —
+                // fresh-install users get auto-discovery, which is the correct default.
                 if self.developer_mode {
                     ui.add_space(12.0);
                     ui.separator();
@@ -1381,9 +1379,9 @@ impl NetworkChooserScreen {
                     app_action |= self.show_database_clear_confirmation(ui);
                 }
 
-                // SPV Maintenance section
-                // TODO: SPV maintenance is hidden when developer mode is OFF.
-                // Remove the developer_mode check once SPV is production-ready.
+                // SPV maintenance (clear data, rescan) is Expert-only — these are
+                // diagnostic tools that can destroy wallet sync state and should not
+                // be exposed to fresh-install users.
                 if self.developer_mode {
                     let current_backend_mode = self.current_app_context().core_backend_mode();
                     if current_backend_mode == CoreBackendMode::Spv {

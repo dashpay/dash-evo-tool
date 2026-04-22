@@ -121,6 +121,13 @@ impl AppContext {
     /// user gets a proper "nothing to claim" banner instead of a silent
     /// success.
     ///
+    /// A safety cap of [`MAX_CLAIM_ALL_ITERATIONS`] protects against an
+    /// unexpected platform state where claim calls keep succeeding but never
+    /// report `NoTokensToClaim` (e.g. a misbehaving node or a bug in the
+    /// termination signal). If the cap is reached, the total fees claimed so
+    /// far are reported as success — the user can press Claim again if more
+    /// tokens remain.
+    ///
     /// Any other error short-circuits the loop and is returned as-is.
     #[allow(clippy::too_many_arguments)]
     pub async fn claim_all_tokens(
@@ -135,6 +142,13 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let mut iterations: usize = 0;
         loop {
+            if iterations >= MAX_CLAIM_ALL_ITERATIONS {
+                tracing::warn!(
+                    iterations,
+                    "claim_all_tokens hit iteration cap; returning partial success so the user can retry"
+                );
+                break;
+            }
             let outcome = self
                 .claim_tokens(
                     data_contract.clone(),
@@ -169,6 +183,15 @@ impl AppContext {
         )))
     }
 }
+
+/// Safety cap on [`AppContext::claim_all_tokens`] iterations.
+///
+/// A perpetual distribution can claim at most 128 cycles per call (32,767 for
+/// fixed-amount distributions), so 1,000 iterations is well above any
+/// legitimate backlog. The cap only kicks in if the platform keeps reporting
+/// positive claims without ever signalling `NoTokensToClaim`, which would
+/// indicate a platform or SDK defect rather than normal use.
+const MAX_CLAIM_ALL_ITERATIONS: usize = 1000;
 
 /// Returns `true` when the SDK error is the platform's
 /// `InvalidTokenClaimNoCurrentRewards` consensus state error.

@@ -98,6 +98,14 @@ existing · Dev Mode only: Create multiple test identities).
 **Network awareness**: switching network filters both dropdowns to wallets and identities
 that exist on the new network.
 
+**Identity pill dropdown — ordering rule**: items are sorted `Local nickname → DPNS username
+→ Identity ID (shortened)`. Inline search appears once the wallet contains 7 or more
+identities. Drag-to-reorder is intentionally deferred to a later iteration (see §G).
+
+**Jordan dev-mode dropdown footer**: the identity pill dropdown contains a `+ New throwaway
+wallet + identity` footer entry in Developer Mode (catalog §D entry #6). This Jordan-only
+path chains wallet creation → funding → identity registration in one step.
+
 ---
 
 ## B. Screen-by-screen Design
@@ -140,7 +148,14 @@ state.
 1. Chrome strip — breadcrumb, Wallet + Identity switcher, tab bar.
 2. Hero identity card (~240 px tall, full width, gradient surface).
 3. Quick-actions row (Send / Receive / Add contact).
-4. Onboarding checklist strip (conditional — until all three steps complete).
+3a. Secondary actions row (Add funds / Send to wallet / Send to another identity) — all three
+   visible for all personas. See §PROJ-008 for entry-point rationale.
+4. Onboarding checklist strip (conditional — until all three steps complete). The three
+   steps, in order:
+   1. `Pick a username`
+   2. `Set a display name` — hidden if the user has previously dismissed the social profile
+      card (treated as a deliberate skip; do not re-prompt).
+   3. `Add your first contact`
 5. Recent activity preview (latest 5 rows + See all link).
 
 **Hero identity card content** (social profile set):
@@ -179,6 +194,18 @@ Advanced expander below activity preview (collapsed for Alex, open for Priya / J
 - Contents: raw Identity ID (copyable, monospace, RADIUS_SM), revision number, last
   updated, keys summary.
 
+**Secondary actions row** (below quick-actions row, all personas):
+
+| Button | Label | Tooltip |
+|---|---|---|
+| Ghost | `Add funds` | `Move Dash from your wallet into this identity.` |
+| Ghost | `Send to wallet` | `Convert your identity balance back to spendable Dash in your wallet.` |
+| Ghost | `Send to another identity` | `Transfer Dash directly from this identity to another identity.` |
+
+These three buttons enter the Add funds wizard (§B.9), the Send to wallet flow, and the
+Send sheet (§B.7) with pre-configured recipient mode respectively. All are visible for all
+personas; no `.adv` gating.
+
 ### B.3 Identity Home — Priya, no social profile (Frame 4)
 
 Same layout as B.2 but with the social-profile-not-set state.
@@ -210,13 +237,14 @@ content is a centered gate card.
 
 **Gate card exact strings**:
 - Heading: `Set up a social profile first.`
-- Body: `Contacts use your display name and avatar to let people find you. Without a social
-  profile, you cannot add contacts or receive contact requests.`
+- Body: `Contacts use your display name and avatar to let people find you. Your username
+  @{handle} already works for payments — a social profile only unlocks contacts. Without a
+  social profile, you cannot add contacts or receive contact requests.`
 - Primary button: `Add a display name`
 - Secondary button: `Why?` — expands an inline explanation panel:
   - `DashPay contacts share encrypted payment keys with each other. To do this, DashPay
     needs a display name so the other person can confirm they are connecting to the right
-    person. Without one, the contact handshake cannot complete.`
+    person. Without a social profile, the contact handshake cannot complete.`
 
 **Tooltip on gate Contacts tab** (info, All):
 > Set up a social profile first. Contacts need a display name and avatar so people can find
@@ -235,6 +263,10 @@ left-border). Empty = strip hidden entirely.
 
 **Search + filter bar**: placeholder `Search your contacts`. Filter chips: All · Favorites
 (Priya / Jordan) · Hidden (Priya / Jordan) · Recently added.
+
+**Add by username** (Contacts tab header button): the input field accepts `@username` or a
+raw Base58 Identity ID — both resolve to the same lookup path. Tooltip copy: "Find someone
+by their Dash username or identity ID and add them as a contact."
 
 **Contacts list row**: 40 px avatar + display name (body_large) + `@{handle}` (body,
 text_secondary) + `Send` small button + `•••` overflow menu.
@@ -370,6 +402,118 @@ Contents:
      - Confirmation dialog: `This removes the identity from this device. It remains on Dash
        Platform — you can load it again later.`
 
+5. **Voter identity keys** (Masternode / Evonode only — rendered inside Advanced, after the
+   main Keys table):
+   - Sub-heading: `Voting keys` (Alex-facing label for `PrivateKeyOnVoterIdentity`).
+   - Helper: `These keys belong to the separate voter identity tied to your masternode. Most
+     operators manage them via the CLI, not this screen.`
+   - Alex-facing label tooltip: "The keys your masternode uses to vote on username contests."
+   - Table: same columns as main Keys table (Purpose · Type · Status · Added · Actions).
+   - This section is only rendered for `Masternode identity` and `Evonode identity` types.
+     It is `.adv`-gated.
+
+6. **Local nickname** (under the Display name section, below the `Aliases` heading):
+   - Field label: `Local nickname`
+   - Placeholder: `A label only you see on this device.`
+   - Helper: `This nickname is never published to Dash Platform. It is useful if you manage
+     several identities and want a shorthand beyond your DPNS username.`
+   - Displayed in the identity pill dropdown: priority order is Local nickname → DPNS
+     username → shortened Identity ID (see §A.3).
+   - Wording audit entry: `alias (local QualifiedIdentity.alias)` → `Local nickname` (distinct
+     from DPNS Alias, which refers to on-chain secondary usernames).
+
+7. **Auto-accept contact requests** (under Social profile section):
+   - Toggle: `Auto-accept contact requests`
+   - Helper: `Generate a proof that automatically accepts inbound contact requests without
+     your approval. Useful for public-facing accounts.`
+   - Account-index selector (Priya / Jordan only): `Account index`
+   - Validity-period selector: `Valid for` (options: 1 week · 1 month · 3 months · 1 year)
+   - Catalog §D addition (All personas, info tooltip):
+     > Automatically accept contact requests for this identity using an HD-derived proof.
+     > The proof works for the selected validity period, then expires.
+
+### B.9 Add funds wizard
+
+Entry points: secondary actions row on Home (Add funds button), Advanced expander on Home.
+
+**Funding method chooser** (step 1) — four methods, persona-gated:
+
+| Method | Alex-facing label | Visibility |
+|--------|-------------------|------------|
+| `UseWalletBalance` | `From your wallet` (recommended) | Alex, Priya, Jordan |
+| `AddressWithQRCode` | `Send to an address` | Alex, Priya, Jordan |
+| `UsePlatformAddress` | `Use a Platform address` | Priya, Jordan |
+| `UseUnusedAssetLock` | `Recover an unfinished funding` | Priya, Jordan |
+
+**Recover an unfinished funding** (`UseUnusedAssetLock`) is the orphan-recovery flow for
+users whose identity creation failed mid-stream. Alex-facing label deliberately avoids "Asset
+lock" jargon. Priya / Jordan see the technical name in a secondary gloss.
+
+**From your wallet** (`UseWalletBalance`) is the primary path and should be pre-selected.
+After method selection, step 2 shows an amount input with the wallet balance shown inline,
+fee preview, and a `Confirm` primary button.
+
+### B.10 Create identity wizard
+
+Triggered by `Create my first identity` on the onboarding screen, or `+ Add another identity
+→ Create new` from the identity pill dropdown.
+
+1. **Fund the identity** — runs the Add funds wizard (§B.9) inline. Recommended method:
+   `UseWalletBalance`. Minimum required shown dynamically.
+2. **Pick a username** — optional at creation time but encouraged. Contested name detection
+   runs here (see §B.13). User may skip; username can be registered later from Settings.
+3. **Done** — brief success state; identity is now active on Home.
+
+### B.11 Load existing identity
+
+Triggered by `I already have an identity — load it` on the onboarding screen, or `+ Add
+another identity → Load existing` from the identity pill dropdown.
+
+**Mode chooser** (three modes):
+
+| Mode | Alex-facing label | Visibility |
+|------|-------------------|------------|
+| By Identity ID + private key | `Enter the identity ID and private key` | Alex, Priya, Jordan |
+| By DPNS username | `Enter my username` | Alex, Priya, Jordan |
+| By wallet derivation | `Derive from my wallet` | Priya, Jordan (Advanced) |
+
+- **By Identity ID + private key**: two inputs — Identity ID (Base58) and private key. After
+  import, the identity is visible immediately on Home.
+- **By DPNS username**: resolves the username to an Identity ID via the network, then
+  prompts for the private key for the resolved identity.
+- **By wallet derivation**: scans the wallet's derivation path for registered identities.
+  Priya / Jordan only, hidden behind an Advanced expander for Alex.
+
+### B.12 — (reserved)
+
+### B.13 Pick a username
+
+Accessible from: Home hero `Pick a username` link (when no DPNS name), Settings right column
+`Register a username` button, and step 2 of the Create identity wizard (§B.10).
+
+**Step 1 — Enter a username**:
+- Input field with live availability check (debounced, 300 ms).
+- Success state: `@{handle} is available.` (success color).
+- Unavailable state: `@{handle} is taken.` with a `Browse alternatives` ghost link.
+- Contested state: `@{handle} is contested. Registering it starts a masternode vote.`
+  - Contested fee preview card: shows the higher fee (e.g. `0.2 DASH contest fee`) alongside
+    the standard registration fee.
+  - Explanation banner: `Contested names are put to a vote by masternodes. If enough
+    masternodes vote against your registration, the name goes to the next applicant. The
+    voting period lasts approximately 2 weeks.`
+  - Alex sees the plain-language banner; Priya / Jordan also see the lock period in blocks.
+
+**Step 2 — Fee preview and confirm**:
+- Standard: `You pay {fee_amount} DASH to register @{handle}.`
+- Contested: `You pay {fee_amount} DASH (including the {contest_amount} DASH contest
+  deposit). If the vote succeeds, the deposit is burned.`
+- Primary button: `Register @{handle}`
+
+**Step 3 — Registered / Failed**:
+- Success: `@{handle} is yours. It is now your primary username.`
+- Failed (contested, vote lost): `The vote on @{handle} did not go your way. Your contest
+  fee was returned. You can try a different username or wait and try again.`
+
 ---
 
 ## C. Wording Audit
@@ -384,7 +528,7 @@ replacement. Column 3 = Power / Dev tooltip gloss (shown on hover for Priya / Jo
 | Withdraw | Send to wallet | Convert Platform credits back to spendable Dash on the Core chain. Takes one or more blocks to settle. |
 | Transfer | Send to another identity | Transfer Platform credits from this identity directly to another identity without leaving Platform. |
 | Identity / Identities | Identity / Identities (kept) | A Dash Platform identity — the on-chain object that owns usernames, keys, and documents. |
-| DashPay profile | Social profile | The optional display name, bio, and avatar that DashPay uses to identify this identity to contacts. |
+| DashPay profile | Social profile | Optional display name, bio, and avatar linked to this identity for DashPay. |
 | UserId / Identity ID | Identity ID | Base58-encoded identity ID on Dash Platform. |
 | ProTxHash | Masternode ID | The ProTxHash that binds this identity to a masternode on Dash Core. |
 | User / Masternode / Evonode (type) | User identity / Masternode identity / Evonode identity | Identity type: basic user, masternode-bound, or evonode-bound. |
@@ -461,7 +605,7 @@ All tooltips: complete sentences, named placeholders, no concatenation. Variant 
 | 23 | Raw Identity ID copy button | Copy the full identity ID to your clipboard. | clickable | Priya, Jordan |
 | 24 | ProTxHash / Masternode ID copy button | Copy the masternode ID to your clipboard. | clickable | Priya, Jordan |
 | 25 | Contacts tab (gated, no social profile) | Set up a social profile first. Contacts need a display name and avatar so people can find you. | info | All |
-| 26 | Contacts tab header `Add by username` | Find someone by their Dash username and add them as a contact. | clickable | All |
+| 26 | Contacts tab header `Add by username` | Find someone by their Dash username or identity ID and add them as a contact. | clickable | All |
 | 27 | Contacts tab header `Scan QR` | Use a camera or paste a QR image to add a contact. | clickable | All |
 | 28 | Contacts tab header `Show my QR` | Show a QR code so someone nearby can add you or pay you. | clickable | All |
 | 29 | Incoming request `Accept` | Accept this contact request. You will appear in each other's contact list. | clickable | All |
@@ -518,12 +662,25 @@ All tooltips: complete sentences, named placeholders, no concatenation. Variant 
 | 80 | Developer Mode chip (when on) | Developer Mode shows advanced fields and testnet tools. Turn it off in Settings. | info | Jordan |
 | 81 | Settings: `Refresh mode` selector | Choose whether to refresh only Core chain data, only Platform data, or both at once. | info | Priya |
 | 82 | Identity pill dropdown `Add another identity` footer | Create a new identity or load one you already own. | clickable | All |
+| 83 | Home secondary action `Add funds` | Move Dash from your wallet into this identity. | clickable | All |
+| 84 | Home secondary action `Send to wallet` | Convert your identity balance back to spendable Dash in your wallet. | clickable | All |
+| 85 | Home secondary action `Send to another identity` | Transfer Dash directly from this identity to another identity. | clickable | All |
+| 86 | Topbar `Refresh identity data` icon-button | Fetch the latest identity data from the network. | clickable | All |
 
 ---
 
 ## E. Visual Direction
 
 Reuses all existing tokens from `src/ui/theme.rs`. No new color constants invented.
+
+**Shadow alpha intentional deviation**: the wireframe uses CSS shadow alphas
+`0.08 / 0.12 / 0.15 / 0.18 / 0.30` (for `--shadow-small` through `--shadow-glow`). These
+are the **visual target**. The current `theme.rs` `Shadow::*` constants store egui alpha
+bytes `8 / 12 / 15 / 18 / 30` (out of 255), which decode to `0.031 / 0.047 / 0.059 /
+0.071 / 0.118` — noticeably fainter than the wireframe intent. The implementation PR should
+update `Shadow::*` alpha bytes in `theme.rs` to match the wireframe values
+(8→20, 12→31, 15→38, 18→46, 30→76 in 255-scale). This is a deliberate mini-deviation
+flagged here so reviewers know the wireframe is not wrong.
 
 - **Island central panel**: `RADIUS_LG` (16 px) + `Shadow::elevated()`.
 - **Identity Home hero**: gradient `DashColors::DASH_BLUE` (#008de4) → `DashColors::PLATFORM_PURPLE` (#8250dc) at 14 % opacity over `DashColors::surface(dark_mode)`. Radius `RADIUS_XL` (20 px).
@@ -561,7 +718,8 @@ the existing evonode icon in the codebase. All three render at 40 px within a 96
 | 8 | Settings — Priya, Advanced expanded | Social profile section, aliases, keys table, danger zone. |
 
 CSS custom properties in `wireframe.html` mirror `src/ui/theme.rs` line-for-line. Every
-variable maps to its Rust constant in comments.
+variable maps to its Rust constant in comments. Exception: shadow alpha values are
+intentionally brighter in the wireframe than in `theme.rs` — see §E for the rationale.
 
 ---
 
@@ -574,3 +732,7 @@ variable maps to its Rust constant in comments.
 | G3 | Bulk identity creation (IDN-011) placement? | **Quiet tertiary link** in Add-another-identity chooser modal, Developer Mode only. |
 | G4 | Memo storage on sends? | **Split**: DashPay-routed payments store memo as part of the DashPay payment document; raw-address sends store memo locally. |
 | G5 | Unload vs. delete identity in danger zone? | **Unload only** exposed. No "delete permanently" note shown — Platform does not support it today and surfacing a note implying it will exist is premature. |
+| G6 | Identity pill dropdown drag-reorder? | **Deferred** to a later iteration. Default ordering: Local nickname → DPNS username → shortened Identity ID. Inline search at 7+ identities. |
+| G7 | Local identity alias (`QualifiedIdentity.alias`) vs. DPNS aliases? | **Preserved as `Local nickname`** in §B.8 Settings. The field is not deprecated; it is renamed to disambiguate from DPNS on-chain aliases. Migration: existing `alias` values display as-is; no data loss. |
+| G8 | `Request payment` (catalog #45) — UI placement? | **Future feature**. Catalog entry #45 is retained as a disabled-state tooltip ("Payment requests are coming soon.") for now. No active UI row in the wireframe. |
+| G9 | Secondary Home actions visibility gating? | **All personas, no `.adv` gate**. Add funds / Send to wallet / Send to another identity are visible to Alex, Priya, and Jordan. Alex's funding path defaults to `UseWalletBalance` (§B.9); advanced funding methods are gated inside the wizard, not on the Home row. |

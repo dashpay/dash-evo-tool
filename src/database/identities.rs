@@ -114,34 +114,6 @@ impl Database {
         Ok(())
     }
 
-    #[allow(dead_code)] // May be used for caching remote identities from network queries
-    pub fn insert_remote_identity_if_not_exists(
-        &self,
-        identifier: &Identifier,
-        qualified_identity: Option<&QualifiedIdentity>,
-        app_context: &AppContext,
-    ) -> rusqlite::Result<()> {
-        let id = identifier.to_vec();
-        let alias = qualified_identity.and_then(|qi| qi.alias.clone());
-        let identity_type =
-            qualified_identity.map_or("".to_string(), |qi| format!("{:?}", qi.identity_type));
-        let data = qualified_identity.map(|qi| qi.to_bytes());
-
-        let network = app_context.network.to_string();
-
-        // Use a single atomic INSERT OR IGNORE statement so we don't acquire
-        // the connection mutex twice (previously: SELECT under `self.conn.lock()`
-        // then `self.execute()` tried to lock it again, causing a deadlock).
-        // INSERT OR IGNORE also closes the TOCTOU window between check and insert.
-        self.execute(
-            "INSERT OR IGNORE INTO identity (id, data, is_local, alias, identity_type, network)
-             VALUES (?, ?, 0, ?, ?, ?)",
-            params![id, data, alias, identity_type, network],
-        )?;
-
-        Ok(())
-    }
-
     /// Returns all local identities for the current network.
     ///
     /// Stops on the first corrupted identity blob and returns an error.

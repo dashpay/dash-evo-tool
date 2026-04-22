@@ -1,0 +1,2250 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Identity + DashPay Redesign — Wireframe</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+/* =========================================================
+   1. DESIGN TOKENS — mirrored from src/ui/theme.rs
+   DashColors, Spacing, Shape, Shadow, Typography
+   ========================================================= */
+:root {
+  /* DashColors — light mode (src/ui/theme.rs DashColors::*) */
+  --dash-blue:           #008de4; /* DASH_BLUE */
+  --dash-blue-hover:     #0071b6; /* DASH_BLUE_DARK */
+  --deep-blue:           #012060; /* DEEP_BLUE */
+  --midnight-blue:       #0b0f3b; /* MIDNIGHT_BLUE */
+  --platform-purple:     #8250dc; /* PLATFORM_PURPLE rgb(130,80,220) */
+  --highlight-gold:      #9b870c; /* HIGHLIGHT_GOLD */
+  --success:             #27ae60; /* SUCCESS */
+  --warning:             #f1c40f; /* WARNING */
+  --error:               #eb5757; /* ERROR */
+  --info:                #3498db; /* INFO */
+  --danger-red:          #c83c3c; /* DANGER_RED */
+  --testnet-orange:      #ffa500; /* TESTNET_ORANGE */
+
+  /* UI surface colors — light mode */
+  --bg:                  #f0f2f7; /* BACKGROUND rgb(240,242,247) */
+  --bg-dark:             #e6ebf5; /* BACKGROUND_DARK */
+  --surface:             #ffffff; /* SURFACE */
+  --input-bg:            #f8fafc; /* INPUT_BACKGROUND rgb(248,250,252) */
+  --border:              #e2e8f0; /* BORDER rgb(226,232,240) */
+  --border-light:        #f0f5fb; /* BORDER_LIGHT */
+  --text-primary:        #111921; /* TEXT_PRIMARY / BLACK */
+  --text-secondary:      #64788c; /* TEXT_SECONDARY rgb(100,120,140) */
+  --text-on-accent:      #ffffff; /* TEXT_ON_PRIMARY */
+  --hover:               #c8dcfa; /* HOVER rgb(200,220,250) */
+  --disabled:            #bdc3c7; /* DISABLED */
+  --dark-surface:        #202020; /* DARK_SURFACE (used for overlay) */
+
+  /* Shape — src/ui/theme.rs Shape::RADIUS_* */
+  --radius-sm:   6px;   /* RADIUS_SM */
+  --radius-md:   12px;  /* RADIUS_MD */
+  --radius-lg:   16px;  /* RADIUS_LG */
+  --radius-xl:   20px;  /* RADIUS_XL */
+  --radius-full: 999px; /* RADIUS_FULL */
+
+  /* Shadow — src/ui/theme.rs Shadow::* (CSS approximation) */
+  --shadow-small:    0 2px 4px rgba(0,0,0,0.08);   /* Shadow::small() */
+  --shadow-medium:   0 4px 12px rgba(0,0,0,0.12);  /* Shadow::medium() */
+  --shadow-large:    0 8px 24px rgba(0,0,0,0.15);  /* Shadow::large() */
+  --shadow-elevated: 0 12px 32px rgba(0,0,0,0.18); /* Shadow::elevated() */
+  --shadow-glow:     0 0 20px rgba(0,141,228,0.30); /* Shadow::glow() */
+
+  /* Spacing — src/ui/theme.rs Spacing::* */
+  --sp-xxs: 2px;   /* XXS */
+  --sp-xs:  4px;   /* XS */
+  --sp-sm:  8px;   /* SM */
+  --sp-md:  16px;  /* MD */
+  --sp-lg:  24px;  /* LG */
+  --sp-xl:  32px;  /* XL */
+  --sp-xxl: 48px;  /* XXL */
+  --sp-xxxl:64px;  /* XXXL */
+
+  /* Typography — src/ui/theme.rs Typography::SCALE_* */
+  --font-xs:      12px; /* SCALE_XS */
+  --font-sm:      14px; /* SCALE_SM */
+  --font-base:    16px; /* SCALE_BASE */
+  --font-lg:      18px; /* SCALE_LG */
+  --font-xl:      20px; /* SCALE_XL */
+  --font-xxl:     24px; /* SCALE_XXL */
+  --font-xxxl:    30px; /* SCALE_XXXL */
+  --font-display: 36px; /* SCALE_DISPLAY */
+
+  /* Computed semantic aliases */
+  --modal-overlay: rgba(0,0,0,0.47); /* DashColors::modal_overlay() rgba(0,0,0,120) */
+  --hero-gradient: linear-gradient(135deg, rgba(0,141,228,0.14) 0%, rgba(130,80,220,0.14) 100%);
+}
+
+/* =========================================================
+   2. DARK MODE — src/ui/theme.rs DashColors::DARK_*
+   ========================================================= */
+[data-theme="dark"] {
+  --bg:           #121212; /* DARK_BACKGROUND */
+  --bg-dark:      #1c1c1c; /* DARK_BACKGROUND_ELEVATED */
+  --surface:      #202020; /* DARK_SURFACE */
+  --input-bg:     #282828; /* DARK_INPUT_BACKGROUND */
+  --border:       #3c3c3c; /* DARK_BORDER */
+  --border-light: #323232; /* DARK_BORDER_LIGHT */
+  --text-primary: #f0f0f0; /* DARK_TEXT_PRIMARY */
+  --text-secondary:#a0a0a0; /* DARK_TEXT_SECONDARY */
+  --hover:        #2d2d37; /* DARK_HOVER */
+  --disabled:     #505050; /* DARK_DISABLED */
+}
+
+/* =========================================================
+   3. RESET + BASE
+   ========================================================= */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+
+body {
+  font-family: 'Noto Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text-primary);
+  font-size: var(--font-base);
+  line-height: 1.5;
+  min-width: 1200px;
+}
+
+/* Screen-reader-only utility */
+.sr-only {
+  position: absolute; width: 1px; height: 1px;
+  padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0,0,0,0); white-space: nowrap; border: 0;
+}
+
+/* Focus ring — 3 px color-mix of Dash Blue at 55% */
+:focus-visible {
+  outline: 3px solid rgba(0,141,228,0.55); /* @supports not color-mix fallback */
+  outline-offset: 2px;
+}
+@supports (outline-color: color-mix(in srgb, #008de4 55%, transparent)) {
+  :focus-visible { outline-color: color-mix(in srgb, #008de4 55%, transparent); }
+}
+
+/* =========================================================
+   4. PAGE HEADER (persona toggle + theme toggle)
+   ========================================================= */
+.page-header {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: var(--sp-md) var(--sp-lg);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-md);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+
+.page-header h1 {
+  font-size: var(--font-lg);
+  font-weight: 700;
+  color: var(--dash-blue);
+  flex: 1;
+}
+
+.page-header-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-md);
+}
+
+/* Persona toggle */
+.persona-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-xs);
+  font-size: var(--font-sm);
+  color: var(--text-secondary);
+}
+
+.persona-toggle-label { font-weight: 600; margin-right: var(--sp-xs); }
+
+.persona-toggle [role="radiogroup"] {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+}
+
+.persona-btn {
+  background: none;
+  border: none;
+  padding: var(--sp-xs) var(--sp-md);
+  cursor: pointer;
+  font-size: var(--font-sm);
+  font-family: inherit;
+  color: var(--text-secondary);
+  transition: background 0.15s, color 0.15s;
+}
+
+.persona-btn[aria-checked="true"] {
+  background: var(--dash-blue);
+  color: #fff;
+  font-weight: 600;
+}
+
+/* Theme toggle */
+.theme-toggle {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  padding: var(--sp-xs) var(--sp-md);
+  cursor: pointer;
+  font-size: var(--font-sm);
+  font-family: inherit;
+  color: var(--text-secondary);
+}
+
+/* =========================================================
+   5. LAYOUT PRIMITIVES
+   ========================================================= */
+.app-chrome {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  min-height: 600px;
+}
+
+/* =========================================================
+   6. LEFT NAV
+   ========================================================= */
+.nav {
+  background: var(--deep-blue);
+  display: flex;
+  flex-direction: column;
+  padding: var(--sp-md) 0;
+  min-height: 600px;
+}
+
+.nav-network-stripe {
+  height: 4px;
+  background: var(--dash-blue);
+  margin-bottom: var(--sp-sm);
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-sm);
+  padding: var(--sp-sm) var(--sp-md);
+  color: rgba(255,255,255,0.65);
+  font-size: var(--font-sm);
+  cursor: pointer;
+  border-radius: 0;
+  text-decoration: none;
+  transition: background 0.1s, color 0.1s;
+  position: relative;
+}
+
+.nav-item:hover { background: rgba(255,255,255,0.08); color: #fff; }
+
+.nav-item.active {
+  background: rgba(0,141,228,0.25);
+  color: #fff;
+  font-weight: 600;
+}
+
+.nav-item.active::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 3px;
+  background: var(--dash-blue);
+  border-radius: 0 2px 2px 0;
+}
+
+.nav-icon { font-size: 16px; width: 20px; text-align: center; }
+
+.nav-spacer { flex: 1; }
+
+.nav-network-pill {
+  margin: var(--sp-sm) var(--sp-md);
+  padding: var(--sp-xs) var(--sp-sm);
+  background: rgba(0,141,228,0.15);
+  border: 1px solid rgba(0,141,228,0.35);
+  border-radius: var(--radius-full);
+  color: #fff;
+  font-size: var(--font-xs);
+  text-align: center;
+}
+
+/* =========================================================
+   7. CONTENT AREA (topbar, breadcrumb, switcher, panel)
+   ========================================================= */
+.content-area {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+.topbar {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: var(--sp-sm) var(--sp-lg);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-md);
+}
+
+.breadcrumb {
+  font-size: var(--font-sm);
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-xs);
+  font-weight: 600;
+}
+
+.breadcrumb-current { color: var(--text-primary); }
+
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-sm);
+}
+
+.connection-indicator {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--success);
+}
+
+/* Wallet + Identity switcher */
+.switcher {
+  padding: var(--sp-sm) var(--sp-lg);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-xs);
+}
+
+.switcher-pill {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-sm);
+  padding: var(--sp-xs) var(--sp-md);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  font-size: var(--font-sm);
+  color: var(--text-primary);
+  cursor: pointer;
+  width: fit-content;
+  min-width: 220px;
+  position: relative;
+}
+
+.switcher-pill.interactive:hover {
+  border-color: var(--dash-blue);
+  background: var(--hover);
+}
+
+.switcher-pill.subdued { cursor: default; color: var(--text-secondary); }
+.switcher-pill .chevron { margin-left: auto; color: var(--text-secondary); font-size: var(--font-xs); }
+.switcher-pill .avatar-sm {
+  width: 22px; height: 22px; border-radius: 50%;
+  background: var(--dash-blue);
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; font-size: 10px; font-weight: 700; flex-shrink: 0;
+}
+
+/* Tab bar */
+.tab-bar {
+  display: flex;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 0 var(--sp-lg);
+}
+
+.tab {
+  padding: var(--sp-sm) var(--sp-md);
+  font-size: var(--font-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  font-weight: 500;
+  text-decoration: none;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-xs);
+  transition: color 0.15s, border-color 0.15s;
+  position: relative;
+}
+
+.tab:hover { color: var(--text-primary); }
+
+.tab.active {
+  color: var(--dash-blue);
+  border-bottom-color: var(--dash-blue);
+  font-weight: 600;
+}
+
+.tab.gated { color: var(--disabled); cursor: default; }
+
+/* Island central panel */
+.island {
+  margin: var(--sp-lg);
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-elevated);
+  overflow: hidden;
+  flex: 1;
+}
+
+.island-content { padding: var(--sp-lg); }
+
+/* =========================================================
+   8. CARDS + COMPONENTS
+   ========================================================= */
+.card {
+  background: var(--surface);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-medium);
+  padding: var(--sp-md);
+}
+
+.card--hero {
+  background: var(--hero-gradient), var(--surface);
+  border-radius: var(--radius-xl);
+  padding: var(--sp-lg);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-lg);
+  flex-wrap: wrap;
+}
+
+.card--gate {
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  padding: var(--sp-xxl);
+  text-align: center;
+  max-width: 540px;
+  margin: 0 auto;
+}
+
+.card--social-prompt {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--sp-md);
+  margin-bottom: var(--sp-md);
+}
+
+.card--danger {
+  border: 1px solid var(--error);
+  border-radius: var(--radius-md);
+  padding: var(--sp-md);
+  margin-top: var(--sp-md);
+}
+
+.card--fee-preview {
+  background: var(--bg);
+  border-radius: var(--radius-md);
+  padding: var(--sp-md);
+}
+
+/* Avatar */
+.avatar {
+  width: 96px; height: 96px;
+  border-radius: 50%;
+  background: var(--dash-blue);
+  border: 2px solid rgba(0,141,228,0.2);
+  display: flex; align-items: center; justify-content: center;
+  color: #fff;
+  font-size: var(--font-xxxl);
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.avatar--monogram {
+  font-size: var(--font-xxl);
+  background: var(--bg-dark);
+  color: var(--text-secondary);
+}
+
+.avatar--sm {
+  width: 40px; height: 40px;
+  border-radius: 50%;
+  background: var(--dash-blue);
+  border: 1.5px solid rgba(0,141,228,0.2);
+  display: flex; align-items: center; justify-content: center;
+  color: #fff;
+  font-size: var(--font-sm);
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.avatar--lg {
+  width: 128px; height: 128px;
+  border-radius: 50%;
+  background: var(--dash-blue);
+  border: 2px solid rgba(0,141,228,0.2);
+  display: flex; align-items: center; justify-content: center;
+  color: #fff;
+  font-size: var(--font-display);
+  font-weight: 700;
+}
+
+/* Hero identity info */
+.hero-left { flex: 1; display: flex; align-items: center; gap: var(--sp-md); }
+.hero-info { display: flex; flex-direction: column; gap: var(--sp-xs); }
+.hero-right { display: flex; flex-direction: column; align-items: flex-end; gap: var(--sp-xs); }
+
+/* Badges / pills */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px var(--sp-sm);
+  border-radius: var(--radius-full);
+  font-size: var(--font-xs);
+  font-weight: 600;
+}
+
+.badge--user {
+  background: rgba(0,141,228,0.12);
+  color: var(--dash-blue);
+  border: 1px solid rgba(0,141,228,0.25);
+}
+
+.badge--masternode {
+  background: rgba(130,80,220,0.12);
+  color: var(--platform-purple);
+  border: 1px solid rgba(130,80,220,0.25);
+}
+
+.badge--evonode {
+  background: rgba(155,135,12,0.12);
+  color: var(--highlight-gold);
+  border: 1px solid rgba(155,135,12,0.25);
+}
+
+.badge--network {
+  background: rgba(0,141,228,0.12);
+  color: var(--dash-blue);
+  border: 1px solid rgba(0,141,228,0.3);
+  font-size: var(--font-xs);
+}
+
+.badge--pending {
+  background: rgba(0,141,228,0.12);
+  color: var(--dash-blue);
+  border: 1px solid rgba(0,141,228,0.25);
+}
+
+.badge--primary {
+  background: rgba(0,141,228,0.12);
+  color: var(--dash-blue);
+  border: 1px solid rgba(0,141,228,0.25);
+  font-size: var(--font-xs);
+  padding: 1px var(--sp-xs);
+}
+
+/* =========================================================
+   9. BUTTONS
+   ========================================================= */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-xs);
+  padding: var(--sp-sm) var(--sp-md);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-base);
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  border: none;
+  text-decoration: none;
+  min-height: 36px;
+  transition: background 0.15s, box-shadow 0.15s;
+}
+
+.btn-primary {
+  background: var(--dash-blue);
+  color: #fff;
+}
+.btn-primary:hover { background: var(--dash-blue-hover); }
+.btn-primary:focus-visible { box-shadow: var(--shadow-glow); }
+
+.btn-secondary {
+  background: var(--bg);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+}
+.btn-secondary:hover { background: var(--hover); border-color: var(--dash-blue); }
+
+.btn-ghost {
+  background: none;
+  color: var(--dash-blue);
+  border: none;
+  padding: var(--sp-xs) var(--sp-sm);
+}
+.btn-ghost:hover { text-decoration: underline; }
+
+.btn-danger {
+  background: var(--error);
+  color: #fff;
+}
+.btn-danger:hover { background: var(--danger-red); }
+
+.btn-sm {
+  padding: var(--sp-xs) var(--sp-sm);
+  font-size: var(--font-sm);
+  min-height: 28px;
+}
+
+.btn-full { width: 100%; display: flex; }
+
+.btn-disabled {
+  background: var(--disabled);
+  color: #fff;
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.btn-icon {
+  width: 32px; height: 32px;
+  padding: 0;
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  color: var(--text-secondary);
+}
+.btn-icon:hover { color: var(--dash-blue); border-color: var(--dash-blue); }
+
+/* Quick-action row */
+.quick-actions {
+  display: flex;
+  gap: var(--sp-md);
+  margin: var(--sp-md) 0;
+}
+
+.quick-action {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-xs);
+  padding: var(--sp-md);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-medium);
+  cursor: pointer;
+  font-size: var(--font-sm);
+  font-weight: 600;
+  color: var(--text-primary);
+  font-family: inherit;
+}
+
+.quick-action:hover { border-color: var(--dash-blue); background: var(--hover); }
+
+.quick-action-icon {
+  font-size: var(--font-xxl);
+}
+
+/* =========================================================
+   10. TYPOGRAPHY HELPERS
+   ========================================================= */
+.text-xl    { font-size: var(--font-xl); }
+.text-lg    { font-size: var(--font-lg); }
+.text-base  { font-size: var(--font-base); }
+.text-sm    { font-size: var(--font-sm); }
+.text-xs    { font-size: var(--font-xs); }
+.text-display { font-size: var(--font-display); font-weight: 700; }
+.text-xxxl  { font-size: var(--font-xxxl); font-weight: 700; }
+.text-xxl   { font-size: var(--font-xxl); font-weight: 700; }
+.fw-600     { font-weight: 600; }
+.fw-500     { font-weight: 500; }
+.text-secondary { color: var(--text-secondary); }
+.text-primary   { color: var(--text-primary); }
+.text-danger    { color: var(--error); }
+.text-success   { color: var(--success); }
+.text-warning   { color: var(--warning); }
+.text-info      { color: var(--info); }
+.text-dash      { color: var(--dash-blue); }
+.mono           { font-family: 'Courier New', Courier, monospace; font-size: 0.9em; }
+
+/* =========================================================
+   11. LAYOUT HELPERS
+   ========================================================= */
+.flex   { display: flex; }
+.flex-col { flex-direction: column; }
+.items-center { align-items: center; }
+.items-start  { align-items: flex-start; }
+.justify-between { justify-content: space-between; }
+.justify-end  { justify-content: flex-end; }
+.gap-xs { gap: var(--sp-xs); }
+.gap-sm { gap: var(--sp-sm); }
+.gap-md { gap: var(--sp-md); }
+.gap-lg { gap: var(--sp-lg); }
+.mt-xs  { margin-top: var(--sp-xs); }
+.mt-sm  { margin-top: var(--sp-sm); }
+.mt-md  { margin-top: var(--sp-md); }
+.mt-lg  { margin-top: var(--sp-lg); }
+.mt-xl  { margin-top: var(--sp-xl); }
+.mt-xxl { margin-top: var(--sp-xxl); }
+.mb-sm  { margin-bottom: var(--sp-sm); }
+.mb-md  { margin-bottom: var(--sp-md); }
+.ml-auto { margin-left: auto; }
+.w-full { width: 100%; }
+.text-center { text-align: center; }
+.text-right  { text-align: right; }
+
+/* =========================================================
+   12. FORM ELEMENTS
+   ========================================================= */
+.input {
+  width: 100%;
+  padding: var(--sp-sm) var(--sp-md);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--input-bg);
+  color: var(--text-primary);
+  font-size: var(--font-base);
+  font-family: inherit;
+}
+
+.input:focus { border-color: var(--dash-blue); outline: none; box-shadow: 0 0 0 2px rgba(0,141,228,0.2); }
+
+.form-label {
+  font-size: var(--font-sm);
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: var(--sp-xs);
+  display: block;
+}
+
+.form-hint {
+  font-size: var(--font-xs);
+  color: var(--text-secondary);
+  margin-top: var(--sp-xs);
+}
+
+.form-group { margin-bottom: var(--sp-md); }
+
+/* =========================================================
+   13. LIST ROWS (activity, contacts)
+   ========================================================= */
+.list-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-md);
+  padding: var(--sp-sm) 0;
+  border-bottom: 1px solid var(--border-light);
+  min-height: 48px;
+}
+
+.list-row:last-child { border-bottom: none; }
+
+.list-row--failed { border-left: 3px solid var(--error); padding-left: var(--sp-sm); }
+.list-row--expanded { background: var(--bg); border-radius: var(--radius-md); padding: var(--sp-md); flex-direction: column; align-items: flex-start; border: 1px solid var(--border); margin-bottom: var(--sp-sm); }
+
+.activity-icon {
+  width: 32px; height: 32px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: var(--font-base);
+  flex-shrink: 0;
+}
+
+.activity-icon--in  { background: rgba(39,174,96,0.12); color: var(--success); }
+.activity-icon--out { background: rgba(0,141,228,0.12); color: var(--dash-blue); }
+.activity-icon--fund{ background: rgba(155,135,12,0.12); color: var(--highlight-gold); }
+.activity-icon--plat{ background: rgba(130,80,220,0.12); color: var(--platform-purple); }
+.activity-icon--fail{ background: rgba(235,87,87,0.12); color: var(--error); }
+
+/* =========================================================
+   14. BANNERS + CALLOUTS
+   ========================================================= */
+.banner {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-sm);
+  padding: var(--sp-sm) var(--sp-md);
+  border-radius: var(--radius-md);
+  font-size: var(--font-sm);
+  margin-bottom: var(--sp-md);
+}
+
+.banner--info    { background: rgba(52,152,219,0.1); border: 1px solid rgba(52,152,219,0.3); color: var(--info); }
+.banner--warning { background: rgba(241,196,15,0.1); border: 1px solid rgba(241,196,15,0.4); color: #7a6200; }
+.banner--error   { background: rgba(235,87,87,0.1); border: 1px solid rgba(235,87,87,0.3); color: var(--error); }
+.banner--success { background: rgba(39,174,96,0.1); border: 1px solid rgba(39,174,96,0.3); color: var(--success); }
+
+[data-theme="dark"] .banner--warning { color: var(--warning); }
+
+/* =========================================================
+   15. TOOLTIPS
+   Three variants: info (help cursor), clickable (pointer), disabled (not-allowed)
+   Body stays in DOM; hidden via opacity + pointer-events for screen-reader access.
+   ========================================================= */
+.tooltip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.tooltip [role="tooltip"] {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--dark-surface, #1a1a2e);
+  color: #fff;
+  font-size: var(--font-xs);
+  padding: var(--sp-xs) var(--sp-sm);
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+  max-width: 280px;
+  white-space: normal;
+  text-align: center;
+  line-height: 1.4;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s;
+  z-index: 200;
+  box-shadow: var(--shadow-medium);
+}
+
+[data-theme="dark"] .tooltip [role="tooltip"] {
+  background: #333;
+  border: 1px solid var(--border);
+}
+
+.tooltip:hover [role="tooltip"],
+.tooltip:focus-within [role="tooltip"] { opacity: 1; }
+
+.tooltip--info { cursor: help; }
+.tooltip--clickable { cursor: pointer; }
+.tooltip--disabled { cursor: not-allowed; }
+
+/* =========================================================
+   16. MODAL SHEET OVERLAY
+   ========================================================= */
+.modal-backdrop {
+  position: relative;
+  background: var(--modal-overlay);
+  border-radius: var(--radius-lg);
+  padding: var(--sp-lg);
+}
+
+.modal-sheet {
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-elevated);
+  width: 100%;
+  max-width: 560px;
+  margin: 0 auto;
+  padding: var(--sp-lg);
+}
+
+/* =========================================================
+   17. ADVANCED EXPANDER (<details>/<summary>)
+   ========================================================= */
+details.expander summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-sm);
+  padding: var(--sp-sm) 0;
+  font-size: var(--font-sm);
+  font-weight: 600;
+  color: var(--text-secondary);
+  user-select: none;
+}
+
+details.expander summary::before {
+  content: '▶';
+  font-size: var(--font-xs);
+  transition: transform 0.15s;
+  display: inline-block;
+}
+
+details.expander[open] summary::before { transform: rotate(90deg); }
+
+details.expander summary::-webkit-details-marker { display: none; }
+
+.expander-content {
+  padding: var(--sp-md) 0 var(--sp-sm) var(--sp-md);
+  border-left: 2px solid var(--border);
+  margin-left: var(--sp-xs);
+}
+
+/* =========================================================
+   18. ONBOARDING CHECKLIST
+   ========================================================= */
+.checklist {
+  background: linear-gradient(135deg, rgba(0,141,228,0.05), rgba(130,80,220,0.05));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--sp-md);
+  margin-bottom: var(--sp-md);
+}
+
+.checklist-items {
+  display: flex;
+  gap: var(--sp-sm);
+  margin-top: var(--sp-sm);
+  flex-wrap: wrap;
+}
+
+.checklist-item {
+  flex: 1;
+  min-width: 160px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--sp-sm);
+}
+
+.checklist-item--done {
+  border-color: var(--success);
+  background: rgba(39,174,96,0.06);
+}
+
+.checklist-check { color: var(--success); font-size: var(--font-lg); }
+.checklist-uncheck { color: var(--disabled); font-size: var(--font-lg); }
+
+/* =========================================================
+   19. KEYS TABLE
+   ========================================================= */
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--font-sm);
+}
+
+.table th {
+  text-align: left;
+  padding: var(--sp-xs) var(--sp-sm);
+  border-bottom: 2px solid var(--border);
+  color: var(--text-secondary);
+  font-weight: 600;
+  font-size: var(--font-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.table td {
+  padding: var(--sp-xs) var(--sp-sm);
+  border-bottom: 1px solid var(--border-light);
+  color: var(--text-primary);
+}
+
+/* =========================================================
+   20. PROGRESSIVE DISCLOSURE — persona gating
+   CSS selectors hide .adv (Priya + Jordan) and .dev (Jordan only) per body[data-persona]
+   ========================================================= */
+body[data-persona="alex"] .adv { display: none !important; }
+body[data-persona="alex"] .dev { display: none !important; }
+body[data-persona="priya"] .dev { display: none !important; }
+
+/* Default: .adv and .dev visible for priya/jordan */
+.adv, .dev { display: initial; }
+
+/* =========================================================
+   21. FRAME STRUCTURE
+   ========================================================= */
+.frames { max-width: 1440px; margin: 0 auto; padding: var(--sp-xl); display: flex; flex-direction: column; gap: var(--sp-xxxl); }
+
+.frame-divider {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-md);
+  margin-bottom: var(--sp-md);
+}
+
+.frame-divider::before,
+.frame-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.frame-caption {
+  text-align: center;
+}
+
+.frame-caption h2 {
+  font-size: var(--font-xl);
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.frame-caption p {
+  font-size: var(--font-sm);
+  color: var(--text-secondary);
+  margin-top: var(--sp-xs);
+}
+
+.frame-note {
+  font-size: var(--font-xs);
+  color: var(--text-secondary);
+  background: var(--bg);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--sp-xs) var(--sp-sm);
+  margin-bottom: var(--sp-sm);
+  display: inline-block;
+}
+
+/* Frame variant label */
+.variant-label {
+  font-size: var(--font-xs);
+  font-weight: 700;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: var(--sp-sm);
+}
+
+.empty-state {
+  text-align: center;
+  padding: var(--sp-xxl) var(--sp-lg);
+  color: var(--text-secondary);
+}
+
+.empty-state-icon { font-size: 48px; margin-bottom: var(--sp-md); }
+
+.section-heading {
+  font-size: var(--font-lg);
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: var(--sp-xs);
+}
+
+.section-helper {
+  font-size: var(--font-sm);
+  color: var(--text-secondary);
+  margin-bottom: var(--sp-md);
+}
+
+.id-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-xs);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--sp-xs) var(--sp-sm);
+  font-family: monospace;
+  font-size: var(--font-xs);
+  color: var(--text-secondary);
+}
+
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-lg); }
+
+/* Filter chips */
+.filter-chips { display: flex; gap: var(--sp-xs); margin-bottom: var(--sp-md); flex-wrap: wrap; }
+
+.chip {
+  padding: var(--sp-xs) var(--sp-md);
+  border-radius: var(--radius-full);
+  font-size: var(--font-sm);
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-secondary);
+  font-family: inherit;
+}
+
+.chip.active {
+  background: var(--dash-blue);
+  color: #fff;
+  border-color: var(--dash-blue);
+}
+
+.chip:hover:not(.active) { border-color: var(--dash-blue); color: var(--text-primary); }
+</style>
+</head>
+<body data-persona="alex">
+
+<!-- =========================================================
+     PAGE HEADER (persona toggle + theme toggle)
+     ========================================================= -->
+<header>
+<div class="page-header">
+  <h1>Identity + DashPay Redesign — Wireframe</h1>
+  <div class="page-header-controls">
+    <div class="persona-toggle">
+      <span class="persona-toggle-label">Persona:</span>
+      <div role="radiogroup" aria-label="Select persona" id="persona-group">
+        <button class="persona-btn" role="radio" aria-checked="true"  data-persona="alex"  id="pb-alex">Alex</button>
+        <button class="persona-btn" role="radio" aria-checked="false" data-persona="priya" id="pb-priya">Priya</button>
+        <button class="persona-btn" role="radio" aria-checked="false" data-persona="jordan" id="pb-jordan">Jordan</button>
+      </div>
+    </div>
+    <button class="theme-toggle" id="theme-btn" aria-pressed="false" aria-label="Toggle dark mode">Dark mode</button>
+  </div>
+</div>
+</header>
+
+<main>
+<div class="frames">
+
+<!-- ==========================================================
+     FRAME 1 — App chrome zoom
+     ========================================================== -->
+<section aria-labelledby="f1-title">
+<div class="frame-divider">
+  <div class="frame-caption">
+    <h2 id="f1-title">Frame 1 — App chrome zoom</h2>
+    <p>Left nav, network indicator, and the two-pill Wallet + Identity switcher.<br>
+       Nav label is <strong>unchanged</strong> — what moved is DashPay under Identities.
+       Variant A: Alex (subdued wallet pill). Variant B: Priya (interactive wallet pill).</p>
+  </div>
+</div>
+
+<p class="frame-note">Variant A — Alex: single wallet, single identity</p>
+<div class="app-chrome">
+  <nav class="nav" aria-label="Primary navigation">
+    <div class="nav-network-stripe"></div>
+    <a class="nav-item" href="#" aria-label="Wallets"><span class="nav-icon" aria-hidden="true">💼</span> Wallets</a>
+    <a class="nav-item active" href="#" aria-current="page" aria-label="Identities">
+      <span class="nav-icon" aria-hidden="true">👥</span> Identities
+      <span class="tooltip tooltip--info" style="margin-left:auto;">
+        <span style="font-size:10px; color:rgba(255,255,255,0.5);">&#9432;</span>
+        <span role="tooltip" id="tt-1">Your identities on Dash Platform. Manage usernames, balances, keys, and — if you set up a social profile — DashPay contacts and payments.</span>
+      </span>
+    </a>
+    <a class="nav-item" href="#" aria-label="Contracts"><span class="nav-icon" aria-hidden="true">📄</span> Contracts</a>
+    <a class="nav-item" href="#" aria-label="Tokens"><span class="nav-icon" aria-hidden="true">🪙</span> Tokens</a>
+    <a class="nav-item" href="#" aria-label="Tools"><span class="nav-icon" aria-hidden="true">🛠</span> Tools</a>
+    <div class="nav-spacer"></div>
+    <a class="nav-item" href="#" aria-label="Settings"><span class="nav-icon" aria-hidden="true">⚙</span> Settings</a>
+    <div class="nav-network-pill">Mainnet</div>
+  </nav>
+  <div class="content-area">
+    <div class="topbar">
+      <div class="breadcrumb">
+        <span>Identities</span>
+        <span class="breadcrumb-current"></span>
+      </div>
+      <div class="topbar-right">
+        <span class="tooltip tooltip--info">
+          <span class="connection-indicator" aria-label="Connected" role="img"></span>
+          <span role="tooltip" id="tt-77">You are connected and up to date.</span>
+        </span>
+      </div>
+    </div>
+    <!-- Wallet + Identity switcher — Alex subdued -->
+    <div class="switcher" aria-label="Wallet and identity selector">
+      <span class="tooltip tooltip--info" style="display:block; width:fit-content;">
+        <div class="switcher-pill subdued" aria-label="Funded by Main Wallet. Set up another wallet to unlock switching.">
+          <span aria-hidden="true">💼</span>
+          <span>Main Wallet</span>
+          <span class="text-xs text-secondary ml-auto">(single wallet)</span>
+        </div>
+        <span role="tooltip" id="tt-3">This identity is funded by Main Wallet. Set up another wallet on the Wallets screen to unlock switching.</span>
+      </span>
+      <span class="tooltip tooltip--clickable" style="display:block; width:fit-content;">
+        <div class="switcher-pill interactive" role="button" tabindex="0" aria-haspopup="listbox" aria-label="Switch identity: @alex.dash">
+          <div class="avatar-sm"><span aria-hidden="true">A</span></div>
+          <span>@alex.dash</span>
+          <span class="chevron" aria-hidden="true">▾</span>
+        </div>
+        <span role="tooltip" id="tt-4">Switch between identities in Main Wallet or add a new one.</span>
+      </span>
+    </div>
+  </div>
+</div>
+
+<p class="frame-note mt-lg" style="margin-top:24px;">Variant B — Priya: multiple wallets and identities (fully interactive)</p>
+<div class="app-chrome">
+  <nav class="nav" aria-label="Primary navigation (Priya)">
+    <div class="nav-network-stripe"></div>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">💼</span> Wallets</a>
+    <a class="nav-item active" href="#" aria-current="page">
+      <span class="nav-icon" aria-hidden="true">👥</span> Identities
+    </a>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">📄</span> Contracts</a>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">🪙</span> Tokens</a>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">🛠</span> Tools</a>
+    <div class="nav-spacer"></div>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">⚙</span> Settings</a>
+    <div class="nav-network-pill">Testnet</div>
+  </nav>
+  <div class="content-area">
+    <div class="topbar">
+      <div class="breadcrumb"><span>Identities</span></div>
+      <div class="topbar-right">
+        <span class="connection-indicator"></span>
+      </div>
+    </div>
+    <!-- Wallet + Identity switcher — Priya interactive -->
+    <div class="switcher" aria-label="Wallet and identity selector">
+      <span class="tooltip tooltip--clickable" style="display:block; width:fit-content;">
+        <div class="switcher-pill interactive" role="button" tabindex="0" aria-haspopup="listbox" aria-label="Switch wallet: Masternode Ops">
+          <span aria-hidden="true">💼</span>
+          <span>Masternode Ops</span>
+          <span class="chevron" aria-hidden="true">▾</span>
+        </div>
+        <span role="tooltip" id="tt-2">Switch between your wallets. Each wallet can own several identities.</span>
+      </span>
+      <span class="tooltip tooltip--clickable" style="display:block; width:fit-content;">
+        <div class="switcher-pill interactive" role="button" tabindex="0" aria-haspopup="listbox" aria-label="Switch identity: @priya.dash">
+          <div class="avatar-sm" style="background:var(--platform-purple);"><span aria-hidden="true">P</span></div>
+          <span>@priya.dash</span>
+          <span class="chevron" aria-hidden="true">▾</span>
+        </div>
+        <span role="tooltip" id="tt-4b">Switch between identities in Masternode Ops or add a new one.</span>
+      </span>
+    </div>
+  </div>
+</div>
+</section>
+
+<!-- ==========================================================
+     FRAME 2 — Onboarding empty state
+     ========================================================== -->
+<section aria-labelledby="f2-title">
+<div class="frame-divider">
+  <div class="frame-caption">
+    <h2 id="f2-title">Frame 2 — Onboarding empty state</h2>
+    <p>First-time welcome when no identities are loaded on the current network.</p>
+  </div>
+</div>
+<div class="app-chrome">
+  <nav class="nav" aria-label="Primary navigation">
+    <div class="nav-network-stripe"></div>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">💼</span> Wallets</a>
+    <a class="nav-item active" href="#" aria-current="page"><span class="nav-icon" aria-hidden="true">👥</span> Identities</a>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">📄</span> Contracts</a>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">🪙</span> Tokens</a>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">🛠</span> Tools</a>
+    <div class="nav-spacer"></div>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">⚙</span> Settings</a>
+    <div class="nav-network-pill">Mainnet</div>
+  </nav>
+  <div class="content-area">
+    <div class="topbar">
+      <div class="breadcrumb"><span class="breadcrumb-current">Identities</span></div>
+    </div>
+    <div class="island" style="display:flex; align-items:center; justify-content:center;">
+      <div class="island-content" style="max-width:600px; text-align:center;">
+        <div style="font-size:80px; margin-bottom:var(--sp-lg);" aria-hidden="true">👤</div>
+        <h2 class="text-xxxl mb-md">Welcome to Identities.</h2>
+        <p class="text-lg text-secondary mb-md" style="margin-bottom:var(--sp-md);">An identity is your account on Dash Platform. With one you can pick a username, send and receive Dash by name, and — if you choose — connect with people through DashPay.</p>
+        <p class="text-base text-secondary" style="margin-bottom:var(--sp-xl);">You only need a small amount of Dash from your wallet to get started.</p>
+        <div class="flex flex-col gap-sm" style="max-width:320px; margin:0 auto;">
+          <span class="tooltip tooltip--clickable" style="display:block;">
+            <button class="btn btn-primary btn-full">Create my first identity</button>
+            <span role="tooltip" id="tt-7">Start the short setup: pick a username, fund the identity from your wallet, and confirm.</span>
+          </span>
+          <span class="tooltip tooltip--clickable" style="display:block;">
+            <button class="btn btn-secondary btn-full">I already have an identity — load it</button>
+            <span role="tooltip" id="tt-8">Enter the identity ID and private key to import an existing identity into this device.</span>
+          </span>
+        </div>
+        <!-- Developer Mode footer (Jordan only) -->
+        <div class="dev mt-xl" style="border-top:1px solid var(--border); padding-top:var(--sp-md); margin-top:var(--sp-xl);">
+          <p class="text-xs text-secondary mb-sm">Developer tools:</p>
+          <div class="flex gap-sm justify-center">
+            <span class="tooltip tooltip--clickable">
+              <button class="btn btn-ghost btn-sm">Create multiple test identities</button>
+              <span role="tooltip" id="tt-9">Create a batch of identities for testing. Each one is funded and registered automatically.</span>
+            </span>
+            <span class="text-secondary">·</span>
+            <button class="btn btn-ghost btn-sm">Load identity by ID</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</section>
+
+<!-- ==========================================================
+     FRAME 3 — Identity Home — Alex, social profile set
+     ========================================================== -->
+<section aria-labelledby="f3-title">
+<div class="frame-divider">
+  <div class="frame-caption">
+    <h2 id="f3-title">Frame 3 — Identity Home — Alex, social profile set</h2>
+    <p>Hero with avatar and display name, quick actions, onboarding checklist, recent activity.</p>
+  </div>
+</div>
+<div class="app-chrome">
+  <nav class="nav" aria-label="Primary navigation">
+    <div class="nav-network-stripe"></div>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">💼</span> Wallets</a>
+    <a class="nav-item active" href="#" aria-current="page"><span class="nav-icon" aria-hidden="true">👥</span> Identities</a>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">📄</span> Contracts</a>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">🪙</span> Tokens</a>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">🛠</span> Tools</a>
+    <div class="nav-spacer"></div>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">⚙</span> Settings</a>
+    <div class="nav-network-pill">Mainnet</div>
+  </nav>
+  <div class="content-area">
+    <div class="topbar">
+      <div class="breadcrumb"><span class="breadcrumb-current">Identities</span></div>
+      <div class="topbar-right"><span class="connection-indicator"></span></div>
+    </div>
+    <div class="switcher">
+      <div class="switcher-pill subdued" aria-label="Funded by Main Wallet">
+        <span aria-hidden="true">💼</span> Main Wallet
+        <span class="text-xs text-secondary ml-auto">(single wallet)</span>
+      </div>
+      <div class="switcher-pill interactive" role="button" tabindex="0" aria-label="Switch identity: @alex.dash">
+        <div class="avatar-sm"><span aria-hidden="true">A</span></div>
+        @alex.dash <span class="chevron" aria-hidden="true">▾</span>
+      </div>
+    </div>
+    <div class="tab-bar" role="tablist">
+      <a class="tab active" role="tab" aria-selected="true" href="#" id="tab-home-3" aria-controls="panel-home-3">Home</a>
+      <a class="tab" role="tab" aria-selected="false" href="#">Contacts</a>
+      <a class="tab" role="tab" aria-selected="false" href="#">Activity</a>
+      <a class="tab" role="tab" aria-selected="false" href="#">Settings</a>
+    </div>
+    <div class="island" id="panel-home-3" role="tabpanel" aria-labelledby="tab-home-3">
+      <div class="island-content">
+        <!-- Hero -->
+        <div class="card--hero mb-md">
+          <div class="hero-left">
+            <div class="avatar" aria-label="Alex Torres avatar">A</div>
+            <div class="hero-info">
+              <p class="text-xxxl fw-600">Alex Torres</p>
+              <p class="text-base text-secondary">@alex.dash</p>
+              <div class="flex gap-xs">
+                <span class="badge badge--user">User identity</span>
+                <span class="badge badge--network">Mainnet</span>
+              </div>
+            </div>
+          </div>
+          <div class="hero-right">
+            <span class="tooltip tooltip--info">
+              <p class="text-xxl">2.450 DASH</p>
+              <span role="tooltip" id="tt-10">This is the Dash held by your identity. Your wallet balance is shown on the Wallet screen.</span>
+            </span>
+            <span class="tooltip tooltip--info">
+              <p class="text-sm text-secondary">≈ 214.30 USD</p>
+              <span role="tooltip" id="tt-11">An estimated value in USD. Rates can change.</span>
+            </span>
+          </div>
+        </div>
+        <!-- Quick actions -->
+        <div class="quick-actions">
+          <span class="tooltip tooltip--clickable" style="flex:1; display:flex;">
+            <button class="quick-action" style="flex:1;">
+              <span class="quick-action-icon" aria-hidden="true">✈</span>
+              Send
+            </button>
+            <span role="tooltip" id="tt-16">Send Dash to a contact, username, or address.</span>
+          </span>
+          <span class="tooltip tooltip--clickable" style="flex:1; display:flex;">
+            <button class="quick-action" style="flex:1;">
+              <span class="quick-action-icon" aria-hidden="true">📥</span>
+              Receive
+            </button>
+            <span role="tooltip" id="tt-17">Show a QR code or your username so someone can pay you.</span>
+          </span>
+          <span class="tooltip tooltip--clickable" style="flex:1; display:flex;">
+            <button class="quick-action" style="flex:1;">
+              <span class="quick-action-icon" aria-hidden="true">🤝</span>
+              Add contact
+            </button>
+            <span role="tooltip" id="tt-18">Find someone by username and add them to your contacts.</span>
+          </span>
+        </div>
+        <!-- Onboarding checklist (shown until complete) -->
+        <div class="checklist">
+          <div class="flex items-center justify-between">
+            <p class="fw-600">Finish setting up your identity</p>
+            <span class="tooltip tooltip--clickable">
+              <button class="btn btn-ghost btn-sm">Hide this for now</button>
+              <span role="tooltip" id="tt-20">Hide the setup checklist. You can find these actions on Settings and Contacts anytime.</span>
+            </span>
+          </div>
+          <div class="checklist-items">
+            <div class="checklist-item checklist-item--done">
+              <p class="checklist-check fw-600">&#10003; Pick a username</p>
+              <p class="text-xs text-secondary mt-xs">You are @alex.dash.</p>
+            </div>
+            <div class="checklist-item">
+              <p class="checklist-uncheck fw-600">&#9675; Set a display name</p>
+              <p class="text-xs text-secondary mt-xs">This is how you appear to contacts.</p>
+              <button class="btn btn-ghost btn-sm mt-xs" style="padding-left:0;">Set display name</button>
+            </div>
+            <div class="checklist-item">
+              <p class="checklist-uncheck fw-600">&#9675; Add your first contact</p>
+              <p class="text-xs text-secondary mt-xs">Add someone by username to send with one click.</p>
+              <button class="btn btn-ghost btn-sm mt-xs" style="padding-left:0;">Add a contact</button>
+            </div>
+          </div>
+        </div>
+        <!-- Recent activity preview -->
+        <div class="flex items-center justify-between mb-sm">
+          <p class="text-xl fw-600">Recent activity</p>
+          <button class="btn btn-ghost btn-sm">See all activity</button>
+        </div>
+        <div>
+          <div class="list-row">
+            <div class="activity-icon activity-icon--in" aria-hidden="true">↙</div>
+            <div style="flex:1;">
+              <p class="text-sm fw-600">Received 0.500 DASH from @bob.dash</p>
+              <p class="text-xs text-secondary">via contact</p>
+            </div>
+            <p class="text-xs text-secondary">Today, 14:32</p>
+          </div>
+          <div class="list-row">
+            <div class="activity-icon activity-icon--plat" aria-hidden="true">◆</div>
+            <div style="flex:1;">
+              <p class="text-sm fw-600">Registered the username @alex.dash</p>
+              <p class="text-xs text-secondary">Platform · Mar 14</p>
+            </div>
+            <p class="text-xs text-secondary">Mar 14</p>
+          </div>
+          <div class="list-row">
+            <div class="activity-icon activity-icon--fund" aria-hidden="true">⬆</div>
+            <div style="flex:1;">
+              <p class="text-sm fw-600">Added 3.000 DASH to your identity</p>
+              <p class="text-xs text-secondary">From your wallet · funding</p>
+            </div>
+            <p class="text-xs text-secondary">Mar 12</p>
+          </div>
+        </div>
+        <!-- Advanced expander (Priya/Jordan only) -->
+        <details class="expander adv mt-md">
+          <summary>Advanced details</summary>
+          <div class="expander-content">
+            <p class="text-xs text-secondary mb-xs">Identity ID</p>
+            <div class="id-chip mb-sm">
+              <span class="mono">7Bn4qRm9…Xk2pWc</span>
+              <span class="tooltip tooltip--clickable">
+                <button class="btn-icon btn-sm" aria-label="Copy identity ID"><span aria-hidden="true">📋</span></button>
+                <span role="tooltip" id="tt-23">Copy the full identity ID to your clipboard.</span>
+              </span>
+            </div>
+            <p class="text-xs text-secondary">Version 3 · Last updated Mar 14</p>
+          </div>
+        </details>
+        <!-- Alex insight chip -->
+        <div class="banner banner--info mt-md">
+          <span aria-hidden="true">💡</span>
+          <span class="tooltip tooltip--info">
+            <span class="text-sm">Your username @alex.dash works like an address. Share it with anyone who wants to pay you.</span>
+            <span role="tooltip" id="tt-21">Share your username with anyone who wants to pay you. It works even if the sender is on a different Dash wallet.</span>
+          </span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</section>
+
+<!-- ==========================================================
+     FRAME 4 — Identity Home — Priya, no social profile
+     ========================================================== -->
+<section aria-labelledby="f4-title">
+<div class="frame-divider">
+  <div class="frame-caption">
+    <h2 id="f4-title">Frame 4 — Identity Home — Priya, no social profile</h2>
+    <p>Type-glyph monogram hero and the inline "Set up your social profile" card.</p>
+  </div>
+</div>
+<div class="app-chrome">
+  <nav class="nav" aria-label="Primary navigation">
+    <div class="nav-network-stripe" style="background:var(--testnet-orange);"></div>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">💼</span> Wallets</a>
+    <a class="nav-item active" href="#" aria-current="page"><span class="nav-icon" aria-hidden="true">👥</span> Identities</a>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">📄</span> Contracts</a>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">🪙</span> Tokens</a>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">🛠</span> Tools</a>
+    <div class="nav-spacer"></div>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">⚙</span> Settings</a>
+    <div class="nav-network-pill" style="border-color:rgba(255,165,0,0.5); color:var(--testnet-orange);">Testnet</div>
+  </nav>
+  <div class="content-area">
+    <div class="topbar">
+      <div class="breadcrumb"><span class="breadcrumb-current">Identities</span></div>
+      <div class="topbar-right"><span class="connection-indicator"></span></div>
+    </div>
+    <div class="switcher">
+      <div class="switcher-pill interactive" role="button" tabindex="0" aria-label="Switch wallet: Masternode Ops">
+        <span aria-hidden="true">💼</span> Masternode Ops <span class="chevron" aria-hidden="true">▾</span>
+      </div>
+      <div class="switcher-pill interactive" role="button" tabindex="0" aria-label="Switch identity: @priya.dash">
+        <div class="avatar-sm" style="background:var(--platform-purple);"><span aria-hidden="true">🔷</span></div>
+        @priya.dash <span class="chevron" aria-hidden="true">▾</span>
+      </div>
+    </div>
+    <div class="tab-bar" role="tablist">
+      <a class="tab active" role="tab" aria-selected="true" href="#" id="tab-home-4">Home</a>
+      <a class="tab" role="tab" aria-selected="false" href="#">Contacts</a>
+      <a class="tab" role="tab" aria-selected="false" href="#">Activity</a>
+      <a class="tab" role="tab" aria-selected="false" href="#">Settings</a>
+    </div>
+    <div class="island" role="tabpanel" aria-labelledby="tab-home-4">
+      <div class="island-content">
+        <!-- Hero — no social profile, monogram glyph -->
+        <div class="card--hero mb-md">
+          <div class="hero-left">
+            <div class="avatar avatar--monogram" aria-label="Masternode identity (no social profile)">🔷</div>
+            <div class="hero-info">
+              <p class="text-xxxl fw-600">@priya.dash</p>
+              <p class="text-sm text-secondary" style="font-style:italic;">No social profile set</p>
+              <div class="flex gap-xs mt-xs">
+                <span class="badge badge--masternode">Masternode identity</span>
+                <span class="badge badge--network" style="border-color:rgba(255,165,0,0.4); color:var(--testnet-orange); background:rgba(255,165,0,0.1);">Testnet</span>
+              </div>
+            </div>
+          </div>
+          <div class="hero-right">
+            <span class="tooltip tooltip--info">
+              <p class="text-xxl">14.200 DASH</p>
+              <span role="tooltip" id="tt-10b">This is the Dash held by your identity. Your wallet balance is shown on the Wallet screen.</span>
+            </span>
+            <p class="text-sm text-secondary">≈ 1,241.48 USD</p>
+          </div>
+        </div>
+        <!-- Quick actions -->
+        <div class="quick-actions mb-md">
+          <button class="quick-action" style="flex:1;"><span class="quick-action-icon" aria-hidden="true">✈</span>Send</button>
+          <button class="quick-action" style="flex:1;"><span class="quick-action-icon" aria-hidden="true">📥</span>Receive</button>
+          <button class="quick-action" style="flex:1;"><span class="quick-action-icon" aria-hidden="true">🤝</span>Add contact</button>
+        </div>
+        <!-- Social profile card (shown when no social profile) -->
+        <span class="tooltip tooltip--info" style="display:block; margin-bottom:var(--sp-md);">
+          <div class="card--social-prompt">
+            <div class="flex items-center gap-md">
+              <span style="font-size:32px;" aria-hidden="true">🪪</span>
+              <div style="flex:1;">
+                <p class="fw-600 mb-xs">Set up your social profile</p>
+                <p class="text-sm text-secondary">Add a display name, bio, and avatar so people can find you on DashPay. This is optional — you can still use every other feature without it.</p>
+              </div>
+              <div class="flex flex-col gap-xs">
+                <button class="btn btn-primary btn-sm">Add a display name</button>
+                <button class="btn btn-ghost btn-sm">Skip — I use this identity only for voting</button>
+              </div>
+            </div>
+          </div>
+          <span role="tooltip" id="tt-19">Add a display name, bio, and avatar so people can find you on DashPay. This is optional — you can still use every other feature without it.</span>
+        </span>
+        <!-- Advanced expander (always visible for Priya) -->
+        <details class="expander" open>
+          <summary>Advanced details</summary>
+          <div class="expander-content">
+            <p class="text-xs text-secondary mb-xs">Identity ID</p>
+            <div class="id-chip mb-sm">
+              <span class="mono">9Xk2pWcBn4qRm…7Q</span>
+              <button class="btn-icon btn-sm" aria-label="Copy identity ID"><span aria-hidden="true">📋</span></button>
+            </div>
+            <p class="text-xs text-secondary mb-sm">Masternode ID</p>
+            <div class="id-chip mb-sm">
+              <span class="mono">protx:Abc123…Def456</span>
+              <button class="btn-icon btn-sm" aria-label="Copy masternode ID"><span aria-hidden="true">📋</span></button>
+            </div>
+            <p class="text-xs text-secondary">Version 12 · Last updated 2 hours ago</p>
+          </div>
+        </details>
+      </div>
+    </div>
+  </div>
+</div>
+</section>
+
+<!-- ==========================================================
+     FRAME 5 — Contacts tab — gated state (no social profile)
+     ========================================================== -->
+<section aria-labelledby="f5-title">
+<div class="frame-divider">
+  <div class="frame-caption">
+    <h2 id="f5-title">Frame 5 — Contacts tab — gated state</h2>
+    <p>Shown when the current identity has no social profile. Contacts require a profile to be discoverable.</p>
+  </div>
+</div>
+<div class="app-chrome">
+  <nav class="nav" aria-label="Primary navigation">
+    <div class="nav-network-stripe"></div>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">💼</span> Wallets</a>
+    <a class="nav-item active" href="#" aria-current="page"><span class="nav-icon" aria-hidden="true">👥</span> Identities</a>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">📄</span> Contracts</a>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">🪙</span> Tokens</a>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">🛠</span> Tools</a>
+    <div class="nav-spacer"></div>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">⚙</span> Settings</a>
+    <div class="nav-network-pill">Mainnet</div>
+  </nav>
+  <div class="content-area">
+    <div class="topbar">
+      <div class="breadcrumb"><span class="breadcrumb-current">Identities</span></div>
+    </div>
+    <div class="switcher">
+      <div class="switcher-pill subdued"><span aria-hidden="true">💼</span> Main Wallet</div>
+      <div class="switcher-pill interactive" role="button" tabindex="0">
+        <div class="avatar-sm"><span aria-hidden="true">J</span></div>
+        @jordan.dash <span class="chevron" aria-hidden="true">▾</span>
+      </div>
+    </div>
+    <div class="tab-bar" role="tablist">
+      <a class="tab" role="tab" aria-selected="false" href="#">Home</a>
+      <span class="tooltip tooltip--info" style="display:inline-flex;">
+        <a class="tab active" role="tab" aria-selected="true" href="#" id="tab-contacts-5">Contacts</a>
+        <span role="tooltip" id="tt-25">Set up a social profile first. Contacts need a display name and avatar so people can find you.</span>
+      </span>
+      <a class="tab" role="tab" aria-selected="false" href="#">Activity</a>
+      <a class="tab" role="tab" aria-selected="false" href="#">Settings</a>
+    </div>
+    <div class="island" role="tabpanel" aria-labelledby="tab-contacts-5">
+      <div class="island-content" style="display:flex; align-items:center; min-height:360px;">
+        <div class="card--gate">
+          <div style="font-size:56px; margin-bottom:var(--sp-md);" aria-hidden="true">🔒</div>
+          <h3 class="text-xl fw-600 mb-sm">Set up a social profile first.</h3>
+          <p class="text-sm text-secondary mb-md">Contacts use your display name and avatar to let people find you. Without a social profile, you cannot add contacts or receive contact requests.</p>
+          <div class="flex gap-sm justify-center flex-wrap">
+            <button class="btn btn-primary">Add a display name</button>
+            <details class="expander">
+              <summary style="font-size:var(--font-sm); color:var(--text-secondary); padding:var(--sp-sm) var(--sp-md); cursor:pointer;">Why?</summary>
+              <div class="expander-content" style="text-align:left; margin-top:var(--sp-sm); border-left-color:var(--info);">
+                <p class="text-sm text-secondary">DashPay contacts share encrypted payment keys with each other. To do this, DashPay needs a display name so the other person can confirm they are connecting to the right person. Without one, the contact handshake cannot complete.</p>
+              </div>
+            </details>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</section>
+
+<!-- ==========================================================
+     FRAME 6 — Activity tab
+     ========================================================== -->
+<section aria-labelledby="f6-title">
+<div class="frame-divider">
+  <div class="frame-caption">
+    <h2 id="f6-title">Frame 6 — Activity tab</h2>
+    <p>Unified timeline: one expanded row, one failed row, ten normal rows across all three filter categories.</p>
+  </div>
+</div>
+<div class="app-chrome">
+  <nav class="nav" aria-label="Primary navigation">
+    <div class="nav-network-stripe"></div>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">💼</span> Wallets</a>
+    <a class="nav-item active" href="#" aria-current="page"><span class="nav-icon" aria-hidden="true">👥</span> Identities</a>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">📄</span> Contracts</a>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">🪙</span> Tokens</a>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">🛠</span> Tools</a>
+    <div class="nav-spacer"></div>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">⚙</span> Settings</a>
+    <div class="nav-network-pill">Mainnet</div>
+  </nav>
+  <div class="content-area">
+    <div class="topbar">
+      <div class="breadcrumb"><span class="breadcrumb-current">Identities</span></div>
+    </div>
+    <div class="switcher">
+      <div class="switcher-pill subdued"><span aria-hidden="true">💼</span> Main Wallet</div>
+      <div class="switcher-pill interactive" role="button" tabindex="0">
+        <div class="avatar-sm"><span aria-hidden="true">A</span></div>
+        @alex.dash <span class="chevron" aria-hidden="true">▾</span>
+      </div>
+    </div>
+    <div class="tab-bar" role="tablist">
+      <a class="tab" role="tab" aria-selected="false" href="#">Home</a>
+      <a class="tab" role="tab" aria-selected="false" href="#">Contacts</a>
+      <a class="tab active" role="tab" aria-selected="true" href="#" id="tab-activity-6">Activity</a>
+      <a class="tab" role="tab" aria-selected="false" href="#">Settings</a>
+    </div>
+    <div class="island" role="tabpanel" aria-labelledby="tab-activity-6">
+      <div class="island-content">
+        <!-- Tab header -->
+        <div class="flex items-center justify-between mb-md">
+          <p class="text-xl fw-600">Activity</p>
+          <span class="tooltip tooltip--clickable adv">
+            <button class="btn btn-secondary btn-sm">Export</button>
+            <span role="tooltip" id="tt-43">Save your activity as a CSV file.</span>
+          </span>
+        </div>
+        <!-- Filter chips -->
+        <div class="filter-chips">
+          <span class="tooltip tooltip--info">
+            <button class="chip active">All</button>
+            <span role="tooltip" id="tt-all">Show all activity.</span>
+          </span>
+          <span class="tooltip tooltip--info">
+            <button class="chip">Payments</button>
+            <span role="tooltip" id="tt-39">Shows money you sent or received.</span>
+          </span>
+          <span class="tooltip tooltip--info">
+            <button class="chip">Funding</button>
+            <span role="tooltip" id="tt-40">Shows when you added Dash to your identity, sent Dash back to your wallet, or moved Dash between identities.</span>
+          </span>
+          <span class="tooltip tooltip--info adv">
+            <button class="chip">Platform</button>
+            <span role="tooltip" id="tt-41">Shows identity changes like usernames, keys, and contracts.</span>
+          </span>
+        </div>
+        <!-- Expanded row -->
+        <div class="list-row list-row--expanded" aria-expanded="true">
+          <div class="flex items-center gap-md w-full">
+            <div class="activity-icon activity-icon--out" aria-hidden="true">↗</div>
+            <div style="flex:1;">
+              <p class="text-sm fw-600">Sent 0.250 DASH</p>
+              <p class="text-xs text-secondary">To @carol.dash · via username</p>
+            </div>
+            <p class="text-xs text-secondary">Yesterday</p>
+            <span class="tooltip tooltip--clickable">
+              <button class="btn-icon" aria-label="Collapse details" aria-expanded="true"><span aria-hidden="true">▲</span></button>
+              <span role="tooltip" id="tt-42">Show details for this activity.</span>
+            </span>
+          </div>
+          <div style="width:100%; padding-top:var(--sp-sm); border-top:1px solid var(--border-light); margin-top:var(--sp-sm);">
+            <div class="two-col">
+              <div>
+                <p class="text-xs text-secondary mb-xs">Amount</p>
+                <p class="text-sm fw-600">0.250 DASH <span class="text-secondary">(≈ 21.84 USD)</span></p>
+                <p class="text-xs text-secondary mt-xs">Network fee: 0.00002 DASH</p>
+                <p class="text-xs text-secondary">Status: <span style="color:var(--success);">Confirmed</span></p>
+              </div>
+              <div>
+                <p class="text-xs text-secondary mb-xs">To</p>
+                <p class="text-sm fw-600">@carol.dash</p>
+                <p class="text-xs text-secondary">via username · Apr 21, 11:47</p>
+              </div>
+            </div>
+            <div class="adv mt-sm">
+              <p class="text-xs text-secondary mb-xs">Transaction ID</p>
+              <div class="id-chip"><span class="mono">a1b2c3d4e5f6…0a1b</span></div>
+            </div>
+          </div>
+        </div>
+        <!-- Failed row -->
+        <div class="list-row list-row--failed">
+          <div class="activity-icon activity-icon--fail" aria-hidden="true">!</div>
+          <div style="flex:1;">
+            <p class="text-sm fw-600 text-danger">Could not send 1.000 DASH to @dave.dash</p>
+            <p class="text-xs text-secondary">The network did not accept this payment. Your balance is unchanged.</p>
+          </div>
+          <span class="tooltip tooltip--clickable">
+            <button class="btn btn-secondary btn-sm">Retry</button>
+            <span role="tooltip" id="tt-44">Try sending this payment again. Your balance has not been touched.</span>
+          </span>
+        </div>
+        <!-- Normal rows -->
+        <div class="list-row">
+          <div class="activity-icon activity-icon--in" aria-hidden="true">↙</div>
+          <div style="flex:1;"><p class="text-sm fw-600">Received 0.500 DASH from @bob.dash</p><p class="text-xs text-secondary">via contact · Today, 14:32</p></div>
+          <p class="text-xs text-secondary">Today</p>
+          <span class="tooltip tooltip--clickable"><button class="btn-icon" aria-label="Show details"><span aria-hidden="true">▾</span></button><span role="tooltip" id="tt-42b">Show details for this activity.</span></span>
+        </div>
+        <div class="list-row">
+          <div class="activity-icon activity-icon--fund" aria-hidden="true">⬆</div>
+          <div style="flex:1;"><p class="text-sm fw-600">Added 5.000 DASH to your identity</p><p class="text-xs text-secondary">From your wallet · funding</p></div>
+          <p class="text-xs text-secondary">Apr 20</p>
+          <button class="btn-icon" aria-label="Show details"><span aria-hidden="true">▾</span></button>
+        </div>
+        <div class="list-row">
+          <div class="activity-icon activity-icon--out" aria-hidden="true">↗</div>
+          <div style="flex:1;"><p class="text-sm fw-600">Sent 2.100 DASH to @eve.dash</p><p class="text-xs text-secondary">via contact · Apr 19</p></div>
+          <p class="text-xs text-secondary">Apr 19</p>
+          <button class="btn-icon" aria-label="Show details"><span aria-hidden="true">▾</span></button>
+        </div>
+        <div class="list-row adv">
+          <div class="activity-icon activity-icon--plat" aria-hidden="true">◆</div>
+          <div style="flex:1;"><p class="text-sm fw-600">Registered the username @alex.dash</p><p class="text-xs text-secondary">Platform · Mar 14</p></div>
+          <p class="text-xs text-secondary">Mar 14</p>
+          <button class="btn-icon" aria-label="Show details"><span aria-hidden="true">▾</span></button>
+        </div>
+        <div class="list-row">
+          <div class="activity-icon activity-icon--in" aria-hidden="true">↙</div>
+          <div style="flex:1;"><p class="text-sm fw-600">Received 0.100 DASH from @frank.dash</p><p class="text-xs text-secondary">via username · Mar 10</p></div>
+          <p class="text-xs text-secondary">Mar 10</p>
+          <button class="btn-icon" aria-label="Show details"><span aria-hidden="true">▾</span></button>
+        </div>
+        <div class="list-row">
+          <div class="activity-icon activity-icon--fund" aria-hidden="true">⬇</div>
+          <div style="flex:1;"><p class="text-sm fw-600">Sent 1.000 DASH to your wallet</p><p class="text-xs text-secondary">To wallet · Mar 8</p></div>
+          <p class="text-xs text-secondary">Mar 8</p>
+          <button class="btn-icon" aria-label="Show details"><span aria-hidden="true">▾</span></button>
+        </div>
+        <div class="list-row">
+          <div class="activity-icon activity-icon--out" aria-hidden="true">↗</div>
+          <div style="flex:1;"><p class="text-sm fw-600">Sent 0.050 DASH to @grace.dash</p><p class="text-xs text-secondary">via contact · Mar 5</p></div>
+          <p class="text-xs text-secondary">Mar 5</p>
+          <button class="btn-icon" aria-label="Show details"><span aria-hidden="true">▾</span></button>
+        </div>
+        <div class="list-row adv">
+          <div class="activity-icon activity-icon--plat" aria-hidden="true">◆</div>
+          <div style="flex:1;"><p class="text-sm fw-600">Added a new key to your identity</p><p class="text-xs text-secondary">Platform · Feb 28</p></div>
+          <p class="text-xs text-secondary">Feb 28</p>
+          <button class="btn-icon" aria-label="Show details"><span aria-hidden="true">▾</span></button>
+        </div>
+        <div class="list-row">
+          <div class="activity-icon activity-icon--in" aria-hidden="true">↙</div>
+          <div style="flex:1;"><p class="text-sm fw-600">Received 3.200 DASH from @henry.dash</p><p class="text-xs text-secondary">via contact · Feb 20</p></div>
+          <p class="text-xs text-secondary">Feb 20</p>
+          <button class="btn-icon" aria-label="Show details"><span aria-hidden="true">▾</span></button>
+        </div>
+        <div class="list-row">
+          <div class="activity-icon activity-icon--fund" aria-hidden="true">⬆</div>
+          <div style="flex:1;"><p class="text-sm fw-600">Added 10.000 DASH to your identity</p><p class="text-xs text-secondary">From your wallet · funding</p></div>
+          <p class="text-xs text-secondary">Feb 15</p>
+          <button class="btn-icon" aria-label="Show details"><span aria-hidden="true">▾</span></button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</section>
+
+<!-- ==========================================================
+     FRAME 7 — Send sheet (compose step)
+     ========================================================== -->
+<section aria-labelledby="f7-title">
+<div class="frame-divider">
+  <div class="frame-caption">
+    <h2 id="f7-title">Frame 7 — Send sheet — compose step</h2>
+    <p>Username resolution in progress, amount input, memo expander, fee preview card. Shown over a dimmed Identity Home backdrop.</p>
+  </div>
+</div>
+<div class="app-chrome">
+  <nav class="nav" aria-label="Primary navigation">
+    <div class="nav-network-stripe"></div>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">💼</span> Wallets</a>
+    <a class="nav-item active" href="#" aria-current="page"><span class="nav-icon" aria-hidden="true">👥</span> Identities</a>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">📄</span> Contracts</a>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">🪙</span> Tokens</a>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">🛠</span> Tools</a>
+    <div class="nav-spacer"></div>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">⚙</span> Settings</a>
+    <div class="nav-network-pill">Mainnet</div>
+  </nav>
+  <div class="content-area">
+    <div class="topbar">
+      <div class="breadcrumb"><span class="breadcrumb-current">Identities</span></div>
+    </div>
+    <div class="switcher">
+      <div class="switcher-pill subdued"><span aria-hidden="true">💼</span> Main Wallet</div>
+      <div class="switcher-pill interactive" role="button" tabindex="0">
+        <div class="avatar-sm"><span aria-hidden="true">A</span></div>
+        @alex.dash <span class="chevron" aria-hidden="true">▾</span>
+      </div>
+    </div>
+    <div class="tab-bar" role="tablist">
+      <a class="tab active" role="tab" aria-selected="true" href="#" id="tab-home-7">Home</a>
+      <a class="tab" role="tab" aria-selected="false" href="#">Contacts</a>
+      <a class="tab" role="tab" aria-selected="false" href="#">Activity</a>
+      <a class="tab" role="tab" aria-selected="false" href="#">Settings</a>
+    </div>
+    <!-- Dimmed backdrop -->
+    <div class="modal-backdrop" role="tabpanel" aria-labelledby="tab-home-7">
+      <div class="modal-sheet" role="dialog" aria-modal="true" aria-labelledby="send-heading">
+        <div class="flex items-center justify-between mb-md">
+          <h3 class="text-xl fw-600" id="send-heading">Send Dash</h3>
+          <button class="btn-icon" aria-label="Close send sheet"><span aria-hidden="true">✕</span></button>
+        </div>
+        <p class="text-sm text-secondary mb-md">Send from your identity Alex Torres.</p>
+        <!-- Recipient -->
+        <div class="form-group">
+          <span class="tooltip tooltip--info">
+            <label class="form-label" for="send-to">To</label>
+            <span role="tooltip" id="tt-61">Paste a username, Dash address, or identity ID. You can also pick from your contacts.</span>
+          </span>
+          <input class="input" id="send-to" type="text" value="@carol" placeholder="Username, contact, Dash address, or identity ID" aria-describedby="send-to-hint">
+          <p class="form-hint text-info" id="send-to-hint" aria-live="polite">Looking up @carol&#8230;</p>
+        </div>
+        <!-- Amount -->
+        <div class="form-group">
+          <div class="flex items-center justify-between">
+            <span class="tooltip tooltip--info">
+              <label class="form-label" for="send-amount">Amount</label>
+              <span role="tooltip" id="tt-62">How much Dash to send. We will show the network fee before you confirm.</span>
+            </span>
+            <span class="tooltip tooltip--clickable">
+              <button class="btn btn-ghost btn-sm" style="padding:0; font-size:var(--font-xs);">Use USD</button>
+              <span role="tooltip" id="tt-63">Enter the amount in USD. We convert it to DASH for you.</span>
+            </span>
+          </div>
+          <input class="input" id="send-amount" type="text" value="0.500" placeholder="0.000" aria-describedby="send-amount-hint">
+          <p class="form-hint" id="send-amount-hint">&#8776; 43.70 USD</p>
+          <div class="flex gap-xs mt-sm">
+            <span class="tooltip tooltip--clickable">
+              <button class="chip">0.100</button>
+              <span role="tooltip" id="tt-qa1">Quick-select 0.100 DASH.</span>
+            </span>
+            <button class="chip">0.500</button>
+            <span class="tooltip tooltip--clickable">
+              <button class="chip">Max</button>
+              <span role="tooltip" id="tt-64">Send your entire identity balance minus the network fee.</span>
+            </span>
+          </div>
+        </div>
+        <!-- Memo expander -->
+        <details class="expander form-group">
+          <span class="tooltip tooltip--clickable" style="display:inline-flex;">
+            <summary>Add a note</summary>
+            <span role="tooltip" id="tt-65">Attach a private note that only you and the recipient can see.</span>
+          </span>
+          <div class="expander-content">
+            <textarea class="input" rows="3" placeholder="Private to you and the recipient." aria-label="Payment memo" style="resize:vertical;"></textarea>
+          </div>
+        </details>
+        <!-- Fee preview -->
+        <div class="card--fee-preview mb-md">
+          <div class="list-row" style="min-height:unset; padding:var(--sp-xs) 0;">
+            <span class="text-sm flex-1">You send</span>
+            <span class="text-sm fw-600">0.500 DASH</span>
+          </div>
+          <div class="list-row" style="min-height:unset; padding:var(--sp-xs) 0;">
+            <span class="tooltip tooltip--info flex-1" style="display:inline-flex;">
+              <span class="text-sm">Network fee</span>
+              <span role="tooltip" id="tt-66">Paid to the network to process this payment. Not paid to anyone you know.</span>
+            </span>
+            <span class="text-sm text-secondary">0.00002 DASH</span>
+          </div>
+          <div class="list-row" style="min-height:unset; padding:var(--sp-xs) 0; border-top:1px solid var(--border); margin-top:var(--sp-xs);">
+            <span class="text-sm fw-600 flex-1">Total from your identity</span>
+            <span class="text-sm fw-600">0.50002 DASH</span>
+          </div>
+          <div class="list-row adv" style="min-height:unset; padding:var(--sp-xs) 0;">
+            <span class="tooltip tooltip--info flex-1" style="display:inline-flex;">
+              <span class="text-sm text-secondary">Credits used</span>
+              <span role="tooltip" id="tt-67">The Platform credits this action will spend.</span>
+            </span>
+            <span class="text-sm text-secondary">50,000 credits</span>
+          </div>
+        </div>
+        <!-- Buttons -->
+        <div class="flex justify-end gap-sm">
+          <button class="btn btn-secondary">Cancel</button>
+          <span class="tooltip tooltip--disabled">
+            <button class="btn btn-disabled" aria-disabled="true" aria-describedby="tt-69">Review</button>
+            <span role="tooltip" id="tt-69">Enter a valid recipient and amount to continue.</span>
+          </span>
+          <!-- Enabled state for reference -->
+          <span class="tooltip tooltip--clickable">
+            <button class="btn btn-primary" style="display:none;">Review</button>
+            <span role="tooltip" id="tt-68">Double-check before sending.</span>
+          </span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</section>
+
+<!-- ==========================================================
+     FRAME 8 — Settings — Priya, Advanced expanded
+     ========================================================== -->
+<section aria-labelledby="f8-title">
+<div class="frame-divider">
+  <div class="frame-caption">
+    <h2 id="f8-title">Frame 8 — Settings — Priya, Advanced expanded</h2>
+    <p>Social profile section, aliases, keys table (Priya), danger zone.</p>
+  </div>
+</div>
+<div class="app-chrome">
+  <nav class="nav" aria-label="Primary navigation">
+    <div class="nav-network-stripe" style="background:var(--testnet-orange);"></div>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">💼</span> Wallets</a>
+    <a class="nav-item active" href="#" aria-current="page"><span class="nav-icon" aria-hidden="true">👥</span> Identities</a>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">📄</span> Contracts</a>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">🪙</span> Tokens</a>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">🛠</span> Tools</a>
+    <div class="nav-spacer"></div>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">⚙</span> Settings</a>
+    <div class="nav-network-pill" style="border-color:rgba(255,165,0,0.5); color:var(--testnet-orange);">Testnet</div>
+  </nav>
+  <div class="content-area">
+    <div class="topbar">
+      <div class="breadcrumb"><span class="breadcrumb-current">Identities</span></div>
+    </div>
+    <div class="switcher">
+      <div class="switcher-pill interactive" role="button" tabindex="0" aria-label="Switch wallet: Masternode Ops">
+        <span aria-hidden="true">💼</span> Masternode Ops <span class="chevron" aria-hidden="true">▾</span>
+      </div>
+      <div class="switcher-pill interactive" role="button" tabindex="0" aria-label="Switch identity: @priya.dash">
+        <div class="avatar-sm" style="background:var(--platform-purple);"><span aria-hidden="true">P</span></div>
+        @priya.dash <span class="chevron" aria-hidden="true">▾</span>
+      </div>
+    </div>
+    <div class="tab-bar" role="tablist">
+      <a class="tab" role="tab" aria-selected="false" href="#">Home</a>
+      <a class="tab" role="tab" aria-selected="false" href="#">Contacts</a>
+      <a class="tab" role="tab" aria-selected="false" href="#">Activity</a>
+      <a class="tab active" role="tab" aria-selected="true" href="#" id="tab-settings-8">Settings</a>
+    </div>
+    <div class="island" role="tabpanel" aria-labelledby="tab-settings-8">
+      <div class="island-content">
+        <div class="two-col">
+          <!-- Left: Social profile -->
+          <div>
+            <p class="section-heading">Social profile</p>
+            <p class="section-helper">This information is visible to everyone on Dash Platform.</p>
+            <div class="flex items-center gap-md mb-md">
+              <div class="avatar--lg" aria-label="Priya Nakamura avatar" style="width:80px;height:80px;font-size:var(--font-xxl);border-radius:50%;background:var(--platform-purple);border:2px solid rgba(130,80,220,0.2);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;">P</div>
+              <span class="tooltip tooltip--clickable">
+                <button class="btn btn-secondary btn-sm">Change photo</button>
+                <span role="tooltip" id="tt-46">Upload a square image. Other apps will see this avatar.</span>
+              </span>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="display-name">Display name</label>
+              <input class="input" id="display-name" type="text" value="Priya Nakamura" placeholder="How should people see your name?">
+              <p class="form-hint">You can change this anytime.</p>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="bio">About</label>
+              <textarea class="input" id="bio" rows="3" placeholder="A short description, up to 200 characters." style="resize:vertical;">Masternode operator and Dash community member.</textarea>
+              <p class="form-hint text-right">46 / 200</p>
+            </div>
+            <div class="flex justify-end gap-sm">
+              <span class="tooltip tooltip--clickable" style="color:var(--error);">
+                <button class="btn btn-ghost btn-sm text-danger">Delete social profile</button>
+                <span role="tooltip" id="tt-49">Remove the display name, bio, and avatar from DashPay. Your identity, usernames, and balance stay.</span>
+              </span>
+              <span class="tooltip tooltip--disabled">
+                <button class="btn btn-disabled btn-sm" aria-disabled="true" aria-describedby="tt-47">Save social profile</button>
+                <span role="tooltip" id="tt-47">There are no changes to save.</span>
+              </span>
+            </div>
+          </div>
+          <!-- Right: Username + Aliases -->
+          <div>
+            <p class="section-heading">Username</p>
+            <div class="flex items-center gap-sm mb-md">
+              <span class="mono text-lg fw-600">@priya.dash</span>
+              <button class="btn-icon btn-sm" aria-label="Copy username"><span aria-hidden="true">📋</span></button>
+              <span class="tooltip tooltip--info">
+                <span class="badge badge--primary">Primary</span>
+                <span role="tooltip" id="tt-50">Your primary username is what people see by default.</span>
+              </span>
+            </div>
+            <p class="section-heading">Aliases</p>
+            <p class="section-helper">Extra usernames that also point to your identity.</p>
+            <div class="list-row">
+              <span class="mono text-sm" style="flex:1;">@priya-node.dash</span>
+              <span class="tooltip tooltip--clickable">
+                <button class="btn btn-ghost btn-sm">Make primary</button>
+                <span role="tooltip" id="tt-51">Use this username as your main one. Your old primary will become an alias.</span>
+              </span>
+              <span class="tooltip tooltip--clickable">
+                <button class="btn btn-ghost btn-sm text-danger">Remove</button>
+                <span role="tooltip" id="tt-52">Remove this alias. You will keep your other usernames.</span>
+              </span>
+            </div>
+            <span class="tooltip tooltip--clickable" style="display:block; margin-top:var(--sp-sm);">
+              <button class="btn btn-secondary btn-sm">Add an alias</button>
+              <span role="tooltip" id="tt-53">Register another DPNS name that points to this identity.</span>
+            </span>
+          </div>
+        </div>
+
+        <!-- Advanced expander — open by default for Priya -->
+        <details class="expander mt-lg" open>
+          <summary>
+            Advanced
+            <span class="text-xs text-secondary fw-500" style="margin-left:var(--sp-xs);">Keys, raw identifiers, and identity type.</span>
+          </summary>
+          <div class="expander-content">
+            <!-- Identity type and raw ID -->
+            <div class="flex items-center gap-md mb-md">
+              <span class="badge badge--masternode">Masternode identity</span>
+              <span class="tooltip tooltip--info">
+                <span class="text-xs text-secondary">&#9432; Masternode identity</span>
+                <span role="tooltip" id="tt-13">An identity tied to a Dash masternode. It can vote on name contests.</span>
+              </span>
+            </div>
+            <div class="flex items-center gap-sm mb-sm">
+              <p class="text-xs text-secondary" style="width:100px; flex-shrink:0;">Identity ID</p>
+              <div class="id-chip" style="flex:1;">
+                <span class="mono">9Xk2pWcBn4qRm…7Qmn</span>
+                <span class="tooltip tooltip--clickable">
+                  <button class="btn-icon btn-sm" aria-label="Copy identity ID"><span aria-hidden="true">📋</span></button>
+                  <span role="tooltip" id="tt-23b">Copy the full identity ID to your clipboard.</span>
+                </span>
+              </div>
+            </div>
+            <div class="flex items-center gap-sm mb-md">
+              <span class="tooltip tooltip--info" style="width:100px; flex-shrink:0; display:inline-flex;">
+                <p class="text-xs text-secondary">Masternode ID</p>
+                <span role="tooltip" id="tt-60">The masternode identifier on the Dash Core chain.</span>
+              </span>
+              <div class="id-chip" style="flex:1;">
+                <span class="mono">protx:Abc123Def456…Xyz</span>
+                <span class="tooltip tooltip--clickable">
+                  <button class="btn-icon btn-sm" aria-label="Copy masternode ID"><span aria-hidden="true">📋</span></button>
+                  <span role="tooltip" id="tt-24">Copy the masternode ID to your clipboard.</span>
+                </span>
+              </div>
+            </div>
+            <!-- Keys table -->
+            <p class="text-base fw-600 mb-xs">Keys</p>
+            <p class="text-xs text-secondary mb-sm">Keys let this identity sign actions. Most people never need to manage these directly.</p>
+            <table class="table mb-md">
+              <thead>
+                <tr>
+                  <th>
+                    <span class="tooltip tooltip--info">
+                      Purpose
+                      <span role="tooltip" id="tt-54">What this key is allowed to do (authenticate, transfer, decrypt, vote).</span>
+                    </span>
+                  </th>
+                  <th>
+                    <span class="tooltip tooltip--info">
+                      Type
+                      <span role="tooltip" id="tt-55">The cryptographic algorithm for this key.</span>
+                    </span>
+                  </th>
+                  <th>
+                    <span class="tooltip tooltip--info">
+                      Status
+                      <span role="tooltip" id="tt-56">Whether this key is active, disabled, or revoked.</span>
+                    </span>
+                  </th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Authentication</td>
+                  <td>ECDSA_SECP256K1</td>
+                  <td><span style="color:var(--success);">Active</span></td>
+                  <td><button class="btn btn-ghost btn-sm">View details</button></td>
+                </tr>
+                <tr>
+                  <td>Transfer</td>
+                  <td>ECDSA_SECP256K1</td>
+                  <td><span style="color:var(--success);">Active</span></td>
+                  <td><button class="btn btn-ghost btn-sm">View details</button></td>
+                </tr>
+                <tr>
+                  <td>Voting</td>
+                  <td>ECDSA_SECP256K1</td>
+                  <td><span style="color:var(--success);">Active</span></td>
+                  <td><button class="btn btn-ghost btn-sm">View details</button></td>
+                </tr>
+              </tbody>
+            </table>
+            <span class="tooltip tooltip--clickable">
+              <button class="btn btn-secondary btn-sm">Add a new key</button>
+              <span role="tooltip" id="tt-57">Register a new key for this identity. You will choose its purpose and type.</span>
+            </span>
+            <!-- Refresh -->
+            <div class="flex items-center gap-md mt-md">
+              <span class="tooltip tooltip--clickable">
+                <button class="btn btn-secondary btn-sm">Refresh identity data</button>
+                <span role="tooltip" id="tt-58">Fetch the latest state of this identity from the network.</span>
+              </span>
+              <span class="adv">
+                <span class="tooltip tooltip--info" style="display:inline-flex; align-items:center; gap:var(--sp-xs);">
+                  <label class="text-xs text-secondary" for="refresh-mode">Refresh mode</label>
+                  <select id="refresh-mode" class="input" style="width:auto; font-size:var(--font-xs); padding:var(--sp-xs);">
+                    <option>Both</option>
+                    <option>Core only</option>
+                    <option>Platform only</option>
+                  </select>
+                  <span role="tooltip" id="tt-81">Choose whether to refresh only Core chain data, only Platform data, or both at once.</span>
+                </span>
+              </span>
+            </div>
+            <!-- Danger zone -->
+            <div class="card--danger mt-md">
+              <p class="text-sm fw-600 text-danger mb-sm">Danger zone</p>
+              <div class="flex items-center justify-between">
+                <div>
+                  <p class="text-sm fw-600">Unload this identity from this device</p>
+                  <p class="text-xs text-secondary">It stays on Dash Platform — you can load it again later.</p>
+                </div>
+                <span class="tooltip tooltip--clickable">
+                  <button class="btn btn-danger btn-sm">Unload</button>
+                  <span role="tooltip" id="tt-59">Remove this identity from this device. It remains on Dash Platform — you can load it again later.</span>
+                </span>
+              </div>
+            </div>
+          </div>
+        </details>
+
+      </div>
+    </div>
+  </div>
+</div>
+</section>
+
+</div><!-- /frames -->
+</main>
+
+<footer style="text-align:center; padding:var(--sp-xl); color:var(--text-secondary); font-size:var(--font-sm); border-top:1px solid var(--border);">
+  <p>Identity + DashPay Redesign Wireframe &mdash; 8 frames &mdash; static visual reference only.</p>
+  <p class="mt-xs">See <a href="design-spec.md" style="color:var(--dash-blue);">design-spec.md</a> for the full UX specification.</p>
+</footer>
+
+<script>
+/* =========================================================
+   PERSONA TOGGLE
+   radiogroup with arrow-key navigation
+   ========================================================= */
+(function () {
+  var buttons = document.querySelectorAll('.persona-btn');
+  var body = document.body;
+
+  function setPersona(persona) {
+    body.setAttribute('data-persona', persona);
+    buttons.forEach(function (btn) {
+      var active = btn.getAttribute('data-persona') === persona;
+      btn.setAttribute('aria-checked', active ? 'true' : 'false');
+    });
+  }
+
+  buttons.forEach(function (btn, idx) {
+    btn.addEventListener('click', function () {
+      setPersona(btn.getAttribute('data-persona'));
+    });
+
+    btn.addEventListener('keydown', function (e) {
+      var count = buttons.length;
+      if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+        e.preventDefault();
+        buttons[(idx + 1) % count].focus();
+        setPersona(buttons[(idx + 1) % count].getAttribute('data-persona'));
+      } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        buttons[(idx - 1 + count) % count].focus();
+        setPersona(buttons[(idx - 1 + count) % count].getAttribute('data-persona'));
+      }
+    });
+  });
+
+  /* Default */
+  setPersona('alex');
+}());
+
+/* =========================================================
+   THEME TOGGLE
+   flips data-theme on <html>, updates aria-pressed and label
+   ========================================================= */
+(function () {
+  var btn = document.getElementById('theme-btn');
+  var html = document.documentElement;
+
+  btn.addEventListener('click', function () {
+    var dark = html.getAttribute('data-theme') === 'dark';
+    html.setAttribute('data-theme', dark ? 'light' : 'dark');
+    btn.setAttribute('aria-pressed', dark ? 'false' : 'true');
+    btn.textContent = dark ? 'Dark mode' : 'Light mode';
+  });
+}());
+</script>
+</body>
+</html>

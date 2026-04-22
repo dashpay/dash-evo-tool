@@ -6,6 +6,7 @@ use crate::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest
 use crate::context::AppContext;
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::wallet::single_key::SingleKeyWallet;
+use crate::spv::CoreBackendMode;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::password_input::PasswordInput;
@@ -17,6 +18,8 @@ use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::fee::FeeRate;
 use eframe::egui::{self, Context, RichText, Ui};
 use egui::{Color32, Frame, Margin};
 use std::sync::{Arc, RwLock};
+
+const SINGLE_KEY_REQUIRES_CORE_MESSAGE: &str = "Single-key wallets do not yet support SPV. Open Settings, switch to Expert mode, and select Local Dash Core node to send from this wallet.";
 
 /// A single recipient entry with address and amount
 #[derive(Debug, Clone)]
@@ -808,21 +811,26 @@ impl SingleKeyWalletSendScreen {
                 .selected_wallet
                 .as_ref()
                 .is_some_and(|w| w.read().map(|g| g.is_open()).unwrap_or(false));
+            let is_rpc_mode = self.app_context.core_backend_mode() == CoreBackendMode::Rpc;
 
             let send_button = egui::Button::new(
                 RichText::new(if self.sending { "Sending..." } else { "Send" })
                     .color(Color32::WHITE)
                     .strong(),
             )
-            .fill(if wallet_is_open && !self.sending {
+            .fill(if wallet_is_open && !self.sending && is_rpc_mode {
                 DashColors::DASH_BLUE
             } else {
                 DashColors::DASH_BLUE.gamma_multiply(0.5)
             })
             .min_size(egui::vec2(120.0, 36.0));
 
-            let button_enabled = wallet_is_open && !self.sending;
-            if ui.add_enabled(button_enabled, send_button).clicked() {
+            let button_enabled = wallet_is_open && !self.sending && is_rpc_mode;
+            let mut response = ui.add_enabled(button_enabled, send_button);
+            if !is_rpc_mode {
+                response = response.on_disabled_hover_text(SINGLE_KEY_REQUIRES_CORE_MESSAGE);
+            }
+            if response.clicked() {
                 match self.validate_and_send() {
                     Ok(send_action) => {
                         action = send_action;
@@ -853,6 +861,8 @@ impl ScreenLike for SingleKeyWalletSendScreen {
             RootScreenType::RootScreenWalletsBalances,
         );
 
+        let is_rpc_mode = self.app_context.core_backend_mode() == CoreBackendMode::Rpc;
+
         action |= island_central_panel(ctx, |ui| {
             let mut inner_action = AppAction::None;
             let dark_mode = ui.ctx().style().visuals.dark_mode;
@@ -862,6 +872,22 @@ impl ScreenLike for SingleKeyWalletSendScreen {
             egui::ScrollArea::vertical()
                 .auto_shrink([true; 2])
                 .show(ui, |ui| {
+                    if !is_rpc_mode {
+                        Frame::group(ui.style())
+                            .fill(DashColors::WARNING.gamma_multiply(0.15))
+                            .stroke(egui::Stroke::new(1.0, DashColors::WARNING))
+                            .inner_margin(Margin::symmetric(12, 10))
+                            .corner_radius(5.0)
+                            .show(ui, |ui| {
+                                ui.label(
+                                    RichText::new(SINGLE_KEY_REQUIRES_CORE_MESSAGE)
+                                        .color(DashColors::text_primary(dark_mode))
+                                        .size(13.0),
+                                );
+                            });
+                        ui.add_space(10.0);
+                    }
+
                     // Heading with Advanced Options checkbox
                     ui.horizontal(|ui| {
                         ui.heading(

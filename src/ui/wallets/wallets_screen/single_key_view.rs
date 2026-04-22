@@ -1,10 +1,15 @@
 use crate::app::AppAction;
+use crate::spv::CoreBackendMode;
 use crate::ui::ScreenType;
 use crate::ui::theme::DashColors;
 use eframe::egui;
 use egui::{Frame, Margin, RichText, Ui};
 
 use super::WalletsBalancesScreen;
+
+/// Shown as a disabled-button tooltip and the in-screen info banner for any
+/// single-key-wallet action that depends on Dash Core RPC.
+const SINGLE_KEY_REQUIRES_CORE_TOOLTIP: &str = "Single-key wallets do not yet support SPV. Open Settings, switch to Expert mode, and select Local Dash Core node to enable this action.";
 
 impl WalletsBalancesScreen {
     /// Render the detail view for a selected single key wallet
@@ -33,6 +38,7 @@ impl WalletsBalancesScreen {
         drop(wallet);
 
         let text_color = DashColors::text_primary(dark_mode);
+        let is_rpc_mode = self.app_context.core_backend_mode() == CoreBackendMode::Rpc;
 
         Frame::group(ui.style())
             .fill(DashColors::surface(dark_mode))
@@ -46,18 +52,40 @@ impl WalletsBalancesScreen {
                     ui.label(RichText::new(format!("Balance: {:.8} DASH", balance_dash)));
                     ui.add_space(10.0);
 
+                    // When the app is on its built-in SPV backend, surface an
+                    // info banner explaining that single-key wallet actions
+                    // are unavailable. The actions themselves are greyed out
+                    // below; this label is the "why" users otherwise wouldn't
+                    // see from a silent disable.
+                    if !is_rpc_mode {
+                        ui.label(
+                            RichText::new(SINGLE_KEY_REQUIRES_CORE_TOOLTIP)
+                                .color(DashColors::WARNING)
+                                .size(13.0),
+                        );
+                        ui.add_space(10.0);
+                    }
+
                     // Action buttons for SK wallet
                     ui.horizontal(|ui| {
-                        if ui
-                            .button(RichText::new("Send").color(text_color).strong())
-                            .clicked()
-                        {
+                        let send_button =
+                            egui::Button::new(RichText::new("Send").color(text_color).strong());
+                        let send_response = ui.add_enabled(is_rpc_mode, send_button);
+                        let send_response = if is_rpc_mode {
+                            send_response
+                        } else {
+                            send_response.on_disabled_hover_text(SINGLE_KEY_REQUIRES_CORE_TOOLTIP)
+                        };
+                        if send_response.clicked() {
                             action = AppAction::AddScreen(
                                 ScreenType::SingleKeyWalletSendScreen(wallet_arc.clone())
                                     .create_screen(&self.app_context),
                             );
                         }
 
+                        // Receive only displays the local address — it does
+                        // not touch Core or SPV, so it stays enabled in both
+                        // modes.
                         if ui
                             .button(RichText::new("Receive").color(text_color))
                             .clicked()

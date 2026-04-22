@@ -36,10 +36,15 @@ use tokio_util::sync::CancellationToken;
 use zeroize::Zeroize;
 
 /// Preferred backend for Core-level operations.
+///
+/// SPV is the default for both fresh installs and unknown/invalid persisted
+/// values. The enum-level default and the `From<u8>` fallback intentionally
+/// match the DB column default and the runtime default in `AppContext` — they
+/// must be kept in sync to avoid silent contradictions at startup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CoreBackendMode {
-    #[default]
     Rpc = 0,
+    #[default]
     Spv = 1,
 }
 
@@ -52,8 +57,8 @@ impl CoreBackendMode {
 impl From<u8> for CoreBackendMode {
     fn from(value: u8) -> Self {
         match value {
-            1 => CoreBackendMode::Spv,
-            _ => CoreBackendMode::Rpc,
+            0 => CoreBackendMode::Rpc,
+            _ => CoreBackendMode::Spv,
         }
     }
 }

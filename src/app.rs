@@ -11,6 +11,7 @@ use crate::context::connection_status::{ConnectionStatus, OverallConnectionState
 use crate::database::Database;
 #[cfg(not(feature = "testing"))]
 use crate::logging::initialize_logger;
+use crate::model::feature_gate::FeatureGate;
 use crate::model::settings::Settings;
 use crate::spv::CoreBackendMode;
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
@@ -721,6 +722,12 @@ impl AppState {
         if disable {
             return None;
         }
+        // SPV mode has no local Dash Core node to talk to over ZMQ. Gate the
+        // listener spawn through FeatureGate so the common (SPV) path doesn't
+        // burn a socket + retry loop waiting for a node that isn't there.
+        if !FeatureGate::RpcBackend.is_available(ctx) {
+            return None;
+        }
         CoreZMQListener::spawn_listener(
             network,
             &endpoint,
@@ -918,15 +925,12 @@ impl AppState {
             .ok();
     }
 
-    /// Auto-start SPV sync if the conditions are met: auto-start enabled,
-    /// developer mode on, and backend mode is SPV.
-    // TODO: SPV auto-start is gated behind developer mode while SPV is in development.
-    // Remove the is_developer_mode() check once SPV is production-ready.
+    /// Auto-start SPV sync if the conditions are met: auto-start enabled and
+    /// backend mode is SPV.
     fn try_auto_start_spv(&self) {
         let ctx = self.current_app_context();
         let auto_start = ctx.db.get_auto_start_spv().unwrap_or(false);
-        if auto_start && ctx.is_developer_mode() && ctx.core_backend_mode() == CoreBackendMode::Spv
-        {
+        if auto_start && FeatureGate::SpvBackend.is_available(ctx) {
             if let Err(e) = ctx.start_spv() {
                 tracing::warn!("Failed to auto-start SPV sync: {e}");
             } else {

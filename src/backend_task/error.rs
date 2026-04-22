@@ -572,6 +572,12 @@ pub enum TaskError {
         allowed_networks: &'static str,
     },
 
+    /// The requested operation requires Dash Core (RPC) and cannot run in light-wallet (SPV) mode.
+    #[error(
+        "{operation} is only available when connected to Dash Core. Switch to Dash Core in Settings and retry."
+    )]
+    OperationRequiresDashCore { operation: &'static str },
+
     // ──────────────────────────────────────────────────────────────────────────
     // Platform info errors
     // ──────────────────────────────────────────────────────────────────────────

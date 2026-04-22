@@ -1017,6 +1017,15 @@ As a developer, I want to fund multiple addresses in one operation so that I can
 - Specify N addresses and amount per address.
 - Single action distributes funds.
 
+### NET-015: Use Dash Evo Tool without a local Dash Core node [Implemented]
+**Persona:** Alex (Everyday User)
+
+As an everyday user, I want to install and use Dash Evo Tool without having to run or configure a local Dash Core node.
+
+- Fresh install connects to the Dash network via the built-in SPV light client with zero configuration.
+- The user sees sync progress and status clearly; no mention of SPV, RPC, or nodes in the default UI.
+- Dash Core RPC remains available as an opt-in under Expert mode for users who do run a local node.
+
 ---
 
 ## Programmatic Access (MCP)

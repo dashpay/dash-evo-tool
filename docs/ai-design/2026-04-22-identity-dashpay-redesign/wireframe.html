@@ -1081,7 +1081,129 @@ body[data-persona="jordan"] .alex-only { display: none; }
 .chip:hover:not(.active) { border-color: var(--dash-blue); color: var(--text-primary); }
 
 /* =========================================================
-   22. IDENTITY PICKER GRID (F3)
+   22. BREADCRUMB-AS-SWITCHER
+   The breadcrumb IS the wallet+identity switcher. Three segments:
+   Identities > [wallet pill] > [identity pill]
+   ========================================================= */
+nav.breadcrumb-nav { display: contents; }
+
+.breadcrumb-ol {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-xs);
+  font-size: var(--font-sm);
+  color: var(--text-secondary);
+  font-weight: 600;
+  flex-wrap: nowrap;
+}
+
+.breadcrumb-ol li { display: inline-flex; align-items: center; }
+
+.breadcrumb-sep {
+  color: var(--text-secondary);
+  font-size: var(--font-xs);
+  font-weight: 400;
+  padding: 0 var(--sp-xxs);
+  user-select: none;
+}
+
+.breadcrumb-link {
+  color: var(--text-secondary);
+  text-decoration: none;
+  font-weight: 600;
+}
+.breadcrumb-link:hover { color: var(--dash-blue); text-decoration: underline; }
+
+.breadcrumb-placeholder {
+  font-style: italic;
+  color: var(--text-secondary);
+  font-weight: 400;
+}
+
+/* Pill inside breadcrumb — slightly reduced vertical padding so the bar stays single-line */
+.breadcrumb-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-xs);
+  padding: 2px var(--sp-sm);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  font-size: var(--font-sm);
+  color: var(--text-primary);
+  font-weight: 500;
+  white-space: nowrap;
+  position: relative;
+}
+
+.breadcrumb-pill.switcher-interactive {
+  cursor: pointer;
+}
+.breadcrumb-pill.switcher-interactive:hover {
+  border-color: var(--dash-blue);
+  background: var(--hover);
+}
+.breadcrumb-pill.subdued {
+  cursor: default;
+  color: var(--text-secondary);
+  background: transparent;
+  border-color: transparent;
+}
+.breadcrumb-pill .chevron {
+  color: var(--text-secondary);
+  font-size: var(--font-xs);
+}
+.breadcrumb-pill .avatar-sm {
+  width: 18px; height: 18px; border-radius: 50%;
+  background: var(--dash-blue);
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; font-size: 9px; font-weight: 700; flex-shrink: 0;
+}
+
+/* =========================================================
+   23. REQUEST CARDS (Contacts page)
+   ========================================================= */
+.request-card {
+  background: var(--surface);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  padding: var(--sp-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-xs);
+  min-width: 200px;
+}
+
+.request-card--received {
+  border-left: 3px solid #f59e0b;
+}
+
+.request-card--sent {
+  border-left: 3px solid var(--info);
+  opacity: 0.85;
+}
+
+.request-card-row {
+  display: flex;
+  gap: var(--sp-sm);
+  flex-wrap: wrap;
+}
+
+.section-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px var(--sp-xs);
+  border-radius: var(--radius-full);
+  font-size: var(--font-xs);
+  font-weight: 700;
+  background: #f59e0b;
+  color: #fff;
+  margin-left: var(--sp-xs);
+}
+
+/* =========================================================
+   24. IDENTITY PICKER GRID (F3)
    ========================================================= */
 .identity-grid {
   display: grid;
@@ -1223,127 +1345,14 @@ body[data-persona="jordan"] .alex-only { display: none; }
 <div class="frames">
 
 <!-- ==========================================================
-     FRAME 1 — App chrome zoom
+     FRAME 1 — Onboarding empty state
      ========================================================== -->
 <section aria-labelledby="f1-title">
 <div class="frame-divider">
   <div class="frame-caption">
-    <h2 id="f1-title">Frame 1 — App chrome zoom</h2>
-    <p>Left nav, network indicator, and the two-pill Wallet + Identity switcher.<br>
-       Nav label is <strong>unchanged</strong> — what moved is DashPay under Identities.
-       Variant A: Alex (subdued wallet pill). Variant B: Priya (interactive wallet pill).</p>
-  </div>
-</div>
-
-<p class="frame-note">Variant A — Alex: single wallet, single identity</p>
-<div class="app-chrome">
-  <nav class="nav" aria-label="Primary navigation">
-    <div class="nav-network-stripe"></div>
-    <a class="nav-item" href="#" aria-label="Wallets"><span class="nav-icon" aria-hidden="true">💼</span> Wallets</a>
-    <a class="nav-item active" href="#" aria-current="page" aria-label="Identities" aria-describedby="tt-1">
-      <span class="nav-icon" aria-hidden="true">👥</span> Identities
-      <span class="tooltip tooltip--info" style="margin-left:auto;">
-        <span style="font-size:10px; color:rgba(255,255,255,0.5);">&#9432;</span>
-        <span role="tooltip" id="tt-1">Your identities on Dash Platform. Manage usernames, balances, keys, and — if you set up a social profile — DashPay contacts and payments.</span>
-      </span>
-    </a>
-    <a class="nav-item" href="#" aria-label="Contracts"><span class="nav-icon" aria-hidden="true">📄</span> Contracts</a>
-    <a class="nav-item" href="#" aria-label="Tokens"><span class="nav-icon" aria-hidden="true">🪙</span> Tokens</a>
-    <a class="nav-item" href="#" aria-label="Tools"><span class="nav-icon" aria-hidden="true">🛠</span> Tools</a>
-    <div class="nav-spacer"></div>
-    <a class="nav-item" href="#" aria-label="Settings"><span class="nav-icon" aria-hidden="true">⚙</span> Settings</a>
-    <div class="nav-network-pill">Mainnet</div>
-  </nav>
-  <div class="content-area">
-    <div class="topbar">
-      <div class="breadcrumb">
-        <span>Identities</span>
-        <span class="breadcrumb-current"></span>
-      </div>
-      <div class="topbar-right">
-        <span class="tooltip tooltip--info">
-          <span class="connection-indicator" aria-label="Connected" role="img"></span>
-          <span role="tooltip" id="tt-77">You are connected and up to date.</span>
-        </span>
-      </div>
-    </div>
-    <!-- Wallet + Identity switcher — Alex subdued -->
-    <div class="switcher" aria-label="Wallet and identity selector">
-      <span class="tooltip tooltip--info" style="display:block; width:fit-content;">
-        <div class="switcher-pill subdued" aria-describedby="tt-3" aria-label="Main Wallet. Set up another wallet to switch between them.">
-          <span aria-hidden="true">💼</span>
-          <span>Main Wallet</span>
-        </div>
-        <span role="tooltip" id="tt-3">This identity is funded by Main Wallet. Set up another wallet on the Wallets screen to switch between them.</span>
-      </span>
-      <span class="tooltip tooltip--clickable" style="display:block; width:fit-content;">
-        <div class="switcher-pill interactive" role="button" tabindex="0" aria-haspopup="listbox" aria-describedby="tt-4" aria-label="Switch identity: @alex.dash">
-          <div class="avatar-sm"><span aria-hidden="true">A</span></div>
-          <span>@alex.dash</span>
-          <span class="chevron" aria-hidden="true">▾</span>
-        </div>
-        <span role="tooltip" id="tt-4">Switch between identities in Main Wallet or add a new one.</span>
-      </span>
-    </div>
-  </div>
-</div>
-
-<p class="frame-note mt-lg">Variant B — Priya: multiple wallets and identities (fully interactive)</p>
-<div class="app-chrome">
-  <nav class="nav" aria-label="Primary navigation (Priya)">
-    <div class="nav-network-stripe"></div>
-    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">💼</span> Wallets</a>
-    <a class="nav-item active" href="#" aria-current="page">
-      <span class="nav-icon" aria-hidden="true">👥</span> Identities
-    </a>
-    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">📄</span> Contracts</a>
-    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">🪙</span> Tokens</a>
-    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">🛠</span> Tools</a>
-    <div class="nav-spacer"></div>
-    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">⚙</span> Settings</a>
-    <div class="nav-network-pill">Testnet</div>
-  </nav>
-  <div class="content-area">
-    <div class="topbar">
-      <div class="breadcrumb"><span>Identities</span></div>
-      <div class="topbar-right">
-        <span class="tooltip tooltip--info">
-          <span class="connection-indicator" role="img" aria-label="Connected" aria-describedby="tt-77b"></span>
-          <span role="tooltip" id="tt-77b">You are connected and up to date.</span>
-        </span>
-      </div>
-    </div>
-    <!-- Wallet + Identity switcher — Priya interactive -->
-    <div class="switcher" aria-label="Wallet and identity selector">
-      <span class="tooltip tooltip--clickable" style="display:block; width:fit-content;">
-        <div class="switcher-pill interactive" role="button" tabindex="0" aria-haspopup="listbox" aria-describedby="tt-2" aria-label="Switch wallet: Masternode Ops">
-          <span aria-hidden="true">💼</span>
-          <span>Masternode Ops</span>
-          <span class="chevron" aria-hidden="true">▾</span>
-        </div>
-        <span role="tooltip" id="tt-2">Switch between your wallets. Each wallet can own several identities.</span>
-      </span>
-      <span class="tooltip tooltip--clickable" style="display:block; width:fit-content;">
-        <div class="switcher-pill interactive" role="button" tabindex="0" aria-haspopup="listbox" aria-describedby="tt-4b" aria-label="Switch identity: @priya.dash">
-          <div class="avatar-sm" style="background:var(--platform-purple);"><span aria-hidden="true">P</span></div>
-          <span>@priya.dash</span>
-          <span class="chevron" aria-hidden="true">▾</span>
-        </div>
-        <span role="tooltip" id="tt-4b">Switch between identities in Masternode Ops or add a new one.</span>
-      </span>
-    </div>
-  </div>
-</div>
-</section>
-
-<!-- ==========================================================
-     FRAME 2 — Onboarding empty state
-     ========================================================== -->
-<section aria-labelledby="f2-title">
-<div class="frame-divider">
-  <div class="frame-caption">
-    <h2 id="f2-title">Frame 2 — Onboarding empty state</h2>
-    <p>First-time welcome when no identities are loaded on the current network.</p>
+    <h2 id="f1-title">Frame 1 — Onboarding empty state</h2>
+    <p>First-time welcome when no identities are loaded on the current network.<br>
+       Breadcrumb shows placeholder segments — no wallet, no identity yet.</p>
   </div>
 </div>
 <div class="app-chrome">
@@ -1360,7 +1369,15 @@ body[data-persona="jordan"] .alex-only { display: none; }
   </nav>
   <div class="content-area">
     <div class="topbar">
-      <div class="breadcrumb"><span class="breadcrumb-current">Identities</span></div>
+      <nav class="breadcrumb-nav" aria-label="Location">
+        <ol class="breadcrumb-ol">
+          <li><a class="breadcrumb-link" href="#">Identities</a></li>
+          <li aria-hidden="true"><span class="breadcrumb-sep">›</span></li>
+          <li><span class="breadcrumb-placeholder" aria-disabled="true" role="presentation">(no wallet yet)</span></li>
+          <li aria-hidden="true"><span class="breadcrumb-sep">›</span></li>
+          <li aria-current="page"><span class="breadcrumb-placeholder" aria-disabled="true" role="presentation">(no identity yet)</span></li>
+        </ol>
+      </nav>
     </div>
     <div class="island" style="display:flex; align-items:center; justify-content:center;">
       <div class="island-content" style="max-width:600px; text-align:center;">
@@ -1397,14 +1414,15 @@ body[data-persona="jordan"] .alex-only { display: none; }
 </section>
 
 <!-- ==========================================================
-     FRAME 3 — Identity Picker (≥2 identities loaded)
+     FRAME 2 — Identity picker (≥2 identities loaded)
      ========================================================== -->
-<section aria-labelledby="f3-new-title">
+<section aria-labelledby="f2-title">
 <div class="frame-divider">
   <div class="frame-caption">
-    <h2 id="f3-new-title">Frame 3 — Identity picker</h2>
+    <h2 id="f2-title">Frame 2 — Identity picker</h2>
     <p>Shown when the user clicks the Identities nav item and more than one identity is loaded.<br>
-       Clicking a card selects the identity in the switcher and navigates to Home (F4 or F5).</p>
+       Breadcrumb: wallet selected, identity segment shows "(choose an identity)" placeholder.<br>
+       Clicking a card selects the identity and navigates to Home (F3).</p>
   </div>
 </div>
 <div class="app-chrome">
@@ -1421,7 +1439,22 @@ body[data-persona="jordan"] .alex-only { display: none; }
   </nav>
   <div class="content-area">
     <div class="topbar">
-      <div class="breadcrumb"><span class="breadcrumb-current">Identities</span></div>
+      <nav class="breadcrumb-nav" aria-label="Location">
+        <ol class="breadcrumb-ol">
+          <li><a class="breadcrumb-link" href="#">Identities</a></li>
+          <li aria-hidden="true"><span class="breadcrumb-sep">›</span></li>
+          <li>
+            <span class="tooltip tooltip--info">
+              <span class="breadcrumb-pill subdued" aria-describedby="tt-3i" aria-label="Main Wallet">
+                <span aria-hidden="true">💼</span> Main Wallet
+              </span>
+              <span role="tooltip" id="tt-3i">This identity is funded by Main Wallet. Set up another wallet on the Wallets screen to switch between them.</span>
+            </span>
+          </li>
+          <li aria-hidden="true"><span class="breadcrumb-sep">›</span></li>
+          <li aria-current="page"><span class="breadcrumb-placeholder" aria-disabled="true" role="presentation">(choose an identity)</span></li>
+        </ol>
+      </nav>
       <div class="topbar-right">
         <span class="tooltip tooltip--info">
           <span class="connection-indicator" role="img" aria-label="Connected" aria-describedby="tt-77i"></span>
@@ -1429,7 +1462,7 @@ body[data-persona="jordan"] .alex-only { display: none; }
         </span>
       </div>
     </div>
-    <!-- No switcher on the picker page — it IS the identity selector -->
+    <!-- No tab bar on the picker — the grid is the identity selector -->
     <div class="island">
       <div class="island-content">
         <h2 class="text-xxl fw-600 mb-xs">Pick an identity</h2>
@@ -1450,7 +1483,7 @@ body[data-persona="jordan"] .alex-only { display: none; }
               <p class="card-balance-fiat">≈ 45.25 USD</p>
               <p class="card-callout">Opens Identity Home →</p>
             </div>
-            <span role="tooltip" id="tt-78x-1">Open this identity. You can switch between identities anytime from the pill under the breadcrumb.</span>
+            <span role="tooltip" id="tt-78x-1">Open this identity. You can switch between identities anytime from the breadcrumb.</span>
           </span>
 
           <!-- Card 2: Priya Nakamura — social profile, User identity -->
@@ -1465,7 +1498,7 @@ body[data-persona="jordan"] .alex-only { display: none; }
               <p class="card-balance">12.5 DASH</p>
               <p class="card-callout">Opens Identity Home →</p>
             </div>
-            <span role="tooltip" id="tt-78x-2">Open this identity. You can switch between identities anytime from the pill under the breadcrumb.</span>
+            <span role="tooltip" id="tt-78x-2">Open this identity. You can switch between identities anytime from the breadcrumb.</span>
           </span>
 
           <!-- Card 3: Masternode identity — no social profile (monogram) -->
@@ -1480,7 +1513,7 @@ body[data-persona="jordan"] .alex-only { display: none; }
               <p class="card-balance">0.10 DASH</p>
               <p class="card-callout">Opens Identity Home →</p>
             </div>
-            <span role="tooltip" id="tt-78x-3">Open this identity. You can switch between identities anytime from the pill under the breadcrumb.</span>
+            <span role="tooltip" id="tt-78x-3">Open this identity. You can switch between identities anytime from the breadcrumb.</span>
           </span>
 
           <!-- Card 4: Testing identity — no DPNS, shortened ID (Jordan only) -->
@@ -1495,7 +1528,7 @@ body[data-persona="jordan"] .alex-only { display: none; }
               <p class="card-balance">0.01 DASH</p>
               <p class="card-callout">Opens Identity Home →</p>
             </div>
-            <span role="tooltip" id="tt-78x-4">Open this identity. You can switch between identities anytime from the pill under the breadcrumb.</span>
+            <span role="tooltip" id="tt-78x-4">Open this identity. You can switch between identities anytime from the breadcrumb.</span>
           </span>
 
           <!-- Add new identity card -->
@@ -1518,13 +1551,15 @@ body[data-persona="jordan"] .alex-only { display: none; }
 </section>
 
 <!-- ==========================================================
-     FRAME 3 — Identity Home — Alex, social profile set
+     FRAME 3 — Identity Home (canonical — covers both social-profile-set
+     and no-social-profile states; Alex with social profile rendered here)
      ========================================================== -->
 <section aria-labelledby="f3-title">
 <div class="frame-divider">
   <div class="frame-caption">
-    <h2 id="f3-title">Frame 4 — Identity Home — Alex, social profile set</h2>
-    <p>Hero with avatar and display name, quick actions, onboarding checklist, recent activity.</p>
+    <h2 id="f3-title">Frame 3 — Identity Home</h2>
+    <p>Hero with avatar and display name, quick actions, onboarding checklist, recent activity.<br>
+       Alex with social profile set is the canonical render. See annotation for the no-profile state.</p>
   </div>
 </div>
 <div class="app-chrome">
@@ -1541,7 +1576,30 @@ body[data-persona="jordan"] .alex-only { display: none; }
   </nav>
   <div class="content-area">
     <div class="topbar">
-      <div class="breadcrumb"><span class="breadcrumb-current">Identities</span></div>
+      <nav class="breadcrumb-nav" aria-label="Location">
+        <ol class="breadcrumb-ol">
+          <li><a class="breadcrumb-link" href="#">Identities</a></li>
+          <li aria-hidden="true"><span class="breadcrumb-sep">›</span></li>
+          <li>
+            <span class="tooltip tooltip--info">
+              <span class="breadcrumb-pill subdued" aria-describedby="tt-3c" aria-label="Main Wallet">
+                <span aria-hidden="true">💼</span> Main Wallet
+              </span>
+              <span role="tooltip" id="tt-3c">This identity is funded by Main Wallet. Set up another wallet on the Wallets screen to switch between them.</span>
+            </span>
+          </li>
+          <li aria-hidden="true"><span class="breadcrumb-sep">›</span></li>
+          <li aria-current="page">
+            <span class="tooltip tooltip--clickable">
+              <span class="breadcrumb-pill switcher-interactive" role="button" tabindex="0" aria-haspopup="listbox" aria-describedby="tt-4c" aria-label="Switch identity: @alex.dash">
+                <span class="avatar-sm" aria-hidden="true">A</span>
+                @alex.dash <span class="chevron" aria-hidden="true">▾</span>
+              </span>
+              <span role="tooltip" id="tt-4c">Switch between identities in Main Wallet or add a new one.</span>
+            </span>
+          </li>
+        </ol>
+      </nav>
       <div class="topbar-right">
         <span class="tooltip tooltip--info">
           <span class="connection-indicator" role="img" aria-label="Connected" aria-describedby="tt-77c"></span>
@@ -1553,21 +1611,6 @@ body[data-persona="jordan"] .alex-only { display: none; }
         </span>
       </div>
     </div>
-    <div class="switcher">
-      <span class="tooltip tooltip--info" style="display:block; width:fit-content;">
-        <div class="switcher-pill subdued" aria-describedby="tt-3c" aria-label="Main Wallet. Set up another wallet to switch between them.">
-          <span aria-hidden="true">💼</span> Main Wallet
-        </div>
-        <span role="tooltip" id="tt-3c">This identity is funded by Main Wallet. Set up another wallet on the Wallets screen to switch between them.</span>
-      </span>
-      <span class="tooltip tooltip--clickable" style="display:block; width:fit-content;">
-        <div class="switcher-pill interactive" role="button" tabindex="0" aria-haspopup="listbox" aria-describedby="tt-4c" aria-label="Switch identity: @alex.dash">
-          <div class="avatar-sm"><span aria-hidden="true">A</span></div>
-          @alex.dash <span class="chevron" aria-hidden="true">▾</span>
-        </div>
-        <span role="tooltip" id="tt-4c">Switch between identities in Main Wallet or add a new one.</span>
-      </span>
-    </div>
     <div class="tab-bar" role="tablist">
       <a class="tab active" role="tab" aria-selected="true" href="#" id="tab-home-3" aria-controls="panel-home-3">Home</a>
       <a class="tab" role="tab" aria-selected="false" href="#">Contacts</a>
@@ -1576,6 +1619,11 @@ body[data-persona="jordan"] .alex-only { display: none; }
     </div>
     <div class="island" id="panel-home-3" role="tabpanel" aria-labelledby="tab-home-3">
       <div class="island-content">
+        <!-- No-profile state annotation -->
+        <div class="banner banner--info mb-md" style="border-left:3px solid var(--info);">
+          <span aria-hidden="true">📌</span>
+          <span class="text-sm">When the selected identity has no social profile, the avatar shows the type-glyph monogram and the hero body renders an inline "Set up your social profile" card. See design-spec §B.3.</span>
+        </div>
         <!-- Hero -->
         <div class="card--hero mb-md">
           <div class="hero-left">
@@ -1610,22 +1658,19 @@ body[data-persona="jordan"] .alex-only { display: none; }
         <div class="quick-actions">
           <span class="tooltip tooltip--clickable" style="flex:1; display:flex;">
             <button class="quick-action" style="flex:1;" aria-describedby="tt-16">
-              <span class="quick-action-icon" aria-hidden="true">✈</span>
-              Send
+              <span class="quick-action-icon" aria-hidden="true">✈</span>Send
             </button>
             <span role="tooltip" id="tt-16">Send Dash to a contact, username, or address.</span>
           </span>
           <span class="tooltip tooltip--clickable" style="flex:1; display:flex;">
             <button class="quick-action" style="flex:1;" aria-describedby="tt-17">
-              <span class="quick-action-icon" aria-hidden="true">📥</span>
-              Receive
+              <span class="quick-action-icon" aria-hidden="true">📥</span>Receive
             </button>
             <span role="tooltip" id="tt-17">Show a QR code or your username so someone can pay you.</span>
           </span>
           <span class="tooltip tooltip--clickable" style="flex:1; display:flex;">
             <button class="quick-action" style="flex:1;" aria-describedby="tt-18">
-              <span class="quick-action-icon" aria-hidden="true">🤝</span>
-              Add contact
+              <span class="quick-action-icon" aria-hidden="true">🤝</span>Add contact
             </button>
             <span role="tooltip" id="tt-18">Find someone by username and add them to your contacts.</span>
           </span>
@@ -1645,7 +1690,7 @@ body[data-persona="jordan"] .alex-only { display: none; }
             <span role="tooltip" id="tt-82a">Transfer Dash directly from this identity to another identity.</span>
           </span>
         </div>
-        <!-- Onboarding checklist (shown until complete) -->
+        <!-- Onboarding checklist -->
         <div class="checklist">
           <div class="flex items-center justify-between">
             <p class="fw-600">Finish setting up your identity</p>
@@ -1689,7 +1734,7 @@ body[data-persona="jordan"] .alex-only { display: none; }
             <div class="activity-icon activity-icon--plat" aria-hidden="true">◆</div>
             <div style="flex:1;">
               <p class="text-sm fw-600">Registered the username @alex.dash</p>
-              <p class="text-xs text-secondary">Identity update · Mar 14</p>
+              <p class="text-xs text-secondary">Identity update</p>
             </div>
             <p class="text-xs text-secondary">Mar 14</p>
           </div>
@@ -1717,7 +1762,7 @@ body[data-persona="jordan"] .alex-only { display: none; }
             <p class="text-xs text-secondary">Version 3 · Last updated Mar 14</p>
           </div>
         </details>
-        <!-- Alex insight chip (alex-only: patronising to Priya/Jordan) -->
+        <!-- Alex insight chip -->
         <div class="banner banner--info mt-md alex-only">
           <span aria-hidden="true">💡</span>
           <span class="tooltip tooltip--info">
@@ -1732,181 +1777,14 @@ body[data-persona="jordan"] .alex-only { display: none; }
 </section>
 
 <!-- ==========================================================
-     FRAME 4 — Identity Home — Priya, no social profile
+     FRAME 4 — Contacts (populated)
      ========================================================== -->
 <section aria-labelledby="f4-title">
 <div class="frame-divider">
   <div class="frame-caption">
-    <h2 id="f4-title">Frame 5 — Identity Home — Priya, no social profile</h2>
-    <p>Type-glyph monogram hero and the inline "Set up your social profile" card.</p>
-  </div>
-</div>
-<div class="app-chrome">
-  <nav class="nav" aria-label="Primary navigation">
-    <div class="nav-network-stripe" style="background:var(--testnet-orange);"></div>
-    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">💼</span> Wallets</a>
-    <a class="nav-item active" href="#" aria-current="page"><span class="nav-icon" aria-hidden="true">👥</span> Identities</a>
-    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">📄</span> Contracts</a>
-    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">🪙</span> Tokens</a>
-    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">🛠</span> Tools</a>
-    <div class="nav-spacer"></div>
-    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">⚙</span> Settings</a>
-    <div class="nav-network-pill" style="border-color:rgba(255,165,0,0.5); color:var(--testnet-orange);">Testnet</div>
-  </nav>
-  <div class="content-area">
-    <div class="topbar">
-      <div class="breadcrumb"><span class="breadcrumb-current">Identities</span></div>
-      <div class="topbar-right">
-        <span class="tooltip tooltip--info">
-          <span class="connection-indicator" role="img" aria-label="Connected" aria-describedby="tt-77d"></span>
-          <span role="tooltip" id="tt-77d">You are connected and up to date.</span>
-        </span>
-        <span class="tooltip tooltip--clickable">
-          <button class="btn-icon btn-sm" aria-label="Refresh identity data" aria-describedby="tt-58d"><span aria-hidden="true">↻</span></button>
-          <span role="tooltip" id="tt-58d">Fetch the latest identity data from the network.</span>
-        </span>
-      </div>
-    </div>
-    <div class="switcher">
-      <span class="tooltip tooltip--clickable" style="display:block; width:fit-content;">
-        <div class="switcher-pill interactive" role="button" tabindex="0" aria-haspopup="listbox" aria-describedby="tt-2d" aria-label="Switch wallet: Masternode Ops">
-          <span aria-hidden="true">💼</span> Masternode Ops <span class="chevron" aria-hidden="true">▾</span>
-        </div>
-        <span role="tooltip" id="tt-2d">Switch between your wallets. Each wallet can own several identities.</span>
-      </span>
-      <span class="tooltip tooltip--clickable" style="display:block; width:fit-content;">
-        <div class="switcher-pill interactive" role="button" tabindex="0" aria-haspopup="listbox" aria-describedby="tt-4d" aria-label="Switch identity: @priya.dash">
-          <div class="avatar-sm" style="background:var(--platform-purple);"><span aria-hidden="true">🔷</span></div>
-          @priya.dash <span class="chevron" aria-hidden="true">▾</span>
-        </div>
-        <span role="tooltip" id="tt-4d">Switch between identities in Masternode Ops or add a new one.</span>
-      </span>
-    </div>
-    <div class="tab-bar" role="tablist">
-      <a class="tab active" role="tab" aria-selected="true" href="#" id="tab-home-4">Home</a>
-      <a class="tab" role="tab" aria-selected="false" href="#">Contacts</a>
-      <a class="tab" role="tab" aria-selected="false" href="#">Activity</a>
-      <a class="tab" role="tab" aria-selected="false" href="#">Settings</a>
-    </div>
-    <div class="island" role="tabpanel" aria-labelledby="tab-home-4">
-      <div class="island-content">
-        <!-- Hero — no social profile, monogram glyph -->
-        <div class="card--hero mb-md">
-          <div class="hero-left">
-            <div class="avatar avatar--monogram" aria-label="Masternode identity (no social profile)">🔷</div>
-            <div class="hero-info">
-              <p class="text-xxxl fw-600">@priya.dash</p>
-              <p class="text-sm text-secondary" style="font-style:italic;">No social profile yet</p>
-              <div class="flex gap-xs mt-xs">
-                <span class="tooltip tooltip--info">
-                  <span class="badge badge--masternode" aria-describedby="tt-13b">Masternode identity</span>
-                  <span role="tooltip" id="tt-13b">An identity tied to a Dash masternode. It can vote on name contests.</span>
-                </span>
-                <span class="tooltip tooltip--info">
-                  <span class="badge badge--network" style="border-color:rgba(255,165,0,0.4); color:var(--testnet-orange); background:rgba(255,165,0,0.1);" aria-describedby="tt-15b">Testnet</span>
-                  <span role="tooltip" id="tt-15b">You are on Testnet. Identities and balances are separate per network.</span>
-                </span>
-              </div>
-            </div>
-          </div>
-          <div class="hero-right">
-            <span class="tooltip tooltip--info">
-              <p class="text-xxl" tabindex="0" aria-describedby="tt-10b">14.200 DASH</p>
-              <span role="tooltip" id="tt-10b">This is the Dash held by your identity. Your wallet balance is shown on the Wallet screen.</span>
-            </span>
-            <p class="text-sm text-secondary">≈ 1,241.48 USD</p>
-          </div>
-        </div>
-        <!-- Quick actions -->
-        <div class="quick-actions mb-md">
-          <span class="tooltip tooltip--clickable" style="flex:1; display:flex;">
-            <button class="quick-action" style="flex:1;" aria-describedby="tt-16d">
-              <span class="quick-action-icon" aria-hidden="true">✈</span>Send
-            </button>
-            <span role="tooltip" id="tt-16d">Send Dash to a contact, username, or address.</span>
-          </span>
-          <span class="tooltip tooltip--clickable" style="flex:1; display:flex;">
-            <button class="quick-action" style="flex:1;" aria-describedby="tt-17d">
-              <span class="quick-action-icon" aria-hidden="true">📥</span>Receive
-            </button>
-            <span role="tooltip" id="tt-17d">Show a QR code or your username so someone can pay you.</span>
-          </span>
-          <span class="tooltip tooltip--clickable" style="flex:1; display:flex;">
-            <button class="quick-action" style="flex:1;" aria-describedby="tt-18d">
-              <span class="quick-action-icon" aria-hidden="true">🤝</span>Add contact
-            </button>
-            <span role="tooltip" id="tt-18d">Find someone by username and add them to your contacts.</span>
-          </span>
-        </div>
-        <!-- Secondary actions row -->
-        <div class="flex gap-sm mb-md">
-          <span class="tooltip tooltip--clickable" style="flex:1; display:flex;">
-            <button class="btn btn-secondary btn-sm" style="flex:1;" aria-describedby="tt-80b">Add funds</button>
-            <span role="tooltip" id="tt-80b">Move Dash from your wallet into this identity.</span>
-          </span>
-          <span class="tooltip tooltip--clickable" style="flex:1; display:flex;">
-            <button class="btn btn-secondary btn-sm" style="flex:1;" aria-describedby="tt-81b">Send to wallet</button>
-            <span role="tooltip" id="tt-81b">Convert your identity balance back to spendable Dash in your wallet.</span>
-          </span>
-          <span class="tooltip tooltip--clickable" style="flex:1; display:flex;">
-            <button class="btn btn-secondary btn-sm" style="flex:1;" aria-describedby="tt-82b">Send to another identity</button>
-            <span role="tooltip" id="tt-82b">Transfer Dash directly from this identity to another identity.</span>
-          </span>
-        </div>
-        <!-- Social profile card (shown when no social profile) -->
-        <span class="tooltip tooltip--info" style="display:block; margin-bottom:var(--sp-md);" tabindex="0" aria-describedby="tt-19">
-          <div class="card--social-prompt">
-            <div class="flex items-center gap-md">
-              <span style="font-size:32px;" aria-hidden="true">🪪</span>
-              <div style="flex:1;">
-                <p class="fw-600 mb-xs">Set up your social profile</p>
-                <p class="text-sm text-secondary">Add a display name, bio, and avatar so people can find you on DashPay. This is optional — you can still use every other feature without it.</p>
-              </div>
-              <div class="flex flex-col gap-xs">
-                <button class="btn btn-primary btn-sm">Add a display name</button>
-                <button class="btn btn-ghost btn-sm">Skip for now — I use this identity only for voting.</button>
-              </div>
-            </div>
-          </div>
-          <span role="tooltip" id="tt-19">Add a display name, bio, and avatar so people can find you on DashPay. This is optional — you can still use every other feature without it.</span>
-        </span>
-        <!-- Advanced expander (Priya/Jordan only — .adv keeps raw IDs hidden from Alex in static view) -->
-        <details class="expander adv" open>
-          <summary>Advanced details</summary>
-          <div class="expander-content">
-            <p class="text-xs text-secondary mb-xs">Identity ID</p>
-            <div class="id-chip mb-sm">
-              <span class="mono">9Xk2pWcBn4qRm…7Q</span>
-              <span class="tooltip tooltip--clickable">
-                <button class="btn-icon btn-sm" aria-label="Copy identity ID" aria-describedby="tt-23c"><span aria-hidden="true">📋</span></button>
-                <span role="tooltip" id="tt-23c">Copy the full identity ID to your clipboard.</span>
-              </span>
-            </div>
-            <p class="text-xs text-secondary mb-sm">Masternode ID</p>
-            <div class="id-chip mb-sm">
-              <span class="mono">Abc123…Def456</span>
-              <span class="tooltip tooltip--clickable">
-                <button class="btn-icon btn-sm" aria-label="Copy masternode ID" aria-describedby="tt-24d"><span aria-hidden="true">📋</span></button>
-                <span role="tooltip" id="tt-24d">Copy the masternode ID to your clipboard.</span>
-              </span>
-            </div>
-            <p class="text-xs text-secondary">Version 12 · Last updated 2 hours ago</p>
-          </div>
-        </details>
-      </div>
-    </div>
-  </div>
-</div>
-</section>
-
-<!-- ==========================================================
-     FRAME 5 — Contacts tab — gated state (no social profile)
-     ========================================================== -->
-<section aria-labelledby="f5-title">
-<div class="frame-divider">
-  <div class="frame-caption">
-    <h2 id="f5-title">Frame 6 — Contacts tab — gated state</h2>
-    <p>Shown when the current identity has no social profile. Contacts require a profile to be discoverable.</p>
+    <h2 id="f4-title">Frame 4 — Contacts</h2>
+    <p>Populated contacts page for @alex.dash. Three sections: received requests (2, amber accent),
+       active contacts (5), sent requests (2, blue accent). See design-spec §B.4.</p>
   </div>
 </div>
 <div class="app-chrome">
@@ -1923,56 +1801,248 @@ body[data-persona="jordan"] .alex-only { display: none; }
   </nav>
   <div class="content-area">
     <div class="topbar">
-      <div class="breadcrumb"><span class="breadcrumb-current">Identities</span></div>
+      <nav class="breadcrumb-nav" aria-label="Location">
+        <ol class="breadcrumb-ol">
+          <li><a class="breadcrumb-link" href="#">Identities</a></li>
+          <li aria-hidden="true"><span class="breadcrumb-sep">›</span></li>
+          <li>
+            <span class="tooltip tooltip--info">
+              <span class="breadcrumb-pill subdued" aria-describedby="tt-3ct" aria-label="Main Wallet">
+                <span aria-hidden="true">💼</span> Main Wallet
+              </span>
+              <span role="tooltip" id="tt-3ct">This identity is funded by Main Wallet. Set up another wallet on the Wallets screen to switch between them.</span>
+            </span>
+          </li>
+          <li aria-hidden="true"><span class="breadcrumb-sep">›</span></li>
+          <li aria-current="page">
+            <span class="tooltip tooltip--clickable">
+              <span class="breadcrumb-pill switcher-interactive" role="button" tabindex="0" aria-haspopup="listbox" aria-describedby="tt-4ct" aria-label="Switch identity: @alex.dash">
+                <span class="avatar-sm" aria-hidden="true">A</span>
+                @alex.dash <span class="chevron" aria-hidden="true">▾</span>
+              </span>
+              <span role="tooltip" id="tt-4ct">Switch between identities in Main Wallet or add a new one.</span>
+            </span>
+          </li>
+        </ol>
+      </nav>
       <div class="topbar-right">
         <span class="tooltip tooltip--info">
-          <span class="connection-indicator" role="img" aria-label="Connected" aria-describedby="tt-77e"></span>
-          <span role="tooltip" id="tt-77e">You are connected and up to date.</span>
-        </span>
-        <span class="tooltip tooltip--clickable">
-          <button class="btn-icon btn-sm" aria-label="Refresh identity data" aria-describedby="tt-58e"><span aria-hidden="true">↻</span></button>
-          <span role="tooltip" id="tt-58e">Fetch the latest identity data from the network.</span>
+          <span class="connection-indicator" role="img" aria-label="Connected" aria-describedby="tt-77ct"></span>
+          <span role="tooltip" id="tt-77ct">You are connected and up to date.</span>
         </span>
       </div>
     </div>
-    <div class="switcher">
-      <span class="tooltip tooltip--info" style="display:block; width:fit-content;">
-        <div class="switcher-pill subdued" aria-describedby="tt-3e"><span aria-hidden="true">💼</span> Main Wallet</div>
-        <span role="tooltip" id="tt-3e">This identity is funded by Main Wallet. Set up another wallet on the Wallets screen to switch between them.</span>
-      </span>
-      <span class="tooltip tooltip--clickable" style="display:block; width:fit-content;">
-        <div class="switcher-pill interactive" role="button" tabindex="0" aria-haspopup="listbox" aria-describedby="tt-4e" aria-label="Switch identity: @jordan.dash">
-          <div class="avatar-sm"><span aria-hidden="true">J</span></div>
-          @jordan.dash <span class="chevron" aria-hidden="true">▾</span>
-        </div>
-        <span role="tooltip" id="tt-4e">Switch between identities in Main Wallet or add a new one.</span>
-      </span>
-    </div>
     <div class="tab-bar" role="tablist">
       <a class="tab" role="tab" aria-selected="false" href="#">Home</a>
-      <span class="tooltip tooltip--info" style="display:inline-flex;">
-        <a class="tab active" role="tab" aria-selected="true" href="#" id="tab-contacts-5" aria-describedby="tt-25">Contacts</a>
-        <span role="tooltip" id="tt-25">Set up a social profile first. Contacts need a display name and avatar so people can find you.</span>
-      </span>
+      <a class="tab active" role="tab" aria-selected="true" href="#" id="tab-contacts-4" aria-controls="panel-contacts-4">Contacts</a>
       <a class="tab" role="tab" aria-selected="false" href="#">Activity</a>
       <a class="tab" role="tab" aria-selected="false" href="#">Settings</a>
     </div>
-    <div class="island" role="tabpanel" aria-labelledby="tab-contacts-5">
-      <div class="island-content" style="display:flex; align-items:center; min-height:360px;">
-        <div class="card--gate">
-          <div style="font-size:56px; margin-bottom:var(--sp-md);" aria-hidden="true">🔒</div>
-          <h3 class="text-xl fw-600 mb-sm">Set up a social profile first.</h3>
-          <p class="text-sm text-secondary mb-md">Contacts use your display name and avatar to let people find you. Without a social profile, you cannot add contacts or receive contact requests.</p>
-          <div class="flex gap-sm justify-center flex-wrap">
-            <button class="btn btn-primary">Add a display name</button>
-            <details class="expander">
-              <summary style="font-size:var(--font-sm); color:var(--text-secondary); padding:var(--sp-sm) var(--sp-md); cursor:pointer;">Why?</summary>
-              <div class="expander-content" style="text-align:left; margin-top:var(--sp-sm); border-left-color:var(--info);">
-                <p class="text-sm text-secondary">DashPay contacts share encrypted payment keys with each other. To do this, DashPay needs a display name so the other person can confirm they are connecting to the right person. Without one, the contact handshake cannot complete.</p>
-              </div>
-            </details>
+    <div class="island" id="panel-contacts-4" role="tabpanel" aria-labelledby="tab-contacts-4">
+      <div class="island-content">
+        <!-- Tab header with right-aligned actions -->
+        <div class="flex items-center justify-between mb-md">
+          <p class="text-xl fw-600">Contacts</p>
+          <div class="flex gap-sm">
+            <span class="tooltip tooltip--clickable">
+              <button class="btn btn-primary btn-sm" aria-describedby="tt-26">+ Add by username</button>
+              <span role="tooltip" id="tt-26">Find someone by their Dash username or identity ID and add them as a contact.</span>
+            </span>
+            <span class="tooltip tooltip--clickable">
+              <button class="btn btn-secondary btn-sm" aria-describedby="tt-27">Scan QR</button>
+              <span role="tooltip" id="tt-27">Use a camera or paste a QR image to add a contact.</span>
+            </span>
+            <span class="tooltip tooltip--clickable">
+              <button class="btn btn-secondary btn-sm" aria-describedby="tt-28">Show my QR</button>
+              <span role="tooltip" id="tt-28">Show a QR code so someone nearby can add you or pay you.</span>
+            </span>
           </div>
         </div>
+
+        <!-- SECTION 1: Received requests — amber accent, rendered first -->
+        <div class="mb-md">
+          <div class="flex items-center mb-sm">
+            <p class="text-base fw-600">Received requests — awaiting your approval</p>
+            <span class="section-badge">2 new</span>
+          </div>
+          <div class="request-card-row">
+            <!-- Request card 1: Marco Reyes -->
+            <div class="request-card request-card--received" style="flex:1;">
+              <div class="flex items-center gap-sm">
+                <div class="avatar--sm" style="background:#c05621;">M</div>
+                <div style="flex:1;">
+                  <p class="text-sm fw-600">Marco Reyes</p>
+                  <p class="text-xs text-secondary">@marco.dash</p>
+                </div>
+                <p class="text-xs text-secondary">2 hours ago</p>
+              </div>
+              <div class="flex gap-xs mt-xs">
+                <span class="tooltip tooltip--clickable">
+                  <button class="btn btn-primary btn-sm" aria-describedby="tt-29">Accept</button>
+                  <span role="tooltip" id="tt-29">Accept this contact request. You will appear in each other's contact list.</span>
+                </span>
+                <span class="tooltip tooltip--clickable">
+                  <button class="btn btn-secondary btn-sm" aria-describedby="tt-30">Decline</button>
+                  <span role="tooltip" id="tt-30">Decline this request. The other person will not be notified.</span>
+                </span>
+              </div>
+            </div>
+            <!-- Request card 2: Lina Park -->
+            <div class="request-card request-card--received" style="flex:1;">
+              <div class="flex items-center gap-sm">
+                <div class="avatar--sm" style="background:#6b46c1;">L</div>
+                <div style="flex:1;">
+                  <p class="text-sm fw-600">Lina Park</p>
+                  <p class="text-xs text-secondary">@lina.dash</p>
+                </div>
+                <p class="text-xs text-secondary">Yesterday</p>
+              </div>
+              <div class="flex gap-xs mt-xs">
+                <span class="tooltip tooltip--clickable">
+                  <button class="btn btn-primary btn-sm" aria-describedby="tt-29b">Accept</button>
+                  <span role="tooltip" id="tt-29b">Accept this contact request. You will appear in each other's contact list.</span>
+                </span>
+                <span class="tooltip tooltip--clickable">
+                  <button class="btn btn-secondary btn-sm" aria-describedby="tt-30b">Decline</button>
+                  <span role="tooltip" id="tt-30b">Decline this request. The other person will not be notified.</span>
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- SECTION 2: Active contacts -->
+        <div class="mb-md">
+          <div class="flex items-center justify-between mb-sm">
+            <p class="text-base fw-600">Active contacts · 5</p>
+            <input class="input" style="width:220px;" type="search" placeholder="Search your contacts" aria-label="Search your contacts">
+          </div>
+          <!-- Contact rows -->
+          <div class="list-row">
+            <div class="avatar--sm" style="background:#2b6cb0;">B</div>
+            <div style="flex:1;">
+              <p class="text-sm fw-600">Bilal Okafor</p>
+              <p class="text-xs text-secondary">@bilal.dash · last paid 3 days ago</p>
+            </div>
+            <span class="tooltip tooltip--clickable">
+              <button class="btn btn-primary btn-sm" aria-describedby="tt-32a">Send</button>
+              <span role="tooltip" id="tt-32a">Send Dash to Bilal Okafor.</span>
+            </span>
+            <span class="tooltip tooltip--clickable">
+              <button class="btn-icon" aria-label="More actions for Bilal Okafor" aria-describedby="tt-33a">•••</button>
+              <span role="tooltip" id="tt-33a">More actions for this contact.</span>
+            </span>
+          </div>
+          <div class="list-row">
+            <div class="avatar--sm" style="background:#276749;">S</div>
+            <div style="flex:1;">
+              <p class="text-sm fw-600">Sofia Romero</p>
+              <p class="text-xs text-secondary">@sofia.dash · last paid last week</p>
+            </div>
+            <span class="tooltip tooltip--clickable">
+              <button class="btn btn-primary btn-sm" aria-describedby="tt-32b">Send</button>
+              <span role="tooltip" id="tt-32b">Send Dash to Sofia Romero.</span>
+            </span>
+            <span class="tooltip tooltip--clickable">
+              <button class="btn-icon" aria-label="More actions for Sofia Romero" aria-describedby="tt-33b">•••</button>
+              <span role="tooltip" id="tt-33b">More actions for this contact.</span>
+            </span>
+          </div>
+          <div class="list-row">
+            <div class="avatar--sm" style="background:#744210;">D</div>
+            <div style="flex:1;">
+              <p class="text-sm fw-600">Devon King</p>
+              <p class="text-xs text-secondary">@devon.dash · no payments yet</p>
+            </div>
+            <span class="tooltip tooltip--clickable">
+              <button class="btn btn-primary btn-sm" aria-describedby="tt-32c">Send</button>
+              <span role="tooltip" id="tt-32c">Send Dash to Devon King.</span>
+            </span>
+            <span class="tooltip tooltip--clickable">
+              <button class="btn-icon" aria-label="More actions for Devon King" aria-describedby="tt-33c">•••</button>
+              <span role="tooltip" id="tt-33c">More actions for this contact.</span>
+            </span>
+          </div>
+          <div class="list-row">
+            <div class="avatar--sm" style="background:#2c7a7b;">T</div>
+            <div style="flex:1;">
+              <p class="text-sm fw-600">Tomomi Kato</p>
+              <p class="text-xs text-secondary">@tomomi.dash · last paid today</p>
+            </div>
+            <span class="tooltip tooltip--clickable">
+              <button class="btn btn-primary btn-sm" aria-describedby="tt-32d">Send</button>
+              <span role="tooltip" id="tt-32d">Send Dash to Tomomi Kato.</span>
+            </span>
+            <span class="tooltip tooltip--clickable">
+              <button class="btn-icon" aria-label="More actions for Tomomi Kato" aria-describedby="tt-33d">•••</button>
+              <span role="tooltip" id="tt-33d">More actions for this contact.</span>
+            </span>
+          </div>
+          <div class="list-row">
+            <div class="avatar--sm" style="background:#553c9a;">R</div>
+            <div style="flex:1;">
+              <p class="text-sm fw-600">Raj Patel</p>
+              <p class="text-xs text-secondary">@raj.dash · last paid 2 months ago</p>
+            </div>
+            <span class="tooltip tooltip--clickable">
+              <button class="btn btn-primary btn-sm" aria-describedby="tt-32e">Send</button>
+              <span role="tooltip" id="tt-32e">Send Dash to Raj Patel.</span>
+            </span>
+            <span class="tooltip tooltip--clickable">
+              <button class="btn-icon" aria-label="More actions for Raj Patel" aria-describedby="tt-33e">•••</button>
+              <span role="tooltip" id="tt-33e">More actions for this contact.</span>
+            </span>
+          </div>
+          <!-- Contact detail drawer annotation (static) -->
+          <div class="banner banner--info mt-sm">
+            <span aria-hidden="true">📌</span>
+            <span class="text-xs">Clicking a row opens the contact detail drawer (right-hand slide-in, 480 px) with Send · Copy handle · Edit private label · Remove contact actions.</span>
+          </div>
+        </div>
+
+        <!-- SECTION 3: Sent requests — muted, blue accent -->
+        <div>
+          <p class="text-base fw-600 mb-sm">Sent requests — waiting for acceptance</p>
+          <div class="request-card-row">
+            <!-- Sent card 1: Kai Andersen -->
+            <div class="request-card request-card--sent" style="flex:1;">
+              <div class="flex items-center gap-sm">
+                <div class="avatar--sm" style="background:#2b6cb0;">K</div>
+                <div style="flex:1;">
+                  <p class="text-sm fw-600">Kai Andersen</p>
+                  <p class="text-xs text-secondary">@kai.dash · You sent 1 day ago</p>
+                </div>
+                <span class="tooltip tooltip--info">
+                  <span class="badge badge--pending" aria-describedby="tt-31">Pending</span>
+                  <span role="tooltip" id="tt-31">Waiting for Kai Andersen to respond.</span>
+                </span>
+              </div>
+              <span class="tooltip tooltip--clickable" style="display:inline-flex; margin-top:var(--sp-xs);">
+                <button class="btn btn-secondary btn-sm" aria-describedby="tt-29c">Cancel request</button>
+                <span role="tooltip" id="tt-29c">Cancel the request. Kai Andersen will not be notified.</span>
+              </span>
+            </div>
+            <!-- Sent card 2: Elena Costa -->
+            <div class="request-card request-card--sent" style="flex:1;">
+              <div class="flex items-center gap-sm">
+                <div class="avatar--sm" style="background:#276749;">E</div>
+                <div style="flex:1;">
+                  <p class="text-sm fw-600">Elena Costa</p>
+                  <p class="text-xs text-secondary">@elena.dash · You sent 5 days ago</p>
+                </div>
+                <span class="tooltip tooltip--info">
+                  <span class="badge badge--pending" aria-describedby="tt-31b">Pending</span>
+                  <span role="tooltip" id="tt-31b">Waiting for Elena Costa to respond.</span>
+                </span>
+              </div>
+              <span class="tooltip tooltip--clickable" style="display:inline-flex; margin-top:var(--sp-xs);">
+                <button class="btn btn-secondary btn-sm" aria-describedby="tt-29d">Cancel request</button>
+                <span role="tooltip" id="tt-29d">Cancel the request. Elena Costa will not be notified.</span>
+              </span>
+            </div>
+          </div>
+        </div>
+
       </div>
     </div>
   </div>
@@ -1980,12 +2050,12 @@ body[data-persona="jordan"] .alex-only { display: none; }
 </section>
 
 <!-- ==========================================================
-     FRAME 6 — Activity tab
+     FRAME 5 — Activity tab
      ========================================================== -->
-<section aria-labelledby="f6-title">
+<section aria-labelledby="f5-title">
 <div class="frame-divider">
   <div class="frame-caption">
-    <h2 id="f6-title">Frame 7 — Activity tab</h2>
+    <h2 id="f5-title">Frame 5 — Activity</h2>
     <p>Unified timeline: one expanded row, one failed row, ten normal rows across all three filter categories.</p>
   </div>
 </div>
@@ -2003,7 +2073,30 @@ body[data-persona="jordan"] .alex-only { display: none; }
   </nav>
   <div class="content-area">
     <div class="topbar">
-      <div class="breadcrumb"><span class="breadcrumb-current">Identities</span></div>
+      <nav class="breadcrumb-nav" aria-label="Location">
+        <ol class="breadcrumb-ol">
+          <li><a class="breadcrumb-link" href="#">Identities</a></li>
+          <li aria-hidden="true"><span class="breadcrumb-sep">›</span></li>
+          <li>
+            <span class="tooltip tooltip--info">
+              <span class="breadcrumb-pill subdued" aria-describedby="tt-3f" aria-label="Main Wallet">
+                <span aria-hidden="true">💼</span> Main Wallet
+              </span>
+              <span role="tooltip" id="tt-3f">This identity is funded by Main Wallet. Set up another wallet on the Wallets screen to switch between them.</span>
+            </span>
+          </li>
+          <li aria-hidden="true"><span class="breadcrumb-sep">›</span></li>
+          <li aria-current="page">
+            <span class="tooltip tooltip--clickable">
+              <span class="breadcrumb-pill switcher-interactive" role="button" tabindex="0" aria-haspopup="listbox" aria-describedby="tt-4f" aria-label="Switch identity: @alex.dash">
+                <span class="avatar-sm" aria-hidden="true">A</span>
+                @alex.dash <span class="chevron" aria-hidden="true">▾</span>
+              </span>
+              <span role="tooltip" id="tt-4f">Switch between identities in Main Wallet or add a new one.</span>
+            </span>
+          </li>
+        </ol>
+      </nav>
       <div class="topbar-right">
         <span class="tooltip tooltip--info">
           <span class="connection-indicator" role="img" aria-label="Connected" aria-describedby="tt-77f"></span>
@@ -2015,26 +2108,13 @@ body[data-persona="jordan"] .alex-only { display: none; }
         </span>
       </div>
     </div>
-    <div class="switcher">
-      <span class="tooltip tooltip--info" style="display:block; width:fit-content;">
-        <div class="switcher-pill subdued" aria-describedby="tt-3f"><span aria-hidden="true">💼</span> Main Wallet</div>
-        <span role="tooltip" id="tt-3f">This identity is funded by Main Wallet. Set up another wallet on the Wallets screen to switch between them.</span>
-      </span>
-      <span class="tooltip tooltip--clickable" style="display:block; width:fit-content;">
-        <div class="switcher-pill interactive" role="button" tabindex="0" aria-haspopup="listbox" aria-describedby="tt-4f" aria-label="Switch identity: @alex.dash">
-          <div class="avatar-sm"><span aria-hidden="true">A</span></div>
-          @alex.dash <span class="chevron" aria-hidden="true">▾</span>
-        </div>
-        <span role="tooltip" id="tt-4f">Switch between identities in Main Wallet or add a new one.</span>
-      </span>
-    </div>
     <div class="tab-bar" role="tablist">
       <a class="tab" role="tab" aria-selected="false" href="#">Home</a>
       <a class="tab" role="tab" aria-selected="false" href="#">Contacts</a>
-      <a class="tab active" role="tab" aria-selected="true" href="#" id="tab-activity-6">Activity</a>
+      <a class="tab active" role="tab" aria-selected="true" href="#" id="tab-activity-5">Activity</a>
       <a class="tab" role="tab" aria-selected="false" href="#">Settings</a>
     </div>
-    <div class="island" role="tabpanel" aria-labelledby="tab-activity-6">
+    <div class="island" role="tabpanel" aria-labelledby="tab-activity-5">
       <div class="island-content">
         <!-- Tab header -->
         <div class="flex items-center justify-between mb-md">
@@ -2177,12 +2257,12 @@ body[data-persona="jordan"] .alex-only { display: none; }
 </section>
 
 <!-- ==========================================================
-     FRAME 7 — Send sheet (compose step)
+     FRAME 6 — Send sheet (compose step)
      ========================================================== -->
-<section aria-labelledby="f7-title">
+<section aria-labelledby="f6-title">
 <div class="frame-divider">
   <div class="frame-caption">
-    <h2 id="f7-title">Frame 8 — Send sheet — compose step</h2>
+    <h2 id="f6-title">Frame 6 — Send sheet</h2>
     <p>Username resolution in progress, amount input, memo expander, fee preview card. Shown over a dimmed Identity Home backdrop.</p>
   </div>
 </div>
@@ -2200,7 +2280,30 @@ body[data-persona="jordan"] .alex-only { display: none; }
   </nav>
   <div class="content-area">
     <div class="topbar">
-      <div class="breadcrumb"><span class="breadcrumb-current">Identities</span></div>
+      <nav class="breadcrumb-nav" aria-label="Location">
+        <ol class="breadcrumb-ol">
+          <li><a class="breadcrumb-link" href="#">Identities</a></li>
+          <li aria-hidden="true"><span class="breadcrumb-sep">›</span></li>
+          <li>
+            <span class="tooltip tooltip--info">
+              <span class="breadcrumb-pill subdued" aria-describedby="tt-3g" aria-label="Main Wallet">
+                <span aria-hidden="true">💼</span> Main Wallet
+              </span>
+              <span role="tooltip" id="tt-3g">This identity is funded by Main Wallet. Set up another wallet on the Wallets screen to switch between them.</span>
+            </span>
+          </li>
+          <li aria-hidden="true"><span class="breadcrumb-sep">›</span></li>
+          <li aria-current="page">
+            <span class="tooltip tooltip--clickable">
+              <span class="breadcrumb-pill switcher-interactive" role="button" tabindex="0" aria-haspopup="listbox" aria-describedby="tt-4g" aria-label="Switch identity: @alex.dash">
+                <span class="avatar-sm" aria-hidden="true">A</span>
+                @alex.dash <span class="chevron" aria-hidden="true">▾</span>
+              </span>
+              <span role="tooltip" id="tt-4g">Switch between identities in Main Wallet or add a new one.</span>
+            </span>
+          </li>
+        </ol>
+      </nav>
       <div class="topbar-right">
         <span class="tooltip tooltip--info">
           <span class="connection-indicator" role="img" aria-label="Connected" aria-describedby="tt-77g"></span>
@@ -2212,27 +2315,14 @@ body[data-persona="jordan"] .alex-only { display: none; }
         </span>
       </div>
     </div>
-    <div class="switcher">
-      <span class="tooltip tooltip--info" style="display:block; width:fit-content;">
-        <div class="switcher-pill subdued" aria-describedby="tt-3g"><span aria-hidden="true">💼</span> Main Wallet</div>
-        <span role="tooltip" id="tt-3g">This identity is funded by Main Wallet. Set up another wallet on the Wallets screen to switch between them.</span>
-      </span>
-      <span class="tooltip tooltip--clickable" style="display:block; width:fit-content;">
-        <div class="switcher-pill interactive" role="button" tabindex="0" aria-haspopup="listbox" aria-describedby="tt-4g" aria-label="Switch identity: @alex.dash">
-          <div class="avatar-sm"><span aria-hidden="true">A</span></div>
-          @alex.dash <span class="chevron" aria-hidden="true">▾</span>
-        </div>
-        <span role="tooltip" id="tt-4g">Switch between identities in Main Wallet or add a new one.</span>
-      </span>
-    </div>
     <div class="tab-bar" role="tablist">
-      <a class="tab active" role="tab" aria-selected="true" href="#" id="tab-home-7">Home</a>
+      <a class="tab active" role="tab" aria-selected="true" href="#" id="tab-home-6">Home</a>
       <a class="tab" role="tab" aria-selected="false" href="#">Contacts</a>
       <a class="tab" role="tab" aria-selected="false" href="#">Activity</a>
       <a class="tab" role="tab" aria-selected="false" href="#">Settings</a>
     </div>
     <!-- Dimmed backdrop -->
-    <div class="modal-backdrop" role="tabpanel" aria-labelledby="tab-home-7">
+    <div class="modal-backdrop" role="tabpanel" aria-labelledby="tab-home-6">
       <div class="modal-sheet" role="dialog" aria-modal="true" aria-labelledby="send-heading">
         <div class="flex items-center justify-between mb-md">
           <h3 class="text-xl fw-600" id="send-heading">Send Dash</h3>
@@ -2324,13 +2414,13 @@ body[data-persona="jordan"] .alex-only { display: none; }
 </section>
 
 <!-- ==========================================================
-     FRAME 8 — Settings — Priya, Advanced expanded
+     FRAME 7 — Settings — Priya, Advanced expanded
      ========================================================== -->
-<section aria-labelledby="f8-title">
+<section aria-labelledby="f7-title">
 <div class="frame-divider">
   <div class="frame-caption">
-    <h2 id="f8-title">Frame 9 — Settings — Priya, Advanced expanded</h2>
-    <p>Social profile section, aliases, keys table (Priya), danger zone.</p>
+    <h2 id="f7-title">Frame 7 — Settings</h2>
+    <p>Social profile section, aliases, keys table (Priya), danger zone. Priya context with multi-wallet interactive breadcrumb.</p>
   </div>
 </div>
 <div class="app-chrome">
@@ -2347,7 +2437,30 @@ body[data-persona="jordan"] .alex-only { display: none; }
   </nav>
   <div class="content-area">
     <div class="topbar">
-      <div class="breadcrumb"><span class="breadcrumb-current">Identities</span></div>
+      <nav class="breadcrumb-nav" aria-label="Location">
+        <ol class="breadcrumb-ol">
+          <li><a class="breadcrumb-link" href="#">Identities</a></li>
+          <li aria-hidden="true"><span class="breadcrumb-sep">›</span></li>
+          <li>
+            <span class="tooltip tooltip--clickable">
+              <span class="breadcrumb-pill switcher-interactive" role="button" tabindex="0" aria-haspopup="listbox" aria-describedby="tt-2h" aria-label="Switch wallet: Masternode Ops">
+                <span aria-hidden="true">💼</span> Masternode Ops <span class="chevron" aria-hidden="true">▾</span>
+              </span>
+              <span role="tooltip" id="tt-2h">Switch between your wallets. Each wallet can own several identities.</span>
+            </span>
+          </li>
+          <li aria-hidden="true"><span class="breadcrumb-sep">›</span></li>
+          <li aria-current="page">
+            <span class="tooltip tooltip--clickable">
+              <span class="breadcrumb-pill switcher-interactive" role="button" tabindex="0" aria-haspopup="listbox" aria-describedby="tt-4h" aria-label="Switch identity: @priya.dash">
+                <span class="avatar-sm" style="background:var(--platform-purple);" aria-hidden="true">P</span>
+                @priya.dash <span class="chevron" aria-hidden="true">▾</span>
+              </span>
+              <span role="tooltip" id="tt-4h">Switch between identities in Masternode Ops or add a new one.</span>
+            </span>
+          </li>
+        </ol>
+      </nav>
       <div class="topbar-right">
         <span class="tooltip tooltip--info">
           <span class="connection-indicator" role="img" aria-label="Connected" aria-describedby="tt-77h"></span>
@@ -2359,28 +2472,13 @@ body[data-persona="jordan"] .alex-only { display: none; }
         </span>
       </div>
     </div>
-    <div class="switcher">
-      <span class="tooltip tooltip--clickable" style="display:block; width:fit-content;">
-        <div class="switcher-pill interactive" role="button" tabindex="0" aria-haspopup="listbox" aria-describedby="tt-2h" aria-label="Switch wallet: Masternode Ops">
-          <span aria-hidden="true">💼</span> Masternode Ops <span class="chevron" aria-hidden="true">▾</span>
-        </div>
-        <span role="tooltip" id="tt-2h">Switch between your wallets. Each wallet can own several identities.</span>
-      </span>
-      <span class="tooltip tooltip--clickable" style="display:block; width:fit-content;">
-        <div class="switcher-pill interactive" role="button" tabindex="0" aria-haspopup="listbox" aria-describedby="tt-4h" aria-label="Switch identity: @priya.dash">
-          <div class="avatar-sm" style="background:var(--platform-purple);"><span aria-hidden="true">P</span></div>
-          @priya.dash <span class="chevron" aria-hidden="true">▾</span>
-        </div>
-        <span role="tooltip" id="tt-4h">Switch between identities in Masternode Ops or add a new one.</span>
-      </span>
-    </div>
     <div class="tab-bar" role="tablist">
       <a class="tab" role="tab" aria-selected="false" href="#">Home</a>
       <a class="tab" role="tab" aria-selected="false" href="#">Contacts</a>
       <a class="tab" role="tab" aria-selected="false" href="#">Activity</a>
-      <a class="tab active" role="tab" aria-selected="true" href="#" id="tab-settings-8">Settings</a>
+      <a class="tab active" role="tab" aria-selected="true" href="#" id="tab-settings-7">Settings</a>
     </div>
-    <div class="island" role="tabpanel" aria-labelledby="tab-settings-8">
+    <div class="island" role="tabpanel" aria-labelledby="tab-settings-7">
       <div class="island-content">
         <div class="two-col">
           <!-- Left: Social profile -->
@@ -2576,11 +2674,166 @@ body[data-persona="jordan"] .alex-only { display: none; }
 </div>
 </section>
 
+<!-- ==========================================================
+     FRAME 8 — App chrome reference
+     Component reference: left nav, breadcrumb variants, network indicator.
+     Moved to end so readers encounter the real screens first.
+     ========================================================== -->
+<section aria-labelledby="f8-title">
+<div class="frame-divider">
+  <div class="frame-caption">
+    <h2 id="f8-title">Frame 8 — App chrome reference</h2>
+    <p>Left nav, network indicator, and breadcrumb switcher variants — shown at zoom for component-level review.<br>
+       Variant A: Alex — single wallet, subdued pill. Variant B: Priya — multi-wallet, interactive pills.<br>
+       Variant C: onboarding empty state — both placeholder segments shown.</p>
+  </div>
+</div>
+
+<!-- Variant A: Alex — single wallet subdued breadcrumb -->
+<div class="variant-label" style="text-align:center; margin-bottom:var(--sp-sm);">Variant A — Alex (single wallet, subdued wallet pill)</div>
+<div class="app-chrome" style="min-height:260px;">
+  <nav class="nav" aria-label="Primary navigation">
+    <div class="nav-network-stripe"></div>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">💼</span> Wallets</a>
+    <a class="nav-item active" href="#" aria-current="page"><span class="nav-icon" aria-hidden="true">👥</span> Identities</a>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">📄</span> Contracts</a>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">🪙</span> Tokens</a>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">🛠</span> Tools</a>
+    <div class="nav-spacer"></div>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">⚙</span> Settings</a>
+    <div class="nav-network-pill">Mainnet</div>
+  </nav>
+  <div class="content-area">
+    <div class="topbar">
+      <nav class="breadcrumb-nav" aria-label="Location">
+        <ol class="breadcrumb-ol">
+          <li><a class="breadcrumb-link" href="#">Identities</a></li>
+          <li aria-hidden="true"><span class="breadcrumb-sep">›</span></li>
+          <li>
+            <span class="tooltip tooltip--info">
+              <span class="breadcrumb-pill subdued" aria-describedby="tt-3chA" aria-label="Main Wallet">
+                <span aria-hidden="true">💼</span> Main Wallet
+              </span>
+              <span role="tooltip" id="tt-3chA">This identity is funded by Main Wallet. Set up another wallet on the Wallets screen to switch between them.</span>
+            </span>
+          </li>
+          <li aria-hidden="true"><span class="breadcrumb-sep">›</span></li>
+          <li aria-current="page">
+            <span class="tooltip tooltip--clickable">
+              <span class="breadcrumb-pill switcher-interactive" role="button" tabindex="0" aria-haspopup="listbox" aria-describedby="tt-4chA" aria-label="Switch identity: @alex.dash">
+                <span class="avatar-sm" aria-hidden="true">A</span>
+                @alex.dash <span class="chevron" aria-hidden="true">▾</span>
+              </span>
+              <span role="tooltip" id="tt-4chA">Switch between identities in Main Wallet or add a new one.</span>
+            </span>
+          </li>
+        </ol>
+      </nav>
+      <div class="topbar-right">
+        <span class="tooltip tooltip--info">
+          <span class="connection-indicator" role="img" aria-label="Connected" aria-describedby="tt-77chA"></span>
+          <span role="tooltip" id="tt-77chA">You are connected and up to date.</span>
+        </span>
+      </div>
+    </div>
+    <div class="island-content text-sm text-secondary" style="padding:var(--sp-lg); font-style:italic;">
+      Content area (see frames F1–F7 for real content)
+    </div>
+  </div>
+</div>
+
+<!-- Variant B: Priya — multi-wallet interactive breadcrumb -->
+<div class="variant-label" style="text-align:center; margin:var(--sp-lg) 0 var(--sp-sm);">Variant B — Priya (multi-wallet, both pills interactive)</div>
+<div class="app-chrome" style="min-height:260px;">
+  <nav class="nav" aria-label="Primary navigation">
+    <div class="nav-network-stripe" style="background:var(--testnet-orange);"></div>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">💼</span> Wallets</a>
+    <a class="nav-item active" href="#" aria-current="page"><span class="nav-icon" aria-hidden="true">👥</span> Identities</a>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">📄</span> Contracts</a>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">🪙</span> Tokens</a>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">🛠</span> Tools</a>
+    <div class="nav-spacer"></div>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">⚙</span> Settings</a>
+    <div class="nav-network-pill" style="border-color:rgba(255,165,0,0.5); color:var(--testnet-orange);">Testnet</div>
+  </nav>
+  <div class="content-area">
+    <div class="topbar">
+      <nav class="breadcrumb-nav" aria-label="Location">
+        <ol class="breadcrumb-ol">
+          <li><a class="breadcrumb-link" href="#">Identities</a></li>
+          <li aria-hidden="true"><span class="breadcrumb-sep">›</span></li>
+          <li>
+            <span class="tooltip tooltip--clickable">
+              <span class="breadcrumb-pill switcher-interactive" role="button" tabindex="0" aria-haspopup="listbox" aria-describedby="tt-2chB" aria-label="Switch wallet: Masternode Ops">
+                <span aria-hidden="true">💼</span> Masternode Ops <span class="chevron" aria-hidden="true">▾</span>
+              </span>
+              <span role="tooltip" id="tt-2chB">Switch between your wallets. Each wallet can own several identities.</span>
+            </span>
+          </li>
+          <li aria-hidden="true"><span class="breadcrumb-sep">›</span></li>
+          <li aria-current="page">
+            <span class="tooltip tooltip--clickable">
+              <span class="breadcrumb-pill switcher-interactive" role="button" tabindex="0" aria-haspopup="listbox" aria-describedby="tt-4chB" aria-label="Switch identity: @priya.dash">
+                <span class="avatar-sm" style="background:var(--platform-purple);" aria-hidden="true">P</span>
+                @priya.dash <span class="chevron" aria-hidden="true">▾</span>
+              </span>
+              <span role="tooltip" id="tt-4chB">Switch between identities in Masternode Ops or add a new one.</span>
+            </span>
+          </li>
+        </ol>
+      </nav>
+      <div class="topbar-right">
+        <span class="tooltip tooltip--info">
+          <span class="connection-indicator" role="img" aria-label="Connected" aria-describedby="tt-77chB"></span>
+          <span role="tooltip" id="tt-77chB">You are connected and up to date.</span>
+        </span>
+      </div>
+    </div>
+    <div class="island-content text-sm text-secondary" style="padding:var(--sp-lg); font-style:italic;">
+      Content area (see frames F1–F7 for real content)
+    </div>
+  </div>
+</div>
+
+<!-- Variant C: Empty state placeholders -->
+<div class="variant-label" style="text-align:center; margin:var(--sp-lg) 0 var(--sp-sm);">Variant C — Onboarding empty state (no wallet, no identity — both placeholder segments)</div>
+<div class="app-chrome" style="min-height:260px;">
+  <nav class="nav" aria-label="Primary navigation">
+    <div class="nav-network-stripe"></div>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">💼</span> Wallets</a>
+    <a class="nav-item active" href="#" aria-current="page"><span class="nav-icon" aria-hidden="true">👥</span> Identities</a>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">📄</span> Contracts</a>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">🪙</span> Tokens</a>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">🛠</span> Tools</a>
+    <div class="nav-spacer"></div>
+    <a class="nav-item" href="#"><span class="nav-icon" aria-hidden="true">⚙</span> Settings</a>
+    <div class="nav-network-pill">Mainnet</div>
+  </nav>
+  <div class="content-area">
+    <div class="topbar">
+      <nav class="breadcrumb-nav" aria-label="Location">
+        <ol class="breadcrumb-ol">
+          <li><a class="breadcrumb-link" href="#">Identities</a></li>
+          <li aria-hidden="true"><span class="breadcrumb-sep">›</span></li>
+          <li><span class="breadcrumb-placeholder" aria-disabled="true" role="presentation">(no wallet yet)</span></li>
+          <li aria-hidden="true"><span class="breadcrumb-sep">›</span></li>
+          <li aria-current="page"><span class="breadcrumb-placeholder" aria-disabled="true" role="presentation">(no identity yet)</span></li>
+        </ol>
+      </nav>
+    </div>
+    <div class="island-content text-sm text-secondary" style="padding:var(--sp-lg); font-style:italic;">
+      Onboarding empty state shown here (see Frame 1 for full render)
+    </div>
+  </div>
+</div>
+
+</section>
+
 </div><!-- /frames -->
 </main>
 
 <footer style="text-align:center; padding:var(--sp-xl); color:var(--text-secondary); font-size:var(--font-sm); border-top:1px solid var(--border);">
-  <p>Identity + DashPay Redesign Wireframe &mdash; 9 frames &mdash; static visual reference only.</p>
+  <p>Identity + DashPay Redesign Wireframe &mdash; 8 frames &mdash; static visual reference only.</p>
   <p class="mt-xs">See <a href="design-spec.md" style="color:var(--dash-blue);">design-spec.md</a> for the full UX specification.</p>
 </footer>
 

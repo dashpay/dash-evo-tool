@@ -37,15 +37,14 @@ stack (system-ui / Segoe UI / Helvetica) takes over — the layout is unaffected
 
 | # | Caption |
 |---|---|
-| 1 | App chrome zoom — Alex (subdued wallet pill) and Priya (interactive wallet pill), one-row switcher layout |
-| 2 | Onboarding empty state |
-| 3 | Identity picker — grid shown when ≥ 2 identities are loaded (4 cards + add-new card) |
-| 4 | Identity Home — Alex, social profile set |
-| 5 | Identity Home — Priya, no social profile |
-| 6 | Contacts tab — gated state (no social profile) |
-| 7 | Activity tab |
-| 8 | Send sheet — compose step |
-| 9 | Settings — Priya, Advanced expanded |
+| 1 | Onboarding empty state — breadcrumb shows `(no wallet yet)` and `(no identity yet)` placeholders |
+| 2 | Identity picker — grid shown when ≥ 2 identities are loaded (4 cards + add-new card); breadcrumb shows wallet pill + `(choose an identity)` |
+| 3 | Identity Home — Alex with social profile (canonical). Annotation callout documents no-profile state (see design-spec §B.3) |
+| 4 | Contacts — populated: 2 received requests (amber), 5 active contacts, 2 sent requests (blue) |
+| 5 | Activity tab |
+| 6 | Send sheet — compose step |
+| 7 | Settings — Priya, Advanced expanded (multi-wallet interactive breadcrumb) |
+| 8 | App chrome reference — breadcrumb switcher variants A (Alex), B (Priya), C (empty state placeholders) |
 
 ## Placeholder token legend
 
@@ -80,7 +79,7 @@ npx playwright screenshot \
 
 For individual frames at 1280x800, use the Playwright Node API targeting each
 `section[aria-labelledby]` element, iterating over personas `alex`, `priya`, `jordan` and
-themes `light`, `dark`. This produces up to 54 PNGs (9 frames x 3 personas x 2 themes).
+themes `light`, `dark`. This produces up to 48 PNGs (8 frames x 3 personas x 2 themes).
 
 ## Design decisions recorded since initial commit
 
@@ -94,8 +93,26 @@ themes `light`, `dark`. This produces up to 54 PNGs (9 frames x 3 personas x 2 t
   in Settings — not deprecated. See design-spec.md §G7.
 - **Identity pill dropdown ordering**: Local nickname → DPNS username → shortened ID.
   Search activates at 7+ identities. Drag-reorder deferred. See design-spec.md §G6.
-- **One-row switcher**: wallet pill and identity pill are displayed side by side (`flex-direction: row; flex-wrap: wrap`) rather than stacked. Degrades to two rows via `flex-wrap: wrap` at narrow widths. The picker page (F3) has no switcher — the grid itself is the selector.
-- **Identity picker card heading hierarchy**: display name preferred over DPNS handle, which is preferred over shortened Identity ID. This matches the priority order already established for the pill dropdown (see §A.3 / §G6) and avoids a separate rule set.
+- **Breadcrumb as switcher**: the wallet + identity switcher is now embedded directly in the
+  breadcrumb (`Identities › [wallet pill] › [identity pill]`). The old standalone switcher
+  row under the breadcrumb is removed. Placeholder text `(no wallet yet)`, `(no identity yet)`,
+  and `(choose an identity)` ensures all three segments are always present. Alex's wallet pill
+  is `.subdued` (non-interactive); Priya/Jordan's wallet pill is `.switcher-interactive`.
+  Pills use reduced vertical padding (2px) so the topbar stays single-line. See design-spec §A.3.
+- **Identity picker page (F2) has no switcher segments filled**: the picker IS the selector.
+  Wallet pill is shown (subdued for Alex, interactive for Priya), but identity segment is the
+  `(choose an identity)` placeholder until a card is clicked.
+- **Consolidated Identity Home (F3)**: a single frame covers both social-profile-set and
+  no-profile states. The no-profile state is documented via an annotation callout pointing to
+  design-spec §B.3. No separate "Priya, no social profile" frame.
+- **Populated Contacts (F4)**: replaces the gated-state frame. Three sections: received
+  requests (amber, rendered first), active contacts (5 rows with search), sent requests
+  (muted blue). Gated state is now documented in §B.4.1 — shown inline in the active
+  contacts section when the identity has no social profile.
+- **App chrome reference moved to F8**: opening with the component reference confused readers.
+  Moving it to the end means users encounter the actual screens first. Caption updated to
+  "App chrome reference" to signal this is a reference frame, not a starting point.
+- **Identity picker card heading hierarchy**: display name preferred over DPNS handle, which is preferred over shortened Identity ID. This matches the priority order already established for the breadcrumb pill (see §A.3 / §G6) and avoids a separate rule set.
 - **Picker avatar sizing**: 72×72 px chosen as a midpoint between the 40 px contact list avatar and the 96 px hero avatar, giving enough surface for a legible monogram glyph without dominating the card at ≥ 260 px width.
 - **Picker card hover elevation**: shadow increases from `--shadow-small` to `--shadow-medium` on hover — same elevation step used by all other interactive cards in the design. No border-color change on standard cards (the add-new card switches from dashed to solid Dash Blue instead, since that border is its defining visual element).
 

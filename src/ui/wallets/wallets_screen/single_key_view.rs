@@ -11,7 +11,7 @@ use super::WalletsBalancesScreen;
 /// Shown as a disabled-button tooltip and in the in-screen warning banner for
 /// any single-key-wallet action that depends on Dash Core RPC. Exported so the
 /// dedicated send screen can reuse the same copy.
-pub(crate) const SINGLE_KEY_REQUIRES_CORE: &str = "Single-key wallets do not yet support SPV. Open Settings, switch to Expert mode, and select Local Dash Core node to use this wallet.";
+pub(crate) const SINGLE_KEY_REQUIRES_CORE: &str = "Sending from a single-key wallet requires a local Dash Core node. You can still receive funds at this address. To send, open Settings, switch to Expert mode, and select Local Dash Core node.";
 
 impl WalletsBalancesScreen {
     /// Render the detail view for a selected single key wallet

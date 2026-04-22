@@ -499,8 +499,19 @@ pub async fn shield_from_asset_lock(
         .broadcast_raw_transaction(&asset_lock_transaction)
         .await
     {
-        if let Ok(mut proofs) = app_context.transactions_waiting_for_finality.lock() {
-            proofs.remove(&tx_id);
+        match app_context.transactions_waiting_for_finality.lock() {
+            Ok(mut proofs) => {
+                proofs.remove(&tx_id);
+            }
+            Err(poisoned) => {
+                tracing::warn!(
+                    %tx_id,
+                    "transactions_waiting_for_finality lock is poisoned after broadcast failure; \
+                     recovering through poisoned guard so the finality tracking entry is cleared"
+                );
+                let mut proofs = poisoned.into_inner();
+                proofs.remove(&tx_id);
+            }
         }
         return Err(e);
     }
@@ -542,8 +553,26 @@ pub async fn shield_from_asset_lock(
     loop {
         tokio::select! {
             _ = &mut timeout => {
-                if let Ok(mut proofs) = app_context.transactions_waiting_for_finality.try_lock() {
-                    proofs.remove(&tx_id);
+                match app_context.transactions_waiting_for_finality.try_lock() {
+                    Ok(mut proofs) => {
+                        proofs.remove(&tx_id);
+                    }
+                    Err(std::sync::TryLockError::WouldBlock) => {
+                        tracing::debug!(
+                            %tx_id,
+                            "transactions_waiting_for_finality lock is contended on timeout; \
+                             finality tracking entry not cleared"
+                        );
+                    }
+                    Err(std::sync::TryLockError::Poisoned(poisoned)) => {
+                        tracing::warn!(
+                            %tx_id,
+                            "transactions_waiting_for_finality lock is poisoned on timeout; \
+                             recovering through poisoned guard so the entry is cleared"
+                        );
+                        let mut proofs = poisoned.into_inner();
+                        proofs.remove(&tx_id);
+                    }
                 }
 
                 if app_context.core_backend_mode() == crate::spv::CoreBackendMode::Rpc

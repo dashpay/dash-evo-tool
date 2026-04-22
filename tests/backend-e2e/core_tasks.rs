@@ -310,98 +310,30 @@ async fn test_tc009_send_single_key_wallet_payment() {
     // Wait for the transaction to propagate, then refresh UTXOs.
     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 
-    // Single-key wallets depend on Core RPC for UTXO refresh. In SPV mode the
-    // refresh task returns `OperationRequiresDashCore`, at which point the
-    // send payment flow cannot be exercised — we verify the expected typed
-    // error and stop here.
+    // Backend E2E runs against SPV only (see tests/backend-e2e/README.md), and
+    // single-key wallets depend on Core RPC for UTXO refresh. The refresh task
+    // therefore returns `OperationRequiresDashCore` — we verify the typed error
+    // and stop; the send step is unreachable without refreshed UTXOs.
     let refresh_result = run_task(
         app_context,
         BackendTask::CoreTask(CoreTask::RefreshSingleKeyWalletInfo(skw_arc.clone())),
     )
     .await;
 
-    match app_context.core_backend_mode() {
-        dash_evo_tool::spv::CoreBackendMode::Spv => {
-            let err = refresh_result
-                .expect_err("RefreshSingleKeyWalletInfo must fail in SPV mode with a typed error");
-            assert!(
-                matches!(
-                    err,
-                    dash_evo_tool::backend_task::error::TaskError::OperationRequiresDashCore { .. }
-                ),
-                "Expected OperationRequiresDashCore in SPV mode, got: {:?}",
-                err
-            );
-            tracing::info!(
-                "TC-009: single-key wallet flow is not supported in SPV mode; \
-                 verified typed OperationRequiresDashCore error and skipping send step."
-            );
-            return;
-        }
-        dash_evo_tool::spv::CoreBackendMode::Rpc => {
-            refresh_result.expect("RefreshSingleKeyWalletInfo should succeed after funding");
-        }
-    }
-
-    let balance = skw_arc.read().expect("skw lock").total_balance_duffs();
-    if balance == 0 {
-        tracing::warn!(
-            "TC-009: SKIPPED — single-key wallet has no balance after funding + refresh. \
-             Core RPC did not return any UTXOs for the funded address."
-        );
-        return;
-    }
-
-    // Derive a recipient address from the framework wallet
-    let recipient_address = {
-        let wallets = app_context.wallets().read().expect("wallets lock");
-        let fw = wallets
-            .get(&ctx.framework_wallet_hash)
-            .expect("framework wallet")
-            .clone();
-        let mut fw_guard = fw.write().expect("fw lock");
-        fw_guard
-            .receive_address(
-                dash_sdk::dpp::dashcore::Network::Testnet,
-                false,
-                Some(app_context),
-            )
-            .expect("receive address")
-            .to_string()
-    };
-
-    let result = run_task(
-        app_context,
-        BackendTask::CoreTask(CoreTask::SendSingleKeyWalletPayment {
-            wallet: skw_arc.clone(),
-            request: WalletPaymentRequest {
-                recipients: vec![PaymentRecipient {
-                    address: recipient_address,
-                    amount_duffs: 1_000,
-                }],
-                subtract_fee_from_amount: true,
-                memo: Some("TC-009 send back".to_string()),
-                override_fee: None,
-            },
-        }),
-    )
-    .await
-    .expect("SendSingleKeyWalletPayment should succeed");
-
-    match result {
-        BackendTaskSuccessResult::WalletPayment {
-            txid, total_amount, ..
-        } => {
-            assert_eq!(txid.len(), 64, "txid should be 64 hex chars");
-            assert!(total_amount > 0, "total_amount should be > 0");
-            tracing::info!(
-                "TC-009: single-key payment txid={}, amount={}",
-                txid,
-                total_amount
-            );
-        }
-        other => panic!("Expected WalletPayment, got: {:?}", other),
-    }
+    let err = refresh_result
+        .expect_err("RefreshSingleKeyWalletInfo must fail in SPV mode with a typed error");
+    assert!(
+        matches!(
+            err,
+            dash_evo_tool::backend_task::error::TaskError::OperationRequiresDashCore { .. }
+        ),
+        "Expected OperationRequiresDashCore in SPV mode, got: {:?}",
+        err
+    );
+    tracing::info!(
+        "TC-009: single-key wallet flow is not supported in SPV mode; \
+         verified typed OperationRequiresDashCore error and skipping send step."
+    );
 }
 
 // TC-010: ListCoreWallets — REMOVED (Core RPC-specific, not available in SPV mode)

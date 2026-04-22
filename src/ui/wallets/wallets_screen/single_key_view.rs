@@ -1,15 +1,18 @@
 use crate::app::AppAction;
 use crate::spv::CoreBackendMode;
-use crate::ui::ScreenType;
+use crate::ui::components::MessageBanner;
+use crate::ui::components::component_trait::Component;
 use crate::ui::theme::DashColors;
+use crate::ui::{MessageType, ScreenType};
 use eframe::egui;
 use egui::{Frame, Margin, RichText, Ui};
 
 use super::WalletsBalancesScreen;
 
-/// Shown as a disabled-button tooltip and the in-screen info banner for any
-/// single-key-wallet action that depends on Dash Core RPC.
-const SINGLE_KEY_REQUIRES_CORE_TOOLTIP: &str = "Single-key wallets do not yet support SPV. Open Settings, switch to Expert mode, and select Local Dash Core node to enable this action.";
+/// Shown as a disabled-button tooltip and in the in-screen warning banner for
+/// any single-key-wallet action that depends on Dash Core RPC. Exported so the
+/// dedicated send screen can reuse the same copy.
+pub(crate) const SINGLE_KEY_REQUIRES_CORE: &str = "Single-key wallets do not yet support SPV. Open Settings, switch to Expert mode, and select Local Dash Core node to use this wallet.";
 
 impl WalletsBalancesScreen {
     /// Render the detail view for a selected single key wallet
@@ -52,29 +55,44 @@ impl WalletsBalancesScreen {
                     ui.label(RichText::new(format!("Balance: {:.8} DASH", balance_dash)));
                     ui.add_space(10.0);
 
-                    // When the app is on its built-in SPV backend, surface an
-                    // info banner explaining that single-key wallet actions
+                    // When the app is on its built-in SPV backend, surface a
+                    // warning banner explaining that single-key wallet actions
                     // are unavailable. The actions themselves are greyed out
-                    // below; this label is the "why" users otherwise wouldn't
+                    // below; this banner is the "why" users otherwise wouldn't
                     // see from a silent disable.
+                    //
+                    // We construct the `MessageBanner` as a fresh local each
+                    // frame on purpose: this is a persistent state notice
+                    // (bound to the SPV backend mode), not a transient task
+                    // result, so we want it visible the whole time the mode
+                    // is active. A fresh instance every frame means the
+                    // auto-dismiss timer never fires and the banner is shown
+                    // consistently; rendering is cheap and egui handles the
+                    // repainting.
                     if !is_rpc_mode {
-                        ui.label(
-                            RichText::new(SINGLE_KEY_REQUIRES_CORE_TOOLTIP)
-                                .color(DashColors::WARNING)
-                                .size(13.0),
-                        );
+                        let mut banner = MessageBanner::new();
+                        banner.set_message(SINGLE_KEY_REQUIRES_CORE, MessageType::Warning);
+                        banner.show(ui);
                         ui.add_space(10.0);
                     }
 
                     // Action buttons for SK wallet
                     ui.horizontal(|ui| {
-                        let send_button =
-                            egui::Button::new(RichText::new("Send").color(text_color).strong());
+                        // Only force the primary text color when the button is
+                        // enabled; otherwise let egui apply its default disabled
+                        // visuals so the button actually looks greyed out.
+                        let send_label = RichText::new("Send").strong();
+                        let send_label = if is_rpc_mode {
+                            send_label.color(text_color)
+                        } else {
+                            send_label
+                        };
+                        let send_button = egui::Button::new(send_label);
                         let send_response = ui.add_enabled(is_rpc_mode, send_button);
                         let send_response = if is_rpc_mode {
                             send_response
                         } else {
-                            send_response.on_disabled_hover_text(SINGLE_KEY_REQUIRES_CORE_TOOLTIP)
+                            send_response.on_disabled_hover_text(SINGLE_KEY_REQUIRES_CORE)
                         };
                         if send_response.clicked() {
                             action = AppAction::AddScreen(

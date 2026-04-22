@@ -5,6 +5,7 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::config::Config;
 use crate::context::AppContext;
 use crate::context::connection_status::{ConnectionStatus, OverallConnectionState};
+use crate::model::feature_gate::FeatureGate;
 use crate::model::wallet::DerivationPathHelpers;
 use crate::spv::{CoreBackendMode, SpvStatus, SpvStatusSnapshot};
 use crate::ui::components::component_trait::Component;
@@ -253,24 +254,22 @@ impl NetworkChooserScreen {
                 .spacing([40.0, 12.0])
                 .striped(false)
                 .show(ui, |ui| {
-                    // TODO: SPV is currently hidden behind Developer Mode while still in development.
-                    // Once SPV is production-ready, remove this developer_mode check and make SPV
-                    // the default/primary connection method, with RPC as a fallback option.
                     let current_backend_mode = *self
                         .backend_modes
                         .entry(self.current_network)
-                        .or_insert(CoreBackendMode::Rpc);
+                        .or_insert(CoreBackendMode::Spv);
 
                     if self.developer_mode {
-                        // Row 1: Connection Type (only shown in developer mode)
+                        // Row 1: Connection Type (only shown in Expert mode — the
+                        // connection backend is an advanced power-user choice).
                         ui.label(
                             egui::RichText::new("Connection Type:")
                                 .color(DashColors::text_primary(dark_mode)),
                         );
 
                         let connection_text = match current_backend_mode {
-                            CoreBackendMode::Spv => "SPV Client",
-                            CoreBackendMode::Rpc => "Dash Core RPC",
+                            CoreBackendMode::Spv => "Built-in (SPV)",
+                            CoreBackendMode::Rpc => "Local Dash Core node",
                         };
 
                         let mut connection_mode = current_backend_mode;
@@ -282,7 +281,7 @@ impl NetworkChooserScreen {
                                     .selectable_value(
                                         &mut connection_mode,
                                         CoreBackendMode::Spv,
-                                        "SPV Client",
+                                        "Built-in (SPV)",
                                     )
                                     .changed()
                                 {
@@ -295,7 +294,7 @@ impl NetworkChooserScreen {
                                     .selectable_value(
                                         &mut connection_mode,
                                         CoreBackendMode::Rpc,
-                                        "Dash Core RPC",
+                                        "Local Dash Core node",
                                     )
                                     .changed()
                                 {
@@ -308,33 +307,6 @@ impl NetworkChooserScreen {
                             });
 
                         ui.end_row();
-
-                        // Show experimental warning when SPV mode is selected
-                        if current_backend_mode == CoreBackendMode::Spv {
-                            ui.label(""); // Empty label for grid alignment
-                            egui::Frame::new()
-                                .fill(DashColors::WARNING.gamma_multiply(0.15))
-                                .inner_margin(egui::Margin::symmetric(8, 4))
-                                .stroke(egui::Stroke::new(1.0, DashColors::WARNING))
-                                .corner_radius(4.0)
-                                .show(ui, |ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.label(
-                                            egui::RichText::new("⚠")
-                                                .color(DashColors::WARNING)
-                                                .size(14.0),
-                                        );
-                                        ui.label(
-                                            egui::RichText::new(
-                                                "SPV mode is experimental and still in development",
-                                            )
-                                            .color(DashColors::WARNING)
-                                            .size(12.0),
-                                        );
-                                    });
-                                });
-                            ui.end_row();
-                        }
                     }
 
                     // Row 2: Network
@@ -440,7 +412,7 @@ impl NetworkChooserScreen {
             let current_backend_mode = *self
                 .backend_modes
                 .entry(self.current_network)
-                .or_insert(CoreBackendMode::Rpc);
+                .or_insert(CoreBackendMode::Spv);
             if current_backend_mode == CoreBackendMode::Rpc {
                 ui.add_space(20.0);
                 ui.separator();
@@ -552,7 +524,7 @@ impl NetworkChooserScreen {
             let current_backend_mode = *self
                 .backend_modes
                 .entry(self.current_network)
-                .or_insert(CoreBackendMode::Rpc);
+                .or_insert(CoreBackendMode::Spv);
 
             let ctx = self.current_app_context().clone();
             let status = ctx.connection_status();
@@ -682,10 +654,7 @@ impl NetworkChooserScreen {
                 }
             });
 
-            // TODO: SPV sync progress is hidden when developer mode is OFF.
-            // Remove the developer_mode check once SPV is production-ready.
-            if self.developer_mode
-                && current_backend_mode == CoreBackendMode::Spv
+            if FeatureGate::SpvBackend.is_available(self.current_app_context())
                 && let Some(snap) = snapshot.as_ref()
                 && (snap.status == SpvStatus::Syncing || snap.status == SpvStatus::Starting)
             {
@@ -1108,7 +1077,10 @@ impl NetworkChooserScreen {
                 ui.horizontal(|ui| {
                     if StyledCheckbox::new(&mut self.developer_mode, "Expert mode")
                         .show(ui)
-                        .clickable_tooltip("Show advanced options for power users and developers")
+                        .clickable_tooltip(
+                            "Show advanced options for experienced users, including \
+                             Dash Core RPC, developer tools, and signing overrides.",
+                        )
                         .clicked()
                     {
                         for ctx in self.network_contexts.values() {
@@ -1120,18 +1092,6 @@ impl NetworkChooserScreen {
                             config.developer_mode = Some(self.developer_mode);
                             if let Err(e) = config.save(&self.data_dir) {
                                 tracing::error!("Failed to save config: {e}");
-                            }
-                        }
-
-                        // TODO: When developer mode is disabled, stop SPV and switch to RPC.
-                        // Remove this block once SPV is production-ready.
-                        if !self.developer_mode {
-                            for (&network, ctx) in &self.network_contexts {
-                                ctx.stop_spv();
-                                if ctx.core_backend_mode() == CoreBackendMode::Spv {
-                                    ctx.set_core_backend_mode(CoreBackendMode::Rpc);
-                                }
-                                self.backend_modes.insert(network, CoreBackendMode::Rpc);
                             }
                         }
                     }
@@ -1253,8 +1213,8 @@ impl NetworkChooserScreen {
                     );
                 });
 
-                // TODO: SPV settings are hidden when developer mode is OFF.
-                // Remove the developer_mode checks once SPV is production-ready.
+                // Advanced SPV peer source configuration is Expert-only —
+                // fresh-install users get auto-discovery, which is the correct default.
                 if self.developer_mode {
                     ui.add_space(12.0);
                     ui.separator();
@@ -1419,9 +1379,9 @@ impl NetworkChooserScreen {
                     app_action |= self.show_database_clear_confirmation(ui);
                 }
 
-                // SPV Maintenance section
-                // TODO: SPV maintenance is hidden when developer mode is OFF.
-                // Remove the developer_mode check once SPV is production-ready.
+                // SPV maintenance (clear data, rescan) is Expert-only — these are
+                // diagnostic tools that can destroy wallet sync state and should not
+                // be exposed to fresh-install users.
                 if self.developer_mode {
                     let current_backend_mode = self.current_app_context().core_backend_mode();
                     if current_backend_mode == CoreBackendMode::Spv {

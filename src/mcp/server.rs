@@ -255,8 +255,11 @@ pub async fn init_app_context() -> Result<Arc<AppContext>, McpError> {
         )
     })?;
 
-    // Headless mode has no Dash Core RPC — force SPV backend so wallet
-    // tools work without a local node.
+    // Headless mode has no Dash Core RPC credentials — force SPV backend so
+    // wallet tools work without a local node. This is defence-in-depth even
+    // after the v34 migration: a user could point `det_cli` at a GUI data dir
+    // where someone explicitly chose RPC. We flip the in-memory mode only
+    // (volatile) so the GUI's saved preference is never overwritten.
     if app_context.core_backend_mode() != CoreBackendMode::Spv {
         tracing::info!("Headless mode: forcing SPV backend (was RPC)");
         app_context.set_core_backend_mode_volatile(CoreBackendMode::Spv);

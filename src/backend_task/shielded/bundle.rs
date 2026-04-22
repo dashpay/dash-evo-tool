@@ -553,22 +553,19 @@ pub async fn shield_from_asset_lock(
     loop {
         tokio::select! {
             _ = &mut timeout => {
-                match app_context.transactions_waiting_for_finality.try_lock() {
+                // Block briefly to guarantee cleanup; the critical section is a
+                // small BTreeMap remove. Mirrors the broadcast-failure branch
+                // above so a timeout cannot leak a finality tracking entry
+                // that the finality listener would otherwise keep servicing.
+                match app_context.transactions_waiting_for_finality.lock() {
                     Ok(mut proofs) => {
                         proofs.remove(&tx_id);
                     }
-                    Err(std::sync::TryLockError::WouldBlock) => {
-                        tracing::debug!(
-                            %tx_id,
-                            "transactions_waiting_for_finality lock is contended on timeout; \
-                             finality tracking entry not cleared"
-                        );
-                    }
-                    Err(std::sync::TryLockError::Poisoned(poisoned)) => {
+                    Err(poisoned) => {
                         tracing::warn!(
                             %tx_id,
                             "transactions_waiting_for_finality lock is poisoned on timeout; \
-                             recovering through poisoned guard so the entry is cleared"
+                             recovering through poisoned guard so the finality tracking entry is cleared"
                         );
                         let mut proofs = poisoned.into_inner();
                         proofs.remove(&tx_id);

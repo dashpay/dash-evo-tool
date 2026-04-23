@@ -553,7 +553,25 @@ impl AppState {
                     Screen::DashPayProfileSearchScreen(dashpay_profile_search_screen),
                 ),
             ]
-            .into(),
+            .into_iter()
+            .chain({
+                // Register the new unified Identities hub screen. Feature-gated:
+                // when `identity-hub` is disabled, nothing is inserted and the
+                // nav entry is absent, so the hub screen is never reachable.
+                #[cfg(feature = "identity-hub")]
+                {
+                    let hub = crate::ui::identity::IdentityHubScreen::new(&active_context);
+                    vec![(
+                        RootScreenType::RootScreenIdentityHub,
+                        Screen::IdentityHubScreen(hub),
+                    )]
+                }
+                #[cfg(not(feature = "identity-hub"))]
+                {
+                    Vec::<(RootScreenType, Screen)>::new()
+                }
+            })
+            .collect(),
             selected_main_screen,
             screen_stack: vec![],
             chosen_network,

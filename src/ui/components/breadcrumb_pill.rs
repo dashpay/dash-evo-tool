@@ -50,7 +50,10 @@ pub struct BreadcrumbPillResponse {
 }
 
 impl BreadcrumbPillResponse {
-    fn new(label: String, mode: BreadcrumbPillMode, clicked: bool) -> Self {
+    /// Construct a response directly. Exposed at crate visibility for
+    /// compositional callers (e.g. the identity pill wrapper) and for
+    /// integration tests that fabricate responses without running egui.
+    pub(crate) fn new(label: String, mode: BreadcrumbPillMode, clicked: bool) -> Self {
         let changed_value = if clicked { Some(label.clone()) } else { None };
         Self {
             clicked,
@@ -230,26 +233,25 @@ impl BreadcrumbPill {
             Sense::hover()
         };
 
-        // Use `ui.scope` so the inner label's allocated rect matches the frame,
-        // and interact with the whole allocated rect (so clicks outside the
-        // label bounds but inside the frame still register).
-        let frame_response = frame
-            .show(ui, |ui| {
-                // A plain label inside the frame. We deliberately use
-                // `selectable_label(false, ...)` to avoid egui's text selection
-                // visuals for what is effectively a button.
-                ui.add(egui::Label::new(rich).sense(sense))
-            })
-            .response;
+        // In egui, `Frame::show(...).response` is the outer allocation, which
+        // only senses `Sense::hover` by default — child-widget clicks are NOT
+        // inherited by the outer Response. We must read `.inner` (the value
+        // returned from the closure) to pick up the Label's click Sense.
+        // Using the frame's `.response` instead silently breaks click
+        // detection on interactive pills. See CodeRabbit review on PR #842 for
+        // the full analysis.
+        let inner_response = frame
+            .show(ui, |ui| ui.add(egui::Label::new(rich).sense(sense)))
+            .inner;
 
         let response = if !self.tooltip.is_empty() {
             if matches!(self.mode, BreadcrumbPillMode::Interactive) {
-                frame_response.clickable_tooltip(&self.tooltip)
+                inner_response.clickable_tooltip(&self.tooltip)
             } else {
-                frame_response.info_tooltip(&self.tooltip)
+                inner_response.info_tooltip(&self.tooltip)
             }
         } else {
-            frame_response
+            inner_response
         };
         response.widget_info(|| {
             WidgetInfo::labeled(

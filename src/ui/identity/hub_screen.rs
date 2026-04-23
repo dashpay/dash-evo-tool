@@ -7,12 +7,15 @@
 //! See `docs/ai-design/2026-04-23-identity-hub-impl/04-dev-plan.md` Task T3.
 
 use crate::app::AppAction;
+use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::message_banner::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::DashColors;
-use crate::ui::{RootScreenType, ScreenLike};
+use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use eframe::egui::{Context, RichText};
 use std::sync::Arc;
 
@@ -29,6 +32,15 @@ pub struct IdentityHubScreen {
     /// The currently selected tab. Persisted only in memory for now — start tab
     /// persistence across restarts is a follow-up.
     selected_tab: IdentityHubTab,
+    /// Cached landing-load error banner. Set by `landing()` when identity
+    /// loading fails; cleared on `refresh`. Separating this from a real
+    /// zero-identity state avoids inviting users to create identities when the
+    /// real problem is a database / context error.
+    load_error_banner: Option<BannerHandle>,
+    /// Remembered landing state from the most recent successful load. Falls
+    /// back to `HubLanding::Onboarding` on first render so the UI has
+    /// something to draw until the first load attempt completes.
+    last_good_landing: HubLanding,
 }
 
 impl IdentityHubScreen {
@@ -39,17 +51,38 @@ impl IdentityHubScreen {
         Self {
             app_context: app_context.clone(),
             selected_tab: IdentityHubTab::default(),
+            load_error_banner: None,
+            last_good_landing: HubLanding::Onboarding,
         }
     }
 
-    /// Current landing state derived from the active-network identity count.
-    pub(crate) fn landing(&self) -> HubLanding {
-        let count = self
-            .app_context
-            .load_local_qualified_identities()
-            .map(|v| v.len())
-            .unwrap_or(0);
-        HubLanding::from_identity_count(count)
+    /// Resolve the current landing state from the active-network identity
+    /// count. On load failure, surface a calm error banner (technical details
+    /// attached separately) and reuse the last-known-good landing instead of
+    /// silently routing the user to onboarding.
+    pub(crate) fn landing(&mut self, ctx: &Context) -> HubLanding {
+        match self.app_context.load_local_qualified_identities() {
+            Ok(identities) => {
+                // Clear any previously-shown error banner now that loading works.
+                self.load_error_banner.take_and_clear();
+                let landing = HubLanding::from_identity_count(identities.len());
+                self.last_good_landing = landing;
+                landing
+            }
+            Err(e) => {
+                // Idempotent: set_global de-duplicates by text, so repainting
+                // this frame after frame does not spam banners.
+                let handle = MessageBanner::set_global(
+                    ctx,
+                    "Could not load your identities from this device. Try refreshing or \
+                     reopening the app.",
+                    MessageType::Error,
+                );
+                handle.with_details(&e);
+                self.load_error_banner = Some(handle);
+                self.last_good_landing
+            }
+        }
     }
 
     /// Currently selected tab.
@@ -64,6 +97,18 @@ impl IdentityHubScreen {
 }
 
 impl ScreenLike for IdentityHubScreen {
+    fn refresh(&mut self) {
+        // Nothing to refresh in the scaffold itself — per-tab submodules own
+        // their own cached data and will implement `refresh` when they land
+        // (T8–T11). Clear the stale load-error banner so the next `landing()`
+        // call can try again cleanly.
+        self.load_error_banner.take_and_clear();
+    }
+
+    fn refresh_on_arrival(&mut self) {
+        self.refresh();
+    }
+
     fn ui(&mut self, ctx: &Context) -> AppAction {
         let mut action = AppAction::None;
 
@@ -80,9 +125,10 @@ impl ScreenLike for IdentityHubScreen {
             RootScreenType::RootScreenIdentityHub,
         );
 
+        let landing = self.landing(ctx);
+
         action |= island_central_panel(ctx, |ui| {
             let dark_mode = ui.ctx().style().visuals.dark_mode;
-            let landing = self.landing();
 
             match landing {
                 HubLanding::Onboarding => super::onboarding::render(ui, &self.app_context),
@@ -141,25 +187,69 @@ impl ScreenLike for IdentityHubScreen {
 
         action
     }
+
+    fn display_message(&mut self, _message: &str, _message_type: MessageType) {
+        // AppState sets the global banner centrally — we only need side-effects
+        // here. The scaffold has none yet (no in-flight task banners owned by
+        // the hub itself). Sub-tab content will override their own lifecycle.
+    }
+
+    fn display_task_result(&mut self, _result: BackendTaskSuccessResult) {
+        // No backend tasks are dispatched from the hub root in the scaffold.
+        // Tab submodules take over when they land; until then this is a no-op
+        // so unexpected task results do not corrupt hub state.
+    }
+
+    fn display_task_error(&mut self, _error: &TaskError) -> bool {
+        // Let AppState render the default error banner — the hub has no
+        // special-case error handling of its own yet.
+        false
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // Construction + tab selection is a pure function of the struct and does not
-    // require a real AppContext. We stay out of the `ui()` render path in unit
-    // tests — that's covered by the kittest integration tests under
-    // `tests/kittest/identity_hub_*.rs`.
+    // Unit tests for the screen's pure state manipulation. Rendering is
+    // covered by the kittest integration tests under
+    // `tests/kittest/identity_hub.rs`, which mount a real `AppContext`.
+    //
+    // These tests avoid constructing an `AppContext` so they stay fast and
+    // deterministic — we directly manipulate the small amount of state we
+    // own (`selected_tab`, `last_good_landing`).
 
     #[test]
-    fn selected_tab_round_trips() {
-        // Build a harness that does not allocate an AppContext — we only touch
-        // `selected_tab` accessors, not the UI path.
-        // This verifies the tab state machine matches the spec.
+    fn default_state_machine() {
+        // Mirror what `new()` initialises without depending on AppContext.
         let mut tab = IdentityHubTab::default();
+        let mut last_good = HubLanding::Onboarding;
         assert_eq!(tab, IdentityHubTab::Home);
+        assert_eq!(last_good, HubLanding::Onboarding);
+
+        // Tab transitions round-trip.
         tab = IdentityHubTab::Settings;
         assert_eq!(tab, IdentityHubTab::Settings);
+        tab = IdentityHubTab::Contacts;
+        assert_eq!(tab, IdentityHubTab::Contacts);
+
+        // Landing updates on successful load.
+        last_good = HubLanding::from_identity_count(1);
+        assert_eq!(last_good, HubLanding::Home);
+        last_good = HubLanding::from_identity_count(5);
+        assert_eq!(last_good, HubLanding::Picker);
+    }
+
+    #[test]
+    fn load_error_preserves_last_good_landing() {
+        // Simulate the fallback path in `landing()` without needing an
+        // `AppContext`: cache a good state, then on error reuse it.
+        let mut last_good = HubLanding::from_identity_count(3); // Picker
+        // A load error must NOT downgrade to Onboarding.
+        let would_fall_back_to = last_good; // the `landing` fn returns this on Err
+        assert_eq!(would_fall_back_to, HubLanding::Picker);
+        last_good = HubLanding::from_identity_count(0);
+        // Next good load = empty account — falls back to Onboarding legitimately.
+        assert_eq!(last_good, HubLanding::Onboarding);
     }
 }

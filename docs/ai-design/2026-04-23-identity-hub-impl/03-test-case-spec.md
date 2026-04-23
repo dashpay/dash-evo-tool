@@ -153,7 +153,7 @@ for handle line; tabular numerals for balance.
 ### IT-ACTIVITY-01 — Activity tab shell renders
 
 **File**: `tests/kittest/identity_hub_activity.rs`.
-**Preconditions**: one identity, `identity_hub_activity_feed` flag off.
+**Preconditions**: one identity, Cargo feature `identity-hub-activity-feed` off.
 **Steps**: mount hub, switch to Activity tab.
 **Expected**:
 - Filter chips present: All, Payments, Funding.

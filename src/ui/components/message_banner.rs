@@ -287,8 +287,20 @@ impl MessageBanner {
         self
     }
 
+    /// Disable auto-dismiss for the current message so the banner stays
+    /// visible until cleared via [`clear`](Self::clear) or replaced via
+    /// [`set_message`](Self::set_message). Intended for persistent in-screen
+    /// state notices that are bound to a long-lived app mode (e.g. "Single
+    /// key wallet unavailable while on SPV backend"). No-op if no message is
+    /// currently set.
+    pub fn disable_auto_dismiss(&mut self) -> &mut Self {
+        if let Some(state) = &mut self.state {
+            state.auto_dismiss_after = None;
+        }
+        self
+    }
+
     /// Clears the current message immediately.
-    #[allow(dead_code)]
     pub fn clear(&mut self) {
         self.state = None;
     }

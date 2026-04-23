@@ -1,4 +1,5 @@
 use crate::context::AppContext;
+use crate::spv::CoreBackendMode;
 use crate::ui::RootScreenType;
 use crate::ui::theme::{DashColors, Shadow, Shape, Spacing, Typography};
 use crate::{app::AppAction, ui};
@@ -16,6 +17,15 @@ pub enum ToolsSubscreen {
     GroveSTARK,
     MasternodeListDiff,
     DPNS,
+}
+
+impl ToolsSubscreen {
+    /// Returns `true` when the tool only works with an RPC connection to a
+    /// local Dash Core node and must be disabled while the app is running on
+    /// its built-in SPV backend.
+    fn requires_core_rpc(&self) -> bool {
+        matches!(self, Self::MasternodeListDiff)
+    }
 }
 
 impl ToolsSubscreen {
@@ -38,6 +48,7 @@ impl ToolsSubscreen {
 pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext) -> AppAction {
     let mut action = AppAction::None;
     let dark_mode = ctx.style().visuals.dark_mode;
+    let is_rpc_mode = app_context.core_backend_mode() == CoreBackendMode::Rpc;
 
     let subscreens = vec![
         ToolsSubscreen::PlatformInfo,
@@ -105,6 +116,8 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
 
                         for subscreen in subscreens {
                             let is_active = active_screen == subscreen;
+                            let requires_core_rpc = subscreen.requires_core_rpc();
+                            let is_enabled = is_rpc_mode || !requires_core_rpc;
 
                             let button = if is_active {
                                 egui::Button::new(
@@ -128,8 +141,16 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
                                 .min_size(egui::Vec2::new(150.0, 28.0))
                             };
 
-                            // Show the subscreen name as a clickable option
-                            if ui.add(button).clicked() {
+                            // Show the subscreen name as a clickable option. Disable
+                            // tools that require a Core RPC connection while running
+                            // on the built-in SPV backend.
+                            let mut response = ui.add_enabled(is_enabled, button);
+                            if !is_enabled {
+                                response = response.on_disabled_hover_text(
+                                    "This tool requires a local Dash Core node. Open Settings, switch to Expert mode, and select Local Dash Core node to enable it.",
+                                );
+                            }
+                            if response.clicked() {
                                 // Handle navigation based on which subscreen is selected
                                 match subscreen {
                                     ToolsSubscreen::PlatformInfo => {
@@ -188,4 +209,35 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
         });
 
     action
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn masternode_list_diff_requires_core_rpc() {
+        assert!(ToolsSubscreen::MasternodeListDiff.requires_core_rpc());
+    }
+
+    #[test]
+    fn spv_safe_tools_do_not_require_core_rpc() {
+        for tool in [
+            ToolsSubscreen::PlatformInfo,
+            ToolsSubscreen::AddressBalance,
+            ToolsSubscreen::ProofLog,
+            ToolsSubscreen::TransactionViewer,
+            ToolsSubscreen::DocumentViewer,
+            ToolsSubscreen::ProofViewer,
+            ToolsSubscreen::ContractViewer,
+            ToolsSubscreen::GroveSTARK,
+            ToolsSubscreen::DPNS,
+        ] {
+            assert!(
+                !tool.requires_core_rpc(),
+                "Tool {} should be available in SPV mode",
+                tool.display_name()
+            );
+        }
+    }
 }

@@ -2,6 +2,7 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
+use crate::spv::CoreBackendMode;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayload;
@@ -14,10 +15,29 @@ use std::sync::{Arc, RwLock};
 impl AppContext {
     /// Search for unused asset locks by scanning the Core wallet for asset lock transactions
     /// that belong to this wallet but aren't tracked in the database.
+    ///
+    /// This operation requires Dash Core because it queries the Core wallet's
+    /// transaction and UTXO indices via `list_unspent` / `get_raw_transaction`.
+    /// In SPV mode, asset lock finality events are delivered directly to the
+    /// wallet as InstantLocks / ChainLocks arrive, so no explicit recovery
+    /// pass is needed — we return a zero-count success result rather than
+    /// failing on a missing Core RPC connection.
     pub fn recover_asset_locks(
         &self,
         wallet: Arc<RwLock<Wallet>>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
+        if self.core_backend_mode() == CoreBackendMode::Spv {
+            tracing::info!(
+                "recover_asset_locks: SPV mode — asset locks are reconciled \
+                 automatically via InstantLock / ChainLock events. Nothing to \
+                 do here."
+            );
+            return Ok(BackendTaskSuccessResult::RecoveredAssetLocks {
+                recovered_count: 0,
+                total_amount: 0,
+            });
+        }
+
         let (known_addresses, seed_hash, already_tracked_txids, core_wallet_name) = {
             let wallet_guard = wallet.read()?;
             let addresses: Vec<Address> = wallet_guard.known_addresses.keys().cloned().collect();

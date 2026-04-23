@@ -13,11 +13,11 @@
 //!   scope for T10 (additive-only; no new backend task).
 //!
 //! Retry plumbing for failed rows is wired through the reusable
-//! [`ActivityRow`](crate::ui::components::activity_row::ActivityRow)
+//! [`ActivityRow`](crate::ui::identity::activity_row::ActivityRow)
 //! component — the caller decides what a retry means. Because T10 renders no
 //! live rows, there is nothing to retry today; when the aggregator lands it
 //! will feed real rows into the same component and surface
-//! [`ActivityRowAction::Retry`](crate::ui::components::activity_row::ActivityRowAction::Retry)
+//! [`ActivityRowAction::Retry`](crate::ui::identity::activity_row::ActivityRowAction::Retry)
 //! through the unified [`AppAction`] channel.
 //!
 //! See `docs/ai-design/2026-04-23-identity-hub-impl/04-dev-plan.md` T10 and
@@ -25,8 +25,9 @@
 
 use crate::app::AppAction;
 use crate::context::AppContext;
-use crate::ui::theme::DashColors;
-use eframe::egui::{RichText, Ui};
+use crate::ui::RootScreenType;
+use crate::ui::theme::{DashColors, ResponseExt};
+use eframe::egui::{self, RichText, Sense, Ui};
 use std::sync::Arc;
 
 /// Filter categories for the unified activity timeline.
@@ -69,6 +70,7 @@ impl ActivityFilter {
 /// planned when the aggregator lands.
 pub fn render(ui: &mut Ui, _app_context: &Arc<AppContext>) -> AppAction {
     let dark_mode = ui.ctx().style().visuals.dark_mode;
+    let mut action = AppAction::None;
 
     ui.vertical_centered(|ui| {
         ui.add_space(12.0);
@@ -107,10 +109,7 @@ pub fn render(ui: &mut Ui, _app_context: &Arc<AppContext>) -> AppAction {
                     .color(DashColors::text_primary(dark_mode)),
             );
             ui.add_space(8.0);
-            ui.label(
-                RichText::new("View DashPay Payments for now.")
-                    .color(DashColors::text_secondary(dark_mode)),
-            );
+            action |= legacy_payments_link(ui);
         }
 
         #[cfg(not(feature = "identity-hub-activity-feed"))]
@@ -125,13 +124,72 @@ pub fn render(ui: &mut Ui, _app_context: &Arc<AppContext>) -> AppAction {
             );
             ui.add_space(8.0);
             ui.label(
-                RichText::new("For now, view activity on the existing DashPay Payments screen.")
+                RichText::new("For now, view activity on the existing DashPay Payments screen:")
                     .color(DashColors::text_secondary(dark_mode)),
             );
+            ui.add_space(4.0);
+            action |= legacy_payments_link(ui);
         }
     });
 
+    action
+}
+
+/// Render an underlined, Dash-blue link to the legacy DashPay Payments screen.
+/// Emits `AppAction::SetMainScreen(RootScreenDashPayPayments)` when clicked so
+/// the user can see their movements today while the unified aggregator is
+/// built. No new backend task and no new screen are introduced.
+fn legacy_payments_link(ui: &mut Ui) -> AppAction {
+    let resp = ui
+        .add(
+            egui::Label::new(
+                RichText::new("Open DashPay Payments")
+                    .underline()
+                    .color(DashColors::DASH_BLUE),
+            )
+            .sense(Sense::click()),
+        )
+        .clickable_tooltip("Open the legacy DashPay Payments screen in a new view.");
+    if resp.clicked() {
+        return resolve_activity_button(ActivityButton::LegacyPaymentsLink);
+    }
     AppAction::None
+}
+
+/// Every clickable affordance on the Activity tab. Today there is only one —
+/// the legacy-payments link — but keeping an enum here mirrors the Home /
+/// Contacts dispatcher pattern so reviewers see a single shape. When the
+/// aggregator lands and activity rows gain retry affordances, the rows'
+/// `ActivityRowAction::Retry` will plug into this enum as
+/// `ActivityButton::Retry(ActivityRowId)` without changing the UI shell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActivityButton {
+    /// `Open DashPay Payments` link, rendered in both the empty state
+    /// (feature off) and the feed placeholder (feature on).
+    LegacyPaymentsLink,
+}
+
+/// What an [`ActivityButton`] click produces, as a pure enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActivityButtonKind {
+    /// Swap the root screen to `RootScreenDashPayPayments`.
+    SetRootScreen(RootScreenType),
+}
+
+/// Pure dispatcher — unit-testable, no `AppContext` needed.
+pub fn activity_button_kind(button: ActivityButton) -> ActivityButtonKind {
+    match button {
+        ActivityButton::LegacyPaymentsLink => {
+            ActivityButtonKind::SetRootScreen(RootScreenType::RootScreenDashPayPayments)
+        }
+    }
+}
+
+/// Materialise an [`ActivityButton`] into a concrete [`AppAction`].
+fn resolve_activity_button(button: ActivityButton) -> AppAction {
+    match activity_button_kind(button) {
+        ActivityButtonKind::SetRootScreen(root) => AppAction::SetMainScreen(root),
+    }
 }
 
 /// Bitset-style filter state for the chip row.
@@ -210,5 +268,28 @@ mod tests {
         assert_eq!(ActivityFilter::Payments.label(), "Payments");
         assert_eq!(ActivityFilter::Funding.label(), "Funding");
         assert_eq!(ActivityFilter::Platform.label(), "Platform");
+    }
+
+    // ---------------------------------------------------------------
+    // Dead-button regression test.
+    // ---------------------------------------------------------------
+
+    const ALL_ACTIVITY_BUTTONS: &[ActivityButton] = &[ActivityButton::LegacyPaymentsLink];
+
+    #[test]
+    fn activity_all_buttons_list_is_exhaustive() {
+        for button in ALL_ACTIVITY_BUTTONS {
+            let _: () = match *button {
+                ActivityButton::LegacyPaymentsLink => (),
+            };
+        }
+    }
+
+    #[test]
+    fn legacy_payments_link_routes_to_dashpay_payments_screen() {
+        assert_eq!(
+            activity_button_kind(ActivityButton::LegacyPaymentsLink),
+            ActivityButtonKind::SetRootScreen(RootScreenType::RootScreenDashPayPayments),
+        );
     }
 }

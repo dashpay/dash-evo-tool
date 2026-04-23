@@ -6,11 +6,11 @@
 //!
 //! See `docs/ai-design/2026-04-23-identity-hub-impl/04-dev-plan.md` Task T3.
 
+use super::identity_hub_tab_bar::IdentityHubTabBar;
 use crate::app::AppAction;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
-use crate::ui::components::identity_hub_tab_bar::IdentityHubTabBar;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::message_banner::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::components::styled::island_central_panel;
@@ -144,8 +144,11 @@ impl ScreenLike for IdentityHubScreen {
             match landing {
                 HubLanding::Onboarding => super::onboarding::render(ui, &self.app_context),
                 HubLanding::Home | HubLanding::Picker => {
-                    // Scaffold stub — real tab content arrives in T8–T11.
-                    ui.vertical_centered(|ui| {
+                    // `ui.vertical_centered(...).inner` carries the tab's
+                    // `AppAction` back out — previously this closure returned
+                    // `AppAction::None` unconditionally, swallowing every
+                    // `AddScreen` / `BackendTask` produced by the tab content.
+                    let inner = ui.vertical_centered(|ui| {
                         ui.add_space(24.0);
                         ui.label(
                             RichText::new("Identities hub")
@@ -205,7 +208,7 @@ impl ScreenLike for IdentityHubScreen {
                             }
                         }
                     });
-                    AppAction::None
+                    inner.inner
                 }
             }
         });

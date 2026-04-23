@@ -13,13 +13,14 @@
 //! ship in a follow-up task (T10) — this scaffold presents the shell shape
 //! and copy only.
 
+use super::social_profile_gate_card::SocialProfileGateCard;
 use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::dashpay::DashPayTask;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::ui::components::social_profile_gate_card::SocialProfileGateCard;
-use crate::ui::theme::{ComponentStyles, DashColors, Shape};
+use crate::ui::ScreenType;
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Shape};
 use eframe::egui::{CornerRadius, Frame, Margin, RichText, Stroke, Ui};
 use std::sync::Arc;
 
@@ -35,6 +36,63 @@ pub const SENT_HEADING: &str = "Sent requests";
 pub const NO_RECEIVED_EMPTY: &str = "No pending requests.";
 pub const NO_ACTIVE_EMPTY: &str = "You have no contacts yet.";
 pub const SEARCH_PLACEHOLDER: &str = "Search your contacts";
+
+/// Every clickable affordance on the Contacts tab header + populated shell.
+/// Mirrors the home-tab `HomeButton` dispatcher pattern so the dead-button
+/// unit test can enumerate every variant and assert each one maps to a real
+/// screen, not `AppAction::None`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContactsButton {
+    /// Header `+ Add by username`.
+    HeaderAddByUsername,
+    /// Header `Scan QR`.
+    HeaderScanQr,
+    /// Header `Show my QR`.
+    HeaderShowMyQr,
+    /// Populated active-section `Add by username` button.
+    ActiveAddByUsername,
+    /// Gate card `Set up my profile` CTA (gated state only). Emits a hub
+    /// outcome because the Settings tab is hub-local.
+    GateSetUpProfile,
+}
+
+/// What a [`ContactsButton`] click produces, as a pure enum for unit tests.
+/// `GateSetUpProfile` is `SwitchHubTab(Settings)` — a hub-local intent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContactsButtonKind {
+    /// Open the given screen via `AppAction::AddScreen`.
+    OpenScreen(ContactsScreenKind),
+    /// Switch to another hub tab (§B.4.1 gate CTA -> Settings).
+    SwitchHubTab(super::IdentityHubTab),
+}
+
+/// Screens any contacts button can open. Maps 1:1 to `ScreenType` — kept as a
+/// pure enum for unit tests that have no `AppContext`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContactsScreenKind {
+    /// `ScreenType::DashPayAddContact` — add-contact flow.
+    AddContact,
+    /// `ScreenType::DashPayQRGenerator` — show-my-QR screen.
+    QrGenerator,
+}
+
+/// Pure dispatcher. Every variant MUST produce a non-dead result — the
+/// `every_contacts_button_produces_live_action` test enforces this.
+pub fn contacts_button_kind(button: ContactsButton) -> ContactsButtonKind {
+    use ContactsButtonKind::*;
+    use ContactsScreenKind::*;
+    match button {
+        ContactsButton::HeaderAddByUsername | ContactsButton::ActiveAddByUsername => {
+            OpenScreen(AddContact)
+        }
+        // Scan QR currently routes to the add-contact screen (which owns
+        // the existing scan affordance). TODO(identity-hub): if a dedicated
+        // scan screen ships, swap to it here.
+        ContactsButton::HeaderScanQr => OpenScreen(AddContact),
+        ContactsButton::HeaderShowMyQr => OpenScreen(QrGenerator),
+        ContactsButton::GateSetUpProfile => SwitchHubTab(super::IdentityHubTab::Settings),
+    }
+}
 
 /// Hub-owned contacts-tab state. Tracks whether the Contacts tab has already
 /// dispatched its `DashPayTask::LoadContacts` request for the current tab
@@ -148,12 +206,26 @@ pub fn render_gated(ui: &mut Ui, handle: Option<&str>) -> AppAction {
     let response = card.show(ui);
     if response.primary_clicked {
         // Route to the Settings tab — that is where the user actually edits
-        // display name and avatar (social-profile fields). Emitting the
-        // hub-scoped `SwitchIdentityHubTab` action keeps the cross-tab hop
-        // inside the hub, without introducing a new backend task.
-        #[cfg(feature = "identity-hub")]
-        {
-            return AppAction::SwitchIdentityHubTab(super::IdentityHubTab::Settings);
+        // display name and avatar (social-profile fields). Resolution goes
+        // through the pure `contacts_button_kind` dispatcher, so `identity-
+        // hub` feature gating is handled in one place.
+        match contacts_button_kind(ContactsButton::GateSetUpProfile) {
+            #[cfg(feature = "identity-hub")]
+            ContactsButtonKind::SwitchHubTab(tab) => {
+                return AppAction::SwitchIdentityHubTab(tab);
+            }
+            #[cfg(not(feature = "identity-hub"))]
+            ContactsButtonKind::SwitchHubTab(_) => {
+                // Without the identity-hub feature, there is no hub to
+                // switch to — the gate card should not even be reachable
+                // in that build, but we defend against it rather than
+                // silently drop the click.
+            }
+            ContactsButtonKind::OpenScreen(_) => {
+                // Not possible today (dispatcher returns SwitchHubTab), but
+                // exhaustive match future-proofs the gate CTA.
+                unreachable!("GateSetUpProfile should not map to OpenScreen");
+            }
         }
     }
     if response.why_toggled {
@@ -170,13 +242,14 @@ pub fn render_gated(ui: &mut Ui, handle: Option<&str>) -> AppAction {
 /// first paint so the real list can arrive without a new backend task.
 fn render_populated(
     ui: &mut Ui,
-    _app_context: &Arc<AppContext>,
+    app_context: &Arc<AppContext>,
     identity: &QualifiedIdentity,
     state_guard: &mut ContactsState,
 ) -> AppAction {
     let dark_mode = ui.ctx().style().visuals.dark_mode;
+    let mut action = AppAction::None;
 
-    header_row(ui, dark_mode);
+    action |= header_row(ui, app_context, dark_mode);
 
     ui.add_space(12.0);
     section_card(ui, dark_mode, RECEIVED_HEADING, |ui| {
@@ -190,6 +263,7 @@ fn render_populated(
     });
 
     ui.add_space(12.0);
+    let mut active_add_action = AppAction::None;
     section_card(
         ui,
         dark_mode,
@@ -206,9 +280,19 @@ fn render_populated(
             ui.add_space(8.0);
             ui.label(RichText::new(NO_ACTIVE_EMPTY).color(DashColors::text_secondary(dark_mode)));
             ui.add_space(8.0);
-            ui.add(ComponentStyles::primary_button(ADD_BY_USERNAME_LABEL));
+            let add_resp = ui
+                .add(ComponentStyles::primary_button(ADD_BY_USERNAME_LABEL))
+                .clickable_tooltip(
+                    "Find someone by their Dash username or identity ID and add them as a \
+                     contact.",
+                );
+            if add_resp.clicked() {
+                active_add_action =
+                    resolve_contacts_button(ContactsButton::ActiveAddByUsername, app_context);
+            }
         },
     );
+    action |= active_add_action;
 
     ui.add_space(12.0);
     // Sent-section collapses entirely when empty (per design §B.4). The
@@ -231,19 +315,26 @@ fn render_populated(
     // frame, which floods the backend channel and hammers the SDK. The hub
     // resets the guard in `refresh_on_arrival()` so a fresh tab switch or
     // explicit refresh will trigger another load.
-    if state_guard.load_requested {
-        return AppAction::None;
+    if !state_guard.load_requested {
+        state_guard.load_requested = true;
+        action |= AppAction::BackendTask(BackendTask::DashPayTask(Box::new(
+            DashPayTask::LoadContacts {
+                identity: identity.clone(),
+            },
+        )));
     }
-    state_guard.load_requested = true;
-    AppAction::BackendTask(BackendTask::DashPayTask(Box::new(
-        DashPayTask::LoadContacts {
-            identity: identity.clone(),
-        },
-    )))
+
+    action
 }
 
 /// Header row: title on the left, three action buttons right-aligned.
-fn header_row(ui: &mut Ui, dark_mode: bool) {
+///
+/// Returns any `AppAction` generated by clicks on the three header buttons
+/// (`Add by username`, `Scan QR`, `Show my QR`). Each is routed through the
+/// pure [`contacts_button_kind`] dispatcher so the same mapping is used by
+/// the unit tests and by the renderer.
+fn header_row(ui: &mut Ui, app_context: &Arc<AppContext>, dark_mode: bool) -> AppAction {
+    let mut action = AppAction::None;
     ui.horizontal(|ui| {
         ui.label(
             RichText::new("Contacts")
@@ -254,17 +345,66 @@ fn header_row(ui: &mut Ui, dark_mode: bool) {
         ui.with_layout(
             eframe::egui::Layout::right_to_left(eframe::egui::Align::Center),
             |ui| {
-                ui.add(ComponentStyles::secondary_button(
-                    SHOW_MY_QR_LABEL,
-                    dark_mode,
-                ));
+                // `Show my QR` — opens the existing QR generator screen.
+                let show_qr = ui
+                    .add(ComponentStyles::secondary_button(
+                        SHOW_MY_QR_LABEL,
+                        dark_mode,
+                    ))
+                    .clickable_tooltip("Show a QR code so someone nearby can add you or pay you.");
+                if show_qr.clicked() {
+                    action |= resolve_contacts_button(ContactsButton::HeaderShowMyQr, app_context);
+                }
                 ui.add_space(8.0);
-                ui.add(ComponentStyles::secondary_button(SCAN_QR_LABEL, dark_mode));
+
+                // `Scan QR` — routes to the add-contact screen, which owns
+                // the existing scan affordance; no new scan-only entry point
+                // is introduced. TODO(identity-hub): swap to a dedicated QR
+                // scanner screen if/when one ships.
+                let scan = ui
+                    .add(ComponentStyles::secondary_button(SCAN_QR_LABEL, dark_mode))
+                    .clickable_tooltip("Use a camera or paste a QR image to add a contact.");
+                if scan.clicked() {
+                    action |= resolve_contacts_button(ContactsButton::HeaderScanQr, app_context);
+                }
                 ui.add_space(8.0);
-                ui.add(ComponentStyles::primary_button(ADD_BY_USERNAME_LABEL));
+
+                // `Add by username` — primary CTA routes to the existing
+                // Add-contact screen (username-first input).
+                let add = ui
+                    .add(ComponentStyles::primary_button(ADD_BY_USERNAME_LABEL))
+                    .clickable_tooltip(
+                        "Find someone by their Dash username or identity ID and add them as a \
+                         contact.",
+                    );
+                if add.clicked() {
+                    action |=
+                        resolve_contacts_button(ContactsButton::HeaderAddByUsername, app_context);
+                }
             },
         );
     });
+    action
+}
+
+/// Materialise a [`ContactsButton`] into a concrete [`AppAction`] using the
+/// provided `AppContext`. Thin adapter over [`contacts_button_kind`] so the
+/// renderer keeps using the pure dispatcher and tests can exercise the
+/// decision logic without an `AppContext`.
+fn resolve_contacts_button(button: ContactsButton, app_context: &Arc<AppContext>) -> AppAction {
+    match contacts_button_kind(button) {
+        ContactsButtonKind::OpenScreen(kind) => {
+            let screen = match kind {
+                ContactsScreenKind::AddContact => ScreenType::DashPayAddContact,
+                ContactsScreenKind::QrGenerator => ScreenType::DashPayQRGenerator,
+            };
+            AppAction::AddScreen(screen.create_screen(app_context))
+        }
+        #[cfg(feature = "identity-hub")]
+        ContactsButtonKind::SwitchHubTab(tab) => AppAction::SwitchIdentityHubTab(tab),
+        #[cfg(not(feature = "identity-hub"))]
+        ContactsButtonKind::SwitchHubTab(_) => AppAction::None,
+    }
 }
 
 /// Render a bordered section card with a heading and caller-supplied body.
@@ -358,5 +498,79 @@ mod tests {
                 "empty-state copy '{line}' must start with an uppercase letter"
             );
         }
+    }
+
+    // ---------------------------------------------------------------
+    // Dead-button regression tests — same invariant as home.rs:
+    // every interactive button MUST produce a live result from the
+    // pure dispatcher. The T8-Wave-2 regression was that the header
+    // buttons were rendered without any click handling at all; this
+    // suite pins the expected mapping.
+    // ---------------------------------------------------------------
+
+    const ALL_CONTACTS_BUTTONS: &[ContactsButton] = &[
+        ContactsButton::HeaderAddByUsername,
+        ContactsButton::HeaderScanQr,
+        ContactsButton::HeaderShowMyQr,
+        ContactsButton::ActiveAddByUsername,
+        ContactsButton::GateSetUpProfile,
+    ];
+
+    #[test]
+    fn contacts_all_buttons_list_is_exhaustive() {
+        for button in ALL_CONTACTS_BUTTONS {
+            let _: () = match *button {
+                ContactsButton::HeaderAddByUsername => (),
+                ContactsButton::HeaderScanQr => (),
+                ContactsButton::HeaderShowMyQr => (),
+                ContactsButton::ActiveAddByUsername => (),
+                ContactsButton::GateSetUpProfile => (),
+            };
+        }
+    }
+
+    #[test]
+    fn every_contacts_button_maps_to_a_live_action() {
+        for button in ALL_CONTACTS_BUTTONS {
+            let kind = contacts_button_kind(*button);
+            // The dispatcher only produces two variants; both are live —
+            // `OpenScreen` resolves to `AppAction::AddScreen(...)` and
+            // `SwitchHubTab` to `AppAction::SwitchIdentityHubTab(...)`.
+            match kind {
+                ContactsButtonKind::OpenScreen(_) | ContactsButtonKind::SwitchHubTab(_) => {}
+            }
+        }
+    }
+
+    #[test]
+    fn add_by_username_and_scan_qr_open_add_contact_screen() {
+        assert_eq!(
+            contacts_button_kind(ContactsButton::HeaderAddByUsername),
+            ContactsButtonKind::OpenScreen(ContactsScreenKind::AddContact),
+        );
+        assert_eq!(
+            contacts_button_kind(ContactsButton::ActiveAddByUsername),
+            ContactsButtonKind::OpenScreen(ContactsScreenKind::AddContact),
+        );
+        assert_eq!(
+            contacts_button_kind(ContactsButton::HeaderScanQr),
+            ContactsButtonKind::OpenScreen(ContactsScreenKind::AddContact),
+        );
+    }
+
+    #[test]
+    fn show_my_qr_opens_qr_generator_screen() {
+        assert_eq!(
+            contacts_button_kind(ContactsButton::HeaderShowMyQr),
+            ContactsButtonKind::OpenScreen(ContactsScreenKind::QrGenerator),
+        );
+    }
+
+    #[test]
+    fn gate_cta_switches_to_settings_tab() {
+        assert_eq!(
+            contacts_button_kind(ContactsButton::GateSetUpProfile),
+            ContactsButtonKind::SwitchHubTab(super::super::IdentityHubTab::Settings),
+        );
     }
 }

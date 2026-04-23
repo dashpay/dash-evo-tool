@@ -1390,6 +1390,7 @@ impl MasternodeListDiffScreen {
             Ok(data) => data,
             Err(e) => {
                 self.ui_state.error = Some(e);
+                self.task.pending = None;
                 return;
             }
         };
@@ -1400,6 +1401,7 @@ impl MasternodeListDiffScreen {
                 .feed_qr_info(qr_info, false, true, &block_data)
         {
             self.ui_state.error = Some(e.to_string());
+            self.task.pending = None;
             return;
         }
 
@@ -4239,6 +4241,19 @@ impl ScreenLike for MasternodeListDiffScreen {
                 self.selection.selected_quorum_in_diff_index = None;
             }
             BackendTaskSuccessResult::MnListFetchedQrInfo { qr_info } => {
+                // Pre-populate hash↔height data the engine needs (cycle boundary hashes
+                // are not carried in the QRInfo message and must be resolved locally).
+                // Build this BEFORE inserting diffs into the cache so a failure does not
+                // leave the cache partially populated.
+                let block_data = match self.build_qr_info_block_data(&qr_info) {
+                    Ok(data) => data,
+                    Err(e) => {
+                        self.ui_state.error = Some(e);
+                        self.task.pending = None;
+                        return;
+                    }
+                };
+
                 // Warm heights and cache diffs before feed_qr_info (replicates old flow)
                 self.insert_mn_list_diff(&qr_info.mn_list_diff_tip);
                 self.insert_mn_list_diff(&qr_info.mn_list_diff_h);
@@ -4251,16 +4266,6 @@ impl ScreenLike for MasternodeListDiffScreen {
                 for d in &qr_info.mn_list_diff_list {
                     self.insert_mn_list_diff(d);
                 }
-
-                // Pre-populate hash↔height data the engine needs (cycle boundary hashes
-                // are not carried in the QRInfo message and must be resolved locally).
-                let block_data = match self.build_qr_info_block_data(&qr_info) {
-                    Ok(data) => data,
-                    Err(e) => {
-                        self.ui_state.error = Some(e);
-                        return;
-                    }
-                };
                 if let Err(e) = self.data.masternode_list_engine.feed_qr_info(
                     qr_info.clone(),
                     false,

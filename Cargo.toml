@@ -103,11 +103,19 @@ native-dialog = "0.9.0"
 raw-cpuid = "11.5.0"
 
 [features]
+default = ["identity-hub"]
 testing = []
 bench = []
 mcp = ["dep:rmcp", "rmcp/server", "rmcp/macros", "rmcp/transport-streamable-http-server", "dep:axum", "dep:subtle"]
 cli = ["dep:rmcp", "rmcp/server", "rmcp/macros", "rmcp/client", "rmcp/transport-io", "rmcp/transport-streamable-http-client-reqwest", "dep:clap", "dep:clap_complete"]
 headless = ["cli", "mcp"]
+# New unified Identities hub UI section (four-tab: Home/Contacts/Activity/Settings).
+# Default-enabled. Disable to get a smaller compile surface when iterating on legacy
+# Identities / Dashpay screens only.
+identity-hub = []
+# Unified Activity timeline aggregator. Off by default — the aggregator backend does
+# not exist yet; when off, the Activity tab renders a gated "coming soon" message.
+identity-hub-activity-feed = ["identity-hub"]
 
 [dev-dependencies]
 egui_kittest = { version = "0.35.0", features = ["eframe"] }
@@ -145,7 +153,7 @@ debug = "line-tables-only"
 
 [lints.rust.unexpected_cfgs]
 level = "warn"
-check-cfg = ["cfg(tokio_unstable)", "cfg(feature, values(\"testing\", \"bench\", \"mcp\", \"cli\", \"headless\"))"]
+check-cfg = ["cfg(tokio_unstable)", "cfg(feature, values(\"testing\", \"bench\", \"mcp\", \"cli\", \"headless\", \"identity-hub\", \"identity-hub-activity-feed\"))"]
 
 
 [lints.clippy]

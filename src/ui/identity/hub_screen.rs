@@ -20,6 +20,7 @@ use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use eframe::egui::{Context, RichText};
 use std::sync::Arc;
 
+use super::home::HomeState;
 use super::landing::HubLanding;
 use super::tabs::IdentityHubTab;
 
@@ -42,6 +43,9 @@ pub struct IdentityHubScreen {
     /// back to `HubLanding::Onboarding` on first render so the UI has
     /// something to draw until the first load attempt completes.
     last_good_landing: HubLanding,
+    /// Home-tab state (dismissed checklist flag, advanced expander, etc).
+    /// Owned here so tab switches do not wipe it.
+    home_state: HomeState,
 }
 
 impl IdentityHubScreen {
@@ -54,6 +58,7 @@ impl IdentityHubScreen {
             selected_tab: IdentityHubTab::default(),
             load_error_banner: None,
             last_good_landing: HubLanding::Onboarding,
+            home_state: HomeState::default(),
         }
     }
 
@@ -163,7 +168,16 @@ impl ScreenLike for IdentityHubScreen {
                         }
                         ui.add_space(16.0);
                         match self.selected_tab {
-                            IdentityHubTab::Home => super::home::render(ui, &self.app_context),
+                            IdentityHubTab::Home => {
+                                let (home_action, outcome) =
+                                    super::home::render(ui, &self.app_context, &self.home_state);
+                                if let Some(next_tab) =
+                                    super::home::apply_outcome(&mut self.home_state, outcome)
+                                {
+                                    self.selected_tab = next_tab;
+                                }
+                                home_action
+                            }
                             IdentityHubTab::Contacts => {
                                 super::contacts::render(ui, &self.app_context)
                             }

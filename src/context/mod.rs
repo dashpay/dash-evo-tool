@@ -706,12 +706,23 @@ impl AppContext {
     /// Import an address into the correct Core wallet if it's not already known.
     /// Uses `core_wallet_name` to target the right wallet on multi-wallet nodes.
     /// No-op if the address is already watched/mine.
+    ///
+    /// In SPV mode this is a no-op: there is no Dash Core node to import into,
+    /// and HD-derived addresses are already tracked by the SPV subsystem via
+    /// `Wallet::register_address` (which populates `known_addresses` and feeds
+    /// the SPV bloom filter). Incoming UTXOs on these addresses are delivered
+    /// through `received_transaction_finality()` from InstantLock/ChainLock
+    /// events — the same path the QR funding flows poll via
+    /// `capture_qr_funding_utxo_if_available`.
     pub fn ensure_address_imported(
         &self,
         address: &Address,
         core_wallet_name: Option<&str>,
         label: Option<&str>,
     ) -> Result<(), TaskError> {
+        if self.core_backend_mode() != CoreBackendMode::Rpc {
+            return Ok(());
+        }
         let client = self.core_client_for_wallet(core_wallet_name)?;
         let info = client
             .get_address_info(address)

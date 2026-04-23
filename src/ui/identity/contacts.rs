@@ -180,6 +180,12 @@ fn render_populated(
 
     ui.add_space(12.0);
     section_card(ui, dark_mode, RECEIVED_HEADING, |ui| {
+        // TODO(identity-hub): render real `RequestCard::received` rows once a
+        // loaded-contact-requests cache lands on `AppContext`. When wiring,
+        // consume `RequestCardResponse::{accepted, declined}` and dispatch
+        // `DashPayTask::AcceptContactRequest` / `RejectContactRequest` with
+        // the request's `Identifier`. These backend variants already exist at
+        // `src/backend_task/dashpay.rs`; wiring is additive to this file.
         ui.label(RichText::new(NO_RECEIVED_EMPTY).color(DashColors::text_secondary(dark_mode)));
     });
 
@@ -209,6 +215,12 @@ fn render_populated(
     // populated shell renders only the heading so the section wiring stays
     // visible to reviewers; the real list hides it once data is live.
     section_card(ui, dark_mode, SENT_HEADING, |ui| {
+        // TODO(identity-hub): render real `RequestCard::sent` rows once a
+        // loaded-sent-requests cache lands. Consume
+        // `RequestCardResponse::cancelled` and dispatch a "cancel" task —
+        // requires a new `DashPayTask::CancelContactRequest` variant (not
+        // yet present; do NOT add here — defer until a parallel wallet
+        // refactor wave lands, per the integration constraints).
         ui.label(
             RichText::new("No outgoing requests.").color(DashColors::text_secondary(dark_mode)),
         );

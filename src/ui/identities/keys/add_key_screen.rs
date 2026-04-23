@@ -76,6 +76,7 @@ impl AddKeyScreen {
             app_context: app_context.clone(),
             private_key_input: PasswordInput::new()
                 .with_hint_text("Private key (hex)")
+                .with_char_limit(66)
                 .with_monospace(),
             key_type: KeyType::ECDSA_SECP256K1,
             purpose: Purpose::AUTHENTICATION,
@@ -119,6 +120,7 @@ impl AddKeyScreen {
             app_context: app_context.clone(),
             private_key_input: PasswordInput::new()
                 .with_hint_text("Private key (hex)")
+                .with_char_limit(66)
                 .with_monospace(),
             key_type: KeyType::ECDSA_SECP256K1,
             purpose: Purpose::ENCRYPTION,
@@ -162,6 +164,7 @@ impl AddKeyScreen {
             app_context: app_context.clone(),
             private_key_input: PasswordInput::new()
                 .with_hint_text("Private key (hex)")
+                .with_char_limit(66)
                 .with_monospace(),
             key_type: KeyType::ECDSA_SECP256K1,
             purpose: Purpose::DECRYPTION,

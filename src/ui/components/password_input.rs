@@ -1,7 +1,10 @@
 use egui::{Rect, Response, Sense, Stroke, Ui, pos2, vec2};
 
 use crate::model::secret::Secret;
-use crate::ui::theme::{DashColors, ResponseExt};
+use crate::ui::theme::{DashColors, ResponseExt, Typography};
+
+const PASSWORD_INPUT_HORIZONTAL_PADDING: f32 = 8.0;
+const PASSWORD_INPUT_REVEAL_ICON_WIDTH: f32 = 28.0;
 
 /// Response from [`PasswordInput::show`].
 ///
@@ -155,6 +158,23 @@ impl PasswordInput {
 
         if let Some(width) = self.desired_width {
             text_edit = text_edit.desired_width(width);
+        } else if let Some(limit) = self.char_limit {
+            let font_id = if self.monospace {
+                Typography::monospace()
+            } else {
+                Typography::body()
+            };
+            let sample = if self.monospace {
+                "0".repeat(limit)
+            } else {
+                "W".repeat(limit)
+            };
+            let measured_width = Typography::measure_text_width(ui, &sample, font_id);
+            text_edit = text_edit.desired_width(
+                measured_width
+                    + PASSWORD_INPUT_HORIZONTAL_PADDING
+                    + PASSWORD_INPUT_REVEAL_ICON_WIDTH,
+            );
         } else {
             text_edit = text_edit.desired_width(ui.available_width());
         }

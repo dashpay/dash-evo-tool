@@ -1,4 +1,6 @@
-use egui::{Button, Color32, CursorIcon, FontFamily, FontId, RichText, Stroke, Vec2, WidgetText};
+use egui::{
+    Button, Color32, CursorIcon, FontFamily, FontId, RichText, Stroke, Ui, Vec2, WidgetText,
+};
 
 /// Theme mode enumeration
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -601,6 +603,14 @@ impl Typography {
 
     pub fn button() -> FontId {
         FontId::new(Self::SCALE_BASE, FontFamily::Proportional)
+    }
+
+    /// Measure the width of a representative sample using egui's active font metrics.
+    pub fn measure_text_width(ui: &Ui, sample: &str, font_id: FontId) -> f32 {
+        ui.painter()
+            .layout_no_wrap(sample.to_owned(), font_id, Color32::TRANSPARENT)
+            .size()
+            .x
     }
 }
 

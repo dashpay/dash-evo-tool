@@ -20,6 +20,7 @@ use eframe::egui::{Context, RichText};
 use std::sync::Arc;
 
 use super::landing::HubLanding;
+use super::settings::SettingsTab;
 use super::tabs::IdentityHubTab;
 
 /// Top-level screen for the new unified Identities hub.
@@ -41,6 +42,9 @@ pub struct IdentityHubScreen {
     /// back to `HubLanding::Onboarding` on first render so the UI has
     /// something to draw until the first load attempt completes.
     last_good_landing: HubLanding,
+    /// Settings-tab state. Held on the hub so edit fields, unsaved drafts,
+    /// and modal state persist across frames.
+    settings_tab: SettingsTab,
 }
 
 impl IdentityHubScreen {
@@ -53,6 +57,7 @@ impl IdentityHubScreen {
             selected_tab: IdentityHubTab::default(),
             load_error_banner: None,
             last_good_landing: HubLanding::Onboarding,
+            settings_tab: SettingsTab::new(),
         }
     }
 
@@ -176,7 +181,7 @@ impl ScreenLike for IdentityHubScreen {
                                 super::activity::render(ui, &self.app_context)
                             }
                             IdentityHubTab::Settings => {
-                                super::settings::render(ui, &self.app_context)
+                                self.settings_tab.render(ui, &self.app_context)
                             }
                         }
                     });

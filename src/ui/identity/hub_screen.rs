@@ -22,6 +22,7 @@ use std::sync::Arc;
 
 use super::home::HomeState;
 use super::landing::HubLanding;
+use super::settings::SettingsTab;
 use super::tabs::IdentityHubTab;
 
 /// Top-level screen for the new unified Identities hub.
@@ -46,6 +47,9 @@ pub struct IdentityHubScreen {
     /// Home-tab state (dismissed checklist flag, advanced expander, etc).
     /// Owned here so tab switches do not wipe it.
     home_state: HomeState,
+    /// Settings-tab state. Held on the hub so edit fields, unsaved drafts,
+    /// and modal state persist across frames.
+    settings_tab: SettingsTab,
 }
 
 impl IdentityHubScreen {
@@ -59,6 +63,7 @@ impl IdentityHubScreen {
             load_error_banner: None,
             last_good_landing: HubLanding::Onboarding,
             home_state: HomeState::default(),
+            settings_tab: SettingsTab::new(),
         }
     }
 
@@ -185,7 +190,7 @@ impl ScreenLike for IdentityHubScreen {
                                 super::activity::render(ui, &self.app_context)
                             }
                             IdentityHubTab::Settings => {
-                                super::settings::render(ui, &self.app_context)
+                                self.settings_tab.render(ui, &self.app_context)
                             }
                         }
                     });

@@ -7,6 +7,7 @@ mod identity_hub_activity;
 mod identity_hub_contacts;
 mod identity_hub_home;
 mod identity_hub_onboarding;
+mod identity_hub_settings;
 mod import_single_key;
 mod info_popup;
 mod message_banner;

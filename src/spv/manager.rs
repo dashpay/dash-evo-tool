@@ -819,15 +819,22 @@ impl SpvManager {
             wallet_map.clear();
         }
 
-        // Reset the in-memory WalletManager's synced_height so the next SPV session
-        // scans filters from genesis instead of the stale height from the previous run.
-        match self.wallet.try_write() {
-            Ok(mut wm) => {
-                wm.update_synced_height(0);
-            }
-            Err(_) => {
-                tracing::warn!("Failed to reset WalletManager synced_height during SPV data clear");
-            }
+        // Reset the in-memory WalletManager's filter_committed_height so the next
+        // SPV session scans filters from genesis instead of the stale height from the
+        // previous run. We reset filter_committed_height (not synced_height) because at
+        // rust-dashcore 309fac8 these became independent fields — FiltersManager::new()
+        // reads filter_committed_height() for its "already synced" guard.
+        //
+        // This must succeed before we wipe the on-disk data; otherwise the in-memory
+        // height would stay stale while on-disk filters are gone, re-triggering the
+        // skipped-rescan bug this clear is meant to prevent.
+        {
+            let mut wm = self.wallet.try_write().map_err(|e| {
+                format!(
+                    "Failed to reset WalletManager filter_committed_height during SPV data clear: {e}"
+                )
+            })?;
+            wm.update_filter_committed_height(0);
         }
 
         self.write_sync_progress(None).map_err(|e| e.to_string())?;

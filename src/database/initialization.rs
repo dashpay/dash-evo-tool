@@ -35,7 +35,39 @@ impl<T> MigrationResultExt<T> for rusqlite::Result<T> {
     }
 }
 
-pub const DEFAULT_DB_VERSION: u16 = 33;
+pub const DEFAULT_DB_VERSION: u16 = 34;
+
+/// Minimal view of `.env` values the v34 migration needs.
+struct V34EnvSnapshot {
+    developer_mode: bool,
+    /// True if any `{NETWORK}_core_rpc_password` is set and non-empty.
+    has_any_rpc_password: bool,
+}
+
+/// Parse `<data_dir>/.env` via `dotenvy::from_path_iter` to decide the v34
+/// migration outcome. The iterator API does not mutate process env (unlike
+/// `Config::load_from` / `dotenvy::from_path_override`), so this is safe to
+/// call from inside the migration transaction and from parallel test runs.
+fn read_env_file_for_v34_migration(data_dir: &Path) -> std::io::Result<V34EnvSnapshot> {
+    let env_path = data_dir.join(".env");
+    let iter = dotenvy::from_path_iter(&env_path).map_err(std::io::Error::other)?;
+
+    let mut developer_mode = false;
+    let mut has_any_rpc_password = false;
+    for item in iter {
+        let (key, value) = item.map_err(std::io::Error::other)?;
+        if key.eq_ignore_ascii_case("DEVELOPER_MODE") {
+            developer_mode = matches!(value.to_ascii_lowercase().as_str(), "true" | "1" | "yes");
+        } else if key.to_ascii_lowercase().ends_with("core_rpc_password") && !value.is_empty() {
+            has_any_rpc_password = true;
+        }
+    }
+
+    Ok(V34EnvSnapshot {
+        developer_mode,
+        has_any_rpc_password,
+    })
+}
 
 pub const DEFAULT_NETWORK: &str = "mainnet";
 
@@ -67,7 +99,13 @@ impl Database {
             let current_version = self.db_schema_version()?;
             if current_version != DEFAULT_DB_VERSION {
                 self.backup_db(db_file_path)?;
-                if let Err(e) = self.try_perform_migration(current_version, DEFAULT_DB_VERSION) {
+                // Migrations may need to read `.env` from the data directory
+                // (see v34 for one such arm). The DB file typically lives at
+                // `<data_dir>/<db_file>`, so its parent is the data dir.
+                let data_dir = db_file_path.parent();
+                if let Err(e) =
+                    self.try_perform_migration(current_version, DEFAULT_DB_VERSION, data_dir)
+                {
                     let version_after_migration = self.db_schema_version().unwrap_or(0);
                     return Err(rusqlite::Error::InvalidParameterName(format!(
                         "Database migration from version {} to {} failed (database is at version {}): {}",
@@ -80,8 +118,45 @@ impl Database {
         Ok(())
     }
 
-    fn apply_version_changes(&self, version: u16, tx: &Connection) -> Result<(), MigrationError> {
+    fn apply_version_changes(
+        &self,
+        version: u16,
+        tx: &Connection,
+        data_dir: Option<&Path>,
+    ) -> Result<(), MigrationError> {
         match version {
+            34 => {
+                // SPV is now the default Core-level backend. Users who have a
+                // configured local Dash Core node (Expert mode + at least one
+                // network's `core_rpc_password` set) keep their existing mode;
+                // everyone else is pinned to SPV. No new persisted flag — the
+                // DB version bump itself is the one-shot gate.
+                let migrate_to_spv = match data_dir {
+                    Some(dir) => match read_env_file_for_v34_migration(dir) {
+                        Ok(env_snapshot) => {
+                            !(env_snapshot.developer_mode && env_snapshot.has_any_rpc_password)
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "v34 migration: .env unreadable ({e}); defaulting to SPV"
+                            );
+                            true
+                        }
+                    },
+                    // Tests or headless contexts without a data dir: safest default is SPV.
+                    None => true,
+                };
+
+                if migrate_to_spv {
+                    tx.execute("UPDATE settings SET core_backend_mode = 1 WHERE id = 1", [])
+                        .migration_err("settings", "v34: pin SPV as default backend")?;
+                } else {
+                    tracing::info!(
+                        "v34 migration: preserving existing core_backend_mode \
+                         (local Dash Core node configured)"
+                    );
+                }
+            }
             // Versions 28-32 were consolidated into v33 to resolve migration
             // numbering conflicts between the zk and v1.0-dev branches.
             // If migrating from < 28, these are no-ops that just bump the version.
@@ -276,6 +351,7 @@ impl Database {
         &self,
         original_version: u16,
         to_version: u16,
+        data_dir: Option<&Path>,
     ) -> Result<bool, MigrationError> {
         match original_version.cmp(&to_version) {
             std::cmp::Ordering::Equal => {
@@ -307,7 +383,7 @@ impl Database {
                         source: e,
                     })?;
                     let result = self
-                        .apply_version_changes(version, &tx)
+                        .apply_version_changes(version, &tx, data_dir)
                         .and_then(|()| {
                             self.update_database_version(version, &tx).migration_err(
                                 "settings",
@@ -1575,7 +1651,7 @@ mod test {
         db.set_db_version(START_VERSION).unwrap();
 
         // Simulate a migration failure by trying to apply an invalid change
-        let result = db.try_perform_migration(START_VERSION, DEFAULT_DB_VERSION);
+        let result = db.try_perform_migration(START_VERSION, DEFAULT_DB_VERSION, None);
         assert!(result.is_err());
         println!("Migration failed as expected: {}", result.unwrap_err());
 
@@ -1615,7 +1691,21 @@ mod test {
             )
             .unwrap();
         assert_eq!(version, DEFAULT_DB_VERSION);
-        assert_eq!(version, 33);
+
+        // Fresh installs must land on SPV (core_backend_mode = 1). This is the
+        // user-visible contract of the v34 default-flip: non-Expert users never
+        // see an RPC config UI, so anything other than SPV here would strand them.
+        let core_backend_mode: u8 = conn
+            .query_row(
+                "SELECT core_backend_mode FROM settings WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            core_backend_mode, 1,
+            "fresh install must default to SPV (core_backend_mode = 1)"
+        );
 
         assert_v33_schema(&conn);
     }
@@ -1724,7 +1814,7 @@ mod test {
         assert_eq!(db.db_schema_version().unwrap(), 27);
 
         // Run migration from v27 to current
-        let result = db.try_perform_migration(27, DEFAULT_DB_VERSION);
+        let result = db.try_perform_migration(27, DEFAULT_DB_VERSION, None);
         assert!(
             result.is_ok(),
             "migration from v27 to v{DEFAULT_DB_VERSION} failed: {:?}",
@@ -1732,7 +1822,7 @@ mod test {
         );
 
         // Verify final version
-        assert_eq!(db.db_schema_version().unwrap(), 33);
+        assert_eq!(db.db_schema_version().unwrap(), DEFAULT_DB_VERSION);
 
         // Verify full v33 schema
         let conn = db.conn.lock().unwrap();
@@ -1987,7 +2077,7 @@ mod test {
         assert_eq!(db.db_schema_version().unwrap(), 27);
 
         // Run migration with orphaned FK rows present
-        let result = db.try_perform_migration(27, DEFAULT_DB_VERSION);
+        let result = db.try_perform_migration(27, DEFAULT_DB_VERSION, None);
         assert!(
             result.is_ok(),
             "migration with orphaned FK rows failed: {:?}",
@@ -2335,7 +2425,7 @@ mod test {
         assert_eq!(db.db_schema_version().unwrap(), 5);
 
         // Run full migration from v5 to current
-        let result = db.try_perform_migration(5, DEFAULT_DB_VERSION);
+        let result = db.try_perform_migration(5, DEFAULT_DB_VERSION, None);
         assert!(
             result.is_ok(),
             "migration from v0.9.0 (v5) to v{DEFAULT_DB_VERSION} failed: {:?}",
@@ -2389,5 +2479,147 @@ mod test {
             )
             .unwrap();
         assert_eq!(lock_identity, Some(vec![0xBBu8; 32]));
+    }
+
+    // ── v34 migration: SPV-default backend ──────────────────────────
+    //
+    // The migration reads `.env` via `dotenvy::from_path_iter`, which does
+    // not mutate the process environment, so these tests are self-contained
+    // and can run in parallel with each other and the rest of the suite.
+    mod v34 {
+        fn write_env(dir: &std::path::Path, contents: &str) {
+            std::fs::write(dir.join(".env"), contents).expect("write .env");
+        }
+
+        /// Set up a fresh v33 database in `dir` with `core_backend_mode = 0` (RPC),
+        /// returning the `Database`.
+        fn fresh_v33_db(dir: &std::path::Path) -> super::super::Database {
+            let db_file = dir.join("test_data.db");
+            let db = super::super::Database::new(&db_file).unwrap();
+            db.create_tables().unwrap();
+            db.set_default_version().unwrap();
+            // Set starting state: v33 with the legacy RPC default.
+            db.set_db_version(33).unwrap();
+            {
+                let conn = db.conn.lock().unwrap();
+                conn.execute("UPDATE settings SET core_backend_mode = 0 WHERE id = 1", [])
+                    .unwrap();
+            }
+            db
+        }
+
+        fn read_core_backend_mode(db: &super::super::Database) -> u8 {
+            let conn = db.conn.lock().unwrap();
+            conn.query_row(
+                "SELECT core_backend_mode FROM settings WHERE id = 1",
+                [],
+                |row| row.get::<_, u8>(0),
+            )
+            .unwrap()
+        }
+
+        /// developer_mode=true + a non-empty core_rpc_password on at least one
+        /// network → migration leaves the saved mode untouched.
+        #[test]
+        fn v34_preserves_mode_when_local_core_configured() {
+            let tmp = tempfile::tempdir().unwrap();
+            let db = fresh_v33_db(tmp.path());
+            write_env(
+                tmp.path(),
+                "DEVELOPER_MODE=true\n\
+                 MAINNET_core_rpc_password=hunter2\n",
+            );
+
+            let result = db.try_perform_migration(33, 34, Some(tmp.path()));
+            assert!(result.is_ok(), "migration failed: {:?}", result.err());
+            assert_eq!(db.db_schema_version().unwrap(), 34);
+            // Mode preserved as RPC (0) — user's existing choice respected.
+            assert_eq!(read_core_backend_mode(&db), 0);
+        }
+
+        /// Same as `v34_preserves_mode_when_local_core_configured`, but the
+        /// password key is fully uppercase (`MAINNET_CORE_RPC_PASSWORD`). The
+        /// suffix match must be case-insensitive so these users are not
+        /// silently flipped to SPV during the v34 migration.
+        #[test]
+        fn v34_preserves_mode_with_uppercase_password_key() {
+            let tmp = tempfile::tempdir().unwrap();
+            let db = fresh_v33_db(tmp.path());
+            write_env(
+                tmp.path(),
+                "DEVELOPER_MODE=true\n\
+                 MAINNET_CORE_RPC_PASSWORD=hunter2\n",
+            );
+
+            let result = db.try_perform_migration(33, 34, Some(tmp.path()));
+            assert!(result.is_ok(), "migration failed: {:?}", result.err());
+            assert_eq!(db.db_schema_version().unwrap(), 34);
+            // Mode preserved as RPC (0) — uppercase password key must count.
+            assert_eq!(read_core_backend_mode(&db), 0);
+        }
+
+        /// developer_mode=true but no password on any network → SPV.
+        #[test]
+        fn v34_migrates_to_spv_when_no_rpc_password() {
+            let tmp = tempfile::tempdir().unwrap();
+            let db = fresh_v33_db(tmp.path());
+            write_env(tmp.path(), "DEVELOPER_MODE=true\n");
+
+            let result = db.try_perform_migration(33, 34, Some(tmp.path()));
+            assert!(result.is_ok(), "migration failed: {:?}", result.err());
+            assert_eq!(db.db_schema_version().unwrap(), 34);
+            assert_eq!(read_core_backend_mode(&db), 1);
+        }
+
+        /// developer_mode=false (regardless of password) → SPV.
+        #[test]
+        fn v34_migrates_to_spv_when_developer_mode_off() {
+            let tmp = tempfile::tempdir().unwrap();
+            let db = fresh_v33_db(tmp.path());
+            write_env(
+                tmp.path(),
+                "DEVELOPER_MODE=false\n\
+                 MAINNET_core_rpc_password=hunter2\n",
+            );
+
+            let result = db.try_perform_migration(33, 34, Some(tmp.path()));
+            assert!(result.is_ok(), "migration failed: {:?}", result.err());
+            assert_eq!(db.db_schema_version().unwrap(), 34);
+            assert_eq!(read_core_backend_mode(&db), 1);
+        }
+
+        /// No `.env` at all (or unreadable) → SPV (safest default).
+        #[test]
+        fn v34_migrates_to_spv_when_env_missing() {
+            let tmp = tempfile::tempdir().unwrap();
+            let db = fresh_v33_db(tmp.path());
+            // Deliberately do not write `.env`.
+
+            let result = db.try_perform_migration(33, 34, Some(tmp.path()));
+            assert!(result.is_ok(), "migration failed: {:?}", result.err());
+            assert_eq!(db.db_schema_version().unwrap(), 34);
+            assert_eq!(read_core_backend_mode(&db), 1);
+        }
+
+        /// Re-running the migration on an already-migrated DB is a no-op.
+        #[test]
+        fn v34_rerun_is_noop() {
+            let tmp = tempfile::tempdir().unwrap();
+            let db = fresh_v33_db(tmp.path());
+            write_env(tmp.path(), "DEVELOPER_MODE=false\n");
+
+            // First run: 33 -> 34
+            db.try_perform_migration(33, 34, Some(tmp.path())).unwrap();
+            assert_eq!(db.db_schema_version().unwrap(), 34);
+
+            // Second run: 34 -> 34 is a no-op.
+            let result = db.try_perform_migration(34, 34, Some(tmp.path()));
+            assert!(result.is_ok(), "re-run should be no-op: {:?}", result.err());
+            assert!(
+                !result.unwrap(),
+                "try_perform_migration should report no migration needed"
+            );
+            assert_eq!(db.db_schema_version().unwrap(), 34);
+        }
     }
 }

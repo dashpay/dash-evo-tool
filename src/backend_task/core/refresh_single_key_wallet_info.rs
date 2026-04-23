@@ -3,17 +3,29 @@
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::wallet::single_key::SingleKeyWallet;
+use crate::spv::CoreBackendMode;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::dashcore::{OutPoint, TxOut};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 impl AppContext {
-    /// Refresh a single key wallet by reloading UTXOs from Core RPC
+    /// Refresh a single key wallet by reloading UTXOs from Core RPC.
+    ///
+    /// Single-key wallets require Dash Core for UTXO discovery — the SPV
+    /// subsystem tracks HD-wallet-derived addresses only. In SPV mode this
+    /// function surfaces a typed error instead of silently hitting RPC and
+    /// producing a `ConnectionRefused` banner.
     pub fn refresh_single_key_wallet_info(
         &self,
         wallet: Arc<RwLock<SingleKeyWallet>>,
     ) -> Result<(), TaskError> {
+        if self.core_backend_mode() == CoreBackendMode::Spv {
+            return Err(TaskError::OperationRequiresDashCore {
+                operation: "Refreshing single-key wallet balances",
+            });
+        }
+
         let (address, key_hash, core_wallet_name) = {
             let wallet_guard = wallet.read()?;
             (

@@ -572,6 +572,16 @@ pub enum TaskError {
         allowed_networks: &'static str,
     },
 
+    /// The requested operation requires Dash Core (RPC) and cannot run in light-wallet (SPV) mode.
+    ///
+    /// The `operation` field is preserved for diagnostic purposes (Debug / log inspection)
+    /// but is intentionally omitted from the user-facing `Display` text so the message is a
+    /// single complete sentence — no fragment composition, safe for i18n extraction.
+    #[error(
+        "This action is only available when connected to Dash Core. Switch to Dash Core in Settings and retry."
+    )]
+    OperationRequiresDashCore { operation: &'static str },
+
     // ──────────────────────────────────────────────────────────────────────────
     // Platform info errors
     // ──────────────────────────────────────────────────────────────────────────
@@ -841,6 +851,16 @@ pub enum TaskError {
         "The identity {identity_id} does not have a voting key. Please add a voting key to vote."
     )]
     NoVotingIdentity { identity_id: String },
+
+    /// No open vote poll was found on Platform for the given DPNS name.
+    ///
+    /// Surfaced by the pre-flight existence check in `vote_on_dpns_name`,
+    /// before any state transition is broadcast. Short-circuits a ~70 s
+    /// retry chain that would otherwise expire with an opaque timeout.
+    #[error(
+        "The contested name \"{name}\" is not currently open for voting. It may have been resolved or may not exist. Refresh the contested names list and try again."
+    )]
+    VotePollNotFound { name: String },
 
     /// The identity does not have an authentication key required to sign documents.
     #[error(

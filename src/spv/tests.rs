@@ -502,14 +502,16 @@ async fn test_broadcast_transaction_fails_when_not_running() {
 
 /// Given CoreBackendMode variants,
 /// When converting between u8 and enum via From<u8> and as_u8(),
-/// Then roundtrip is correct (0 = Rpc, 1 = Spv, unknown defaults to Rpc).
+/// Then roundtrip is correct (0 = Rpc, 1 = Spv, unknown defaults to Spv — the
+/// DB column default and the app's runtime default).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_core_backend_mode_roundtrip() {
     use crate::spv::CoreBackendMode;
 
     assert_eq!(CoreBackendMode::from(0), CoreBackendMode::Rpc);
     assert_eq!(CoreBackendMode::from(1), CoreBackendMode::Spv);
-    assert_eq!(CoreBackendMode::from(99), CoreBackendMode::Rpc); // default
+    assert_eq!(CoreBackendMode::from(99), CoreBackendMode::Spv); // default fallback
+    assert_eq!(CoreBackendMode::default(), CoreBackendMode::Spv);
 
     assert_eq!(CoreBackendMode::Rpc.as_u8(), 0);
     assert_eq!(CoreBackendMode::Spv.as_u8(), 1);

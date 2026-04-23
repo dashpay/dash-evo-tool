@@ -1,3 +1,4 @@
+pub mod activity_row;
 pub mod address_input;
 pub mod amount_input;
 pub mod breadcrumb_pill;

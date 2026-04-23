@@ -18,6 +18,13 @@ Concise catalog of all reusable UI components. Consult before creating new UI el
 | `PasswordInput` | `password_input.rs` | N/A (security) | Masked input with hold-to-reveal, zeroizes on drop. NOT ComponentResponse |
 | `IdentitySelector` | `identity_selector.rs` | N/A (Widget) | ComboBox dropdown for identity selection |
 
+## Breadcrumb Components (Identities hub)
+
+| Component | File | DomainType | Description |
+|-----------|------|------------|-------------|
+| `BreadcrumbPill` | `breadcrumb_pill.rs` | `String` | Label + optional icon + chevron. Three modes: Interactive / Subdued / Placeholder. Drives the wallet + identity switcher in the Identities hub breadcrumb. |
+| `IdentityPill` | `identity_pill.rs` | `String` | Thin wrapper over `BreadcrumbPill` applying the priority rule Local nickname → DPNS handle → shortened Identity ID. `display_label` / `shorten_id` are pure functions reusable anywhere an identity label is rendered. |
+
 ## Dialog Components
 
 | Component | File | DomainType | Description |

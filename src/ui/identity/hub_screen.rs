@@ -10,6 +10,7 @@ use crate::app::AppAction;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use crate::ui::components::identity_hub_tab_bar::IdentityHubTabBar;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::message_banner::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::components::styled::island_central_panel;
@@ -152,20 +153,14 @@ impl ScreenLike for IdentityHubScreen {
                         );
                         ui.add_space(24.0);
 
-                        // Very basic tab-bar preview — proper component in T5.
-                        ui.horizontal(|ui| {
-                            for tab in IdentityHubTab::ALL {
-                                let selected = tab == self.selected_tab;
-                                let text = if selected {
-                                    RichText::new(tab.label()).strong()
-                                } else {
-                                    RichText::new(tab.label())
-                                };
-                                if ui.selectable_label(selected, text).clicked() {
-                                    self.selected_tab = tab;
-                                }
-                            }
-                        });
+                        // Hub tab bar (T5). Reuses the project's theme tokens
+                        // via `IdentityHubTabBar`; selection state lives on
+                        // the screen so refreshes and deep links can update
+                        // it from outside the component.
+                        let tab_response = IdentityHubTabBar::new(self.selected_tab).show(ui);
+                        if let Some(clicked) = tab_response.clicked() {
+                            self.selected_tab = clicked;
+                        }
                         ui.add_space(16.0);
                         match self.selected_tab {
                             IdentityHubTab::Home => super::home::render(ui, &self.app_context),

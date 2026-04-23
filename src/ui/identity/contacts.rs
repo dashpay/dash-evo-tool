@@ -147,18 +147,18 @@ pub fn render_gated(ui: &mut Ui, handle: Option<&str>) -> AppAction {
     let card = SocialProfileGateCard::new(handle);
     let response = card.show(ui);
     if response.primary_clicked {
-        // Route to the Home-tab social-profile setup card. The hub owns tab
-        // switching; emitting `AppAction::None` here keeps the screen free of
-        // cross-tab coupling until the dedicated deep-link action lands in a
-        // follow-up. The button remains visibly interactive so users see it
-        // responds.
-        //
-        // TODO(identity-hub T8): return `AppAction::SwitchIdentityHubTab(Home)`
-        // once the hub exposes that action.
+        // Route to the Settings tab — that is where the user actually edits
+        // display name and avatar (social-profile fields). Emitting the
+        // hub-scoped `SwitchIdentityHubTab` action keeps the cross-tab hop
+        // inside the hub, without introducing a new backend task.
+        #[cfg(feature = "identity-hub")]
+        {
+            return AppAction::SwitchIdentityHubTab(super::IdentityHubTab::Settings);
+        }
     }
     if response.why_toggled {
-        // TODO(identity-hub T9): persist the expanded flag on the hub screen
-        // so the panel stays open across frames. Until then the card is
+        // TODO(identity-hub): persist the expanded flag on the hub screen so
+        // the panel stays open across frames. Until then the card is
         // re-rendered collapsed each frame; the click still surfaces a
         // visible press so the affordance is not dead.
     }

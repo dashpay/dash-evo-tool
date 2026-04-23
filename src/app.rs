@@ -374,6 +374,12 @@ pub enum AppAction {
         /// Optional sub-screen to push onto the stack
         add_screen: Option<Box<crate::ui::ScreenType>>,
     },
+    /// Switch the active sub-tab inside the Identity Hub root screen. Emitted
+    /// by in-hub deep links (e.g. the Home tab's "See all activity" link, the
+    /// Contacts gate's "Add a display name" CTA). Handled by `AppState::update`
+    /// which looks up the visible `IdentityHubScreen` and calls `select_tab`.
+    #[cfg(feature = "identity-hub")]
+    SwitchIdentityHubTab(crate::ui::identity::IdentityHubTab),
 }
 
 impl BitOrAssign for AppAction {
@@ -2031,6 +2037,17 @@ impl App for AppState {
                         self.screen_stack.push(screen);
                     }
                     self.try_auto_start_spv();
+                }
+                #[cfg(feature = "identity-hub")]
+                AppAction::SwitchIdentityHubTab(tab) => {
+                    // Resolve the visible screen. In-hub deep links are only
+                    // meaningful when the user is actually on the hub, so we
+                    // silently drop the action otherwise rather than hijack
+                    // navigation.
+                    if let crate::ui::Screen::IdentityHubScreen(hub) = self.visible_screen_mut() {
+                        hub.select_tab(tab);
+                        hub.refresh();
+                    }
                 }
             }
         }

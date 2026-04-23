@@ -42,10 +42,12 @@ fn legacy_nav_entries_coexist_with_hub() {
     // We don't need to drive the UI for this one — it's a pure enum check.
     // The `RootScreenType` enum must contain all three coexisting variants.
     let legacy_identities = RootScreenType::RootScreenIdentities;
-    let legacy_dashpay = RootScreenType::RootScreenDashPayProfile;
+    // `RootScreenDashpay` is the legacy root nav entry for DashPay; the other
+    // `RootScreenDashPay*` variants are sub-screens within that section.
+    let legacy_dashpay_root = RootScreenType::RootScreenDashpay;
     let new_hub = RootScreenType::RootScreenIdentityHub;
     assert_ne!(legacy_identities, new_hub);
-    assert_ne!(legacy_dashpay, new_hub);
+    assert_ne!(legacy_dashpay_root, new_hub);
     // Round-trip the new variant through on-disk encoding to verify the
     // persistence contract is stable.
     let encoded = new_hub.to_int();

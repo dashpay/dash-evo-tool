@@ -37,8 +37,9 @@ Derived from 01-requirements.md, 02-ux-plan.md, 03-test-case-spec.md.
 
 5. **`src/app.rs`** — register the new screen in `AppState::new()` `main_screens` BTreeMap.
 
-6. **`src/database/settings.rs`** — extend `RootScreenType::from_int` / `to_int` mapping
-   (next free integer). No schema change.
+6. **`src/ui/mod.rs`** — extend `RootScreenType::from_int` / `to_int` mapping
+   (next free integer). No schema change. `src/database/settings.rs` consumes the
+   mapping but does not own it — only add tests there if persistence behaviour changes.
 
 7. **`src/ui/components/left_panel.rs`** — add a third nav button `Identities · Hub` (new
    label distinct from the legacy `Identities`) using the `identity.png` icon for now.
@@ -63,9 +64,9 @@ Phase 1 documents committed under `docs/ai-design/2026-04-23-identity-hub-impl/`
 
 ### T2 — Feature flag + RootScreenType variant
 
-- Add `feat-identity-hub` feature to `Cargo.toml` (default-enabled so the hub is visible
+- Add `identity-hub` feature to `Cargo.toml` (default-enabled so the hub is visible
   by default; can be disabled for quick compile).
-- Add `identity_hub_activity_feed` feature (default off) — gates the unified activity
+- Add `identity-hub-activity-feed` feature (default off) — gates the unified activity
   aggregator (stub tab content when off).
 - Extend `RootScreenType` with `RootScreenIdentityHub` (to_int / from_int mapping uses
   integer 27 — next free).
@@ -231,8 +232,8 @@ Commit: `chore(identity-hub): formatting and clippy cleanup` (as needed).
 
 | Flag | Kind | Default | Gates |
 |------|------|---------|-------|
-| `feat-identity-hub` | Cargo feature | on | entire hub module compilation + nav entry |
-| `identity_hub_activity_feed` | Cargo feature | off | unified activity aggregator rendering |
+| `identity-hub` | Cargo feature | on | left-nav `Identity Hub` entry + hub registration in `main_screens` |
+| `identity-hub-activity-feed` | Cargo feature | off | unified activity aggregator rendering |
 | `developer_mode` | runtime (`AppContext::is_developer_mode`) | off | dev footer, throwaway identity, multi-identity create |
 
 Runtime gates use existing `FeatureGate` predicates where applicable; introduce new

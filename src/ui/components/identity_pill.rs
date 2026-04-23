@@ -3,17 +3,19 @@
 //! Label priority: **Local nickname → DPNS username → shortened Identity ID**
 //! (design-spec §G6).
 //!
-//! This is intentionally a thin wrapper around [`BreadcrumbPill`] so the
-//! priority rule lives in exactly one place.
+//! Follows the project's lazy-init component pattern
+//! (`docs/COMPONENT_DESIGN_PATTERN.md`): domain/config fields stored on the
+//! struct, the inner [`BreadcrumbPill`] built on every `show()` call.
 
 use crate::ui::components::breadcrumb_pill::{
     BreadcrumbPill, BreadcrumbPillMode, BreadcrumbPillResponse,
 };
+use crate::ui::components::component_trait::ComponentResponse;
 use eframe::egui::Ui;
 
 /// Label priority resolver for an identity. Returns the first non-empty
-/// option in the priority order, or the shortened raw id if all three are
-/// missing.
+/// option in the priority order. Never returns an empty string — an empty
+/// identifier id falls back to the stable placeholder `Unknown identity`.
 ///
 /// * `local_nickname` — `QualifiedIdentity.alias` in the codebase, displayed
 ///   in the UI as "Local nickname".
@@ -21,8 +23,6 @@ use eframe::egui::Ui;
 ///   leading `@`).
 /// * `identity_id_base58` — the raw Base58 identity id. Shortened to
 ///   `"Fx1Kj…9Tt"`-style when used as the fallback label.
-///
-/// The resolver never returns an empty string.
 pub fn display_label(
     local_nickname: Option<&str>,
     dpns_handle: Option<&str>,
@@ -34,7 +34,14 @@ pub fn display_label(
     if let Some(handle) = dpns_handle.map(str::trim).filter(|s| !s.is_empty()) {
         return handle.to_string();
     }
-    shorten_id(identity_id_base58)
+    let trimmed = identity_id_base58.trim();
+    if trimmed.is_empty() {
+        // Defensive fallback so a caller that passes an empty id does not
+        // produce an invisible pill. "Unknown identity" is a complete,
+        // i18n-ready sentence fragment suitable as a display label.
+        return "Unknown identity".to_string();
+    }
+    shorten_id(trimmed)
 }
 
 /// Shorten a Base58 identity id for compact display: keeps the first five
@@ -51,48 +58,125 @@ pub fn shorten_id(id: &str) -> String {
     format!("{head}…{tail}")
 }
 
-/// Builder for the identity pill. Wraps a `BreadcrumbPill` and exposes only
-/// the identity-specific configuration (nickname / handle / id). All other
-/// options (tooltip, accessible name) are forwarded to the inner pill.
+/// Response returned by [`IdentityPill::show`]. Thin wrapper over
+/// [`BreadcrumbPillResponse`] — keeps the identity-pill API independent of
+/// the underlying pill widget so callers never depend on the inner type.
+#[derive(Clone, Debug)]
+pub struct IdentityPillResponse {
+    pub clicked: bool,
+    pub label: String,
+    changed_value: Option<String>,
+}
+
+impl IdentityPillResponse {
+    fn from_inner(inner: BreadcrumbPillResponse) -> Self {
+        let changed_value = inner.changed_value().clone();
+        Self {
+            clicked: inner.clicked,
+            label: inner.label,
+            changed_value,
+        }
+    }
+}
+
+impl ComponentResponse for IdentityPillResponse {
+    type DomainType = String;
+
+    fn has_changed(&self) -> bool {
+        self.clicked
+    }
+
+    fn is_valid(&self) -> bool {
+        true
+    }
+
+    fn changed_value(&self) -> &Option<Self::DomainType> {
+        &self.changed_value
+    }
+
+    fn error_message(&self) -> Option<&str> {
+        None
+    }
+}
+
+/// Identity-pill widget. Stores domain/config fields (the identity's
+/// nickname / handle / id) plus builder-set options. The inner
+/// [`BreadcrumbPill`] is constructed on each `show()` call.
+#[derive(Clone, Debug, Default)]
 pub struct IdentityPill {
-    inner: BreadcrumbPill,
+    local_nickname: Option<String>,
+    dpns_handle: Option<String>,
+    identity_id_base58: String,
+    tooltip: String,
+    accessible_name: Option<String>,
+    mode: BreadcrumbPillMode,
 }
 
 impl IdentityPill {
     /// Build an identity pill from the three identity fields. The pill is
-    /// interactive by default; override with [`with_mode`].
+    /// interactive by default; override with [`with_mode`](Self::with_mode).
     pub fn new(
         local_nickname: Option<&str>,
         dpns_handle: Option<&str>,
         identity_id_base58: &str,
     ) -> Self {
-        let label = display_label(local_nickname, dpns_handle, identity_id_base58);
         Self {
-            inner: BreadcrumbPill::new(label).with_icon("👤"),
+            local_nickname: local_nickname.map(str::to_string),
+            dpns_handle: dpns_handle.map(str::to_string),
+            identity_id_base58: identity_id_base58.to_string(),
+            tooltip: String::new(),
+            accessible_name: None,
+            mode: BreadcrumbPillMode::default(),
         }
     }
 
-    /// Attach a tooltip. Forwards to the inner pill.
+    /// Attach a tooltip.
     pub fn with_tooltip(mut self, text: impl Into<String>) -> Self {
-        self.inner = self.inner.with_tooltip(text);
+        self.tooltip = text.into();
         self
     }
 
-    /// Override accessible name. Forwards to the inner pill.
+    /// Override accessible name. Defaults to the resolved display label.
     pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
-        self.inner = self.inner.with_accessible_name(name);
+        self.accessible_name = Some(name.into());
         self
     }
 
     /// Force a specific mode. Interactive by default.
     pub fn with_mode(mut self, mode: BreadcrumbPillMode) -> Self {
-        self.inner = self.inner.with_mode(mode);
+        self.mode = mode;
         self
     }
 
+    /// Resolve the display label using the priority rule (for tests and
+    /// compositional callers).
+    pub fn resolved_label(&self) -> String {
+        display_label(
+            self.local_nickname.as_deref(),
+            self.dpns_handle.as_deref(),
+            &self.identity_id_base58,
+        )
+    }
+
+    /// Build the inner `BreadcrumbPill` from the stored config. Exposed for
+    /// tests; production callers use `show()`.
+    fn build_inner(&self) -> BreadcrumbPill {
+        let label = self.resolved_label();
+        let mut pill = BreadcrumbPill::new(label)
+            .with_icon("👤")
+            .with_mode(self.mode);
+        if !self.tooltip.is_empty() {
+            pill = pill.with_tooltip(self.tooltip.clone());
+        }
+        if let Some(name) = &self.accessible_name {
+            pill = pill.with_accessible_name(name.clone());
+        }
+        pill
+    }
+
     /// Render and return the response.
-    pub fn show(self, ui: &mut Ui) -> BreadcrumbPillResponse {
-        self.inner.show(ui)
+    pub fn show(&self, ui: &mut Ui) -> IdentityPillResponse {
+        IdentityPillResponse::from_inner(self.build_inner().show(ui))
     }
 }
 
@@ -147,10 +231,66 @@ mod tests {
     }
 
     #[test]
-    fn all_empty_collapses_to_empty_id() {
-        // Defensive: the id is the guaranteed-non-optional fallback, so an
-        // empty id yields an empty label. Callers must not pass an empty id.
+    fn empty_id_uses_unknown_identity_fallback() {
+        // Defensive fallback: an empty id must never produce an invisible
+        // pill. Callers should avoid passing an empty id, but the label
+        // resolver guards against it so a bug upstream never renders a blank.
         let label = display_label(None, None, "");
-        assert_eq!(label, "");
+        assert_eq!(label, "Unknown identity");
+    }
+
+    #[test]
+    fn whitespace_only_id_uses_unknown_identity_fallback() {
+        let label = display_label(None, None, "   ");
+        assert_eq!(label, "Unknown identity");
+    }
+
+    #[test]
+    fn pill_stores_domain_fields_lazily() {
+        // Lazy-init: the struct must not eagerly construct a BreadcrumbPill.
+        // We verify by checking that the builder chain only mutates stored
+        // config, and `build_inner` produces a pill with the right label.
+        let pill = IdentityPill::new(Some("dev"), Some("alex.dash"), "Fx1Kj9TtFx1Kj9Tt");
+        assert_eq!(pill.resolved_label(), "dev");
+        assert_eq!(pill.mode, BreadcrumbPillMode::Interactive);
+        let inner = pill.build_inner();
+        assert_eq!(inner.label(), "dev");
+    }
+
+    #[test]
+    fn pill_builder_chain_is_fluent() {
+        let pill = IdentityPill::new(None, Some("alex.dash"), "Fx1Kj9TtFx1Kj9Tt")
+            .with_tooltip("Switch identities")
+            .with_accessible_name("Identity switcher")
+            .with_mode(BreadcrumbPillMode::Subdued);
+        assert_eq!(pill.resolved_label(), "alex.dash");
+        assert_eq!(pill.mode, BreadcrumbPillMode::Subdued);
+        assert_eq!(pill.tooltip, "Switch identities");
+        assert_eq!(pill.accessible_name.as_deref(), Some("Identity switcher"));
+    }
+
+    #[test]
+    fn response_round_trip() {
+        // Not clicked.
+        let inner = BreadcrumbPillResponse::new(
+            "alex.dash".to_string(),
+            BreadcrumbPillMode::Interactive,
+            false,
+        );
+        let resp = IdentityPillResponse::from_inner(inner);
+        assert!(!resp.has_changed());
+        assert!(resp.is_valid());
+        assert!(resp.changed_value().is_none());
+        assert_eq!(resp.label, "alex.dash");
+
+        // Clicked — payload propagates.
+        let inner = BreadcrumbPillResponse::new(
+            "alex.dash".to_string(),
+            BreadcrumbPillMode::Interactive,
+            true,
+        );
+        let resp = IdentityPillResponse::from_inner(inner);
+        assert!(resp.has_changed());
+        assert_eq!(resp.changed_value().as_deref(), Some("alex.dash"));
     }
 }

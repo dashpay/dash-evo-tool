@@ -12,6 +12,7 @@ See [docs/personas/](personas/) for full persona descriptions.
 - [Identity Operations (IDN)](#identity-operations-idn)
 - [DPNS (DPN)](#dpns-dpn)
 - [DashPay (DPY)](#dashpay-dpy)
+- [Identities Hub (IDH)](#identities-hub-idh)
 - [Token Operations (TOK)](#token-operations-tok)
 - [Contracts and Documents (DOC)](#contracts-and-documents-doc)
 - [Developer and Power Tools (DEV)](#developer-and-power-tools-dev)
@@ -1050,37 +1051,37 @@ As Alex, I want to open the Identities section on a fresh device and be offered 
 - Onboarding empty state shows a heading, a plain-language explanation, and two primary CTAs: `Create my first identity` and `I already have an identity — load it`.
 - Dev-mode footer adds `Create multiple test identities` / `Load identity by ID` tertiary links.
 
-### IDH-002: Identity home at a glance [Implemented]
+### IDH-002: Identity home at a glance [Gap]
 **Persona:** Alex
 
 As Alex, when I have one identity, opening Identities shows me my balance, username, quick actions, and recent activity without jargon.
 
-- Identity hub routes directly to Home for a single-identity account.
-- Planned layout: hero card, quick actions (Send · Receive · Add contact), secondary actions (Add funds · Send to wallet · Send to another identity), onboarding checklist, recent activity preview.
+- Hub scaffold routes directly to Home for a single-identity account and renders a placeholder until the per-tab content lands.
+- Planned layout (follow-up): hero card, quick actions (Send · Receive · Add contact), secondary actions (Add funds · Send to wallet · Send to another identity), onboarding checklist, recent activity preview.
 
-### IDH-003: Multi-identity switching [Implemented]
+### IDH-003: Multi-identity switching [Gap]
 **Persona:** Priya
 
 As Priya, with multiple wallets and identities, I can switch between them from the breadcrumb pill on any tab in under two clicks.
 
-- Breadcrumb renders `Identities › [wallet pill] › [identity pill]`.
-- Pills are interactive when there is more than one option, subdued when there is only one, and render italic placeholder text when empty.
-- Label priority for identities: Local nickname → DPNS handle → shortened Identity ID.
+- Reusable `BreadcrumbPill` and `IdentityPill` components shipped, including the label priority rule (Local nickname → DPNS handle → shortened Identity ID).
+- The full three-segment switcher composition (wallet pill + identity pill + dropdowns) lands in a follow-up alongside the tab bar.
 
-### IDH-004: Opt in to DashPay social profile [Implemented]
+### IDH-004: Opt in to DashPay social profile [Gap]
 **Persona:** Alex
 
 As Alex, setting up a social profile to unlock DashPay contacts is clearly optional and I can keep using payments and usernames without doing it.
 
-- Identity hub Home shows an inline `Set up your social profile` card when no profile exists.
-- Contacts tab shows a gated-state card with an action to add a display name when no profile exists.
+- Tab scaffolds for Home and Contacts compile and render placeholder copy pointing users at the legacy DashPay screens.
+- Planned (follow-up): `Set up your social profile` card on Home, gated-state card on Contacts.
 
-### IDH-005: Developer bulk identity creation [Implemented]
+### IDH-005: Developer bulk identity creation [Gap]
 **Persona:** Jordan
 
 As Jordan in Developer Mode, I have a single entry point to create many test identities without leaving the Identities section.
 
-- Dev-mode footer on the onboarding state and the identity-picker `Add a new identity` dropdown both surface the bulk-creation path.
+- Onboarding screen surfaces a Developer-mode footer mentioning `Create multiple test identities` / `Load identity by ID` as plain text.
+- Planned (follow-up): wire those footer items to the existing `AddNewIdentityScreen` bulk path and dev-mode identity-picker dropdown entries.
 
 ### IDH-006: Unified activity timeline [Gap]
 **Persona:** All

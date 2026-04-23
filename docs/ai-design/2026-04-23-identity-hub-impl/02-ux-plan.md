@@ -92,7 +92,7 @@ entry (tt-1), developer-mode chip footer hidden for Alex / Priya, shown for Jord
 **MVP constraint**: the unified aggregator over DashPay payments + funding + platform ops
 does not exist today. The tab ships with filter chips and a gated-state body saying
 "Unified activity is coming soon. For now, view activity on the existing DashPay Payments
-screen." Feature flag: `identity_hub_activity_feed`, off by default.
+screen." Cargo feature flag: `identity-hub-activity-feed`, off by default.
 
 ## Journey 7 — Settings (Priya, multi-wallet)
 

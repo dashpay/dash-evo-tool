@@ -18,30 +18,24 @@ Concise catalog of all reusable UI components. Consult before creating new UI el
 | `PasswordInput` | `password_input.rs` | N/A (security) | Masked input with hold-to-reveal, zeroizes on drop. NOT ComponentResponse |
 | `IdentitySelector` | `identity_selector.rs` | N/A (Widget) | ComboBox dropdown for identity selection |
 
-## Breadcrumb Components (Identities hub)
+## Breadcrumb Components
 
 | Component | File | DomainType | Description |
 |-----------|------|------------|-------------|
-| `BreadcrumbPill` | `breadcrumb_pill.rs` | `String` | Label + optional icon + chevron. Three modes: Interactive / Subdued / Placeholder. Drives the wallet + identity switcher in the Identities hub breadcrumb. |
-| `IdentityPill` | `identity_pill.rs` | `String` | Thin wrapper over `BreadcrumbPill` applying the priority rule Local nickname → DPNS handle → shortened Identity ID. `display_label` / `shorten_id` are pure functions reusable anywhere an identity label is rendered. |
+| `BreadcrumbPill` | `breadcrumb_pill.rs` | `String` | Label + optional icon + chevron. Three modes: Interactive / Subdued / Placeholder. Reusable anywhere a breadcrumb pill is needed (Identities hub breadcrumb, future wallet breadcrumbs). |
 
-## Identity Hub Components
+## Placement Rule
 
-All of these live flat in `src/ui/components/` and are consumed by the unified
-Identities hub under `src/ui/identity/`. See the design spec at
-`docs/ai-design/2026-04-22-identity-dashpay-redesign/` for visual context.
+`src/ui/components/` holds **reusable** components only — widgets that plausibly
+have a second consumer outside their originating screen (Wallets, Tokens,
+Contracts, Tools, Settings, etc.).
 
-| Component | File | Description |
-|-----------|------|-------------|
-| `IdentityHubTabBar` | `identity_hub_tab_bar.rs` | Horizontal tab strip over the four hub tabs (Home · Contacts · Activity · Settings). Response struct surfaces the clicked tab; caller owns the selected-tab state so deep links can override it. |
-| `IdentityHeroCard` | `identity_hero_card.rs` | Large hero card on the Home tab: identity avatar / pill, balance preview, quick actions. |
-| `OnboardingChecklist` | `onboarding_checklist.rs` | Home-tab step list with dismiss + skip semantics. Response surfaces which step was acted on so the hub applies the right `HomeOutcome`. |
-| `IdentityPickerCard` | `identity_picker_card.rs` | Picker-grid card representing one identity (avatar, name, id). Clicking selects that identity. |
-| `IdentityPickerAddCard` | `identity_picker_add_card.rs` | Trailing picker-grid card that adds a new identity (onboarding-style CTA). |
-| `SocialProfileGateCard` | `social_profile_gate_card.rs` | Contacts-tab gate shown when the active identity has no DashPay profile. Primary CTA emits `AppAction::SwitchIdentityHubTab(Settings)` so the user lands where profile editing happens. |
-| `RequestCard` | `request_card.rs` | Contact-request row with received / sent variants. Response exposes `accepted` / `declined` / `cancelled` flags — callers dispatch the matching `DashPayTask` variant. |
-| `ContactRow` | `contact_row.rs` | Active-contact row used in the contacts list. Consistent avatar/initials with `RequestCard`. |
-| `ActivityRow` | `activity_row.rs` | Activity-tab row with icon, title, subtitle, timestamp, and optional amount. Used in the filterable timeline and the Home-tab recent-activity preview. |
+Identity Hub-specific widgets (`IdentityHubTabBar`, `IdentityHeroCard`,
+`OnboardingChecklist`, `IdentityPickerCard`, `IdentityPickerAddCard`,
+`SocialProfileGateCard`, `RequestCard`, `ContactRow`, `ActivityRow`,
+`IdentityPill`) live in `src/ui/identity/` alongside the tab modules that
+consume them. If one of those widgets gains a second consumer outside the
+hub, promote it into this directory.
 
 ## Dialog Components
 

@@ -27,13 +27,23 @@
 //! back to a registered screen (handled by the resolver in `AppState::new`).
 
 pub mod activity;
+pub mod activity_row;
+pub mod contact_row;
 pub mod contacts;
 pub mod home;
 pub mod hub_screen;
+pub mod identity_hero_card;
+pub mod identity_hub_tab_bar;
+pub mod identity_picker_add_card;
+pub mod identity_picker_card;
+pub mod identity_pill;
 pub mod landing;
 pub mod onboarding;
+pub mod onboarding_checklist;
 pub mod picker;
+pub mod request_card;
 pub mod settings;
+pub mod social_profile_gate_card;
 pub mod tabs;
 
 pub use hub_screen::IdentityHubScreen;

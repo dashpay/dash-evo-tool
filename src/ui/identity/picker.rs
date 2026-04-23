@@ -12,12 +12,12 @@
 //! This module is the UI shell only. No backend tasks are dispatched here —
 //! identity lookup is handled upstream by `IdentityHubScreen::landing()`.
 
+use super::identity_picker_add_card::IdentityPickerAddCard;
+use super::identity_picker_card::{CARD_MIN_WIDTH, IdentityPickerCard};
 use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::Screen;
-use crate::ui::components::identity_picker_add_card::IdentityPickerAddCard;
-use crate::ui::components::identity_picker_card::{CARD_MIN_WIDTH, IdentityPickerCard};
 use crate::ui::identities::add_new_identity_screen::AddNewIdentityScreen;
 use crate::ui::theme::DashColors;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;

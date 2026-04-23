@@ -16,8 +16,8 @@
 //! `add_requested == true` which the picker grid uses to route to
 //! `AddNewIdentityScreen` (the existing, unmodified screen).
 
+use super::identity_picker_card::{CARD_HEIGHT, CARD_MIN_WIDTH};
 use crate::ui::components::component_trait::ComponentResponse;
-use crate::ui::components::identity_picker_card::{CARD_HEIGHT, CARD_MIN_WIDTH};
 use crate::ui::theme::DashColors;
 use eframe::egui::{
     self, Color32, CornerRadius, FontId, Frame, Margin, Pos2, Rect, Response, RichText, Sense,

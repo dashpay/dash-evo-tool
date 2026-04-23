@@ -24,9 +24,9 @@
 //! (`docs/COMPONENT_DESIGN_PATTERN.md`): private fields, builder methods,
 //! `show()` returns a typed response implementing [`ComponentResponse`].
 
+use super::identity_pill::shorten_id;
 use crate::model::qualified_identity::IdentityType;
 use crate::ui::components::component_trait::ComponentResponse;
-use crate::ui::components::identity_pill::shorten_id;
 use crate::ui::theme::DashColors;
 use eframe::egui::{
     self, Color32, CornerRadius, FontId, Frame, Margin, Response, RichText, Sense, Stroke, Ui,

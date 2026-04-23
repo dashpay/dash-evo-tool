@@ -17,10 +17,10 @@
 //! - No request cards or active contacts list rendered (the populated-state
 //!   section headings and the search placeholder must be absent).
 
-use dash_evo_tool::ui::components::social_profile_gate_card::{
+use dash_evo_tool::ui::identity::contacts;
+use dash_evo_tool::ui::identity::social_profile_gate_card::{
     HEADING as GATE_HEADING, PRIMARY_LABEL as GATE_PRIMARY,
 };
-use dash_evo_tool::ui::identity::contacts;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 

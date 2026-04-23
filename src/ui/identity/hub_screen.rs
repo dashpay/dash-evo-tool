@@ -109,11 +109,11 @@ impl IdentityHubScreen {
 
 impl ScreenLike for IdentityHubScreen {
     fn refresh(&mut self) {
-        // Nothing to refresh in the scaffold itself — per-tab submodules own
-        // their own cached data and will implement `refresh` when they land
-        // (T8–T11). Clear the stale load-error banner so the next `landing()`
-        // call can try again cleanly.
+        // Clear the stale load-error banner so the next `landing()` call can
+        // try again cleanly, and reset per-tab load guards so a refresh
+        // re-fires the Contacts load.
         self.load_error_banner.take_and_clear();
+        self.contacts_state.reset();
     }
 
     fn refresh_on_arrival(&mut self) {
@@ -169,6 +169,12 @@ impl ScreenLike for IdentityHubScreen {
                         // it from outside the component.
                         let tab_response = IdentityHubTabBar::new(self.selected_tab).show(ui);
                         if let Some(clicked) = tab_response.clicked() {
+                            if clicked != self.selected_tab {
+                                // Tab-entry transition: reset per-tab load
+                                // guards so the incoming tab re-dispatches
+                                // its initial backend task once.
+                                self.contacts_state.reset();
+                            }
                             self.selected_tab = clicked;
                         }
                         ui.add_space(16.0);
@@ -179,13 +185,18 @@ impl ScreenLike for IdentityHubScreen {
                                 if let Some(next_tab) =
                                     super::home::apply_outcome(&mut self.home_state, outcome)
                                 {
+                                    if next_tab != self.selected_tab {
+                                        self.contacts_state.reset();
+                                    }
                                     self.selected_tab = next_tab;
                                 }
                                 home_action
                             }
-                            IdentityHubTab::Contacts => {
-                                super::contacts::render(ui, &self.app_context)
-                            }
+                            IdentityHubTab::Contacts => super::contacts::render(
+                                ui,
+                                &self.app_context,
+                                &mut self.contacts_state,
+                            ),
                             IdentityHubTab::Activity => {
                                 super::activity::render(ui, &self.app_context)
                             }

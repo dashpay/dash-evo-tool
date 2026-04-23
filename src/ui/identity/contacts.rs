@@ -36,15 +36,43 @@ pub const NO_RECEIVED_EMPTY: &str = "No pending requests.";
 pub const NO_ACTIVE_EMPTY: &str = "You have no contacts yet.";
 pub const SEARCH_PLACEHOLDER: &str = "Search your contacts";
 
+/// Hub-owned contacts-tab state. Tracks whether the Contacts tab has already
+/// dispatched its `DashPayTask::LoadContacts` request for the current tab
+/// entry. Without this, the populated state would fire a backend task on
+/// every paint — that floods the channel and hammers the SDK. The flag is
+/// reset by the hub when the user leaves the tab (via [`ContactsState::reset`])
+/// or via an explicit refresh affordance.
+#[derive(Debug, Default, Clone)]
+pub struct ContactsState {
+    /// Set to `true` after the first paint of the populated shell triggers
+    /// the backend task. Guards all subsequent frames from re-dispatching.
+    load_requested: bool,
+}
+
+impl ContactsState {
+    /// Clear the dispatched flag so the next paint re-issues the load. Call
+    /// this from `refresh()` / `refresh_on_arrival()` on the hub.
+    pub fn reset(&mut self) {
+        self.load_requested = false;
+    }
+}
+
 /// Public entry point invoked by `hub_screen` when the Contacts tab is active.
 ///
 /// Resolves the "current" identity as the first locally-loaded identity on
 /// the active network (a pragmatic default until T7's identity picker lands).
 /// When no identity is loaded, or the active identity has no DashPay profile,
 /// the gated state is rendered.
-pub fn render(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAction {
+///
+/// The caller owns a [`ContactsState`] so the populated-shell only dispatches
+/// its backend task once per tab entry — not once per paint.
+pub fn render(
+    ui: &mut Ui,
+    app_context: &Arc<AppContext>,
+    state_guard: &mut ContactsState,
+) -> AppAction {
     let state = ContactsTabState::resolve(app_context);
-    render_state(ui, app_context, &state)
+    render_state(ui, app_context, &state, state_guard)
 }
 
 /// Resolved rendering mode for the Contacts tab.
@@ -95,10 +123,17 @@ impl ContactsTabState {
 
 /// Render the resolved state. Split out so tests can exercise the rendering
 /// logic without reaching into `AppContext` internals.
-fn render_state(ui: &mut Ui, app_context: &Arc<AppContext>, state: &ContactsTabState) -> AppAction {
+fn render_state(
+    ui: &mut Ui,
+    app_context: &Arc<AppContext>,
+    state: &ContactsTabState,
+    state_guard: &mut ContactsState,
+) -> AppAction {
     match state {
         ContactsTabState::Gated { handle } => render_gated(ui, handle.as_deref()),
-        ContactsTabState::Populated { identity } => render_populated(ui, app_context, identity),
+        ContactsTabState::Populated { identity } => {
+            render_populated(ui, app_context, identity, state_guard)
+        }
     }
 }
 
@@ -137,6 +172,7 @@ fn render_populated(
     ui: &mut Ui,
     _app_context: &Arc<AppContext>,
     identity: &QualifiedIdentity,
+    state_guard: &mut ContactsState,
 ) -> AppAction {
     let dark_mode = ui.ctx().style().visuals.dark_mode;
 
@@ -178,11 +214,15 @@ fn render_populated(
         );
     });
 
-    // Fire the existing backend task to populate the list. Dispatch returns
-    // through `AppAction::BackendTask`, which the hub-level `ui()` pipes to
-    // `AppState::run_backend_task`. No new backend hook is introduced here.
-    // The identity is cloned once per frame — small price in exchange for a
-    // task-free scaffold that can be replaced by cached state in T10.
+    // Fire the existing backend task to populate the list — but only once per
+    // tab entry. Without this guard the populated shell re-dispatches every
+    // frame, which floods the backend channel and hammers the SDK. The hub
+    // resets the guard in `refresh_on_arrival()` so a fresh tab switch or
+    // explicit refresh will trigger another load.
+    if state_guard.load_requested {
+        return AppAction::None;
+    }
+    state_guard.load_requested = true;
     AppAction::BackendTask(BackendTask::DashPayTask(Box::new(
         DashPayTask::LoadContacts {
             identity: identity.clone(),

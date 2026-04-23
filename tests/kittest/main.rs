@@ -4,6 +4,7 @@ mod dashpay_screen;
 mod identities_screen;
 mod identity_hub;
 mod identity_hub_activity;
+mod identity_hub_contacts;
 mod identity_hub_onboarding;
 mod import_single_key;
 mod info_popup;

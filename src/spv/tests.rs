@@ -5,6 +5,7 @@ use crate::spv::SpvStatus;
 use crate::spv::manager::SpvManager;
 use crate::utils::tasks::TaskManager;
 use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::key_wallet_manager::WalletInterface;
 use std::sync::{Arc, RwLock};
 use tokio::time::{Duration, timeout};
 
@@ -638,4 +639,50 @@ async fn test_live_testnet_sync_and_shutdown() {
     );
 
     let _ = task_manager.shutdown();
+}
+
+/// Regression test: clear_data_dir must reset filter_committed_height (not just synced_height).
+///
+/// At rust-dashcore 309fac8, WalletManager gained an independent filter_committed_height
+/// field. FiltersManager::new() reads filter_committed_height() for its "already synced"
+/// guard — the field is no longer derived from synced_height. Calling update_synced_height(0)
+/// alone leaves filter_committed_height stale and causes the next SPV session to declare
+/// itself "already synced" and skip the rescan, producing zero balance after a Clear SPV Data.
+///
+/// Given a manager with a non-zero filter_committed_height,
+/// When clear_data_dir() is called,
+/// Then filter_committed_height is reset to 0.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_clear_data_dir_resets_filter_committed_height() {
+    let (manager, _tm, _tmp_dir) = create_test_manager();
+
+    // Pre-seed a non-zero filter_committed_height to simulate a previous session.
+    const PRESEED_HEIGHT: u32 = 5_000;
+    let wallet_arc = manager.wallet();
+    {
+        let mut wm = wallet_arc.write().await;
+        wm.update_filter_committed_height(PRESEED_HEIGHT);
+    }
+
+    // Verify pre-condition.
+    {
+        let wm = wallet_arc.read().await;
+        assert_eq!(
+            wm.filter_committed_height(),
+            PRESEED_HEIGHT,
+            "pre-condition: filter_committed_height should be PRESEED_HEIGHT"
+        );
+    }
+
+    manager
+        .clear_data_dir()
+        .expect("clear_data_dir should succeed");
+
+    // After clearing, filter_committed_height must be 0.
+    let wm = wallet_arc.read().await;
+    assert_eq!(
+        wm.filter_committed_height(),
+        0,
+        "clear_data_dir must reset filter_committed_height to 0"
+    );
 }

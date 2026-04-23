@@ -1194,13 +1194,13 @@ As Alex, I want to open the Identities section on a fresh device and be offered 
 - Onboarding empty state shows a heading, a plain-language explanation, and two primary CTAs: `Create my first identity` and `I already have an identity — load it`.
 - Dev-mode footer adds `Create multiple test identities` / `Load identity by ID` tertiary links.
 
-### IDH-002: Identity home at a glance [Gap]
+### IDH-002: Identity home at a glance [Implemented]
 **Persona:** Alex
 
 As Alex, when I have one identity, opening Identities shows me my balance, username, quick actions, and recent activity without jargon.
 
-- Hub scaffold routes directly to Home for a single-identity account and renders a placeholder until the per-tab content lands.
-- Planned layout (follow-up): hero card, quick actions (Send · Receive · Add contact), secondary actions (Add funds · Send to wallet · Send to another identity), onboarding checklist, recent activity preview.
+- Home tab renders the full layout: `IdentityHeroCard`, quick actions (Send · Receive · Add contact), secondary actions (Add funds · Send to wallet · Send to another identity), `OnboardingChecklist`, and a recent-activity preview.
+- "See all activity" link on Home hops directly to the Activity tab via `HomeOutcome::GoToActivity`.
 
 ### IDH-003: Multi-identity switching [Gap]
 **Persona:** Priya
@@ -1208,15 +1208,17 @@ As Alex, when I have one identity, opening Identities shows me my balance, usern
 As Priya, with multiple wallets and identities, I can switch between them from the breadcrumb pill on any tab in under two clicks.
 
 - Reusable `BreadcrumbPill` and `IdentityPill` components shipped, including the label priority rule (Local nickname → DPNS handle → shortened Identity ID).
-- The full three-segment switcher composition (wallet pill + identity pill + dropdowns) lands in a follow-up alongside the tab bar.
+- Identity picker grid lands with `IdentityPickerCard` + `IdentityPickerAddCard`, so a multi-identity account sees a picker landing.
+- The full three-segment switcher composition (wallet pill + identity pill + dropdowns) lands in a follow-up.
 
-### IDH-004: Opt in to DashPay social profile [Gap]
+### IDH-004: Opt in to DashPay social profile [Implemented]
 **Persona:** Alex
 
 As Alex, setting up a social profile to unlock DashPay contacts is clearly optional and I can keep using payments and usernames without doing it.
 
-- Tab scaffolds for Home and Contacts compile and render placeholder copy pointing users at the legacy DashPay screens.
-- Planned (follow-up): `Set up your social profile` card on Home, gated-state card on Contacts.
+- Contacts tab shows `SocialProfileGateCard` when the active identity has no DashPay profile; the primary CTA deep-links to Settings via `AppAction::SwitchIdentityHubTab(Settings)`.
+- Settings tab hosts the social-profile block where display name and avatar can be edited; identities without a profile continue to use payments and usernames untouched.
+- Home tab renders a `Set up your social profile` entry in the onboarding checklist with a skip affordance — opting in is never forced.
 
 ### IDH-005: Developer bulk identity creation [Gap]
 **Persona:** Jordan
@@ -1231,5 +1233,5 @@ As Jordan in Developer Mode, I have a single entry point to create many test ide
 
 As any persona, my payments, funding movements, and platform actions all live in one Activity tab with filters, not in separate screens.
 
-- Tab shell with filter chips ships in the hub scaffold.
+- Activity tab shell ships with filter chips and `ActivityRow` component for rendering timeline entries.
 - Full aggregation across DashPay payments, funding, and platform ops depends on a backend aggregator; gated behind the `identity-hub-activity-feed` Cargo feature until implemented.

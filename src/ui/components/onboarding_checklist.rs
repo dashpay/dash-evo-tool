@@ -1,0 +1,422 @@
+//! Onboarding checklist — three-step guided setup strip shown on the
+//! Identity Home tab until the user either completes all steps or dismisses
+//! the checklist.
+//!
+//! See design-spec §B.2 (checklist zone #4). The three steps, in order:
+//!
+//! 1. `Pick a username`
+//! 2. `Set a display name` — hidden by callers when the user has previously
+//!    dismissed the social-profile card (treated as a deliberate skip; the
+//!    caller is responsible for honoring that decision).
+//! 3. `Add your first contact`
+//!
+//! Each step renders with either a filled check mark (complete) or an empty
+//! circle (pending). A dismiss button (`×`) in the top-right corner reports
+//! `dismissed == true` so the caller can persist the dismissal.
+//!
+//! Follows `docs/COMPONENT_DESIGN_PATTERN.md`: private fields + builder +
+//! response struct implementing [`ComponentResponse`].
+
+use crate::ui::components::component_trait::ComponentResponse;
+use crate::ui::theme::{DashColors, ResponseExt, Shape, Spacing};
+use eframe::egui::{self, Color32, CornerRadius, Frame, Margin, RichText, Sense, Stroke, Ui};
+
+/// The three canonical onboarding steps. `Hidden` is applied by the caller
+/// (see docs/ai-design/2026-04-22-identity-dashpay-redesign/design-spec.md
+/// §B.2) to honor a user's skip of the social profile card.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ChecklistStep {
+    PickUsername,
+    SetDisplayName,
+    AddFirstContact,
+}
+
+impl ChecklistStep {
+    /// All steps in rendering order.
+    pub const ALL: [ChecklistStep; 3] = [
+        ChecklistStep::PickUsername,
+        ChecklistStep::SetDisplayName,
+        ChecklistStep::AddFirstContact,
+    ];
+
+    /// Alex-facing label. Exact wording from design-spec §B.2.
+    pub fn label(self) -> &'static str {
+        match self {
+            ChecklistStep::PickUsername => "Pick a username",
+            ChecklistStep::SetDisplayName => "Set a display name",
+            ChecklistStep::AddFirstContact => "Add your first contact",
+        }
+    }
+
+    /// Short, complete-sentence description rendered in a tooltip.
+    pub fn tooltip(self) -> &'static str {
+        match self {
+            ChecklistStep::PickUsername => "Pick a Dash username so people can pay you by name.",
+            ChecklistStep::SetDisplayName => {
+                "Add a display name so contacts can recognise you on DashPay."
+            }
+            ChecklistStep::AddFirstContact => {
+                "Find someone by username and add them to your contacts."
+            }
+        }
+    }
+}
+
+/// Action that the checklist emits in a response.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ChecklistAction {
+    /// User clicked the row for this step to act on it.
+    Activated(ChecklistStep),
+    /// User clicked the dismiss (`×`) button.
+    Dismissed,
+}
+
+/// Response returned by [`OnboardingChecklist::show`].
+///
+/// `has_changed` is `true` when the user either activates a step or
+/// dismisses the checklist — callers should react by routing the user to
+/// the right screen and / or persisting the dismissal.
+#[derive(Clone, Debug, Default)]
+pub struct ChecklistResponse {
+    action: Option<ChecklistAction>,
+    has_changed: bool,
+    changed_value: Option<ChecklistAction>,
+}
+
+impl ChecklistResponse {
+    fn new(action: Option<ChecklistAction>) -> Self {
+        Self {
+            action,
+            has_changed: action.is_some(),
+            changed_value: action,
+        }
+    }
+
+    /// The action, if any, produced this frame.
+    pub fn action(&self) -> Option<ChecklistAction> {
+        self.action
+    }
+
+    /// True if the user clicked the dismiss button.
+    pub fn dismissed(&self) -> bool {
+        matches!(self.action, Some(ChecklistAction::Dismissed))
+    }
+
+    /// Step the user activated this frame, if any.
+    pub fn activated_step(&self) -> Option<ChecklistStep> {
+        match self.action {
+            Some(ChecklistAction::Activated(step)) => Some(step),
+            _ => None,
+        }
+    }
+}
+
+impl ComponentResponse for ChecklistResponse {
+    type DomainType = ChecklistAction;
+
+    fn has_changed(&self) -> bool {
+        self.has_changed
+    }
+
+    fn is_valid(&self) -> bool {
+        true
+    }
+
+    fn changed_value(&self) -> &Option<Self::DomainType> {
+        &self.changed_value
+    }
+
+    fn error_message(&self) -> Option<&str> {
+        None
+    }
+}
+
+/// Onboarding checklist widget.
+#[derive(Clone, Debug)]
+pub struct OnboardingChecklist {
+    steps: Vec<ChecklistStep>,
+    completed: Vec<ChecklistStep>,
+}
+
+impl OnboardingChecklist {
+    /// Construct a checklist with all three steps visible by default. Hide a
+    /// step by calling [`hide`](Self::hide) (used by callers to honor a
+    /// previous "skip the social profile" decision).
+    pub fn new() -> Self {
+        Self {
+            steps: ChecklistStep::ALL.to_vec(),
+            completed: Vec::new(),
+        }
+    }
+
+    /// Mark a step as complete. No-op if the step was already complete.
+    pub fn mark_complete(mut self, step: ChecklistStep) -> Self {
+        if !self.completed.contains(&step) {
+            self.completed.push(step);
+        }
+        self
+    }
+
+    /// Hide a step so it never renders. Useful when the user has explicitly
+    /// skipped an optional section (e.g. the social profile card).
+    pub fn hide(mut self, step: ChecklistStep) -> Self {
+        self.steps.retain(|s| *s != step);
+        // Also remove from completed so the "all done" check stays honest.
+        self.completed.retain(|s| *s != step);
+        self
+    }
+
+    /// Returns `true` when every visible step is marked complete. Callers
+    /// may stop rendering the checklist at that point.
+    pub fn all_complete(&self) -> bool {
+        !self.steps.is_empty() && self.steps.iter().all(|s| self.completed.contains(s))
+    }
+
+    /// Accessor for the currently visible steps in rendering order.
+    pub fn visible_steps(&self) -> &[ChecklistStep] {
+        &self.steps
+    }
+
+    /// Accessor reporting whether a specific step is complete.
+    pub fn is_complete(&self, step: ChecklistStep) -> bool {
+        self.completed.contains(&step)
+    }
+
+    /// Render the checklist. Returns a response describing any click.
+    ///
+    /// The checklist renders as a single card with a row per visible step and
+    /// a small dismiss button in the top-right corner. Completed rows show a
+    /// filled Dash-blue circle with a white check mark; pending rows show an
+    /// empty outlined circle.
+    pub fn show(&self, ui: &mut Ui) -> ChecklistResponse {
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
+
+        let frame = Frame::new()
+            .fill(DashColors::surface(dark_mode))
+            .stroke(Stroke::new(
+                Shape::BORDER_WIDTH,
+                DashColors::border_light(dark_mode),
+            ))
+            .corner_radius(CornerRadius::same(Shape::RADIUS_MD))
+            .inner_margin(Margin::same(Spacing::MD as i8));
+
+        let mut action: Option<ChecklistAction> = None;
+
+        frame.show(ui, |ui| {
+            // Header row with heading + dismiss button.
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new("Get set up")
+                        .size(16.0)
+                        .strong()
+                        .color(DashColors::text_primary(dark_mode)),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // `×` dismiss button — compact, ghost styling.
+                    let dismiss_resp = ui
+                        .add(
+                            egui::Label::new(
+                                RichText::new("×")
+                                    .size(20.0)
+                                    .color(DashColors::text_secondary(dark_mode)),
+                            )
+                            .sense(Sense::click()),
+                        )
+                        .clickable_tooltip(
+                            "Hide the setup checklist. You can find these actions on Settings \
+                             and Contacts anytime.",
+                        );
+                    if dismiss_resp.clicked() {
+                        action = Some(ChecklistAction::Dismissed);
+                    }
+                });
+            });
+            ui.add_space(Spacing::SM);
+
+            for step in &self.steps {
+                let complete = self.completed.contains(step);
+                if self.paint_step_row(ui, dark_mode, *step, complete) {
+                    action = Some(ChecklistAction::Activated(*step));
+                }
+            }
+        });
+
+        ChecklistResponse::new(action)
+    }
+
+    /// Paint a single step row. Returns `true` when the user clicked the
+    /// row (regardless of completion state — callers decide whether to
+    /// re-route a completed step to its edit screen).
+    fn paint_step_row(
+        &self,
+        ui: &mut Ui,
+        dark_mode: bool,
+        step: ChecklistStep,
+        complete: bool,
+    ) -> bool {
+        let mut clicked = false;
+        ui.horizontal(|ui| {
+            // Circle bullet — filled + check mark for complete, outlined
+            // otherwise.
+            let size = 20.0;
+            let (rect, _resp) = ui.allocate_exact_size(egui::vec2(size, size), Sense::hover());
+            let painter = ui.painter();
+            let center = rect.center();
+            let radius = size * 0.5;
+
+            if complete {
+                painter.circle_filled(center, radius, DashColors::DASH_BLUE);
+                // Draw a white check mark (two-line polyline).
+                let check_color = Color32::WHITE;
+                let p1 = egui::pos2(center.x - 4.0, center.y);
+                let p2 = egui::pos2(center.x - 1.0, center.y + 3.0);
+                let p3 = egui::pos2(center.x + 4.0, center.y - 3.0);
+                painter.line_segment([p1, p2], Stroke::new(1.8, check_color));
+                painter.line_segment([p2, p3], Stroke::new(1.8, check_color));
+            } else {
+                painter.circle_stroke(
+                    center,
+                    radius - 1.0,
+                    Stroke::new(1.5, DashColors::border(dark_mode)),
+                );
+            }
+
+            ui.add_space(Spacing::SM);
+
+            // Label — struck through when complete so the state is obvious
+            // even to color-blind users.
+            let text_color = if complete {
+                DashColors::text_secondary(dark_mode)
+            } else {
+                DashColors::text_primary(dark_mode)
+            };
+            let mut rich = RichText::new(step.label()).color(text_color);
+            if complete {
+                rich = rich.strikethrough();
+            }
+            let label_resp = ui
+                .add(egui::Label::new(rich).sense(Sense::click()))
+                .clickable_tooltip(step.tooltip());
+            if label_resp.clicked() {
+                clicked = true;
+            }
+        });
+        clicked
+    }
+}
+
+impl Default for OnboardingChecklist {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // UT-CHECKLIST-01 — Onboarding checklist completion.
+    //
+    // Preconditions: checklist with three steps, `Pick a username` marked
+    // complete. Expected: first step rendered with check mark; remaining two
+    // with empty circle.
+    #[test]
+    fn checklist_marks_pick_username_complete_only() {
+        let checklist = OnboardingChecklist::new().mark_complete(ChecklistStep::PickUsername);
+        assert!(checklist.is_complete(ChecklistStep::PickUsername));
+        assert!(!checklist.is_complete(ChecklistStep::SetDisplayName));
+        assert!(!checklist.is_complete(ChecklistStep::AddFirstContact));
+        assert!(!checklist.all_complete());
+        assert_eq!(checklist.visible_steps(), ChecklistStep::ALL.as_slice());
+    }
+
+    // UT-CHECKLIST-02 — Dismiss persists.
+    //
+    // Preconditions: checklist rendered; user clicks the dismiss button.
+    // Expected: response reports dismissed == true; caller must persist via
+    // settings.
+    #[test]
+    fn dismiss_response_reports_dismissed_true() {
+        let resp = ChecklistResponse::new(Some(ChecklistAction::Dismissed));
+        assert!(resp.dismissed());
+        assert!(resp.has_changed());
+        assert!(resp.is_valid());
+        assert_eq!(resp.changed_value(), &Some(ChecklistAction::Dismissed));
+        // The response API lets callers persist the dismissal — the widget
+        // itself does not mutate disk. This is the contract in UT-CHECKLIST-02.
+        assert_eq!(resp.activated_step(), None);
+    }
+
+    #[test]
+    fn empty_default_response_has_no_action() {
+        let resp = ChecklistResponse::default();
+        assert!(!resp.has_changed());
+        assert!(resp.action().is_none());
+        assert!(!resp.dismissed());
+        assert_eq!(resp.activated_step(), None);
+    }
+
+    #[test]
+    fn activated_step_response_has_step_value() {
+        let resp = ChecklistResponse::new(Some(ChecklistAction::Activated(
+            ChecklistStep::PickUsername,
+        )));
+        assert_eq!(resp.activated_step(), Some(ChecklistStep::PickUsername));
+        assert!(!resp.dismissed());
+    }
+
+    #[test]
+    fn hide_removes_step_from_visible_and_completed() {
+        let checklist = OnboardingChecklist::new()
+            .mark_complete(ChecklistStep::SetDisplayName)
+            .hide(ChecklistStep::SetDisplayName);
+        assert!(
+            !checklist
+                .visible_steps()
+                .contains(&ChecklistStep::SetDisplayName)
+        );
+        assert!(!checklist.is_complete(ChecklistStep::SetDisplayName));
+    }
+
+    #[test]
+    fn mark_complete_is_idempotent() {
+        let checklist = OnboardingChecklist::new()
+            .mark_complete(ChecklistStep::PickUsername)
+            .mark_complete(ChecklistStep::PickUsername);
+        assert!(checklist.is_complete(ChecklistStep::PickUsername));
+    }
+
+    #[test]
+    fn all_complete_true_only_when_every_visible_step_done() {
+        let checklist = OnboardingChecklist::new()
+            .mark_complete(ChecklistStep::PickUsername)
+            .mark_complete(ChecklistStep::SetDisplayName)
+            .mark_complete(ChecklistStep::AddFirstContact);
+        assert!(checklist.all_complete());
+    }
+
+    #[test]
+    fn all_complete_false_on_empty_checklist() {
+        // A checklist with every step hidden is not "all complete" — there
+        // is nothing to complete. This guards against a caller inadvertently
+        // hiding the last step and then thinking the user finished setup.
+        let checklist = OnboardingChecklist::new()
+            .hide(ChecklistStep::PickUsername)
+            .hide(ChecklistStep::SetDisplayName)
+            .hide(ChecklistStep::AddFirstContact);
+        assert!(!checklist.all_complete());
+        assert!(checklist.visible_steps().is_empty());
+    }
+
+    #[test]
+    fn labels_are_from_design_spec() {
+        // Lock the exact strings — any future wording change should bump
+        // design-spec §B.2 first.
+        assert_eq!(ChecklistStep::PickUsername.label(), "Pick a username");
+        assert_eq!(ChecklistStep::SetDisplayName.label(), "Set a display name");
+        assert_eq!(
+            ChecklistStep::AddFirstContact.label(),
+            "Add your first contact"
+        );
+    }
+}

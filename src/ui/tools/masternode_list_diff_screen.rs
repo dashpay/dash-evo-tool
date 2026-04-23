@@ -428,20 +428,8 @@ impl MasternodeListDiffScreen {
             }
             let work_height = self.get_height_and_cache(&work_hash)?;
             let cycle_boundary_height = work_height + WORK_DIFF_DEPTH;
-            let cycle_boundary_hash = match self
-                .app_context
-                .core_client
-                .read()
-                .unwrap()
-                .get_block_hash(cycle_boundary_height)
-            {
-                Ok(hash) => hash,
-                Err(e) => return Err(e.to_string()),
-            };
+            let cycle_boundary_hash = self.get_block_hash_and_cache(cycle_boundary_height)?;
             block_data.insert_hash(cycle_boundary_height, cycle_boundary_hash);
-            self.cache
-                .block_height_cache
-                .insert(cycle_boundary_hash, cycle_boundary_height);
         }
 
         Ok(block_data)

@@ -707,13 +707,14 @@ impl AppContext {
     /// Uses `core_wallet_name` to target the right wallet on multi-wallet nodes.
     /// No-op if the address is already watched/mine.
     ///
-    /// In SPV mode this is a no-op: there is no Dash Core node to import into,
-    /// and HD-derived addresses are already tracked by the SPV subsystem via
-    /// `Wallet::register_address` (which populates `known_addresses` and feeds
-    /// the SPV bloom filter). Incoming UTXOs on these addresses are delivered
-    /// through `received_transaction_finality()` from InstantLock/ChainLock
-    /// events — the same path the QR funding flows poll via
-    /// `capture_qr_funding_utxo_if_available`.
+    /// In SPV mode this is a no-op: there is no Dash Core node to import into.
+    /// HD-derived addresses are tracked by the SPV wallet manager watching the
+    /// BIP44 account derived from the same xprv — `Wallet::register_address`
+    /// records them in wallet state (`known_addresses`) but does not update the
+    /// SPV bloom filter directly. Incoming UTXOs for these addresses are
+    /// populated via the SPV reconciliation path (`reconcile_spv_wallets()`),
+    /// which is what downstream checks such as
+    /// `capture_qr_funding_utxo_if_available` observe.
     pub fn ensure_address_imported(
         &self,
         address: &Address,

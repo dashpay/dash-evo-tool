@@ -864,15 +864,18 @@ impl ComponentStyles {
     /// Add a primary button (conditionally enabled) with pointer cursor on hover.
     ///
     /// When disabled, uses distinct greyed-out fill and text so the button
-    /// visually reads as inactive (egui's default disabled visuals are bypassed
-    /// by the explicit fill/text styling in `primary_button()`).
+    /// visually reads as inactive. `disabled_alpha` is temporarily set to 1.0
+    /// before calling `add_enabled(false, …)` so egui skips its 0.5-opacity
+    /// multiplier; our explicit fill/text colors handle the visual differentiation
+    /// without shifting the paint rect or washing out contrast.
     pub fn add_primary_button_enabled(
         ui: &mut egui::Ui,
         enabled: bool,
         label: impl Into<WidgetText>,
     ) -> egui::Response {
-        let button = if enabled {
-            Self::primary_button(label)
+        if enabled {
+            ui.add(Self::primary_button(label))
+                .on_hover_cursor(CursorIcon::PointingHand)
         } else {
             let dark_mode = ui.ctx().style().visuals.dark_mode;
             let text = match label.into() {
@@ -886,14 +889,21 @@ impl ComponentStyles {
                     .strong()
                     .color(Self::button_disabled_text(dark_mode)),
             };
-            Button::new(text)
+            let button = Button::new(text)
                 .fill(DashColors::BUTTON_DISABLED)
                 .stroke(egui::Stroke::NONE)
                 .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-                .min_size(Self::DIALOG_BUTTON_MIN_SIZE)
-        };
-        ui.add_enabled(enabled, button)
-            .on_hover_cursor(CursorIcon::PointingHand)
+                .min_size(Self::DIALOG_BUTTON_MIN_SIZE);
+            // Temporarily suppress egui's 0.5 disabled-alpha so our explicit
+            // fill and text colors are painted at full opacity.
+            let prev_alpha = ui.visuals().disabled_alpha;
+            ui.visuals_mut().disabled_alpha = 1.0;
+            let response = ui
+                .add_enabled(false, button)
+                .on_hover_cursor(CursorIcon::NotAllowed);
+            ui.visuals_mut().disabled_alpha = prev_alpha;
+            response
+        }
     }
 
     /// Add a secondary button to the UI with pointer cursor on hover.

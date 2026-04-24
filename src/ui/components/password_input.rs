@@ -169,7 +169,7 @@ impl PasswordInput {
             } else {
                 "W".repeat(limit)
             };
-            let measured_width = Typography::measure_text_width(ui, &sample, font_id);
+            let measured_width = Typography::measure_text_width(ui, sample, font_id);
             text_edit = text_edit.desired_width(
                 measured_width
                     + PASSWORD_INPUT_HORIZONTAL_PADDING

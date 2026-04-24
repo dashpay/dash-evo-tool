@@ -606,9 +606,9 @@ impl Typography {
     }
 
     /// Measure the width of a representative sample using egui's active font metrics.
-    pub fn measure_text_width(ui: &Ui, sample: &str, font_id: FontId) -> f32 {
+    pub fn measure_text_width(ui: &Ui, sample: impl Into<String>, font_id: FontId) -> f32 {
         ui.painter()
-            .layout_no_wrap(sample.to_owned(), font_id, Color32::TRANSPARENT)
+            .layout_no_wrap(sample.into(), font_id, Color32::TRANSPARENT)
             .size()
             .x
     }

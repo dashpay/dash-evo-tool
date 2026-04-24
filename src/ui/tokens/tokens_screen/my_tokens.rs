@@ -196,11 +196,18 @@ impl TokensScreen {
 
                                     ui.separator();
                                     let dark_mode = ui.ctx().style().visuals.dark_mode;
-                                    if ComponentStyles::add_secondary_button(ui, "Close", dark_mode)
-                                        .clicked()
-                                    {
-                                        close_popup = true;
-                                    }
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            if ComponentStyles::add_secondary_button(
+                                                ui, "Close", dark_mode,
+                                            )
+                                            .clicked()
+                                            {
+                                                close_popup = true;
+                                            }
+                                        },
+                                    );
                                 });
                             });
                     });
@@ -617,11 +624,16 @@ impl TokensScreen {
 
                             ui.separator();
                             let dark_mode = ui.ctx().style().visuals.dark_mode;
-                            if ComponentStyles::add_secondary_button(ui, "Close", dark_mode)
-                                .clicked()
-                            {
-                                self.show_explanation_popup = None;
-                            }
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ComponentStyles::add_secondary_button(ui, "Close", dark_mode)
+                                        .clicked()
+                                    {
+                                        self.show_explanation_popup = None;
+                                    }
+                                },
+                            );
                         });
                     });
 

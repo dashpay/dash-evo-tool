@@ -555,11 +555,13 @@ impl NetworkChooserScreen {
                         )
                         .fill(DashColors::ERROR)
                         .stroke(egui::Stroke::NONE)
-                        .corner_radius(Shape::RADIUS_MD)
-                        .min_size(egui::vec2(120.0, 36.0));
+                        .corner_radius(Shape::RADIUS_MD);
 
                         if ui
-                            .add_enabled(!is_stopping, disconnect_button)
+                            .add_enabled_ui(!is_stopping, |ui| {
+                                ui.add_sized(egui::vec2(120.0, 36.0), disconnect_button)
+                            })
+                            .inner
                             .clicked()
                         {
                             self.current_app_context().stop_spv();
@@ -622,10 +624,12 @@ impl NetworkChooserScreen {
                         )
                         .fill(DashColors::DASH_BLUE)
                         .stroke(egui::Stroke::NONE)
-                        .corner_radius(Shape::RADIUS_MD)
-                        .min_size(egui::vec2(120.0, 36.0));
+                        .corner_radius(Shape::RADIUS_MD);
 
-                        if ui.add(connect_button).clicked() {
+                        if ui
+                            .add_sized(egui::vec2(120.0, 36.0), connect_button)
+                            .clicked()
+                        {
                             if current_backend_mode == CoreBackendMode::Spv {
                                 if let Err(err) = self.current_app_context().start_spv() {
                                     app_action =

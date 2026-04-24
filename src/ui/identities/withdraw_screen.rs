@@ -601,8 +601,7 @@ impl ScreenLike for WithdrawalScreen {
                 let button = egui::Button::new(RichText::new("Withdraw").color(Color32::WHITE))
                     .fill(DashColors::DASH_BLUE)
                     .frame(true)
-                    .corner_radius(3.0)
-                    .min_size(egui::vec2(60.0, 30.0));
+                    .corner_radius(3.0);
 
                 let has_valid_amount = self.withdrawal_amount.is_some();
                 let has_address_error = self.withdrawal_address_error.is_some();
@@ -623,7 +622,8 @@ impl ScreenLike for WithdrawalScreen {
                 };
 
                 if ui
-                    .add_enabled(ready, button)
+                    .add_enabled_ui(ready, |ui| ui.add_sized(egui::vec2(60.0, 30.0), button))
+                    .inner
                     .disabled_tooltip(&hover_text)
                     .clicked()
                     && self.confirmation_dialog.is_none()

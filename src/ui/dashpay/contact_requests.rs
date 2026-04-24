@@ -667,10 +667,12 @@ impl ContactRequests {
             } else {
                 egui::Stroke::new(1.0, DashColors::border(dark_mode))
             })
-            .corner_radius(egui::CornerRadius::same(4))
-            .min_size(egui::Vec2::new(120.0, 28.0));
+            .corner_radius(egui::CornerRadius::same(4));
 
-            if ui.add(incoming_tab).clicked() {
+            if ui
+                .add_sized(egui::Vec2::new(120.0, 28.0), incoming_tab)
+                .clicked()
+            {
                 self.active_tab = RequestTab::Incoming;
             }
 
@@ -693,10 +695,12 @@ impl ContactRequests {
             } else {
                 egui::Stroke::new(1.0, DashColors::border(dark_mode))
             })
-            .corner_radius(egui::CornerRadius::same(4))
-            .min_size(egui::Vec2::new(120.0, 28.0));
+            .corner_radius(egui::CornerRadius::same(4));
 
-            if ui.add(outgoing_tab).clicked() {
+            if ui
+                .add_sized(egui::Vec2::new(120.0, 28.0), outgoing_tab)
+                .clicked()
+            {
                 self.active_tab = RequestTab::Outgoing;
             }
         });

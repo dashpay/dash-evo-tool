@@ -1125,7 +1125,6 @@ impl ScreenLike for GroveSTARKScreen {
                     .fill(DashColors::DASH_BLUE)
                     .stroke(egui::Stroke::NONE)
                     .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
-                    .min_size(egui::Vec2::new(150.0, 28.0))
                 } else {
                     Button::new(
                         RichText::new("🔐 Generate Proof")
@@ -1135,10 +1134,12 @@ impl ScreenLike for GroveSTARKScreen {
                     .fill(DashColors::glass_white(dark_mode))
                     .stroke(egui::Stroke::new(1.0, DashColors::border(dark_mode)))
                     .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
-                    .min_size(egui::Vec2::new(150.0, 28.0))
                 };
 
-                if ui.add(generate_button).clicked() {
+                if ui
+                    .add_sized(egui::Vec2::new(150.0, 28.0), generate_button)
+                    .clicked()
+                {
                     self.mode = ProofMode::Generate;
                 }
 
@@ -1155,7 +1156,6 @@ impl ScreenLike for GroveSTARKScreen {
                     .fill(DashColors::DASH_BLUE)
                     .stroke(egui::Stroke::NONE)
                     .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
-                    .min_size(egui::Vec2::new(150.0, 28.0))
                 } else {
                     Button::new(
                         RichText::new("✅ Verify Proof")
@@ -1165,10 +1165,12 @@ impl ScreenLike for GroveSTARKScreen {
                     .fill(DashColors::glass_white(dark_mode))
                     .stroke(egui::Stroke::new(1.0, DashColors::border(dark_mode)))
                     .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
-                    .min_size(egui::Vec2::new(150.0, 28.0))
                 };
 
-                if ui.add(verify_button).clicked() {
+                if ui
+                    .add_sized(egui::Vec2::new(150.0, 28.0), verify_button)
+                    .clicked()
+                {
                     self.mode = ProofMode::Verify;
                 }
             });

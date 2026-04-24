@@ -622,6 +622,35 @@ pub enum TaskError {
     #[error("Could not retrieve token information from the platform. Please retry.")]
     TokenQueryError { detail: String },
 
+    /// The token does not have a perpetual distribution configured — no rewards to claim.
+    #[error("This token does not have perpetual distribution, so there are no rewards to claim.")]
+    TokenNoPerpetualDistribution,
+
+    /// The recipient identity does not exist on Platform (e.g. during a token mint).
+    #[error(
+        "The recipient identity `{recipient_id}` does not exist on the platform. \
+         Check the ID and try again, or create the identity first."
+    )]
+    TokenRecipientIdentityNotFound {
+        recipient_id: String,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// The identity's token account is not frozen, so an unfreeze / destroy-frozen action
+    /// cannot proceed.
+    #[error(
+        "Identity `{identity_id}` is not frozen for token `{token_id}`, so `{action}` cannot proceed. \
+         Refresh the frozen-account list and try again."
+    )]
+    TokenAccountNotFrozen {
+        identity_id: String,
+        token_id: String,
+        action: String,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
     // ──────────────────────────────────────────────────────────────────────────
     // Contract schema errors
     // ──────────────────────────────────────────────────────────────────────────
@@ -1265,6 +1294,14 @@ impl From<SdkError> for TaskError {
             InvalidTokenBaseSupply {
                 base_supply: u64,
             },
+            RecipientIdentityNotFound {
+                recipient_id: String,
+            },
+            TokenAccountNotFrozen {
+                identity_id: String,
+                token_id: String,
+                action: String,
+            },
         }
 
         let kind: Option<ConsensusKind> = {
@@ -1340,6 +1377,18 @@ impl From<SdkError> for TaskError {
                             base_supply: e.base_supply(),
                         })
                     }
+                    ConsensusError::StateError(StateError::RecipientIdentityDoesNotExistError(
+                        e,
+                    )) => Some(ConsensusKind::RecipientIdentityNotFound {
+                        recipient_id: e.recipient_id().to_string(Encoding::Base58),
+                    }),
+                    ConsensusError::StateError(StateError::IdentityTokenAccountNotFrozenError(
+                        e,
+                    )) => Some(ConsensusKind::TokenAccountNotFrozen {
+                        identity_id: e.identity_id().to_string(Encoding::Base58),
+                        token_id: e.token_id().to_string(Encoding::Base58),
+                        action: e.action().to_string(),
+                    }),
                     _ => None,
                 })
                 .or_else(|| {
@@ -1437,6 +1486,22 @@ impl From<SdkError> for TaskError {
                     source_error: boxed,
                 }
             }
+            Some(ConsensusKind::RecipientIdentityNotFound { recipient_id }) => {
+                TaskError::TokenRecipientIdentityNotFound {
+                    recipient_id,
+                    source_error: boxed,
+                }
+            }
+            Some(ConsensusKind::TokenAccountNotFrozen {
+                identity_id,
+                token_id,
+                action,
+            }) => TaskError::TokenAccountNotFrozen {
+                identity_id,
+                token_id,
+                action,
+                source_error: boxed,
+            },
             None => {
                 // Extract timeout duration before consuming boxed.
                 let timeout_secs = if let SdkError::TimeoutReached(d, _) = &*boxed {
@@ -2685,6 +2750,105 @@ mod tests {
         assert!(
             msg.contains("smaller value"),
             "Expected actionable guidance, got: {msg}"
+        );
+    }
+
+    // ─── New token error tests ────────────────────────────────────────────────
+
+    #[test]
+    fn test_token_no_perpetual_distribution_display() {
+        let err = TaskError::TokenNoPerpetualDistribution;
+        let msg = err.to_string();
+        assert!(
+            msg.contains("perpetual distribution"),
+            "Expected perpetual distribution mention, got: {msg}"
+        );
+        assert!(
+            msg.contains("no rewards to claim"),
+            "Expected actionable info, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_recipient_identity_not_found_from_consensus_error() {
+        use dash_sdk::dpp::consensus::state::identity::RecipientIdentityDoesNotExistError;
+        let recipient_id = Identifier::random();
+        let expected_id_str = recipient_id.to_string(Encoding::Base58);
+        let consensus = ConsensusError::from(RecipientIdentityDoesNotExistError::new(recipient_id));
+        let broadcast_err = dash_sdk::error::StateTransitionBroadcastError {
+            code: 40216,
+            message: "recipient identity does not exist".to_string(),
+            cause: Some(consensus),
+        };
+        let sdk_err = SdkError::StateTransitionBroadcastError(broadcast_err);
+        let err = TaskError::from(sdk_err);
+        assert!(
+            matches!(
+                err,
+                TaskError::TokenRecipientIdentityNotFound {
+                    ref recipient_id,
+                    ..
+                } if *recipient_id == expected_id_str
+            ),
+            "Expected TokenRecipientIdentityNotFound with correct id, got: {err:?}"
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&expected_id_str),
+            "Expected recipient id in message, got: {msg}"
+        );
+        assert!(
+            msg.contains("does not exist"),
+            "Expected existence message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_identity_token_account_not_frozen_from_consensus_error() {
+        use dash_sdk::dpp::consensus::state::token::IdentityTokenAccountNotFrozenError;
+        let token_id = Identifier::random();
+        let identity_id = Identifier::random();
+        let action = "Unfreeze".to_string();
+        let expected_token_id_str = token_id.to_string(Encoding::Base58);
+        let expected_identity_id_str = identity_id.to_string(Encoding::Base58);
+        let consensus = ConsensusError::from(IdentityTokenAccountNotFrozenError::new(
+            token_id,
+            identity_id,
+            action.clone(),
+        ));
+        let broadcast_err = dash_sdk::error::StateTransitionBroadcastError {
+            code: 40220,
+            message: "identity token account is not frozen".to_string(),
+            cause: Some(consensus),
+        };
+        let sdk_err = SdkError::StateTransitionBroadcastError(broadcast_err);
+        let err = TaskError::from(sdk_err);
+        assert!(
+            matches!(
+                err,
+                TaskError::TokenAccountNotFrozen {
+                    ref identity_id,
+                    ref token_id,
+                    ref action,
+                    ..
+                } if *identity_id == expected_identity_id_str
+                    && *token_id == expected_token_id_str
+                    && *action == "Unfreeze"
+            ),
+            "Expected TokenAccountNotFrozen with correct fields, got: {err:?}"
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&expected_identity_id_str),
+            "Expected identity id in message, got: {msg}"
+        );
+        assert!(
+            msg.contains(&expected_token_id_str),
+            "Expected token id in message, got: {msg}"
+        );
+        assert!(
+            msg.contains("Unfreeze"),
+            "Expected action in message, got: {msg}"
         );
     }
 }

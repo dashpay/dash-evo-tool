@@ -816,7 +816,13 @@ impl WalletsBalancesScreen {
                             });
 
                         if ui
-                            .add_enabled(can_fund, fund_button)
+                            .add_enabled_ui(can_fund, |ui| {
+                                ui.add_sized(
+                                    ComponentStyles::DIALOG_BUTTON_MIN_SIZE,
+                                    fund_button,
+                                )
+                            })
+                            .inner
                             .on_hover_cursor(egui::CursorIcon::PointingHand)
                             .clicked()
                         {

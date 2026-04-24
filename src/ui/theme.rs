@@ -78,6 +78,10 @@ impl DashColors {
     pub const DANGER_RED: Color32 = Color32::from_rgb(200, 60, 60);
     /// Gray fill for disabled/inactive buttons
     pub const BUTTON_DISABLED: Color32 = Color32::from_rgb(100, 100, 100);
+    /// Text color for disabled primary buttons in light mode.
+    pub const BUTTON_DISABLED_TEXT_LIGHT: Color32 = Color32::from_rgb(200, 200, 200);
+    /// Text color for disabled primary buttons in dark mode.
+    pub const BUTTON_DISABLED_TEXT_DARK: Color32 = Color32::from_rgb(200, 200, 200);
     /// Salmon/orange for input validation warnings
     pub const VALIDATION_WARNING: Color32 = Color32::from_rgb(255, 150, 100);
     /// Bright orange for important warnings (e.g., private key exposure, missing identities)
@@ -762,6 +766,14 @@ impl ComponentStyles {
         DashColors::WHITE
     }
 
+    pub fn button_disabled_text(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            DashColors::BUTTON_DISABLED_TEXT_DARK
+        } else {
+            DashColors::BUTTON_DISABLED_TEXT_LIGHT
+        }
+    }
+
     pub fn input_stroke() -> Stroke {
         Stroke::new(1.0, DashColors::BORDER)
     }
@@ -867,11 +879,11 @@ impl ComponentStyles {
                     .as_ref()
                     .clone()
                     .strong()
-                    .color(DashColors::disabled(dark_mode)),
+                    .color(Self::button_disabled_text(dark_mode)),
                 // INTENTIONAL(CMT-010): LayoutJob/Galley variants not used by any callsite
                 other => RichText::new(other.text().to_string())
                     .strong()
-                    .color(DashColors::disabled(dark_mode)),
+                    .color(Self::button_disabled_text(dark_mode)),
             };
             Button::new(text)
                 .fill(DashColors::BUTTON_DISABLED)

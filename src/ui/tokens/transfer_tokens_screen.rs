@@ -597,9 +597,6 @@ impl ScreenLike for TransferTokensScreen {
                     && !self.receiver_identity_id.is_empty()
                     && self.selected_key.is_some()
                     && has_enough_balance;
-                let mut new_style = (**ui.style()).clone();
-                new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
-                ui.set_style(new_style);
                 let hover_text = if !has_enough_balance {
                     format!(
                         "Insufficient identity balance for fee (need at least {})",

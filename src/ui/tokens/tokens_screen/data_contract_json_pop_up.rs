@@ -67,7 +67,10 @@ impl TokensScreen {
                     // Close button styled like ConfirmationDialog
                     ui.horizontal(|ui| {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ComponentStyles::add_primary_button(ui, "Close").clicked() {
+                            let dark_mode = ui.ctx().style().visuals.dark_mode;
+                            if ComponentStyles::add_secondary_button(ui, "Close", dark_mode)
+                                .clicked()
+                            {
                                 self.show_json_popup = false;
                             }
                         });

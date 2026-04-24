@@ -661,6 +661,7 @@ impl TokensScreen {
         let mut pos = 0;
         let mut action = AppAction::None;
         ui.spacing_mut().item_spacing.x = 5.0;
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
 
         if range.contains(&pos) {
             if itb.available_actions.can_transfer {
@@ -679,7 +680,9 @@ impl TokensScreen {
                 // Disabled, grayed-out Transfer button
                 ui.add_enabled(
                     false,
-                    egui::Button::new(RichText::new("Transfer").color(Color32::GRAY)),
+                    egui::Button::new(
+                        RichText::new("Transfer").color(DashColors::muted_color(dark_mode)),
+                    ),
                 )
                 .disabled_tooltip("Transfer not available");
             }
@@ -942,7 +945,7 @@ impl TokensScreen {
                         // Disabled, grayed-out Purchase button
                         ui.add_enabled(
                                 false,
-                                egui::Button::new(RichText::new("Purchase").color(egui::Color32::GRAY)),
+                                egui::Button::new(RichText::new("Purchase").color(DashColors::muted_color(dark_mode))),
                             )
                             .disabled_tooltip({
                                 if let Some(Some(pricing)) = self.token_pricing_data.get(&itb.token_id) {

@@ -999,6 +999,23 @@ pub enum TaskError {
     /// Creating a network context failed during a network switch.
     #[error("Could not connect to {network}. Check your network configuration and retry.")]
     NetworkContextCreationFailed { network: Network, detail: String },
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Address-watch registration errors
+    // ──────────────────────────────────────────────────────────────────────────
+    /// An off-tree address (not covered by the standard BIP44 account watch)
+    /// could not be registered with the SPV subsystem. The running SPV loop
+    /// currently has no runtime registration API, so addresses outside the
+    /// wallet's BIP44 account may not receive their incoming transactions until
+    /// the wallet is reloaded.
+    ///
+    /// The associated Base58 address lets users identify which handle is
+    /// affected.
+    #[error(
+        "Could not start watching address {address}. Please reload the wallet and retry, \
+         or switch to Dash Core RPC mode in Expert settings if the problem persists."
+    )]
+    SpvOffTreeAddressRegistrationUnsupported { address: String },
 }
 
 /// Escapes control characters in a token name for safe display in error messages.

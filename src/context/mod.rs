@@ -1,3 +1,4 @@
+pub mod address_watch;
 pub mod connection_status;
 mod contract_token_db;
 mod identity_db;
@@ -5,6 +6,8 @@ mod settings_db;
 pub mod shielded;
 mod transaction_processing;
 mod wallet_lifecycle;
+
+pub use address_watch::AddressCoverage;
 
 pub(crate) use transaction_processing::get_transaction_info;
 
@@ -703,9 +706,84 @@ impl AppContext {
         Self::create_core_rpc_client(&url, self.network, &cfg.devnet_name, &cfg)
     }
 
+    /// Ensure SPV/Core is watching the given address, dispatching by
+    /// [`AddressCoverage`] and the active backend mode.
+    ///
+    /// # Dispatch matrix
+    ///
+    /// | Coverage                   | Core RPC mode                             | SPV mode                                                   |
+    /// |----------------------------|-------------------------------------------|------------------------------------------------------------|
+    /// | `StandardBip44Account`     | Import into the targeted Core wallet.     | No-op — wallet-level account watch already covers it.      |
+    /// | `OffTree`                  | Import into the targeted Core wallet.     | Returns [`TaskError::SpvOffTreeAddressRegistrationUnsupported`]. |
+    ///
+    /// Replaces the legacy `ensure_address_imported` / `try_import_address`
+    /// pair; see [`crate::context::address_watch`] for rationale.
+    ///
+    /// Fire-and-forget callers must use `let _` explicitly so the type system
+    /// makes the error-swallowing visible at the call site.
+    pub fn ensure_address_watched(
+        &self,
+        address: &Address,
+        coverage: AddressCoverage,
+        core_wallet_name: Option<&str>,
+        label: Option<&str>,
+    ) -> Result<(), TaskError> {
+        match self.core_backend_mode() {
+            CoreBackendMode::Rpc => self.import_address_into_core(address, core_wallet_name, label),
+            CoreBackendMode::Spv => match coverage {
+                AddressCoverage::StandardBip44Account => Ok(()),
+                AddressCoverage::OffTree => {
+                    // TODO(refactor): SpvManager has no runtime API to register an
+                    // extra address outside the wallet's BIP44 account watch.
+                    // Until that upstream hook exists, surface a typed error so
+                    // callers can decide (warn-and-continue vs abort). The wallet
+                    // reload path covers these addresses once the user restarts
+                    // the SPV loop.
+                    tracing::warn!(
+                        address = %address,
+                        "Off-tree address registration requested in SPV mode; \
+                         running SPV loop has no runtime registration hook. \
+                         Incoming transactions to this address may be missed \
+                         until the wallet is reloaded."
+                    );
+                    Err(TaskError::SpvOffTreeAddressRegistrationUnsupported {
+                        address: address.to_string(),
+                    })
+                }
+            },
+        }
+    }
+
     /// Import an address into the correct Core wallet if it's not already known.
     /// Uses `core_wallet_name` to target the right wallet on multi-wallet nodes.
     /// No-op if the address is already watched/mine.
+    fn import_address_into_core(
+        &self,
+        address: &Address,
+        core_wallet_name: Option<&str>,
+        label: Option<&str>,
+    ) -> Result<(), TaskError> {
+        let client = self.core_client_for_wallet(core_wallet_name)?;
+        let info = client
+            .get_address_info(address)
+            .map_err(|e| self.rpc_error_with_url(e))?;
+        if !(info.is_watchonly || info.is_mine) {
+            client
+                .import_address(address, label, Some(false))
+                .map_err(|e| self.rpc_error_with_url(e))?;
+        }
+        Ok(())
+    }
+
+    /// Legacy: retained only until all callers migrate to [`Self::ensure_address_watched`].
+    ///
+    /// Pre-existing behaviour: works in Core RPC mode, silently no-ops in SPV
+    /// mode. This is exactly the bug the typed API fixes — once every caller
+    /// has migrated, this method is removed.
+    #[deprecated(
+        note = "use `ensure_address_watched` with an explicit `AddressCoverage`; \
+                silent no-op in SPV mode hides off-tree coverage bugs"
+    )]
     pub fn ensure_address_imported(
         &self,
         address: &Address,
@@ -724,7 +802,11 @@ impl AppContext {
         Ok(())
     }
 
-    /// Import address into Core, ignoring errors. For best-effort registration.
+    /// Legacy: retained only until all callers migrate to [`Self::ensure_address_watched`].
+    #[deprecated(
+        note = "use `ensure_address_watched` with an explicit `AddressCoverage`; \
+                silent no-op in SPV mode hides off-tree coverage bugs"
+    )]
     pub fn try_import_address(
         &self,
         address: &Address,

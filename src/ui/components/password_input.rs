@@ -144,7 +144,7 @@ impl PasswordInput {
             .password(!self.revealing)
             .hint_text(&self.hint_text)
             .margin(egui::Margin {
-                right: 28,
+                right: PASSWORD_INPUT_REVEAL_ICON_WIDTH as i8,
                 ..egui::Margin::same(4)
             });
 

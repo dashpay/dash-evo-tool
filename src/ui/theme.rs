@@ -890,7 +890,13 @@ impl ComponentStyles {
                     .strong()
                     .color(Self::button_disabled_text(dark_mode)),
             };
-            ui.add(
+            // `add_sized` sets up a `centered_and_justified` inner layout so the button's
+            // `AtomLayout` inherits `horizontal_align = Center`, centering the text within
+            // the fill rect.  Without this, the default top-down-left layout causes the text
+            // atom to be left-aligned inside the button even when the rect is wider than the
+            // text content.
+            ui.add_sized(
+                Self::DIALOG_BUTTON_MIN_SIZE,
                 Button::new(text)
                     .fill(DashColors::BUTTON_DISABLED)
                     .stroke(egui::Stroke::NONE)

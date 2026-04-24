@@ -79,7 +79,8 @@ impl DashColors {
     /// Gray fill for disabled/inactive buttons
     pub const BUTTON_DISABLED: Color32 = Color32::from_rgb(100, 100, 100);
     /// Text color for disabled primary buttons in light mode.
-    pub const BUTTON_DISABLED_TEXT_LIGHT: Color32 = Color32::from_rgb(200, 200, 200);
+    /// rgb(240,240,240) gives 5.19:1 contrast against BUTTON_DISABLED fill — exceeds WCAG AA 4.5:1.
+    pub const BUTTON_DISABLED_TEXT_LIGHT: Color32 = Color32::from_rgb(240, 240, 240);
     /// Text color for disabled primary buttons in dark mode.
     pub const BUTTON_DISABLED_TEXT_DARK: Color32 = Color32::from_rgb(200, 200, 200);
     /// Salmon/orange for input validation warnings

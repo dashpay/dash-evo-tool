@@ -17,13 +17,14 @@ use dash_sdk::dpp::dashcore::bls_sig_utils::BLSSignature;
 use dash_sdk::dpp::dashcore::consensus::serialize as serialize2;
 use dash_sdk::dpp::dashcore::consensus::{Decodable, deserialize, serialize};
 use dash_sdk::dpp::dashcore::hashes::Hash;
+use dash_sdk::dpp::dashcore::network::constants::NetworkExt;
 use dash_sdk::dpp::dashcore::network::message_qrinfo::{QRInfo, QuorumSnapshot};
 use dash_sdk::dpp::dashcore::network::message_sml::MnListDiff;
 use dash_sdk::dpp::dashcore::sml::llmq_entry_verification::LLMQEntryVerificationStatus;
 use dash_sdk::dpp::dashcore::sml::llmq_type::LLMQType;
 use dash_sdk::dpp::dashcore::sml::masternode_list::MasternodeList;
 use dash_sdk::dpp::dashcore::sml::masternode_list_engine::{
-    MasternodeListEngine, MasternodeListEngineBlockContainer, QRInfoBlockData, WORK_DIFF_DEPTH,
+    MasternodeListEngine, MasternodeListEngineBlockContainer, WORK_DIFF_DEPTH,
 };
 use dash_sdk::dpp::dashcore::sml::masternode_list_entry::EntryMasternodeType;
 use dash_sdk::dpp::dashcore::sml::masternode_list_entry::qualified_masternode_list_entry::QualifiedMasternodeListEntry;
@@ -406,33 +407,34 @@ impl MasternodeListDiffScreen {
         Ok(height)
     }
 
-    /// Build the hash↔height bundle the engine requires in [`MasternodeListEngine::feed_qr_info`].
+    /// Resolve every block hash referenced by a QRInfo to its height so the engine's
+    /// `block_container` can be pre-populated before [`MasternodeListEngine::feed_qr_info`].
     ///
-    /// Walks the hash sets the engine enumerates from the QRInfo and resolves each from
-    /// our local cache first, then via Core RPC (populating the cache on success). Cycle
-    /// boundary blocks (`work_height + WORK_DIFF_DEPTH`) are fetched from Core by height.
-    fn build_qr_info_block_data(&mut self, qr_info: &QRInfo) -> Result<QRInfoBlockData, String> {
-        let mut block_data = QRInfoBlockData::default();
+    /// Walks the hash set the engine enumerates from the QRInfo and resolves each from
+    /// our local cache first, then via Core RPC (populating the cache on success). For
+    /// every referenced hash we additionally fetch the cycle-boundary block at
+    /// `height + WORK_DIFF_DEPTH` (the engine needs it to compute rotated quorum keys).
+    /// Returns a flat list of `(height, hash)` pairs the caller feeds into
+    /// `engine.block_container.feed_block_height`.
+    fn build_qr_info_block_data(
+        &mut self,
+        qr_info: &QRInfo,
+    ) -> Result<Vec<(CoreBlockHeight, BlockHash)>, String> {
+        let mut entries = Vec::new();
 
         for hash in MasternodeListEngine::qr_info_referenced_block_hashes(qr_info) {
             if hash.as_byte_array() == &[0; 32] {
                 continue;
             }
             let height = self.get_height_and_cache(&hash)?;
-            block_data.insert_height(hash, height);
-        }
+            entries.push((height, hash));
 
-        for work_hash in MasternodeListEngine::qr_info_work_block_hashes(qr_info) {
-            if work_hash.as_byte_array() == &[0; 32] {
-                continue;
-            }
-            let work_height = self.get_height_and_cache(&work_hash)?;
-            let cycle_boundary_height = work_height + WORK_DIFF_DEPTH;
+            let cycle_boundary_height = height + WORK_DIFF_DEPTH;
             let cycle_boundary_hash = self.get_block_hash_and_cache(cycle_boundary_height)?;
-            block_data.insert_hash(cycle_boundary_height, cycle_boundary_hash);
+            entries.push((cycle_boundary_height, cycle_boundary_hash));
         }
 
-        Ok(block_data)
+        Ok(entries)
     }
 
     #[allow(dead_code)]
@@ -1394,11 +1396,17 @@ impl MasternodeListDiffScreen {
                 return;
             }
         };
-
-        if let Err(e) =
+        for (height, hash) in block_data {
             self.data
                 .masternode_list_engine
-                .feed_qr_info(qr_info, false, true, &block_data)
+                .block_container
+                .feed_block_height(height, hash);
+        }
+
+        if let Err(e) = self
+            .data
+            .masternode_list_engine
+            .feed_qr_info(qr_info, false, true)
         {
             self.ui_state.error = Some(e.to_string());
             self.task.pending = None;
@@ -4253,6 +4261,12 @@ impl ScreenLike for MasternodeListDiffScreen {
                         return;
                     }
                 };
+                for (height, hash) in block_data {
+                    self.data
+                        .masternode_list_engine
+                        .block_container
+                        .feed_block_height(height, hash);
+                }
 
                 // Warm heights and cache diffs before feed_qr_info (replicates old flow)
                 self.insert_mn_list_diff(&qr_info.mn_list_diff_tip);
@@ -4266,12 +4280,11 @@ impl ScreenLike for MasternodeListDiffScreen {
                 for d in &qr_info.mn_list_diff_list {
                     self.insert_mn_list_diff(d);
                 }
-                if let Err(e) = self.data.masternode_list_engine.feed_qr_info(
-                    qr_info.clone(),
-                    false,
-                    true,
-                    &block_data,
-                ) {
+                if let Err(e) =
+                    self.data
+                        .masternode_list_engine
+                        .feed_qr_info(qr_info.clone(), false, true)
+                {
                     self.ui_state.error = Some(e.to_string());
                 }
                 // Store full qr_info for the QR tab

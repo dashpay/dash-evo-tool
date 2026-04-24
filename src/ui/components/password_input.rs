@@ -160,9 +160,9 @@ impl PasswordInput {
             text_edit = text_edit.desired_width(width);
         } else if let Some(limit) = self.char_limit {
             let font_id = if self.monospace {
-                Typography::monospace()
+                egui::TextStyle::Monospace.resolve(ui.style())
             } else {
-                Typography::body()
+                egui::TextStyle::Body.resolve(ui.style())
             };
             let sample = if self.monospace {
                 "0".repeat(limit)

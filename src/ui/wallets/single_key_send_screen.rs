@@ -831,15 +831,17 @@ impl SingleKeyWalletSendScreen {
             } else {
                 send_label
             };
-            let send_button = egui::Button::new(send_label)
-                .fill(if button_enabled {
-                    DashColors::DASH_BLUE
-                } else {
-                    DashColors::DASH_BLUE.gamma_multiply(0.5)
-                })
-                .min_size(egui::vec2(120.0, 36.0));
+            let send_button = egui::Button::new(send_label).fill(if button_enabled {
+                DashColors::DASH_BLUE
+            } else {
+                DashColors::DASH_BLUE.gamma_multiply(0.5)
+            });
 
-            let mut response = ui.add_enabled(button_enabled, send_button);
+            let mut response = ui
+                .add_enabled_ui(button_enabled, |ui| {
+                    ui.add_sized(egui::vec2(120.0, 36.0), send_button)
+                })
+                .inner;
             if !is_rpc_mode {
                 response = response.on_disabled_hover_text(SINGLE_KEY_REQUIRES_CORE);
             }

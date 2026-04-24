@@ -795,7 +795,6 @@ impl ComponentStyles {
             .fill(Self::primary_button_fill())
             .stroke(Self::primary_button_stroke())
             .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-            .min_size(Self::DIALOG_BUTTON_MIN_SIZE)
     }
 
     /// Returns a fully styled secondary (cancel/close) button with theme-aware colors.
@@ -817,7 +816,6 @@ impl ComponentStyles {
             .fill(Self::secondary_button_fill(dark_mode))
             .stroke(Self::secondary_button_stroke(dark_mode))
             .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-            .min_size(Self::DIALOG_BUTTON_MIN_SIZE)
     }
 
     /// Returns a fully styled danger (destructive action) button with red fill and white text.
@@ -839,12 +837,16 @@ impl ComponentStyles {
             .fill(Self::danger_button_fill())
             .stroke(egui::Stroke::NONE)
             .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-            .min_size(Self::DIALOG_BUTTON_MIN_SIZE)
     }
 
     /// Add a primary button to the UI with pointer cursor on hover.
+    ///
+    /// Uses `add_sized` so the button's `AtomLayout` inherits
+    /// `horizontal_align = Center` from a `centered_and_justified` inner layout.
+    /// Without this the default top-down-left layout would left-align the text
+    /// atom inside the fill rect when the label is narrower than `DIALOG_BUTTON_MIN_SIZE`.
     pub fn add_primary_button(ui: &mut egui::Ui, label: impl Into<WidgetText>) -> egui::Response {
-        ui.add(Self::primary_button(label))
+        ui.add_sized(Self::DIALOG_BUTTON_MIN_SIZE, Self::primary_button(label))
             .on_hover_cursor(CursorIcon::PointingHand)
     }
 
@@ -877,25 +879,38 @@ impl ComponentStyles {
                 .fill(DashColors::BUTTON_DISABLED)
                 .stroke(egui::Stroke::NONE)
                 .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-                .min_size(Self::DIALOG_BUTTON_MIN_SIZE)
         };
-        ui.add_enabled(enabled, button)
-            .on_hover_cursor(CursorIcon::PointingHand)
+        // `add_sized` wraps the widget in a `centered_and_justified` inner layout so the
+        // button's `AtomLayout` inherits `horizontal_align = Center`. This keeps the text
+        // centered within the fill rect for both the enabled and disabled branches, matching
+        // footprints so swapping between states doesn't jitter the cursor.
+        ui.add_enabled_ui(enabled, |ui| {
+            ui.add_sized(Self::DIALOG_BUTTON_MIN_SIZE, button)
+        })
+        .inner
+        .on_hover_cursor(CursorIcon::PointingHand)
     }
 
     /// Add a secondary button to the UI with pointer cursor on hover.
+    ///
+    /// See `add_primary_button` for why `add_sized` is used.
     pub fn add_secondary_button(
         ui: &mut egui::Ui,
         label: impl Into<WidgetText>,
         dark_mode: bool,
     ) -> egui::Response {
-        ui.add(Self::secondary_button(label, dark_mode))
-            .on_hover_cursor(CursorIcon::PointingHand)
+        ui.add_sized(
+            Self::DIALOG_BUTTON_MIN_SIZE,
+            Self::secondary_button(label, dark_mode),
+        )
+        .on_hover_cursor(CursorIcon::PointingHand)
     }
 
     /// Add a danger button to the UI with pointer cursor on hover.
+    ///
+    /// See `add_primary_button` for why `add_sized` is used.
     pub fn add_danger_button(ui: &mut egui::Ui, label: impl Into<WidgetText>) -> egui::Response {
-        ui.add(Self::danger_button(label))
+        ui.add_sized(Self::DIALOG_BUTTON_MIN_SIZE, Self::danger_button(label))
             .on_hover_cursor(CursorIcon::PointingHand)
     }
 
@@ -924,17 +939,24 @@ impl ComponentStyles {
             .frame(true)
             .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
             .stroke(egui::Stroke::NONE)
-            .min_size(Vec2::new(100.0, Self::TOOLBAR_BUTTON_HEIGHT))
     }
 
+    /// Default minimum size for toolbar buttons. Use this with `add_sized` at callsites.
+    pub const TOOLBAR_BUTTON_MIN_SIZE: Vec2 = Vec2::new(100.0, Self::TOOLBAR_BUTTON_HEIGHT);
+
     /// Add a toolbar button to the UI with pointer cursor on hover.
+    ///
+    /// See `add_primary_button` for why `add_sized` is used.
     pub fn add_toolbar_button(
         ui: &mut egui::Ui,
         label: impl Into<WidgetText>,
         fill: egui::Color32,
     ) -> egui::Response {
-        ui.add(Self::toolbar_button(label, fill))
-            .on_hover_cursor(CursorIcon::PointingHand)
+        ui.add_sized(
+            Self::TOOLBAR_BUTTON_MIN_SIZE,
+            Self::toolbar_button(label, fill),
+        )
+        .on_hover_cursor(CursorIcon::PointingHand)
     }
 }
 

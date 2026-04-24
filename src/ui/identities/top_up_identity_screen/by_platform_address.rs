@@ -192,10 +192,15 @@ impl TopUpIdentityScreen {
                 DashColors::DASH_BLUE
             } else {
                 DashColors::DASH_BLUE.gamma_multiply(0.5)
-            })
-            .min_size(egui::vec2(120.0, 36.0));
+            });
 
-            if ui.add_enabled(can_top_up, button).clicked() {
+            if ui
+                .add_enabled_ui(can_top_up, |ui| {
+                    ui.add_sized(egui::vec2(120.0, 36.0), button)
+                })
+                .inner
+                .clicked()
+            {
                 match self.validate_and_top_up_from_platform() {
                     Ok(top_up_action) => {
                         action = top_up_action;

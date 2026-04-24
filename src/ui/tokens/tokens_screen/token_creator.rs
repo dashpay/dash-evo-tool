@@ -122,10 +122,12 @@ impl TokensScreen {
                                                 .color(egui::Color32::WHITE)
                                                 .strong(),
                                         )
-                                        .fill(DashColors::DASH_BLUE)
-                                        .min_size(egui::vec2(150.0, 36.0));
+                                        .fill(DashColors::DASH_BLUE);
 
-                                        if ui.add(button).clicked() {
+                                        if ui
+                                            .add_sized(egui::vec2(150.0, 36.0), button)
+                                            .clicked()
+                                        {
                                             load_identity_clicked = true;
                                         }
 
@@ -413,10 +415,15 @@ impl TokensScreen {
                                     DashColors::DASH_BLUE
                                 } else {
                                     egui::Color32::GRAY
-                                })
-                                .min_size(egui::vec2(150.0, 36.0));
+                                });
 
-                                if ui.add_enabled(can_create, button).clicked() {
+                                if ui
+                                    .add_enabled_ui(can_create, |ui| {
+                                        ui.add_sized(egui::vec2(150.0, 36.0), button)
+                                    })
+                                    .inner
+                                    .clicked()
+                                {
                                     // Auto-set plural name if empty (singular + "s")
                                     let singular = self.token_names_input[0].0.trim().to_string();
                                     if self.token_names_input[0].1.trim().is_empty() {
@@ -860,10 +867,12 @@ impl TokensScreen {
                                     .color(egui::Color32::WHITE)
                                     .strong(),
                             )
-                            .fill(DashColors::DASH_BLUE)
-                            .min_size(egui::vec2(200.0, 36.0));
+                            .fill(DashColors::DASH_BLUE);
 
-                            if ui.add(register_button).clicked() {
+                            if ui
+                                .add_sized(egui::vec2(200.0, 36.0), register_button)
+                                .clicked()
+                            {
                                 match self.parse_token_build_args() {
                                     Ok(args) => {
                                         // If success, show the "confirmation popup"
@@ -882,10 +891,12 @@ impl TokensScreen {
                                     .color(egui::Color32::WHITE)
                                     .strong(),
                             )
-                            .fill(DashColors::DASH_BLUE)
-                            .min_size(egui::vec2(120.0, 36.0));
+                            .fill(DashColors::DASH_BLUE);
 
-                            if ui.add(view_json_button).clicked() {
+                            if ui
+                                .add_sized(egui::vec2(120.0, 36.0), view_json_button)
+                                .clicked()
+                            {
                                 match self.parse_token_build_args() {
                                     Ok(args) => {
                                         // We have the parsed token creation arguments

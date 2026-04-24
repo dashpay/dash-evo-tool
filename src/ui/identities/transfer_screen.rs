@@ -211,10 +211,12 @@ impl TransferScreen {
                 selected_fill
             } else {
                 unselected_fill
-            })
-            .min_size(egui::vec2(120.0, 28.0));
+            });
 
-            if ui.add(identity_button).clicked() {
+            if ui
+                .add_sized(egui::vec2(120.0, 28.0), identity_button)
+                .clicked()
+            {
                 self.destination_type = TransferDestinationType::Identity;
             }
 
@@ -236,10 +238,12 @@ impl TransferScreen {
                 selected_fill
             } else {
                 unselected_fill
-            })
-            .min_size(egui::vec2(140.0, 28.0));
+            });
 
-            if ui.add(platform_button).clicked() {
+            if ui
+                .add_sized(egui::vec2(140.0, 28.0), platform_button)
+                .clicked()
+            {
                 self.destination_type = TransferDestinationType::PlatformAddress;
             }
         });

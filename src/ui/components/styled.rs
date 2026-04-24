@@ -111,11 +111,18 @@ impl StyledButton {
             button = button.stroke(stroke);
         }
 
-        if let Some(min_width) = self.min_width {
-            button = button.min_size(Vec2::new(min_width, 0.0));
-        }
-
-        let response = ui.add_enabled(self.enabled, button);
+        // When a caller requested a minimum width, use `add_sized` so the button's
+        // `AtomLayout` inherits `horizontal_align = Center` from a
+        // `centered_and_justified` inner layout. Otherwise plain `add` preserves
+        // content-sized behaviour.
+        let response = if let Some(min_width) = self.min_width {
+            ui.add_enabled_ui(self.enabled, |ui| {
+                ui.add_sized(Vec2::new(min_width, 0.0), button)
+            })
+            .inner
+        } else {
+            ui.add_enabled(self.enabled, button)
+        };
 
         if response.hovered() && self.enabled {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -253,7 +260,7 @@ impl GradientButton {
         let time = ui.ctx().input(|i| i.time as f32);
         let animated_color = DashColors::gradient_animated(time);
 
-        let mut button = Button::new(
+        let button = Button::new(
             RichText::new(self.text)
                 .color(DashColors::WHITE)
                 .size(Typography::SCALE_BASE),
@@ -262,11 +269,13 @@ impl GradientButton {
         .stroke(Stroke::NONE)
         .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD));
 
-        if let Some(width) = self.min_width {
-            button = button.min_size(Vec2::new(width, 36.0));
-        }
-
-        let response = ui.add(button);
+        // See `StyledButton::show` for why `add_sized` is used when `min_width`
+        // is set: it keeps text centered inside the button rect.
+        let response = if let Some(width) = self.min_width {
+            ui.add_sized(Vec2::new(width, 36.0), button)
+        } else {
+            ui.add(button)
+        };
 
         // Request repaint for animation
         self.app_context.repaint_animation(ui.ctx());

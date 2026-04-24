@@ -2537,16 +2537,22 @@ impl WalletSendScreen {
                 self.get_transaction_type_description()
             };
 
-            let send_button =
-                egui::Button::new(RichText::new(button_text).color(Color32::WHITE).strong())
-                    .fill(if can_send {
-                        DashColors::DASH_BLUE
-                    } else {
-                        DashColors::DASH_BLUE.gamma_multiply(0.5)
-                    })
-                    .min_size(egui::vec2(160.0, 36.0));
+            let send_button = egui::Button::new(
+                RichText::new(button_text).color(Color32::WHITE).strong(),
+            )
+            .fill(if can_send {
+                DashColors::DASH_BLUE
+            } else {
+                DashColors::DASH_BLUE.gamma_multiply(0.5)
+            });
 
-            if ui.add_enabled(can_send, send_button).clicked() {
+            if ui
+                .add_enabled_ui(can_send, |ui| {
+                    ui.add_sized(egui::vec2(160.0, 36.0), send_button)
+                })
+                .inner
+                .clicked()
+            {
                 match self.validate_and_send() {
                     Ok(send_action) => {
                         self.set_send_progress_banner(ui.ctx());
@@ -3120,16 +3126,22 @@ impl WalletSendScreen {
 
             let button_text = if is_sending { "Sending..." } else { "Send" };
 
-            let send_button =
-                egui::Button::new(RichText::new(button_text).color(Color32::WHITE).strong())
-                    .fill(if can_send {
-                        DashColors::DASH_BLUE
-                    } else {
-                        DashColors::DASH_BLUE.gamma_multiply(0.5)
-                    })
-                    .min_size(egui::vec2(160.0, 36.0));
+            let send_button = egui::Button::new(
+                RichText::new(button_text).color(Color32::WHITE).strong(),
+            )
+            .fill(if can_send {
+                DashColors::DASH_BLUE
+            } else {
+                DashColors::DASH_BLUE.gamma_multiply(0.5)
+            });
 
-            if ui.add_enabled(can_send, send_button).clicked() {
+            if ui
+                .add_enabled_ui(can_send, |ui| {
+                    ui.add_sized(egui::vec2(160.0, 36.0), send_button)
+                })
+                .inner
+                .clicked()
+            {
                 match self.validate_and_send_advanced() {
                     Ok(send_action) => {
                         self.set_send_progress_banner(ui.ctx());

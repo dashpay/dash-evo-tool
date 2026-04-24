@@ -266,10 +266,9 @@ impl TokensScreen {
                                     .color(egui::Color32::WHITE)
                                     .strong(),
                             )
-                            .fill(DashColors::DASH_BLUE)
-                            .min_size(egui::vec2(150.0, 36.0));
+                            .fill(DashColors::DASH_BLUE);
 
-                            if ui.add(button).clicked() {
+                            if ui.add_sized(egui::vec2(150.0, 36.0), button).clicked() {
                                 app_action = AppAction::AddScreen(
                                     ScreenType::AddTokenById.create_screen(&self.app_context),
                                 );
@@ -281,10 +280,9 @@ impl TokensScreen {
                                     .color(egui::Color32::WHITE)
                                     .strong(),
                             )
-                            .fill(DashColors::DASH_BLUE)
-                            .min_size(egui::vec2(150.0, 36.0));
+                            .fill(DashColors::DASH_BLUE);
 
-                            if ui.add(button).clicked() {
+                            if ui.add_sized(egui::vec2(150.0, 36.0), button).clicked() {
                                 if let RefreshingStatus::Refreshing = self.refreshing_status {
                                     app_action = AppAction::None;
                                 } else {

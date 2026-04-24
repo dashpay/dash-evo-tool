@@ -2,7 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::core::{CoreItem, CoreTask};
 use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
-use crate::context::AppContext;
+use crate::context::{AddressCoverage, AppContext};
 use crate::model::amount::Amount;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
@@ -106,19 +106,22 @@ impl CreateAssetLockScreen {
         let core_wallet_name = wallet.core_wallet_name.clone();
         drop(wallet);
 
-        // Import address to core if needed
+        // Ensure the funding address is watched (Core-RPC: imports into the
+        // targeted Core wallet; SPV: covered by the BIP44 account watch).
         if let Some(has_address) = self.core_has_funding_address {
             if !has_address {
-                self.app_context.ensure_address_imported(
+                self.app_context.ensure_address_watched(
                     &receive_address,
+                    AddressCoverage::StandardBip44Account,
                     core_wallet_name.as_deref(),
                     Some("Managed by Dash Evo Tool - Asset Lock"),
                 )?;
             }
             self.funding_address = Some(receive_address);
         } else {
-            self.app_context.ensure_address_imported(
+            self.app_context.ensure_address_watched(
                 &receive_address,
+                AddressCoverage::StandardBip44Account,
                 core_wallet_name.as_deref(),
                 Some("Managed by Dash Evo Tool - Asset Lock"),
             )?;

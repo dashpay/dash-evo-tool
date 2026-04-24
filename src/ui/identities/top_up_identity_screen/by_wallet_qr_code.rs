@@ -2,6 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::{IdentityTask, IdentityTopUpInfo, TopUpIdentityFundingMethod};
+use crate::context::AddressCoverage;
 use crate::ui::MessageType;
 use crate::ui::components::MessageBanner;
 use crate::ui::identities::funding_common::{self, copy_to_clipboard, generate_qr_code_image};
@@ -23,8 +24,9 @@ impl TopUpIdentityScreen {
                     let core_wallet_name = wallet.core_wallet_name.clone();
                     drop(wallet);
 
-                    self.app_context.ensure_address_imported(
+                    self.app_context.ensure_address_watched(
                         &receive_address,
+                        AddressCoverage::StandardBip44Account,
                         core_wallet_name.as_deref(),
                         Some("Managed by Dash Evo Tool"),
                     )?;

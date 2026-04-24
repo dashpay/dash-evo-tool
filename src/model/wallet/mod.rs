@@ -1000,16 +1000,8 @@ impl Wallet {
                 known_public_key = Some(public_key);
                 if let Some(app_context) = register {
                     let address = Address::p2pkh(&public_key, network);
-                    app_context.try_import_address(
-                        &address,
-                        self.core_wallet_name.as_deref(),
-                        Some(&format!(
-                            "Managed by Dash Evo Tool {} {}",
-                            self.alias.clone().unwrap_or_default(),
-                            derivation_path
-                        )),
-                    );
-
+                    // `register_address` handles address-watch registration internally
+                    // (dispatches by backend mode via `ensure_address_watched`).
                     self.register_address(
                         address,
                         &derivation_path,
@@ -1199,8 +1191,26 @@ impl Wallet {
             },
         );
 
-        if app_context.core_backend_mode() == crate::spv::CoreBackendMode::Rpc {
-            app_context.try_import_address(&address, self.core_wallet_name.as_deref(), None);
+        let coverage =
+            crate::context::AddressCoverage::from_derivation_path_reference(path_reference);
+        if let Err(e) = app_context.ensure_address_watched(
+            &address,
+            coverage,
+            self.core_wallet_name.as_deref(),
+            None,
+        ) {
+            // Best-effort: we've already persisted the address in the wallet
+            // maps and database, so downstream lookups still work. Only the
+            // external watch (Core RPC import or SPV registration) failed;
+            // log loudly and continue so the caller isn't blocked.
+            tracing::warn!(
+                address = %address,
+                error = %e,
+                ?coverage,
+                "Failed to register address for external watch; wallet-side \
+                 bookkeeping succeeded but incoming transactions may be missed \
+                 until the wallet is reloaded."
+            );
         }
 
         tracing::trace!(

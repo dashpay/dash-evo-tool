@@ -4,6 +4,7 @@ use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::{
     IdentityRegistrationInfo, IdentityTask, RegisterIdentityFundingMethod,
 };
+use crate::context::AddressCoverage;
 use crate::ui::MessageType;
 use crate::ui::components::MessageBanner;
 use crate::ui::identities::add_new_identity_screen::{
@@ -31,16 +32,18 @@ impl AddNewIdentityScreen {
 
                     if let Some(has_address) = self.core_has_funding_address {
                         if !has_address {
-                            self.app_context.ensure_address_imported(
+                            self.app_context.ensure_address_watched(
                                 &receive_address,
+                                AddressCoverage::StandardBip44Account,
                                 core_wallet_name.as_deref(),
                                 Some("Managed by Dash Evo Tool"),
                             )?;
                         }
                         self.funding_address = Some(receive_address);
                     } else {
-                        self.app_context.ensure_address_imported(
+                        self.app_context.ensure_address_watched(
                             &receive_address,
+                            AddressCoverage::StandardBip44Account,
                             core_wallet_name.as_deref(),
                             Some("Managed by Dash Evo Tool"),
                         )?;

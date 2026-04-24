@@ -164,11 +164,8 @@ impl PasswordInput {
             } else {
                 egui::TextStyle::Body.resolve(ui.style())
             };
-            let sample = if self.monospace {
-                "0".repeat(limit)
-            } else {
-                "W".repeat(limit)
-            };
+            // Wide glyph upper bound — identical width in monospace, safe upper bound in proportional.
+            let sample = "W".repeat(limit);
             let measured_width = Typography::measure_text_width(ui, sample, font_id);
             text_edit = text_edit.desired_width(
                 measured_width

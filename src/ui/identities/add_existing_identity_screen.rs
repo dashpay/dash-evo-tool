@@ -13,7 +13,7 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{MessageType, ScreenLike};
 use bip39::rand::{prelude::IteratorRandom, thread_rng};
 use dash_sdk::dashcore_rpc::dashcore::Network;
@@ -473,7 +473,7 @@ impl AddExistingIdentityScreen {
             .fill(if is_valid_id {
                 DashColors::DASH_BLUE
             } else {
-                DashColors::BUTTON_DISABLED
+                ComponentStyles::button_disabled_fill(ui.ctx().style().visuals.dark_mode)
             })
             .frame(true)
             .corner_radius(3.0);
@@ -843,7 +843,7 @@ impl AddExistingIdentityScreen {
             .fill(if is_valid {
                 DashColors::DASH_BLUE
             } else {
-                DashColors::BUTTON_DISABLED
+                ComponentStyles::button_disabled_fill(ui.ctx().style().visuals.dark_mode)
             })
             .frame(true)
             .corner_radius(3.0);

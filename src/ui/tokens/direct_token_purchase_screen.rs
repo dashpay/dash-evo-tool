@@ -6,7 +6,7 @@ use dash_sdk::dpp::data_contract::associated_token::token_configuration::accesso
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
-use eframe::egui::{self, Color32, Context, Ui};
+use eframe::egui::{self, Context, Ui};
 use egui::RichText;
 
 use super::tokens_screen::IdentityTokenInfo;
@@ -630,19 +630,16 @@ impl ScreenLike for PurchaseTokenScreen {
                         }
                     }
                 } else {
-                    let button = egui::Button::new(
-                        RichText::new(purchase_text).color(DashColors::muted_color(dark_mode)),
-                    )
-                    .fill(Color32::from_rgb(50, 50, 50))
-                    .corner_radius(3.0);
-
-                    ui.add_enabled(false, button).disabled_tooltip(
-                        if self.pricing_fetch_attempted && self.fetched_pricing_schedule.is_none() {
-                            "This token is not available for purchase"
-                        } else {
-                            "Fetch token price and enter amount first"
-                        },
-                    );
+                    ComponentStyles::add_primary_button_enabled(ui, false, purchase_text)
+                        .disabled_tooltip(
+                            if self.pricing_fetch_attempted
+                                && self.fetched_pricing_schedule.is_none()
+                            {
+                                "This token is not available for purchase"
+                            } else {
+                                "Fetch token price and enter amount first"
+                            },
+                        );
                 }
 
                 // Show confirmation dialog if it exists

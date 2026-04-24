@@ -61,7 +61,6 @@ pub fn add_dpns_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext)
                                 .fill(DashColors::DASH_BLUE)
                                 .stroke(egui::Stroke::NONE)
                                 .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
-                                .min_size(egui::Vec2::new(150.0, 28.0))
                             } else {
                                 egui::Button::new(
                                     RichText::new(subscreen.display_name())
@@ -71,7 +70,6 @@ pub fn add_dpns_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext)
                                 .fill(DashColors::glass_white(dark_mode))
                                 .stroke(egui::Stroke::new(1.0, DashColors::border(dark_mode)))
                                 .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
-                                .min_size(egui::Vec2::new(150.0, 28.0))
                             };
 
                             // Show the subscreen name as a clickable option

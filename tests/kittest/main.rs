@@ -1,3 +1,4 @@
+mod button_sizing;
 mod confirmation_dialog;
 mod create_asset_lock_screen;
 mod identities_screen;

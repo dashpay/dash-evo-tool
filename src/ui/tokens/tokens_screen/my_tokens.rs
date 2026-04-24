@@ -261,30 +261,14 @@ impl TokensScreen {
 
                     match self.tokens_subscreen {
                         TokensSubscreen::MyTokens => {
-                            let button = egui::Button::new(
-                                RichText::new("Import Token")
-                                    .color(egui::Color32::WHITE)
-                                    .strong(),
-                            )
-                            .fill(DashColors::DASH_BLUE)
-                            .min_size(egui::vec2(150.0, 36.0));
-
-                            if ui.add(button).clicked() {
+                            if ComponentStyles::add_primary_button(ui, "Import Token").clicked() {
                                 app_action = AppAction::AddScreen(
                                     ScreenType::AddTokenById.create_screen(&self.app_context),
                                 );
                             }
                         }
                         TokensSubscreen::SearchTokens | TokensSubscreen::TokenCreator => {
-                            let button = egui::Button::new(
-                                RichText::new("Refresh")
-                                    .color(egui::Color32::WHITE)
-                                    .strong(),
-                            )
-                            .fill(DashColors::DASH_BLUE)
-                            .min_size(egui::vec2(150.0, 36.0));
-
-                            if ui.add(button).clicked() {
+                            if ComponentStyles::add_primary_button(ui, "Refresh").clicked() {
                                 if let RefreshingStatus::Refreshing = self.refreshing_status {
                                     app_action = AppAction::None;
                                 } else {

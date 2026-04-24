@@ -19,7 +19,7 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
@@ -2537,16 +2537,7 @@ impl WalletSendScreen {
                 self.get_transaction_type_description()
             };
 
-            let send_button =
-                egui::Button::new(RichText::new(button_text).color(Color32::WHITE).strong())
-                    .fill(if can_send {
-                        DashColors::DASH_BLUE
-                    } else {
-                        DashColors::DASH_BLUE.gamma_multiply(0.5)
-                    })
-                    .min_size(egui::vec2(160.0, 36.0));
-
-            if ui.add_enabled(can_send, send_button).clicked() {
+            if ComponentStyles::add_primary_button_enabled(ui, can_send, button_text).clicked() {
                 match self.validate_and_send() {
                     Ok(send_action) => {
                         self.set_send_progress_banner(ui.ctx());
@@ -3120,16 +3111,7 @@ impl WalletSendScreen {
 
             let button_text = if is_sending { "Sending..." } else { "Send" };
 
-            let send_button =
-                egui::Button::new(RichText::new(button_text).color(Color32::WHITE).strong())
-                    .fill(if can_send {
-                        DashColors::DASH_BLUE
-                    } else {
-                        DashColors::DASH_BLUE.gamma_multiply(0.5)
-                    })
-                    .min_size(egui::vec2(160.0, 36.0));
-
-            if ui.add_enabled(can_send, send_button).clicked() {
+            if ComponentStyles::add_primary_button_enabled(ui, can_send, button_text).clicked() {
                 match self.validate_and_send_advanced() {
                     Ok(send_action) => {
                         self.set_send_progress_banner(ui.ctx());

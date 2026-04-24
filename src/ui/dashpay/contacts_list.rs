@@ -8,7 +8,7 @@ use crate::ui::components::ResultBannerExt;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::wallet_unlock_popup::WalletUnlockResult;
 use crate::ui::dashpay::contact_requests::ContactRequests;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{MessageType, ScreenLike, ScreenType};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
@@ -341,27 +341,12 @@ impl ContactsList {
 
         // Tab bar
         ui.horizontal(|ui| {
-            let contacts_tab = egui::Button::new(RichText::new("My Contacts").color(
-                if self.active_tab == ContactsTab::Contacts {
-                    DashColors::WHITE
-                } else {
-                    DashColors::text_primary(dark_mode)
-                },
-            ))
-            .fill(if self.active_tab == ContactsTab::Contacts {
-                DashColors::DASH_BLUE
+            let contacts_response = if self.active_tab == ContactsTab::Contacts {
+                ComponentStyles::add_primary_button(ui, "My Contacts")
             } else {
-                DashColors::glass_white(dark_mode)
-            })
-            .stroke(if self.active_tab == ContactsTab::Contacts {
-                egui::Stroke::NONE
-            } else {
-                egui::Stroke::new(1.0, DashColors::border(dark_mode))
-            })
-            .corner_radius(egui::CornerRadius::same(4))
-            .min_size(egui::Vec2::new(120.0, 28.0));
-
-            if ui.add(contacts_tab).clicked() {
+                ComponentStyles::add_secondary_button(ui, "My Contacts", dark_mode)
+            };
+            if contacts_response.clicked() {
                 self.active_tab = ContactsTab::Contacts;
             }
 
@@ -375,27 +360,12 @@ impl ContactsList {
                 "Requests".to_string()
             };
 
-            let requests_tab = egui::Button::new(RichText::new(requests_label).color(
-                if self.active_tab == ContactsTab::Requests {
-                    DashColors::WHITE
-                } else {
-                    DashColors::text_primary(dark_mode)
-                },
-            ))
-            .fill(if self.active_tab == ContactsTab::Requests {
-                DashColors::DASH_BLUE
+            let requests_response = if self.active_tab == ContactsTab::Requests {
+                ComponentStyles::add_primary_button(ui, requests_label)
             } else {
-                DashColors::glass_white(dark_mode)
-            })
-            .stroke(if self.active_tab == ContactsTab::Requests {
-                egui::Stroke::NONE
-            } else {
-                egui::Stroke::new(1.0, DashColors::border(dark_mode))
-            })
-            .corner_radius(egui::CornerRadius::same(4))
-            .min_size(egui::Vec2::new(120.0, 28.0));
-
-            if ui.add(requests_tab).clicked() {
+                ComponentStyles::add_secondary_button(ui, requests_label, dark_mode)
+            };
+            if requests_response.clicked() {
                 self.active_tab = ContactsTab::Requests;
             }
         });

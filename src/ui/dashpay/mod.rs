@@ -18,7 +18,7 @@ pub use profile_search::ProfileSearchScreen;
 use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::ui::ScreenType;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors};
 use chrono::{LocalResult, TimeZone, Utc};
 use chrono_humanize::HumanTime;
 
@@ -94,15 +94,7 @@ pub fn render_no_identities_card(ui: &mut Ui, app_context: &Arc<AppContext>) -> 
 
                 ui.add_space(15.0);
 
-                let button = egui::Button::new(
-                    RichText::new("Load Identity")
-                        .color(egui::Color32::WHITE)
-                        .strong(),
-                )
-                .fill(DashColors::DASH_BLUE)
-                .min_size(egui::vec2(150.0, 36.0));
-
-                if ui.add(button).clicked() {
+                if ComponentStyles::add_primary_button(ui, "Load Identity").clicked() {
                     return AppAction::AddScreen(
                         ScreenType::AddExistingIdentity.create_screen(app_context),
                     );

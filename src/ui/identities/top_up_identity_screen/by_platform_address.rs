@@ -9,7 +9,7 @@ use crate::ui::components::MessageBanner;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::identities::funding_common::WalletFundedScreenStep;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors};
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::Credits;
 use dash_sdk::dpp::dashcore::Address;
@@ -183,19 +183,7 @@ impl TopUpIdentityScreen {
                 _ => "Top Up Identity",
             };
 
-            let button = egui::Button::new(
-                RichText::new(button_text)
-                    .color(egui::Color32::WHITE)
-                    .strong(),
-            )
-            .fill(if can_top_up {
-                DashColors::DASH_BLUE
-            } else {
-                DashColors::DASH_BLUE.gamma_multiply(0.5)
-            })
-            .min_size(egui::vec2(120.0, 36.0));
-
-            if ui.add_enabled(can_top_up, button).clicked() {
+            if ComponentStyles::add_primary_button_enabled(ui, can_top_up, button_text).clicked() {
                 match self.validate_and_top_up_from_platform() {
                     Ok(top_up_action) => {
                         action = top_up_action;

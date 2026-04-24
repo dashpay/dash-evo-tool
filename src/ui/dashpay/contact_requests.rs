@@ -14,7 +14,7 @@ use crate::ui::components::wallet_unlock_popup::{
 use crate::ui::components::{MessageBanner, ResultBannerExt};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{MessageType, Screen, ScreenLike, ScreenType};
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -650,53 +650,23 @@ impl ContactRequests {
         // Tabs
         let dark_mode = ui.ctx().style().visuals.dark_mode;
         ui.horizontal(|ui| {
-            let incoming_tab = egui::Button::new(RichText::new("Incoming").color(
-                if self.active_tab == RequestTab::Incoming {
-                    DashColors::WHITE
-                } else {
-                    DashColors::text_primary(dark_mode)
-                },
-            ))
-            .fill(if self.active_tab == RequestTab::Incoming {
-                DashColors::DASH_BLUE
+            let incoming_response = if self.active_tab == RequestTab::Incoming {
+                ComponentStyles::add_primary_button(ui, "Incoming")
             } else {
-                DashColors::glass_white(dark_mode)
-            })
-            .stroke(if self.active_tab == RequestTab::Incoming {
-                egui::Stroke::NONE
-            } else {
-                egui::Stroke::new(1.0, DashColors::border(dark_mode))
-            })
-            .corner_radius(egui::CornerRadius::same(4))
-            .min_size(egui::Vec2::new(120.0, 28.0));
-
-            if ui.add(incoming_tab).clicked() {
+                ComponentStyles::add_secondary_button(ui, "Incoming", dark_mode)
+            };
+            if incoming_response.clicked() {
                 self.active_tab = RequestTab::Incoming;
             }
 
             ui.add_space(8.0);
 
-            let outgoing_tab = egui::Button::new(RichText::new("Outgoing").color(
-                if self.active_tab == RequestTab::Outgoing {
-                    DashColors::WHITE
-                } else {
-                    DashColors::text_primary(dark_mode)
-                },
-            ))
-            .fill(if self.active_tab == RequestTab::Outgoing {
-                DashColors::DASH_BLUE
+            let outgoing_response = if self.active_tab == RequestTab::Outgoing {
+                ComponentStyles::add_primary_button(ui, "Outgoing")
             } else {
-                DashColors::glass_white(dark_mode)
-            })
-            .stroke(if self.active_tab == RequestTab::Outgoing {
-                egui::Stroke::NONE
-            } else {
-                egui::Stroke::new(1.0, DashColors::border(dark_mode))
-            })
-            .corner_radius(egui::CornerRadius::same(4))
-            .min_size(egui::Vec2::new(120.0, 28.0));
-
-            if ui.add(outgoing_tab).clicked() {
+                ComponentStyles::add_secondary_button(ui, "Outgoing", dark_mode)
+            };
+            if outgoing_response.clicked() {
                 self.active_tab = RequestTab::Outgoing;
             }
         });

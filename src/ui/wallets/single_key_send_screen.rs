@@ -821,25 +821,10 @@ impl SingleKeyWalletSendScreen {
             let is_rpc_mode = self.app_context.core_backend_mode() == CoreBackendMode::Rpc;
 
             let button_enabled = wallet_is_open && !self.sending && is_rpc_mode;
-            // Only force white label text when the button is actually clickable;
-            // otherwise let egui's default disabled visuals take over so the
-            // greyed-out state is visually unambiguous.
-            let send_label =
-                RichText::new(if self.sending { "Sending..." } else { "Send" }).strong();
-            let send_label = if button_enabled {
-                send_label.color(Color32::WHITE)
-            } else {
-                send_label
-            };
-            let send_button = egui::Button::new(send_label)
-                .fill(if button_enabled {
-                    DashColors::DASH_BLUE
-                } else {
-                    DashColors::DASH_BLUE.gamma_multiply(0.5)
-                })
-                .min_size(egui::vec2(120.0, 36.0));
+            let send_label = if self.sending { "Sending..." } else { "Send" };
 
-            let mut response = ui.add_enabled(button_enabled, send_button);
+            let mut response =
+                ComponentStyles::add_primary_button_enabled(ui, button_enabled, send_label);
             if !is_rpc_mode {
                 response = response.on_disabled_hover_text(SINGLE_KEY_REQUIRES_CORE);
             }

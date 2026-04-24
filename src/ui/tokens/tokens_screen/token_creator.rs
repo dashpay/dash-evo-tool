@@ -11,7 +11,7 @@ use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
 use eframe::epaint::Color32;
 use egui::{ComboBox, Context, Frame, Margin, RichText, TextEdit, Ui};
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::ScreenType;
 use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::BackendTask;
@@ -117,15 +117,9 @@ impl TokensScreen {
 
                                         ui.add_space(15.0);
 
-                                        let button = egui::Button::new(
-                                            RichText::new("Load Identity")
-                                                .color(egui::Color32::WHITE)
-                                                .strong(),
-                                        )
-                                        .fill(DashColors::DASH_BLUE)
-                                        .min_size(egui::vec2(150.0, 36.0));
-
-                                        if ui.add(button).clicked() {
+                                        if ComponentStyles::add_primary_button(ui, "Load Identity")
+                                            .clicked()
+                                        {
                                             load_identity_clicked = true;
                                         }
 
@@ -404,19 +398,13 @@ impl TokensScreen {
                                 && self.selected_token_preset.is_some();
 
                             ui.horizontal(|ui| {
-                                let button = egui::Button::new(
-                                    RichText::new("Create Token")
-                                        .color(egui::Color32::WHITE)
-                                        .strong(),
+                                if ComponentStyles::add_primary_button_enabled(
+                                    ui,
+                                    can_create,
+                                    "Create Token",
                                 )
-                                .fill(if can_create {
-                                    DashColors::DASH_BLUE
-                                } else {
-                                    egui::Color32::GRAY
-                                })
-                                .min_size(egui::vec2(150.0, 36.0));
-
-                                if ui.add_enabled(can_create, button).clicked() {
+                                .clicked()
+                                {
                                     // Auto-set plural name if empty (singular + "s")
                                     let singular = self.token_names_input[0].0.trim().to_string();
                                     if self.token_names_input[0].1.trim().is_empty() {
@@ -855,15 +843,9 @@ impl TokensScreen {
                         // 6) "Register Token Contract" button
                         ui.add_space(10.0);
                         ui.horizontal(|ui| {
-                            let register_button = egui::Button::new(
-                                RichText::new("Register Token Contract")
-                                    .color(egui::Color32::WHITE)
-                                    .strong(),
-                            )
-                            .fill(DashColors::DASH_BLUE)
-                            .min_size(egui::vec2(200.0, 36.0));
-
-                            if ui.add(register_button).clicked() {
+                            if ComponentStyles::add_primary_button(ui, "Register Token Contract")
+                                .clicked()
+                            {
                                 match self.parse_token_build_args() {
                                     Ok(args) => {
                                         // If success, show the "confirmation popup"
@@ -877,15 +859,7 @@ impl TokensScreen {
                                 }
                             }
 
-                            let view_json_button = egui::Button::new(
-                                RichText::new("View JSON")
-                                    .color(egui::Color32::WHITE)
-                                    .strong(),
-                            )
-                            .fill(DashColors::DASH_BLUE)
-                            .min_size(egui::vec2(120.0, 36.0));
-
-                            if ui.add(view_json_button).clicked() {
+                            if ComponentStyles::add_primary_button(ui, "View JSON").clicked() {
                                 match self.parse_token_build_args() {
                                     Ok(args) => {
                                         // We have the parsed token creation arguments

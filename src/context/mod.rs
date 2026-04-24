@@ -737,12 +737,18 @@ impl AppContext {
     }
 
     /// Import address into Core, ignoring errors. For best-effort registration.
+    ///
+    /// No-ops in SPV mode — mirroring [`Self::ensure_address_imported`] — because there is no
+    /// RPC client to talk to and every call would fail silently, wasting resources.
     pub fn try_import_address(
         &self,
         address: &Address,
         core_wallet_name: Option<&str>,
         label: Option<&str>,
     ) {
+        if self.core_backend_mode() != CoreBackendMode::Rpc {
+            return;
+        }
         if let Ok(client) = self.core_client_for_wallet(core_wallet_name) {
             let _ = client.import_address(address, label, Some(false));
         }

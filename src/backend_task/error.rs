@@ -2792,6 +2792,12 @@ mod tests {
             ),
             "Expected TokenRecipientIdentityNotFound with correct id, got: {err:?}"
         );
+        // Source chain must be preserved so the collapsible details panel / logs
+        // retain the full technical context.
+        assert!(
+            std::error::Error::source(&err).is_some(),
+            "Expected source chain to be preserved, got None"
+        );
         let msg = err.to_string();
         assert!(
             msg.contains(&expected_id_str),
@@ -2817,7 +2823,7 @@ mod tests {
             action.clone(),
         ));
         let broadcast_err = dash_sdk::error::StateTransitionBroadcastError {
-            code: 40220,
+            code: 40703,
             message: "identity token account is not frozen".to_string(),
             cause: Some(consensus),
         };
@@ -2836,6 +2842,12 @@ mod tests {
                     && *action == "Unfreeze"
             ),
             "Expected TokenAccountNotFrozen with correct fields, got: {err:?}"
+        );
+        // Source chain must be preserved so the collapsible details panel / logs
+        // retain the full technical context.
+        assert!(
+            std::error::Error::source(&err).is_some(),
+            "Expected source chain to be preserved, got None"
         );
         let msg = err.to_string();
         assert!(

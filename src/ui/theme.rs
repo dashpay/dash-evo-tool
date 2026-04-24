@@ -76,13 +76,14 @@ impl DashColors {
     pub const DANGER_HOVER: Color32 = Color32::from_rgb(200, 0, 0);
     /// Red for danger/destructive action buttons (delete, remove)
     pub const DANGER_RED: Color32 = Color32::from_rgb(200, 60, 60);
-    /// Gray fill for disabled/inactive buttons
-    pub const BUTTON_DISABLED: Color32 = Color32::from_rgb(100, 100, 100);
-    /// Text color for disabled primary buttons in light mode.
-    /// rgb(240,240,240) gives 5.19:1 contrast against BUTTON_DISABLED fill — exceeds WCAG AA 4.5:1.
-    pub const BUTTON_DISABLED_TEXT_LIGHT: Color32 = Color32::from_rgb(240, 240, 240);
-    /// Text color for disabled primary buttons in dark mode.
-    pub const BUTTON_DISABLED_TEXT_DARK: Color32 = Color32::from_rgb(200, 200, 200);
+    /// Gray fill for disabled/inactive buttons — dark mode variant (slightly lighter than background)
+    pub const BUTTON_DISABLED_DARK: Color32 = Color32::from_rgb(100, 100, 100);
+    /// Gray fill for disabled/inactive buttons — light mode variant (fades toward white background)
+    pub const BUTTON_DISABLED_LIGHT: Color32 = Color32::from_rgb(220, 220, 220);
+    /// Text color on disabled buttons — light mode (dark gray, ≥4.5:1 on BUTTON_DISABLED_LIGHT)
+    pub const BUTTON_DISABLED_TEXT_LIGHT: Color32 = Color32::from_rgb(85, 85, 85);
+    /// Text color on disabled buttons — dark mode (near-white, ≥4.5:1 on BUTTON_DISABLED_DARK)
+    pub const BUTTON_DISABLED_TEXT_DARK: Color32 = Color32::from_rgb(230, 230, 230);
     /// Salmon/orange for input validation warnings
     pub const VALIDATION_WARNING: Color32 = Color32::from_rgb(255, 150, 100);
     /// Bright orange for important warnings (e.g., private key exposure, missing identities)
@@ -767,6 +768,14 @@ impl ComponentStyles {
         DashColors::WHITE
     }
 
+    pub fn button_disabled_fill(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            DashColors::BUTTON_DISABLED_DARK
+        } else {
+            DashColors::BUTTON_DISABLED_LIGHT
+        }
+    }
+
     pub fn button_disabled_text(dark_mode: bool) -> Color32 {
         if dark_mode {
             DashColors::BUTTON_DISABLED_TEXT_DARK
@@ -898,7 +907,7 @@ impl ComponentStyles {
             ui.add_sized(
                 Self::DIALOG_BUTTON_MIN_SIZE,
                 Button::new(text)
-                    .fill(DashColors::BUTTON_DISABLED)
+                    .fill(Self::button_disabled_fill(dark_mode))
                     .stroke(egui::Stroke::NONE)
                     .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
                     .min_size(Self::DIALOG_BUTTON_MIN_SIZE)

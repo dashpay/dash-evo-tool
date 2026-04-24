@@ -16,7 +16,7 @@ use crate::ui::components::component_trait::Component;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
@@ -611,7 +611,7 @@ impl ShieldScreen {
                                         .color(DashColors::WHITE)
                                         .size(12.0),
                                 )
-                                .fill(DashColors::BUTTON_DISABLED);
+                                .fill(ComponentStyles::button_disabled_fill(dark_mode));
                                 if ui
                                     .add_sized([btn_width, 20.0], btn)
                                     .on_hover_text("View state transition JSON")

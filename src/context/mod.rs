@@ -716,8 +716,9 @@ impl AppContext {
     /// | `StandardBip44Account`     | Import into the targeted Core wallet.     | No-op — wallet-level account watch already covers it.      |
     /// | `OffTree`                  | Import into the targeted Core wallet.     | Returns [`TaskError::SpvOffTreeAddressRegistrationUnsupported`]. |
     ///
-    /// Replaces the legacy `ensure_address_imported` / `try_import_address`
-    /// pair; see [`crate::context::address_watch`] for rationale.
+    /// See [`crate::context::address_watch`] for rationale and the history
+    /// of the legacy `ensure_address_imported` / `try_import_address` pair
+    /// this method replaced.
     ///
     /// Fire-and-forget callers must use `let _` explicitly so the type system
     /// makes the error-swallowing visible at the call site.
@@ -773,49 +774,6 @@ impl AppContext {
                 .map_err(|e| self.rpc_error_with_url(e))?;
         }
         Ok(())
-    }
-
-    /// Legacy: retained only until all callers migrate to [`Self::ensure_address_watched`].
-    ///
-    /// Pre-existing behaviour: works in Core RPC mode, silently no-ops in SPV
-    /// mode. This is exactly the bug the typed API fixes — once every caller
-    /// has migrated, this method is removed.
-    #[deprecated(
-        note = "use `ensure_address_watched` with an explicit `AddressCoverage`; \
-                silent no-op in SPV mode hides off-tree coverage bugs"
-    )]
-    pub fn ensure_address_imported(
-        &self,
-        address: &Address,
-        core_wallet_name: Option<&str>,
-        label: Option<&str>,
-    ) -> Result<(), TaskError> {
-        let client = self.core_client_for_wallet(core_wallet_name)?;
-        let info = client
-            .get_address_info(address)
-            .map_err(|e| self.rpc_error_with_url(e))?;
-        if !(info.is_watchonly || info.is_mine) {
-            client
-                .import_address(address, label, Some(false))
-                .map_err(|e| self.rpc_error_with_url(e))?;
-        }
-        Ok(())
-    }
-
-    /// Legacy: retained only until all callers migrate to [`Self::ensure_address_watched`].
-    #[deprecated(
-        note = "use `ensure_address_watched` with an explicit `AddressCoverage`; \
-                silent no-op in SPV mode hides off-tree coverage bugs"
-    )]
-    pub fn try_import_address(
-        &self,
-        address: &Address,
-        core_wallet_name: Option<&str>,
-        label: Option<&str>,
-    ) {
-        if let Ok(client) = self.core_client_for_wallet(core_wallet_name) {
-            let _ = client.import_address(address, label, Some(false));
-        }
     }
 
     /// Convert an RPC error to `TaskError`, enriching connection failures with

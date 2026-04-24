@@ -704,7 +704,6 @@ impl AppState {
             Network::Testnet => "tcp://127.0.0.1:23709",
             Network::Devnet => "tcp://127.0.0.1:23710",
             Network::Regtest => "tcp://127.0.0.1:20302",
-            _ => return None,
         };
         let endpoint = ctx
             .config

@@ -300,7 +300,6 @@ pub(crate) fn network_display_name(network: dash_sdk::dpp::dashcore::Network) ->
         Network::Testnet => "testnet",
         Network::Devnet => "devnet",
         Network::Regtest => "local",
-        _ => "unknown",
     }
 }
 

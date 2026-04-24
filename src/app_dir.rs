@@ -60,20 +60,14 @@ pub fn core_cookie_path(
     network: Network,
     devnet_name: &Option<String>,
 ) -> Result<PathBuf, std::io::Error> {
-    core_user_data_dir_path().and_then(|path| {
+    core_user_data_dir_path().map(|path| {
         let network_dir = match network {
             Network::Mainnet => "",
             Network::Testnet => "testnet3",
             Network::Devnet => devnet_name.as_deref().unwrap_or(""),
             Network::Regtest => "regtest",
-            _ => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    format!("Unsupported network for cookie path: {:?}", network),
-                ));
-            }
         };
-        Ok(path.join(network_dir).join(".cookie"))
+        path.join(network_dir).join(".cookie")
     })
 }
 
@@ -142,12 +136,6 @@ pub fn create_dash_core_config_if_not_exists(
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "Local network does not support overwriting dash.conf",
-            ));
-        }
-        _ => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Unsupported network",
             ));
         }
     };

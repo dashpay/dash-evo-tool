@@ -75,7 +75,6 @@ impl NetworkConfig {
             Network::Testnet => 19998,
             Network::Devnet => 29998,
             Network::Regtest => 19898,
-            _ => 9998,
         }
     }
 
@@ -98,7 +97,6 @@ impl Config {
             Network::Testnet => &self.testnet_config,
             Network::Devnet => &self.devnet_config,
             Network::Regtest => &self.local_config,
-            _ => &None,
         }
     }
 
@@ -315,13 +313,6 @@ impl Config {
             Network::Testnet => self.testnet_config = Some(new_config),
             Network::Devnet => self.devnet_config = Some(new_config),
             Network::Regtest => self.local_config = Some(new_config),
-            _ => {
-                // Optionally handle any custom or unknown network here if needed
-                tracing::warn!(
-                    "Attempted to update config for an unknown network: {:?}",
-                    network
-                );
-            }
         }
     }
 }

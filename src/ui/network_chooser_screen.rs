@@ -328,7 +328,6 @@ impl NetworkChooserScreen {
                         Network::Testnet => "Testnet",
                         Network::Devnet => "Devnet",
                         Network::Regtest => "Local",
-                        _ => "Unknown",
                     };
 
                     ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
@@ -1767,7 +1766,6 @@ impl NetworkChooserScreen {
             Network::Testnet => "Testnet",
             Network::Devnet => "Devnet",
             Network::Regtest => "Local",
-            _ => "this network",
         }
     }
 

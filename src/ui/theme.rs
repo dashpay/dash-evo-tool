@@ -523,13 +523,6 @@ impl DashColors {
                     Self::REGTEST_BROWN
                 }
             }
-            _ => {
-                if dark_mode {
-                    Self::DASH_BLUE_DARK
-                } else {
-                    Self::DASH_BLUE
-                }
-            }
         }
     }
 

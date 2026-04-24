@@ -121,7 +121,6 @@ fn format_extended_epoch_info(
         Network::Testnet => 3_600_000,
         Network::Devnet => 3_600_000,
         Network::Regtest => 1_200_000,
-        _ => 3_600_000,
     };
 
     let readable_epoch_end_time = match Utc

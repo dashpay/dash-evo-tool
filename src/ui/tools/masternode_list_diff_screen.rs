@@ -369,41 +369,52 @@ impl MasternodeListDiffScreen {
         }
     }
 
-    fn get_height_and_cache(&mut self, block_hash: &BlockHash) -> Result<CoreBlockHeight, String> {
-        let Some(height) = self
+    /// Resolve a block hash to its height without mutating the engine.
+    ///
+    /// Reads in order from: engine `block_container`, `block_height_cache`, then Core RPC
+    /// (populating `block_height_cache` on success). Unlike [`Self::get_height_and_cache`],
+    /// this helper deliberately does **not** call `feed_block_height` — callers that need
+    /// to stage pre-commit lookups (e.g. `build_qr_info_block_data`) use this so a partial
+    /// failure leaves the engine untouched.
+    fn resolve_height(&mut self, block_hash: &BlockHash) -> Result<CoreBlockHeight, String> {
+        if let Some(height) = self
             .data
             .masternode_list_engine
             .block_container
             .get_height(block_hash)
-        else {
-            let Some(height) = self.cache.block_height_cache.get(block_hash) else {
-                tracing::debug!(
-                    "Asking core for height {} ({})",
-                    block_hash,
-                    block_hash.reverse()
-                );
-                return match self
-                    .app_context
-                    .core_client
-                    .read()
-                    .unwrap()
-                    .get_block_header_info(
-                        &(BlockHash2::from_byte_array(block_hash.to_byte_array())),
-                    ) {
-                    Ok(result) => {
-                        self.cache
-                            .block_height_cache
-                            .insert(*block_hash, result.height as CoreBlockHeight);
-                        self.data
-                            .masternode_list_engine
-                            .feed_block_height(result.height as CoreBlockHeight, *block_hash);
-                        Ok(result.height as CoreBlockHeight)
-                    }
-                    Err(e) => Err(e.to_string()),
-                };
-            };
+        {
+            return Ok(height);
+        }
+        if let Some(height) = self.cache.block_height_cache.get(block_hash) {
             return Ok(*height);
-        };
+        }
+        tracing::debug!(
+            "Asking core for height {} ({})",
+            block_hash,
+            block_hash.reverse()
+        );
+        match self
+            .app_context
+            .core_client
+            .read()
+            .unwrap()
+            .get_block_header_info(&(BlockHash2::from_byte_array(block_hash.to_byte_array())))
+        {
+            Ok(result) => {
+                let height = result.height as CoreBlockHeight;
+                self.cache.block_height_cache.insert(*block_hash, height);
+                Ok(height)
+            }
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    fn get_height_and_cache(&mut self, block_hash: &BlockHash) -> Result<CoreBlockHeight, String> {
+        let height = self.resolve_height(block_hash)?;
+        self.data
+            .masternode_list_engine
+            .block_container
+            .feed_block_height(height, *block_hash);
         Ok(height)
     }
 
@@ -416,6 +427,16 @@ impl MasternodeListDiffScreen {
     /// `height + WORK_DIFF_DEPTH` (the engine needs it to compute rotated quorum keys).
     /// Returns a flat list of `(height, hash)` pairs the caller feeds into
     /// `engine.block_container.feed_block_height`.
+    ///
+    /// This is a pure "build" step: it uses [`Self::resolve_height`] (which populates
+    /// the local height cache but never touches the engine) so a mid-loop failure does
+    /// not leave the engine partially populated. The caller commits the returned entries
+    /// to the engine only after the full set resolves successfully.
+    ///
+    /// If a cycle-boundary block is not yet available from Core RPC, the referenced-hash
+    /// entry is still kept and the boundary lookup is skipped with a warning. The engine
+    /// may still succeed in `feed_qr_info`; if it does not, the error surfaces from that
+    /// call where it belongs.
     fn build_qr_info_block_data(
         &mut self,
         qr_info: &QRInfo,
@@ -426,12 +447,25 @@ impl MasternodeListDiffScreen {
             if hash.as_byte_array() == &[0; 32] {
                 continue;
             }
-            let height = self.get_height_and_cache(&hash)?;
+            let height = self.resolve_height(&hash)?;
             entries.push((height, hash));
 
             let cycle_boundary_height = height + WORK_DIFF_DEPTH;
-            let cycle_boundary_hash = self.get_block_hash_and_cache(cycle_boundary_height)?;
-            entries.push((cycle_boundary_height, cycle_boundary_hash));
+            match self.get_block_hash_and_cache(cycle_boundary_height) {
+                Ok(cycle_boundary_hash) => {
+                    entries.push((cycle_boundary_height, cycle_boundary_hash));
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        referenced_hash = %hash,
+                        referenced_height = height,
+                        cycle_boundary_height,
+                        error = %e,
+                        "cycle-boundary block not yet available; skipping and letting feed_qr_info decide"
+                    );
+                    continue;
+                }
+            }
         }
 
         Ok(entries)
@@ -668,6 +702,7 @@ impl MasternodeListDiffScreen {
             tracing::debug!("feeding {} {}", base_height, mn_list_diff.base_block_hash);
             self.data
                 .masternode_list_engine
+                .block_container
                 .feed_block_height(base_height, mn_list_diff.base_block_hash);
         } else {
             self.ui_state.error = Some(format!(
@@ -681,6 +716,7 @@ impl MasternodeListDiffScreen {
             tracing::debug!("feeding {} {}", block_height, mn_list_diff.block_hash);
             self.data
                 .masternode_list_engine
+                .block_container
                 .feed_block_height(block_height, mn_list_diff.block_hash);
         } else {
             self.ui_state.error = Some(format!(
@@ -695,6 +731,7 @@ impl MasternodeListDiffScreen {
         if let Ok(height) = self.get_height(&quorum_entry.quorum_hash) {
             self.data
                 .masternode_list_engine
+                .block_container
                 .feed_block_height(height, quorum_entry.quorum_hash);
         } else {
             self.ui_state.error = Some(format!(

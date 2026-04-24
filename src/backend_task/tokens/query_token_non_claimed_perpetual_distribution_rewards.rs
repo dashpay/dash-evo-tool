@@ -81,9 +81,7 @@ impl AppContext {
         let perpetual_distribution = token_config
             .distribution_rules()
             .perpetual_distribution()
-            .ok_or(TaskError::TokenQueryError {
-                detail: "Token does not have perpetual distribution".to_string(),
-            })?;
+            .ok_or(TaskError::TokenNoPerpetualDistribution)?;
         let data_contract = self
             .get_contract_by_token_id(&token_id)?
             .ok_or(TaskError::DataContractNotFound)?;

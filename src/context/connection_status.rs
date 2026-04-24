@@ -422,7 +422,6 @@ impl ConnectionStatus {
             Network::Testnet => testnet_chainlock.is_some(),
             Network::Devnet => devnet_chainlock.is_some(),
             Network::Regtest => local_chainlock.is_some(),
-            _ => false,
         };
         self.set_rpc_online(online);
     }

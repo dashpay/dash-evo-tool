@@ -16,6 +16,7 @@ use dash_sdk::dapi_client::{AddressList, DapiRequestExecutor, IntoInner, Request
 use dash_sdk::dapi_grpc::core::v0::GetBlockchainStatusRequest;
 use dash_sdk::dpp::dashcore::BlockHash;
 use dash_sdk::dpp::dashcore::hashes::Hash;
+use dash_sdk::dpp::dashcore::network::constants::NetworkExt;
 use dash_sdk::dpp::prelude::CoreBlockHeight;
 use dash_sdk::error::ContextProviderError;
 use dash_sdk::platform::ContextProvider;

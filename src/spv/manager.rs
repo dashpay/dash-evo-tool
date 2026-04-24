@@ -1449,7 +1449,6 @@ impl SpvManager {
             Network::Testnet => 19999,
             Network::Devnet => 20001,
             Network::Regtest => 19899,
-            _ => 9999,
         };
 
         let addr = format!("{}:{}", host, port);
@@ -1492,7 +1491,6 @@ fn build_spv_data_dir(
             }
         }
         Network::Regtest => "regtest".to_string(),
-        other => format!("{other:?}"),
     };
 
     Ok(base.join(network_dir))

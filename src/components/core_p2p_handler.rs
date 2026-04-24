@@ -92,7 +92,6 @@ impl CoreP2PHandler {
             Network::Testnet => 19999,
             Network::Devnet => 29999,
             Network::Regtest => 29999,
-            _ => return Err(P2PError::UnsupportedNetwork),
         });
         let stream = TcpStream::connect_timeout(
             &format!("127.0.0.1:{port}")

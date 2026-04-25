@@ -706,12 +706,24 @@ impl AppContext {
     /// Import an address into the correct Core wallet if it's not already known.
     /// Uses `core_wallet_name` to target the right wallet on multi-wallet nodes.
     /// No-op if the address is already watched/mine.
+    ///
+    /// In SPV mode this is a no-op: there is no Dash Core node to import into.
+    /// HD-derived addresses are tracked by the SPV wallet manager watching the
+    /// BIP44 account derived from the same xprv — `Wallet::register_address`
+    /// records them in wallet state (`known_addresses`) but does not update the
+    /// SPV bloom filter directly. Incoming UTXOs for these addresses are
+    /// populated via the SPV reconciliation path (`reconcile_spv_wallets()`),
+    /// which is what downstream checks such as
+    /// `capture_qr_funding_utxo_if_available` observe.
     pub fn ensure_address_imported(
         &self,
         address: &Address,
         core_wallet_name: Option<&str>,
         label: Option<&str>,
     ) -> Result<(), TaskError> {
+        if self.core_backend_mode() != CoreBackendMode::Rpc {
+            return Ok(());
+        }
         let client = self.core_client_for_wallet(core_wallet_name)?;
         let info = client
             .get_address_info(address)
@@ -725,12 +737,18 @@ impl AppContext {
     }
 
     /// Import address into Core, ignoring errors. For best-effort registration.
+    ///
+    /// No-ops in SPV mode — mirroring [`Self::ensure_address_imported`] — because there is no
+    /// RPC client to talk to and every call would fail silently, wasting resources.
     pub fn try_import_address(
         &self,
         address: &Address,
         core_wallet_name: Option<&str>,
         label: Option<&str>,
     ) {
+        if self.core_backend_mode() != CoreBackendMode::Rpc {
+            return;
+        }
         if let Ok(client) = self.core_client_for_wallet(core_wallet_name) {
             let _ = client.import_address(address, label, Some(false));
         }

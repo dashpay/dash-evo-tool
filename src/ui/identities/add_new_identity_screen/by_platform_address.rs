@@ -6,7 +6,7 @@ use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::identities::add_new_identity_screen::{
     AddNewIdentityScreen, FundingMethod, WalletFundedScreenStep,
 };
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors};
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use egui::{Color32, ComboBox, RichText, Ui};
 
@@ -244,7 +244,7 @@ impl AddNewIdentityScreen {
             .fill(if can_create {
                 DashColors::DASH_BLUE
             } else {
-                DashColors::BUTTON_DISABLED
+                ComponentStyles::button_disabled_fill(dark_mode)
             })
             .frame(true)
             .corner_radius(3.0);

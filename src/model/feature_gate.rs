@@ -44,6 +44,10 @@ pub enum FeatureGate {
     DeveloperMode,
     /// SPV backend mode — active when the app is running in SPV (light client) mode
     SpvBackend,
+    /// Dash Core RPC backend mode — active when the app is running against a local Dash Core node.
+    /// Use this gate for functionality that requires the Core RPC / ZMQ surface (e.g. the ZMQ
+    /// listener) instead of reaching for a raw `core_backend_mode() == Rpc` comparison.
+    RpcBackend,
 }
 
 impl FeatureGate {
@@ -71,6 +75,7 @@ impl FeatureGate {
             FeatureGate::DashPay => true, // Always for now; future: network/version gate
             FeatureGate::DeveloperMode => ctx.is_developer_mode(),
             FeatureGate::SpvBackend => ctx.core_backend_mode() == CoreBackendMode::Spv,
+            FeatureGate::RpcBackend => ctx.core_backend_mode() == CoreBackendMode::Rpc,
         }
     }
 }

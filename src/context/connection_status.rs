@@ -75,7 +75,7 @@ impl ConnectionStatus {
             rpc_online: AtomicBool::new(false),
             zmq_status: Mutex::new(ZMQConnectionEvent::Disconnected),
             spv_status: AtomicU8::new(SpvStatus::Idle as u8),
-            backend_mode: AtomicU8::new(CoreBackendMode::Rpc.as_u8()),
+            backend_mode: AtomicU8::new(CoreBackendMode::Spv.as_u8()),
             disable_zmq: AtomicBool::new(false),
             overall_state: AtomicU8::new(OverallConnectionState::Disconnected as u8),
             spv_last_error: Mutex::new(None),
@@ -422,7 +422,6 @@ impl ConnectionStatus {
             Network::Testnet => testnet_chainlock.is_some(),
             Network::Devnet => devnet_chainlock.is_some(),
             Network::Regtest => local_chainlock.is_some(),
-            _ => false,
         };
         self.set_rpc_online(online);
     }

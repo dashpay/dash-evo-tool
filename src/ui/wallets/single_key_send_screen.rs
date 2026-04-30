@@ -6,12 +6,15 @@ use crate::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest
 use crate::context::AppContext;
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::wallet::single_key::SingleKeyWallet;
+use crate::spv::CoreBackendMode;
 use crate::ui::components::MessageBanner;
+use crate::ui::components::component_trait::Component;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::{ComponentStyles, DashColors};
+use crate::ui::wallets::wallets_screen::SINGLE_KEY_REQUIRES_CORE;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::fee::FeeRate;
 use eframe::egui::{self, Context, RichText, Ui};
@@ -70,6 +73,12 @@ pub struct SingleKeyWalletSendScreen {
 
     // Advanced options toggle
     show_advanced_options: bool,
+
+    /// Persistent warning banner rendered when the app is running on the SPV
+    /// backend. Stored on the screen (rather than constructed fresh each
+    /// frame) so the underlying tracing log fires once on mode entry instead
+    /// of every repaint.
+    spv_warning_banner: MessageBanner,
 }
 
 impl SingleKeyWalletSendScreen {
@@ -85,6 +94,7 @@ impl SingleKeyWalletSendScreen {
             password_input: PasswordInput::new().with_hint_text("Enter password"),
             fee_dialog: FeeConfirmationDialog::default(),
             show_advanced_options: false,
+            spv_warning_banner: MessageBanner::new(),
         }
     }
 
@@ -808,21 +818,32 @@ impl SingleKeyWalletSendScreen {
                 .selected_wallet
                 .as_ref()
                 .is_some_and(|w| w.read().map(|g| g.is_open()).unwrap_or(false));
+            let is_rpc_mode = self.app_context.core_backend_mode() == CoreBackendMode::Rpc;
 
-            let send_button = egui::Button::new(
-                RichText::new(if self.sending { "Sending..." } else { "Send" })
-                    .color(Color32::WHITE)
-                    .strong(),
-            )
-            .fill(if wallet_is_open && !self.sending {
-                DashColors::DASH_BLUE
+            let button_enabled = wallet_is_open && !self.sending && is_rpc_mode;
+            // Only force white label text when the button is actually clickable;
+            // otherwise let egui's default disabled visuals take over so the
+            // greyed-out state is visually unambiguous.
+            let send_label =
+                RichText::new(if self.sending { "Sending..." } else { "Send" }).strong();
+            let send_label = if button_enabled {
+                send_label.color(Color32::WHITE)
             } else {
-                DashColors::DASH_BLUE.gamma_multiply(0.5)
-            })
-            .min_size(egui::vec2(120.0, 36.0));
+                send_label
+            };
+            let send_button = egui::Button::new(send_label)
+                .fill(if button_enabled {
+                    DashColors::DASH_BLUE
+                } else {
+                    DashColors::DASH_BLUE.gamma_multiply(0.5)
+                })
+                .min_size(egui::vec2(120.0, 36.0));
 
-            let button_enabled = wallet_is_open && !self.sending;
-            if ui.add_enabled(button_enabled, send_button).clicked() {
+            let mut response = ui.add_enabled(button_enabled, send_button);
+            if !is_rpc_mode {
+                response = response.on_disabled_hover_text(SINGLE_KEY_REQUIRES_CORE);
+            }
+            if response.clicked() {
                 match self.validate_and_send() {
                     Ok(send_action) => {
                         action = send_action;
@@ -853,6 +874,8 @@ impl ScreenLike for SingleKeyWalletSendScreen {
             RootScreenType::RootScreenWalletsBalances,
         );
 
+        let is_rpc_mode = self.app_context.core_backend_mode() == CoreBackendMode::Rpc;
+
         action |= island_central_panel(ctx, |ui| {
             let mut inner_action = AppAction::None;
             let dark_mode = ui.ctx().style().visuals.dark_mode;
@@ -862,6 +885,22 @@ impl ScreenLike for SingleKeyWalletSendScreen {
             egui::ScrollArea::vertical()
                 .auto_shrink([true; 2])
                 .show(ui, |ui| {
+                    // Persistent warning banner for the SPV backend. Stored on
+                    // the screen so the underlying tracing log fires once on
+                    // mode entry instead of every repaint — see the matching
+                    // note in `single_key_view.rs`.
+                    if !is_rpc_mode {
+                        if !self.spv_warning_banner.has_message() {
+                            self.spv_warning_banner
+                                .set_message(SINGLE_KEY_REQUIRES_CORE, MessageType::Warning)
+                                .disable_auto_dismiss();
+                        }
+                        self.spv_warning_banner.show(ui);
+                        ui.add_space(10.0);
+                    } else if self.spv_warning_banner.has_message() {
+                        self.spv_warning_banner.clear();
+                    }
+
                     // Heading with Advanced Options checkbox
                     ui.horizontal(|ui| {
                         ui.heading(

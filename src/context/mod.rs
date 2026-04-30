@@ -312,20 +312,16 @@ impl AppContext {
         // Wire up push-based SPV status updates to ConnectionStatus
         spv_manager.set_connection_status(Arc::clone(&connection_status));
 
-        // Load the core backend mode from settings, defaulting to RPC if not set
+        // Load the core backend mode from settings. The DB column default is
+        // SPV (=1), and the v34 migration pins every existing user who does
+        // not have a configured local Dash Core node onto SPV. Developer mode
+        // is a visibility toggle — it does not override the persisted choice.
         let saved_core_backend_mode = db
             .get_settings()
             .ok()
             .flatten()
             .map(|s| s.7) // core_backend_mode is the 8th element (index 7)
-            .unwrap_or(CoreBackendMode::Rpc.as_u8());
-
-        // If not in developer mode, force RPC mode (SPV is gated behind dev mode)
-        let saved_core_backend_mode = if developer_mode_enabled {
-            saved_core_backend_mode
-        } else {
-            CoreBackendMode::Rpc.as_u8()
-        };
+            .unwrap_or(CoreBackendMode::Spv.as_u8());
 
         // Load saved wallet selection, validating that the wallets still exist
         let (saved_wallet_hash, saved_single_key_hash) =
@@ -376,8 +372,10 @@ impl AppContext {
         };
 
         let app_context = Arc::new(app_context);
-        // Bind providers to the newly created app_context.
-        // Only the active provider is registered with the SDK here (SPV by default).
+        // Bind providers to the newly created app_context. The saved mode in
+        // `settings.core_backend_mode` is the single source of truth: we bind
+        // SPV first to ensure a provider is always registered, then rebind to
+        // RPC only if that is the saved choice.
         if let Err(e) = app_context
             .spv_context_provider
             .read()
@@ -388,7 +386,7 @@ impl AppContext {
             return None;
         }
 
-        // If defaulting to RPC, rebind the RPC provider (overrides SPV registration above).
+        // If the saved mode is RPC, rebind the RPC provider (overrides SPV registration above).
         if app_context.core_backend_mode() == CoreBackendMode::Rpc
             && let Err(e) = app_context
                 .rpc_context_provider
@@ -450,6 +448,23 @@ impl AppContext {
     }
 
     fn set_core_backend_mode_inner(self: &Arc<Self>, mode: CoreBackendMode, persist: bool) {
+        // TODO: mid-session mode switches here do not manage ZMQ listener
+        // lifecycle.
+        //   - RPC → SPV: any listener spawned at startup or on the last
+        //     network switch keeps running, burning a socket + retry loop
+        //     against a Core node that is no longer in use (pre-existing
+        //     bug, predates the SPV-default flip).
+        //   - SPV → RPC: no listener is spawned here, so Expert users
+        //     toggling to Local Dash Core node mid-session lose ZMQ
+        //     real-time events until restart or network switch (the
+        //     FeatureGate::RpcBackend gate in spawn_zmq_listener blocks
+        //     the startup spawn while in SPV mode).
+        // Fixing this requires an AppContext → AppState signal so the
+        // listener map (owned by AppState) can be torn down or spawned
+        // in response to mode changes. Cross-module refactor, deliberately
+        // scoped out of PR #836.
+        // Ref: CR-1 on dashpay/dash-evo-tool#836.
+
         // Switch SDK context provider to match the selected backend.
         // Only store/persist the mode after binding succeeds — otherwise the app
         // would report the new mode while still wired to the old provider.
@@ -691,12 +706,24 @@ impl AppContext {
     /// Import an address into the correct Core wallet if it's not already known.
     /// Uses `core_wallet_name` to target the right wallet on multi-wallet nodes.
     /// No-op if the address is already watched/mine.
+    ///
+    /// In SPV mode this is a no-op: there is no Dash Core node to import into.
+    /// HD-derived addresses are tracked by the SPV wallet manager watching the
+    /// BIP44 account derived from the same xprv — `Wallet::register_address`
+    /// records them in wallet state (`known_addresses`) but does not update the
+    /// SPV bloom filter directly. Incoming UTXOs for these addresses are
+    /// populated via the SPV reconciliation path (`reconcile_spv_wallets()`),
+    /// which is what downstream checks such as
+    /// `capture_qr_funding_utxo_if_available` observe.
     pub fn ensure_address_imported(
         &self,
         address: &Address,
         core_wallet_name: Option<&str>,
         label: Option<&str>,
     ) -> Result<(), TaskError> {
+        if self.core_backend_mode() != CoreBackendMode::Rpc {
+            return Ok(());
+        }
         let client = self.core_client_for_wallet(core_wallet_name)?;
         let info = client
             .get_address_info(address)
@@ -710,12 +737,18 @@ impl AppContext {
     }
 
     /// Import address into Core, ignoring errors. For best-effort registration.
+    ///
+    /// No-ops in SPV mode — mirroring [`Self::ensure_address_imported`] — because there is no
+    /// RPC client to talk to and every call would fail silently, wasting resources.
     pub fn try_import_address(
         &self,
         address: &Address,
         core_wallet_name: Option<&str>,
         label: Option<&str>,
     ) {
+        if self.core_backend_mode() != CoreBackendMode::Rpc {
+            return;
+        }
         if let Ok(client) = self.core_client_for_wallet(core_wallet_name) {
             let _ = client.import_address(address, label, Some(false));
         }
@@ -857,12 +890,13 @@ pub(crate) const fn default_platform_version(network: &Network) -> &'static Plat
         Network::Testnet => &PLATFORM_V11,
         Network::Devnet => &PLATFORM_V11,
         Network::Regtest => &PLATFORM_V11,
-        _ => panic!("Unsupported network for default_platform_version"),
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn wallet_name_with_spaces_is_url_encoded() {
         let base = "http://127.0.0.1:9998";
@@ -871,5 +905,40 @@ mod tests {
         let url = format!("{}/wallet/{}", base, encoded);
         assert_eq!(url, "http://127.0.0.1:9998/wallet/my%20test%20wallet");
         assert!(!url.contains(' '));
+    }
+
+    /// A fresh data directory (no pre-existing settings) must resolve to the
+    /// SPV backend — both because the `settings.core_backend_mode` column
+    /// defaults to 1 (SPV) and because `AppContext::new()`'s `unwrap_or`
+    /// fallback now uses SPV. This is the non-network-dependent replacement
+    /// for a full `AppContext::new()` integration test: it exercises the same
+    /// DB-column/unwrap pathway that drives the stored mode at startup.
+    #[test]
+    fn fresh_db_resolves_to_spv_backend_mode() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_file_path = tmp.path().join("test_data.db");
+        let db = crate::database::Database::new(&db_file_path).unwrap();
+        db.initialize(&db_file_path).unwrap();
+
+        // Column default path: a freshly initialized DB reports SPV (=1).
+        let settings = db
+            .get_settings()
+            .expect("settings read")
+            .expect("settings row present");
+        // Settings tuple: index 7 is core_backend_mode (see AppContext::new).
+        assert_eq!(
+            settings.7,
+            CoreBackendMode::Spv.as_u8(),
+            "fresh DB should default to SPV"
+        );
+
+        // Default-fallback path: if settings were missing/unreadable, the
+        // fallback used by `AppContext::new()` must also resolve to SPV. Guard
+        // against silent drift of both the enum default and the as_u8 mapping.
+        assert_eq!(CoreBackendMode::default(), CoreBackendMode::Spv);
+        assert_eq!(
+            CoreBackendMode::from(CoreBackendMode::Spv.as_u8()),
+            CoreBackendMode::Spv
+        );
     }
 }

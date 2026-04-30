@@ -191,7 +191,6 @@ impl AppContext {
                     Network::Testnet => (&testnet_result, maybe_testnet_config),
                     Network::Devnet => (&devnet_result, maybe_devnet_config),
                     Network::Regtest => (&local_result, maybe_local_config),
-                    _ => (&mainnet_result, maybe_mainnet_config),
                 };
                 let active_rpc_error = if let Err(e) = active_result {
                     if let Some(task_err) =

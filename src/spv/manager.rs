@@ -36,10 +36,16 @@ use tokio_util::sync::CancellationToken;
 use zeroize::Zeroize;
 
 /// Preferred backend for Core-level operations.
+///
+/// SPV is the default for both fresh installs and unknown/invalid persisted
+/// values. The enum-level default and the `From<u8>` fallback intentionally
+/// match the DB column default and the runtime default in `AppContext` — they
+/// must be kept in sync to avoid silent contradictions at startup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(u8)]
 pub enum CoreBackendMode {
-    #[default]
     Rpc = 0,
+    #[default]
     Spv = 1,
 }
 
@@ -52,8 +58,8 @@ impl CoreBackendMode {
 impl From<u8> for CoreBackendMode {
     fn from(value: u8) -> Self {
         match value {
-            1 => CoreBackendMode::Spv,
-            _ => CoreBackendMode::Rpc,
+            0 => CoreBackendMode::Rpc,
+            _ => CoreBackendMode::Spv,
         }
     }
 }
@@ -813,15 +819,22 @@ impl SpvManager {
             wallet_map.clear();
         }
 
-        // Reset the in-memory WalletManager's synced_height so the next SPV session
-        // scans filters from genesis instead of the stale height from the previous run.
-        match self.wallet.try_write() {
-            Ok(mut wm) => {
-                wm.update_synced_height(0);
-            }
-            Err(_) => {
-                tracing::warn!("Failed to reset WalletManager synced_height during SPV data clear");
-            }
+        // Reset the in-memory WalletManager's filter_committed_height so the next
+        // SPV session scans filters from genesis instead of the stale height from the
+        // previous run. We reset filter_committed_height (not synced_height) because at
+        // rust-dashcore 309fac8 these became independent fields — FiltersManager::new()
+        // reads filter_committed_height() for its "already synced" guard.
+        //
+        // This must succeed before we wipe the on-disk data; otherwise the in-memory
+        // height would stay stale while on-disk filters are gone, re-triggering the
+        // skipped-rescan bug this clear is meant to prevent.
+        {
+            let mut wm = self.wallet.try_write().map_err(|e| {
+                format!(
+                    "Failed to reset WalletManager filter_committed_height during SPV data clear: {e}"
+                )
+            })?;
+            wm.update_filter_committed_height(0);
         }
 
         self.write_sync_progress(None).map_err(|e| e.to_string())?;
@@ -1436,7 +1449,6 @@ impl SpvManager {
             Network::Testnet => 19999,
             Network::Devnet => 20001,
             Network::Regtest => 19899,
-            _ => 9999,
         };
 
         let addr = format!("{}:{}", host, port);
@@ -1479,7 +1491,6 @@ fn build_spv_data_dir(
             }
         }
         Network::Regtest => "regtest".to_string(),
-        other => format!("{other:?}"),
     };
 
     Ok(base.join(network_dir))

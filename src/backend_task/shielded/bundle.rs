@@ -429,7 +429,6 @@ pub async fn shield_from_asset_lock(
     amount_duffs: u64,
     source_address: Option<&Address>,
 ) -> Result<u64, TaskError> {
-    use dash_sdk::dashcore_rpc::RpcApi;
     use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
     use dash_sdk::dpp::prelude::AssetLockProof;
     use dash_sdk::dpp::shielded::builder::build_shield_from_asset_lock_transition;
@@ -493,14 +492,29 @@ pub async fn shield_from_asset_lock(
         proofs.insert(tx_id, None);
     }
 
-    // Step 3: Broadcast the transaction
-    app_context
-        .core_client
-        .read()
-        .map_err(|_| TaskError::LockPoisoned {
-            resource: "core_client",
-        })?
-        .send_raw_transaction(&asset_lock_transaction)?;
+    // Step 3: Broadcast the transaction (routes through SPV or RPC per
+    // `core_backend_mode()`). On failure, drop the finality tracking entry
+    // we just inserted so it does not leak across retries.
+    if let Err(e) = app_context
+        .broadcast_raw_transaction(&asset_lock_transaction)
+        .await
+    {
+        match app_context.transactions_waiting_for_finality.lock() {
+            Ok(mut proofs) => {
+                proofs.remove(&tx_id);
+            }
+            Err(poisoned) => {
+                tracing::warn!(
+                    %tx_id,
+                    "transactions_waiting_for_finality lock is poisoned after broadcast failure; \
+                     recovering through poisoned guard so the finality tracking entry is cleared"
+                );
+                let mut proofs = poisoned.into_inner();
+                proofs.remove(&tx_id);
+            }
+        }
+        return Err(e);
+    }
 
     // Step 4: Remove used UTXOs from wallet
     {
@@ -539,8 +553,23 @@ pub async fn shield_from_asset_lock(
     loop {
         tokio::select! {
             _ = &mut timeout => {
-                if let Ok(mut proofs) = app_context.transactions_waiting_for_finality.try_lock() {
-                    proofs.remove(&tx_id);
+                // Block briefly to guarantee cleanup; the critical section is a
+                // small BTreeMap remove. Mirrors the broadcast-failure branch
+                // above so a timeout cannot leak a finality tracking entry
+                // that the finality listener would otherwise keep servicing.
+                match app_context.transactions_waiting_for_finality.lock() {
+                    Ok(mut proofs) => {
+                        proofs.remove(&tx_id);
+                    }
+                    Err(poisoned) => {
+                        tracing::warn!(
+                            %tx_id,
+                            "transactions_waiting_for_finality lock is poisoned on timeout; \
+                             recovering through poisoned guard so the finality tracking entry is cleared"
+                        );
+                        let mut proofs = poisoned.into_inner();
+                        proofs.remove(&tx_id);
+                    }
                 }
 
                 if app_context.core_backend_mode() == crate::spv::CoreBackendMode::Rpc

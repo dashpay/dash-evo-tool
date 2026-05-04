@@ -234,8 +234,8 @@ impl DestroyFrozenFundsScreen {
     /// Confirmation popup
     fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
         let msg = format!(
-            "Are you sure you want to destroy frozen funds for identity {}? This action cannot be undone.",
-            self.frozen_identity_id
+            "Are you sure you want to destroy frozen funds for identity {identity_id}? This action cannot be undone.",
+            identity_id = self.frozen_identity_id
         );
 
         let confirmation_dialog = self.confirmation_dialog.get_or_insert_with(|| {
@@ -596,8 +596,8 @@ impl ScreenLike for DestroyFrozenFundsScreen {
                     if ComponentStyles::add_primary_button(ui, button_text).clicked() {
                         // Initialize confirmation dialog when button is clicked
                         let msg = format!(
-                            "Are you sure you want to destroy frozen funds for identity {}? This action cannot be undone.",
-                            self.frozen_identity_id
+                            "Are you sure you want to destroy frozen funds for identity {identity_id}? This action cannot be undone.",
+                            identity_id = self.frozen_identity_id
                         );
                         self.confirmation_dialog = Some(
                             ConfirmationDialog::new("Confirm Destroy Frozen Funds", msg)

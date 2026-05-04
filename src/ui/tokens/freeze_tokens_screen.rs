@@ -224,8 +224,8 @@ impl FreezeTokensScreen {
     /// Confirmation popup
     fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
         let msg = format!(
-            "Are you sure you want to freeze identity {}?",
-            self.freeze_identity_id
+            "Are you sure you want to freeze identity {identity_id}?",
+            identity_id = self.freeze_identity_id
         );
 
         let confirmation_dialog = self.confirmation_dialog.get_or_insert_with(|| {
@@ -601,8 +601,15 @@ impl ScreenLike for FreezeTokensScreen {
                 if self.app_context.is_developer_mode() || !button_text.contains("Test") {
                     ui.add_space(10.0);
                     if ComponentStyles::add_primary_button(ui, button_text).clicked() {
-                        // Initialize confirmation dialog when button is clicked
-                        self.confirmation_dialog = None; // Reset for fresh dialog
+                        let msg = format!(
+                            "Are you sure you want to freeze identity {identity_id}?",
+                            identity_id = self.freeze_identity_id
+                        );
+                        self.confirmation_dialog = Some(
+                            ConfirmationDialog::new("Confirm Freeze", msg)
+                                .confirm_text(Some("Confirm"))
+                                .cancel_text(Some("Cancel")),
+                        );
                     }
                 }
 

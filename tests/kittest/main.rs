@@ -5,4 +5,5 @@ mod info_popup;
 mod message_banner;
 mod network_chooser;
 mod startup;
+mod token_action_confirmation_dialogs;
 mod wallets_screen;

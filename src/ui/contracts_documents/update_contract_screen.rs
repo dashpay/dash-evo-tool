@@ -77,16 +77,12 @@ impl UpdateDataContractScreen {
             None
         };
 
-        let excluded_aliases = ["dpns", "keyword_search", "token_history", "withdrawals"];
+        // Only user-added contracts are editable; built-in system contracts
+        // are skipped at the source instead of being materialized and then
+        // filtered out.
         let known_contracts = app_context
-            .get_contracts(None, None)
-            .expect("Failed to load contracts")
-            .into_iter()
-            .filter(|c| match &c.alias {
-                Some(alias) => !excluded_aliases.contains(&alias.as_str()),
-                None => true,
-            })
-            .collect::<Vec<_>>();
+            .get_user_contracts()
+            .expect("Failed to load contracts");
 
         let selected_key = selected_qualified_identity.as_ref().and_then(|identity| {
             identity

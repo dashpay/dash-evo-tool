@@ -89,27 +89,16 @@ impl GroveSTARKScreen {
             qualified_identities.len()
         );
 
-        // Load initial contracts (exclude system contracts)
-        let excluded_aliases = ["dpns", "keyword_search", "token_history", "withdrawals"];
-        let all_contracts = app_context.get_contracts(None, None).unwrap_or_default();
+        // Load initial contracts (system contracts are skipped at the source).
+        let all_contracts = app_context.get_user_contracts().unwrap_or_default();
 
         tracing::info!(
-            "ZK Proofs screen found {} total contracts",
+            "ZK Proofs screen found {} user contracts",
             all_contracts.len()
         );
 
         let available_contracts: Vec<(String, String)> = all_contracts
             .into_iter()
-            .filter(|c| match &c.alias {
-                Some(alias) => {
-                    let is_system = excluded_aliases.contains(&alias.as_str());
-                    if is_system {
-                        tracing::debug!("Excluding system contract: {}", alias);
-                    }
-                    !is_system
-                }
-                None => true,
-            })
             .map(|qualified_contract| {
                 let id = qualified_contract
                     .contract
@@ -204,15 +193,10 @@ impl GroveSTARKScreen {
     }
 
     fn refresh_contracts(&mut self, app_context: &AppContext) {
-        let excluded_aliases = ["dpns", "keyword_search", "token_history", "withdrawals"];
-        let all_contracts = app_context.get_contracts(None, None).unwrap_or_default();
+        let all_contracts = app_context.get_user_contracts().unwrap_or_default();
 
         self.available_contracts = all_contracts
             .into_iter()
-            .filter(|c| match &c.alias {
-                Some(alias) => !excluded_aliases.contains(&alias.as_str()),
-                None => true,
-            })
             .map(|qualified_contract| {
                 let id = qualified_contract
                     .contract
@@ -235,7 +219,7 @@ impl GroveSTARKScreen {
         self.available_document_types.clear();
         self.selected_document_type = None;
 
-        if let Ok(contracts) = app_context.get_contracts(None, None) {
+        if let Ok(contracts) = app_context.get_contracts_arc(None, None) {
             for contract in contracts {
                 let id = contract
                     .contract

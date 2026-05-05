@@ -158,11 +158,14 @@ pub fn add_contract_chooser_panel(
 ) -> AppAction {
     let mut action = AppAction::None;
 
-    // Retrieve the list of known contracts
-    let contracts = app_context.get_contracts(None, None).unwrap_or_else(|e| {
-        error!("Error fetching contracts: {}", e);
-        vec![]
-    });
+    // Retrieve the list of known contracts as Arc-backed refs so cached
+    // system contracts are not deep-cloned on every frame.
+    let contracts = app_context
+        .get_contracts_arc(None, None)
+        .unwrap_or_else(|e| {
+            error!("Error fetching contracts: {}", e);
+            vec![]
+        });
 
     // Filter contracts by name or ID
     let filtered_contracts: Vec<_> = contracts
@@ -218,7 +221,7 @@ pub fn add_contract_chooser_panel(
 
                             for contract in filtered_contracts {
                                 let contract_id = contract.contract.id().to_string(Encoding::Base58);
-                                let is_selected_contract = *selected_data_contract == *contract;
+                                let is_selected_contract = selected_data_contract.contract.id() == contract.contract.id();
 
                                 // Format built-in contract names nicely
                                 let display_name = match contract.alias.as_deref() {
@@ -295,7 +298,7 @@ pub fn add_contract_chooser_panel(
                                                                 if let Ok(new_doc_type) = contract.contract.document_type_cloned_for_name(doc_name) {
                                                                     *pending_document_type = new_doc_type.clone();
                                                                     *selected_document_type = new_doc_type.clone();
-                                                                    *selected_data_contract = contract.clone();
+                                                                    *selected_data_contract = contract.to_owned_qualified();
                                                                     *selected_index = None;
                                                                     *document_query = format!("SELECT * FROM {}", selected_document_type.name());
 
@@ -348,7 +351,7 @@ pub fn add_contract_chooser_panel(
                                                                                 *selected_index = Some(index.clone());
                                                                                 if let Ok(new_doc_type) = contract.contract.document_type_cloned_for_name(doc_name) {
                                                                                     *selected_document_type = new_doc_type;
-                                                                                    *selected_data_contract = contract.clone();
+                                                                                    *selected_data_contract = contract.to_owned_qualified();
 
                                                                                     // Build the WHERE clause using all property names
                                                                                     let conditions: Vec<String> = index
@@ -516,10 +519,7 @@ pub fn add_contract_chooser_panel(
                                         // Right‐aligned Remove button
                                         ui.horizontal(|ui| {
                                             ui.add_space(8.0);
-                                            if contract.alias != Some("dpns".to_string())
-                                                && contract.alias != Some("token_history".to_string())
-                                                && contract.alias != Some("withdrawals".to_string())
-                                                && contract.alias != Some("keyword_search".to_string())
+                                            if !app_context.is_system_contract_id(&contract.contract.id())
                                                 && ui.add(
                                                     egui::Button::new("Remove")
                                                         .min_size(egui::Vec2::new(60.0, 20.0))

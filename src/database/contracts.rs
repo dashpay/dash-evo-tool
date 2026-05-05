@@ -31,11 +31,22 @@ impl Database {
         insert_tokens_too: InsertTokensToo,
         app_context: &AppContext,
     ) -> Result<()> {
+        let data_contract_id = data_contract.id();
+        if app_context.is_system_contract_id(&data_contract_id) {
+            tracing::debug!(
+                ?data_contract_id,
+                ?contract_alias,
+                ?insert_tokens_too,
+                "Skipping insert for system contract"
+            );
+            return Ok(());
+        }
+
         // Serialize the contract
         let contract_bytes = data_contract
             .serialize_to_bytes_with_platform_version(app_context.platform_version())
             .expect("expected to serialize contract");
-        let contract_id = data_contract.id().to_vec();
+        let contract_id = data_contract_id.to_vec();
         let network = app_context.network.to_string();
 
         // Insert the contract if it does not exist
@@ -260,10 +271,22 @@ impl Database {
     ) -> Result<Vec<QualifiedContract>> {
         let network = app_context.network.to_string();
 
-        // Build the SQL query with optional limit and offset
-        let mut query = String::from("SELECT contract, alias FROM contract WHERE network = ?");
+        let excluded_contract_ids = app_context
+            .system_contract_ids()
+            .map(|contract_id| contract_id.to_vec());
+        let excluded_contract_placeholders = vec!["?"; excluded_contract_ids.len()].join(", ");
+
+        // Build the SQL query with optional limit and offset. A stable
+        // `ORDER BY contract_id` is required: without it, SQLite is free to
+        // return rows in any order, so LIMIT/OFFSET pagination would not be
+        // deterministic across calls and pages could overlap or skip rows.
+        let mut query = format!(
+            "SELECT contract, alias FROM contract WHERE network = ? AND contract_id NOT IN ({excluded_contract_placeholders}) ORDER BY contract_id"
+        );
         if limit.is_some() {
             query.push_str(" LIMIT ?");
+        } else if offset.is_some() {
+            query.push_str(" LIMIT -1");
         }
         if offset.is_some() {
             query.push_str(" OFFSET ?");
@@ -278,6 +301,9 @@ impl Database {
 
         // Collect parameters for query execution
         let mut params: Vec<&dyn rusqlite::ToSql> = vec![&network];
+        for contract_id in &excluded_contract_ids {
+            params.push(contract_id);
+        }
         if let Some(l) = limit {
             limit_value = l;
             params.push(&limit_value); // Now `limit_value` lives long enough
@@ -315,21 +341,102 @@ impl Database {
         Ok(contracts)
     }
 
+    /// Returns the contract IDs of every contract row persisted on the given
+    /// network whose contract blob successfully deserializes. Rows with
+    /// malformed contract IDs or unparseable contract bytes are skipped, so
+    /// the result is consistent with the visible contract set surfaced by
+    /// [`Self::get_contracts`] and [`Self::get_contract_by_id`] (both of
+    /// which silently drop malformed rows on `versioned_deserialize`).
+    pub fn get_contract_ids_for_network(
+        &self,
+        app_context: &AppContext,
+    ) -> rusqlite::Result<Vec<Identifier>> {
+        let network = app_context.network.to_string();
+        let conn = self.conn.lock().unwrap();
+        let mut stmt =
+            conn.prepare("SELECT contract_id, contract FROM contract WHERE network = ?")?;
+        let mut rows = stmt.query(params![network])?;
+        let mut ids = Vec::new();
+        while let Some(row) = rows.next()? {
+            let id_bytes: Vec<u8> = row.get(0)?;
+            let contract_bytes: Vec<u8> = row.get(1)?;
+            let id = match Identifier::from_bytes(&id_bytes) {
+                Ok(id) => id,
+                Err(e) => {
+                    tracing::warn!("Skipping malformed contract id row: {}", e);
+                    continue;
+                }
+            };
+            // Only return IDs of rows that round-trip through the same
+            // deserialization path as the listing helpers. Rows with valid
+            // 32-byte keys but corrupted blobs would otherwise show as
+            // "loaded" while never appearing in the visible contract list.
+            match DataContract::versioned_deserialize(
+                &contract_bytes,
+                false,
+                app_context.platform_version(),
+            ) {
+                Ok(_) => ids.push(id),
+                Err(e) => {
+                    tracing::warn!(?id, "Skipping contract row with malformed blob: {}", e);
+                    continue;
+                }
+            }
+        }
+        Ok(ids)
+    }
+
     pub fn remove_contract(
         &self,
         contract_id: &[u8],
         app_context: &AppContext,
     ) -> rusqlite::Result<()> {
-        let network = app_context.network.to_string();
+        self.remove_contract_for_network(contract_id, &app_context.network)
+    }
 
-        // 1) remove the contract itself
-        self.execute(
+    /// Network-only variant of [`Self::remove_contract`] for callers (e.g. tests
+    /// and free helpers in `context::contract_token_db`) that do not have a
+    /// full [`AppContext`] available. Production paths should keep using
+    /// [`Self::remove_contract`].
+    pub(crate) fn remove_contract_for_network(
+        &self,
+        contract_id: &[u8],
+        network: &Network,
+    ) -> rusqlite::Result<()> {
+        let network = network.to_string();
+        let conn = self.conn.lock().unwrap();
+        let tx = conn.unchecked_transaction()?;
+
+        tx.execute(
+            "DELETE FROM identity_token_balances
+             WHERE network = ?
+               AND token_id IN (
+                   SELECT id FROM token WHERE data_contract_id = ? AND network = ?
+               )",
+            params![&network, contract_id, &network],
+        )?;
+        // `token_order` has no `network` column on purpose — see the
+        // invariant on `Database::initialize_token_order_table`. Token
+        // metadata/order are single-network-at-a-time surfaces, so this
+        // cleanup follows the current network recorded on the token row.
+        tx.execute(
+            "DELETE FROM token_order
+             WHERE token_id IN (
+                 SELECT id FROM token WHERE data_contract_id = ? AND network = ?
+             )",
+            params![contract_id, &network],
+        )?;
+        tx.execute(
+            "DELETE FROM token WHERE data_contract_id = ? AND network = ?",
+            params![contract_id, &network],
+        )?;
+        tx.execute(
             "DELETE FROM contract
-         WHERE contract_id = ? AND network = ?",
-            params![contract_id, network],
+             WHERE contract_id = ? AND network = ?",
+            params![contract_id, &network],
         )?;
 
-        Ok(())
+        tx.commit()
     }
 
     /// Deletes all contracts in Devnet variants and Regtest.
@@ -413,5 +520,248 @@ impl Database {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::database::test_helpers::create_test_database;
+    use dash_sdk::dpp::dashcore::Network;
+    use dash_sdk::platform::Identifier;
+    use rusqlite::params;
+
+    fn id(byte: u8) -> Identifier {
+        Identifier::from_bytes(&[byte; 32]).expect("32 bytes is a valid identifier")
+    }
+
+    fn count_rows(conn: &rusqlite::Connection, sql: &str, params: &[&dyn rusqlite::ToSql]) -> i64 {
+        conn.query_row(sql, rusqlite::params_from_iter(params), |row| row.get(0))
+            .expect("count query")
+    }
+
+    /// Removing a non-system (user) contract via `remove_contract_for_network`
+    /// must cascade to every dependent row (tokens, token_order, identity
+    /// token balances) for that contract on the same network in a single
+    /// transaction. Production behaviour for unrelated rows on the same
+    /// network must be preserved.
+    #[test]
+    fn remove_contract_cascades_dependent_rows() {
+        let db = create_test_database().expect("create in-memory db");
+        let network = Network::Testnet;
+        let network_str = network.to_string();
+
+        let contract_id = id(0xC1);
+        let other_contract_id = id(0xC2);
+        let token_id = id(0xD1);
+        let other_token_id = id(0xD2);
+        let identity_id = id(0xA1);
+
+        // Direct SQL inserts — we don't need real serialized contracts for
+        // this test because we only verify the cascade DELETE behaviour.
+        // The test DB enables foreign keys, so the rows we reference must
+        // exist (e.g. an `identity` row backing the FK in
+        // `identity_token_balances`).
+        let conn = db.shared_connection();
+        let conn = conn.lock().unwrap();
+
+        // Identity row to satisfy the FK from identity_token_balances.
+        conn.execute(
+            "INSERT INTO identity (id, is_local, network) VALUES (?, ?, ?)",
+            params![identity_id.to_vec(), 1i64, &network_str],
+        )
+        .unwrap();
+
+        // Two user-contract rows on the same network.
+        for cid in [&contract_id, &other_contract_id] {
+            conn.execute(
+                "INSERT INTO contract (contract_id, contract, alias, network) VALUES (?, ?, ?, ?)",
+                params![
+                    cid.to_vec(),
+                    b"placeholder".to_vec(),
+                    Option::<String>::None,
+                    &network_str
+                ],
+            )
+            .unwrap();
+        }
+
+        // Token rows: one belonging to the contract under test, one to the
+        // unrelated contract on the same network.
+        conn.execute(
+            "INSERT INTO token (id, token_alias, token_config, data_contract_id, token_position, network)
+             VALUES (?, ?, ?, ?, ?, ?)",
+            params![
+                token_id.to_vec(),
+                "alias",
+                b"cfg".to_vec(),
+                contract_id.to_vec(),
+                0u16,
+                &network_str
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO token (id, token_alias, token_config, data_contract_id, token_position, network)
+             VALUES (?, ?, ?, ?, ?, ?)",
+            params![
+                other_token_id.to_vec(),
+                "alias-other",
+                b"cfg".to_vec(),
+                other_contract_id.to_vec(),
+                0u16,
+                &network_str
+            ],
+        )
+        .unwrap();
+
+        // identity_token_balances rows for both tokens.
+        conn.execute(
+            "INSERT INTO identity_token_balances (token_id, identity_id, balance, network)
+             VALUES (?, ?, ?, ?)",
+            params![token_id.to_vec(), identity_id.to_vec(), 0u64, &network_str],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO identity_token_balances (token_id, identity_id, balance, network)
+             VALUES (?, ?, ?, ?)",
+            params![
+                other_token_id.to_vec(),
+                identity_id.to_vec(),
+                0u64,
+                &network_str
+            ],
+        )
+        .unwrap();
+
+        // token_order rows for both tokens.
+        conn.execute(
+            "INSERT INTO token_order (pos, token_id, identity_id) VALUES (?, ?, ?)",
+            params![0i64, token_id.to_vec(), identity_id.to_vec()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO token_order (pos, token_id, identity_id) VALUES (?, ?, ?)",
+            params![1i64, other_token_id.to_vec(), identity_id.to_vec()],
+        )
+        .unwrap();
+
+        // Sanity: every row exists before removal.
+        assert_eq!(
+            count_rows(
+                &conn,
+                "SELECT COUNT(*) FROM contract WHERE contract_id = ? AND network = ?",
+                &[&contract_id.to_vec(), &network_str]
+            ),
+            1
+        );
+        assert_eq!(
+            count_rows(
+                &conn,
+                "SELECT COUNT(*) FROM token WHERE data_contract_id = ? AND network = ?",
+                &[&contract_id.to_vec(), &network_str]
+            ),
+            1
+        );
+        assert_eq!(
+            count_rows(
+                &conn,
+                "SELECT COUNT(*) FROM identity_token_balances WHERE token_id = ?",
+                &[&token_id.to_vec()]
+            ),
+            1
+        );
+        assert_eq!(
+            count_rows(
+                &conn,
+                "SELECT COUNT(*) FROM token_order WHERE token_id = ?",
+                &[&token_id.to_vec()]
+            ),
+            1
+        );
+
+        // Drop the lock so `remove_contract_for_network` can re-acquire it.
+        drop(conn);
+
+        db.remove_contract_for_network(contract_id.as_bytes(), &network)
+            .expect("remove_contract_for_network succeeds for user contract");
+
+        let conn = db.shared_connection();
+        let conn = conn.lock().unwrap();
+
+        // The targeted contract and all its dependents are gone.
+        assert_eq!(
+            count_rows(
+                &conn,
+                "SELECT COUNT(*) FROM contract WHERE contract_id = ? AND network = ?",
+                &[&contract_id.to_vec(), &network_str]
+            ),
+            0,
+            "contract row should be deleted"
+        );
+        assert_eq!(
+            count_rows(
+                &conn,
+                "SELECT COUNT(*) FROM token WHERE data_contract_id = ? AND network = ?",
+                &[&contract_id.to_vec(), &network_str]
+            ),
+            0,
+            "token rows tied to the contract should be deleted"
+        );
+        assert_eq!(
+            count_rows(
+                &conn,
+                "SELECT COUNT(*) FROM identity_token_balances WHERE token_id = ?",
+                &[&token_id.to_vec()]
+            ),
+            0,
+            "identity_token_balances rows for the removed token should be deleted"
+        );
+        assert_eq!(
+            count_rows(
+                &conn,
+                "SELECT COUNT(*) FROM token_order WHERE token_id = ?",
+                &[&token_id.to_vec()]
+            ),
+            0,
+            "token_order rows for the removed token should be deleted"
+        );
+
+        // Unrelated rows on the same network must remain untouched.
+        assert_eq!(
+            count_rows(
+                &conn,
+                "SELECT COUNT(*) FROM contract WHERE contract_id = ? AND network = ?",
+                &[&other_contract_id.to_vec(), &network_str]
+            ),
+            1,
+            "unrelated contract row must remain"
+        );
+        assert_eq!(
+            count_rows(
+                &conn,
+                "SELECT COUNT(*) FROM token WHERE data_contract_id = ? AND network = ?",
+                &[&other_contract_id.to_vec(), &network_str]
+            ),
+            1,
+            "unrelated token row must remain"
+        );
+        assert_eq!(
+            count_rows(
+                &conn,
+                "SELECT COUNT(*) FROM identity_token_balances WHERE token_id = ?",
+                &[&other_token_id.to_vec()]
+            ),
+            1,
+            "unrelated identity_token_balances row must remain"
+        );
+        assert_eq!(
+            count_rows(
+                &conn,
+                "SELECT COUNT(*) FROM token_order WHERE token_id = ?",
+                &[&other_token_id.to_vec()]
+            ),
+            1,
+            "unrelated token_order row must remain"
+        );
     }
 }

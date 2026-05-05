@@ -18,7 +18,10 @@ pub fn clicked_outside_window(ctx: &egui::Context, window_rect: egui::Rect) -> b
 use crate::{
     app::AppAction,
     context::AppContext,
-    model::{qualified_contract::QualifiedContract, qualified_identity::QualifiedIdentity},
+    model::{
+        qualified_contract::{QualifiedContract, QualifiedContractRef},
+        qualified_identity::QualifiedIdentity,
+    },
     ui::contracts_documents::group_actions_screen::GroupActionsScreen,
     ui::theme::DashColors,
     ui::{RootScreenType, Screen, identities::keys::add_key_screen::AddKeyScreen},
@@ -84,6 +87,14 @@ pub fn identity_display_label(identity: &QualifiedIdentity) -> String {
 
 /// Returns the display label for a QualifiedContract (alias or Base58 ID).
 pub fn contract_display_label(contract: &QualifiedContract) -> String {
+    contract
+        .alias
+        .clone()
+        .unwrap_or_else(|| contract.contract.id().to_string(Encoding::Base58))
+}
+
+/// Returns the display label for a QualifiedContractRef (alias or Base58 ID).
+pub fn contract_ref_display_label(contract: &QualifiedContractRef) -> String {
     contract
         .alias
         .clone()
@@ -714,10 +725,15 @@ pub fn add_contract_doc_type_chooser_with_filtering(
     selected_contract: &mut Option<QualifiedContract>,
     selected_doc_type: &mut Option<DocumentType>,
 ) {
-    let contracts = app_context.get_contracts(None, None).unwrap_or_default();
+    // Use the Arc-backed listing so cached system contracts are not
+    // deep-cloned on every frame; the selected contract is materialized
+    // only when the user actually picks one.
+    let contracts = app_context
+        .get_contracts_arc(None, None)
+        .unwrap_or_default();
     let search_term_lowercase = search_term.to_lowercase();
     let filtered = contracts.iter().filter(|qc| {
-        contract_display_label(qc)
+        contract_ref_display_label(qc)
             .to_lowercase()
             .contains(&search_term_lowercase)
     });
@@ -743,7 +759,7 @@ pub fn add_contract_doc_type_chooser_pre_filtered<'a, T>(
     selected_contract: &mut Option<QualifiedContract>,
     selected_doc_type: &mut Option<DocumentType>,
 ) where
-    T: Iterator<Item = &'a QualifiedContract>,
+    T: Iterator<Item = &'a QualifiedContractRef>,
 {
     egui::Grid::new("contract_doc_type_grid")
         .num_columns(2)
@@ -753,6 +769,8 @@ pub fn add_contract_doc_type_chooser_pre_filtered<'a, T>(
             ui.label("Filter contracts:");
             ui.text_edit_singleline(search_term);
             ui.end_row();
+
+            let selected_id = selected_contract.as_ref().map(|qc| qc.contract.id());
 
             ui.label("Contract:");
             ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
@@ -766,12 +784,10 @@ pub fn add_contract_doc_type_chooser_pre_filtered<'a, T>(
                     )
                     .show_ui(ui, |cui| {
                         for qc in filtered_contracts {
-                            let label = contract_display_label(qc);
-                            if cui
-                                .selectable_label(selected_contract.as_ref() == Some(qc), label)
-                                .clicked()
-                            {
-                                *selected_contract = Some(qc.clone());
+                            let label = contract_ref_display_label(qc);
+                            let is_selected = selected_id == Some(qc.contract.id());
+                            if cui.selectable_label(is_selected, label).clicked() {
+                                *selected_contract = Some(qc.to_owned_qualified());
                             }
                         }
                     });

@@ -456,15 +456,15 @@ impl ScreenLike for TransitionVisualizerScreen {
                             ui.label(format!("Contract ID: {}", contract_id));
                             ui.add_space(10.0);
 
-                            // Check if contract already exists
+                            // Check if contract already exists. Use the cheap
+                            // ID-only lookup so we don't deserialize every
+                            // loaded contract just to compare base58 strings.
                             let contract_exists = self
                                 .app_context
-                                .get_contracts(None, None)
+                                .loaded_contract_ids()
                                 .unwrap_or_default()
                                 .iter()
-                                .any(|c| {
-                                    c.contract.id().to_string(Encoding::Base58) == *contract_id
-                                });
+                                .any(|id| id.to_string(Encoding::Base58) == *contract_id);
 
                             if contract_exists {
                                 ui.label("This contract already exists locally.");

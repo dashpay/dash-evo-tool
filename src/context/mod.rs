@@ -372,6 +372,13 @@ impl AppContext {
         };
 
         let app_context = Arc::new(app_context);
+        if let Err(e) = app_context.cleanup_persisted_system_contracts() {
+            tracing::warn!(
+                ?network,
+                "Failed to clean up persisted duplicate system contracts: {e}"
+            );
+        }
+
         // Bind providers to the newly created app_context. The saved mode in
         // `settings.core_backend_mode` is the single source of truth: we bind
         // SPV first to ensure a provider is always registered, then rebind to

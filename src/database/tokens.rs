@@ -505,6 +505,20 @@ impl Database {
     }
 
     /// (Re)creates the `token_order` table with proper foreign keys.
+    ///
+    /// **Invariant — single-network token order.** `token_order` intentionally
+    /// has no `network` column. Token order is conceptually global to the
+    /// active network: [`Self::save_token_order`] truncates and rewrites the
+    /// whole table, and [`Self::load_token_order`] returns every row, so
+    /// callers operating on a different network would clobber each other's
+    /// state. The cascade-delete in [`Database::remove_contract_for_network`]
+    /// is therefore scoped by the current `token.network` value even though
+    /// `token_order` itself is not network-scoped — token metadata and order
+    /// are single-network-at-a-time surfaces owned by whichever network last
+    /// wrote them.
+    /// If multi-network token ordering is ever required, this table must
+    /// gain a `network` column and `save_token_order` / `load_token_order`
+    /// must be updated to filter by it.
     pub fn initialize_token_order_table(
         &self,
         conn: &rusqlite::Connection,
@@ -524,8 +538,12 @@ impl Database {
         Ok(())
     }
 
-    /// Saves the user’s custom identity order (the entire list).
+    /// Saves the user's custom identity order (the entire list).
     /// This method overwrites whatever was there before.
+    ///
+    /// See the invariant on [`Self::initialize_token_order_table`]: this
+    /// truncates `token_order` for **all** networks, so callers must only
+    /// invoke it for the active network.
     pub fn save_token_order(&self, all_ids: Vec<(Identifier, Identifier)>) -> rusqlite::Result<()> {
         let conn = self.conn.lock().unwrap();
         let tx = conn.unchecked_transaction()?;
@@ -550,6 +568,11 @@ impl Database {
 
     /// Loads the custom identity order from the DB, returning a list of Identifiers in the stored order.
     /// If there's no data, returns an empty Vec.
+    ///
+    /// See the invariant on [`Self::initialize_token_order_table`]:
+    /// `token_order` is global (no `network` column), so this returns
+    /// whatever the most recent [`Self::save_token_order`] wrote regardless
+    /// of which network was active at the time.
     pub fn load_token_order(&self) -> rusqlite::Result<Vec<(Identifier, Identifier)>> {
         let conn = self.conn.lock().unwrap();
 

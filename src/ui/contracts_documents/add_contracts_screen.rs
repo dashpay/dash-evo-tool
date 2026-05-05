@@ -16,6 +16,30 @@ use std::sync::Arc;
 
 const MAX_CONTRACTS: usize = 10;
 
+/// Returns the first identifier in `identifiers` that appears earlier in the
+/// same slice, or `None` if all entries are unique.
+///
+/// Extracted as a free function so the rejection rule can be unit-tested
+/// without driving the full screen.
+pub(crate) fn find_duplicate_input(identifiers: &[Identifier]) -> Option<Identifier> {
+    identifiers
+        .iter()
+        .enumerate()
+        .find_map(|(index, id)| identifiers[..index].contains(id).then_some(*id))
+}
+
+/// Returns the first identifier in `requested` that is also present in
+/// `existing`, or `None` if none of the requested IDs are already loaded.
+pub(crate) fn find_already_loaded_id(
+    requested: &[Identifier],
+    existing: &[Identifier],
+) -> Option<Identifier> {
+    requested
+        .iter()
+        .find(|identifier| existing.contains(identifier))
+        .copied()
+}
+
 #[derive(PartialEq)]
 enum AddContractsStatus {
     NotStarted,
@@ -80,6 +104,52 @@ impl AddContractsScreen {
     fn add_contracts_clicked(&mut self) -> AppAction {
         match self.parse_identifiers() {
             Ok(identifiers) => {
+                if let Some(identifier) = find_duplicate_input(&identifiers) {
+                    let message =
+                        crate::backend_task::error::TaskError::DuplicateContractInRequest {
+                            contract_id: identifier,
+                        }
+                        .to_string();
+                    self.add_contracts_status = AddContractsStatus::Error;
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        &message,
+                        MessageType::Error,
+                    );
+                    return AppAction::None;
+                }
+
+                let existing_contract_ids = match self.app_context.loaded_contract_ids() {
+                    Ok(ids) => ids,
+                    Err(e) => {
+                        tracing::warn!("Failed to check loaded contracts before adding: {e}");
+                        self.add_contracts_status = AddContractsStatus::Error;
+                        let handle = MessageBanner::set_global(
+                            self.app_context.egui_ctx(),
+                            "Unable to check whether those contracts are already loaded. Please try again.",
+                            MessageType::Error,
+                        );
+                        handle.with_details(e);
+                        return AppAction::None;
+                    }
+                };
+
+                if let Some(identifier) =
+                    find_already_loaded_id(&identifiers, &existing_contract_ids)
+                {
+                    let message = crate::backend_task::error::TaskError::ContractAlreadyLoaded {
+                        contract_id: identifier,
+                    }
+                    .to_string();
+                    self.add_contracts_status = AddContractsStatus::Error;
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        &message,
+                        MessageType::Error,
+                    );
+                    return AppAction::None;
+                }
+
                 self.add_banner.take_and_clear();
                 let handle = MessageBanner::set_global(
                     self.app_context.egui_ctx(),
@@ -268,6 +338,40 @@ impl AddContractsScreen {
     }
 }
 
+/// Test-only helpers for driving [`AddContractsScreen`] from integration tests
+/// (`tests/kittest/add_contracts_screen.rs`). Gated on the `testing` feature so
+/// they are unreachable from production builds.
+#[cfg(feature = "testing")]
+impl AddContractsScreen {
+    /// Replaces the contract id input fields. Pass an empty string for fields
+    /// that should be left blank.
+    pub fn set_contract_ids_inputs_for_test(&mut self, inputs: Vec<String>) {
+        self.contract_ids_input = inputs;
+    }
+
+    /// Invokes the `Add Contracts` click handler synchronously and returns the
+    /// resulting [`AppAction`] so tests can assert that early-return branches
+    /// short-circuit without dispatching a backend task.
+    pub fn click_add_contracts_for_test(&mut self) -> AppAction {
+        self.add_contracts_clicked()
+    }
+
+    /// Returns whether the screen is currently in the error state — set by
+    /// every early-return branch of `add_contracts_clicked`.
+    pub fn is_error_status_for_test(&self) -> bool {
+        matches!(self.add_contracts_status, AddContractsStatus::Error)
+    }
+
+    /// Returns whether the screen is waiting for a backend result — set only
+    /// when `add_contracts_clicked` actually dispatches a `BackendTask`.
+    pub fn is_waiting_status_for_test(&self) -> bool {
+        matches!(
+            self.add_contracts_status,
+            AddContractsStatus::WaitingForResult
+        )
+    }
+}
+
 impl ScreenLike for AddContractsScreen {
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
@@ -348,5 +452,61 @@ impl ScreenLike for AddContractsScreen {
         });
 
         action
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn id(byte: u8) -> Identifier {
+        Identifier::from_bytes(&[byte; 32]).expect("32 bytes is a valid identifier")
+    }
+
+    #[test]
+    fn find_duplicate_input_returns_none_for_unique_inputs() {
+        let inputs = [id(1), id(2), id(3)];
+        assert!(find_duplicate_input(&inputs).is_none());
+    }
+
+    #[test]
+    fn find_duplicate_input_returns_none_for_empty_input() {
+        assert!(find_duplicate_input(&[]).is_none());
+    }
+
+    #[test]
+    fn find_duplicate_input_returns_first_repeat() {
+        let inputs = [id(1), id(2), id(1), id(3)];
+        assert_eq!(find_duplicate_input(&inputs), Some(id(1)));
+    }
+
+    #[test]
+    fn find_duplicate_input_returns_first_repeat_when_multiple_dupes_exist() {
+        // Even with two distinct duplicate pairs, the helper reports the
+        // earliest-seen repeat so the user gets a deterministic message.
+        let inputs = [id(2), id(1), id(2), id(1)];
+        assert_eq!(find_duplicate_input(&inputs), Some(id(2)));
+    }
+
+    #[test]
+    fn find_already_loaded_id_returns_none_when_no_overlap() {
+        let requested = [id(1), id(2)];
+        let existing = [id(3), id(4)];
+        assert!(find_already_loaded_id(&requested, &existing).is_none());
+    }
+
+    #[test]
+    fn find_already_loaded_id_returns_none_for_empty_existing() {
+        let requested = [id(1), id(2)];
+        assert!(find_already_loaded_id(&requested, &[]).is_none());
+    }
+
+    #[test]
+    fn find_already_loaded_id_returns_first_already_loaded_in_request_order() {
+        // Existing list is unordered relative to requested; result must
+        // reflect the order the user typed.
+        let requested = [id(7), id(2), id(9)];
+        let existing = [id(9), id(2)];
+        assert_eq!(find_already_loaded_id(&requested, &existing), Some(id(2)));
     }
 }

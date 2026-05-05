@@ -1,3 +1,4 @@
+mod add_contracts_screen;
 mod confirmation_dialog;
 mod create_asset_lock_screen;
 mod identities_screen;

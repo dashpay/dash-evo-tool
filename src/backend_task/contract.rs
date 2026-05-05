@@ -27,6 +27,29 @@ use dash_sdk::platform::{
 };
 use dash_sdk::query_types::IndexMap;
 
+/// Returns the first identifier in `identifiers` that appears earlier in the
+/// same slice, or `None` if every entry is unique.
+///
+/// Used as a task-boundary duplicate guard for [`ContractTask::FetchContracts`].
+fn first_duplicate_id(identifiers: &[Identifier]) -> Option<Identifier> {
+    identifiers
+        .iter()
+        .enumerate()
+        .find_map(|(index, id)| identifiers[..index].contains(id).then_some(*id))
+}
+
+/// Returns the first identifier in `requested` that is also present in
+/// `existing`, or `None` when none of the requested IDs are already loaded.
+fn first_already_loaded_id(
+    requested: &[Identifier],
+    existing: &[Identifier],
+) -> Option<Identifier> {
+    requested
+        .iter()
+        .find(|identifier| existing.contains(identifier))
+        .copied()
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum ContractTask {
     FetchContracts(Vec<Identifier>),
@@ -47,6 +70,28 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, crate::backend_task::error::TaskError> {
         match task {
             ContractTask::FetchContracts(identifiers) => {
+                // Task-boundary duplicate / already-loaded enforcement.
+                //
+                // The `AddContractsScreen` UI also performs these checks, but
+                // duplicating them here protects non-UI callers (e.g. MCP tools)
+                // and closes the TOCTOU window between the screen check and
+                // the network fetch / persistence below.
+                if let Some(duplicate) = first_duplicate_id(&identifiers) {
+                    return Err(
+                        crate::backend_task::error::TaskError::DuplicateContractInRequest {
+                            contract_id: duplicate,
+                        },
+                    );
+                }
+                let existing_ids = self.loaded_contract_ids()?;
+                if let Some(already_loaded) = first_already_loaded_id(&identifiers, &existing_ids) {
+                    return Err(
+                        crate::backend_task::error::TaskError::ContractAlreadyLoaded {
+                            contract_id: already_loaded,
+                        },
+                    );
+                }
+
                 match DataContract::fetch_many(sdk, identifiers).await {
                     Ok(data_contracts) => {
                         let mut results = vec![];
@@ -208,9 +253,30 @@ impl AppContext {
             }
             ContractTask::RemoveContract(identifier) => self
                 .remove_contract(&identifier)
-                .map(|_| BackendTaskSuccessResult::RemovedContract)
-                .map_err(crate::backend_task::error::TaskError::from),
+                .map(|_| BackendTaskSuccessResult::RemovedContract),
             ContractTask::SaveDataContract(data_contract, alias, insert_tokens_too) => {
+                // Task-boundary enforcement: the local DB layer silently
+                // skips system contract IDs and `INSERT OR IGNORE` makes a
+                // duplicate user-contract insert a no-op, so without this
+                // check non-UI callers could appear to "save" a contract
+                // when the database state did not actually change.
+                let contract_id = data_contract.id();
+                if self.is_system_contract_id(&contract_id) {
+                    return Err(
+                        crate::backend_task::error::TaskError::SystemContractImmutable {
+                            contract_id,
+                        },
+                    );
+                }
+                let existing_ids = self.loaded_contract_ids()?;
+                if existing_ids.contains(&contract_id) {
+                    return Err(
+                        crate::backend_task::error::TaskError::ContractAlreadyLoaded {
+                            contract_id,
+                        },
+                    );
+                }
+
                 self.db.insert_contract_if_not_exists(
                     &data_contract,
                     alias.as_deref(),
@@ -220,5 +286,39 @@ impl AppContext {
                 Ok(BackendTaskSuccessResult::SavedContract)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn id(byte: u8) -> Identifier {
+        Identifier::from_bytes(&[byte; 32]).expect("32 bytes is a valid identifier")
+    }
+
+    #[test]
+    fn first_duplicate_id_returns_none_for_unique_inputs() {
+        assert!(first_duplicate_id(&[id(1), id(2), id(3)]).is_none());
+    }
+
+    #[test]
+    fn first_duplicate_id_returns_first_repeat() {
+        assert_eq!(
+            first_duplicate_id(&[id(1), id(2), id(1), id(3)]),
+            Some(id(1))
+        );
+    }
+
+    #[test]
+    fn first_already_loaded_id_returns_first_match_in_request_order() {
+        let requested = [id(7), id(2), id(9)];
+        let existing = [id(9), id(2)];
+        assert_eq!(first_already_loaded_id(&requested, &existing), Some(id(2)));
+    }
+
+    #[test]
+    fn first_already_loaded_id_returns_none_when_no_overlap() {
+        assert!(first_already_loaded_id(&[id(1), id(2)], &[id(3), id(4)]).is_none());
     }
 }

@@ -108,8 +108,7 @@ impl AppContext {
 
         match state_transition.broadcast_and_wait(sdk, None).await {
             Ok(returned_contract) => {
-                self.db
-                    .replace_contract(data_contract.id(), &returned_contract, self)?;
+                self.replace_contract(data_contract.id(), &returned_contract)?;
                 let fee_result = FeeResult::new(estimated_fee, estimated_fee);
                 Ok(BackendTaskSuccessResult::UpdatedContract(fee_result))
             }
@@ -148,9 +147,7 @@ impl AppContext {
                             _ => sleep(Duration::from_secs(10)).await,
                         }
                         if let Ok(Some(contract)) = DataContract::fetch(sdk, id).await {
-                            self.db
-                                .replace_contract(contract.id(), &contract, self)
-                                .ok();
+                            self.replace_contract(contract.id(), &contract)?;
 
                             return Ok(BackendTaskSuccessResult::ContractSavedAfterProofError);
                         }

@@ -16,6 +16,7 @@ use dash_sdk::dpp::consensus::state::state_error::StateError;
 use dash_sdk::dpp::dashcore;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use dash_sdk::dpp::prelude::Identifier;
 use thiserror::Error;
 
 /// Dash Core RPC error code: wallet file not specified (multi-wallet node).
@@ -457,6 +458,43 @@ pub enum TaskError {
         "The data contract could not be found. It may have been removed or the ID is incorrect."
     )]
     DataContractNotFound,
+
+    /// A user-driven mutation targeted a built-in system contract. System
+    /// contracts (DPNS, DashPay, withdrawals, token history, keyword search)
+    /// are managed by the application and cannot be modified or removed.
+    #[error(
+        "Contract {contract_id} is a built-in system contract and cannot be modified or removed. \
+         Use a different contract."
+    )]
+    SystemContractImmutable {
+        /// Identifier of the system contract whose mutation was rejected.
+        /// Rendered as Base58 in the user-facing message via `Identifier`'s
+        /// `Display` implementation.
+        contract_id: Identifier,
+    },
+
+    /// The same contract identifier appeared more than once in a single
+    /// add-contracts request.
+    #[error(
+        "Contract {contract_id} was entered more than once. Remove the duplicate entry before adding contracts."
+    )]
+    DuplicateContractInRequest {
+        /// Identifier of the duplicated contract. Rendered as Base58 in the
+        /// user-facing message via `Identifier`'s `Display` implementation.
+        contract_id: Identifier,
+    },
+
+    /// An add-contracts request referenced a contract that is already loaded
+    /// (either persisted in the local database or one of the built-in system
+    /// contracts).
+    #[error(
+        "Contract {contract_id} is already loaded. Select it from the existing contracts list or enter a different contract ID."
+    )]
+    ContractAlreadyLoaded {
+        /// Identifier of the already-loaded contract. Rendered as Base58 in
+        /// the user-facing message via `Identifier`'s `Display` implementation.
+        contract_id: Identifier,
+    },
 
     // ──────────────────────────────────────────────────────────────────────────
     // Serialization errors

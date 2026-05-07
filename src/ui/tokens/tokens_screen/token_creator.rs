@@ -1573,48 +1573,41 @@ impl TokensScreen {
             ui.add_space(3.0);
 
             ui.indent("document_schemas_section", |ui| {
-                // Add link to dashpay.io
-            ui.horizontal(|ui| {
-                    ui.label("Paste JSON document schemas to include in the contract. Easily create document schemas here:");
-                    ui.add(egui::Hyperlink::from_label_and_url(
-                        RichText::new("dashpay.io")
-                            .underline()
-                            .color(DashColors::ACTION_BUTTON_BLUE),
-                        "https://dashpay.io",
-                    ));
-                });
-
-            ui.add_space(5.0);
-
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
-            let schemas_response = ui.add_sized(
-                [ui.available_width(), 120.0],
-                TextEdit::multiline(&mut self.document_schemas_input)
-                    .text_color(DashColors::text_primary(dark_mode))
-                    .background_color(DashColors::input_background(dark_mode)),
-            );
-
-            if schemas_response.changed() {
-                self.parse_document_schemas();
-            }
-
-            ui.add_space(5.0);
-
-            // Show validation result
-            if let Some(ref error) = self.document_schemas_error {
-                ui.colored_label(
-                    Color32::DARK_RED,
-                    format!("Schema validation error: {}", error),
+                ui.label(
+                    "Paste the document-schemas JSON object for this contract, with one schema entry per document type.",
                 );
-            } else if self.parsed_document_schemas.is_some() {
-                let schema_count = self.parsed_document_schemas.as_ref().unwrap().len();
-                if schema_count > 0 {
-                    ui.colored_label(
-                        Color32::DARK_GREEN,
-                        format!("✓ {} valid document schema(s) parsed", schema_count),
-                    );
+
+                ui.add_space(5.0);
+
+                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let schemas_response = ui.add_sized(
+                    [ui.available_width(), 120.0],
+                    TextEdit::multiline(&mut self.document_schemas_input)
+                        .text_color(DashColors::text_primary(dark_mode))
+                        .background_color(DashColors::input_background(dark_mode)),
+                );
+
+                if schemas_response.changed() {
+                    self.parse_document_schemas();
                 }
-            }
+
+                ui.add_space(5.0);
+
+                // Show validation result
+                if let Some(ref error) = self.document_schemas_error {
+                    ui.colored_label(
+                        Color32::DARK_RED,
+                        format!("Schema validation error: {}", error),
+                    );
+                } else if self.parsed_document_schemas.is_some() {
+                    let schema_count = self.parsed_document_schemas.as_ref().unwrap().len();
+                    if schema_count > 0 {
+                        ui.colored_label(
+                            Color32::DARK_GREEN,
+                            format!("✓ {} valid document schema(s) parsed", schema_count),
+                        );
+                    }
+                }
             });
         }
     }

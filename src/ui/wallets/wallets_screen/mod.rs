@@ -26,7 +26,9 @@ use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::{add_top_panel_with_global_nav_capturing, wallet_only_spec};
 use crate::ui::components::wallet_unlock_popup::{WalletUnlockPopup, WalletUnlockResult};
 use crate::ui::helpers::copy_text_to_clipboard;
-use crate::ui::helpers::{ModalOpeningGuard, clicked_outside_window_after_open};
+use crate::ui::helpers::{
+    ModalOpeningGuard, clicked_outside_window_after_open, draw_modal_overlay,
+};
 use crate::ui::state::TrackedAssetLockCache;
 use crate::ui::state::account_summary::{
     AccountCategory, AccountSummary, collect_account_summaries,
@@ -2635,9 +2637,12 @@ impl ScreenLike for WalletsBalancesScreen {
 
         // Rename dialog
         if self.show_rename_dialog {
+            draw_modal_overlay(ctx, "rename_wallet_dialog_overlay");
+
             let window_response = egui::Window::new("Rename Wallet")
                 .collapsible(false)
                 .resizable(false)
+                .order(egui::Order::Foreground)
                 .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .show(ctx, |ui| {
                     let dark_mode = ui.style().visuals.dark_mode;
@@ -2820,10 +2825,13 @@ impl ScreenLike for WalletsBalancesScreen {
 
         // SK wallet unlock dialog
         if self.show_sk_unlock_dialog {
+            draw_modal_overlay(ctx, "single_key_unlock_dialog_overlay");
+
             let mut close_dialog = false;
             egui::Window::new("Unlock Wallet")
                 .collapsible(false)
                 .resizable(false)
+                .order(egui::Order::Foreground)
                 .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .show(ctx, |ui| {
                     ui.vertical(|ui| {

@@ -128,12 +128,7 @@ pub(super) struct PrivateKeyDialogState {
 
 impl WalletsBalancesScreen {
     pub(super) fn draw_modal_overlay(ctx: &Context, id: &str) {
-        let screen_rect = ctx.content_rect();
-        let painter = ctx.layer_painter(egui::LayerId::new(
-            egui::Order::Background,
-            egui::Id::new(id),
-        ));
-        painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
+        crate::ui::helpers::draw_modal_overlay(ctx, id);
     }
 
     pub(super) fn modal_frame(ctx: &Context) -> Frame {
@@ -223,6 +218,7 @@ impl WalletsBalancesScreen {
         let window_response = egui::Window::new("Receive")
             .collapsible(false)
             .resizable(false)
+            .order(egui::Order::Foreground)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .open(&mut open)
             .frame(Self::modal_frame(ctx))
@@ -589,6 +585,7 @@ impl WalletsBalancesScreen {
         let window_response = egui::Window::new("Fund Platform Address from Asset Lock")
             .collapsible(false)
             .resizable(false)
+            .order(egui::Order::Foreground)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .open(&mut open)
             .frame(Self::modal_frame(ctx))
@@ -769,6 +766,7 @@ impl WalletsBalancesScreen {
         egui::Window::new("Private Key")
             .collapsible(false)
             .resizable(false)
+            .order(egui::Order::Foreground)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .open(&mut open)
             .frame(Self::modal_frame(ctx))
@@ -1167,6 +1165,7 @@ impl WalletsBalancesScreen {
         let window_response = egui::Window::new("Mine Blocks")
             .collapsible(false)
             .resizable(false)
+            .order(egui::Order::Foreground)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .open(&mut open)
             .frame(Self::modal_frame(ctx))

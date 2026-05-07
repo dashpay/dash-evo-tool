@@ -6,7 +6,9 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::helpers::{ModalOpeningGuard, clicked_outside_window_after_open};
+use crate::ui::helpers::{
+    ModalOpeningGuard, clicked_outside_window_after_open, draw_modal_overlay,
+};
 use crate::ui::identities::add_new_identity_screen::AddNewIdentityScreen;
 use crate::ui::identities::funding_common::generate_qr_code_image;
 use crate::ui::theme::{ComponentStyles, DashColors};
@@ -295,13 +297,7 @@ impl AddNewWalletScreen {
             return AppAction::None;
         }
 
-        // Draw dark overlay behind the dialog
-        let screen_rect = ctx.content_rect();
-        let painter = ctx.layer_painter(egui::LayerId::new(
-            egui::Order::Background,
-            egui::Id::new("receive_funds_overlay"),
-        ));
-        painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
+        draw_modal_overlay(ctx, "receive_funds_overlay");
 
         // Generate QR code if needed
         let mut qr_error: Option<String> = None;
@@ -327,6 +323,7 @@ impl AddNewWalletScreen {
         let window_response = egui::Window::new("Fund Wallet")
             .collapsible(false)
             .resizable(false)
+            .order(egui::Order::Foreground)
             .open(&mut open)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .show(ctx, |ui| {
@@ -716,9 +713,11 @@ impl ScreenLike for AddNewWalletScreen {
         // Display error popup if there's an error
         if let Some(error_message) = self.error.as_ref() {
             let error_message = error_message.clone();
+            draw_modal_overlay(ctx, "add_wallet_error_dialog_overlay");
             egui::Window::new("Error")
                 .resizable(false)
                 .collapsible(false)
+                .order(egui::Order::Foreground)
                 .anchor(egui::Align2::CENTER_CENTER, Vec2::new(0.0, 0.0))
                 .show(ctx, |ui| {
                     ui.label(error_message);

@@ -12,7 +12,9 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::{ConfirmationDialog, ConfirmationStatus, island_central_panel};
 use crate::ui::components::top_panel::{add_top_panel_with_global_nav, subdued_everyday_spec};
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
-use crate::ui::helpers::{ModalOpeningGuard, clicked_outside_window_after_open};
+use crate::ui::helpers::{
+    ModalOpeningGuard, clicked_outside_window_after_open, draw_modal_overlay,
+};
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::identities::register_dpns_name_screen::{
@@ -937,17 +939,12 @@ impl IdentitiesScreen {
             return AppAction::None;
         };
 
-        // Draw dark overlay behind the popup
-        let screen_rect = ctx.content_rect();
-        let painter = ctx.layer_painter(egui::LayerId::new(
-            egui::Order::Background,
-            egui::Id::new("edit_alias_overlay"),
-        ));
-        painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
+        draw_modal_overlay(ctx, "edit_alias_overlay");
 
         let window_response = egui::Window::new("Update Alias")
             .collapsible(false)
             .resizable(false)
+            .order(egui::Order::Foreground)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .frame(egui::Frame {
                 inner_margin: egui::Margin::same(20),

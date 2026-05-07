@@ -111,7 +111,7 @@ impl ConfirmationDialog {
             required_confirmation_text: None,
             confirmation_prompt: None,
             confirmation_input: String::new(),
-            blocks_input: false,
+            blocks_input: true,
             is_open: true,
             opening_guard: ModalOpeningGuard::armed(),
         }

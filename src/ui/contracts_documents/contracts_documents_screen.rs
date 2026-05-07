@@ -13,7 +13,9 @@ use crate::ui::components::contract_chooser_panel::{
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::message_banner::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::components::top_panel::{add_top_panel_with_global_nav, subdued_everyday_spec};
-use crate::ui::helpers::{ModalOpeningGuard, clicked_outside_window_after_open};
+use crate::ui::helpers::{
+    ModalOpeningGuard, clicked_outside_window_after_open, draw_modal_overlay,
+};
 use crate::ui::theme::{ComponentStyles, DashColors, Shadow, Shape};
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, ScreenLike, ScreenType};
 use crate::utils::parsers::{DocumentQueryTextInputParser, TextInputParser};
@@ -323,9 +325,12 @@ impl DocumentQueryScreen {
                     }
                 }
 
+                draw_modal_overlay(ui.ctx(), "select_properties_dialog_overlay");
+
                 let window_response = egui::Window::new("Select Properties")
                     .collapsible(false)
                     .resizable(true)
+                    .order(egui::Order::Foreground)
                     .min_width(400.0)
                     .title_bar(false)
                     .show(ui.ctx(), |ui| {

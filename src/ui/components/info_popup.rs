@@ -68,10 +68,10 @@ impl InfoPopup {
                 title: self.title.clone(),
                 overlay_id: self.id.with("overlay"),
                 overlay_order: egui::Order::Background,
-                window_order: egui::Order::Middle,
+                window_order: egui::Order::Foreground,
                 resizable: is_markdown, // Allow resizing for markdown content
                 show_close_button: true,
-                blocks_input: false,
+                blocks_input: true,
                 inner_margin: 16,
             },
             |ui| {

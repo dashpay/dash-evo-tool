@@ -3,6 +3,7 @@ use dash_evo_tool::ui::components::component_trait::ComponentResponse;
 use dash_evo_tool::ui::components::confirmation_dialog::{
     ConfirmationDialog, ConfirmationStatus, NOTHING,
 };
+use dash_evo_tool::ui::helpers::draw_modal_overlay;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 
@@ -220,4 +221,158 @@ fn test_open_false_component_response() {
             assert!(response.inner.changed_value().is_none());
         });
     harness.run();
+}
+
+/// Regression guard for PR #732: a blocking confirmation modal must consume
+/// pointer events so they cannot reach background widgets.
+#[test]
+fn test_modal_overlay_blocks_click_through_to_background_widget() {
+    // Place a clickable background widget at a known rect that sits entirely
+    // outside the centered dialog window but well within the screen-sized
+    // modal. If modal chrome correctly consumes pointer events, the background
+    // button must never be activated.
+    let background_rect =
+        egui::Rect::from_min_size(egui::pos2(20.0, 20.0), egui::vec2(120.0, 30.0));
+
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(600.0, 400.0))
+        .build_ui_state(
+            |ui, clicks: &mut u32| {
+                let response = ui.put(background_rect, egui::Button::new("Background"));
+                if response.clicked() {
+                    *clicks += 1;
+                }
+                let mut dialog = ConfirmationDialog::new("Modal Title", "Modal Message");
+                dialog.show(ui);
+            },
+            0u32,
+        );
+
+    // Compute layout / paint so modal input blocking is registered.
+    harness.run();
+
+    // Sanity check: the dialog window does not cover the background button rect
+    // (otherwise the click would be blocked by the dialog itself, not the overlay).
+    let dialog_node = harness
+        .query_by_label("Modal Title")
+        .expect("dialog should be rendered");
+    assert!(
+        !dialog_node.rect().intersects(background_rect),
+        "test setup invalid: background widget rect overlaps the dialog window rect"
+    );
+
+    // Click on the background button. The position is over the background
+    // widget and inside the modal overlay, but outside the dialog window.
+    let click_pos = background_rect.center();
+    harness.event(egui::Event::PointerMoved(click_pos));
+    harness.event(egui::Event::PointerButton {
+        pos: click_pos,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    });
+    harness.event(egui::Event::PointerButton {
+        pos: click_pos,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    harness.run();
+
+    assert_eq!(
+        *harness.state(),
+        0,
+        "modal chrome must consume pointer events; background widget was activated through the modal"
+    );
+}
+
+/// Regression guard for legacy manual `egui::Window` modals that use
+/// `draw_modal_overlay` directly instead of `modal_chrome`.
+#[test]
+fn test_legacy_modal_overlay_blocks_background_and_preserves_window_input() {
+    let background_rect =
+        egui::Rect::from_min_size(egui::pos2(20.0, 20.0), egui::vec2(120.0, 30.0));
+
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(600.0, 400.0))
+        .build_ui_state(
+            |ui, clicks: &mut (u32, u32)| {
+                let background_response = ui.put(background_rect, egui::Button::new("Background"));
+                if background_response.clicked() {
+                    clicks.0 += 1;
+                }
+
+                draw_modal_overlay(ui.ctx(), "legacy_helper_test_overlay");
+
+                egui::Window::new("Legacy Modal")
+                    .collapsible(false)
+                    .resizable(false)
+                    .order(egui::Order::Foreground)
+                    .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                    .show(ui.ctx(), |ui| {
+                        if ui.button("Modal Button").clicked() {
+                            clicks.1 += 1;
+                        }
+                    });
+            },
+            (0u32, 0u32),
+        );
+
+    harness.run();
+
+    let modal_node = harness
+        .query_by_label("Legacy Modal")
+        .expect("legacy modal should be rendered");
+    assert!(
+        !modal_node.rect().intersects(background_rect),
+        "test setup invalid: background widget rect overlaps the legacy modal rect"
+    );
+
+    let background_click_pos = background_rect.center();
+    harness.event(egui::Event::PointerMoved(background_click_pos));
+    harness.event(egui::Event::PointerButton {
+        pos: background_click_pos,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    });
+    harness.event(egui::Event::PointerButton {
+        pos: background_click_pos,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    harness.run();
+
+    assert_eq!(
+        harness.state().0,
+        0,
+        "legacy modal overlay must consume pointer events before background widgets"
+    );
+
+    let modal_button_rect = harness
+        .query_by_label("Modal Button")
+        .expect("modal button should be rendered")
+        .rect();
+    let modal_click_pos = modal_button_rect.center();
+    harness.event(egui::Event::PointerMoved(modal_click_pos));
+    harness.event(egui::Event::PointerButton {
+        pos: modal_click_pos,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    });
+    harness.event(egui::Event::PointerButton {
+        pos: modal_click_pos,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    harness.run();
+
+    assert_eq!(
+        harness.state().1,
+        1,
+        "foreground legacy modal window must remain interactive above the overlay sink"
+    );
 }

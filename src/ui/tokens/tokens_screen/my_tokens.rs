@@ -4,7 +4,7 @@ use crate::backend_task::tokens::TokenTask;
 use crate::model::amount::Amount;
 use crate::model::user_role::UserRole;
 use crate::ui::components::MessageBanner;
-use crate::ui::helpers::clicked_outside_window_after_open;
+use crate::ui::helpers::{clicked_outside_window_after_open, draw_modal_overlay};
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::tokens::burn_tokens_screen::BurnTokensScreen;
 use crate::ui::tokens::claim_tokens_screen::ClaimTokensScreen;
@@ -180,9 +180,12 @@ impl TokensScreen {
                 let mut close_popup = false;
                 let dark_mode = ui.style().visuals.dark_mode;
 
+                draw_modal_overlay(ui.ctx(), "token_info_popup_overlay");
+
                 let window_response = egui::Window::new("Token Configuration Details")
                     .resizable(true)
                     .collapsible(false)
+                    .order(egui::Order::Foreground)
                     .default_width(600.0)
                     .default_height(500.0)
                     .open(&mut is_open)
@@ -565,17 +568,12 @@ impl TokensScreen {
             if let Some(explanation) = self.reward_explanations.get(&identity_token_id) {
                 let mut is_open = true;
 
-                // Draw dark overlay behind the popup
-                let screen_rect = ui.ctx().content_rect();
-                let painter = ui.ctx().layer_painter(egui::LayerId::new(
-                    egui::Order::Background,
-                    egui::Id::new("reward_explanation_overlay"),
-                ));
-                painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
+                draw_modal_overlay(ui.ctx(), "reward_explanation_overlay");
 
                 let window_response = egui::Window::new("Reward Calculation Explanation")
                     .resizable(true)
                     .collapsible(false)
+                    .order(egui::Order::Foreground)
                     .default_width(600.0)
                     .default_height(400.0)
                     .open(&mut is_open)

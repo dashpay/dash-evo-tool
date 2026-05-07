@@ -1,4 +1,4 @@
-use crate::ui::helpers::clicked_outside_window_after_open;
+use crate::ui::helpers::{clicked_outside_window_after_open, draw_modal_overlay};
 use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::tokens::tokens_screen::TokensScreen;
 use egui::Ui;
@@ -15,17 +15,12 @@ impl TokensScreen {
         if self.show_json_popup {
             let mut is_open = true;
 
-            // Draw dark overlay behind the dialog for better visibility
-            let screen_rect = ui.ctx().content_rect();
-            let painter = ui.ctx().layer_painter(egui::LayerId::new(
-                egui::Order::Background,
-                egui::Id::new("json_popup_overlay"),
-            ));
-            painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
+            draw_modal_overlay(ui.ctx(), "json_popup_overlay");
 
             let window_response = egui::Window::new("Data Contract JSON")
                 .collapsible(false)
                 .resizable(true)
+                .order(egui::Order::Foreground)
                 .max_height(600.0)
                 .max_width(800.0)
                 .scroll(true)

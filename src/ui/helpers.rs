@@ -4,6 +4,27 @@ use std::sync::Arc;
 // Re-export from the model layer so existing callers don't break.
 pub use crate::model::address::is_platform_address_string;
 
+/// Paint a semi-transparent modal backdrop for legacy `egui::Window` modals
+/// and consume click/drag input so pointer events cannot pass through.
+///
+/// New shared modal components should prefer `modal_chrome` with
+/// `blocks_input: true`. This helper exists for call sites that still own their
+/// window layout directly. Pair it with a foreground-order window so the sink
+/// stays below the modal itself.
+pub fn draw_modal_overlay(ctx: &egui::Context, id: &str) {
+    let screen_rect = ctx.content_rect();
+    let overlay_id = egui::Id::new(id);
+    ctx.layer_painter(egui::LayerId::new(egui::Order::Background, overlay_id))
+        .rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
+
+    egui::Area::new(overlay_id.with("input_sink"))
+        .fixed_pos(screen_rect.min)
+        .order(egui::Order::Middle)
+        .show(ctx, |ui| {
+            ui.allocate_response(screen_rect.size(), egui::Sense::click_and_drag());
+        });
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct ModalOpeningGuard {
     skip_outside_click_once: bool,

@@ -16,7 +16,9 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::components::{MessageBanner, ResultBannerExt};
-use crate::ui::helpers::{ModalOpeningGuard, clicked_outside_window_after_open};
+use crate::ui::helpers::{
+    ModalOpeningGuard, clicked_outside_window_after_open, draw_modal_overlay,
+};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::state::AvatarCache;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
@@ -943,17 +945,12 @@ impl ProfileScreen {
             if let Some(profile) = &self.profile {
                 let avatar_url = profile.avatar_url.clone();
 
-                // Draw modal overlay
-                let screen_rect = ui.ctx().content_rect();
-                let painter = ui.ctx().layer_painter(egui::LayerId::new(
-                    egui::Order::Background,
-                    egui::Id::new("avatar_popup_overlay"),
-                ));
-                painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
+                draw_modal_overlay(ui.ctx(), "avatar_popup_overlay");
 
                 let window_response = egui::Window::new("Avatar")
                     .collapsible(false)
                     .resizable(false)
+                    .order(egui::Order::Foreground)
                     .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                     .show(ui.ctx(), |ui| {
                         ui.vertical_centered(|ui| {

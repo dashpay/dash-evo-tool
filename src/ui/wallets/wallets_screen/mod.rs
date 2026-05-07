@@ -1494,6 +1494,16 @@ impl WalletsBalancesScreen {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
         let sections = self.system_tab_sections(summaries);
 
+        ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.checkbox(
+                    &mut self.show_zero_balance_addresses,
+                    "Show zero-balance addresses",
+                );
+            });
+        });
+        ui.add_space(4.0);
+
         for (cat, idx, addr_count, balance) in &sections {
             let balance_text = if *balance == 0 {
                 "empty".to_string()

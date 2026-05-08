@@ -159,7 +159,7 @@ Screen::ui() → AppAction::BackendTask(task)
 ## Screen Pattern
 
 All screens implement the `ScreenLike` trait:
-- `ui(&mut self, ctx: &Context) -> AppAction` - Render UI, return actions
+- `ui(&mut self, ui: &mut egui::Ui) -> AppAction` - Render UI, return actions
 - `display_task_result(&mut self, result: BackendTaskSuccessResult)` - Handle async results
 - `display_message(&mut self, msg: &str, type: MessageType)` - Show user feedback
 - `refresh(&mut self)` / `refresh_on_arrival(&mut self)` - Re-fetch data

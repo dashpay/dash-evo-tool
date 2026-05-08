@@ -15,7 +15,7 @@ use dash_sdk::dpp::data_contract::{
 };
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::serialization::PlatformSerializableWithPlatformVersion;
-use egui::{Color32, Context as EguiContext, Frame, Margin, RichText, Panel};
+use egui::{Color32, Context as EguiContext, Frame, Margin, Panel, RichText};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::error;

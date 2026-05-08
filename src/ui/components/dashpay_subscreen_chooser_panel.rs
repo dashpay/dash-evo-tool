@@ -4,7 +4,7 @@ use crate::model::feature_gate::FeatureGate;
 use crate::ui::RootScreenType;
 use crate::ui::dashpay::dashpay_screen::DashPaySubscreen;
 use crate::ui::theme::{DashColors, Shadow, Shape, Spacing, Typography};
-use egui::{Context, Frame, Margin, RichText, Panel};
+use egui::{Context, Frame, Margin, Panel, RichText};
 use std::sync::Arc;
 
 pub fn add_dashpay_subscreen_chooser_panel(

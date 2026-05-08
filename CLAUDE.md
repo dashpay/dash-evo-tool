@@ -121,7 +121,7 @@ User-facing error messages (shown in `MessageBanner` via `Display`) must follow 
 ### Key Dependencies
 
 - `dash-sdk` - Dash blockchain SDK (git dep from dashpay/platform)
-- `egui/eframe 0.33` - Immediate mode GUI framework
+- `egui/eframe 0.34` - Immediate mode GUI framework
 - `tokio` - Async runtime (12 worker threads)
 - `rusqlite` - SQLite with bundled library
 - Rust edition 2024, minimum rust-version 1.92

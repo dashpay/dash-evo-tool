@@ -1509,8 +1509,8 @@ impl AppState {
 }
 
 impl App for AppState {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        let ctx = ui.ctx().clone();
+    fn ui(&mut self, _ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = _ui.ctx().clone();
         let ctx = &ctx;
         // ── Graceful shutdown: intercept window close so the UI stays responsive ──
         // When the user closes the window we cancel the native close, show a banner,

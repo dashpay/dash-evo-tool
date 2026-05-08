@@ -67,7 +67,7 @@ pub fn add_left_panel(
 
     #[allow(deprecated)]
     Panel::left("left_panel")
-        .default_width(panel_width)
+        .default_size(panel_width)
         .frame(
             Frame::new()
                 .fill(ctx.global_style().visuals.panel_fill)

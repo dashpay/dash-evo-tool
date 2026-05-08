@@ -168,8 +168,8 @@ pub fn add_left_panel(
 
     #[allow(deprecated)]
     Panel::left("left_panel")
-        .min_width(140.0)
-        .max_width(140.0)
+        .min_size(140.0)
+        .max_size(140.0)
         .resizable(false)
         .frame(
             Frame::new()

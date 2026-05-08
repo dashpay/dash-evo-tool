@@ -96,7 +96,7 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
     #[allow(deprecated)]
     Panel::left("tools_subscreen_chooser_panel")
         .resizable(false)
-        .default_width(270.0)
+        .default_size(270.0)
         .frame(
             Frame::new()
                 .fill(DashColors::background(dark_mode))

@@ -28,7 +28,7 @@ pub fn add_dashpay_subscreen_chooser_panel(
 
     #[allow(deprecated)]
     Panel::left("dashpay_subscreen_chooser_panel")
-        .default_width(270.0)
+        .default_size(270.0)
         .frame(
             Frame::new()
                 .fill(DashColors::background(dark_mode)) // Light background instead of transparent

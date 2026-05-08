@@ -29,7 +29,7 @@ pub fn add_tokens_subscreen_chooser_panel(ctx: &Context, app_context: &AppContex
     #[allow(deprecated)]
     Panel::left("tokens_subscreen_chooser_panel")
         .resizable(false)
-        .default_width(270.0)
+        .default_size(270.0)
         .frame(
             Frame::new()
                 .fill(DashColors::background(dark_mode))

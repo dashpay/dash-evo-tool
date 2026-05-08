@@ -10,13 +10,13 @@ rust-version = "1.92"
 tokio-util = { version = "0.7.15" }
 bip39 = { version = "2.2.0", features = ["all-languages", "rand", "zeroize"] }
 derive_more = "2.1.1"
-egui = "0.33.3"
-egui_extras = "0.33.3"
-egui_commonmark = "0.22.0"
+egui = "0.34.2"
+egui_extras = "0.34.2"
+egui_commonmark = "0.23.0"
 rfd = "0.17.2"
 qrcode = "0.14.1"
 nix = { version = "0.31.1", features = ["signal"] }
-eframe = { version = "0.33.3", features = ["persistence", "wgpu"] }
+eframe = { version = "0.34.2", features = ["persistence", "wgpu"] }
 base64 = "0.22.1"
 dash-sdk = { git = "https://github.com/dashpay/platform", branch = "feat/platform-wallet-secret-protection", features = [
     "core_key_wallet",
@@ -110,7 +110,7 @@ cli = ["dep:rmcp", "rmcp/server", "rmcp/macros", "rmcp/client", "rmcp/transport-
 headless = ["cli", "mcp"]
 
 [dev-dependencies]
-egui_kittest = { version = "0.33.3", features = ["eframe"] }
+egui_kittest = { version = "0.34.2", features = ["eframe"] }
 tokio-shared-rt = "=0.1.0"
 criterion = "0.5.1"
 # Used only by error-mapping unit tests to construct a genuine divergent-version

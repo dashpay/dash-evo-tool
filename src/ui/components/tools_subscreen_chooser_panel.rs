@@ -3,7 +3,7 @@ use crate::spv::CoreBackendMode;
 use crate::ui::RootScreenType;
 use crate::ui::theme::{DashColors, Shadow, Shape, Spacing, Typography};
 use crate::{app::AppAction, ui};
-use egui::{Context, Frame, Margin, RichText, ScrollArea, Panel};
+use egui::{Context, Frame, Margin, Panel, RichText, ScrollArea};
 
 #[derive(PartialEq)]
 pub enum ToolsSubscreen {

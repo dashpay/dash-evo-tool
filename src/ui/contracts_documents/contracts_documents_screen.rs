@@ -692,50 +692,50 @@ impl ScreenLike for DocumentQueryScreen {
         action |= {
             #[allow(deprecated)]
             CentralPanel::default()
-            .frame(
-                Frame::new()
-                    .fill(DashColors::background(dark_mode))
-                    .inner_margin(Margin {
-                        left: 10,
-                        right: 19, // More space on the right
-                        top: 10,
-                        bottom: 0, // Less space on the bottom
-                    }),
-            )
-            .show(ctx, |ui| {
-                // Create an island panel with rounded edges
-                Frame::new()
-                    .fill(DashColors::surface(dark_mode))
-                    .stroke(Stroke::new(1.0, DashColors::border_light(dark_mode)))
-                    .inner_margin(Margin::same(20))
-                    .corner_radius(egui::CornerRadius::same(Shape::RADIUS_LG))
-                    .shadow(Shadow::elevated())
-                    .show(ui, |ui| {
-                        MessageBanner::show_global(ui);
-                        let mut inner_action = AppAction::None;
+                .frame(
+                    Frame::new()
+                        .fill(DashColors::background(dark_mode))
+                        .inner_margin(Margin {
+                            left: 10,
+                            right: 19, // More space on the right
+                            top: 10,
+                            bottom: 0, // Less space on the bottom
+                        }),
+                )
+                .show(ctx, |ui| {
+                    // Create an island panel with rounded edges
+                    Frame::new()
+                        .fill(DashColors::surface(dark_mode))
+                        .stroke(Stroke::new(1.0, DashColors::border_light(dark_mode)))
+                        .inner_margin(Margin::same(20))
+                        .corner_radius(egui::CornerRadius::same(Shape::RADIUS_LG))
+                        .shadow(Shadow::elevated())
+                        .show(ui, |ui| {
+                            MessageBanner::show_global(ui);
+                            let mut inner_action = AppAction::None;
 
-                        // Use a vertical layout that allocates space properly
-                        ui.vertical(|ui| {
-                            // Input field at the top
-                            inner_action |= self.show_input_field(ui);
+                            // Use a vertical layout that allocates space properly
+                            ui.vertical(|ui| {
+                                // Input field at the top
+                                inner_action |= self.show_input_field(ui);
 
-                            // Document display area that expands to fill available space
-                            ui.with_layout(
-                                egui::Layout::top_down_justified(egui::Align::LEFT),
-                                |ui| {
-                                    inner_action |= self.show_output(ui);
-                                },
-                            );
-                        });
+                                // Document display area that expands to fill available space
+                                ui.with_layout(
+                                    egui::Layout::top_down_justified(egui::Align::LEFT),
+                                    |ui| {
+                                        inner_action |= self.show_output(ui);
+                                    },
+                                );
+                            });
 
-                        if self.contract_to_remove.is_some() {
-                            inner_action |= self.show_remove_contract_popup(ui);
-                        }
-                        inner_action
-                    })
-                    .inner
-            })
-            .inner
+                            if self.contract_to_remove.is_some() {
+                                inner_action |= self.show_remove_contract_popup(ui);
+                            }
+                            inner_action
+                        })
+                        .inner
+                })
+                .inner
         };
 
         action

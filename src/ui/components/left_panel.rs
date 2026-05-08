@@ -6,7 +6,7 @@ use crate::ui::components::styled::GradientButton;
 use crate::ui::theme::{DashColors, ResponseExt, Shadow, Shape, Spacing};
 use dash_sdk::dashcore_rpc::dashcore::Network;
 use eframe::epaint::Margin;
-use egui::{Context, Frame, Image, RichText, Panel, TextureHandle};
+use egui::{Context, Frame, Image, Panel, RichText, TextureHandle};
 use egui_extras::{Size, StripBuilder};
 use rust_embed::RustEmbed;
 use std::sync::Arc;

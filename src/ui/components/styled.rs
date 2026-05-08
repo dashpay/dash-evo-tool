@@ -540,6 +540,10 @@ pub fn styled_text_edit_multiline(text: &mut String, dark_mode: bool) -> TextEdi
 /// Wraps `CentralPanel::show(ctx, ...)`, which is deprecated in egui 0.34 in
 /// favor of `show_inside(ui, ...)`. The deprecation is silenced at this single
 /// boundary so the screen layer can keep its `&Context`-driven `ui()` shape.
+// TODO(egui-0.35): migrate to `Panel::central(...).show_inside(ui, ...)` and
+// thread `&mut Ui` from `App::ui` instead of `&Context`. Defers a 60+ call-site
+// refactor that exceeded the egui 0.34 upgrade scope. The current
+// `#[allow(deprecated)]` containment must be removed when this happens.
 pub fn island_central_panel<R>(ctx: &Context, content: impl FnOnce(&mut Ui) -> R) -> R {
     let dark_mode = ctx.global_style().visuals.dark_mode;
 

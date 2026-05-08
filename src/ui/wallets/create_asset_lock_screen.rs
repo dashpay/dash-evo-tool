@@ -19,7 +19,7 @@ use crate::ui::identities::funding_common::{self, WalletFundedScreenStep, genera
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::{Address, OutPoint, TxOut};
-use eframe::egui::{self, Context, Ui};
+use eframe::egui::{self, Ui};
 use egui::{Button, RichText, Vec2};
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
@@ -247,7 +247,7 @@ impl ScreenWithWalletUnlock for CreateAssetLockScreen {
 }
 
 impl ScreenLike for CreateAssetLockScreen {
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
         let wallet_name = self
             .wallet
             .read()
@@ -256,7 +256,7 @@ impl ScreenLike for CreateAssetLockScreen {
             .unwrap_or_else(|| "Unknown Wallet".to_string());
 
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![
                 (
@@ -271,12 +271,12 @@ impl ScreenLike for CreateAssetLockScreen {
         );
 
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             RootScreenType::RootScreenWalletsBalances,
         );
 
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             let mut inner_action = AppAction::None;
             let dark_mode = ui.style().visuals.dark_mode;
 

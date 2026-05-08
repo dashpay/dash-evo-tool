@@ -6,7 +6,7 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
-use egui::{Context, Ui};
+use egui::{Ui};
 use std::sync::Arc;
 
 use super::contacts_list::ContactsList;
@@ -72,7 +72,7 @@ impl ScreenLike for DashPayScreen {
         self.refresh();
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
         let mut action = AppAction::None;
 
         // Add top panel with action buttons based on current subscreen
@@ -107,21 +107,21 @@ impl ScreenLike for DashPayScreen {
         };
 
         action |= add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![("DashPay", AppAction::None)],
             right_buttons,
         );
 
         // Highlight Dashpay in the main left panel
-        action |= add_left_panel(ctx, &self.app_context, RootScreenType::RootScreenDashpay);
+        action |= add_left_panel(ui, &self.app_context, RootScreenType::RootScreenDashpay);
 
         // DashPay subscreen chooser panel on the left side of the content area
         action |=
-            add_dashpay_subscreen_chooser_panel(ctx, &self.app_context, self.dashpay_subscreen);
+            add_dashpay_subscreen_chooser_panel(ui, &self.app_context, self.dashpay_subscreen);
 
         // Main content area with island styling
-        action |= island_central_panel(ctx, |ui| self.render_subscreen(ui));
+        action |= island_central_panel(ui, |ui| self.render_subscreen(ui));
 
         // Handle custom actions from top panel buttons
         if let AppAction::Custom(command) = &action {

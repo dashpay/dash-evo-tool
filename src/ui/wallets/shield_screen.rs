@@ -654,9 +654,11 @@ impl ShieldScreen {
 }
 
 impl ScreenLike for ShieldScreen {
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![
                 ("Wallets", AppAction::PopScreen),
@@ -666,7 +668,7 @@ impl ScreenLike for ShieldScreen {
         );
 
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             RootScreenType::RootScreenWalletsBalances,
         );
@@ -681,7 +683,7 @@ impl ScreenLike for ShieldScreen {
             action |= AppAction::BackendTask(task);
         }
 
-        island_central_panel(ctx, |ui| {
+        island_central_panel(ui, |ui| {
             let dark_mode = ui.style().visuals.dark_mode;
             ui.heading("Shield");
             ui.add_space(10.0);

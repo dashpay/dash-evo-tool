@@ -3,7 +3,7 @@ use crate::context::AppContext;
 use crate::ui::RootScreenType;
 use crate::ui::theme::DashColors;
 use eframe::epaint::Margin;
-use egui::{Context, Frame, Image, Panel, TextureHandle};
+use egui::{Context, Frame, Image, Panel, TextureHandle, Ui};
 use rust_embed::RustEmbed;
 use std::sync::Arc;
 use tracing::error;
@@ -40,10 +40,12 @@ fn load_icon(ctx: &Context, path: &str) -> Option<TextureHandle> {
 
 #[allow(dead_code)]
 pub fn add_left_panel(
-    ctx: &Context,
+    ui: &mut Ui,
     _app_context: &Arc<AppContext>,
     selected_screen: RootScreenType,
 ) -> AppAction {
+    let ctx = ui.ctx().clone();
+    let ctx = &ctx;
     let mut action = AppAction::None;
 
     // Define the button details directly in this function
@@ -65,7 +67,6 @@ pub fn add_left_panel(
 
     let panel_width = 50.0 + 20.0; // Button width (50) + 10px margin on each side (20 total)
 
-    #[allow(deprecated)]
     Panel::left("left_panel")
         .default_size(panel_width)
         .frame(
@@ -78,7 +79,7 @@ pub fn add_left_panel(
                     bottom: 0,
                 }),
         )
-        .show(ctx, |ui| {
+        .show_inside(ui, |ui| {
             ui.vertical_centered(|ui| {
                 for (label, screen_type, icon_path) in buttons.iter() {
                     if *screen_type == RootScreenType::RootScreenDocumentQuery {

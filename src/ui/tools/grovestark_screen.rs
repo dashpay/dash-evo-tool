@@ -17,7 +17,7 @@ use dash_sdk::dpp::identity::{
     Identity, IdentityPublicKey, KeyType, Purpose, accessors::IdentityGettersV0,
 };
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use egui::{Button, ComboBox, Context, Frame, Grid, Margin, RichText, ScrollArea, TextEdit, Ui};
+use egui::{Button, ComboBox, Frame, Grid, Margin, RichText, ScrollArea, TextEdit, Ui};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -1059,12 +1059,12 @@ impl ScreenLike for GroveSTARKScreen {
         // Pop on success if needed
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
         let mut action = AppAction::None;
 
         // Add top panel with breadcrumb
         action |= add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![("Tools", AppAction::None)],
             vec![],
@@ -1072,16 +1072,16 @@ impl ScreenLike for GroveSTARKScreen {
 
         // Add left panel
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             RootScreenType::RootScreenToolsGroveSTARKScreen,
         );
 
         // Add tools subscreen chooser panel
-        action |= add_tools_subscreen_chooser_panel(ctx, self.app_context.as_ref());
+        action |= add_tools_subscreen_chooser_panel(ui, self.app_context.as_ref());
 
         // Add central panel with the main UI
-        let panel_action = island_central_panel(ctx, |ui| {
+        let panel_action = island_central_panel(ui, |ui| {
             ui.label(
                 RichText::new("GroveSTARK Zero-Knowledge Proofs")
                     .size(Typography::SCALE_XL)

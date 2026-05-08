@@ -19,7 +19,6 @@ use bip39::rand::{prelude::IteratorRandom, thread_rng};
 use dash_sdk::dashcore_rpc::dashcore::Network;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
-use eframe::egui::Context;
 use egui::{Color32, ComboBox, RichText, Ui};
 use serde::Deserialize;
 use std::fs;
@@ -1073,9 +1072,11 @@ impl ScreenLike for AddExistingIdentityScreen {
         self.add_identity_status = AddIdentityStatus::Complete;
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![
                 ("Identities", AppAction::GoToMainScreen),
@@ -1085,12 +1086,12 @@ impl ScreenLike for AddExistingIdentityScreen {
         );
 
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             crate::ui::RootScreenType::RootScreenIdentities,
         );
 
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             let mut inner_action = AppAction::None;
 
             // Error display is handled by the global MessageBanner

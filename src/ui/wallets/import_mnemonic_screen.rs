@@ -11,7 +11,6 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::identities::add_existing_identity_screen::AddExistingIdentityScreen;
 use crate::ui::identities::add_new_identity_screen::AddNewIdentityScreen;
 use crate::ui::{RootScreenType, Screen, ScreenLike};
-use eframe::egui::Context;
 
 use crate::database::is_unique_constraint_violation;
 use crate::model::wallet::Wallet;
@@ -481,7 +480,7 @@ impl ScreenLike for ImportMnemonicScreen {
         false
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
         let mut pending_action = AppAction::None;
         if self.core_wallets.is_none() && !self.core_wallets_loading {
             if self.app_context.core_backend_mode() == crate::spv::CoreBackendMode::Spv {
@@ -494,7 +493,7 @@ impl ScreenLike for ImportMnemonicScreen {
         }
 
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![
                 ("Wallets", AppAction::GoToMainScreen),
@@ -504,12 +503,12 @@ impl ScreenLike for ImportMnemonicScreen {
         );
 
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             crate::ui::RootScreenType::RootScreenWalletsBalances,
         );
 
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             let mut inner_action = AppAction::None;
 
             // Show success screen if wallet was imported

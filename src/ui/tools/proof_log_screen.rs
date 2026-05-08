@@ -9,7 +9,7 @@ use crate::ui::theme::{DashColors, ResponseExt};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::drive::grovedb::operations::proof::GroveDBProof;
 use dash_sdk::drive::query::PathQuery;
-use eframe::egui::{self, Context, Grid, ScrollArea, Ui};
+use eframe::egui::{self, Grid, ScrollArea, Ui};
 use egui::text::LayoutJob;
 use egui::{Color32, FontId, Frame, Stroke, TextFormat, TextStyle, Vec2};
 use regex::Regex;
@@ -372,23 +372,23 @@ impl ScreenLike for ProofLogScreen {
     }
 
     /// Renders the UI components for the proof viewer screen.
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![("Tools", AppAction::None)],
             vec![],
         );
 
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             RootScreenType::RootScreenToolsProofLogScreen,
         );
 
-        action |= add_tools_subscreen_chooser_panel(ctx, self.app_context.as_ref());
+        action |= add_tools_subscreen_chooser_panel(ui, self.app_context.as_ref());
 
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             // Fetch proof items if not already fetched
             if self.proof_items.is_empty() {
                 ui.vertical_centered(|ui| {

@@ -520,7 +520,9 @@ impl ScreenLike for ContactDetailsScreen {
         self.needs_backend_fetch = true;
     }
 
-    fn ui(&mut self, ctx: &egui::Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let mut action = AppAction::None;
 
         // Add top panel with contact name if available
@@ -536,7 +538,7 @@ impl ScreenLike for ContactDetailsScreen {
             .unwrap_or_else(|| "Contact Details".to_string());
 
         action |= add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![
                 ("DashPay", AppAction::None),
@@ -546,11 +548,11 @@ impl ScreenLike for ContactDetailsScreen {
         );
 
         // Highlight DashPay in the main left panel
-        action |= add_left_panel(ctx, &self.app_context, RootScreenType::RootScreenDashpay);
+        action |= add_left_panel(ui, &self.app_context, RootScreenType::RootScreenDashpay);
         action |=
-            add_dashpay_subscreen_chooser_panel(ctx, &self.app_context, DashPaySubscreen::Contacts);
+            add_dashpay_subscreen_chooser_panel(ui, &self.app_context, DashPaySubscreen::Contacts);
 
-        action |= island_central_panel(ctx, |ui| self.render(ui));
+        action |= island_central_panel(ui, |ui| self.render(ui));
 
         // Show info popup if requested
         if self.show_info_popup {

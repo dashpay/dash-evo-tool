@@ -3,11 +3,11 @@ use crate::ui::RootScreenType;
 use crate::ui::dpns::dpns_contested_names_screen::DPNSSubscreen;
 use crate::ui::theme::{DashColors, Shadow, Shape, Spacing, Typography};
 use crate::{app::AppAction, ui};
-use egui::{Context, Frame, Margin, Panel, RichText};
+use egui::{Frame, Margin, Panel, RichText, Ui};
 
-pub fn add_dpns_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext) -> AppAction {
+pub fn add_dpns_subscreen_chooser_panel(ui: &mut Ui, app_context: &AppContext) -> AppAction {
     let mut action = AppAction::None;
-    let dark_mode = ctx.global_style().visuals.dark_mode;
+    let dark_mode = ui.ctx().global_style().visuals.dark_mode;
 
     let subscreens = vec![
         DPNSSubscreen::Active,
@@ -27,7 +27,6 @@ pub fn add_dpns_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext)
         _ => DPNSSubscreen::Active,
     };
 
-    #[allow(deprecated)]
     Panel::left("dpns_subscreen_chooser_panel")
         .resizable(true)
         .default_size(270.0)
@@ -36,7 +35,7 @@ pub fn add_dpns_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext)
                 .fill(DashColors::background(dark_mode))
                 .inner_margin(Margin::symmetric(10, 10)),
         )
-        .show(ctx, |ui| {
+        .show_inside(ui, |ui| {
             let available_height = ui.available_height();
 
             Frame::new()

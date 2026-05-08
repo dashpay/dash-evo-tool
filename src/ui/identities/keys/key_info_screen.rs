@@ -33,7 +33,7 @@ use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicK
 use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::IdentityPublicKey;
-use eframe::egui::{self, Context};
+use eframe::egui::{self};
 use egui::{Color32, RichText, ScrollArea};
 use std::sync::{Arc, RwLock};
 
@@ -71,9 +71,11 @@ pub struct KeyInfoScreen {
 impl ScreenLike for KeyInfoScreen {
     fn refresh(&mut self) {}
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![
                 ("Identities", AppAction::GoToMainScreen),
@@ -83,12 +85,12 @@ impl ScreenLike for KeyInfoScreen {
         );
 
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             crate::ui::RootScreenType::RootScreenIdentities,
         );
 
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             let inner_action = AppAction::None;
 
             ScrollArea::vertical().show(ui, |ui| {

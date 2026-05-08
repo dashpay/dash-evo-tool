@@ -27,7 +27,7 @@ use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicK
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::IdentityPublicKey;
-use eframe::egui::{self, Context, Frame, Margin, Ui};
+use eframe::egui::{self, Frame, Margin, Ui};
 use egui::{Color32, RichText};
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
@@ -368,9 +368,11 @@ impl ScreenLike for WithdrawalScreen {
     }
 
     /// Renders the UI components for the withdrawal screen
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![
                 ("Identities", AppAction::GoToMainScreen),
@@ -380,12 +382,12 @@ impl ScreenLike for WithdrawalScreen {
         );
 
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             crate::ui::RootScreenType::RootScreenIdentities,
         );
 
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             let mut inner_action = AppAction::None;
 
             // Show the success screen if the withdrawal was successful

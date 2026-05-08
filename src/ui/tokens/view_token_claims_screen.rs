@@ -14,7 +14,6 @@ use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::drive::query::{WhereClause, WhereOperator};
 use dash_sdk::platform::{Document, DocumentQuery};
-use egui::Context;
 use std::sync::Arc;
 
 use super::tokens_screen::IdentityTokenBasicInfo;
@@ -94,10 +93,10 @@ impl ScreenLike for ViewTokenClaimsScreen {
         }
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
         // Top panel
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![
                 ("Tokens", AppAction::GoToMainScreen),
@@ -117,16 +116,16 @@ impl ScreenLike for ViewTokenClaimsScreen {
 
         // Left panel
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             crate::ui::RootScreenType::RootScreenMyTokenBalances,
         );
 
         // Subscreen chooser
-        action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
+        action |= add_tokens_subscreen_chooser_panel(ui, &self.app_context);
 
         // Central panel
-        island_central_panel(ctx, |ui| {
+        island_central_panel(ui, |ui| {
             ui.heading("View Token Claims");
             ui.add_space(10.0);
 

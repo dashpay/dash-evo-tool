@@ -34,7 +34,6 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::prelude::AssetLockProof;
 use dash_sdk::platform::Identifier;
-use eframe::egui::Context;
 use egui::ahash::HashSet;
 use egui::{Align, Button, Color32, ComboBox, ScrollArea, Ui};
 use egui_extras::{Column, TableBuilder};
@@ -1097,9 +1096,11 @@ impl ScreenLike for AddNewIdentityScreen {
             WalletFundedScreenStep::Success => {}
         }
     }
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![
                 ("Identities", AppAction::GoToMainScreen),
@@ -1109,12 +1110,12 @@ impl ScreenLike for AddNewIdentityScreen {
         );
 
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             crate::ui::RootScreenType::RootScreenIdentities,
         );
 
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             let mut inner_action = AppAction::None;
 
             ScrollArea::vertical().show(ui, |ui| {

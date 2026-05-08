@@ -3,9 +3,9 @@ use crate::ui::RootScreenType;
 use crate::ui::theme::{DashColors, Shadow, Shape, Spacing, Typography};
 use crate::ui::tokens::tokens_screen::TokensSubscreen;
 use crate::{app::AppAction, ui};
-use egui::{Context, Frame, Margin, Panel, RichText};
+use egui::{Frame, Margin, Panel, RichText, Ui};
 
-pub fn add_tokens_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext) -> AppAction {
+pub fn add_tokens_subscreen_chooser_panel(ui: &mut Ui, app_context: &AppContext) -> AppAction {
     let mut action = AppAction::None;
 
     let subscreens = vec![
@@ -24,9 +24,8 @@ pub fn add_tokens_subscreen_chooser_panel(ctx: &Context, app_context: &AppContex
         _ => TokensSubscreen::MyTokens, // Fallback to Active screen if settings unavailable
     };
 
-    let dark_mode = ctx.global_style().visuals.dark_mode;
+    let dark_mode = ui.ctx().global_style().visuals.dark_mode;
 
-    #[allow(deprecated)]
     Panel::left("tokens_subscreen_chooser_panel")
         .resizable(false)
         .default_size(270.0)
@@ -35,7 +34,7 @@ pub fn add_tokens_subscreen_chooser_panel(ctx: &Context, app_context: &AppContex
                 .fill(DashColors::background(dark_mode))
                 .inner_margin(Margin::symmetric(10, 10)),
         )
-        .show(ctx, |ui| {
+        .show_inside(ui, |ui| {
             let available_height = ui.available_height();
             Frame::new()
                 .fill(DashColors::surface(dark_mode))

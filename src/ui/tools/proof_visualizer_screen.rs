@@ -9,7 +9,7 @@ use crate::ui::{MessageType, RootScreenType, ScreenLike};
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use dash_sdk::drive::grovedb::operations::proof::GroveDBProof;
-use eframe::egui::{self, Context, ScrollArea, TextEdit, Ui};
+use eframe::egui::{self, ScrollArea, TextEdit, Ui};
 use egui::Color32;
 use std::sync::Arc;
 
@@ -145,23 +145,23 @@ impl ScreenLike for ProofVisualizerScreen {
         // Implement message display if needed
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![("Tools", AppAction::None)],
             vec![],
         );
 
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             RootScreenType::RootScreenToolsProofVisualizerScreen,
         );
 
-        action |= add_tools_subscreen_chooser_panel(ctx, self.app_context.as_ref());
+        action |= add_tools_subscreen_chooser_panel(ui, self.app_context.as_ref());
 
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             self.show_input_field(ui);
             self.show_output(ui);
             AppAction::None

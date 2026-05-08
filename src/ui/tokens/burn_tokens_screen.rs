@@ -22,7 +22,7 @@ use dash_sdk::dpp::group::{GroupStateTransitionInfo, GroupStateTransitionInfoSta
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
-use eframe::egui::{self, Context, Ui};
+use eframe::egui::{self, Ui};
 use eframe::egui::{Frame, Margin};
 use egui::RichText;
 use std::collections::HashSet;
@@ -376,13 +376,15 @@ impl ScreenLike for BurnTokensScreen {
         }
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let mut action;
 
         // Build a top panel
         if self.group_action_id.is_some() {
             action = add_top_panel(
-                ctx,
+                ui,
                 &self.app_context,
                 vec![
                     ("Contracts", AppAction::GoToMainScreen),
@@ -393,7 +395,7 @@ impl ScreenLike for BurnTokensScreen {
             );
         } else {
             action = add_top_panel(
-                ctx,
+                ui,
                 &self.app_context,
                 vec![
                     ("Tokens", AppAction::GoToMainScreen),
@@ -406,15 +408,15 @@ impl ScreenLike for BurnTokensScreen {
 
         // Left panel
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             crate::ui::RootScreenType::RootScreenMyTokenBalances,
         );
 
         // Subscreen chooser
-        action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
+        action |= add_tokens_subscreen_chooser_panel(ui, &self.app_context);
 
-        let central_panel_action = island_central_panel(ctx, |ui| {
+        let central_panel_action = island_central_panel(ui, |ui| {
             let dark_mode = ui.style().visuals.dark_mode;
 
             // If we are in the "Complete" status, just show success screen

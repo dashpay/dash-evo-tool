@@ -39,7 +39,7 @@ use dash_sdk::dpp::dashcore::{
     BlockHash, ChainLock as ChainLock2, InstantLock as InstantLock2, Network, ProTxHash, QuorumHash,
 };
 use dash_sdk::dpp::prelude::CoreBlockHeight;
-use eframe::egui::{self, Context, ScrollArea, Ui};
+use eframe::egui::{self, ScrollArea, Ui};
 use egui::{Align, Frame, Layout, Margin, RichText, Stroke, TextEdit, Vec2};
 use itertools::Itertools;
 use rfd::FileDialog;
@@ -4413,24 +4413,24 @@ impl ScreenLike for MasternodeListDiffScreen {
         // Optionally refresh data when this screen is shown
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![("Tools", AppAction::None)],
             vec![],
         );
 
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             RootScreenType::RootScreenToolsMasternodeListDiffScreen,
         );
 
-        action |= add_tools_subscreen_chooser_panel(ctx, self.app_context.as_ref());
+        action |= add_tools_subscreen_chooser_panel(ui, self.app_context.as_ref());
 
         // Styled central panel consistent with other tool screens; scroll only below tab row
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             // Top: input area (base/end block height + Get DMLs button)
             let mut inner = AppAction::None;
             inner |= self.render_input_area(ui);

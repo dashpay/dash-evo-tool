@@ -40,7 +40,7 @@ impl TokensScreen {
                 })
                 .show(ui.ctx(), |ui| {
                     // Display the JSON in a multiline text box
-                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    let dark_mode = ui.style().visuals.dark_mode;
                     ui.add_space(10.0);
                     ui.label(
                         egui::RichText::new("Below is the data contract JSON:")
@@ -66,7 +66,7 @@ impl TokensScreen {
 
                     // Close button — right-aligned to match ConfirmationDialog pattern
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        let dark_mode = ui.style().visuals.dark_mode;
                         if ComponentStyles::add_secondary_button(ui, "Close", dark_mode).clicked() {
                             self.show_json_popup = false;
                         }

@@ -3,7 +3,7 @@ use crate::ui::RootScreenType;
 use crate::ui::theme::{DashColors, Shadow, Shape, Spacing, Typography};
 use crate::ui::tokens::tokens_screen::TokensSubscreen;
 use crate::{app::AppAction, ui};
-use egui::{Context, Frame, Margin, RichText, SidePanel};
+use egui::{Context, Frame, Margin, RichText, Panel};
 
 pub fn add_tokens_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext) -> AppAction {
     let mut action = AppAction::None;
@@ -21,9 +21,10 @@ pub fn add_tokens_subscreen_chooser_panel(ctx: &Context, app_context: &AppContex
         _ => TokensSubscreen::MyTokens,
     };
 
-    let dark_mode = ctx.style().visuals.dark_mode;
+    let dark_mode = ctx.global_style().visuals.dark_mode;
 
-    SidePanel::left("tokens_subscreen_chooser_panel")
+    #[allow(deprecated)]
+    Panel::left("tokens_subscreen_chooser_panel")
         .resizable(false)
         .default_width(270.0)
         .frame(

@@ -562,7 +562,7 @@ impl ProfileScreen {
 
         // Profile loading status - styled card when no profile loaded
         if !self.profile_load_attempted && !self.loading {
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
             Frame::group(ui.style())
                 .fill(ui.visuals().extreme_bg_color)
                 .corner_radius(5.0)
@@ -592,7 +592,7 @@ impl ProfileScreen {
         // Loading or saving indicator
         if self.loading || self.saving {
             ui.horizontal(|ui| {
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
                 ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
                 let status_text = if self.saving {
                     "Saving profile..."
@@ -610,7 +610,7 @@ impl ProfileScreen {
                         // Main editing panel (left side)
                         ui.vertical(|ui| {
                             ui.group(|ui| {
-                                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                let dark_mode = ui.style().visuals.dark_mode;
                                 ui.horizontal(|ui| {
                                     ui.label(
                                         RichText::new("Edit Profile")
@@ -1061,7 +1061,7 @@ impl ProfileScreen {
                                     if let Some(identity) = &self.selected_identity
                                         && !identity.dpns_names.is_empty()
                                     {
-                                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                        let dark_mode = ui.style().visuals.dark_mode;
                                         ui.label(
                                             RichText::new(format!(
                                                 "@{}",
@@ -1103,7 +1103,7 @@ impl ProfileScreen {
                             ui.separator();
 
                             // Bio
-                            let dark_mode = ui.ctx().style().visuals.dark_mode;
+                            let dark_mode = ui.style().visuals.dark_mode;
                             ui.label(
                                 RichText::new("Bio:")
                                     .strong()
@@ -1125,7 +1125,7 @@ impl ProfileScreen {
                         });
                     } else if self.profile_load_attempted {
                         // No profile exists (only show after we've tried to load)
-                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        let dark_mode = ui.style().visuals.dark_mode;
                         Frame::group(ui.style())
                             .fill(ui.visuals().extreme_bg_color)
                             .corner_radius(5.0)
@@ -1166,6 +1166,7 @@ impl ProfileScreen {
 
         // Show info popup if requested
         if self.show_info_popup {
+            #[allow(deprecated)]
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
                 .show(ui.ctx(), |ui| {
@@ -1179,6 +1180,7 @@ impl ProfileScreen {
 
         // Show avatar info popup if requested
         if self.show_avatar_info_popup {
+            #[allow(deprecated)]
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
                 .show(ui.ctx(), |ui| {
@@ -1223,7 +1225,7 @@ impl ProfileScreen {
                             ui.add_space(10.0);
 
                             // Show URL in smaller, secondary text
-                            let dark_mode = ui.ctx().style().visuals.dark_mode;
+                            let dark_mode = ui.style().visuals.dark_mode;
                             ui.label(
                                 RichText::new(&avatar_url)
                                     .small()

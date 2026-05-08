@@ -890,7 +890,7 @@ impl ComponentStyles {
             ui.add(Self::primary_button(label))
                 .on_hover_cursor(CursorIcon::PointingHand)
         } else {
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
             let text = match label.into() {
                 WidgetText::RichText(rt) => rt
                     .as_ref()
@@ -1087,7 +1087,7 @@ pub fn apply_theme(ctx: &egui::Context, theme_mode: ThemeMode) {
     // Apply the custom visuals first
     ctx.set_visuals(visuals);
 
-    let mut style = (*ctx.style()).clone();
+    let mut style = (*ctx.global_style()).clone();
 
     // Configure modern visuals with gradients and glass effects
     // Override all background colors again to ensure they stick
@@ -1175,5 +1175,5 @@ pub fn apply_theme(ctx: &egui::Context, theme_mode: ThemeMode) {
     // Don't override extreme_bg_color here - it should remain as input_background for TextEdit widgets
     style.visuals.faint_bg_color = DashColors::background(dark_mode);
 
-    ctx.set_style(style);
+    ctx.set_global_style(style);
 }

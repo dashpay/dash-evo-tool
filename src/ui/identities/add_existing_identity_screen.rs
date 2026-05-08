@@ -474,7 +474,7 @@ impl AddExistingIdentityScreen {
             .fill(if is_valid_id {
                 DashColors::DASH_BLUE
             } else {
-                ComponentStyles::button_disabled_fill(ui.ctx().style().visuals.dark_mode)
+                ComponentStyles::button_disabled_fill(ui.style().visuals.dark_mode)
             })
             .frame(true)
             .corner_radius(3.0);
@@ -859,7 +859,7 @@ impl AddExistingIdentityScreen {
             .fill(if is_valid {
                 DashColors::DASH_BLUE
             } else {
-                ComponentStyles::button_disabled_fill(ui.ctx().style().visuals.dark_mode)
+                ComponentStyles::button_disabled_fill(ui.style().visuals.dark_mode)
             })
             .frame(true)
             .corner_radius(3.0);
@@ -1182,6 +1182,7 @@ impl ScreenLike for AddExistingIdentityScreen {
 
         // Show the popup window if `show_popup` is true
         if let Some(show_pop_up_info_text) = self.show_pop_up_info.clone() {
+            #[allow(deprecated)]
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
                 .show(ctx, |ui| {

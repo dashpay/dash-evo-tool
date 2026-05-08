@@ -149,7 +149,7 @@ impl WalletsBalancesScreen {
                 spread: 0,
                 color: DashColors::popup_shadow(),
             },
-            fill: ctx.style().visuals.window_fill,
+            fill: ctx.global_style().visuals.window_fill,
             stroke: egui::Stroke::new(1.0, DashColors::popup_border_glow()),
         }
     }
@@ -241,7 +241,7 @@ impl WalletsBalancesScreen {
                 }
 
                 ui.add_space(8.0);
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
                 ui.horizontal(|ui| {
                     let has_address_error = self.send_dialog.address_error.is_some();
                     if ComponentStyles::add_primary_button_enabled(ui, !has_address_error, "Send")
@@ -288,7 +288,7 @@ impl WalletsBalancesScreen {
             }
         }
 
-        let dark_mode = ctx.style().visuals.dark_mode;
+        let dark_mode = ctx.global_style().visuals.dark_mode;
 
         // Determine current address based on selected type
         let current_address = match self.receive_dialog.address_type {
@@ -690,7 +690,7 @@ impl WalletsBalancesScreen {
 
         let mut action = AppAction::None;
         let mut open = self.fund_platform_dialog.is_open;
-        let dark_mode = ctx.style().visuals.dark_mode;
+        let dark_mode = ctx.global_style().visuals.dark_mode;
 
         // Draw dark overlay behind the popup
         Self::draw_modal_overlay(ctx, "fund_platform_dialog_overlay");
@@ -863,7 +863,7 @@ impl WalletsBalancesScreen {
             return;
         }
 
-        let dark_mode = ctx.style().visuals.dark_mode;
+        let dark_mode = ctx.global_style().visuals.dark_mode;
         let mut open = self.private_key_dialog.is_open;
 
         // Draw dark overlay behind the dialog
@@ -1290,7 +1290,7 @@ impl WalletsBalancesScreen {
 
         let mut action = AppAction::None;
         let mut open = self.mine_dialog.is_open;
-        let dark_mode = ctx.style().visuals.dark_mode;
+        let dark_mode = ctx.global_style().visuals.dark_mode;
 
         Self::draw_modal_overlay(ctx, "mine_dialog_overlay");
 

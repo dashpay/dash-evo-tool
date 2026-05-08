@@ -77,7 +77,7 @@ impl TokensScreen {
                             }
                         };
                         if all_identities.is_empty() {
-                            let dark_mode = ui.ctx().style().visuals.dark_mode;
+                            let dark_mode = ui.style().visuals.dark_mode;
                             Frame::group(ui.style())
                                 .fill(ui.visuals().extreme_bg_color)
                                 .corner_radius(5.0)
@@ -1579,7 +1579,7 @@ impl TokensScreen {
 
                 ui.add_space(5.0);
 
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
                 let schemas_response = ui.add_sized(
                     [ui.available_width(), 120.0],
                     TextEdit::multiline(&mut self.document_schemas_input)

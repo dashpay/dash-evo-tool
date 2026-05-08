@@ -141,7 +141,7 @@ impl PasswordInput {
 
     /// Render the password input. Returns a [`PasswordInputResponse`].
     pub fn show(&mut self, ui: &mut Ui) -> PasswordInputResponse {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         // -- TextEdit --------------------------------------------------------
         // INTENTIONAL(SEC-005): Egui TextEdit may cache plaintext in layout galleys and

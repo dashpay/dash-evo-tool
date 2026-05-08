@@ -46,7 +46,7 @@ impl AssetLockDetailScreen {
     }
 
     fn render_asset_lock_info(&mut self, ui: &mut Ui) {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         let Some(lock) = self.load_tracked_lock() else {
             if self.asset_lock_cache.is_failed(&self.wallet_seed_hash) {
@@ -306,7 +306,7 @@ impl ScreenLike for AssetLockDetailScreen {
 
         action |= island_central_panel(ctx, |ui| {
             let mut inner_action = AppAction::None;
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
 
             ui.horizontal(|ui| {
                 ui.heading(

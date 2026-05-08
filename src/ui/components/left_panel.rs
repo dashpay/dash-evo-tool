@@ -6,7 +6,7 @@ use crate::ui::components::styled::GradientButton;
 use crate::ui::theme::{DashColors, ResponseExt, Shadow, Shape, Spacing};
 use dash_sdk::dashcore_rpc::dashcore::Network;
 use eframe::epaint::Margin;
-use egui::{Context, Frame, Image, RichText, SidePanel, TextureHandle};
+use egui::{Context, Frame, Image, RichText, Panel, TextureHandle};
 use egui_extras::{Size, StripBuilder};
 use rust_embed::RustEmbed;
 use std::sync::Arc;
@@ -164,9 +164,10 @@ pub fn add_left_panel(
         ),
     ];
 
-    let dark_mode = ctx.style().visuals.dark_mode;
+    let dark_mode = ctx.global_style().visuals.dark_mode;
 
-    SidePanel::left("left_panel")
+    #[allow(deprecated)]
+    Panel::left("left_panel")
         .min_width(140.0)
         .max_width(140.0)
         .resizable(false)

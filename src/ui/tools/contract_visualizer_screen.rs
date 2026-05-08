@@ -121,7 +121,7 @@ impl ContractVisualizerScreen {
 
     fn show_input(&mut self, ui: &mut Ui) {
         ui.label("Enter hex, base64, or comma-separated integers for Contract:");
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         let resp = ui.add(
             TextEdit::multiline(&mut self.input_data_hex)
                 .desired_rows(4)

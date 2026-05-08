@@ -220,13 +220,13 @@ impl SendPaymentScreen {
             ui.group(|ui| {
                 // From identity
                 ui.horizontal(|ui| {
-                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    let dark_mode = ui.style().visuals.dark_mode;
                     ui.label(
                         RichText::new("From:")
                             .strong()
                             .color(DashColors::text_primary(dark_mode)),
                     );
-                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    let dark_mode = ui.style().visuals.dark_mode;
                     ui.label(
                         RichText::new(self.from_identity.to_string())
                             .color(DashColors::text_primary(dark_mode)),
@@ -235,7 +235,7 @@ impl SendPaymentScreen {
 
                 // Wallet Balance (from wallet, not identity)
                 ui.horizontal(|ui| {
-                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    let dark_mode = ui.style().visuals.dark_mode;
                     ui.label(
                         RichText::new("Wallet Balance:")
                             .strong()
@@ -263,17 +263,17 @@ impl SendPaymentScreen {
 
                 // To contact
                 ui.horizontal(|ui| {
-                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    let dark_mode = ui.style().visuals.dark_mode;
                     ui.label(
                         RichText::new("To:")
                             .strong()
                             .color(DashColors::text_primary(dark_mode)),
                     );
                     if let Some(name) = &self.to_contact_name {
-                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        let dark_mode = ui.style().visuals.dark_mode;
                         ui.label(RichText::new(name).color(DashColors::text_primary(dark_mode)));
                     } else {
-                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        let dark_mode = ui.style().visuals.dark_mode;
                         ui.label(
                             RichText::new(format!("{}", self.to_contact_id))
                                 .color(DashColors::text_primary(dark_mode)),
@@ -317,7 +317,7 @@ impl SendPaymentScreen {
                 ui.add_space(10.0);
 
                 // Memo field
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
                 ui.label(
                     RichText::new("Memo (optional):")
                         .strong()
@@ -329,7 +329,7 @@ impl SendPaymentScreen {
                         .desired_rows(3)
                         .desired_width(f32::INFINITY),
                 );
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
                 ui.label(
                     RichText::new(format!("{}/100 characters", self.memo.len()))
                         .small()
@@ -414,6 +414,7 @@ impl ScreenLike for SendPaymentScreen {
 
         // Show info popup if requested
         if self.show_info_popup {
+            #[allow(deprecated)]
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
                 .show(ctx, |ui| {
@@ -587,7 +588,7 @@ impl PaymentHistory {
         }
 
         if self.selected_identity.is_none() {
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
             ui.label(
                 RichText::new("Please select an identity to view payment history")
                     .color(DashColors::text_primary(dark_mode)),
@@ -607,7 +608,7 @@ impl PaymentHistory {
         // Payment list
         ScrollArea::vertical().show(ui, |ui| {
             if self.payments.is_empty() {
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
                 Frame::group(ui.style())
                     .fill(ui.visuals().extreme_bg_color)
                     .corner_radius(5.0)
@@ -633,7 +634,7 @@ impl PaymentHistory {
             } else {
                 for payment in &self.payments {
                     ui.group(|ui| {
-                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        let dark_mode = ui.style().visuals.dark_mode;
                         ui.horizontal(|ui| {
                             // Avatar placeholder
                             ui.vertical(|ui| {

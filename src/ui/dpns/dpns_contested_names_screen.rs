@@ -289,7 +289,7 @@ impl DPNSScreen {
             ui.add_space(10.0);
 
             if self.dpns_subscreen != DPNSSubscreen::ScheduledVotes {
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
                 ui.label(RichText::new("Please check back later or try refreshing the list.").color(DashColors::text_primary(dark_mode)));
                 ui.add_space(20.0);
                 if StyledButton::primary("Refresh").show(ui).clicked() {
@@ -315,7 +315,7 @@ impl DPNSScreen {
                     }
                 }
             } else {
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
                 let text_color = DashColors::text_primary(dark_mode);
                 ui.label(
                     RichText::new("To schedule votes, go to the Active Contests subscreen, click your choices, and then click the 'Vote' button in the top-right.").color(text_color)
@@ -333,7 +333,7 @@ impl DPNSScreen {
     /// Show the Active Contests table
     fn render_table_active_contests(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
             ui.label(RichText::new("Filter by name:").color(DashColors::text_primary(dark_mode)));
             ui.text_edit_singleline(&mut self.active_filter_term);
         });
@@ -402,7 +402,7 @@ impl DPNSScreen {
                         }
                     });
                     header.col(|ui| {
-                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        let dark_mode = ui.style().visuals.dark_mode;
                         ui.heading(
                             RichText::new("Contestants").color(DashColors::text_primary(dark_mode)),
                         );
@@ -464,7 +464,7 @@ impl DPNSScreen {
                                         (contested_name.normalized_contested_name.clone(), None)
                                     };
 
-                                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                let dark_mode = ui.style().visuals.dark_mode;
                                 let label_response = ui.label(
                                     RichText::new(used_name)
                                         .color(DashColors::text_primary(dark_mode)),
@@ -478,7 +478,7 @@ impl DPNSScreen {
                             row.col(|ui| {
                                 let label_text = format!("{}", locked_votes);
                                 let dark_green = Color32::from_rgb(0, 100, 0);
-                                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                let dark_mode = ui.style().visuals.dark_mode;
                                 let normal_color = DashColors::text_primary(dark_mode);
                                 let text_widget = if is_locked_votes_bold {
                                     RichText::new(label_text).strong().color(dark_green)
@@ -580,7 +580,7 @@ impl DPNSScreen {
 
                             // Ending Time
                             row.col(|ui| {
-                                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                let dark_mode = ui.style().visuals.dark_mode;
                                 if let Some(ending_time) = contested_name.end_time {
                                     if let LocalResult::Single(dt) =
                                         Utc.timestamp_millis_opt(ending_time as i64)
@@ -608,7 +608,7 @@ impl DPNSScreen {
 
                             // Last Updated
                             row.col(|ui| {
-                                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                let dark_mode = ui.style().visuals.dark_mode;
                                 if let Some(last_updated) = contested_name.last_updated {
                                     if let LocalResult::Single(dt) =
                                         Utc.timestamp_opt(last_updated as i64, 0)
@@ -657,7 +657,7 @@ impl DPNSScreen {
     /// Show a Past Contests table
     fn render_table_past_contests(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
             ui.label(RichText::new("Filter by name:").color(DashColors::text_primary(dark_mode)));
             ui.text_edit_singleline(&mut self.past_filter_term);
         });
@@ -728,7 +728,7 @@ impl DPNSScreen {
                         body.row(25.0, |mut row| {
                             // Name
                             row.col(|ui| {
-                                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                let dark_mode = ui.style().visuals.dark_mode;
                                 ui.label(
                                     RichText::new(&contested_name.normalized_contested_name)
                                         .color(DashColors::text_primary(dark_mode)),
@@ -736,7 +736,7 @@ impl DPNSScreen {
                             });
                             // Ended Time
                             row.col(|ui| {
-                                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                let dark_mode = ui.style().visuals.dark_mode;
                                 if let Some(ended_time) = contested_name.end_time {
                                     if let LocalResult::Single(dt) =
                                         Utc.timestamp_millis_opt(ended_time as i64)
@@ -762,7 +762,7 @@ impl DPNSScreen {
                             });
                             // Last Updated
                             row.col(|ui| {
-                                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                let dark_mode = ui.style().visuals.dark_mode;
                                 if let Some(last_updated) = contested_name.last_updated {
                                     if let LocalResult::Single(dt) =
                                         Utc.timestamp_opt(last_updated as i64, 0)
@@ -794,7 +794,7 @@ impl DPNSScreen {
                             });
                             // Awarded To
                             row.col(|ui| {
-                                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                let dark_mode = ui.style().visuals.dark_mode;
                                 match contested_name.state {
                                     ContestState::Unknown => {
                                         ui.label(
@@ -834,7 +834,7 @@ impl DPNSScreen {
     /// Show the Owned DPNS names table
     fn render_table_local_dpns_names(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
             ui.label(RichText::new("Filter by name:").color(DashColors::text_primary(dark_mode)));
             ui.text_edit_singleline(&mut self.owned_filter_term);
         });
@@ -905,7 +905,7 @@ impl DPNSScreen {
                         }
                     });
                     header.col(|ui| {
-                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        let dark_mode = ui.style().visuals.dark_mode;
                         ui.label(
                             RichText::new("Actions").color(DashColors::text_primary(dark_mode)),
                         );
@@ -922,14 +922,14 @@ impl DPNSScreen {
                         };
                         body.row(25.0, |mut row| {
                             row.col(|ui| {
-                                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                let dark_mode = ui.style().visuals.dark_mode;
                                 ui.label(
                                     RichText::new(&display_name)
                                         .color(DashColors::text_primary(dark_mode)),
                                 );
                             });
                             row.col(|ui| {
-                                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                let dark_mode = ui.style().visuals.dark_mode;
                                 ui.label(
                                     RichText::new(identifier.to_string(Encoding::Base58))
                                         .color(DashColors::text_primary(dark_mode)),
@@ -942,7 +942,7 @@ impl DPNSScreen {
                             .map(|dt| dt.to_string())
                             .unwrap_or_else(|| "Invalid timestamp".to_string());
                             row.col(|ui| {
-                                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                let dark_mode = ui.style().visuals.dark_mode;
                                 ui.label(
                                     RichText::new(dt).color(DashColors::text_primary(dark_mode)),
                                 );
@@ -1018,13 +1018,13 @@ impl DPNSScreen {
                         }
                     });
                     header.col(|ui| {
-                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        let dark_mode = ui.style().visuals.dark_mode;
                         ui.heading(
                             RichText::new("Voter").color(DashColors::text_primary(dark_mode)),
                         );
                     });
                     header.col(|ui| {
-                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        let dark_mode = ui.style().visuals.dark_mode;
                         ui.heading(
                             RichText::new("Vote Choice").color(DashColors::text_primary(dark_mode)),
                         );
@@ -1035,13 +1035,13 @@ impl DPNSScreen {
                         }
                     });
                     header.col(|ui| {
-                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        let dark_mode = ui.style().visuals.dark_mode;
                         ui.heading(
                             RichText::new("Status").color(DashColors::text_primary(dark_mode)),
                         );
                     });
                     header.col(|ui| {
-                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        let dark_mode = ui.style().visuals.dark_mode;
                         ui.heading(
                             RichText::new("Actions").color(DashColors::text_primary(dark_mode)),
                         );
@@ -1072,7 +1072,7 @@ impl DPNSScreen {
                             });
                             // Time
                             row.col(|ui| {
-                                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                let dark_mode = ui.style().visuals.dark_mode;
                                 if let LocalResult::Single(dt) =
                                     Utc.timestamp_millis_opt(vote.0.unix_timestamp as i64)
                                 {
@@ -1097,7 +1097,7 @@ impl DPNSScreen {
                             });
                             // Status
                             row.col(|ui| {
-                                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                let dark_mode = ui.style().visuals.dark_mode;
                                 match vote.1 {
                                     ScheduledVoteCastingStatus::NotStarted => {
                                         ui.label(
@@ -1264,7 +1264,7 @@ impl DPNSScreen {
     fn show_bulk_schedule_popup_window(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
 
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         ui.heading(
             RichText::new("Cast or Schedule Votes").color(DashColors::text_primary(dark_mode)),
         );
@@ -1281,7 +1281,7 @@ impl DPNSScreen {
             ui.add_space(5.0);
             ui.colored_label(Color32::DARK_RED, "No masternode identities loaded. Please go to the Identities screen to load your masternodes.");
             ui.add_space(10.0);
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
             if ComponentStyles::add_secondary_button(ui, "Close", dark_mode).clicked() {
                 self.show_bulk_schedule_popup = false;
             }
@@ -1293,7 +1293,7 @@ impl DPNSScreen {
             ui.add_space(5.0);
             ui.colored_label(Color32::DARK_RED, "No votes selected. Please click the votes you want to cast or schedule in the Active Contests screen.");
             ui.add_space(10.0);
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
             if ComponentStyles::add_secondary_button(ui, "Close", dark_mode).clicked() {
                 self.show_bulk_schedule_popup = false;
             }
@@ -1303,7 +1303,7 @@ impl DPNSScreen {
         egui::ScrollArea::vertical().show(ui, |ui| {
             // Show which votes were clicked
             ui.group(|ui| {
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
                 ui.heading(
                     RichText::new("Selected Votes:").color(DashColors::text_primary(dark_mode)),
                 );
@@ -1325,7 +1325,7 @@ impl DPNSScreen {
                         ResourceVoteChoice::TowardsIdentity(id) => id.to_string(Encoding::Base58),
                         other => other.to_string(),
                     };
-                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    let dark_mode = ui.style().visuals.dark_mode;
                     ui.label(
                         RichText::new(format!(
                             "{}   =>   {}   |   Contest ends at {}",
@@ -1339,7 +1339,7 @@ impl DPNSScreen {
             ui.add_space(10.0);
 
             // Show each identity + let user pick None / Immediate / Scheduled
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
             ui.heading(
                 RichText::new("Select cast method for each node:")
                     .color(DashColors::text_primary(dark_mode)),
@@ -1347,7 +1347,7 @@ impl DPNSScreen {
             ui.add_space(10.0);
             ui.group(|ui| {
                 ui.horizontal(|ui| {
-                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    let dark_mode = ui.style().visuals.dark_mode;
                     ui.label(RichText::new("Set all:").color(DashColors::text_primary(dark_mode)));
 
                     // A ComboBox to pick No Vote / Cast Now / Schedule
@@ -1408,7 +1408,7 @@ impl DPNSScreen {
                         ref mut minutes,
                     } = self.set_all_option
                     {
-                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        let dark_mode = ui.style().visuals.dark_mode;
                         ui.label(
                             RichText::new("Schedule In:")
                                 .color(DashColors::text_primary(dark_mode)),
@@ -1434,7 +1434,7 @@ impl DPNSScreen {
                             .alias
                             .clone()
                             .unwrap_or_else(|| identity.identity.id().to_string(Encoding::Base58));
-                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        let dark_mode = ui.style().visuals.dark_mode;
                         ui.label(
                             RichText::new(format!("Identity: {}", label))
                                 .color(DashColors::text_primary(dark_mode)),
@@ -1509,7 +1509,7 @@ impl DPNSScreen {
                             minutes,
                         } = current_option
                         {
-                            let dark_mode = ui.ctx().style().visuals.dark_mode;
+                            let dark_mode = ui.style().visuals.dark_mode;
                             ui.label(
                                 RichText::new("Schedule In:")
                                     .color(DashColors::text_primary(dark_mode)),
@@ -1547,7 +1547,7 @@ impl DPNSScreen {
         }
 
         ui.add_space(5.0);
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         if ComponentStyles::add_secondary_button(ui, "Cancel", dark_mode).clicked() {
             self.selected_votes.clear();
             self.show_bulk_schedule_popup = false;
@@ -1564,7 +1564,7 @@ impl DPNSScreen {
                 // Elapsed time is shown in the global banner
             }
             VoteHandlingStatus::SchedulingVotes => {
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
                 ui.label(
                     RichText::new("Scheduling votes...").color(DashColors::text_primary(dark_mode)),
                 );
@@ -1680,36 +1680,36 @@ impl DPNSScreen {
                     if let Some(message) = &self.bulk_schedule_message {
                         match message.0 {
                             MessageType::Error => {
-                                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                let dark_mode = ui.style().visuals.dark_mode;
                                 ui.heading(
                                     RichText::new("❌").color(DashColors::text_primary(dark_mode)),
                                 );
                                 if message.1.contains("Successes") {
-                                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                    let dark_mode = ui.style().visuals.dark_mode;
                                     ui.heading(
                                         RichText::new("Only some votes succeeded")
                                             .color(DashColors::text_primary(dark_mode)),
                                     );
                                 } else {
-                                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                    let dark_mode = ui.style().visuals.dark_mode;
                                     ui.heading(
                                         RichText::new("No votes succeeded")
                                             .color(DashColors::text_primary(dark_mode)),
                                     );
                                 }
                                 ui.add_space(10.0);
-                                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                let dark_mode = ui.style().visuals.dark_mode;
                                 ui.label(
                                     RichText::new(message.1.clone())
                                         .color(DashColors::text_primary(dark_mode)),
                                 );
                             }
                             MessageType::Success => {
-                                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                let dark_mode = ui.style().visuals.dark_mode;
                                 ui.heading(
                                     RichText::new("🎉").color(DashColors::text_primary(dark_mode)),
                                 );
-                                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                let dark_mode = ui.style().visuals.dark_mode;
                                 ui.heading(
                                     RichText::new("Successfully casted and scheduled all votes")
                                         .color(DashColors::text_primary(dark_mode)),
@@ -1721,7 +1721,7 @@ impl DPNSScreen {
                 }
                 VoteHandlingStatus::Failed(message) => {
                     // This means there was a DET-side error, not Platform-side
-                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    let dark_mode = ui.style().visuals.dark_mode;
                     ui.heading(RichText::new("❌").color(DashColors::text_primary(dark_mode)));
                     ui.heading(
                         RichText::new("Error casting and scheduling votes (DET-side)")
@@ -1736,7 +1736,7 @@ impl DPNSScreen {
             }
 
             ui.add_space(20.0);
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
             if ComponentStyles::add_primary_button(ui, "Go back to Active Contests").clicked() {
                 self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
                 self.show_bulk_schedule_popup = false;

@@ -1206,7 +1206,7 @@ impl WalletSendScreen {
             self.wallet_open_attempted = true;
         }
         if wallet_needs_unlock(wallet) {
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
             ui.add_space(10.0);
             ui.colored_label(
                 DashColors::warning_color(dark_mode),
@@ -1311,7 +1311,7 @@ impl WalletSendScreen {
     }
 
     fn render_wallet_info(&self, ui: &mut Ui) {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         if let Some(wallet_arc) = &self.selected_wallet
             && let Ok(wallet) = wallet_arc.read()
@@ -1754,7 +1754,7 @@ impl WalletSendScreen {
     }
 
     fn render_source_selection(&mut self, ui: &mut Ui) {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         ui.label(
             RichText::new("Send from")
@@ -2163,7 +2163,7 @@ impl WalletSendScreen {
     }
 
     fn render_amount_input(&mut self, ui: &mut Ui) {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         let fee_estimator = self.app_context.fee_estimator();
 
         // Get max amount and hint based on source selection
@@ -2365,7 +2365,7 @@ impl WalletSendScreen {
     /// Renders a breakdown of which platform addresses will be used and how much from each.
     /// Uses the same allocation algorithm as the actual send logic.
     fn render_platform_source_breakdown(&self, ui: &mut Ui) {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         let network = self.app_context.network;
         let fee_estimator = self.app_context.fee_estimator();
 
@@ -2527,7 +2527,7 @@ impl WalletSendScreen {
     /// Render the advanced send UI with multiple inputs/outputs
     fn render_advanced_send(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         // Wallet info
         self.render_wallet_info(ui);
@@ -2696,7 +2696,7 @@ impl WalletSendScreen {
 
     /// Render Core address inputs for advanced mode
     fn render_core_inputs(&mut self, ui: &mut Ui) {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         let mut inputs_to_remove = Vec::new();
 
         ui.label(
@@ -2820,7 +2820,7 @@ impl WalletSendScreen {
 
     /// Render Platform address inputs for advanced mode
     fn render_platform_inputs(&mut self, ui: &mut Ui) {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         let mut inputs_to_remove = Vec::new();
 
         ui.label(
@@ -2949,7 +2949,7 @@ impl WalletSendScreen {
 
     /// Render the outputs section for advanced mode
     fn render_advanced_outputs(&mut self, ui: &mut Ui) {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         let mut outputs_to_remove = Vec::new();
         let num_outputs = self.advanced_outputs.len();
 
@@ -3430,7 +3430,7 @@ impl ScreenLike for WalletSendScreen {
 
         action |= island_central_panel(ctx, |ui| {
             let mut inner_action = AppAction::None;
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
 
             if let Some(status_action) = self.render_send_status(ui) {
                 return status_action;

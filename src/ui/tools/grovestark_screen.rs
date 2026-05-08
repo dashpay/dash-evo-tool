@@ -475,7 +475,7 @@ impl GroveSTARKScreen {
     }
 
     fn render_generation_ui(&mut self, ui: &mut Ui, app_context: &AppContext) -> Option<AppAction> {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         let debug_build = cfg!(debug_assertions);
 
         ui.label(
@@ -817,7 +817,7 @@ impl GroveSTARKScreen {
         ui: &mut Ui,
         app_context: &AppContext,
     ) -> Option<AppAction> {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         let debug_build = cfg!(debug_assertions);
 
         ui.label(
@@ -1039,7 +1039,7 @@ impl ScreenLike for GroveSTARKScreen {
                 RichText::new("GroveSTARK Zero-Knowledge Proofs")
                     .size(Typography::SCALE_XL)
                     .strong()
-                    .color(DashColors::text_primary(ui.ctx().style().visuals.dark_mode)),
+                    .color(DashColors::text_primary(ui.style().visuals.dark_mode)),
             );
             ui.add_space(5.0);
 
@@ -1047,7 +1047,7 @@ impl ScreenLike for GroveSTARKScreen {
             ui.label(
                 RichText::new("WARNING: GroveSTARK is a research project. It has not been audited and may contain bugs and security flaws. This feature is NOT ready for production usage.")
                     .size(Typography::SCALE_XS)
-                    .color(DashColors::text_primary(ui.ctx().style().visuals.dark_mode))
+                    .color(DashColors::text_primary(ui.style().visuals.dark_mode))
             );
             ui.add_space(Spacing::SM);
             ui.separator();
@@ -1061,11 +1061,11 @@ impl ScreenLike for GroveSTARKScreen {
                     RichText::new("Mode:")
                         .size(Typography::SCALE_LG)
                         .strong()
-                        .color(DashColors::text_primary(ui.ctx().style().visuals.dark_mode)),
+                        .color(DashColors::text_primary(ui.style().visuals.dark_mode)),
                 );
                 ui.add_space(10.0);
 
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
 
                 // Generate button
                 let generate_selected = self.mode == ProofMode::Generate;

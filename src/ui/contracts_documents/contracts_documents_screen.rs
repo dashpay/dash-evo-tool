@@ -166,7 +166,7 @@ impl DocumentQueryScreen {
             let available = ui.available_width();
             let text_width = (available - button_width - spacing).max(100.0); // Ensure minimum width
 
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
             ui.add(
                 egui::TextEdit::singleline(&mut self.document_query)
                     .desired_width(text_width)
@@ -294,7 +294,7 @@ impl DocumentQueryScreen {
                         });
 
                         ui.separator();
-                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        let dark_mode = ui.style().visuals.dark_mode;
                         if ComponentStyles::add_secondary_button(ui, "Close", dark_mode).clicked() {
                             self.show_fields_dropdown = false;
                         }
@@ -453,7 +453,7 @@ impl DocumentQueryScreen {
         let mut combined_string = doc_strings.join("\n\n");
 
         // 3) Display in multiline text
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         ui.add(
             egui::TextEdit::multiline(&mut combined_string)
                 .desired_rows(10)
@@ -687,9 +687,11 @@ impl ScreenLike for DocumentQueryScreen {
         }
 
         // Custom central panel with adjusted margins for Document Query screen
-        let dark_mode = ctx.style().visuals.dark_mode;
+        let dark_mode = ctx.global_style().visuals.dark_mode;
 
-        action |= CentralPanel::default()
+        action |= {
+            #[allow(deprecated)]
+            CentralPanel::default()
             .frame(
                 Frame::new()
                     .fill(DashColors::background(dark_mode))
@@ -733,7 +735,8 @@ impl ScreenLike for DocumentQueryScreen {
                     })
                     .inner
             })
-            .inner;
+            .inner
+        };
 
         action
     }

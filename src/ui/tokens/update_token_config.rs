@@ -719,7 +719,7 @@ impl UpdateTokenConfigScreen {
         // Display estimated fee before action button
         let estimated_fee = self.app_context.fee_estimator().estimate_token_transition();
         ui.add_space(10.0);
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         egui::Frame::new()
             .fill(DashColors::surface(dark_mode))
             .inner_margin(egui::Margin::symmetric(10, 8))
@@ -865,7 +865,7 @@ impl UpdateTokenConfigScreen {
                 authorized_identity_input.get_or_insert_with(String::new);
                 if let Some(id_str) = authorized_identity_input {
                     ui.horizontal(|ui| {
-                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        let dark_mode = ui.style().visuals.dark_mode;
                         ui.add_sized(
                             [300.0, 22.0],
                             egui::TextEdit::singleline(id_str)

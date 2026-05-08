@@ -408,7 +408,7 @@ impl ScreenLike for DestroyFrozenFundsScreen {
         action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
 
         island_central_panel(ctx, |ui| {
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
 
             if self.status == DestroyFrozenFundsStatus::Complete {
                 action |= self.show_success_screen(ui);

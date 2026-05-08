@@ -156,7 +156,7 @@ impl RegisterDataContractScreen {
     }
 
     fn ui_input_field(&mut self, ui: &mut egui::Ui) {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         let response = ui.add(
             TextEdit::multiline(&mut self.contract_json_input)
                 .desired_rows(12)
@@ -179,7 +179,7 @@ impl RegisterDataContractScreen {
         };
 
         if let Some(msg) = error_msg {
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
             let error_color = DashColors::error_color(dark_mode);
             Frame::new()
                 .fill(error_color.gamma_multiply(0.1))
@@ -224,7 +224,7 @@ impl RegisterDataContractScreen {
                     .estimate_storage_based_fee(contract_size, 20); // ~20 seeks for tree operations
                 let estimated_fee = registration_fee.saturating_add(storage_fee);
                 ui.add_space(10.0);
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
                 Frame::new()
                     .fill(DashColors::surface(dark_mode))
                     .inner_margin(Margin::symmetric(10, 8))

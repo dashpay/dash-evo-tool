@@ -958,7 +958,7 @@ pub fn show_success_screen_with_info(
     info_section: Option<(&str, &str)>,
 ) -> AppAction {
     let mut action = AppAction::None;
-    let dark_mode = ui.ctx().style().visuals.dark_mode;
+    let dark_mode = ui.style().visuals.dark_mode;
 
     ui.vertical_centered(|ui| {
         ui.add_space(if info_section.is_some() { 60.0 } else { 100.0 });
@@ -1041,7 +1041,7 @@ pub fn show_group_token_success_screen_with_fee(
     fee_info: Option<(&str, &str)>,
 ) -> AppAction {
     let mut action = AppAction::None;
-    let dark_mode = ui.ctx().style().visuals.dark_mode;
+    let dark_mode = ui.style().visuals.dark_mode;
 
     ui.vertical_centered(|ui| {
         ui.add_space(if fee_info.is_some() { 60.0 } else { 100.0 });

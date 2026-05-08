@@ -2,7 +2,7 @@ use crate::context::AppContext;
 use crate::ui::RootScreenType;
 use crate::ui::theme::{DashColors, Shadow, Shape, Spacing, Typography};
 use crate::{app::AppAction, ui};
-use egui::{Context, Frame, Margin, RichText, ScrollArea, SidePanel};
+use egui::{Context, Frame, Margin, RichText, ScrollArea, Panel};
 
 #[derive(PartialEq)]
 pub enum ToolsSubscreen {
@@ -33,7 +33,7 @@ impl ToolsSubscreen {
 
 pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext) -> AppAction {
     let mut action = AppAction::None;
-    let dark_mode = ctx.style().visuals.dark_mode;
+    let dark_mode = ctx.global_style().visuals.dark_mode;
 
     let subscreens = vec![
         ToolsSubscreen::PlatformInfo,
@@ -67,7 +67,8 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
         _ => ToolsSubscreen::PlatformInfo,
     };
 
-    SidePanel::left("tools_subscreen_chooser_panel")
+    #[allow(deprecated)]
+    Panel::left("tools_subscreen_chooser_panel")
         .resizable(false)
         .default_width(270.0)
         .frame(

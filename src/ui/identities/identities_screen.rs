@@ -219,7 +219,7 @@ impl IdentitiesScreen {
     }
 
     fn show_alias(&mut self, ui: &mut Ui, qualified_identity: &QualifiedIdentity) {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         if let Some(alias) = &qualified_identity.alias {
             ui.label(RichText::new(alias).color(DashColors::text_primary(dark_mode)));
@@ -380,7 +380,7 @@ impl IdentitiesScreen {
     }
 
     fn render_no_identities_view(&self, ui: &mut Ui) {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         // Optionally put everything in a framed "card"-like container
         Frame::group(ui.style())
@@ -615,7 +615,7 @@ impl IdentitiesScreen {
                                                     let actions_popup_id = ui.make_persistent_id(format!("actions_popup_{}", qualified_identity.identity.id().to_string(Encoding::Base58)));
                                                         egui::Popup::from_toggle_button_response(&actions_response).id(actions_popup_id)
                                                         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                                                        .frame(egui::Frame::popup(ui.style()).fill(DashColors::popup_fill(ui.ctx().style().visuals.dark_mode)))
+                                                        .frame(egui::Frame::popup(ui.style()).fill(DashColors::popup_fill(ui.style().visuals.dark_mode)))
                                                         .show(|ui| {
                                                         ui.set_min_width(150.0);
 
@@ -725,12 +725,12 @@ impl IdentitiesScreen {
                                                     let popup_id = ui.make_persistent_id(format!("keys_popup_{}", qualified_identity.identity.id().to_string(Encoding::Base58)));
                                                     egui::Popup::from_toggle_button_response(&button_response).id(popup_id)
                                                         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                                                        .frame(egui::Frame::popup(ui.style()).fill(DashColors::popup_fill(ui.ctx().style().visuals.dark_mode)))
+                                                        .frame(egui::Frame::popup(ui.style()).fill(DashColors::popup_fill(ui.style().visuals.dark_mode)))
                                                         .show(|ui| {
                                                             // Wrap in a scroll area so popups with many keys are accessible
                                                             let max_popup_height = ui.ctx().content_rect().height() * 0.6;
                                                             egui::ScrollArea::vertical().max_height(max_popup_height).show(ui, |ui| {
-                                                            let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                                            let dark_mode = ui.style().visuals.dark_mode;
 
                                                             // Main Identity Keys
                                                             if !public_keys.is_empty() {
@@ -946,13 +946,13 @@ impl IdentitiesScreen {
                     spread: 0,
                     color: DashColors::popup_shadow(),
                 },
-                fill: ctx.style().visuals.window_fill,
+                fill: ctx.global_style().visuals.window_fill,
                 stroke: egui::Stroke::new(1.0, DashColors::popup_border_glow()),
             })
             .show(ctx, |ui| {
                 ui.set_min_width(300.0);
 
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
 
                 ui.label(
                     RichText::new("Enter a new alias for this identity:")

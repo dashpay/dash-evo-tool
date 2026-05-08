@@ -178,7 +178,7 @@ impl ConfirmationDialog {
                 // Set minimum width for the dialog
                 ui.set_min_width(300.0);
 
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
 
                 // Message content with bold text and proper color
                 ui.add_space(10.0);

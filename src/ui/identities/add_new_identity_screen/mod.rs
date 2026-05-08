@@ -621,7 +621,7 @@ impl AddNewIdentityScreen {
 
             // Use a lighter stripe color that doesn't clash with comboboxes
             let original_stripe_color = ui.visuals().faint_bg_color;
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
             ui.visuals_mut().faint_bg_color = DashColors::stripe(dark_mode);
 
             let revealed_wifs = &self.revealed_wifs;
@@ -1334,7 +1334,7 @@ impl ScreenLike for AddNewIdentityScreen {
 
                 ui.horizontal(|ui| {
                     ui.label("Alias:");
-                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    let dark_mode = ui.style().visuals.dark_mode;
                     ui.add(
                         egui::TextEdit::singleline(&mut self.alias_input)
                             .hint_text(egui::RichText::new("e.g., My Main Identity").color(DashColors::text_secondary(dark_mode)))
@@ -1342,7 +1342,7 @@ impl ScreenLike for AddNewIdentityScreen {
                     );
                 });
 
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
                 ui.label(
                     egui::RichText::new("Note: This is a Dash Evo Tool nickname, not a DPNS username.")
                         .small()
@@ -1388,6 +1388,7 @@ impl ScreenLike for AddNewIdentityScreen {
 
         // Show the info popup if requested
         if let Some(show_pop_up_info_text) = self.show_pop_up_info.clone() {
+            #[allow(deprecated)]
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
                 .show(ctx, |ui| {

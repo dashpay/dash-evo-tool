@@ -218,7 +218,7 @@ impl ScreenLike for ShieldScreen {
         );
 
         island_central_panel(ctx, |ui| {
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
             ui.heading("Shield");
             ui.add_space(10.0);
             ui.label("Move funds from a platform or core address into the shielded pool.");

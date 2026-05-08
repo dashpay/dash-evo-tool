@@ -1509,7 +1509,9 @@ impl AppState {
 }
 
 impl App for AppState {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         // ── Graceful shutdown: intercept window close so the UI stays responsive ──
         // When the user closes the window we cancel the native close, show a banner,
         // and start an async shutdown. Once all tasks have finished (or timed out)
@@ -1990,7 +1992,7 @@ impl App for AppState {
         }
     }
 
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+    fn on_exit(&mut self) {
         // On macOS, order windows out before winit tears down the event
         // handler. This lets AppKit properly clean up display-related KVO
         // observers (TouchBar, etc.) while views are still alive.

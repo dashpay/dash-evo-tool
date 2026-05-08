@@ -280,7 +280,7 @@ impl SingleKeyWalletSendScreen {
     }
 
     fn render_recipients(&mut self, ui: &mut Ui) {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         ui.add_space(15.0);
 
@@ -382,7 +382,7 @@ impl SingleKeyWalletSendScreen {
     }
 
     fn render_options(&mut self, ui: &mut Ui) {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         ui.add_space(15.0);
 
@@ -452,7 +452,7 @@ impl SingleKeyWalletSendScreen {
 
     /// Render the simple (beginner) send UI - single recipient, minimal options
     fn render_simple_send(&mut self, ui: &mut Ui) {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         ui.add_space(15.0);
 
@@ -524,7 +524,7 @@ impl SingleKeyWalletSendScreen {
             return action;
         }
 
-        let dark_mode = ctx.style().visuals.dark_mode;
+        let dark_mode = ctx.global_style().visuals.dark_mode;
 
         egui::Window::new("Fee Confirmation Required")
             .collapsible(false)
@@ -640,7 +640,7 @@ impl SingleKeyWalletSendScreen {
     }
 
     fn render_wallet_info(&self, ui: &mut Ui) {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         if let Some(wallet_arc) = &self.selected_wallet
             && let Ok(wallet) = wallet_arc.read()
@@ -702,7 +702,7 @@ impl SingleKeyWalletSendScreen {
     }
 
     fn render_wallet_unlock(&mut self, ui: &mut Ui) -> AppAction {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         Frame::group(ui.style())
             .fill(DashColors::surface(dark_mode))
@@ -848,7 +848,7 @@ impl ScreenLike for SingleKeyWalletSendScreen {
 
         action |= island_central_panel(ctx, |ui| {
             let mut inner_action = AppAction::None;
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
 
             // Message display is handled by the global MessageBanner.
 

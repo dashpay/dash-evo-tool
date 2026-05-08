@@ -6,7 +6,7 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
-use egui::{Ui};
+use egui::Ui;
 use std::sync::Arc;
 
 use super::contacts_list::ContactsList;

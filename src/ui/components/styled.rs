@@ -4,7 +4,9 @@ use crate::{
     context::AppContext,
     ui::theme::{DashColors, Shadow, Shape, Spacing, Typography},
 };
-use egui::{Button, CentralPanel, Color32, Frame, Margin, Response, RichText, Stroke, TextEdit, Ui, Vec2};
+use egui::{
+    Button, CentralPanel, Color32, Frame, Margin, Response, RichText, Stroke, TextEdit, Ui, Vec2,
+};
 
 // Re-export commonly used components
 pub use super::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};

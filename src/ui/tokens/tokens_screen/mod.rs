@@ -2898,11 +2898,8 @@ impl ScreenLike for TokensScreen {
                 );
             }
             TokensSubscreen::SearchTokens => {
-                action |= add_left_panel(
-                    ui,
-                    &self.app_context,
-                    RootScreenType::RootScreenTokenSearch,
-                );
+                action |=
+                    add_left_panel(ui, &self.app_context, RootScreenType::RootScreenTokenSearch);
             }
             TokensSubscreen::TokenCreator => {
                 action |= add_left_panel(

@@ -424,10 +424,9 @@ impl ScreenLike for SendPaymentScreen {
 
         // Show info popup if requested
         if self.show_info_popup {
-            #[allow(deprecated)]
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
-                .show(ctx, |ui| {
+                .show_inside(ui, |ui| {
                     let mut popup =
                         InfoPopup::new("Payment Guidelines", PAYMENT_GUIDELINES_INFO_TEXT);
                     if popup.show(ui).inner {

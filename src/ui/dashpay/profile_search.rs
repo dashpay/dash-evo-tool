@@ -260,8 +260,6 @@ impl ProfileSearchScreen {
 
 impl ScreenLike for ProfileSearchScreen {
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
-        let ctx = ui.ctx().clone();
-        let ctx = &ctx;
         let mut action = AppAction::None;
 
         // Add top panel - consistent with other DashPay subscreens
@@ -303,10 +301,9 @@ impl ScreenLike for ProfileSearchScreen {
 
         // Show info popup if requested
         if self.show_info_popup {
-            #[allow(deprecated)]
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
-                .show(ctx, |ui| {
+                .show_inside(ui, |ui| {
                     let mut popup =
                         InfoPopup::new("About Profile Search", PROFILE_SEARCH_INFO_TEXT);
                     if popup.show(ui).inner {

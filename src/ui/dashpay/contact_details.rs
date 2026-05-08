@@ -521,8 +521,6 @@ impl ScreenLike for ContactDetailsScreen {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
-        let ctx = ui.ctx().clone();
-        let ctx = &ctx;
         let mut action = AppAction::None;
 
         // Add top panel with contact name if available
@@ -556,10 +554,9 @@ impl ScreenLike for ContactDetailsScreen {
 
         // Show info popup if requested
         if self.show_info_popup {
-            #[allow(deprecated)]
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
-                .show(ctx, |ui| {
+                .show_inside(ui, |ui| {
                     let mut popup =
                         InfoPopup::new("Private Contact Information", PRIVATE_CONTACT_INFO_TEXT);
                     if popup.show(ui).inner {

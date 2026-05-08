@@ -1012,11 +1012,8 @@ impl ScreenLike for ContactsList {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
-        let ctx = ui.ctx().clone();
-        let ctx = &ctx;
         let mut action = AppAction::None;
-        #[allow(deprecated)]
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show_inside(ui, |ui| {
             action = self.render(ui);
         });
         action

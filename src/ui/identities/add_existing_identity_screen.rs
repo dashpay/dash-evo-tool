@@ -1167,10 +1167,9 @@ impl ScreenLike for AddExistingIdentityScreen {
 
         // Show the popup window if `show_popup` is true
         if let Some(show_pop_up_info_text) = self.show_pop_up_info.clone() {
-            #[allow(deprecated)]
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
-                .show(ctx, |ui| {
+                .show_inside(ui, |ui| {
                     let mut popup =
                         InfoPopup::new("Load Identity Information", &show_pop_up_info_text);
                     if popup.show(ui).inner {

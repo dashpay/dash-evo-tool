@@ -632,8 +632,6 @@ impl ContactProfileViewerScreen {
 
 impl ScreenLike for ContactProfileViewerScreen {
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
-        let ctx = ui.ctx().clone();
-        let ctx = &ctx;
         let mut action = AppAction::None;
 
         // Add top panel
@@ -656,10 +654,9 @@ impl ScreenLike for ContactProfileViewerScreen {
 
         // Show info popup if requested
         if let Some((title, text)) = self.show_info_popup {
-            #[allow(deprecated)]
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
-                .show(ctx, |ui| {
+                .show_inside(ui, |ui| {
                     let mut popup = InfoPopup::new(title, text);
                     if popup.show(ui).inner {
                         self.show_info_popup = None;

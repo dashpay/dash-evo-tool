@@ -578,10 +578,9 @@ impl ScreenLike for AddContactScreen {
 
         // Show info popup if requested
         if self.show_info_popup {
-            #[allow(deprecated)]
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
-                .show(ctx, |ui| {
+                .show_inside(ui, |ui| {
                     let mut popup =
                         InfoPopup::new("About Contact Requests", CONTACT_REQUEST_INFO_TEXT);
                     if popup.show(ui).inner {

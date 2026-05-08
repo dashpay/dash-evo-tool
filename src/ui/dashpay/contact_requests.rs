@@ -1027,8 +1027,7 @@ impl ScreenLike for ContactRequests {
         let ctx = &ctx;
         // Create a simple central panel for rendering
         let mut action = AppAction::None;
-        #[allow(deprecated)]
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show_inside(ui, |ui| {
             action = self.render(ui);
         });
 

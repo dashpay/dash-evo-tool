@@ -16,10 +16,7 @@ impl ScreenLike for KeysScreen {
     fn refresh(&mut self) {}
 
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
-        let ctx = ui.ctx().clone();
-        let ctx = &ctx;
-        #[allow(deprecated)]
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show_inside(ui, |ui| {
             ui.heading("Identity Keys");
 
             egui::ScrollArea::vertical().show(ui, |ui| {

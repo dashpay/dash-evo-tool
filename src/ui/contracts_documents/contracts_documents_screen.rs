@@ -692,7 +692,6 @@ impl ScreenLike for DocumentQueryScreen {
         let dark_mode = ctx.global_style().visuals.dark_mode;
 
         action |= {
-            #[allow(deprecated)]
             CentralPanel::default()
                 .frame(
                     Frame::new()
@@ -704,7 +703,7 @@ impl ScreenLike for DocumentQueryScreen {
                             bottom: 0, // Less space on the bottom
                         }),
                 )
-                .show(ctx, |ui| {
+                .show_inside(ui, |ui| {
                     // Create an island panel with rounded edges
                     Frame::new()
                         .fill(DashColors::surface(dark_mode))

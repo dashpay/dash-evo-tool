@@ -6,7 +6,7 @@ use crate::context::connection_status::OverallConnectionState;
 use crate::spv::CoreBackendMode;
 use crate::ui::ScreenType;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Shadow, Shape};
-use egui::{Align2, Context, FontId, Frame, Margin, RichText, TextureHandle, TopBottomPanel, Ui};
+use egui::{Align2, Context, FontId, Frame, Margin, RichText, TextureHandle, Panel, Ui};
 use rust_embed::RustEmbed;
 use std::sync::Arc;
 use tracing::error;
@@ -101,7 +101,7 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAc
     let backend_mode = status.backend_mode();
     let overall = status.overall_state();
 
-    let dark_mode = ui.ctx().style().visuals.dark_mode;
+    let dark_mode = ui.style().visuals.dark_mode;
     let circle_size = 14.0;
 
     // Five-state color: green (synced), orange (syncing/connecting), magenta (error), red (disconnected)
@@ -207,10 +207,11 @@ pub fn add_top_panel(
     right_buttons: Vec<(&str, DesiredAppAction)>,
 ) -> AppAction {
     let mut action = AppAction::None;
-    let dark_mode = ctx.style().visuals.dark_mode;
+    let dark_mode = ctx.global_style().visuals.dark_mode;
     let network_accent = DashColors::network_accent(app_context.network, dark_mode);
 
-    TopBottomPanel::top("top_panel")
+    #[allow(deprecated)]
+    Panel::top("top_panel")
         .frame(
             Frame::new()
                 .fill(DashColors::background(dark_mode))
@@ -289,7 +290,7 @@ pub fn add_top_panel(
                                     );
                                     let popup_id = ui.make_persistent_id("docs_popup");
 
-                                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                    let dark_mode = ui.style().visuals.dark_mode;
                                     egui::Popup::new(
                                         popup_id,
                                         ui.ctx().clone(),
@@ -328,7 +329,7 @@ pub fn add_top_panel(
                                         network_accent,
                                     );
 
-                                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                    let dark_mode = ui.style().visuals.dark_mode;
                                     egui::Popup::new(
                                         popup_id,
                                         ui.ctx().clone(),

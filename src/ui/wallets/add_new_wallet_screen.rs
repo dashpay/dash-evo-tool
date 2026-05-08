@@ -198,7 +198,7 @@ impl AddNewWalletScreen {
 
     fn show_success(&mut self, ui: &mut Ui, ctx: &Context) -> AppAction {
         let mut action = AppAction::None;
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         // Check for incoming funds by looking at wallet balance
         // Use total_balance_duffs() which falls back to max_balance() (from UTXOs) if SPV balance not set
@@ -402,7 +402,7 @@ impl AddNewWalletScreen {
     }
 
     fn render_seed_phrase_input(&mut self, ui: &mut Ui) {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         let surface = DashColors::surface(dark_mode);
         let border = DashColors::border(dark_mode);
         let text_primary = DashColors::text_primary(dark_mode);
@@ -810,7 +810,7 @@ impl ScreenLike for AddNewWalletScreen {
                 .show(ctx, |ui| {
                     ui.label(error_message);
                     ui.add_space(10.0);
-                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    let dark_mode = ui.style().visuals.dark_mode;
                     if ComponentStyles::add_secondary_button(ui, "Close", dark_mode).clicked() {
                         self.error = None;
                     }

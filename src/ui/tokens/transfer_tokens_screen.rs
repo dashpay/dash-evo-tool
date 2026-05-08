@@ -404,7 +404,7 @@ impl ScreenLike for TransferTokensScreen {
         action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
 
         let central_panel_action = island_central_panel(ctx, |ui| {
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
 
             // Show the success screen if the transfer was successful
             if self.transfer_tokens_status == TransferTokensStatus::Complete {

@@ -95,7 +95,7 @@ impl InfoPopup {
                     ui.set_max_width(500.0);
                 }
 
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
 
                 // Message content
                 ui.add_space(10.0);

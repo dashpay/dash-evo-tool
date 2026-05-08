@@ -27,7 +27,7 @@ impl WelcomeScreen {
 
     pub fn ui(&mut self, ctx: &Context) -> AppAction {
         let mut action = AppAction::None;
-        let dark_mode = ctx.style().visuals.dark_mode;
+        let dark_mode = ctx.global_style().visuals.dark_mode;
 
         // Central panel with welcome content (using island style like other screens)
         island_central_panel(ctx, |ui| {

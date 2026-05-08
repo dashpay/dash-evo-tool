@@ -16,6 +16,7 @@ impl ScreenLike for KeysScreen {
     fn refresh(&mut self) {}
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
+        #[allow(deprecated)]
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Identity Keys");
 

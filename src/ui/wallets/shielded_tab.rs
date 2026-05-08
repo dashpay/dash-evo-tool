@@ -317,7 +317,7 @@ impl ShieldedTabView {
 
     /// Render the shielded tab content.
     pub fn ui(&mut self, ui: &mut Ui) -> AppAction {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         let mut action = self.tick();
 
         // Messages

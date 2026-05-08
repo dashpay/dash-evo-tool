@@ -1659,7 +1659,7 @@ impl MasternodeListDiffScreen {
                 PendingTask::QrInfoWithDmls => "Fetching QR info + DMLs…",
                 PendingTask::ChainLocks => "Fetching chain locks…",
             };
-            let text_primary = DashColors::text_primary(ui.ctx().style().visuals.dark_mode);
+            let text_primary = DashColors::text_primary(ui.style().visuals.dark_mode);
             ui.colored_label(text_primary, label);
         });
         ui.add_space(6.0);
@@ -2553,7 +2553,7 @@ impl MasternodeListDiffScreen {
 
     /// Render the details for the selected quorum
     fn render_quorum_details(&mut self, ui: &mut Ui) {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         let border = DashColors::border(dark_mode);
         ui.heading("Quorum Details");
         if let Some(dml_key) = self.selection.selected_dml_diff_key {
@@ -2764,7 +2764,7 @@ impl MasternodeListDiffScreen {
 
     /// Render the details for the selected Masternode
     fn render_mn_details(&mut self, ui: &mut Ui) {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         let border = DashColors::border(dark_mode);
         ui.heading("Masternode Details");
 

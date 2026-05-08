@@ -177,7 +177,7 @@ impl TokensScreen {
             if let Some(token_info) = self.all_known_tokens.get(&token_id).cloned() {
                 let mut is_open = true;
                 let mut close_popup = false;
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
 
                 let window_response = egui::Window::new("Token Configuration Details")
                     .resizable(true)
@@ -195,7 +195,7 @@ impl TokensScreen {
                                     self.render_token_info_popup_content(ui, &token_info);
 
                                     ui.separator();
-                                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                    let dark_mode = ui.style().visuals.dark_mode;
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
@@ -230,7 +230,7 @@ impl TokensScreen {
     }
     fn render_no_owned_tokens(&mut self, ui: &mut Ui) -> AppAction {
         let mut app_action = AppAction::None;
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         Frame::group(ui.style())
             .fill(ui.visuals().extreme_bg_color)
@@ -623,7 +623,7 @@ impl TokensScreen {
                             }
 
                             ui.separator();
-                            let dark_mode = ui.ctx().style().visuals.dark_mode;
+                            let dark_mode = ui.style().visuals.dark_mode;
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
@@ -673,7 +673,7 @@ impl TokensScreen {
         let mut pos = 0;
         let mut action = AppAction::None;
         ui.spacing_mut().item_spacing.x = 5.0;
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         if range.contains(&pos) {
             if itb.available_actions.can_transfer {

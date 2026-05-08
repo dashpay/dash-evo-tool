@@ -4,7 +4,7 @@ use crate::model::feature_gate::FeatureGate;
 use crate::ui::RootScreenType;
 use crate::ui::dashpay::dashpay_screen::DashPaySubscreen;
 use crate::ui::theme::{DashColors, Shadow, Shape, Spacing, Typography};
-use egui::{Context, Frame, Margin, RichText, SidePanel};
+use egui::{Context, Frame, Margin, RichText, Panel};
 use std::sync::Arc;
 
 pub fn add_dashpay_subscreen_chooser_panel(
@@ -13,7 +13,7 @@ pub fn add_dashpay_subscreen_chooser_panel(
     current_subscreen: DashPaySubscreen,
 ) -> AppAction {
     let mut action = AppAction::None;
-    let dark_mode = ctx.style().visuals.dark_mode;
+    let dark_mode = ctx.global_style().visuals.dark_mode;
 
     // Build subscreens list - Payment History is experimental (developer mode only)
     let mut subscreens = vec![DashPaySubscreen::Profile, DashPaySubscreen::Contacts];
@@ -26,7 +26,8 @@ pub fn add_dashpay_subscreen_chooser_panel(
 
     let active_screen = current_subscreen;
 
-    SidePanel::left("dashpay_subscreen_chooser_panel")
+    #[allow(deprecated)]
+    Panel::left("dashpay_subscreen_chooser_panel")
         .default_width(270.0)
         .frame(
             Frame::new()

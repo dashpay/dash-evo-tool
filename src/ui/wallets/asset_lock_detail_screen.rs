@@ -73,7 +73,7 @@ impl AssetLockDetailScreen {
     }
 
     fn render_asset_lock_info(&mut self, ui: &mut Ui) {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         if let Some((tx, address, amount, _islock, proof)) = self.get_asset_lock_data() {
             Frame::new()
@@ -299,7 +299,7 @@ impl ScreenLike for AssetLockDetailScreen {
 
         action |= island_central_panel(ctx, |ui| {
             let mut inner_action = AppAction::None;
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
 
             // Header with Back button (outside ScrollArea to avoid scrollbar overlap)
             ui.horizontal(|ui| {
@@ -362,7 +362,7 @@ impl ScreenLike for AssetLockDetailScreen {
 
                     let mut close_popup = false;
                     ui.horizontal(|ui| {
-                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        let dark_mode = ui.style().visuals.dark_mode;
                         if ComponentStyles::add_primary_button(ui, "Copy").clicked()
                             && let Some(ref wif) = self.private_key_wif
                         {

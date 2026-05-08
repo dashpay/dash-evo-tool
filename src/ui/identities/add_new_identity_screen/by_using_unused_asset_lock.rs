@@ -114,7 +114,7 @@ impl AddNewIdentityScreen {
             .fee_estimator()
             .estimate_identity_create(key_count);
         ui.add_space(10.0);
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         egui::Frame::new()
             .fill(DashColors::surface(dark_mode))
             .inner_margin(egui::Margin::symmetric(10, 8))

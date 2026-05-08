@@ -51,7 +51,7 @@ impl TopUpIdentityScreen {
         let fee_estimator = self.app_context.fee_estimator();
         let estimated_fee = fee_estimator.estimate_identity_topup();
 
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         Frame::new()
             .fill(DashColors::surface(dark_mode))
             .inner_margin(Margin::symmetric(10, 8))

@@ -3,7 +3,7 @@ use crate::context::AppContext;
 use crate::ui::RootScreenType;
 use crate::ui::theme::DashColors;
 use eframe::epaint::Margin;
-use egui::{Context, Frame, Image, SidePanel, TextureHandle};
+use egui::{Context, Frame, Image, Panel, TextureHandle};
 use rust_embed::RustEmbed;
 use std::sync::Arc;
 use tracing::error;
@@ -65,11 +65,12 @@ pub fn add_left_panel(
 
     let panel_width = 50.0 + 20.0; // Button width (50) + 10px margin on each side (20 total)
 
-    SidePanel::left("left_panel")
+    #[allow(deprecated)]
+    Panel::left("left_panel")
         .default_width(panel_width)
         .frame(
             Frame::new()
-                .fill(ctx.style().visuals.panel_fill)
+                .fill(ctx.global_style().visuals.panel_fill)
                 .inner_margin(Margin {
                     left: 10,
                     right: 10,

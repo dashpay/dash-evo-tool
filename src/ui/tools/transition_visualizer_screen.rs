@@ -153,7 +153,7 @@ impl TransitionVisualizerScreen {
     fn show_input_field(&mut self, ui: &mut Ui) {
         ui.label("Enter hex, base64, or comma-separated integers for state transition:");
         ui.add_space(5.0);
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         let response = ui.add(
             TextEdit::multiline(&mut self.input_data)
                 .desired_rows(6)
@@ -207,7 +207,7 @@ impl TransitionVisualizerScreen {
         ScrollArea::vertical().show(ui, |ui| {
             if let Some(ref json) = self.parsed_json {
                 ui.add_space(5.0);
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
                 ui.add(
                     TextEdit::multiline(&mut json.clone())
                         .desired_rows(10)

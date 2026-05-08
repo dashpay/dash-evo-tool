@@ -54,7 +54,7 @@ impl StyledButton {
     }
 
     pub fn show(self, ui: &mut Ui) -> Response {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         let (text_color, bg_color, _hover_color, stroke) = match self.variant {
             ButtonVariant::Primary => (
@@ -163,7 +163,7 @@ impl StyledCard {
     // }
 
     pub fn show<R>(self, ui: &mut Ui, content: impl FnOnce(&mut Ui) -> R) -> R {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         let stroke = if self.show_border {
             Stroke::new(1.0, DashColors::border(dark_mode))
@@ -301,7 +301,7 @@ impl GlassCard {
     }
 
     pub fn show<R>(self, ui: &mut Ui, content: impl FnOnce(&mut Ui) -> R) -> R {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         egui::Frame::new()
             .fill(DashColors::glass_white(dark_mode))
@@ -361,7 +361,7 @@ impl HeroSection {
             .shadow(Shadow::glow())
             .show(ui, |ui| {
                 ui.vertical_centered(|ui| {
-                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    let dark_mode = ui.style().visuals.dark_mode;
                     ui.label(
                         RichText::new(self.title)
                             .font(Typography::heading_large())
@@ -535,10 +535,15 @@ pub fn styled_text_edit_multiline(text: &mut String, dark_mode: bool) -> TextEdi
         .background_color(DashColors::input_background(dark_mode))
 }
 
-/// Helper function to create an island-style central panel
+/// Helper function to create an island-style central panel.
+///
+/// Wraps `CentralPanel::show(ctx, ...)`, which is deprecated in egui 0.34 in
+/// favor of `show_inside(ui, ...)`. The deprecation is silenced at this single
+/// boundary so the screen layer can keep its `&Context`-driven `ui()` shape.
 pub fn island_central_panel<R>(ctx: &Context, content: impl FnOnce(&mut Ui) -> R) -> R {
-    let dark_mode = ctx.style().visuals.dark_mode;
+    let dark_mode = ctx.global_style().visuals.dark_mode;
 
+    #[allow(deprecated)]
     CentralPanel::default()
         .frame(
             Frame::new()

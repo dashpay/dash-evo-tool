@@ -424,7 +424,7 @@ impl ContactDetailsScreen {
                         ui.label("No payment history with this contact");
                     } else {
                         for payment in &self.payment_history {
-                            let dark_mode = ui.ctx().style().visuals.dark_mode;
+                            let dark_mode = ui.style().visuals.dark_mode;
                             ui.horizontal(|ui| {
                                 // Direction indicator
                                 if payment.is_incoming {
@@ -554,6 +554,7 @@ impl ScreenLike for ContactDetailsScreen {
 
         // Show info popup if requested
         if self.show_info_popup {
+            #[allow(deprecated)]
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
                 .show(ctx, |ui| {

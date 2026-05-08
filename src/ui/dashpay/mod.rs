@@ -53,7 +53,7 @@ use std::sync::Arc;
 /// Renders a styled "No Identities Loaded" card for DashPay screens.
 /// Returns an AppAction if the user clicks the "Load Identity" button.
 pub fn render_no_identities_card(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAction {
-    let dark_mode = ui.ctx().style().visuals.dark_mode;
+    let dark_mode = ui.style().visuals.dark_mode;
 
     Frame::group(ui.style())
         .fill(ui.visuals().extreme_bg_color)

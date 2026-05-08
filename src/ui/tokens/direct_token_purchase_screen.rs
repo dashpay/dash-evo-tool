@@ -176,7 +176,7 @@ impl PurchaseTokenScreen {
         if let Some(pricing_schedule) = &self.fetched_pricing_schedule {
             ui.add_space(5.0);
             ui.label("Current pricing:");
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
 
             match pricing_schedule {
                 TokenPricingSchedule::SinglePrice(price_per_unit) => {
@@ -421,7 +421,7 @@ impl ScreenLike for PurchaseTokenScreen {
         action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
 
         island_central_panel(ctx, |ui| {
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
             // If we are in the "Complete" status, just show success screen
             if self.status == PurchaseTokensStatus::Complete {
                 action |= self.show_success_screen(ui);
@@ -570,7 +570,7 @@ impl ScreenLike for PurchaseTokenScreen {
 
                 // Display estimated fee before action button
                 let estimated_fee = self.app_context.fee_estimator().estimate_token_transition();
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
                 egui::Frame::new()
                     .fill(DashColors::surface(dark_mode))
                     .inner_margin(egui::Margin::symmetric(10, 8))

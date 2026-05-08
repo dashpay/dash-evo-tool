@@ -292,7 +292,7 @@ impl ContactsList {
 
     pub fn render(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         // Identity selector
         let identities = self
@@ -703,7 +703,7 @@ impl ContactsList {
             .id_salt("contacts_list_scroll")
             .show(ui, |ui| {
                 if self.contacts.is_empty() {
-                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    let dark_mode = ui.style().visuals.dark_mode;
                     Frame::group(ui.style())
                         .fill(ui.visuals().extreme_bg_color)
                         .corner_radius(5.0)
@@ -738,7 +738,7 @@ impl ContactsList {
                             });
                         });
                 } else if filtered_contacts.is_empty() {
-                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    let dark_mode = ui.style().visuals.dark_mode;
                     Frame::group(ui.style())
                         .fill(ui.visuals().extreme_bg_color)
                         .corner_radius(5.0)
@@ -878,7 +878,7 @@ impl ContactsList {
                                         .cloned()
                                         .unwrap_or_else(|| "Unknown".to_string());
 
-                                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                    let dark_mode = ui.style().visuals.dark_mode;
 
                                     // Add hidden indicator to name if contact is hidden
                                     let display_name = if contact.is_hidden {
@@ -1013,6 +1013,7 @@ impl ScreenLike for ContactsList {
 
     fn ui(&mut self, ctx: &egui::Context) -> AppAction {
         let mut action = AppAction::None;
+        #[allow(deprecated)]
         egui::CentralPanel::default().show(ctx, |ui| {
             action = self.render(ui);
         });

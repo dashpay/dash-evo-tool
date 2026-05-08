@@ -215,7 +215,7 @@ impl ContactProfileViewerScreen {
 
     pub fn render(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         // Fetch profile on first render if not already done
         if !self.initial_fetch_done && !self.loading {
@@ -654,6 +654,7 @@ impl ScreenLike for ContactProfileViewerScreen {
 
         // Show info popup if requested
         if let Some((title, text)) = self.show_info_popup {
+            #[allow(deprecated)]
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
                 .show(ctx, |ui| {

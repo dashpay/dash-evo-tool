@@ -92,7 +92,7 @@ impl ScreenLike for KeyInfoScreen {
             let inner_action = AppAction::None;
 
             ScrollArea::vertical().show(ui, |ui| {
-                let text_primary = DashColors::text_primary(ui.ctx().style().visuals.dark_mode);
+                let text_primary = DashColors::text_primary(ui.style().visuals.dark_mode);
                 ui.heading(RichText::new("Key Information").color(text_primary));
                 ui.add_space(10.0);
 
@@ -577,6 +577,7 @@ impl ScreenLike for KeyInfoScreen {
 
         // Show the popup window if `show_popup` is true
         if let Some(show_pop_up_info_text) = self.show_pop_up_info.clone() {
+            #[allow(deprecated)]
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
                 .show(ctx, |ui| {
@@ -692,7 +693,7 @@ impl KeyInfoScreen {
     }
 
     fn render_sign_input(&mut self, ui: &mut egui::Ui) {
-        let text_primary = DashColors::text_primary(ui.ctx().style().visuals.dark_mode);
+        let text_primary = DashColors::text_primary(ui.style().visuals.dark_mode);
         ui.add_space(10.0);
         ui.separator();
         ui.add_space(10.0);

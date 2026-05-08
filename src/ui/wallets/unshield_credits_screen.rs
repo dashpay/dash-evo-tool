@@ -122,7 +122,7 @@ impl ScreenLike for UnshieldCreditsScreen {
             ));
             ui.add_space(15.0);
 
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
 
             // Error/success messages
             if let Some(err) = &self.error_message {

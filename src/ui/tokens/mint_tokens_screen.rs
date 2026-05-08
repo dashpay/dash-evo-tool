@@ -432,7 +432,7 @@ impl ScreenLike for MintTokensScreen {
         action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
 
         let central_panel_action = island_central_panel(ctx, |ui| {
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
 
             // If we are in the "Complete" status, just show success screen
             if self.status == MintTokensStatus::Complete {
@@ -658,7 +658,7 @@ impl ScreenLike for MintTokensScreen {
                 // Display estimated fee before action button
                 let estimated_fee = fee_estimator.estimate_token_transition();
                 ui.add_space(10.0);
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
                 egui::Frame::new()
                     .fill(DashColors::surface(dark_mode))
                     .inner_margin(egui::Margin::symmetric(10, 8))

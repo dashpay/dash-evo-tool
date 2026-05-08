@@ -366,7 +366,7 @@ impl ImportMnemonicScreen {
 
                             let mut word = self.seed_phrase_words[i].clone();
 
-                            let dark_mode = ui.ctx().style().visuals.dark_mode;
+                            let dark_mode = ui.style().visuals.dark_mode;
                             let response = ui.add_sized(
                                 Vec2::new(input_width, 20.0),
                                 egui::TextEdit::singleline(&mut word)

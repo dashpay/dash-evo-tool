@@ -596,7 +596,7 @@ fn render_banner(
     details_expanded: &mut bool,
     banner_key: u64,
 ) -> bool {
-    let dark_mode = ui.ctx().style().visuals.dark_mode;
+    let dark_mode = ui.style().visuals.dark_mode;
     let fg_color = DashColors::message_color(message_type, dark_mode);
     let bg_color = DashColors::message_background_color(message_type, dark_mode);
     let secondary_color = DashColors::text_secondary(dark_mode);

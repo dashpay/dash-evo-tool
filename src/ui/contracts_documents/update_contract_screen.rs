@@ -171,7 +171,7 @@ impl UpdateDataContractScreen {
         ScrollArea::vertical()
             .max_height(ui.available_height() - 100.0)
             .show(ui, |ui| {
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
                 let response = ui.add(
                     TextEdit::multiline(&mut self.contract_json_input)
                         .desired_rows(6)
@@ -235,7 +235,7 @@ impl UpdateDataContractScreen {
                     .contract_update;
                 let estimated_fee = base_fee.saturating_add(registration_fee);
 
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
                 Frame::new()
                     .fill(DashColors::surface(dark_mode))
                     .inner_margin(Margin::symmetric(10, 8))

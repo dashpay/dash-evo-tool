@@ -335,7 +335,7 @@ impl ProofLogScreen {
 
                 // Create the layout job with highlighted hashes
                 let font_id = TextStyle::Monospace.resolve(ui.style());
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
                 let text_primary = DashColors::text_primary(dark_mode);
                 let border = DashColors::border(dark_mode);
                 let layout_job =

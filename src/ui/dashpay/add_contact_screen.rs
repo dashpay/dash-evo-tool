@@ -241,7 +241,7 @@ impl ScreenLike for AddContactScreen {
             }
 
             ui.group(|ui| {
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
                 ui.label(
                     RichText::new("From (Sender)")
                         .strong()
@@ -323,7 +323,7 @@ impl ScreenLike for AddContactScreen {
             // Loading indicator
             if matches!(self.status, ContactRequestStatus::Sending) {
                 ui.horizontal(|ui| {
-                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    let dark_mode = ui.style().visuals.dark_mode;
                     ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
                     ui.label(
                         RichText::new("Sending contact request...")
@@ -335,7 +335,7 @@ impl ScreenLike for AddContactScreen {
 
             // Show error if any
             if let ContactRequestStatus::Error(ref err) = self.status {
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
                 let error_color = if dark_mode {
                     DashColors::ERROR
                 } else {
@@ -400,7 +400,7 @@ impl ScreenLike for AddContactScreen {
             // Contact request form
             ScrollArea::vertical().show(ui, |ui| {
                 ui.group(|ui| {
-                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    let dark_mode = ui.style().visuals.dark_mode;
                     ui.label(
                         RichText::new("To (Recipient)")
                             .strong()
@@ -443,7 +443,7 @@ impl ScreenLike for AddContactScreen {
                 // Show summary if all required fields are filled
                 if self.selected_identity.is_some() && !self.username_or_id.is_empty() {
                     ui.group(|ui| {
-                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        let dark_mode = ui.style().visuals.dark_mode;
                         ui.label(
                             RichText::new("Request Summary")
                                 .strong()
@@ -494,7 +494,7 @@ impl ScreenLike for AddContactScreen {
                 }
 
                 ui.group(|ui| {
-                    let _dark_mode = ui.ctx().style().visuals.dark_mode;
+                    let _dark_mode = ui.style().visuals.dark_mode;
 
                     // Check wallet lock status before showing send button
                     let wallet_locked = if let Some(wallet) = &self.selected_wallet {
@@ -576,6 +576,7 @@ impl ScreenLike for AddContactScreen {
 
         // Show info popup if requested
         if self.show_info_popup {
+            #[allow(deprecated)]
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
                 .show(ctx, |ui| {

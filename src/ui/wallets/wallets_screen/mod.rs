@@ -659,7 +659,7 @@ impl WalletsBalancesScreen {
                         });
 
                     ui.colored_label(
-                        DashColors::text_primary(ui.ctx().style().visuals.dark_mode),
+                        DashColors::text_primary(ui.style().visuals.dark_mode),
                         format!(" Balance: {}", Self::format_dash(current_balance)),
                     );
                 });
@@ -705,7 +705,7 @@ impl WalletsBalancesScreen {
 
                     // Buttons for single key wallet
                     if let Some(wallet_arc) = single_key_wallet_opt {
-                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        let dark_mode = ui.style().visuals.dark_mode;
                         let (key_hash, alias) = wallet_arc
                             .read()
                             .ok()
@@ -814,7 +814,7 @@ impl WalletsBalancesScreen {
     }
 
     fn render_remove_wallet_button(&mut self, ui: &mut Ui) {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         if let Some(selected_wallet) = &self.selected_wallet {
             let remove_button =
@@ -920,7 +920,7 @@ impl WalletsBalancesScreen {
                 ui.vertical_centered(|ui| {
                     // Heading
                     ui.add_space(5.0);
-                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    let dark_mode = ui.style().visuals.dark_mode;
                     ui.label(
                         RichText::new("No Wallets Loaded")
                             .strong()
@@ -1070,7 +1070,7 @@ impl WalletsBalancesScreen {
     fn render_action_buttons(&mut self, ui: &mut Ui, ctx: &Context) -> AppAction {
         let mut action = AppAction::None;
         ui.add_space(10.0);
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         ui.horizontal(|ui| {
             if ui
                 .button(
@@ -1294,7 +1294,7 @@ impl WalletsBalancesScreen {
     /// Render the Accounts & Addresses tab bar and content.
     fn render_account_tabs(&mut self, ui: &mut Ui, summaries: &[AccountSummary]) -> AppAction {
         let mut action = AppAction::None;
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         ui.add_space(14.0);
 
@@ -1491,7 +1491,7 @@ impl WalletsBalancesScreen {
         summaries: &[AccountSummary],
     ) -> AppAction {
         let mut action = AppAction::None;
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         let sections = self.system_tab_sections(summaries);
 
         ui.horizontal(|ui| {
@@ -1607,7 +1607,7 @@ impl WalletsBalancesScreen {
             return;
         }
 
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         let show_fee = self.app_context.is_developer_mode();
         let mut order: Vec<usize> = relevant_indices.clone();
         order.sort_by(|&a, &b| {
@@ -1751,7 +1751,7 @@ impl WalletsBalancesScreen {
 
     /// Render a compact sync status panel showing Core, Platform, and Shielded sync progress.
     fn render_sync_status(&self, ui: &mut Ui) {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         let secondary = DashColors::text_secondary(dark_mode);
         let syncing_color = DashColors::DASH_BLUE;
         let sz = 12.0;
@@ -1956,7 +1956,7 @@ impl WalletsBalancesScreen {
 
     /// Render the total balance label only (used in the left column of the header).
     fn render_balance_total(&self, ui: &mut Ui, wallet: &Wallet) {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         let core_balance = wallet.total_balance_duffs();
         let platform_balance = Self::platform_balance_duffs(wallet);
         let shielded_balance = self.shielded_balance_duffs(&wallet.seed_hash());
@@ -1972,7 +1972,7 @@ impl WalletsBalancesScreen {
 
     /// Render the collapsible breakdown detail (used in the right column of the header).
     fn render_balance_breakdown_detail(&mut self, ui: &mut Ui, wallet: &Wallet) {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         let core_balance = wallet.total_balance_duffs();
         let platform_balance = Self::platform_balance_duffs(wallet);
         let shielded_balance = self.shielded_balance_duffs(&wallet.seed_hash());
@@ -2014,7 +2014,7 @@ impl WalletsBalancesScreen {
             )
         };
         let mut action = AppAction::None;
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         let detail_width = ui.available_width();
         ui.horizontal(|row| {
@@ -2304,7 +2304,7 @@ impl ScreenLike for WalletsBalancesScreen {
 
         action |= island_central_panel(ctx, |ui| {
             let mut inner_action = AppAction::None;
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
 
             // Message display is handled by the global MessageBanner
 
@@ -2358,7 +2358,7 @@ impl ScreenLike for WalletsBalancesScreen {
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .show(ctx, |ui| {
-                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    let dark_mode = ui.style().visuals.dark_mode;
                     ui.vertical(|ui| {
                         ui.label("Enter new wallet name:");
                         ui.add_space(5.0);
@@ -2547,7 +2547,7 @@ impl ScreenLike for WalletsBalancesScreen {
                         ui.add_space(10.0);
 
                         ui.horizontal(|ui| {
-                            let dark_mode = ui.ctx().style().visuals.dark_mode;
+                            let dark_mode = ui.style().visuals.dark_mode;
                             if ComponentStyles::add_secondary_button(ui, "Cancel", dark_mode)
                                 .clicked()
                             {

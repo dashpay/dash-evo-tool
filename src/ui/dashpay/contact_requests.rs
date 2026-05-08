@@ -606,7 +606,7 @@ impl ContactRequests {
         // Show structured error with action buttons if any
         let mut dismiss_error = false;
         if let Some(err) = &self.error {
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
             let error_color = if dark_mode {
                 DashColors::ERROR
             } else {
@@ -648,7 +648,7 @@ impl ContactRequests {
         }
 
         // Tabs
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         ui.horizontal(|ui| {
             let incoming_tab = egui::Button::new(RichText::new("Incoming").color(
                 if self.active_tab == RequestTab::Incoming {
@@ -715,7 +715,7 @@ impl ContactRequests {
                 } else {
                     ScrollArea::vertical().id_salt("incoming_requests_scroll").show(ui, |ui| {
                     if self.incoming_requests.is_empty() {
-                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        let dark_mode = ui.style().visuals.dark_mode;
                         Frame::group(ui.style())
                             .fill(ui.visuals().extreme_bg_color)
                             .corner_radius(5.0)
@@ -748,7 +748,7 @@ impl ContactRequests {
 
                                     ui.vertical(|ui| {
                                         use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-                                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                        let dark_mode = ui.style().visuals.dark_mode;
 
                                         // Display name or username or identity ID
                                         let name = request
@@ -897,7 +897,7 @@ impl ContactRequests {
                 } else {
                     ScrollArea::vertical().id_salt("outgoing_requests_scroll").show(ui, |ui| {
                     if self.outgoing_requests.is_empty() {
-                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        let dark_mode = ui.style().visuals.dark_mode;
                         Frame::group(ui.style())
                             .fill(ui.visuals().extreme_bg_color)
                             .corner_radius(5.0)
@@ -940,7 +940,7 @@ impl ContactRequests {
 
                                     ui.vertical(|ui| {
                                         use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-                                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                        let dark_mode = ui.style().visuals.dark_mode;
 
                                         // For outgoing requests, show display name or username or truncated ID
                                         let id_str = request.to_identity.to_string(Encoding::Base58);
@@ -991,7 +991,7 @@ impl ContactRequests {
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
-                                            let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                            let dark_mode = ui.style().visuals.dark_mode;
                                             ui.label(
                                                 RichText::new("Cannot be cancelled once sent")
                                                     .small()
@@ -1025,6 +1025,7 @@ impl ScreenLike for ContactRequests {
     fn ui(&mut self, ctx: &egui::Context) -> AppAction {
         // Create a simple central panel for rendering
         let mut action = AppAction::None;
+        #[allow(deprecated)]
         egui::CentralPanel::default().show(ctx, |ui| {
             action = self.render(ui);
         });

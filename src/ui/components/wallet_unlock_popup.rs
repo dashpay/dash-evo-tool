@@ -109,14 +109,14 @@ impl WalletUnlockPopup {
                     spread: 0,
                     color: DashColors::popup_shadow(),
                 },
-                fill: ctx.style().visuals.window_fill,
+                fill: ctx.global_style().visuals.window_fill,
                 stroke: egui::Stroke::new(1.0, DashColors::popup_border_glow()),
             })
             .show(ctx, |ui| {
                 ui.set_min_width(350.0);
                 ui.set_max_width(400.0);
 
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
 
                 // Title/description
                 ui.label(

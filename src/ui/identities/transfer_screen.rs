@@ -181,7 +181,7 @@ impl TransferScreen {
     }
 
     fn render_destination_type_selector(&mut self, ui: &mut Ui) {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         // Colors for selected/unselected states
         let selected_fill = DashColors::DASH_BLUE;
@@ -745,7 +745,7 @@ impl ScreenLike for TransferScreen {
                 };
 
                 // Display estimated fee
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
                 Frame::group(ui.style())
                     .fill(DashColors::surface(dark_mode))
                     .inner_margin(Margin::symmetric(10, 8))

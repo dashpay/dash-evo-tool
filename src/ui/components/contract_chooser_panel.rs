@@ -15,7 +15,7 @@ use dash_sdk::dpp::data_contract::{
 };
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::serialization::PlatformSerializableWithPlatformVersion;
-use egui::{Color32, Context as EguiContext, Frame, Margin, RichText, SidePanel};
+use egui::{Color32, Context as EguiContext, Frame, Margin, RichText, Panel};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::error;
@@ -55,7 +55,7 @@ fn render_collapsing_header(
     indent_level: usize,
 ) -> bool {
     let text = text.into();
-    let dark_mode = ui.ctx().style().visuals.dark_mode;
+    let dark_mode = ui.style().visuals.dark_mode;
     let indent = indent_level as f32 * 16.0;
 
     let mut clicked = false;
@@ -178,9 +178,10 @@ pub fn add_contract_chooser_panel(
         })
         .collect();
 
-    let dark_mode = ctx.style().visuals.dark_mode;
+    let dark_mode = ctx.global_style().visuals.dark_mode;
 
-    SidePanel::left("contract_chooser_panel")
+    #[allow(deprecated)]
+    Panel::left("contract_chooser_panel")
         // Let the user resize this panel horizontally
         .resizable(true)
         .default_width(270.0)

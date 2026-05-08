@@ -120,7 +120,7 @@ impl ContactInfoEditorScreen {
 
     pub fn render(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         // Header with Back button and title
         ui.horizontal(|ui| {
@@ -265,7 +265,7 @@ impl ContactInfoEditorScreen {
                 } else {
                     // Action buttons
                     ui.horizontal(|ui| {
-                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        let dark_mode = ui.style().visuals.dark_mode;
 
                         if self.saving {
                             ui.spinner();
@@ -341,6 +341,7 @@ impl ScreenLike for ContactInfoEditorScreen {
 
         // Show info popup if requested
         if self.show_info_popup {
+            #[allow(deprecated)]
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
                 .show(ctx, |ui| {

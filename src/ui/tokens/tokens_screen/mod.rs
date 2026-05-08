@@ -331,7 +331,7 @@ impl ChangeControlRulesUI {
                             self.authorized_identity.get_or_insert_with(String::new);
                             if let Some(ref mut id_str) = self.authorized_identity {
                                 ui.horizontal(|ui| {
-                                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                    let dark_mode = ui.style().visuals.dark_mode;
                                     ui.add_sized(
                                         [300.0, 22.0],
                                         TextEdit::singleline(id_str)
@@ -414,7 +414,7 @@ impl ChangeControlRulesUI {
                             self.admin_identity.get_or_insert_with(String::new);
                             if let Some(ref mut id_str) = self.admin_identity {
                                 ui.horizontal(|ui| {
-                                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                    let dark_mode = ui.style().visuals.dark_mode;
                                     ui.add_sized(
                                         [300.0, 22.0],
                                         TextEdit::singleline(id_str)
@@ -580,7 +580,7 @@ impl ChangeControlRulesUI {
                             self.authorized_identity.get_or_insert_with(String::new);
                             if let Some(ref mut id_str) = self.authorized_identity {
                                 ui.horizontal(|ui| {
-                                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                    let dark_mode = ui.style().visuals.dark_mode;
                                     ui.add_sized(
                                         [300.0, 22.0],
                                         TextEdit::singleline(id_str)
@@ -663,7 +663,7 @@ impl ChangeControlRulesUI {
                             self.admin_identity.get_or_insert_with(String::new);
                             if let Some(ref mut id_str) = self.admin_identity {
                                 ui.horizontal(|ui| {
-                                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                    let dark_mode = ui.style().visuals.dark_mode;
                                     ui.add_sized(
                                         [300.0, 22.0],
                                         TextEdit::singleline(id_str)

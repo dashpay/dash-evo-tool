@@ -241,7 +241,7 @@ impl NetworkChooserScreen {
     /// Render the simplified settings interface
     fn render_network_table(&mut self, ui: &mut Ui) -> AppAction {
         let mut app_action = AppAction::None;
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         // Connection Settings Card
         StyledCard::new().padding(24.0).show(ui, |ui| {
@@ -1501,7 +1501,7 @@ impl NetworkChooserScreen {
             }
         }
 
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         egui::Frame::new()
             .fill(DashColors::glass_white(dark_mode))
@@ -1605,7 +1605,7 @@ impl NetworkChooserScreen {
         snapshot: &SpvStatusSnapshot,
     ) -> AppAction {
         let mut action = AppAction::None;
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         ui.label(
             egui::RichText::new("SPV Maintenance")

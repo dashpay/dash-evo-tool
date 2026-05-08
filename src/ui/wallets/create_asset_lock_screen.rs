@@ -278,7 +278,7 @@ impl ScreenLike for CreateAssetLockScreen {
 
         action |= island_central_panel(ctx, |ui| {
             let mut inner_action = AppAction::None;
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
 
             // Header with Back button and Advanced Options checkbox (outside ScrollArea)
             ui.horizontal(|ui| {

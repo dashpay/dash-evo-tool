@@ -507,7 +507,7 @@ impl ShieldScreen {
 
     /// Render the batch progress UI (used for Platform batch mode).
     fn render_batch_progress(&mut self, ui: &mut egui::Ui, ctx: &Context, action: &mut AppAction) {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         let stages_snapshot = self.batch_stages.clone();
         if let Some(stages) = stages_snapshot {
             let lock_stage = |s: &Arc<Mutex<ShieldStage>>| -> ShieldStage {
@@ -682,7 +682,7 @@ impl ScreenLike for ShieldScreen {
         }
 
         island_central_panel(ctx, |ui| {
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
             ui.heading("Shield");
             ui.add_space(10.0);
             ui.label("Move funds from a platform or core address into the shielded pool.");

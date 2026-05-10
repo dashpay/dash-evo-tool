@@ -45,9 +45,14 @@ use std::collections::BTreeMap;
 use std::ops::BitOrAssign;
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
+#[cfg(feature = "testing")]
+use std::time::UNIX_EPOCH;
 use std::time::{Duration, Instant, SystemTime};
 use std::vec;
 use tokio::sync::mpsc as tokiompsc;
+
+#[cfg(feature = "testing")]
+const TESTING_USE_REAL_DATA_DIR_ENV: &str = "DASH_EVO_TOOL_TESTING_USE_REAL_DATA_DIR";
 
 #[derive(Debug, From)]
 pub enum TaskResult {
@@ -215,7 +220,7 @@ impl AppState {
     /// from reading or writing the production database.
     #[cfg(feature = "testing")]
     pub fn new(ctx: egui::Context) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let data_dir = app_user_data_dir_path()?;
+        let data_dir = Self::testing_data_dir()?;
         ensure_data_dir_exists(&data_dir)?;
         ensure_env_file(&data_dir);
         let db = Arc::new(
@@ -223,6 +228,30 @@ impl AppState {
                 .map_err(|e| format!("Failed to create test database: {}", e))?,
         );
         Self::new_inner(ctx, db, data_dir)
+    }
+
+    #[cfg(feature = "testing")]
+    fn testing_data_dir() -> Result<PathBuf, std::io::Error> {
+        if std::env::var(TESTING_USE_REAL_DATA_DIR_ENV)
+            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+            .unwrap_or(false)
+        {
+            return app_user_data_dir_path();
+        }
+
+        if let Ok(dir) = std::env::var("DASH_EVO_DATA_DIR") {
+            return Ok(PathBuf::from(dir));
+        }
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(std::io::Error::other)?
+            .as_nanos();
+        Ok(std::env::temp_dir().join(format!(
+            "dash-evo-tool-testing-{}-{}",
+            std::process::id(),
+            unique
+        )))
     }
 
     fn new_inner(
@@ -1256,6 +1285,8 @@ impl App for AppState {
             // Handle the result on the main thread
             match task_result {
                 TaskResult::Success(message) => {
+                    #[cfg(any(test, feature = "testing"))]
+                    MessageBanner::clear_last_global_task_error_category(ctx);
                     let unboxed_message = *message;
                     match unboxed_message {
                         BackendTaskSuccessResult::None => {}
@@ -1342,12 +1373,17 @@ impl App for AppState {
                     }
                 }
                 TaskResult::Error(TaskError::MustRetry(msg)) => {
+                    #[cfg(any(test, feature = "testing"))]
+                    MessageBanner::clear_last_global_task_error_category(ctx);
                     MessageBanner::set_global(ctx, &msg, MessageType::Success);
                     self.visible_screen_mut()
                         .display_message(&msg, MessageType::Success);
                     self.visible_screen_mut().refresh();
                 }
                 TaskResult::Error(err) => {
+                    #[cfg(any(test, feature = "testing"))]
+                    MessageBanner::set_last_global_task_error_category(ctx, err.test_category());
+
                     // Let the screen handle specific error types first.
                     // If handled, skip the generic error banner.
                     let handled = self.visible_screen_mut().display_task_error(&err);
@@ -1369,6 +1405,8 @@ impl App for AppState {
                     }
                 }
                 TaskResult::Refresh => {
+                    #[cfg(any(test, feature = "testing"))]
+                    MessageBanner::clear_last_global_task_error_category(ctx);
                     self.visible_screen_mut().refresh();
                 }
             }

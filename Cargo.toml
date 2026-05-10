@@ -118,6 +118,17 @@ winres = "0.1"
 [[test]]
 name = "frontend-e2e"
 path = "tests/frontend-e2e/main.rs"
+required-features = ["testing"]
+
+[[test]]
+name = "backend-e2e"
+path = "tests/backend-e2e/main.rs"
+required-features = ["testing"]
+
+[[test]]
+name = "kittest"
+path = "tests/kittest/main.rs"
+required-features = ["testing"]
 
 # Keep full debuginfo for our code, but only line tables for dependencies.
 # This shrinks DWARF from ~790MB to a fraction, letting gimli (std's backtrace
@@ -131,4 +142,3 @@ check-cfg = ["cfg(tokio_unstable)", "cfg(feature, values(\"testing\", \"mcp\", \
 
 [lints.clippy]
 uninlined_format_args = "allow"
-

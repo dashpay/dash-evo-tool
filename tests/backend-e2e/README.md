@@ -13,10 +13,10 @@ All tests are marked `#[ignore]` to prevent them from running during normal
 
 ```bash
 # Run all backend E2E tests
-cargo test --test backend-e2e --all-features -- --ignored --nocapture
+cargo test --test backend-e2e --all-features -- --ignored --nocapture --test-threads=1
 
 # Run a single test
-cargo test --test backend-e2e --all-features -- --ignored --nocapture test_create_identity
+cargo test --test backend-e2e --all-features -- --ignored --nocapture --test-threads=1 test_create_identity
 ```
 
 **Required flags:**
@@ -27,6 +27,7 @@ cargo test --test backend-e2e --all-features -- --ignored --nocapture test_creat
 | `--all-features` | Enables feature-gated dependencies |
 | `--ignored` | Tests are `#[ignore]` by default |
 | `--nocapture` | Shows progress output (SPV sync, balance polling) |
+| `--test-threads=1` | Serializes tests; the shared backend harness is not safe to run concurrently |
 
 ### Environment variables
 

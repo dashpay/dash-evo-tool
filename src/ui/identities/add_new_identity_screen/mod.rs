@@ -108,21 +108,25 @@ pub struct AddNewIdentityScreen {
 
 impl AddNewIdentityScreen {
     /// Returns a reference to the step state.
+    #[cfg(any(test, feature = "testing"))]
     pub fn step(&self) -> Arc<RwLock<WalletFundedScreenStep>> {
         self.step.clone()
     }
 
     /// Returns a reference to the funding method state.
+    #[cfg(any(test, feature = "testing"))]
     pub fn funding_method(&self) -> Arc<RwLock<FundingMethod>> {
         self.funding_method.clone()
     }
 
     /// Sets the funding amount.
+    #[cfg(any(test, feature = "testing"))]
     pub fn set_funding_amount(&mut self, amount: Option<Amount>) {
         self.funding_amount = amount;
     }
 
     /// Sets the alias input.
+    #[cfg(any(test, feature = "testing"))]
     pub fn set_alias_input(&mut self, alias: String) {
         self.alias_input = alias;
     }

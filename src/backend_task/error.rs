@@ -20,6 +20,31 @@ use thiserror::Error;
 /// Dash Core RPC error code: wallet file not specified (multi-wallet node).
 const RPC_WALLET_NOT_SPECIFIED: i32 = -19;
 
+#[cfg(any(test, feature = "testing"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskErrorCategory {
+    Network,
+    TransientPlatform,
+    Validation,
+    Fatal,
+}
+
+#[cfg(any(test, feature = "testing"))]
+impl TaskErrorCategory {
+    pub fn is_retryable(self) -> bool {
+        matches!(self, Self::Network | Self::TransientPlatform)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Network => "NETWORK",
+            Self::TransientPlatform => "TRANSIENT",
+            Self::Validation => "VALIDATION",
+            Self::Fatal => "FATAL",
+        }
+    }
+}
+
 /// App-level error envelope for backend tasks.
 #[derive(Debug, Error)]
 pub enum TaskError {
@@ -906,6 +931,146 @@ pub enum TaskError {
     /// Nullifier sync failed.
     #[error("Could not check for spent shielded notes. Please check your connection and retry.")]
     ShieldedNullifierSyncFailed { detail: String },
+}
+
+#[cfg(any(test, feature = "testing"))]
+impl TaskError {
+    pub fn test_category(&self) -> TaskErrorCategory {
+        match self {
+            TaskError::CoreRpcConnectionFailed { .. }
+            | TaskError::DapiUnavailable { .. }
+            | TaskError::DapiTimeout { .. }
+            | TaskError::DapiConnectionRefused { .. }
+            | TaskError::DapiNoAddresses { .. }
+            | TaskError::DapiAllAddressesExhausted { .. }
+            | TaskError::SdkTimeout { .. }
+            | TaskError::DapiStaleNode { .. }
+            | TaskError::DpnsFetchError { .. }
+            | TaskError::PlatformFetchError { .. }
+            | TaskError::PlatformInfoFetchError { .. }
+            | TaskError::TokenQueryError { .. }
+            | TaskError::SpvBroadcastFailed { .. }
+            | TaskError::UtxoUpdateFailed { .. }
+            | TaskError::ShieldedBroadcastFailed { .. }
+            | TaskError::ShieldedSyncFailed { .. }
+            | TaskError::ShieldedNullifierSyncFailed { .. } => TaskErrorCategory::Network,
+
+            TaskError::MustRetry(_)
+            | TaskError::GroveStark(_)
+            | TaskError::ProofError { .. }
+            | TaskError::ConfirmationTimeout
+            | TaskError::DapiInternalError { .. }
+            | TaskError::DapiDeadlineExceeded { .. }
+            | TaskError::DapiResourceExhausted { .. }
+            | TaskError::IdentityNonceNotFound { .. }
+            | TaskError::SdkError { .. }
+            | TaskError::WalletAddressProviderSetupFailed { .. }
+            | TaskError::AssetLockTransactionNotFoundInDatabase
+            | TaskError::AssetLockInstantLockExpiredNotChainlocked
+            | TaskError::AssetLockInstantLockProofInvalid { .. }
+            | TaskError::DashCoreStartError { .. }
+            | TaskError::SpvStartFailed { .. }
+            | TaskError::AssetLockTransactionBuildFailed { .. }
+            | TaskError::ShieldedNonceMismatch { .. }
+            | TaskError::ShieldedInsufficientPoolNotes { .. }
+            | TaskError::ShieldedAssetLockTimeout => TaskErrorCategory::TransientPlatform,
+
+            TaskError::CoreWalletNotConfigured
+            | TaskError::CoreRpcAuthFailed
+            | TaskError::WalletNotFound
+            | TaskError::WalletLocked
+            | TaskError::DocumentNotFound
+            | TaskError::AssetLockExpired { .. }
+            | TaskError::AssetLockAddressNotFound
+            | TaskError::IdentityNotFound
+            | TaskError::DuplicateIdentityPublicKey { .. }
+            | TaskError::DuplicateIdentityPublicKeyId { .. }
+            | TaskError::IdentityPublicKeyContractBoundsConflict { .. }
+            | TaskError::IdentityNotFoundLocally
+            | TaskError::DapiAccessDenied { .. }
+            | TaskError::PlatformRejected { .. }
+            | TaskError::PlatformAlreadyExists { .. }
+            | TaskError::OperationCancelled { .. }
+            | TaskError::IdentityNonceOverflow { .. }
+            | TaskError::AddressConversionFailed { .. }
+            | TaskError::CreditCalculationOverflow { .. }
+            | TaskError::ChangeAddressUnavailable { .. }
+            | TaskError::AssetLockNoCreditOutputs
+            | TaskError::AssetLockAddressDerivationFailed { .. }
+            | TaskError::TokenPositionNotFound { .. }
+            | TaskError::DataContractNotFound
+            | TaskError::IdentifierParsingError { .. }
+            | TaskError::IdentityCreationError { .. }
+            | TaskError::InvalidPrivateKey { .. }
+            | TaskError::AssetLockNotValidForWallet
+            | TaskError::IdentityInsufficientBalance { .. }
+            | TaskError::AssetLockOutPointInsufficientBalance { .. }
+            | TaskError::OperationNotAvailableOnNetwork { .. }
+            | TaskError::MasterKeyNotFound
+            | TaskError::ContractSchemaMismatch { .. }
+            | TaskError::InvalidCoreWalletName { .. }
+            | TaskError::NoCoreWalletsLoaded
+            | TaskError::WalletKeyLookupFailed { .. }
+            | TaskError::WalletAddressDerivationFailed { .. }
+            | TaskError::InvalidRecipientAddress { .. }
+            | TaskError::AddressNetworkMismatch { .. }
+            | TaskError::NoUtxosAvailable
+            | TaskError::InsufficientFunds { .. }
+            | TaskError::OutputTooSmallForFee { .. }
+            | TaskError::WalletInfoUnavailable
+            | TaskError::MissingBip44Account { .. }
+            | TaskError::ChangeAddressDerivation { .. }
+            | TaskError::NoIdentitiesFound
+            | TaskError::NotContractOwner { .. }
+            | TaskError::NotDesignatedTokenRecipient { .. }
+            | TaskError::NotEvonode
+            | TaskError::WalletIdentityNotFound { .. }
+            | TaskError::WalletIdentityKeyMismatch
+            | TaskError::NoMatchingWalletKeys
+            | TaskError::WalletKeyDerivationPathNotFound
+            | TaskError::NoWalletIdentitiesFound { .. }
+            | TaskError::KeyInputValidationFailed { .. }
+            | TaskError::PublicKeyMapBuildFailed { .. }
+            | TaskError::WalletInfoDeterminationFailed { .. }
+            | TaskError::NoVotingIdentity { .. }
+            | TaskError::NoDocumentSigningKey
+            | TaskError::WalletAlreadyImported
+            | TaskError::ShieldedNoUnspentNotes
+            | TaskError::ShieldedInsufficientBalance { .. }
+            | TaskError::PlatformAddressNotFound
+            | TaskError::ShieldedMerkleWitnessUnavailable { .. }
+            | TaskError::ShieldedFeeExceedsBalance { .. }
+            | TaskError::ShieldedAddressInsufficientFunds { .. }
+            | TaskError::ShieldedInvalidRecipientAddress => TaskErrorCategory::Validation,
+
+            TaskError::Spv(_)
+            | TaskError::DashPay(_)
+            | TaskError::Config(_)
+            | TaskError::Wallet(_)
+            | TaskError::Database { .. }
+            | TaskError::JoinError(_)
+            | TaskError::CoreRpc { .. }
+            | TaskError::LockPoisoned { .. }
+            | TaskError::WalletUtxoReloadFailed { .. }
+            | TaskError::WalletBalanceRecalculationFailed { .. }
+            | TaskError::P2P(_)
+            | TaskError::IdentityUpdateTransitionError { .. }
+            | TaskError::InternalSendError
+            | TaskError::SerializationError { .. }
+            | TaskError::WithdrawalDocumentParsingError { .. }
+            | TaskError::EncryptionError { .. }
+            | TaskError::WalletDatabasePersistError
+            | TaskError::SighashComputationFailed { .. }
+            | TaskError::WalletPaymentFailed { .. }
+            | TaskError::WalletKeyDerivationFailed { .. }
+            | TaskError::ShieldedTransitionBuildFailed { .. }
+            | TaskError::ShieldedAnchorMismatch { .. }
+            | TaskError::ShieldedTreeUpdateFailed { .. }
+            | TaskError::SdkInitializationFailed { .. }
+            | TaskError::RpcProviderCreationFailed { .. }
+            | TaskError::SpvClearDataFailed { .. } => TaskErrorCategory::Fatal,
+        }
+    }
 }
 
 /// Returns `true` when a `dashcore_rpc::Error` wraps an HTTP 401 response,

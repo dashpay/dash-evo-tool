@@ -50,8 +50,7 @@ fn run_dpns_lookup(harness: &mut Harness<'_, AppState>) {
                     || h.query_by_label_contains("Finished loading").is_some()
                     || h.query_by_label_contains("not found").is_some()
                     || h.query_by_label_contains("No identity").is_some()
-                    || h.query_by_label_contains("Error").is_some()
-                    || h.query_by_label_contains("Dismiss").is_some()
+                    || classify_error(h).is_some()
             },
             PLATFORM_READ_TIMEOUT,
             POLL_STEPS,
@@ -84,8 +83,7 @@ fn run_dpns_lookup(harness: &mut Harness<'_, AppState>) {
             || harness
                 .query_by_label_contains("No identity found")
                 .is_some();
-        let has_error = harness.query_by_label_contains("Error").is_some()
-            || harness.query_by_label_contains("Dismiss").is_some();
+        let has_error = classify_error(harness).is_some();
 
         if is_success {
             println!("  DPNS lookup succeeded: name \"quantum\" found");
@@ -115,11 +113,11 @@ fn run_contract_fetch(harness: &mut Harness<'_, AppState>) {
         // Enter the DPNS contract ID
         type_into_text_input(harness, 0, DPNS_CONTRACT_ID);
 
-        // Click "Fetch Contracts" submit button
+        // Click the primary submit button, skipping the breadcrumb with the same label.
         harness
-            .query_by_label("Fetch Contracts")
-            .or_else(|| harness.query_by_label_contains("Fetch Contracts"))
-            .expect("'Fetch Contracts' button must be visible on Add Contracts screen")
+            .query_all_by_role_and_label(egui::accesskit::Role::Button, "Add Contracts")
+            .nth(1)
+            .expect("'Add Contracts' submit button must be visible on Add Contracts screen")
             .click();
         harness.run_steps(SETTLE_STEPS);
 
@@ -128,8 +126,7 @@ fn run_contract_fetch(harness: &mut Harness<'_, AppState>) {
             harness,
             |h| {
                 h.query_by_label_contains("Successfully queried").is_some()
-                    || h.query_by_label_contains("Error").is_some()
-                    || h.query_by_label_contains("Dismiss").is_some()
+                    || classify_error(h).is_some()
                     || h.query_by_label_contains("not found").is_some()
             },
             CONTRACT_FETCH_TIMEOUT,

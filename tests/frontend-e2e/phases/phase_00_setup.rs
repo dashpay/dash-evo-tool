@@ -1,8 +1,7 @@
 use crate::helpers::context::{TestContext, seed_hash_prefix};
 use crate::helpers::harness::*;
 use dash_evo_tool::app::AppState;
-use dash_evo_tool::model::wallet::Wallet;
-use dash_evo_tool::model::wallet::WalletSeedHash;
+use dash_evo_tool::model::wallet::{ClosedKeyItem, Wallet, WalletSeedHash};
 use dash_evo_tool::spv::CoreBackendMode;
 use dash_evo_tool::spv::SpvStatus;
 use dash_sdk::dash_spv::sync::ProgressPercentage;
@@ -13,15 +12,24 @@ use std::time::{Duration, Instant};
 
 const E2E_WALLET_ALIAS: &str = "E2E Test Wallet";
 
-/// Check if a wallet with the E2E alias already exists that we can reuse.
-/// Only matches by exact alias -- never grabs unrelated wallets.
-fn find_existing_e2e_wallet(harness: &Harness<'_, AppState>) -> Option<WalletSeedHash> {
+/// Compute the deterministic wallet fingerprint used for E2E wallet reuse.
+fn e2e_wallet_seed_hash(words: &[&str]) -> WalletSeedHash {
+    let phrase = words.join(" ");
+    let mnemonic = bip39::Mnemonic::parse_normalized(&phrase)
+        .unwrap_or_else(|e| panic!("Invalid mnemonic: {}", e));
+    ClosedKeyItem::compute_seed_hash(&mnemonic.to_seed(""))
+}
+
+/// Reuse only the wallet whose seed hash matches the configured E2E mnemonic.
+fn find_existing_e2e_wallet(
+    harness: &Harness<'_, AppState>,
+    expected_seed_hash: &WalletSeedHash,
+) -> Option<WalletSeedHash> {
     let app_ctx = harness.state().current_app_context();
     let wallets = app_ctx.wallets().read().unwrap();
     wallets
-        .iter()
-        .find(|(_, wallet)| wallet.read().unwrap().alias.as_deref() == Some(E2E_WALLET_ALIAS))
-        .map(|(seed_hash, _)| *seed_hash)
+        .contains_key(expected_seed_hash)
+        .then_some(*expected_seed_hash)
 }
 
 /// Import a wallet through the AppContext/model layer (no UI screen setters).
@@ -95,6 +103,7 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
         words.len()
     );
     println!("  Mnemonic: {} words", words.len());
+    let expected_seed_hash = e2e_wallet_seed_hash(&words);
 
     // 2. Dismiss welcome screen
     dismiss_welcome_screen(harness);
@@ -108,7 +117,7 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
     println!("  Switched to testnet (SPV mode)");
 
     // 4. Check if wallet already exists (idempotent re-run support)
-    if let Some(seed_hash) = find_existing_e2e_wallet(harness) {
+    if let Some(seed_hash) = find_existing_e2e_wallet(harness, &expected_seed_hash) {
         ctx.wallet_seed_hash = Some(seed_hash);
         ctx.wallet_reused = true;
         println!(

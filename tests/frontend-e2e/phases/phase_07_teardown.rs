@@ -44,7 +44,9 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &TestContext) {
         }
     }
 
-    if let Some(seed_hash) = &ctx.wallet_seed_hash {
+    if ctx.wallet_reused {
+        println!("  Reused wallet preserved in database");
+    } else if let Some(seed_hash) = &ctx.wallet_seed_hash {
         match app_ctx.remove_wallet(seed_hash) {
             Ok(()) => println!("  Removed test wallet from database"),
             Err(e) => println!("  Warning: could not remove test wallet: {}", e),

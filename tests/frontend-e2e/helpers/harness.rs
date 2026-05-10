@@ -1,6 +1,8 @@
 use crate::helpers::context::TestContext;
 use dash_evo_tool::app::AppState;
+use dash_evo_tool::backend_task::error::TaskErrorCategory;
 use dash_evo_tool::spv::SpvStatus;
+use dash_evo_tool::ui::components::MessageBanner;
 use dash_evo_tool::ui::{RootScreenType, ScreenLike, ScreenType};
 use dash_sdk::dash_spv::sync::ProgressPercentage;
 use egui_kittest::Harness;
@@ -31,80 +33,8 @@ pub const POLL_STEPS: usize = 30;
 pub const SETTLE_STEPS: usize = 10;
 // ─── Error classification ────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ErrorCategory {
-    Network,
-    Validation,
-    TransientPlatform,
-    Fatal,
-}
-
-impl ErrorCategory {
-    pub fn is_retryable(self) -> bool {
-        matches!(self, Self::Network | Self::TransientPlatform)
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Network => "NETWORK",
-            Self::Validation => "VALIDATION",
-            Self::TransientPlatform => "TRANSIENT",
-            Self::Fatal => "FATAL",
-        }
-    }
-}
-
-/// Error classification patterns, checked in priority order (first match wins).
-/// Network patterns are checked before Validation/TransientPlatform so that
-/// ambiguous tokens like "invalid connection" classify as Network (retryable)
-/// rather than Validation (fatal). This biases toward retry for E2E resilience.
-const ERROR_PATTERNS: &[(ErrorCategory, &[&str])] = &[
-    (
-        ErrorCategory::Network,
-        &[
-            "timeout",
-            "connection",
-            "network",
-            "unavailable",
-            "timed out",
-            "refused",
-            "unreachable",
-        ],
-    ),
-    (
-        ErrorCategory::Validation,
-        &[
-            "invalid",
-            "insufficient",
-            "already exists",
-            "not found",
-            "duplicate",
-            "too low",
-            "too high",
-        ],
-    ),
-    (
-        ErrorCategory::TransientPlatform,
-        &[
-            "consensus",
-            "retry",
-            "temporarily",
-            "try again",
-            "rate limit",
-            "internal error",
-            "transport error",
-        ],
-    ),
-];
-
-pub fn classify_error(error_text: &str) -> ErrorCategory {
-    let lower = error_text.to_lowercase();
-    for (category, patterns) in ERROR_PATTERNS {
-        if patterns.iter().any(|p| lower.contains(p)) {
-            return *category;
-        }
-    }
-    ErrorCategory::Fatal
+pub fn classify_error(harness: &Harness<'_, AppState>) -> Option<TaskErrorCategory> {
+    MessageBanner::last_global_task_error_category(harness.state().current_app_context().egui_ctx())
 }
 
 // ─── Harness creation ────────────────────────────────────────────────────────
@@ -170,6 +100,7 @@ pub fn dismiss_welcome_screen(harness: &mut Harness<'_, AppState>) {
 /// Calls `refresh_on_arrival()` on the target screen so it picks up new
 /// wallets, identities, etc. that were added after initial screen creation.
 pub fn navigate_to_screen(harness: &mut Harness<'_, AppState>, screen: RootScreenType) {
+    clear_global_banners(harness);
     harness.state_mut().selected_main_screen = screen;
     harness.state_mut().screen_stack.clear();
     harness
@@ -221,6 +152,7 @@ pub fn verify_sidebar_label_and_navigate(
 /// Creates the screen from the current AppContext and runs a few frames
 /// to let the UI settle.
 pub fn push_screen(harness: &mut Harness<'_, AppState>, screen_type: ScreenType) {
+    clear_global_banners(harness);
     let app_ctx = harness.state().current_app_context();
     let screen = screen_type.create_screen(app_ctx);
     harness.state_mut().screen_stack.push(screen);
@@ -282,6 +214,11 @@ pub fn dismiss_if_present(harness: &mut Harness<'_, AppState>) {
     }
 }
 
+pub fn clear_global_banners(harness: &mut Harness<'_, AppState>) {
+    MessageBanner::clear_all_global(harness.state().current_app_context().egui_ctx());
+    harness.run_steps(SETTLE_STEPS);
+}
+
 /// Capture the text of a visible error label.
 /// Searches multiple common error patterns and extracts the node text.
 /// Returns None if no error label is visible.
@@ -316,7 +253,7 @@ pub fn handle_retry_error(
     pop_screen: bool,
 ) {
     let error_text = capture_error_text(harness).unwrap_or_else(|| "unknown error".to_string());
-    let category = classify_error(&error_text);
+    let category = classify_error(harness).unwrap_or(TaskErrorCategory::Fatal);
     println!(
         "  {} error (attempt {}/{}): [{}] {}",
         operation,
@@ -337,6 +274,7 @@ pub fn handle_retry_error(
     if pop_screen {
         harness.state_mut().screen_stack.pop();
     }
+    clear_global_banners(harness);
     harness.run_steps(SETTLE_STEPS * attempt as usize);
 
     if attempt == PLATFORM_MAX_RETRIES {
@@ -411,7 +349,9 @@ pub fn emergency_cleanup(harness: &Harness<'_, AppState>, ctx: &TestContext) {
         }
     }
 
-    if let Some(seed_hash) = &ctx.wallet_seed_hash {
+    if ctx.wallet_reused {
+        eprintln!("  Emergency: reused wallet preserved");
+    } else if let Some(seed_hash) = &ctx.wallet_seed_hash {
         match app_ctx.remove_wallet(seed_hash) {
             Ok(()) => eprintln!("  Emergency: wallet removed"),
             Err(e) => eprintln!("  Emergency: wallet removal failed: {}", e),

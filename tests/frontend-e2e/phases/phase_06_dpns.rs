@@ -96,7 +96,7 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
             harness,
             |h| {
                 h.query_by_label_contains("DPNS Name Registered!").is_some()
-                    || h.query_by_label_contains("Error").is_some()
+                    || classify_error(h).is_some()
             },
             DPNS_REGISTRATION_TIMEOUT,
             POLL_STEPS,

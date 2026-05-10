@@ -2,6 +2,7 @@ use crate::helpers::context::TestContext;
 use crate::helpers::harness::*;
 use dash_evo_tool::app::AppState;
 use dash_evo_tool::model::amount::Amount;
+use dash_evo_tool::ui::components::MessageBanner;
 use dash_evo_tool::ui::identities::add_new_identity_screen::{AddNewIdentityScreen, FundingMethod};
 use dash_evo_tool::ui::identities::funding_common::WalletFundedScreenStep;
 use dash_evo_tool::ui::{MessageType, Screen, ScreenLike, ScreenType};
@@ -75,21 +76,24 @@ fn run_validation_tests(harness: &mut Harness<'_, AppState>) {
 
     // ─── Sub-test C: Error message display and dismiss ──────────────────
     push_screen(harness, ScreenType::AddNewIdentity);
-    with_identity_screen_mut(harness, |screen| {
-        screen.display_message("Simulated identity error", MessageType::Error);
-    });
+    clear_global_banners(harness);
+    MessageBanner::set_global(
+        harness.state().current_app_context().egui_ctx(),
+        "Simulated identity error",
+        MessageType::Error,
+    );
     harness.run_steps(POLL_STEPS);
     assert!(
         harness
-            .query_by_label_contains("Error registering identity")
+            .query_by_label_contains("Simulated identity error")
             .is_some(),
-        "Error message must be visible after display_message(Error)"
+        "Error banner must be visible after MessageBanner::set_global(Error)"
     );
     dismiss_if_present(harness);
     harness.run_steps(SETTLE_STEPS);
     assert!(
         harness
-            .query_by_label_contains("Error registering identity")
+            .query_by_label_contains("Simulated identity error")
             .is_none(),
         "Error message must be gone after dismiss"
     );

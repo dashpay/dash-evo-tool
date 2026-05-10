@@ -1,3 +1,5 @@
+#[cfg(any(test, feature = "testing"))]
+use crate::backend_task::error::TaskErrorCategory;
 use crate::ui::MessageType;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::theme::{DashColors, Shape, Spacing, Typography};
@@ -11,6 +13,8 @@ const DEFAULT_AUTO_DISMISS_SHORT: Duration = Duration::from_secs(5);
 const DEFAULT_AUTO_DISMISS_LONG: Duration = Duration::from_secs(9);
 const MAX_BANNERS: usize = 5;
 const BANNER_STATE_ID: &str = "__global_message_banner";
+#[cfg(any(test, feature = "testing"))]
+const TASK_ERROR_CATEGORY_STATE_ID: &str = "__global_message_banner_task_error_category";
 /// Maximum height for the expanded details section before scrolling.
 const DETAILS_MAX_HEIGHT: f32 = 120.0;
 
@@ -446,6 +450,8 @@ impl MessageBanner {
     /// stale messages from the previous context should not persist.
     pub fn clear_all_global(ctx: &egui::Context) {
         set_banners(ctx, vec![]);
+        #[cfg(any(test, feature = "testing"))]
+        clear_last_global_task_error_category(ctx);
     }
 
     /// Returns whether any global banner messages exist.
@@ -465,6 +471,21 @@ impl MessageBanner {
         // expanded flags) even when no banners are removed.
         banners.retain_mut(|b| process_banner(ui, b) == BannerStatus::Visible);
         set_banners(ui.ctx(), banners);
+    }
+
+    #[cfg(any(test, feature = "testing"))]
+    pub fn set_last_global_task_error_category(ctx: &egui::Context, category: TaskErrorCategory) {
+        ctx.data_mut(|d| d.insert_temp(egui::Id::new(TASK_ERROR_CATEGORY_STATE_ID), category));
+    }
+
+    #[cfg(any(test, feature = "testing"))]
+    pub fn last_global_task_error_category(ctx: &egui::Context) -> Option<TaskErrorCategory> {
+        ctx.data(|d| d.get_temp::<TaskErrorCategory>(egui::Id::new(TASK_ERROR_CATEGORY_STATE_ID)))
+    }
+
+    #[cfg(any(test, feature = "testing"))]
+    pub fn clear_last_global_task_error_category(ctx: &egui::Context) {
+        clear_last_global_task_error_category(ctx);
     }
 }
 
@@ -730,6 +751,11 @@ fn set_banners(ctx: &egui::Context, banners: Vec<BannerState>) {
     } else {
         ctx.data_mut(|d| d.insert_temp(egui::Id::new(BANNER_STATE_ID), banners));
     }
+}
+
+#[cfg(any(test, feature = "testing"))]
+fn clear_last_global_task_error_category(ctx: &egui::Context) {
+    ctx.data_mut(|d| d.remove::<TaskErrorCategory>(egui::Id::new(TASK_ERROR_CATEGORY_STATE_ID)));
 }
 
 fn icon_for_type(message_type: MessageType) -> &'static str {

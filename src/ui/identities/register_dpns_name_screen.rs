@@ -66,6 +66,7 @@ pub struct RegisterDpnsNameScreen {
 
 impl RegisterDpnsNameScreen {
     /// Set the DPNS name input.
+    #[cfg(any(test, feature = "testing"))]
     pub fn set_name_input(&mut self, name: String) {
         self.name_input = name;
     }

@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use dash_evo_tool::backend_task::error::TaskErrorCategory;
 use dash_evo_tool::ui::MessageType;
 use dash_evo_tool::ui::components::{BannerStatus, Component, ComponentResponse, MessageBanner};
 use egui_kittest::Harness;
@@ -37,6 +38,30 @@ fn test_global_set_and_has() {
 
     // Handle should now report None for elapsed (banner gone)
     assert!(handle.elapsed().is_none());
+}
+
+#[test]
+fn test_testing_error_category_round_trip() {
+    let ctx = egui::Context::default();
+
+    MessageBanner::set_last_global_task_error_category(&ctx, TaskErrorCategory::Network);
+
+    assert_eq!(
+        MessageBanner::last_global_task_error_category(&ctx),
+        Some(TaskErrorCategory::Network)
+    );
+}
+
+#[test]
+fn test_clear_all_global_clears_testing_error_category() {
+    let ctx = egui::Context::default();
+
+    MessageBanner::set_global(&ctx, "Something went wrong", MessageType::Error);
+    MessageBanner::set_last_global_task_error_category(&ctx, TaskErrorCategory::Validation);
+    MessageBanner::clear_all_global(&ctx);
+
+    assert!(!MessageBanner::has_global(&ctx));
+    assert_eq!(MessageBanner::last_global_task_error_category(&ctx), None);
 }
 
 /// Test the per-instance set_message / has_message / clear cycle.

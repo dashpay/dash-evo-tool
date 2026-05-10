@@ -21,6 +21,11 @@ pub fn run(harness: &mut Harness<'_, AppState>, _ctx: &mut TestContext) {
             println!("  Navigated to token search screen");
         }
 
+        if let Some(clear_btn) = harness.query_by_label("Clear") {
+            clear_btn.click();
+            harness.run_steps(SETTLE_STEPS);
+        }
+
         type_into_text_input(harness, 0, "dash");
         println!(
             "  Typed 'dash' in search input (attempt {}/{})",
@@ -39,7 +44,7 @@ pub fn run(harness: &mut Harness<'_, AppState>, _ctx: &mut TestContext) {
             |h| {
                 h.query_by_label_contains("Contract ID").is_some()
                     || h.query_by_label_contains("No tokens match").is_some()
-                    || h.query_by_label_contains("Error").is_some()
+                    || classify_error(h).is_some()
             },
             TOKEN_SEARCH_TIMEOUT,
             POLL_STEPS,
@@ -64,7 +69,7 @@ pub fn run(harness: &mut Harness<'_, AppState>, _ctx: &mut TestContext) {
 
         let has_results = harness.query_by_label_contains("Contract ID").is_some();
         let no_results = harness.query_by_label_contains("No tokens match").is_some();
-        let has_error = harness.query_by_label_contains("Error").is_some();
+        let has_error = classify_error(harness).is_some();
 
         if has_results {
             println!("  Token search returned results for 'dash'");

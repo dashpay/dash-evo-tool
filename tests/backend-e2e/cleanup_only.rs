@@ -5,7 +5,7 @@
 //! initialization so it can be run as a dedicated CI step after the E2E suite.
 //!
 //! ```bash
-//! cargo test --test backend-e2e --all-features -- --ignored --nocapture cleanup_only
+//! cargo test --test backend-e2e --all-features -- --ignored --nocapture --test-threads=1 cleanup_only
 //! ```
 
 use crate::framework::harness::ctx;

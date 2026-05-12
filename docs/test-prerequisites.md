@@ -72,12 +72,23 @@ Place the following `.env` file at the DET configuration path:
 | Platform | Path |
 |---|---|
 | **macOS** | `~/Library/Application Support/Dash-Evo-Tool/.env` |
-| **Linux** | `~/.config/Dash-Evo-Tool/.env` |
+| **Linux** | `~/.config/dash-evo-tool/.env` |
 | **Windows** | `C:\Users\<User>\AppData\Roaming\Dash-Evo-Tool\.env` |
 
 ```env
+# Mainnet context is required at startup even though smoke tests stay on Testnet.
+# Supply placeholder values and leave Testnet as the active smoke-test network.
+MAINNET_dapi_addresses=https://mainnet-dapi.example:443
+MAINNET_show_in_ui=true
+MAINNET_core_host=127.0.0.1
+MAINNET_core_rpc_port=9998
+MAINNET_core_rpc_user=user
+MAINNET_core_rpc_password=password
+MAINNET_insight_api_url=https://insight.dash.org/insight-api
+
 # Testnet SPV mode — DAPI addresses plus placeholder Core RPC fields
 TESTNET_dapi_addresses=https://34.214.48.68:1443,https://52.12.176.90:1443,https://52.34.144.50:1443,https://44.240.98.102:1443,https://54.201.32.131:1443,https://52.10.229.11:1443,https://52.13.132.146:1443,https://52.40.219.41:1443,https://54.149.33.167:1443,https://35.164.23.245:1443,https://52.33.28.47:1443,https://52.43.13.92:1443,https://52.89.154.48:1443,https://52.24.124.162:1443,https://35.85.21.179:1443,https://54.187.14.232:1443,https://54.68.235.201:1443,https://52.13.250.182:1443
+TESTNET_show_in_ui=true
 
 # Core RPC fields are structurally required by NetworkConfig even in SPV mode,
 # but are not actively used at runtime. Supply placeholder values.
@@ -89,7 +100,7 @@ TESTNET_insight_api_url=https://insight.testnet.networks.dash.org:3002/insight-a
 # core_zmq_endpoint is optional and can be omitted
 ```
 
-> **Note:** While Core RPC settings (`core_host`, `core_rpc_port`, `core_rpc_user`, `core_rpc_password`, `insight_api_url`) are not actively used in SPV mode, the `NetworkConfig` struct requires them to be present during deserialization. Use placeholder values as shown above. The `core_zmq_endpoint` field is optional (`Option<String>`) and may be omitted.
+> **Note:** DET requires a valid `MAINNET_*` config at startup and uses `TESTNET_*` for this smoke suite. While Core RPC settings (`core_host`, `core_rpc_port`, `core_rpc_user`, `core_rpc_password`, `insight_api_url`) are not actively used in SPV mode, the `NetworkConfig` struct requires them to be present during deserialization. Use placeholder values as shown above. The `core_zmq_endpoint` field is optional (`Option<String>`) and may be omitted.
 
 ## Enabling Developer Mode and SPV Backend
 
@@ -99,18 +110,18 @@ SPV backend selection is only visible when Developer Mode is enabled.
 
 1. Click **"Settings"** in the left sidebar.
 2. Check the **"Developer mode"** checkbox.
-3. Click **"Save"**.
+3. Verify the **"Connection Type"** dropdown appears in **"Connection Settings"** on **Settings (Network Chooser)**.
+4. Click **"Wallets"** and verify additional developer UI appears (for example, address tables and refresh controls).
 
 ### Select SPV Backend
 
-The backend mode selector is in the **Network Chooser** screen, not in Settings.
+The backend mode selector is part of **Settings (Network Chooser)**.
 
-1. Open the **Network Chooser** screen (displayed at startup or via the network selector).
+1. Open **"Settings"** in the left sidebar.
 2. Locate the **"Connection Settings"** section.
 3. Open the **"Connection Type"** dropdown (visible only when Developer Mode is enabled).
-4. Select **"SPV"**.
-5. Confirm the selection and connect.
-6. Wait for the connection status indicator (top bar) to turn green, indicating SPV sync is complete.
+4. Select **"SPV Client"**.
+5. Wait for the connection status indicator (top bar) to turn green, indicating SPV sync is complete.
 
 > **Note:** The selected backend mode is stored in the `Settings` struct as `core_backend_mode` and persisted to the local database. Developer Mode also reveals additional UI elements (address tables, refresh controls). This is expected.
 
@@ -128,7 +139,7 @@ The bank wallet is a pre-funded, password-protected testnet wallet. It distribut
 
 1. Click **"Wallets"** in the left sidebar.
 2. Click **"Import Wallet"** in the top-right corner.
-3. Under **"Select what you want to import"**, choose **"Seed Phrase (HD Wallet)"**.
+3. The mnemonic seed phrase import screen is shown by default.
 4. Under **"Select the seed phrase length"**, choose the word count matching `${BANK_MNEMONIC}` (e.g., 24).
 5. Enter each word of `${BANK_MNEMONIC}` into the numbered fields (**"1:"**, **"2:"**, ... **"24:"**).
 6. In the **"Name:"** field, type `Bank`.
@@ -145,9 +156,10 @@ If bank wallet funds are spread across multiple UTXOs, consolidate to address in
 3. Click **"Send"**.
 4. In the **"To:"** field, paste `${BANK_ADDRESS_0}`.
 5. Click **"Max"** to set the maximum sendable amount.
-6. A **"Fee Confirmation Required"** dialog appears — review the fee and total.
-7. Confirm the transaction.
-8. Wait for at least one confirmation.
+6. Click **"Send"** in the form.
+7. A **"Fee Confirmation Required"** dialog appears — review the fee and total.
+8. Confirm the transaction.
+9. Wait for at least one confirmation.
 
 ### Obtaining Test Dash
 
@@ -160,7 +172,7 @@ Some tests require a clean DET state with no existing data:
 1. Quit DET completely.
 2. Remove or rename the data directory:
    - **macOS:** `~/Library/Application Support/Dash-Evo-Tool/`
-   - **Linux:** `~/.config/Dash-Evo-Tool/`
+   - **Linux:** `~/.config/dash-evo-tool/`
    - **Windows:** `C:\Users\<User>\AppData\Roaming\Dash-Evo-Tool\`
 3. Re-create the `.env` file (see [.env Configuration](#env-configuration) above).
 4. Re-launch DET.

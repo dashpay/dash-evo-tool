@@ -330,6 +330,7 @@ impl MessageBanner {
         message_type: MessageType,
     ) -> BannerHandle {
         let text = text.to_string();
+        maybe_set_default_global_task_error_category(ctx, message_type);
         let mut banners = get_banners(ctx);
         if let Some(existing) = banners.iter_mut().find(|b| b.text == text) {
             // Same text already displayed: update message_type if it changed,
@@ -757,6 +758,18 @@ fn set_banners(ctx: &egui::Context, banners: Vec<BannerState>) {
 fn clear_last_global_task_error_category(ctx: &egui::Context) {
     ctx.data_mut(|d| d.remove::<TaskErrorCategory>(egui::Id::new(TASK_ERROR_CATEGORY_STATE_ID)));
 }
+
+#[cfg(any(test, feature = "testing"))]
+fn maybe_set_default_global_task_error_category(ctx: &egui::Context, message_type: MessageType) {
+    if message_type == MessageType::Error
+        && MessageBanner::last_global_task_error_category(ctx).is_none()
+    {
+        MessageBanner::set_last_global_task_error_category(ctx, TaskErrorCategory::Fatal);
+    }
+}
+
+#[cfg(not(any(test, feature = "testing")))]
+fn maybe_set_default_global_task_error_category(_: &egui::Context, _: MessageType) {}
 
 fn icon_for_type(message_type: MessageType) -> &'static str {
     match message_type {

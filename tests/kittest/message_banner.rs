@@ -53,6 +53,45 @@ fn test_testing_error_category_round_trip() {
 }
 
 #[test]
+fn test_direct_error_set_global_defaults_testing_category_to_fatal() {
+    let ctx = egui::Context::default();
+
+    MessageBanner::set_global(&ctx, "Something went wrong", MessageType::Error);
+
+    assert_eq!(
+        MessageBanner::last_global_task_error_category(&ctx),
+        Some(TaskErrorCategory::Fatal)
+    );
+}
+
+#[test]
+fn test_direct_error_set_global_preserves_existing_testing_category() {
+    let ctx = egui::Context::default();
+
+    MessageBanner::set_last_global_task_error_category(&ctx, TaskErrorCategory::Validation);
+    MessageBanner::set_global(&ctx, "Something went wrong", MessageType::Error);
+
+    assert_eq!(
+        MessageBanner::last_global_task_error_category(&ctx),
+        Some(TaskErrorCategory::Validation)
+    );
+}
+
+#[test]
+fn test_non_error_set_global_does_not_create_testing_category() {
+    let ctx = egui::Context::default();
+
+    MessageBanner::set_global(&ctx, "Be careful", MessageType::Warning);
+    assert_eq!(MessageBanner::last_global_task_error_category(&ctx), None);
+
+    MessageBanner::set_global(&ctx, "Done", MessageType::Success);
+    assert_eq!(MessageBanner::last_global_task_error_category(&ctx), None);
+
+    MessageBanner::set_global(&ctx, "FYI", MessageType::Info);
+    assert_eq!(MessageBanner::last_global_task_error_category(&ctx), None);
+}
+
+#[test]
 fn test_clear_all_global_clears_testing_error_category() {
     let ctx = egui::Context::default();
 

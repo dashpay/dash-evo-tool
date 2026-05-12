@@ -1,4 +1,3 @@
-#[cfg(not(feature = "testing"))]
 use crate::app_dir::data_file_path;
 use crate::app_dir::{app_user_data_dir_path, ensure_data_dir_exists, ensure_env_file};
 use crate::backend_task::contested_names::ContestedResourceTask;
@@ -9,7 +8,6 @@ use crate::components::core_zmq_listener::{CoreZMQListener, ZMQMessage};
 use crate::context::AppContext;
 use crate::context::connection_status::{ConnectionStatus, OverallConnectionState};
 use crate::database::Database;
-#[cfg(not(feature = "testing"))]
 use crate::logging::initialize_logger;
 use crate::model::settings::Settings;
 use crate::spv::CoreBackendMode;
@@ -198,11 +196,6 @@ impl BitOrAssign for AppAction {
 }
 impl AppState {
     /// Creates a new `AppState` using the production database.
-    ///
-    /// This constructor is hidden when the `testing` feature is active to prevent
-    /// tests from accidentally using the production database. Use the `testing`
-    /// feature-gated `new()` variant instead.
-    #[cfg(not(feature = "testing"))]
     pub fn new(ctx: egui::Context) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let data_dir = app_user_data_dir_path()?;
         ensure_data_dir_exists(&data_dir)?;
@@ -219,7 +212,9 @@ impl AppState {
     /// Available only when the `testing` feature is active. This prevents tests
     /// from reading or writing the production database.
     #[cfg(feature = "testing")]
-    pub fn new(ctx: egui::Context) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+    pub fn new_for_testing(
+        ctx: egui::Context,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let data_dir = Self::testing_data_dir()?;
         ensure_data_dir_exists(&data_dir)?;
         ensure_env_file(&data_dir);

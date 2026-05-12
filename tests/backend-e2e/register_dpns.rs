@@ -3,10 +3,18 @@
 use crate::framework::harness::ctx;
 use crate::framework::identity_helpers::build_identity_registration;
 use crate::framework::task_runner::run_task;
+use dash_evo_tool::backend_task::error::TaskError;
 use dash_evo_tool::backend_task::identity::{IdentityTask, RegisterDpnsNameInput};
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use rand::prelude::*;
+
+fn is_identity_propagation_lag(error: &TaskError) -> bool {
+    matches!(
+        error,
+        TaskError::IdentityNotFound | TaskError::IdentityNonceNotFound { .. }
+    )
+}
 
 /// Create identity, register a DPNS name, verify by searching.
 #[ignore]
@@ -51,15 +59,14 @@ async fn test_register_dpns_name() {
                 break;
             }
             Err(e) => {
-                let err_str = e.to_string();
-                if attempt < 3 && err_str.contains("not found") {
+                if attempt < 3 && is_identity_propagation_lag(&e) {
                     tracing::info!(
                         "DPNS registration attempt {}/3 failed ({}), retrying in 30s...",
                         attempt,
-                        err_str
+                        e
                     );
                     tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-                    last_error = err_str;
+                    last_error = e.to_string();
                     continue;
                 }
                 panic!("DPNS registration should succeed: {}", e);

@@ -32,8 +32,10 @@ fn find_existing_e2e_wallet(
         .then_some(*expected_seed_hash)
 }
 
-/// Import a wallet through the AppContext/model layer (no UI screen setters).
-/// Parses the mnemonic, creates a Wallet, and registers it via AppContext.
+/// Import a funded wallet fixture through the AppContext/model layer.
+/// This setup path is intentionally non-UI so Phase 0 can create a reusable
+/// funded wallet quickly; UI coverage for mnemonic import lives in
+/// `tests/kittest/interactions.rs`.
 fn import_wallet_via_context(
     harness: &mut Harness<'_, AppState>,
     ctx: &mut TestContext,
@@ -151,7 +153,7 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
             println!("  Wallet bootstrapped for SPV");
         }
     } else {
-        // 5–10. Import wallet via AppContext
+        // 5-10. Create the funded wallet fixture via the model layer.
         import_wallet_via_context(harness, ctx, &words);
     }
 

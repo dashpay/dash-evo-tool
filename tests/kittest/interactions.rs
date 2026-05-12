@@ -1,7 +1,14 @@
 use dash_evo_tool::ui::RootScreenType;
+use dash_evo_tool::ui::ScreenType;
 use dash_evo_tool::ui::welcome_screen::WelcomeScreen;
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
+
+const TEST_IMPORT_MNEMONIC: [&str; 12] = [
+    "abandon", "abandon", "abandon", "abandon", "abandon", "abandon", "abandon", "abandon",
+    "abandon", "abandon", "abandon", "about",
+];
+const TEST_IMPORT_ALIAS: &str = "Imported Test Wallet";
 
 /// Create a test harness with the standard configuration.
 /// Returns the runtime (must be kept alive) and the harness.
@@ -14,7 +21,7 @@ fn create_test_harness() -> (
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
     let _guard = rt.enter();
     let harness = Harness::builder().with_max_steps(200).build_eframe(|ctx| {
-        dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+        dash_evo_tool::app::AppState::new_for_testing(ctx.egui_ctx.clone())
             .expect("Failed to create AppState")
             .with_animations(false)
     });
@@ -27,11 +34,28 @@ fn dismiss_welcome_screen(harness: &mut Harness<'_, dash_evo_tool::app::AppState
     harness.state_mut().welcome_screen = None;
 }
 
+fn push_import_mnemonic_screen(harness: &mut Harness<'_, dash_evo_tool::app::AppState>) {
+    dismiss_welcome_screen(harness);
+    harness.state_mut().selected_main_screen = RootScreenType::RootScreenWalletsBalances;
+    let app_ctx = harness.state().current_app_context();
+    let screen = ScreenType::ImportMnemonic.create_screen(app_ctx);
+    harness.state_mut().screen_stack.push(screen);
+    harness.run_steps(10);
+}
+
 /// Helper to force-enable the welcome screen regardless of DB state.
 fn enable_welcome_screen(harness: &mut Harness<'_, dash_evo_tool::app::AppState>) {
     let ctx = harness.state().mainnet_app_context.clone();
     harness.state_mut().show_welcome_screen = true;
     harness.state_mut().welcome_screen = Some(WelcomeScreen::new(ctx));
+}
+
+fn node_text(node: &egui_kittest::kittest::AccessKitNode<'_>) -> Option<String> {
+    if node.role() == egui::accesskit::Role::Label {
+        node.value()
+    } else {
+        node.label()
+    }
 }
 
 // =============================================================================
@@ -372,6 +396,93 @@ fn test_wallets_screen_has_action_buttons() {
     assert!(
         import_nodes.next().is_some() && create_nodes.next().is_some(),
         "Wallets screen should show both Import Wallet and Create Wallet buttons"
+    );
+}
+
+#[test]
+fn test_import_mnemonic_screen_imports_wallet_via_ui() {
+    let (rt, mut harness) = create_test_harness();
+    let _guard = rt.enter();
+    harness.set_size(egui::vec2(1280.0, 1400.0));
+    push_import_mnemonic_screen(&mut harness);
+
+    let initial_wallet_count = harness
+        .state()
+        .current_app_context()
+        .wallets()
+        .read()
+        .unwrap()
+        .len();
+
+    for (index, word) in TEST_IMPORT_MNEMONIC.iter().enumerate() {
+        harness
+            .query_all_by_role(egui::accesskit::Role::TextInput)
+            .nth(index)
+            .unwrap_or_else(|| panic!("Seed phrase text input #{index} must exist"))
+            .click();
+        harness.run_steps(2);
+        harness
+            .query_all_by_role(egui::accesskit::Role::TextInput)
+            .nth(index)
+            .unwrap_or_else(|| panic!("Seed phrase text input #{index} must still exist"))
+            .type_text(word);
+        harness.run_steps(2);
+    }
+    harness.run_steps(10);
+
+    assert!(
+        harness.query_by_label("Save Wallet").is_some(),
+        "Save Wallet should appear after the mnemonic is parsed"
+    );
+
+    harness
+        .query_all_by_role(egui::accesskit::Role::TextInput)
+        .nth(12)
+        .expect("Alias text input must exist after the 12 mnemonic inputs")
+        .click();
+    harness.run_steps(5);
+    harness
+        .query_all_by_role(egui::accesskit::Role::TextInput)
+        .nth(12)
+        .expect("Alias text input must still exist after clicking")
+        .type_text(TEST_IMPORT_ALIAS);
+    harness.run_steps(10);
+
+    harness
+        .query_by_label("Save Wallet")
+        .expect("Save Wallet button must exist")
+        .click();
+    harness.run_steps(20);
+
+    let visible_success_labels: Vec<String> = harness
+        .query_all_by_role(egui::accesskit::Role::Label)
+        .filter_map(|node| node_text(&node.accesskit_node()))
+        .collect();
+
+    assert!(
+        visible_success_labels
+            .iter()
+            .any(|text| text.contains("Wallet Imported Successfully!")),
+        "Successful import should show the success state; visible labels: {:?}",
+        visible_success_labels
+    );
+
+    let wallets = harness
+        .state()
+        .current_app_context()
+        .wallets()
+        .read()
+        .unwrap();
+    assert_eq!(
+        wallets.len(),
+        initial_wallet_count + 1,
+        "Importing through the UI should add exactly one wallet"
+    );
+    assert!(
+        wallets
+            .values()
+            .any(|wallet| { wallet.read().unwrap().alias.as_deref() == Some(TEST_IMPORT_ALIAS) }),
+        "Imported wallet alias should be present in AppContext"
     );
 }
 

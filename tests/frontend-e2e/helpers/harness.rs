@@ -45,7 +45,7 @@ pub fn create_e2e_harness(rt: &tokio::runtime::Runtime) -> Harness<'static, AppS
     let mut harness = Harness::builder()
         .with_max_steps(10000)
         .build_eframe(|ctx| {
-            AppState::new(ctx.egui_ctx.clone())
+            AppState::new_for_testing(ctx.egui_ctx.clone())
                 .expect("Failed to create AppState for E2E harness")
                 .with_animations(false)
         });

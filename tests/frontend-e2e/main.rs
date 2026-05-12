@@ -23,7 +23,7 @@ fn e2e_testnet_journey() {
         println!("\n=== Smoke: App Initialization ===");
         phases::phase_smoke::run(&mut harness);
 
-        println!("\n=== Phase 0: Setup (Wallet Import + SPV Sync) ===");
+        println!("\n=== Phase 0: Funded Wallet Fixture Setup (Model Layer) + SPV Sync ===");
         phases::phase_00_setup::run(&mut harness, &mut ctx);
 
         println!("\n=== Phase 1: Wallet UI + Balance Display ===");

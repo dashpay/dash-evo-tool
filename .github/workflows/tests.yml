@@ -95,6 +95,7 @@ jobs:
       - name: Run backend E2E tests
         env:
           E2E_WALLET_MNEMONIC: ${{ secrets.E2E_WALLET_MNEMONIC }}
+          RUST_MIN_STACK: 16777216
         run: |
           if [ -z "${E2E_WALLET_MNEMONIC}" ]; then
             echo "Skipping backend E2E tests: E2E_WALLET_MNEMONIC is not set"
@@ -105,6 +106,7 @@ jobs:
         if: ${{ always() }}
         env:
           E2E_WALLET_MNEMONIC: ${{ secrets.E2E_WALLET_MNEMONIC }}
+          RUST_MIN_STACK: 16777216
         run: |
           if [ -z "${E2E_WALLET_MNEMONIC}" ]; then
             echo "Skipping E2E cleanup: E2E_WALLET_MNEMONIC is not set"

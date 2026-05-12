@@ -37,6 +37,33 @@ jobs:
       - name: Check out code
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
+      - name: Install Rust toolchain (for cargo metadata)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Sync metainfo version from Cargo.toml
+        run: |
+          VERSION=$(cargo metadata --format-version=1 --no-deps | jq -r '.packages[] | select(.name == "dash-evo-tool") | .version')
+          if [ -z "$VERSION" ]; then
+            echo "::error::Failed to extract version from Cargo.toml"
+            exit 1
+          fi
+          # Use release published date when available, tag commit date for tag pushes, current date otherwise
+          if [ -n "${{ github.event.release.published_at }}" ]; then
+            DATE=$(echo "${{ github.event.release.published_at }}" | cut -dT -f1)
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            DATE=$(git log -1 --format=%cs "${{ github.ref }}")
+          else
+            DATE=$(date +%Y-%m-%d)
+          fi
+          sed -i "s|<release version=\"[^\"]*\" date=\"[^\"]*\"|<release version=\"${VERSION}\" date=\"${DATE}\"|" \
+            flatpak/org.dash.DashEvoTool.metainfo.xml
+          # Verify replacement applied
+          if ! grep -q "version=\"${VERSION}\" date=\"${DATE}\"" flatpak/org.dash.DashEvoTool.metainfo.xml; then
+            echo "::error::Failed to update metainfo.xml with version ${VERSION} and date ${DATE}"
+            exit 1
+          fi
+          echo "Metainfo version set to ${VERSION}, date ${DATE}"
+
       - name: Install Flatpak and Flatpak Builder
         run: |
           sudo apt-get update

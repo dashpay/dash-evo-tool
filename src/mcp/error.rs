@@ -31,18 +31,28 @@ const CODE_INTERNAL: i32 = -32603; // standard JSON-RPC internal error
 
 impl From<McpToolError> for McpError {
     fn from(e: McpToolError) -> Self {
-        let (code, msg) = match &e {
-            McpToolError::WalletNotFound { .. } => (CODE_WALLET_NOT_FOUND, e.to_string()),
-            McpToolError::InvalidParam { .. } => (CODE_INVALID_PARAM, e.to_string()),
-            McpToolError::NetworkMismatch { .. } => (CODE_NETWORK_MISMATCH, e.to_string()),
-            McpToolError::SpvSyncFailed => (CODE_SPV_SYNC_FAILED, e.to_string()),
-            McpToolError::TaskFailed(_) => (CODE_TASK_FAILED, e.to_string()),
-            McpToolError::Internal(_) => (CODE_INTERNAL, e.to_string()),
+        let (code, msg, data) = match &e {
+            McpToolError::WalletNotFound { .. } => (CODE_WALLET_NOT_FOUND, e.to_string(), None),
+            McpToolError::InvalidParam { .. } => (CODE_INVALID_PARAM, e.to_string(), None),
+            McpToolError::NetworkMismatch { .. } => (CODE_NETWORK_MISMATCH, e.to_string(), None),
+            McpToolError::SpvSyncFailed => (CODE_SPV_SYNC_FAILED, e.to_string(), None),
+            McpToolError::TaskFailed(task_err) => {
+                // Include the full Debug error chain so MCP clients can see
+                // the underlying cause (e.g. SDK/DAPI errors) instead of just
+                // the user-friendly Display message.
+                let details = format!("{task_err:?}");
+                (
+                    CODE_TASK_FAILED,
+                    e.to_string(),
+                    Some(serde_json::Value::String(details)),
+                )
+            }
+            McpToolError::Internal(_) => (CODE_INTERNAL, e.to_string(), None),
         };
         McpError {
             code: ErrorCode(code),
             message: msg.into(),
-            data: None,
+            data,
         }
     }
 }

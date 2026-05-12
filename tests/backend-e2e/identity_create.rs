@@ -13,13 +13,13 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 async fn test_create_identity() {
     let ctx = ctx().await;
 
-    // Asset lock (1M duffs) + tx fees. 2M duffs is sufficient.
-    let (seed_hash, wallet_arc) = ctx.create_funded_test_wallet(2_000_000).await;
+    // Asset lock (5M duffs) + tx fees. 10M duffs provides margin.
+    let (seed_hash, wallet_arc) = ctx.create_funded_test_wallet(30_000_000).await;
 
     // Register identity on Platform
-    let task = BackendTask::IdentityTask(IdentityTask::RegisterIdentity(
-        build_identity_registration(&ctx.app_context, &wallet_arc, seed_hash),
-    ));
+    let (reg_info, _master_key_bytes) =
+        build_identity_registration(&ctx.app_context, &wallet_arc, seed_hash);
+    let task = BackendTask::IdentityTask(IdentityTask::RegisterIdentity(reg_info));
     let result = run_task(&ctx.app_context, task)
         .await
         .expect("Identity registration should succeed");

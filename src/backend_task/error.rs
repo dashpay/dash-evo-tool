@@ -14,6 +14,7 @@ use dash_sdk::dpp::consensus::ConsensusError;
 use dash_sdk::dpp::consensus::basic::basic_error::BasicError;
 use dash_sdk::dpp::consensus::state::state_error::StateError;
 use dash_sdk::dpp::dashcore;
+use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use thiserror::Error;
 
@@ -78,6 +79,10 @@ pub enum TaskError {
     /// Tokio task join errors.
     #[error("An internal operation failed unexpectedly. Please restart the application.")]
     JoinError(#[from] tokio::task::JoinError),
+
+    /// DAPI node discovery or address resolution failed.
+    #[error(transparent)]
+    DapiDiscovery(#[from] crate::backend_task::dapi_discovery::DapiDiscoveryError),
 
     /// Core wallet not configured for this wallet on a multi-wallet Core node.
     #[error(
@@ -408,6 +413,67 @@ pub enum TaskError {
     )]
     TokenPositionNotFound { position: u16 },
 
+    /// The token name contains whitespace or control characters.
+    #[error(
+        "The token name \"{}\" in {form} contains invalid characters. \
+         Token names must not include spaces or control characters. Please rename and try again.",
+        escape_token_name(token_name)
+    )]
+    InvalidTokenNameCharacter {
+        form: String,
+        token_name: String,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// The token name length is outside the allowed range.
+    #[error(
+        "The token {form} is {actual} characters long, but must be between {min} and {max}. \
+         Please adjust the name length and try again."
+    )]
+    InvalidTokenNameLength {
+        form: String,
+        actual: usize,
+        min: usize,
+        max: usize,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// The token language code is not recognized.
+    #[error(
+        "The language code \"{language_code}\" is not valid. \
+         Use a standard language code like \"en\" or \"fr\" and try again."
+    )]
+    InvalidTokenLanguageCode {
+        language_code: String,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// The token's decimal places exceed the platform limit.
+    #[error(
+        "Token decimals cannot exceed {max_decimals}, but {decimals} was specified. \
+         Please use a smaller value."
+    )]
+    TokenDecimalsOverLimit {
+        decimals: u8,
+        max_decimals: u8,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// The token's base supply exceeds the platform limit.
+    #[error(
+        "The token base supply of {base_supply} is too large. \
+         Please use a smaller value."
+    )]
+    InvalidTokenBaseSupply {
+        base_supply: u64,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
     // ──────────────────────────────────────────────────────────────────────────
     // Contract errors
     // ──────────────────────────────────────────────────────────────────────────
@@ -531,6 +597,16 @@ pub enum TaskError {
         allowed_networks: &'static str,
     },
 
+    /// The requested operation requires Dash Core (RPC) and cannot run in light-wallet (SPV) mode.
+    ///
+    /// The `operation` field is preserved for diagnostic purposes (Debug / log inspection)
+    /// but is intentionally omitted from the user-facing `Display` text so the message is a
+    /// single complete sentence — no fragment composition, safe for i18n extraction.
+    #[error(
+        "This action is only available when connected to Dash Core. Switch to Dash Core in Settings and retry."
+    )]
+    OperationRequiresDashCore { operation: &'static str },
+
     // ──────────────────────────────────────────────────────────────────────────
     // Platform info errors
     // ──────────────────────────────────────────────────────────────────────────
@@ -570,6 +646,35 @@ pub enum TaskError {
     /// Querying token data from the platform failed.
     #[error("Could not retrieve token information from the platform. Please retry.")]
     TokenQueryError { detail: String },
+
+    /// The token does not have a perpetual distribution configured — no rewards to claim.
+    #[error("This token does not have perpetual distribution, so there are no rewards to claim.")]
+    TokenNoPerpetualDistribution,
+
+    /// The recipient identity does not exist on Platform (e.g. during a token mint).
+    #[error(
+        "The recipient identity `{recipient_id}` does not exist on the platform. \
+         Check the ID and try again, or create the identity first."
+    )]
+    TokenRecipientIdentityNotFound {
+        recipient_id: String,
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// The identity's token account is not frozen, so an unfreeze / destroy-frozen action
+    /// cannot proceed.
+    #[error(
+        "Identity `{identity_id}` is not frozen for token `{token_id}`, so `{action}` cannot proceed. \
+         Refresh the frozen-account list and try again."
+    )]
+    TokenAccountNotFrozen {
+        identity_id: String,
+        token_id: String,
+        action: String,
+        #[source]
+        source_error: Box<SdkError>,
+    },
 
     // ──────────────────────────────────────────────────────────────────────────
     // Contract schema errors
@@ -801,6 +906,16 @@ pub enum TaskError {
     )]
     NoVotingIdentity { identity_id: String },
 
+    /// No open vote poll was found on Platform for the given DPNS name.
+    ///
+    /// Surfaced by the pre-flight existence check in `vote_on_dpns_name`,
+    /// before any state transition is broadcast. Short-circuits a ~70 s
+    /// retry chain that would otherwise expire with an opaque timeout.
+    #[error(
+        "The contested name \"{name}\" is not currently open for voting. It may have been resolved or may not exist. Refresh the contested names list and try again."
+    )]
+    VotePollNotFound { name: String },
+
     /// The identity does not have an authentication key required to sign documents.
     #[error(
         "This identity does not have a key for signing documents. Please add an authentication key."
@@ -931,13 +1046,26 @@ pub enum TaskError {
     /// Nullifier sync failed.
     #[error("Could not check for spent shielded notes. Please check your connection and retry.")]
     ShieldedNullifierSyncFailed { detail: String },
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Network context errors
+    // ──────────────────────────────────────────────────────────────────────────
+    /// Creating a network context failed during a network switch.
+    #[error("Could not connect to {network}. Check your network configuration and retry.")]
+    NetworkContextCreationFailed { network: Network, detail: String },
+}
+
+/// Escapes control characters in a token name for safe display in error messages.
+fn escape_token_name(name: &str) -> String {
+    name.chars().filter(|c| !c.is_control()).collect()
 }
 
 #[cfg(any(test, feature = "testing"))]
 impl TaskError {
     pub fn test_category(&self) -> TaskErrorCategory {
         match self {
-            TaskError::CoreRpcConnectionFailed { .. }
+            TaskError::DapiDiscovery(_)
+            | TaskError::CoreRpcConnectionFailed { .. }
             | TaskError::DapiUnavailable { .. }
             | TaskError::DapiTimeout { .. }
             | TaskError::DapiConnectionRefused { .. }
@@ -953,7 +1081,8 @@ impl TaskError {
             | TaskError::UtxoUpdateFailed { .. }
             | TaskError::ShieldedBroadcastFailed { .. }
             | TaskError::ShieldedSyncFailed { .. }
-            | TaskError::ShieldedNullifierSyncFailed { .. } => TaskErrorCategory::Network,
+            | TaskError::ShieldedNullifierSyncFailed { .. }
+            | TaskError::NetworkContextCreationFailed { .. } => TaskErrorCategory::Network,
 
             TaskError::MustRetry(_)
             | TaskError::GroveStark(_)
@@ -998,6 +1127,11 @@ impl TaskError {
             | TaskError::AssetLockNoCreditOutputs
             | TaskError::AssetLockAddressDerivationFailed { .. }
             | TaskError::TokenPositionNotFound { .. }
+            | TaskError::InvalidTokenNameCharacter { .. }
+            | TaskError::InvalidTokenNameLength { .. }
+            | TaskError::InvalidTokenLanguageCode { .. }
+            | TaskError::TokenDecimalsOverLimit { .. }
+            | TaskError::InvalidTokenBaseSupply { .. }
             | TaskError::DataContractNotFound
             | TaskError::IdentifierParsingError { .. }
             | TaskError::IdentityCreationError { .. }
@@ -1006,7 +1140,11 @@ impl TaskError {
             | TaskError::IdentityInsufficientBalance { .. }
             | TaskError::AssetLockOutPointInsufficientBalance { .. }
             | TaskError::OperationNotAvailableOnNetwork { .. }
+            | TaskError::OperationRequiresDashCore { .. }
             | TaskError::MasterKeyNotFound
+            | TaskError::TokenNoPerpetualDistribution
+            | TaskError::TokenRecipientIdentityNotFound { .. }
+            | TaskError::TokenAccountNotFrozen { .. }
             | TaskError::ContractSchemaMismatch { .. }
             | TaskError::InvalidCoreWalletName { .. }
             | TaskError::NoCoreWalletsLoaded
@@ -1033,6 +1171,7 @@ impl TaskError {
             | TaskError::PublicKeyMapBuildFailed { .. }
             | TaskError::WalletInfoDeterminationFailed { .. }
             | TaskError::NoVotingIdentity { .. }
+            | TaskError::VotePollNotFound { .. }
             | TaskError::NoDocumentSigningKey
             | TaskError::WalletAlreadyImported
             | TaskError::ShieldedNoUnspentNotes
@@ -1312,6 +1451,34 @@ impl From<SdkError> for TaskError {
                 current_count: u64,
                 minimum_required: u64,
             },
+            InvalidTokenNameCharacter {
+                form: String,
+                token_name: String,
+            },
+            InvalidTokenNameLength {
+                form: String,
+                actual: usize,
+                min: usize,
+                max: usize,
+            },
+            InvalidTokenLanguageCode {
+                language_code: String,
+            },
+            TokenDecimalsOverLimit {
+                decimals: u8,
+                max_decimals: u8,
+            },
+            InvalidTokenBaseSupply {
+                base_supply: u64,
+            },
+            RecipientIdentityNotFound {
+                recipient_id: String,
+            },
+            TokenAccountNotFrozen {
+                identity_id: String,
+                token_id: String,
+                action: String,
+            },
         }
 
         let kind: Option<ConsensusKind> = {
@@ -1357,6 +1524,48 @@ impl From<SdkError> for TaskError {
                             minimum_required: e.minimum_required(),
                         })
                     }
+                    ConsensusError::BasicError(BasicError::InvalidTokenNameCharacterError(e)) => {
+                        Some(ConsensusKind::InvalidTokenNameCharacter {
+                            form: e.form().to_string(),
+                            token_name: e.token_name().to_string(),
+                        })
+                    }
+                    ConsensusError::BasicError(BasicError::InvalidTokenNameLengthError(e)) => {
+                        Some(ConsensusKind::InvalidTokenNameLength {
+                            form: e.form().to_string(),
+                            actual: e.actual(),
+                            min: e.min(),
+                            max: e.max(),
+                        })
+                    }
+                    ConsensusError::BasicError(BasicError::InvalidTokenLanguageCodeError(e)) => {
+                        Some(ConsensusKind::InvalidTokenLanguageCode {
+                            language_code: e.language_code().to_string(),
+                        })
+                    }
+                    ConsensusError::BasicError(BasicError::DecimalsOverLimitError(e)) => {
+                        Some(ConsensusKind::TokenDecimalsOverLimit {
+                            decimals: e.decimals(),
+                            max_decimals: e.max_decimals(),
+                        })
+                    }
+                    ConsensusError::BasicError(BasicError::InvalidTokenBaseSupplyError(e)) => {
+                        Some(ConsensusKind::InvalidTokenBaseSupply {
+                            base_supply: e.base_supply(),
+                        })
+                    }
+                    ConsensusError::StateError(StateError::RecipientIdentityDoesNotExistError(
+                        e,
+                    )) => Some(ConsensusKind::RecipientIdentityNotFound {
+                        recipient_id: e.recipient_id().to_string(Encoding::Base58),
+                    }),
+                    ConsensusError::StateError(StateError::IdentityTokenAccountNotFrozenError(
+                        e,
+                    )) => Some(ConsensusKind::TokenAccountNotFrozen {
+                        identity_id: e.identity_id().to_string(Encoding::Base58),
+                        token_id: e.token_id().to_string(Encoding::Base58),
+                        action: e.action().to_string(),
+                    }),
                     _ => None,
                 })
                 .or_else(|| {
@@ -1413,6 +1622,61 @@ impl From<SdkError> for TaskError {
             }) => TaskError::ShieldedInsufficientPoolNotes {
                 current_count,
                 minimum_required,
+                source_error: boxed,
+            },
+            Some(ConsensusKind::InvalidTokenNameCharacter { form, token_name }) => {
+                TaskError::InvalidTokenNameCharacter {
+                    form,
+                    token_name,
+                    source_error: boxed,
+                }
+            }
+            Some(ConsensusKind::InvalidTokenNameLength {
+                form,
+                actual,
+                min,
+                max,
+            }) => TaskError::InvalidTokenNameLength {
+                form,
+                actual,
+                min,
+                max,
+                source_error: boxed,
+            },
+            Some(ConsensusKind::InvalidTokenLanguageCode { language_code }) => {
+                TaskError::InvalidTokenLanguageCode {
+                    language_code,
+                    source_error: boxed,
+                }
+            }
+            Some(ConsensusKind::TokenDecimalsOverLimit {
+                decimals,
+                max_decimals,
+            }) => TaskError::TokenDecimalsOverLimit {
+                decimals,
+                max_decimals,
+                source_error: boxed,
+            },
+            Some(ConsensusKind::InvalidTokenBaseSupply { base_supply }) => {
+                TaskError::InvalidTokenBaseSupply {
+                    base_supply,
+                    source_error: boxed,
+                }
+            }
+            Some(ConsensusKind::RecipientIdentityNotFound { recipient_id }) => {
+                TaskError::TokenRecipientIdentityNotFound {
+                    recipient_id,
+                    source_error: boxed,
+                }
+            }
+            Some(ConsensusKind::TokenAccountNotFrozen {
+                identity_id,
+                token_id,
+                action,
+            }) => TaskError::TokenAccountNotFrozen {
+                identity_id,
+                token_id,
+                action,
                 source_error: boxed,
             },
             None => {
@@ -1520,6 +1784,10 @@ mod tests {
     use super::*;
     use dash_sdk::dapi_client::DapiClientError;
     use dash_sdk::dapi_client::transport::TransportError;
+    use dash_sdk::dpp::consensus::basic::data_contract::{
+        DecimalsOverLimitError, InvalidTokenBaseSupplyError, InvalidTokenLanguageCodeError,
+        InvalidTokenNameCharacterError, InvalidTokenNameLengthError,
+    };
     use dash_sdk::dpp::consensus::basic::identity::InvalidInstantAssetLockProofSignatureError;
     use dash_sdk::dpp::consensus::state::identity::duplicated_identity_public_key_id_state_error::DuplicatedIdentityPublicKeyIdStateError;
     use dash_sdk::dpp::consensus::state::identity::duplicated_identity_public_key_state_error::DuplicatedIdentityPublicKeyStateError;
@@ -2440,6 +2708,336 @@ mod tests {
         assert!(
             !msg.contains("timed out"),
             "Connection refused should NOT say 'timed out', got: {msg}"
+        );
+    }
+
+    // ─── Token validation consensus error tests ──────────────────────────────
+
+    #[test]
+    fn from_sdk_error_invalid_token_name_character_via_consensus() {
+        let consensus = ConsensusError::from(InvalidTokenNameCharacterError::new(
+            "singular form".to_string(),
+            "token lklimek".to_string(),
+        ));
+        let sdk_err = SdkError::from(consensus);
+        let err = TaskError::from(sdk_err);
+        assert!(matches!(err, TaskError::InvalidTokenNameCharacter { .. }));
+    }
+
+    #[test]
+    fn from_sdk_error_invalid_token_name_character_via_broadcast() {
+        let consensus = ConsensusError::from(InvalidTokenNameCharacterError::new(
+            "singular form".to_string(),
+            "bad name".to_string(),
+        ));
+        let broadcast_err = dash_sdk::error::StateTransitionBroadcastError {
+            code: 10201,
+            message: "invalid token name character".to_string(),
+            cause: Some(consensus),
+        };
+        let sdk_err = SdkError::StateTransitionBroadcastError(broadcast_err);
+        let err = TaskError::from(sdk_err);
+        assert!(matches!(err, TaskError::InvalidTokenNameCharacter { .. }));
+    }
+
+    #[test]
+    fn invalid_token_name_character_display_is_user_friendly() {
+        let consensus = ConsensusError::from(InvalidTokenNameCharacterError::new(
+            "singular form".to_string(),
+            "bad\tname".to_string(),
+        ));
+        let sdk_err = SdkError::from(consensus);
+        let err = TaskError::from(sdk_err);
+        let msg = err.to_string();
+        assert!(
+            msg.contains("badname"),
+            "Expected escaped token name in message, got: {msg}"
+        );
+        assert!(
+            msg.contains("rename"),
+            "Expected actionable guidance, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn from_sdk_error_invalid_token_name_length_via_consensus() {
+        let consensus =
+            ConsensusError::from(InvalidTokenNameLengthError::new(2, 3, 24, "singular form"));
+        let sdk_err = SdkError::from(consensus);
+        let err = TaskError::from(sdk_err);
+        assert!(
+            matches!(
+                err,
+                TaskError::InvalidTokenNameLength {
+                    actual: 2,
+                    min: 3,
+                    max: 24,
+                    ..
+                }
+            ),
+            "Expected InvalidTokenNameLength, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn from_sdk_error_invalid_token_name_length_via_broadcast() {
+        let consensus =
+            ConsensusError::from(InvalidTokenNameLengthError::new(50, 3, 24, "singular form"));
+        let broadcast_err = dash_sdk::error::StateTransitionBroadcastError {
+            code: 10202,
+            message: "invalid token name length".to_string(),
+            cause: Some(consensus),
+        };
+        let sdk_err = SdkError::StateTransitionBroadcastError(broadcast_err);
+        let err = TaskError::from(sdk_err);
+        assert!(matches!(err, TaskError::InvalidTokenNameLength { .. }));
+    }
+
+    #[test]
+    fn invalid_token_name_length_display_is_user_friendly() {
+        let consensus =
+            ConsensusError::from(InvalidTokenNameLengthError::new(2, 3, 24, "singular form"));
+        let sdk_err = SdkError::from(consensus);
+        let err = TaskError::from(sdk_err);
+        let msg = err.to_string();
+        assert!(msg.contains("2"), "Expected actual length, got: {msg}");
+        assert!(msg.contains("3"), "Expected min length, got: {msg}");
+        assert!(msg.contains("24"), "Expected max length, got: {msg}");
+        assert!(
+            msg.contains("adjust"),
+            "Expected actionable guidance, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn from_sdk_error_invalid_token_language_code_via_consensus() {
+        let consensus =
+            ConsensusError::from(InvalidTokenLanguageCodeError::new("zz_FAKE".to_string()));
+        let sdk_err = SdkError::from(consensus);
+        let err = TaskError::from(sdk_err);
+        assert!(matches!(err, TaskError::InvalidTokenLanguageCode { .. }));
+    }
+
+    #[test]
+    fn from_sdk_error_invalid_token_language_code_via_broadcast() {
+        let consensus = ConsensusError::from(InvalidTokenLanguageCodeError::new("xx".to_string()));
+        let broadcast_err = dash_sdk::error::StateTransitionBroadcastError {
+            code: 10203,
+            message: "invalid language code".to_string(),
+            cause: Some(consensus),
+        };
+        let sdk_err = SdkError::StateTransitionBroadcastError(broadcast_err);
+        let err = TaskError::from(sdk_err);
+        assert!(matches!(err, TaskError::InvalidTokenLanguageCode { .. }));
+    }
+
+    #[test]
+    fn invalid_token_language_code_display_is_user_friendly() {
+        let consensus =
+            ConsensusError::from(InvalidTokenLanguageCodeError::new("zz_FAKE".to_string()));
+        let sdk_err = SdkError::from(consensus);
+        let err = TaskError::from(sdk_err);
+        let msg = err.to_string();
+        assert!(
+            msg.contains("zz_FAKE"),
+            "Expected language code in message, got: {msg}"
+        );
+        assert!(
+            msg.contains("en") || msg.contains("fr"),
+            "Expected example codes, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn from_sdk_error_token_decimals_over_limit_via_consensus() {
+        let consensus = ConsensusError::from(DecimalsOverLimitError::new(20, 8));
+        let sdk_err = SdkError::from(consensus);
+        let err = TaskError::from(sdk_err);
+        assert!(
+            matches!(
+                err,
+                TaskError::TokenDecimalsOverLimit {
+                    decimals: 20,
+                    max_decimals: 8,
+                    ..
+                }
+            ),
+            "Expected TokenDecimalsOverLimit, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn from_sdk_error_token_decimals_over_limit_via_broadcast() {
+        let consensus = ConsensusError::from(DecimalsOverLimitError::new(20, 8));
+        let broadcast_err = dash_sdk::error::StateTransitionBroadcastError {
+            code: 10204,
+            message: "decimals over limit".to_string(),
+            cause: Some(consensus),
+        };
+        let sdk_err = SdkError::StateTransitionBroadcastError(broadcast_err);
+        let err = TaskError::from(sdk_err);
+        assert!(matches!(err, TaskError::TokenDecimalsOverLimit { .. }));
+    }
+
+    #[test]
+    fn token_decimals_over_limit_display_is_user_friendly() {
+        let consensus = ConsensusError::from(DecimalsOverLimitError::new(20, 8));
+        let sdk_err = SdkError::from(consensus);
+        let err = TaskError::from(sdk_err);
+        let msg = err.to_string();
+        assert!(msg.contains("20"), "Expected decimals value, got: {msg}");
+        assert!(msg.contains("8"), "Expected max decimals, got: {msg}");
+        assert!(
+            msg.contains("smaller value"),
+            "Expected actionable guidance, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn from_sdk_error_invalid_token_base_supply_via_consensus() {
+        let consensus = ConsensusError::from(InvalidTokenBaseSupplyError::new(u64::MAX));
+        let sdk_err = SdkError::from(consensus);
+        let err = TaskError::from(sdk_err);
+        assert!(matches!(err, TaskError::InvalidTokenBaseSupply { .. }));
+    }
+
+    #[test]
+    fn from_sdk_error_invalid_token_base_supply_via_broadcast() {
+        let consensus = ConsensusError::from(InvalidTokenBaseSupplyError::new(u64::MAX));
+        let broadcast_err = dash_sdk::error::StateTransitionBroadcastError {
+            code: 10205,
+            message: "invalid base supply".to_string(),
+            cause: Some(consensus),
+        };
+        let sdk_err = SdkError::StateTransitionBroadcastError(broadcast_err);
+        let err = TaskError::from(sdk_err);
+        assert!(matches!(err, TaskError::InvalidTokenBaseSupply { .. }));
+    }
+
+    #[test]
+    fn invalid_token_base_supply_display_is_user_friendly() {
+        let consensus = ConsensusError::from(InvalidTokenBaseSupplyError::new(u64::MAX));
+        let sdk_err = SdkError::from(consensus);
+        let err = TaskError::from(sdk_err);
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&u64::MAX.to_string()),
+            "Expected base supply value, got: {msg}"
+        );
+        assert!(
+            msg.contains("smaller value"),
+            "Expected actionable guidance, got: {msg}"
+        );
+    }
+
+    // ─── New token error tests ────────────────────────────────────────────────
+
+    #[test]
+    fn test_token_no_perpetual_distribution_display() {
+        let err = TaskError::TokenNoPerpetualDistribution;
+        let msg = err.to_string();
+        assert!(
+            msg.contains("perpetual distribution"),
+            "Expected perpetual distribution mention, got: {msg}"
+        );
+        assert!(
+            msg.contains("no rewards to claim"),
+            "Expected actionable info, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_recipient_identity_not_found_from_consensus_error() {
+        use dash_sdk::dpp::consensus::state::identity::RecipientIdentityDoesNotExistError;
+        let recipient_id = Identifier::random();
+        let expected_id_str = recipient_id.to_string(Encoding::Base58);
+        let consensus = ConsensusError::from(RecipientIdentityDoesNotExistError::new(recipient_id));
+        let broadcast_err = dash_sdk::error::StateTransitionBroadcastError {
+            code: 40216,
+            message: "recipient identity does not exist".to_string(),
+            cause: Some(consensus),
+        };
+        let sdk_err = SdkError::StateTransitionBroadcastError(broadcast_err);
+        let err = TaskError::from(sdk_err);
+        assert!(
+            matches!(
+                err,
+                TaskError::TokenRecipientIdentityNotFound {
+                    ref recipient_id,
+                    ..
+                } if *recipient_id == expected_id_str
+            ),
+            "Expected TokenRecipientIdentityNotFound with correct id, got: {err:?}"
+        );
+        // Source chain must be preserved so the collapsible details panel / logs
+        // retain the full technical context.
+        assert!(
+            std::error::Error::source(&err).is_some(),
+            "Expected source chain to be preserved, got None"
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&expected_id_str),
+            "Expected recipient id in message, got: {msg}"
+        );
+        assert!(
+            msg.contains("does not exist"),
+            "Expected existence message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_identity_token_account_not_frozen_from_consensus_error() {
+        use dash_sdk::dpp::consensus::state::token::IdentityTokenAccountNotFrozenError;
+        let token_id = Identifier::random();
+        let identity_id = Identifier::random();
+        let action = "Unfreeze".to_string();
+        let expected_token_id_str = token_id.to_string(Encoding::Base58);
+        let expected_identity_id_str = identity_id.to_string(Encoding::Base58);
+        let consensus = ConsensusError::from(IdentityTokenAccountNotFrozenError::new(
+            token_id,
+            identity_id,
+            action.clone(),
+        ));
+        let broadcast_err = dash_sdk::error::StateTransitionBroadcastError {
+            code: 40703,
+            message: "identity token account is not frozen".to_string(),
+            cause: Some(consensus),
+        };
+        let sdk_err = SdkError::StateTransitionBroadcastError(broadcast_err);
+        let err = TaskError::from(sdk_err);
+        assert!(
+            matches!(
+                err,
+                TaskError::TokenAccountNotFrozen {
+                    ref identity_id,
+                    ref token_id,
+                    ref action,
+                    ..
+                } if *identity_id == expected_identity_id_str
+                    && *token_id == expected_token_id_str
+                    && *action == "Unfreeze"
+            ),
+            "Expected TokenAccountNotFrozen with correct fields, got: {err:?}"
+        );
+        // Source chain must be preserved so the collapsible details panel / logs
+        // retain the full technical context.
+        assert!(
+            std::error::Error::source(&err).is_some(),
+            "Expected source chain to be preserved, got None"
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&expected_identity_id_str),
+            "Expected identity id in message, got: {msg}"
+        );
+        assert!(
+            msg.contains(&expected_token_id_str),
+            "Expected token id in message, got: {msg}"
+        );
+        assert!(
+            msg.contains("Unfreeze"),
+            "Expected action in message, got: {msg}"
         );
     }
 }

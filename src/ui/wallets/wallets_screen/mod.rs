@@ -3,6 +3,8 @@ mod asset_locks;
 mod dialogs;
 mod single_key_view;
 
+pub(crate) use single_key_view::SINGLE_KEY_REQUIRES_CORE;
+
 use crate::app::{AppAction, BackendTasksExecutionMode, DesiredAppAction};
 use crate::backend_task::BackendTask;
 use crate::backend_task::core::CoreTask;
@@ -11,6 +13,7 @@ use crate::backend_task::shielded::ShieldedTask;
 use crate::context::AppContext;
 use crate::context::connection_status::spv_phase_summary;
 use crate::model::amount::Amount;
+use crate::model::feature_gate::FeatureGate;
 use crate::model::wallet::{TransactionStatus, Wallet, WalletSeedHash, WalletTransaction};
 use crate::spv::{CoreBackendMode, SpvStatus};
 use crate::ui::components::component_trait::Component;
@@ -162,6 +165,11 @@ pub struct WalletsBalancesScreen {
     /// Transaction count at the time `cached_tx_indices` was last built.
     /// Used to detect list growth that doesn't make existing indices OOB.
     cached_tx_source_len: Option<usize>,
+    /// Persistent warning banner rendered on the single-key wallet detail
+    /// view when the app is running on the SPV backend. Stored on the screen
+    /// (rather than constructed fresh each frame) so the underlying tracing
+    /// log fires once on mode entry instead of every repaint.
+    pub(crate) sk_spv_warning_banner: crate::ui::components::MessageBanner,
 }
 
 impl WalletsBalancesScreen {
@@ -272,6 +280,7 @@ impl WalletsBalancesScreen {
             pending_list_is_single_key: false,
             cached_tx_indices: None,
             cached_tx_source_len: None,
+            sk_spv_warning_banner: crate::ui::components::MessageBanner::new(),
         }
     }
 
@@ -467,6 +476,20 @@ impl WalletsBalancesScreen {
         self.pending_list_core_wallets = false;
         self.pending_list_wallet_hash = None;
         self.pending_list_is_single_key = false;
+    }
+
+    /// Clear all transient request/pending state that could fire against the
+    /// wrong context after a network switch.
+    pub(crate) fn reset_transient_state(&mut self) {
+        self.pending_platform_balance_refresh = None;
+        self.pending_refresh_after_unlock = false;
+        self.pending_asset_lock_search_after_unlock = false;
+        self.pending_wallet_refresh_on_switch = false;
+        self.pending_core_wallet_seed_hash = None;
+        self.pending_core_wallet_options = None;
+        self.core_wallet_dialog = None;
+        self.refreshing = false;
+        self.asset_lock_search_banner.take_and_clear();
     }
 
     /// Reset all cached AddressInput widgets so they pick up the new network.
@@ -1088,7 +1111,7 @@ impl WalletsBalancesScreen {
             }
 
             // Dev-mode buttons: right-aligned, filling all remaining space
-            if self.app_context.is_developer_mode() {
+            if FeatureGate::DeveloperMode.is_available(&self.app_context) {
                 let remaining = ui.available_width();
                 ui.allocate_ui_with_layout(
                     egui::vec2(remaining, ui.min_size().y),
@@ -1171,9 +1194,8 @@ impl WalletsBalancesScreen {
             tabs.insert(0, AccountTab::Category(AccountCategory::Bip44, Some(0)));
         }
 
-        // Add the Shielded tab only when the connected network supports it
-        // (protocol version >= 12, i.e., Platform v3.1+).
-        if self.app_context.supports_shielded() {
+        // Add the Shielded tab only when the connected network supports it.
+        if FeatureGate::Shielded.is_available(&self.app_context) {
             tabs.push(AccountTab::Shielded);
         }
 
@@ -1471,6 +1493,16 @@ impl WalletsBalancesScreen {
         let mut action = AppAction::None;
         let dark_mode = ui.ctx().style().visuals.dark_mode;
         let sections = self.system_tab_sections(summaries);
+
+        ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.checkbox(
+                    &mut self.show_zero_balance_addresses,
+                    "Show zero-balance addresses",
+                );
+            });
+        });
+        ui.add_space(4.0);
 
         for (cat, idx, addr_count, balance) in &sections {
             let balance_text = if *balance == 0 {
@@ -2009,7 +2041,7 @@ impl WalletsBalancesScreen {
                                             .color(DashColors::text_primary(dark_mode))
                                             .size(25.0),
                                     );
-                                    if self.app_context.is_developer_mode() {
+                                    if FeatureGate::DeveloperMode.is_available(&self.app_context) {
                                         ui.label(
                                             RichText::new("[DEV]")
                                                 .color(DashColors::text_secondary(dark_mode))
@@ -2874,16 +2906,27 @@ impl ScreenLike for WalletsBalancesScreen {
             crate::ui::BackendTaskSuccessResult::PlatformAddressBalances {
                 seed_hash,
                 balances,
+                network,
             } => {
                 self.refreshing = false;
+                // Skip stale results from a different network
+                if network != self.app_context.network {
+                    tracing::warn!(
+                        result_network = ?network,
+                        current_network = ?self.app_context.network,
+                        "Discarding PlatformAddressBalances from a previous network"
+                    );
+                    return;
+                }
                 // Update wallet's platform_address_info if this is for the selected wallet
                 if let Some(selected) = &self.selected_wallet
                     && let Ok(mut wallet) = selected.write()
                     && wallet.seed_hash() == seed_hash
                 {
-                    // Update balances in the wallet
-                    for (addr, (balance, nonce)) in balances {
-                        wallet.set_platform_address_info(addr, balance, nonce);
+                    // Convert PlatformAddress back to Core Address for wallet storage
+                    for (platform_addr, (balance, nonce)) in balances {
+                        let core_addr = platform_addr.to_address_with_network(network);
+                        wallet.set_platform_address_info(core_addr, balance, nonce);
                     }
                 }
                 self.refresh_platform_sync_info_cache(&seed_hash);

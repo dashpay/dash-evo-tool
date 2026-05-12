@@ -628,7 +628,9 @@ impl WalletSendScreen {
     fn get_shielded_balance(&self) -> Option<(WalletSeedHash, u64)> {
         let seed_hash = self.selected_wallet_seed_hash?;
         // Try in-memory state first (most accurate, reflects optimistic spend marks)
-        let states = self.app_context.shielded_states.lock().unwrap();
+        let Ok(states) = self.app_context.shielded_states.lock() else {
+            return None;
+        };
         if let Some(state) = states.get(&seed_hash) {
             let balance = state.shielded_balance;
             return if balance > 0 {
@@ -1510,13 +1512,16 @@ impl WalletSendScreen {
         )))
     }
 
-    /// Shield credits from Platform address to shielded pool (Platform -> Shielded).
+    /// Shield credits from Platform address(es) to shielded pool (Platform -> Shielded).
+    ///
+    /// When the requested amount exceeds a single address balance, multiple
+    /// addresses are used — one `ShieldCredits` task per address, dispatched
+    /// sequentially.
     fn send_platform_to_shielded(
         &mut self,
         seed_hash: WalletSeedHash,
         addresses: Vec<(PlatformAddress, Address, u64)>,
     ) -> Result<AppAction, String> {
-        // Shielding from Platform always deposits into the wallet's own shielded pool.
         if !matches!(
             &self.validated_destination,
             Some(ValidatedAddress::Shielded(_))
@@ -1533,31 +1538,75 @@ impl WalletSendScreen {
             return Err("Amount must be greater than 0".to_string());
         }
 
-        // Select the highest-balance platform address as the source
-        let (from_address, from_balance) = addresses
-            .iter()
-            .max_by_key(|(_, _, balance)| *balance)
-            .map(|(platform_addr, _, balance)| (*platform_addr, *balance))
-            .ok_or_else(|| "No platform addresses available".to_string())?;
+        // Sort addresses by balance descending (greedy allocation)
+        let mut sorted_addrs = addresses;
+        sorted_addrs.sort_by(|a, b| b.2.cmp(&a.2));
 
-        // Check that the selected source address has sufficient balance
-        if amount_credits > from_balance {
+        let total_available: u64 = sorted_addrs.iter().map(|(_, _, b)| b).sum();
+        if amount_credits > total_available {
             return Err(format!(
-                "Insufficient platform balance. Need {} but highest address has {}",
+                "Insufficient platform balance. Need {} but total available is {}.",
                 format_credits_as_dash(amount_credits),
-                format_credits_as_dash(from_balance)
+                format_credits_as_dash(total_available)
+            ));
+        }
+
+        // Allocate amount across addresses (highest balance first), reserving
+        // per-operation fee headroom so each address can cover its own shield fee.
+        // Apply the network fee multiplier for consistency with ShieldScreen.
+        let base_fee = crate::model::fee_estimation::shielded_fee_for_actions(
+            2,
+            dash_sdk::dpp::version::PlatformVersion::latest(),
+        );
+        let multiplier = self.app_context.fee_multiplier_permille().max(1000);
+        let per_op_fee = base_fee.saturating_mul(multiplier) / 1000;
+        let mut remaining = amount_credits;
+        let mut tasks: Vec<BackendTask> = Vec::new();
+        for (platform_addr, _, balance) in &sorted_addrs {
+            if remaining == 0 {
+                break;
+            }
+            let available = balance.saturating_sub(per_op_fee);
+            if available == 0 {
+                continue;
+            }
+            let spend = remaining.min(available);
+            tasks.push(BackendTask::ShieldedTask(
+                crate::backend_task::shielded::ShieldedTask::ShieldCredits {
+                    seed_hash,
+                    amount: spend,
+                    from_address: *platform_addr,
+                    nonce_override: None,
+                },
+            ));
+            remaining -= spend;
+        }
+
+        // Reject if allocation could not cover the full amount after fee deductions
+        if tasks.is_empty() {
+            return Err(
+                "Insufficient platform balance after fees. No address has enough to cover the shield operation fee."
+                    .to_string(),
+            );
+        }
+        if remaining > 0 {
+            let max_sendable = amount_credits.saturating_sub(remaining);
+            return Err(format!(
+                "Insufficient platform balance after fees. Need {} but only {} is available after estimated shield fees.",
+                format_credits_as_dash(amount_credits),
+                format_credits_as_dash(max_sendable),
             ));
         }
 
         self.mark_sending();
-        Ok(AppAction::BackendTask(BackendTask::ShieldedTask(
-            crate::backend_task::shielded::ShieldedTask::ShieldCredits {
-                seed_hash,
-                amount: amount_credits,
-                from_address,
-                nonce_override: None,
-            },
-        )))
+        if tasks.len() == 1 {
+            Ok(AppAction::BackendTask(tasks.into_iter().next().unwrap()))
+        } else {
+            Ok(AppAction::BackendTasks(
+                tasks,
+                crate::app::BackendTasksExecutionMode::Sequential,
+            ))
+        }
     }
 
     /// Top up an identity from Platform addresses (Platform -> Identity).
@@ -1749,9 +1798,11 @@ impl WalletSendScreen {
             .and_then(|v| v.as_identity_id().copied())
             .ok_or_else(|| "Invalid identity ID".to_string())?;
 
+        // Prevent self-send (same identity as source and destination)
         if to_identity_id == qualified_identity.identity.id() {
             return Err(
-                "Cannot transfer to the same identity. Choose a different destination.".to_string(),
+                "You cannot send credits to the same identity. Please choose a different destination."
+                    .to_string(),
             );
         }
 
@@ -1897,11 +1948,13 @@ impl WalletSendScreen {
                     ui.horizontal(|ui| {
                         let mut selected = is_identity_selected;
                         if ui.radio_value(&mut selected, true, "").changed() && selected {
-                            if let Some(identity) = self
-                                .selected_identity
-                                .clone()
-                                .or_else(|| identities.first().cloned())
-                            {
+                            if let Some(identity) = self.selected_identity.clone().or_else(|| {
+                                // Default to the identity with the highest balance
+                                identities
+                                    .iter()
+                                    .max_by_key(|qi| qi.identity.balance())
+                                    .cloned()
+                            }) {
                                 self.selected_source =
                                     Some(SourceSelection::Identity(Box::new(identity.clone())));
                                 self.selected_identity = Some(identity);
@@ -2066,71 +2119,99 @@ impl WalletSendScreen {
 
     fn render_destination_input(&mut self, ui: &mut Ui) {
         let developer_mode = self.app_context.is_developer_mode();
-        let addr_input = self.address_input.get_or_insert_with(|| {
-            let allowed_kinds = match &self.selected_source {
-                Some(SourceSelection::CoreWallet) => {
-                    let mut kinds = vec![AddressKind::Core, AddressKind::Platform];
-                    if developer_mode {
-                        kinds.push(AddressKind::Shielded);
+        // Pre-load data outside the closure to avoid double-borrow of self.
+        // Filter out the source identity (if any) to prevent self-sends.
+        let source_identity_id = if let Some(SourceSelection::Identity(qi)) = &self.selected_source
+        {
+            Some(qi.identity.id())
+        } else {
+            None
+        };
+        // Only load identities and shielded state when building a new AddressInput
+        // (get_or_insert_with fires once). Avoids per-frame DB queries.
+        let addr_input = if self.address_input.is_some() {
+            self.address_input.as_mut().unwrap()
+        } else {
+            let loaded_identities: Vec<_> = self
+                .get_loaded_identities()
+                .into_iter()
+                .filter(|qi| Some(qi.identity.id()) != source_identity_id)
+                .collect();
+            let shielded_info: Option<(String, u64)> =
+                self.selected_wallet_seed_hash.and_then(|sh| {
+                    let states = self.app_context.shielded_states.lock().ok()?;
+                    let state = states.get(&sh)?;
+                    use dash_sdk::dpp::address_funds::OrchardAddress;
+                    let raw = state.keys.default_address.to_raw_address_bytes();
+                    let addr = OrchardAddress::from_raw_bytes(&raw).ok()?;
+                    Some((
+                        addr.to_bech32m_string(self.app_context.network),
+                        state.shielded_balance,
+                    ))
+                });
+            self.address_input.get_or_insert_with(|| {
+                let allowed_kinds = match &self.selected_source {
+                    Some(SourceSelection::CoreWallet) => {
+                        let mut kinds = vec![AddressKind::Core, AddressKind::Platform];
+                        if developer_mode {
+                            kinds.push(AddressKind::Shielded);
+                        }
+                        kinds.push(AddressKind::Identity);
+                        kinds
                     }
-                    kinds.push(AddressKind::Identity);
-                    kinds
-                }
-                Some(SourceSelection::PlatformAddresses(_)) => {
-                    let mut kinds = vec![AddressKind::Platform, AddressKind::Core];
-                    if developer_mode {
-                        kinds.push(AddressKind::Shielded);
+                    Some(SourceSelection::PlatformAddresses(_)) => {
+                        let mut kinds = vec![AddressKind::Platform, AddressKind::Core];
+                        if developer_mode {
+                            kinds.push(AddressKind::Shielded);
+                        }
+                        kinds.push(AddressKind::Identity);
+                        kinds
                     }
-                    kinds.push(AddressKind::Identity);
-                    kinds
-                }
-                Some(SourceSelection::Identity(_)) => {
-                    vec![
-                        AddressKind::Core,
-                        AddressKind::Platform,
-                        AddressKind::Identity,
-                    ]
-                }
-                Some(SourceSelection::Shielded(..)) => {
-                    vec![
-                        AddressKind::Shielded,
-                        AddressKind::Platform,
-                        AddressKind::Core,
-                    ]
-                }
-                None => AddressKind::ALL.to_vec(),
-            };
+                    Some(SourceSelection::Identity(_)) => {
+                        vec![
+                            AddressKind::Core,
+                            AddressKind::Platform,
+                            AddressKind::Identity,
+                        ]
+                    }
+                    Some(SourceSelection::Shielded(..)) => {
+                        vec![
+                            AddressKind::Shielded,
+                            AddressKind::Platform,
+                            AddressKind::Core,
+                        ]
+                    }
+                    None => AddressKind::ALL.to_vec(),
+                };
 
-            let mut builder = AddressInput::new(self.app_context.network)
-                .with_label("Send to")
-                .with_hint_text("Enter address (X.../y.../dash1.../tdash1...)")
-                .with_address_kinds(&allowed_kinds)
-                .with_exclude_change(true);
+                let mut builder = AddressInput::new(self.app_context.network)
+                    .with_label("Send to")
+                    .with_hint_text("Enter address (X.../y.../dash1.../tdash1...)")
+                    .with_address_kinds(&allowed_kinds)
+                    .with_exclude_change(true);
 
-            // Provide all wallet addresses for autocomplete
-            if let Ok(wallets_guard) = self.app_context.wallets.read() {
-                let all_wallets: Vec<Arc<RwLock<Wallet>>> =
-                    wallets_guard.values().cloned().collect();
-                if !all_wallets.is_empty() {
-                    builder = builder.with_wallets(&all_wallets);
+                // Provide all wallet addresses for autocomplete
+                if let Ok(wallets_guard) = self.app_context.wallets.read() {
+                    let all_wallets: Vec<Arc<RwLock<Wallet>>> =
+                        wallets_guard.values().cloned().collect();
+                    if !all_wallets.is_empty() {
+                        builder = builder.with_wallets(&all_wallets);
+                    }
                 }
-            }
 
-            // Add shielded address for autocomplete (if wallet has shielded state)
-            if let Some(seed_hash) = self.selected_wallet_seed_hash
-                && let Ok(states) = self.app_context.shielded_states.lock()
-                && let Some(state) = states.get(&seed_hash)
-            {
-                use dash_sdk::dpp::address_funds::OrchardAddress;
-                let raw = state.keys.default_address.to_raw_address_bytes();
-                if let Ok(orchard_addr) = OrchardAddress::from_raw_bytes(&raw) {
-                    let addr_str = orchard_addr.to_bech32m_string(self.app_context.network);
-                    builder = builder.with_shielded_balance(addr_str, state.shielded_balance);
+                // Add identities for autocomplete (searchable by alias/DPNS name)
+                if !loaded_identities.is_empty() {
+                    builder = builder.with_identities(&loaded_identities);
                 }
-            }
 
-            builder
-        });
+                // Add shielded address for autocomplete (if wallet has shielded state)
+                if let Some((addr_str, balance)) = &shielded_info {
+                    builder = builder.with_shielded_balance(addr_str.clone(), *balance);
+                }
+
+                builder
+            })
+        };
 
         let resp = addr_input.show(ui);
         resp.inner.update(&mut self.validated_destination);

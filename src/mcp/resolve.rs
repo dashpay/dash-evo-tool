@@ -105,6 +105,15 @@ pub(crate) fn wallet_arc(
 }
 
 /// Wait for SPV to reach fully-synced (green) state.
+///
+/// Required for **all wallet-facing tools** — both core-chain (UTXOs, sending
+/// Dash) and platform queries (address balances, withdrawals).  Even DAPI-only
+/// operations need SPV because the SDK verifies DAPI proofs against quorum and
+/// masternode list data from the synced chain.  When a second client is running,
+/// SPV falls back to a tempdir and must sync before any proof verification works.
+///
+/// Only tools that make no network calls (e.g. `core_wallets_list`,
+/// `network_info`, `tool_describe`) skip this gate.
 pub(crate) async fn ensure_spv_synced(ctx: &AppContext) -> Result<(), McpToolError> {
     let deadline = tokio::time::Instant::now() + SPV_WAIT_TIMEOUT;
     loop {

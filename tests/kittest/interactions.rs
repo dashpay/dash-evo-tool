@@ -45,7 +45,7 @@ fn push_import_mnemonic_screen(harness: &mut Harness<'_, dash_evo_tool::app::App
 
 /// Helper to force-enable the welcome screen regardless of DB state.
 fn enable_welcome_screen(harness: &mut Harness<'_, dash_evo_tool::app::AppState>) {
-    let ctx = harness.state().mainnet_app_context.clone();
+    let ctx = harness.state().current_app_context().clone();
     harness.state_mut().show_welcome_screen = true;
     harness.state_mut().welcome_screen = Some(WelcomeScreen::new(ctx));
 }

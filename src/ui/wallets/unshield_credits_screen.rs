@@ -12,6 +12,7 @@ use crate::ui::components::component_trait::Component;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use eframe::egui::{self, Context};
@@ -50,13 +51,12 @@ impl UnshieldCreditsScreen {
     }
 
     pub fn new(seed_hash: WalletSeedHash, app_context: &Arc<AppContext>) -> Self {
-        let max_balance = {
-            let states = app_context.shielded_states.lock().unwrap();
-            states
-                .get(&seed_hash)
-                .map(|s| s.shielded_balance)
-                .unwrap_or(0)
-        };
+        let max_balance = app_context
+            .shielded_states
+            .lock()
+            .ok()
+            .and_then(|states| states.get(&seed_hash).map(|s| s.shielded_balance))
+            .unwrap_or(0);
 
         Self {
             app_context: app_context.clone(),
@@ -76,6 +76,14 @@ impl UnshieldCreditsScreen {
 }
 
 impl ScreenLike for UnshieldCreditsScreen {
+    fn refresh_on_arrival(&mut self) {
+        if let Ok(states) = self.app_context.shielded_states.lock()
+            && let Some(state) = states.get(&self.seed_hash)
+        {
+            self.max_balance = state.shielded_balance;
+        }
+    }
+
     fn ui(&mut self, ctx: &Context) -> AppAction {
         let mut action = self
             .pending_refresh_task
@@ -114,13 +122,15 @@ impl ScreenLike for UnshieldCreditsScreen {
             ));
             ui.add_space(15.0);
 
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
+
             // Error/success messages
             if let Some(err) = &self.error_message {
-                ui.colored_label(Color32::from_rgb(255, 100, 100), err);
+                ui.colored_label(DashColors::error_color(dark_mode), err);
                 ui.add_space(5.0);
             }
             if let Some(msg) = &self.success_message {
-                ui.colored_label(Color32::DARK_GREEN, msg);
+                ui.colored_label(DashColors::success_color(dark_mode), msg);
                 if self.balance_update_pending {
                     ui.add_space(8.0);
                     ui.label(
@@ -157,13 +167,13 @@ impl ScreenLike for UnshieldCreditsScreen {
             match self.validated_destination.as_ref().map(|v| v.kind()) {
                 Some(AddressKind::Platform) => {
                     ui.colored_label(
-                        Color32::DARK_GREEN,
+                        DashColors::success_color(dark_mode),
                         "Platform address — credits will be moved to this platform address",
                     );
                 }
                 Some(AddressKind::Core) => {
                     ui.colored_label(
-                        Color32::DARK_GREEN,
+                        DashColors::success_color(dark_mode),
                         "Core address — credits will be withdrawn as DASH to this address",
                     );
                 }

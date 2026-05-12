@@ -9,6 +9,7 @@ use crate::database::{Database, WalletError};
 use crate::model::secret::Secret;
 use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::address_funds::{AddressWitness, PlatformAddress};
+use dash_sdk::dpp::async_trait::async_trait;
 use dash_sdk::dpp::identity::signer::Signer;
 use dash_sdk::dpp::key_wallet::account::AccountType;
 use dash_sdk::dpp::key_wallet::bip32::{
@@ -2644,6 +2645,7 @@ impl WalletAddressProvider {
     }
 }
 
+#[async_trait]
 impl AddressProvider for WalletAddressProvider {
     fn gap_limit(&self) -> AddressIndex {
         self.gap_limit
@@ -2657,7 +2659,7 @@ impl AddressProvider for WalletAddressProvider {
             .collect()
     }
 
-    fn on_address_found(&mut self, index: AddressIndex, _key: &[u8], funds: AddressFunds) {
+    async fn on_address_found(&mut self, index: AddressIndex, _key: &[u8], funds: AddressFunds) {
         self.resolved.insert(index);
 
         // Log what the SDK is returning
@@ -2698,7 +2700,7 @@ impl AddressProvider for WalletAddressProvider {
         }
     }
 
-    fn on_address_absent(&mut self, index: AddressIndex, _key: &[u8]) {
+    async fn on_address_absent(&mut self, index: AddressIndex, _key: &[u8]) {
         self.resolved.insert(index);
     }
 

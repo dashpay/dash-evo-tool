@@ -3,6 +3,7 @@ use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::model::feature_gate::FeatureGate;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
 use crate::ui::components::info_popup::InfoPopup;
@@ -125,6 +126,23 @@ impl ContactProfileViewerScreen {
         }));
 
         AppAction::BackendTask(task)
+    }
+
+    /// Render a "Pay" button gated behind developer mode.
+    fn pay_button(&self, ui: &mut egui::Ui) -> AppAction {
+        if !FeatureGate::DeveloperMode.is_available(&self.app_context) {
+            return AppAction::None;
+        }
+        let pay_button = egui::Button::new(RichText::new("Pay").color(egui::Color32::WHITE))
+            .fill(egui::Color32::from_rgb(0, 141, 228)); // Dash blue
+        if ui.add(pay_button).clicked() {
+            AppAction::AddScreen(
+                ScreenType::DashPaySendPayment(self.identity.clone(), self.contact_id)
+                    .create_screen(&self.app_context),
+            )
+        } else {
+            AppAction::None
+        }
     }
 
     fn save_private_info(&mut self) -> Result<(), TaskError> {
@@ -439,23 +457,7 @@ impl ContactProfileViewerScreen {
                     if ui.button("Refresh").clicked() {
                         action = self.fetch_profile();
                     }
-
-                    // Pay button - requires SPV which is dev mode only
-                    if self.app_context.is_developer_mode() {
-                        let pay_button =
-                            egui::Button::new(RichText::new("Pay").color(egui::Color32::WHITE))
-                                .fill(egui::Color32::from_rgb(0, 141, 228)); // Dash blue
-
-                        if ui.add(pay_button).clicked() {
-                            action = AppAction::AddScreen(
-                                ScreenType::DashPaySendPayment(
-                                    self.identity.clone(),
-                                    self.contact_id,
-                                )
-                                .create_screen(&self.app_context),
-                            );
-                        }
-                    }
+                    action |= self.pay_button(ui);
                 });
             } else if !self.loading {
                 // No profile loaded and not loading
@@ -471,23 +473,7 @@ impl ContactProfileViewerScreen {
                         if ui.button("Retry").clicked() {
                             action = self.fetch_profile();
                         }
-
-                        // Pay button - requires SPV which is dev mode only
-                        if self.app_context.is_developer_mode() {
-                            let pay_button =
-                                egui::Button::new(RichText::new("Pay").color(egui::Color32::WHITE))
-                                    .fill(egui::Color32::from_rgb(0, 141, 228)); // Dash blue
-
-                            if ui.add(pay_button).clicked() {
-                                action = AppAction::AddScreen(
-                                    ScreenType::DashPaySendPayment(
-                                        self.identity.clone(),
-                                        self.contact_id,
-                                    )
-                                    .create_screen(&self.app_context),
-                                );
-                            }
-                        }
+                        action |= self.pay_button(ui);
                     });
                 });
             }

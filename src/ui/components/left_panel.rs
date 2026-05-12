@@ -1,5 +1,6 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
+use crate::model::feature_gate::FeatureGate;
 use crate::ui::RootScreenType;
 use crate::ui::components::styled::GradientButton;
 use crate::ui::theme::{DashColors, ResponseExt, Shadow, Shape, Spacing};
@@ -115,42 +116,51 @@ pub fn add_left_panel(
 ) -> AppAction {
     let mut action = AppAction::None;
 
-    // Define the button details directly in this function
-    let buttons = [
+    // Define the button details directly in this function.
+    // The optional FeatureGate controls visibility — entries where the gate
+    // evaluates to false are filtered out before rendering.
+    let buttons: &[(&str, RootScreenType, &str, Option<FeatureGate>)] = &[
         (
             "Dashpay",
             RootScreenType::RootScreenDashPayProfile,
             "dashpay.png",
+            Some(FeatureGate::DashPay),
         ),
         (
             "Identities",
             RootScreenType::RootScreenIdentities,
             "identity.png",
+            None,
         ),
         (
             "Contracts",
             RootScreenType::RootScreenDocumentQuery,
             "doc.png",
+            None,
         ),
         (
             "Tokens",
             RootScreenType::RootScreenMyTokenBalances,
             "tokens.png",
+            None,
         ),
         (
             "Wallets",
             RootScreenType::RootScreenWalletsBalances,
             "wallet.png",
+            None,
         ),
         (
             "Tools",
             RootScreenType::RootScreenToolsPlatformInfoScreen,
             "tools.png",
+            None,
         ),
         (
             "Settings",
             RootScreenType::RootScreenNetworkChooser,
             "config.png",
+            None,
         ),
     ];
 
@@ -195,7 +205,13 @@ pub fn add_left_panel(
                                     .auto_shrink([false, false])
                                     .show(ui, |ui| {
                                         ui.vertical_centered(|ui| {
-                                            for (label, screen_type, icon_path) in buttons.iter() {
+                                            for (label, screen_type, icon_path, gate) in buttons.iter() {
+                                                // Skip entries whose feature gate is not available
+                                                if let Some(gate) = gate
+                                                    && !gate.is_available(app_context)
+                                                {
+                                                    continue;
+                                                }
                                                 let texture: Option<TextureHandle> = load_icon(ctx, icon_path);
                                                 // Check if this button's category is selected
                                                 let is_selected = match *screen_type {

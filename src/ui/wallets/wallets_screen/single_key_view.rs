@@ -1,10 +1,17 @@
 use crate::app::AppAction;
-use crate::ui::ScreenType;
+use crate::spv::CoreBackendMode;
+use crate::ui::components::component_trait::Component;
 use crate::ui::theme::DashColors;
+use crate::ui::{MessageType, ScreenType};
 use eframe::egui;
 use egui::{Frame, Margin, RichText, Ui};
 
 use super::WalletsBalancesScreen;
+
+/// Shown as a disabled-button tooltip and in the in-screen warning banner for
+/// any single-key-wallet action that depends on Dash Core RPC. Exported so the
+/// dedicated send screen can reuse the same copy.
+pub(crate) const SINGLE_KEY_REQUIRES_CORE: &str = "Sending from a single-key wallet requires a local Dash Core node. You can still receive funds at this address. To send, open Settings, switch to Expert mode, and select Local Dash Core node.";
 
 impl WalletsBalancesScreen {
     /// Render the detail view for a selected single key wallet
@@ -33,6 +40,7 @@ impl WalletsBalancesScreen {
         drop(wallet);
 
         let text_color = DashColors::text_primary(dark_mode);
+        let is_rpc_mode = self.app_context.core_backend_mode() == CoreBackendMode::Rpc;
 
         Frame::group(ui.style())
             .fill(DashColors::surface(dark_mode))
@@ -46,18 +54,58 @@ impl WalletsBalancesScreen {
                     ui.label(RichText::new(format!("Balance: {:.8} DASH", balance_dash)));
                     ui.add_space(10.0);
 
+                    // When the app is on its built-in SPV backend, surface a
+                    // warning banner explaining that single-key wallet actions
+                    // are unavailable. The actions themselves are greyed out
+                    // below; this banner is the "why" users otherwise wouldn't
+                    // see from a silent disable.
+                    //
+                    // The banner lives on the screen struct so its state is
+                    // constructed once and then re-rendered each frame. Setting
+                    // the message via the struct field (instead of a fresh
+                    // local) means `BannerState::logged` is preserved, so the
+                    // underlying tracing log fires once on mode entry — not 60
+                    // times a second while the screen is visible.
+                    if !is_rpc_mode {
+                        if !self.sk_spv_warning_banner.has_message() {
+                            self.sk_spv_warning_banner
+                                .set_message(SINGLE_KEY_REQUIRES_CORE, MessageType::Warning)
+                                .disable_auto_dismiss();
+                        }
+                        self.sk_spv_warning_banner.show(ui);
+                        ui.add_space(10.0);
+                    } else if self.sk_spv_warning_banner.has_message() {
+                        self.sk_spv_warning_banner.clear();
+                    }
+
                     // Action buttons for SK wallet
                     ui.horizontal(|ui| {
-                        if ui
-                            .button(RichText::new("Send").color(text_color).strong())
-                            .clicked()
-                        {
+                        // Only force the primary text color when the button is
+                        // enabled; otherwise let egui apply its default disabled
+                        // visuals so the button actually looks greyed out.
+                        let send_label = RichText::new("Send").strong();
+                        let send_label = if is_rpc_mode {
+                            send_label.color(text_color)
+                        } else {
+                            send_label
+                        };
+                        let send_button = egui::Button::new(send_label);
+                        let send_response = ui.add_enabled(is_rpc_mode, send_button);
+                        let send_response = if is_rpc_mode {
+                            send_response
+                        } else {
+                            send_response.on_disabled_hover_text(SINGLE_KEY_REQUIRES_CORE)
+                        };
+                        if send_response.clicked() {
                             action = AppAction::AddScreen(
                                 ScreenType::SingleKeyWalletSendScreen(wallet_arc.clone())
                                     .create_screen(&self.app_context),
                             );
                         }
 
+                        // Receive only displays the local address — it does
+                        // not touch Core or SPV, so it stays enabled in both
+                        // modes.
                         if ui
                             .button(RichText::new("Receive").color(text_color))
                             .clicked()

@@ -50,9 +50,11 @@ pub async fn start_http_server(
     let mcp_service = StreamableHttpService::new(
         move || Ok(DashMcpService::new_shared(ctx.clone())),
         LocalSessionManager::default().into(),
-        StreamableHttpServerConfig {
-            cancellation_token: cancel.clone(),
-            ..Default::default()
+        {
+            StreamableHttpServerConfig {
+                cancellation_token: cancel.clone(),
+                ..Default::default()
+            }
         },
     );
 

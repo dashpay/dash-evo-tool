@@ -33,7 +33,7 @@ use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_builder:
     BuilderError, TransactionBuilder,
 };
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
-use dash_sdk::dpp::key_wallet_manager::manager::{WalletError, WalletId, WalletManager};
+use dash_sdk::dpp::key_wallet_manager::{WalletError, WalletId, WalletInterface, WalletManager};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
@@ -191,10 +191,11 @@ impl AppContext {
                     Network::Testnet => (&testnet_result, maybe_testnet_config),
                     Network::Devnet => (&devnet_result, maybe_devnet_config),
                     Network::Regtest => (&local_result, maybe_local_config),
-                    _ => (&mainnet_result, maybe_mainnet_config),
                 };
                 let active_rpc_error = if let Err(e) = active_result {
-                    if let Some(task_err) = Self::chain_lock_rpc_error(active_config, e) {
+                    if let Some(task_err) =
+                        Self::chain_lock_rpc_error(active_config, self.network, e)
+                    {
                         return Err(task_err);
                     }
                     // Non-auth, non-connection error — show the actual error
@@ -442,7 +443,8 @@ impl AppContext {
 
         let addr = format!(
             "http://{}:{}",
-            network_config.core_host, network_config.core_rpc_port
+            network_config.rpc_host(),
+            network_config.rpc_port(network)
         );
 
         let cookie_path = match core_cookie_path(network, &network_config.devnet_name) {
@@ -457,15 +459,15 @@ impl AppContext {
         let client = match Client::new(&addr, Auth::CookieFile(cookie_path.clone())) {
             Ok(client) => client,
             Err(_) => {
-                tracing::debug!(
-                    "Failed to authenticate using .cookie file at {:?}, falling back to user/pass",
+                tracing::trace!(
+                    "Cookie auth unavailable at {:?}, using user/pass",
                     cookie_path
                 );
                 match Client::new(
                     &addr,
                     Auth::UserPass(
-                        network_config.core_rpc_user.to_string(),
-                        network_config.core_rpc_password.to_string(),
+                        network_config.core_rpc_user.clone().unwrap_or_default(),
+                        network_config.core_rpc_password.clone().unwrap_or_default(),
                     ),
                 ) {
                     Ok(c) => c,
@@ -484,6 +486,7 @@ impl AppContext {
     /// `TaskError`, enriching connection failures with host:port.
     fn chain_lock_rpc_error(
         config: &Option<NetworkConfig>,
+        network: Network,
         e: &dashcore_rpc::Error,
     ) -> Option<TaskError> {
         if is_rpc_auth_error(e) {
@@ -492,7 +495,7 @@ impl AppContext {
         if is_rpc_connection_error(e) {
             let url = config
                 .as_ref()
-                .map(|c| format!("{}:{} ({})", c.core_host, c.core_rpc_port, e))
+                .map(|c| format!("{}:{}", c.rpc_host(), c.rpc_port(network)))
                 .unwrap_or_else(|| "unknown".to_string());
             return Some(TaskError::CoreRpcConnectionFailed { url, source: None });
         }
@@ -589,7 +592,13 @@ impl AppContext {
                 &parsed_recipients,
                 &request,
             )?;
-            self.sign_spv_transaction(&mut wm, &wallet_id, unsigned)?
+            let signed = self.sign_spv_transaction(&mut wm, &wallet_id, unsigned)?;
+
+            // Notify the wallet about the outgoing tx while still holding the
+            // write lock. This marks spent UTXOs immediately so concurrent
+            // callers don't select the same inputs (double-spend prevention).
+            let _ = wm.process_mempool_transaction(&signed, None).await;
+            signed
         };
 
         self.spv_manager
@@ -935,7 +944,12 @@ impl AppContext {
 
         for (input, (sighash, address)) in tx_signed.input.iter_mut().zip(signing_data.into_iter())
         {
-            let digest: [u8; 32] = sighash.into();
+            let digest: [u8; 32] =
+                sighash[..]
+                    .try_into()
+                    .map_err(|_| TaskError::WalletPaymentFailed {
+                        detail: "Sighash digest has unexpected length".to_string(),
+                    })?;
             let message = Message::from_digest(digest);
 
             let addr_info = account.get_address_info(&address).ok_or_else(|| {

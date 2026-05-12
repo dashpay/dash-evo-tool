@@ -29,3 +29,16 @@ pub fn force_accessibility_activation() -> bool {
         true
     }
 }
+
+/// Orders all windows out before shutdown so macOS can clean up
+/// display-related observations. No-op on non-macOS platforms.
+pub fn order_out_all_windows() {
+    #[cfg(target_os = "macos")]
+    {
+        let Some(mtm) = objc2::MainThreadMarker::new() else {
+            tracing::error!("order_out_all_windows called from non-main thread");
+            return;
+        };
+        macos::order_out_all_windows(mtm);
+    }
+}

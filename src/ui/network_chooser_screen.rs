@@ -1,13 +1,13 @@
 use crate::app::AppAction;
-use crate::backend_task::BackendTask;
 use crate::backend_task::core::CoreTask;
 use crate::backend_task::system_task::SystemTask;
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::config::Config;
 use crate::context::AppContext;
 use crate::context::connection_status::{ConnectionStatus, OverallConnectionState};
+use crate::model::feature_gate::FeatureGate;
 use crate::model::wallet::DerivationPathHelpers;
 use crate::spv::{CoreBackendMode, SpvStatus, SpvStatusSnapshot};
-use crate::ui::components::MessageBanner;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::password_input::PasswordInput;
@@ -15,6 +15,7 @@ use crate::ui::components::styled::{
     ConfirmationDialog, ConfirmationStatus, StyledCard, StyledCheckbox, island_central_panel,
 };
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::theme::{DashColors, ResponseExt, Shape, ThemeMode};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use crate::utils::path::format_path_for_display;
@@ -22,7 +23,7 @@ use dash_sdk::dash_spv::sync::{ProgressPercentage, SyncProgress as SpvSyncProgre
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::TimestampMillis;
 use eframe::egui::{self, Context, Ui};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -83,10 +84,11 @@ fn add_dapi_status_label(
 }
 
 pub struct NetworkChooserScreen {
-    pub mainnet_app_context: Arc<AppContext>,
-    pub testnet_app_context: Option<Arc<AppContext>>,
-    pub devnet_app_context: Option<Arc<AppContext>>,
-    pub local_app_context: Option<Arc<AppContext>>,
+    pub network_contexts: BTreeMap<Network, Arc<AppContext>>,
+    /// Shared data directory (same for all networks).
+    data_dir: PathBuf,
+    /// Shared database handle (same for all networks).
+    db: Arc<crate::database::Database>,
     dashmate_password_input: PasswordInput,
     pub current_network: Network,
     pub recheck_time: Option<TimestampMillis>,
@@ -110,37 +112,46 @@ pub struct NetworkChooserScreen {
     use_local_spv_node: bool,
     auto_start_spv: bool,
     close_dash_qt_on_exit: bool,
+    /// Tracks whether the last config save to disk failed (needed to show the
+    /// correct banner when the async reinit completes).
+    config_save_failed: bool,
+    /// Progress banner shown while reinit runs in the background.
+    reinit_banner: Option<BannerHandle>,
+    discovery_in_progress: bool,
+    fetch_confirmation_dialog: Option<ConfirmationDialog>,
+    /// Set when DAPI discovery completes and an SDK reinit is needed.
+    /// Dispatched as a `BackendTask` from the next `ui()` call.
+    pending_reinit_after_discovery: bool,
 }
 
 impl NetworkChooserScreen {
     pub fn new(
-        mainnet_app_context: &Arc<AppContext>,
-        testnet_app_context: Option<&Arc<AppContext>>,
-        devnet_app_context: Option<&Arc<AppContext>>,
-        local_app_context: Option<&Arc<AppContext>>,
+        contexts: &BTreeMap<Network, Arc<AppContext>>,
         current_network: Network,
         overwrite_dash_conf: bool,
     ) -> Self {
+        let any_context = contexts
+            .values()
+            .next()
+            .expect("BUG: NetworkChooserScreen requires at least one AppContext");
+
+        let data_dir = any_context.data_dir.clone();
+        let db = any_context.db.clone();
+
         let mut dashmate_password_input = PasswordInput::new()
             .with_hint_text("Core RPC password")
             .with_char_limit(40)
             .with_desired_width(280.0);
-        if let Ok(config) = Config::load_from(&mainnet_app_context.data_dir)
+        if let Ok(config) = Config::load_from(&data_dir)
             && let Some(network_config) = config.config_for_network(current_network)
         {
-            dashmate_password_input.set_text(network_config.core_rpc_password.clone());
+            dashmate_password_input
+                .set_text(network_config.core_rpc_password.clone().unwrap_or_default());
         }
 
-        let current_context = match current_network {
-            Network::Mainnet => mainnet_app_context,
-            Network::Testnet => testnet_app_context.unwrap_or(mainnet_app_context),
-            Network::Devnet => devnet_app_context.unwrap_or(mainnet_app_context),
-            Network::Regtest => local_app_context.unwrap_or(mainnet_app_context),
-            _ => mainnet_app_context,
-        };
+        let current_context = contexts.get(&current_network).unwrap_or(any_context);
         let developer_mode = current_context.is_developer_mode();
 
-        // Load settings including theme preference and dash_qt_path
         let settings = current_context
             .get_settings()
             .ok()
@@ -149,42 +160,30 @@ impl NetworkChooserScreen {
         let theme_preference = settings.theme_mode;
         let disable_zmq = settings.disable_zmq;
         let custom_dash_qt_path = settings.dash_qt_path;
-        let use_local_spv_node = mainnet_app_context
-            .db
-            .get_use_local_spv_node()
-            .unwrap_or(false);
-        let auto_start_spv = mainnet_app_context.db.get_auto_start_spv().unwrap_or(false);
-        let close_dash_qt_on_exit = mainnet_app_context
-            .db
-            .get_close_dash_qt_on_exit()
-            .unwrap_or(true);
+        let use_local_spv_node = db.get_use_local_spv_node().unwrap_or(false);
+        let auto_start_spv = db.get_auto_start_spv().unwrap_or(false);
+        let close_dash_qt_on_exit = db.get_close_dash_qt_on_exit().unwrap_or(true);
 
         let mut backend_modes = HashMap::new();
-        backend_modes.insert(Network::Mainnet, mainnet_app_context.core_backend_mode());
-        backend_modes.insert(
+        for network in [
+            Network::Mainnet,
             Network::Testnet,
-            testnet_app_context
-                .map(|ctx| ctx.core_backend_mode())
-                .unwrap_or_default(),
-        );
-        backend_modes.insert(
             Network::Devnet,
-            devnet_app_context
-                .map(|ctx| ctx.core_backend_mode())
-                .unwrap_or_default(),
-        );
-        backend_modes.insert(
             Network::Regtest,
-            local_app_context
-                .map(|ctx| ctx.core_backend_mode())
-                .unwrap_or_default(),
-        );
+        ] {
+            backend_modes.insert(
+                network,
+                contexts
+                    .get(&network)
+                    .map(|ctx| ctx.core_backend_mode())
+                    .unwrap_or_default(),
+            );
+        }
 
         Self {
-            mainnet_app_context: mainnet_app_context.clone(),
-            testnet_app_context: testnet_app_context.cloned(),
-            devnet_app_context: devnet_app_context.cloned(),
-            local_app_context: local_app_context.cloned(),
+            network_contexts: contexts.clone(),
+            data_dir,
+            db,
             dashmate_password_input,
             current_network,
             recheck_time: None,
@@ -208,27 +207,24 @@ impl NetworkChooserScreen {
             use_local_spv_node,
             auto_start_spv,
             close_dash_qt_on_exit,
+            config_save_failed: false,
+            reinit_banner: None,
+            discovery_in_progress: false,
+            fetch_confirmation_dialog: None,
+            pending_reinit_after_discovery: false,
         }
     }
 
-    pub fn context_for_network(&self, network: Network) -> &Arc<AppContext> {
-        match network {
-            Network::Mainnet => &self.mainnet_app_context,
-            Network::Testnet if self.testnet_app_context.is_some() => {
-                self.testnet_app_context.as_ref().unwrap()
-            }
-            Network::Devnet if self.devnet_app_context.is_some() => {
-                self.devnet_app_context.as_ref().unwrap()
-            }
-            Network::Regtest if self.local_app_context.is_some() => {
-                self.local_app_context.as_ref().unwrap()
-            }
-            _ => &self.mainnet_app_context,
-        }
+    pub fn context_for_network(&self, network: Network) -> Option<&Arc<AppContext>> {
+        self.network_contexts.get(&network)
     }
 
+    /// Returns the AppContext for the current network.
+    /// Falls back to any available context (should always succeed while the app is running).
     pub fn current_app_context(&self) -> &Arc<AppContext> {
         self.context_for_network(self.current_network)
+            .or_else(|| self.network_contexts.values().next())
+            .expect("BUG: no AppContext available for any network")
     }
 
     /// Save the current settings to the database
@@ -258,24 +254,22 @@ impl NetworkChooserScreen {
                 .spacing([40.0, 12.0])
                 .striped(false)
                 .show(ui, |ui| {
-                    // TODO: SPV is currently hidden behind Developer Mode while still in development.
-                    // Once SPV is production-ready, remove this developer_mode check and make SPV
-                    // the default/primary connection method, with RPC as a fallback option.
                     let current_backend_mode = *self
                         .backend_modes
                         .entry(self.current_network)
-                        .or_insert(CoreBackendMode::Rpc);
+                        .or_insert(CoreBackendMode::Spv);
 
                     if self.developer_mode {
-                        // Row 1: Connection Type (only shown in developer mode)
+                        // Row 1: Connection Type (only shown in Expert mode — the
+                        // connection backend is an advanced power-user choice).
                         ui.label(
                             egui::RichText::new("Connection Type:")
                                 .color(DashColors::text_primary(dark_mode)),
                         );
 
                         let connection_text = match current_backend_mode {
-                            CoreBackendMode::Spv => "SPV Client",
-                            CoreBackendMode::Rpc => "Dash Core RPC",
+                            CoreBackendMode::Spv => "Built-in (SPV)",
+                            CoreBackendMode::Rpc => "Local Dash Core node",
                         };
 
                         let mut connection_mode = current_backend_mode;
@@ -287,7 +281,7 @@ impl NetworkChooserScreen {
                                     .selectable_value(
                                         &mut connection_mode,
                                         CoreBackendMode::Spv,
-                                        "SPV Client",
+                                        "Built-in (SPV)",
                                     )
                                     .changed()
                                 {
@@ -300,7 +294,7 @@ impl NetworkChooserScreen {
                                     .selectable_value(
                                         &mut connection_mode,
                                         CoreBackendMode::Rpc,
-                                        "Dash Core RPC",
+                                        "Local Dash Core node",
                                     )
                                     .changed()
                                 {
@@ -313,33 +307,6 @@ impl NetworkChooserScreen {
                             });
 
                         ui.end_row();
-
-                        // Show experimental warning when SPV mode is selected
-                        if current_backend_mode == CoreBackendMode::Spv {
-                            ui.label(""); // Empty label for grid alignment
-                            egui::Frame::new()
-                                .fill(DashColors::WARNING.gamma_multiply(0.15))
-                                .inner_margin(egui::Margin::symmetric(8, 4))
-                                .stroke(egui::Stroke::new(1.0, DashColors::WARNING))
-                                .corner_radius(4.0)
-                                .show(ui, |ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.label(
-                                            egui::RichText::new("⚠")
-                                                .color(DashColors::WARNING)
-                                                .size(14.0),
-                                        );
-                                        ui.label(
-                                            egui::RichText::new(
-                                                "SPV mode is experimental and still in development",
-                                            )
-                                            .color(DashColors::WARNING)
-                                            .size(12.0),
-                                        );
-                                    });
-                                });
-                            ui.end_row();
-                        }
                     }
 
                     // Row 2: Network
@@ -361,7 +328,6 @@ impl NetworkChooserScreen {
                         Network::Testnet => "Testnet",
                         Network::Devnet => "Devnet",
                         Network::Regtest => "Local",
-                        _ => "Unknown",
                     };
 
                     ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
@@ -382,18 +348,18 @@ impl NetworkChooserScreen {
                                 {
                                     app_action = AppAction::SwitchNetwork(Network::Mainnet);
                                 }
-                                if self.testnet_app_context.is_some()
-                                    && ui
-                                        .selectable_value(
-                                            &mut self.current_network,
-                                            Network::Testnet,
-                                            "Testnet",
-                                        )
-                                        .clicked()
+                                // Testnet always visible; Devnet/Local only in dev mode
+                                if ui
+                                    .selectable_value(
+                                        &mut self.current_network,
+                                        Network::Testnet,
+                                        "Testnet",
+                                    )
+                                    .clicked()
                                 {
                                     app_action = AppAction::SwitchNetwork(Network::Testnet);
                                 }
-                                if self.devnet_app_context.is_some()
+                                if self.developer_mode
                                     && ui
                                         .selectable_value(
                                             &mut self.current_network,
@@ -404,7 +370,7 @@ impl NetworkChooserScreen {
                                 {
                                     app_action = AppAction::SwitchNetwork(Network::Devnet);
                                 }
-                                if self.local_app_context.is_some()
+                                if self.developer_mode
                                     && ui
                                         .selectable_value(
                                             &mut self.current_network,
@@ -417,13 +383,13 @@ impl NetworkChooserScreen {
                                 }
                                 if self.current_network != prev_network {
                                     let password = Config::load_from(
-                                        &self.mainnet_app_context.data_dir,
+                                        &self.data_dir,
                                     )
                                     .ok()
                                     .and_then(|c| {
                                         c.config_for_network(self.current_network)
                                             .as_ref()
-                                            .map(|nc| nc.core_rpc_password.clone())
+                                            .and_then(|nc| nc.core_rpc_password.clone())
                                     })
                                     .unwrap_or_default();
                                     self.dashmate_password_input.set_text(password);
@@ -445,7 +411,7 @@ impl NetworkChooserScreen {
             let current_backend_mode = *self
                 .backend_modes
                 .entry(self.current_network)
-                .or_insert(CoreBackendMode::Rpc);
+                .or_insert(CoreBackendMode::Spv);
             if current_backend_mode == CoreBackendMode::Rpc {
                 ui.add_space(20.0);
                 ui.separator();
@@ -484,7 +450,7 @@ impl NetworkChooserScreen {
 
                     if (save_clicked || auto_update_succeeded)
                         && let Ok(mut config) =
-                            Config::load_from(&self.mainnet_app_context.data_dir)
+                            Config::load_from(&self.data_dir)
                         && let Some(network_cfg) =
                             config.config_for_network(self.current_network).clone()
                     {
@@ -496,7 +462,7 @@ impl NetworkChooserScreen {
                             updated_config.clone(),
                         );
                         let save_failed = if let Err(e) =
-                            config.save(&self.mainnet_app_context.data_dir)
+                            config.save(&self.data_dir)
                         {
                             tracing::error!("Failed to save config to .env: {e}");
                             true
@@ -504,74 +470,43 @@ impl NetworkChooserScreen {
                             false
                         };
 
-                        // Update in-memory config and reinit regardless of save
-                        // result, so the password takes effect for this session.
-                        // Only do so when the context for this network already
-                        // exists — otherwise `context_for_network` would silently
-                        // fall back to mainnet and corrupt its config.  The saved
-                        // file-level config will be picked up when the network
-                        // context is created.
-                        let network_context_exists = match self.current_network {
-                            Network::Mainnet => true,
-                            Network::Testnet => self.testnet_app_context.is_some(),
-                            Network::Devnet => self.devnet_app_context.is_some(),
-                            Network::Regtest => self.local_app_context.is_some(),
-                            _ => false,
-                        };
-
-                        let reinit_failed = if network_context_exists {
-                            let app_context = self.context_for_network(self.current_network);
+                        // Update in-memory config and dispatch an async reinit
+                        // so the password takes effect for this session without
+                        // blocking the UI thread.  Only do so when the context
+                        // for this network already exists — otherwise
+                        // `context_for_network` would silently fall back to
+                        // mainnet and corrupt its config.  The saved file-level
+                        // config will be picked up when the network context is
+                        // created.
+                        if let Some(app_context) = self.context_for_network(self.current_network)
+                        {
                             {
                                 let mut cfg_lock = app_context.config.write().unwrap();
                                 *cfg_lock = updated_config;
                             }
 
                             MessageBanner::clear_all_global(ui.ctx());
-                            if let Err(e) =
-                                Arc::clone(app_context).reinit_core_client_and_sdk()
-                            {
-                                tracing::error!(
-                                    "Failed to re-init RPC client and sdk for {:?}: {}",
-                                    self.current_network,
-                                    e
-                                );
-                                true
-                            } else {
-                                false
-                            }
+                            self.config_save_failed = save_failed;
+                            self.reinit_banner = Some(MessageBanner::set_global(
+                                ui.ctx(),
+                                "Reconnecting to Dash Core...",
+                                MessageType::Info,
+                            ));
+                            app_action = AppAction::BackendTask(
+                                BackendTask::ReinitCoreClientAndSdk,
+                            );
+                        } else if save_failed {
+                            MessageBanner::set_global(
+                                ui.ctx(),
+                                "Could not save the configuration file. Your changes will apply when this network is activated.",
+                                MessageType::Warning,
+                            );
                         } else {
-                            false
-                        };
-
-                        match (save_failed, reinit_failed) {
-                            (false, false) => {
-                                MessageBanner::set_global(
-                                    ui.ctx(),
-                                    "Core RPC password saved successfully.",
-                                    MessageType::Success,
-                                );
-                            }
-                            (false, true) => {
-                                MessageBanner::set_global(
-                                    ui.ctx(),
-                                    "Password saved but the connection could not be re-established. Check that Dash Core is running and retry.",
-                                    MessageType::Warning,
-                                );
-                            }
-                            (true, false) => {
-                                MessageBanner::set_global(
-                                    ui.ctx(),
-                                    "Could not save the configuration file. Your changes will apply for this session only.",
-                                    MessageType::Warning,
-                                );
-                            }
-                            (true, true) => {
-                                MessageBanner::set_global(
-                                    ui.ctx(),
-                                    "Could not save the configuration file and the connection could not be re-established. Check that Dash Core is running and retry.",
-                                    MessageType::Warning,
-                                );
-                            }
+                            MessageBanner::set_global(
+                                ui.ctx(),
+                                "Core RPC password saved successfully.",
+                                MessageType::Success,
+                            );
                         }
                     }
                 });
@@ -588,7 +523,7 @@ impl NetworkChooserScreen {
             let current_backend_mode = *self
                 .backend_modes
                 .entry(self.current_network)
-                .or_insert(CoreBackendMode::Rpc);
+                .or_insert(CoreBackendMode::Spv);
 
             let ctx = self.current_app_context().clone();
             let status = ctx.connection_status();
@@ -718,10 +653,7 @@ impl NetworkChooserScreen {
                 }
             });
 
-            // TODO: SPV sync progress is hidden when developer mode is OFF.
-            // Remove the developer_mode check once SPV is production-ready.
-            if self.developer_mode
-                && current_backend_mode == CoreBackendMode::Spv
+            if FeatureGate::SpvBackend.is_available(self.current_app_context())
                 && let Some(snap) = snapshot.as_ref()
                 && (snap.status == SpvStatus::Syncing || snap.status == SpvStatus::Starting)
             {
@@ -737,7 +669,7 @@ impl NetworkChooserScreen {
             ui.add_space(10.0);
 
             ui.vertical(|ui| {
-                if current_backend_mode == CoreBackendMode::Rpc && !self.developer_mode {
+                if current_backend_mode == CoreBackendMode::Rpc {
                     ui.horizontal(|ui| {
                         ui.label("Core RPC:");
                         let rpc_color = if rpc_online {
@@ -753,42 +685,6 @@ impl NetworkChooserScreen {
                             "Disconnected".to_string()
                         };
                         ui.colored_label(rpc_color, &rpc_label);
-
-                        ui.label(",");
-                        ui.label("ZMQ:");
-                        if disable_zmq {
-                            ui.colored_label(DashColors::text_secondary(dark_mode), "Disabled");
-                        } else {
-                            let zmq_color = if zmq_connected {
-                                DashColors::SUCCESS
-                            } else {
-                                DashColors::ERROR
-                            };
-                            let zmq_label = if zmq_connected { "Connected" } else { "Disconnected" };
-                            ui.colored_label(zmq_color, zmq_label);
-                        }
-
-                        ui.label(",");
-                        add_dapi_status_label(ui, dapi_total, dapi_available, &dapi_label, dark_mode);
-                    });
-                }
-
-                if current_backend_mode == CoreBackendMode::Rpc && self.developer_mode {
-                    ui.horizontal(|ui| {
-                        ui.label("Dash Core RPC:");
-                        let color = if rpc_online {
-                            DashColors::SUCCESS
-                        } else {
-                            DashColors::ERROR
-                        };
-                        let label = if rpc_online {
-                            "Connected".to_string()
-                        } else if let Some(ref err) = rpc_last_error {
-                            format!("Error: {err}")
-                        } else {
-                            "Disconnected".to_string()
-                        };
-                        ui.colored_label(color, &label);
                     });
 
                     ui.horizontal(|ui| {
@@ -799,19 +695,16 @@ impl NetworkChooserScreen {
                                 "Disabled",
                             );
                         } else {
-                            let color = if zmq_connected {
+                            let zmq_color = if zmq_connected {
                                 DashColors::SUCCESS
                             } else {
                                 DashColors::ERROR
                             };
-                            let label = if zmq_connected { "Connected" } else { "Disconnected" };
-                            ui.colored_label(color, label);
+                            let zmq_label =
+                                if zmq_connected { "Connected" } else { "Disconnected" };
+                            ui.colored_label(zmq_color, zmq_label);
                         }
-                    });
-
-                    ui.horizontal(|ui| {
-                        add_dapi_status_label(ui, dapi_total, dapi_available, &dapi_label, dark_mode);
-                    });
+                });
                 }
 
                 if current_backend_mode == CoreBackendMode::Spv {
@@ -832,12 +725,67 @@ impl NetworkChooserScreen {
                         };
                         ui.colored_label(color, label);
                     });
+                }
 
-                    ui.horizontal(|ui| {
-                        add_dapi_status_label(ui, dapi_total, dapi_available, &dapi_label, dark_mode);
-                    });
+                // DAPI line (all modes)
+                ui.horizontal(|ui| {
+                    add_dapi_status_label(
+                        ui,
+                        dapi_total,
+                        dapi_available,
+                        &dapi_label,
+                        dark_mode,
+                    );
+                });
+
+                // "Refresh DAPI endpoints" button — Mainnet/Testnet only
+                let is_discoverable = matches!(
+                    self.current_network,
+                    Network::Mainnet | Network::Testnet
+                );
+                if is_discoverable {
+                    ui.add_space(8.0);
+                    let button_text = if self.discovery_in_progress {
+                        "Fetching..."
+                    } else {
+                        "Refresh DAPI endpoints"
+                    };
+                    let button =
+                        egui::Button::new(button_text).corner_radius(Shape::RADIUS_MD);
+
+                    let response = ui.add_enabled(!self.discovery_in_progress, button);
+                    let clicked = response.clicked();
+                    response.on_hover_text(
+                        "Updates list of DAPI nodes using a centralized server managed by Dash Core Group.",
+                    );
+                    if clicked {
+                        if dapi_total > 0 {
+                            let message = format!(
+                                "This will fetch a fresh list of DAPI nodes, replacing your current {} \
+                                configured addresses in the config file.",
+                                dapi_total
+                            );
+                            self.fetch_confirmation_dialog = Some(
+                                ConfirmationDialog::new("Update Node Addresses?", message)
+                                    .confirm_text(Some("Fetch"))
+                                    .cancel_text(Some("Cancel")),
+                            );
+                        } else {
+                            self.discovery_in_progress = true;
+                            app_action = AppAction::BackendTask(
+                                BackendTask::DiscoverDapiNodes {
+                                    network: self.current_network,
+                                },
+                            );
+                        }
+                    }
                 }
             });
+
+            // Fetch confirmation dialog
+            if self.fetch_confirmation_dialog.is_some() {
+                app_action |= self.show_fetch_confirmation(ui);
+            }
         });
 
         // Advanced Settings section with clean dropdown
@@ -1128,60 +1076,21 @@ impl NetworkChooserScreen {
                 ui.horizontal(|ui| {
                     if StyledCheckbox::new(&mut self.developer_mode, "Expert mode")
                         .show(ui)
-                        .clickable_tooltip("Show advanced options for power users and developers")
+                        .clickable_tooltip(
+                            "Show advanced options for experienced users, including \
+                             Dash Core RPC, developer tools, and signing overrides.",
+                        )
                         .clicked()
                     {
-                        // Always update all contexts first to keep UI in sync
-                        self.mainnet_app_context
-                            .enable_developer_mode(self.developer_mode);
-                        if let Some(ref ctx) = self.testnet_app_context {
-                            ctx.enable_developer_mode(self.developer_mode);
-                        }
-                        if let Some(ref ctx) = self.devnet_app_context {
-                            ctx.enable_developer_mode(self.developer_mode);
-                        }
-                        if let Some(ref ctx) = self.local_app_context {
+                        for ctx in self.network_contexts.values() {
                             ctx.enable_developer_mode(self.developer_mode);
                         }
 
                         // Persist to config file (non-blocking for UI)
-                        if let Ok(mut config) = Config::load_from(&self.mainnet_app_context.data_dir) {
+                        if let Ok(mut config) = Config::load_from(&self.data_dir) {
                             config.developer_mode = Some(self.developer_mode);
-                            if let Err(e) = config.save(&self.mainnet_app_context.data_dir) {
+                            if let Err(e) = config.save(&self.data_dir) {
                                 tracing::error!("Failed to save config: {e}");
-                            }
-                        }
-
-                        // TODO: When developer mode is disabled, stop SPV and switch to RPC.
-                        // Remove this block once SPV is production-ready.
-                        if !self.developer_mode {
-                            // Stop SPV and switch to RPC for all network contexts
-                            self.mainnet_app_context.stop_spv();
-                            if self.mainnet_app_context.core_backend_mode() == CoreBackendMode::Spv {
-                                self.mainnet_app_context.set_core_backend_mode(CoreBackendMode::Rpc);
-                            }
-                            self.backend_modes.insert(Network::Mainnet, CoreBackendMode::Rpc);
-
-                            if let Some(ref ctx) = self.testnet_app_context {
-                                ctx.stop_spv();
-                                if ctx.core_backend_mode() == CoreBackendMode::Spv {
-                                    ctx.set_core_backend_mode(CoreBackendMode::Rpc);
-                                }
-                                self.backend_modes.insert(Network::Testnet, CoreBackendMode::Rpc);
-                            }
-                            if let Some(ref ctx) = self.devnet_app_context {
-                                ctx.stop_spv();
-                                if ctx.core_backend_mode() == CoreBackendMode::Spv {
-                                    ctx.set_core_backend_mode(CoreBackendMode::Rpc);
-                                }
-                                self.backend_modes.insert(Network::Devnet, CoreBackendMode::Rpc);
-                            }
-                            if let Some(ref ctx) = self.local_app_context {
-                                ctx.stop_spv();
-                                if ctx.core_backend_mode() == CoreBackendMode::Spv {
-                                    ctx.set_core_backend_mode(CoreBackendMode::Rpc);
-                                }
-                                self.backend_modes.insert(Network::Regtest, CoreBackendMode::Rpc);
                             }
                         }
                     }
@@ -1275,7 +1184,6 @@ impl NetworkChooserScreen {
                     {
                         // Save to database
                         match self
-                            .mainnet_app_context
                             .db
                             .update_close_dash_qt_on_exit(self.close_dash_qt_on_exit)
                         {
@@ -1304,8 +1212,8 @@ impl NetworkChooserScreen {
                     );
                 });
 
-                // TODO: SPV settings are hidden when developer mode is OFF.
-                // Remove the developer_mode checks once SPV is production-ready.
+                // Advanced SPV peer source configuration is Expert-only —
+                // fresh-install users get auto-discovery, which is the correct default.
                 if self.developer_mode {
                     ui.add_space(12.0);
                     ui.separator();
@@ -1333,21 +1241,10 @@ impl NetworkChooserScreen {
                         {
                             // Save to database
                             let _ = self
-                                .mainnet_app_context
                                 .db
                                 .update_use_local_spv_node(self.use_local_spv_node);
 
-                            // Update all network contexts
-                            self.mainnet_app_context
-                                .spv_manager()
-                                .set_use_local_node(self.use_local_spv_node);
-                            if let Some(ref ctx) = self.testnet_app_context {
-                                ctx.spv_manager().set_use_local_node(self.use_local_spv_node);
-                            }
-                            if let Some(ref ctx) = self.devnet_app_context {
-                                ctx.spv_manager().set_use_local_node(self.use_local_spv_node);
-                            }
-                            if let Some(ref ctx) = self.local_app_context {
+                            for ctx in self.network_contexts.values() {
                                 ctx.spv_manager().set_use_local_node(self.use_local_spv_node);
                             }
                         }
@@ -1397,7 +1294,6 @@ impl NetworkChooserScreen {
                         {
                             // Save to database
                             let _ = self
-                                .mainnet_app_context
                                 .db
                                 .update_auto_start_spv(self.auto_start_spv);
                         }
@@ -1482,9 +1378,9 @@ impl NetworkChooserScreen {
                     app_action |= self.show_database_clear_confirmation(ui);
                 }
 
-                // SPV Maintenance section
-                // TODO: SPV maintenance is hidden when developer mode is OFF.
-                // Remove the developer_mode check once SPV is production-ready.
+                // SPV maintenance (clear data, rescan) is Expert-only — these are
+                // diagnostic tools that can destroy wallet sync state and should not
+                // be exposed to fresh-install users.
                 if self.developer_mode {
                     let current_backend_mode = self.current_app_context().core_backend_mode();
                     if current_backend_mode == CoreBackendMode::Spv {
@@ -1783,6 +1679,23 @@ impl NetworkChooserScreen {
         action
     }
 
+    fn show_fetch_confirmation(&mut self, ui: &mut Ui) -> AppAction {
+        let mut action = AppAction::None;
+        if let Some(dialog) = self.fetch_confirmation_dialog.as_mut() {
+            let response = dialog.show(ui);
+            if let Some(result) = response.inner.dialog_response {
+                self.fetch_confirmation_dialog = None;
+                if matches!(result, ConfirmationStatus::Confirmed) {
+                    self.discovery_in_progress = true;
+                    action = AppAction::BackendTask(BackendTask::DiscoverDapiNodes {
+                        network: self.current_network,
+                    });
+                }
+            }
+        }
+        action
+    }
+
     fn show_spv_clear_confirmation(&mut self, ui: &mut Ui) -> AppAction {
         if let Some(dialog) = self.spv_clear_dialog.as_mut() {
             let response = dialog.show(ui);
@@ -1853,7 +1766,6 @@ impl NetworkChooserScreen {
             Network::Testnet => "Testnet",
             Network::Devnet => "Devnet",
             Network::Regtest => "Local",
-            _ => "this network",
         }
     }
 
@@ -2025,13 +1937,7 @@ impl NetworkChooserScreen {
     }
 
     fn has_context_for(&self, network: Network) -> bool {
-        match network {
-            Network::Mainnet => true,
-            Network::Testnet => self.testnet_app_context.is_some(),
-            Network::Devnet => self.devnet_app_context.is_some(),
-            Network::Regtest => self.local_app_context.is_some(),
-            _ => false,
-        }
+        self.network_contexts.contains_key(&network)
     }
 
     fn spv_status_detail(&self, snapshot: &SpvStatusSnapshot) -> Option<String> {
@@ -2127,21 +2033,8 @@ impl ScreenLike for NetworkChooserScreen {
             self.theme_preference = settings.theme_mode;
         }
 
-        self.backend_modes.insert(
-            Network::Mainnet,
-            self.mainnet_app_context.core_backend_mode(),
-        );
-        if let Some(ctx) = &self.testnet_app_context {
-            self.backend_modes
-                .insert(Network::Testnet, ctx.core_backend_mode());
-        }
-        if let Some(ctx) = &self.devnet_app_context {
-            self.backend_modes
-                .insert(Network::Devnet, ctx.core_backend_mode());
-        }
-        if let Some(ctx) = &self.local_app_context {
-            self.backend_modes
-                .insert(Network::Regtest, ctx.core_backend_mode());
+        for (&network, ctx) in &self.network_contexts {
+            self.backend_modes.insert(network, ctx.core_backend_mode());
         }
     }
 
@@ -2166,6 +2059,12 @@ impl ScreenLike for NetworkChooserScreen {
                 .inner
         });
 
+        // Dispatch deferred SDK reinit after DAPI discovery
+        if self.pending_reinit_after_discovery {
+            self.pending_reinit_after_discovery = false;
+            action |= AppAction::BackendTask(BackendTask::ReinitCoreClientAndSdk);
+        }
+
         // Recheck both network status every 3 seconds
         let recheck_time = Duration::from_secs(3);
         if action == AppAction::None {
@@ -2189,5 +2088,78 @@ impl ScreenLike for NetworkChooserScreen {
         }
 
         action
+    }
+
+    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
+        // Handle CoreClientReinitialized (from RPC password save)
+        if matches!(
+            &backend_task_success_result,
+            BackendTaskSuccessResult::CoreClientReinitialized
+        ) {
+            self.reinit_banner.take_and_clear();
+            let save_failed = std::mem::take(&mut self.config_save_failed);
+
+            if save_failed {
+                MessageBanner::set_global(
+                    self.current_app_context().egui_ctx(),
+                    "Could not save the configuration file. Your changes will apply for this session only.",
+                    MessageType::Warning,
+                );
+            } else {
+                MessageBanner::set_global(
+                    self.current_app_context().egui_ctx(),
+                    "Core RPC password saved successfully.",
+                    MessageType::Success,
+                );
+            }
+        }
+
+        // Handle DapiNodesDiscovered (from "Refresh DAPI endpoints" button)
+        if let BackendTaskSuccessResult::DapiNodesDiscovered {
+            network,
+            count,
+            addresses_csv,
+        } = backend_task_success_result
+        {
+            self.discovery_in_progress = false;
+
+            // Update config with new addresses
+            let data_dir = &self.current_app_context().data_dir;
+            if let Ok(mut config) = Config::load_from(data_dir) {
+                let mut network_cfg = config
+                    .config_for_network(network)
+                    .clone()
+                    .unwrap_or_default();
+                network_cfg.dapi_addresses = Some(addresses_csv);
+                config.update_config_for_network(network, network_cfg.clone());
+
+                if let Err(e) = config.save(data_dir) {
+                    tracing::error!("Failed to save config after DAPI discovery: {e}");
+                }
+
+                // Update in-memory config and schedule async SDK reinit
+                if let Some(app_context) = self.context_for_network(network) {
+                    if let Ok(mut cfg_lock) = app_context.config.write() {
+                        *cfg_lock = network_cfg;
+                    }
+                    self.pending_reinit_after_discovery = true;
+                }
+
+                MessageBanner::set_global(
+                    self.current_app_context().egui_ctx(),
+                    format!("Updated to {count} node addresses."),
+                    MessageType::Success,
+                );
+            }
+        }
+    }
+
+    fn display_message(&mut self, _msg: &str, msg_type: MessageType) {
+        self.reinit_banner.take_and_clear();
+        self.config_save_failed = false;
+        // Only reset discovery state on errors — other message types may be unrelated
+        if matches!(msg_type, MessageType::Error) && self.discovery_in_progress {
+            self.discovery_in_progress = false;
+        }
     }
 }

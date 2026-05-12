@@ -5,6 +5,7 @@ use crate::spv::SpvStatus;
 use crate::spv::manager::SpvManager;
 use crate::utils::tasks::TaskManager;
 use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::key_wallet_manager::WalletInterface;
 use std::sync::{Arc, RwLock};
 use tokio::time::{Duration, timeout};
 
@@ -15,11 +16,11 @@ const DEADLOCK_TIMEOUT: Duration = Duration::from_secs(10);
 /// Create a minimal testnet NetworkConfig for testing.
 fn test_network_config() -> NetworkConfig {
     NetworkConfig {
-        dapi_addresses: "https://127.0.0.1:1443".to_string(),
-        core_host: "127.0.0.1".to_string(),
-        core_rpc_port: 19998,
-        core_rpc_user: "dashrpc".to_string(),
-        core_rpc_password: "password".to_string(),
+        dapi_addresses: Some("https://127.0.0.1:1443".to_string()),
+        core_host: Some("127.0.0.1".to_string()),
+        core_rpc_port: Some(19998),
+        core_rpc_user: Some("dashrpc".to_string()),
+        core_rpc_password: Some("password".to_string()),
         core_zmq_endpoint: Some("tcp://127.0.0.1:23709".to_string()),
         devnet_name: None,
         wallet_private_key: None,
@@ -501,14 +502,16 @@ async fn test_broadcast_transaction_fails_when_not_running() {
 
 /// Given CoreBackendMode variants,
 /// When converting between u8 and enum via From<u8> and as_u8(),
-/// Then roundtrip is correct (0 = Rpc, 1 = Spv, unknown defaults to Rpc).
+/// Then roundtrip is correct (0 = Rpc, 1 = Spv, unknown defaults to Spv — the
+/// DB column default and the app's runtime default).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_core_backend_mode_roundtrip() {
     use crate::spv::CoreBackendMode;
 
     assert_eq!(CoreBackendMode::from(0), CoreBackendMode::Rpc);
     assert_eq!(CoreBackendMode::from(1), CoreBackendMode::Spv);
-    assert_eq!(CoreBackendMode::from(99), CoreBackendMode::Rpc); // default
+    assert_eq!(CoreBackendMode::from(99), CoreBackendMode::Spv); // default fallback
+    assert_eq!(CoreBackendMode::default(), CoreBackendMode::Spv);
 
     assert_eq!(CoreBackendMode::Rpc.as_u8(), 0);
     assert_eq!(CoreBackendMode::Spv.as_u8(), 1);
@@ -636,4 +639,50 @@ async fn test_live_testnet_sync_and_shutdown() {
     );
 
     let _ = task_manager.shutdown();
+}
+
+/// Regression test: clear_data_dir must reset filter_committed_height (not just synced_height).
+///
+/// At rust-dashcore 309fac8, WalletManager gained an independent filter_committed_height
+/// field. FiltersManager::new() reads filter_committed_height() for its "already synced"
+/// guard — the field is no longer derived from synced_height. Calling update_synced_height(0)
+/// alone leaves filter_committed_height stale and causes the next SPV session to declare
+/// itself "already synced" and skip the rescan, producing zero balance after a Clear SPV Data.
+///
+/// Given a manager with a non-zero filter_committed_height,
+/// When clear_data_dir() is called,
+/// Then filter_committed_height is reset to 0.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_clear_data_dir_resets_filter_committed_height() {
+    let (manager, _tm, _tmp_dir) = create_test_manager();
+
+    // Pre-seed a non-zero filter_committed_height to simulate a previous session.
+    const PRESEED_HEIGHT: u32 = 5_000;
+    let wallet_arc = manager.wallet();
+    {
+        let mut wm = wallet_arc.write().await;
+        wm.update_filter_committed_height(PRESEED_HEIGHT);
+    }
+
+    // Verify pre-condition.
+    {
+        let wm = wallet_arc.read().await;
+        assert_eq!(
+            wm.filter_committed_height(),
+            PRESEED_HEIGHT,
+            "pre-condition: filter_committed_height should be PRESEED_HEIGHT"
+        );
+    }
+
+    manager
+        .clear_data_dir()
+        .expect("clear_data_dir should succeed");
+
+    // After clearing, filter_committed_height must be 0.
+    let wm = wallet_arc.read().await;
+    assert_eq!(
+        wm.filter_committed_height(),
+        0,
+        "clear_data_dir must reset filter_committed_height to 0"
+    );
 }

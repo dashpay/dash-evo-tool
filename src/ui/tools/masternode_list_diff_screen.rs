@@ -17,20 +17,20 @@ use dash_sdk::dpp::dashcore::bls_sig_utils::BLSSignature;
 use dash_sdk::dpp::dashcore::consensus::serialize as serialize2;
 use dash_sdk::dpp::dashcore::consensus::{Decodable, deserialize, serialize};
 use dash_sdk::dpp::dashcore::hashes::Hash;
+use dash_sdk::dpp::dashcore::network::constants::NetworkExt;
 use dash_sdk::dpp::dashcore::network::message_qrinfo::{QRInfo, QuorumSnapshot};
 use dash_sdk::dpp::dashcore::network::message_sml::MnListDiff;
 use dash_sdk::dpp::dashcore::sml::llmq_entry_verification::LLMQEntryVerificationStatus;
 use dash_sdk::dpp::dashcore::sml::llmq_type::LLMQType;
 use dash_sdk::dpp::dashcore::sml::masternode_list::MasternodeList;
 use dash_sdk::dpp::dashcore::sml::masternode_list_engine::{
-    MasternodeListEngine, MasternodeListEngineBlockContainer,
+    MasternodeListEngine, MasternodeListEngineBlockContainer, WORK_DIFF_DEPTH,
 };
 use dash_sdk::dpp::dashcore::sml::masternode_list_entry::EntryMasternodeType;
 use dash_sdk::dpp::dashcore::sml::masternode_list_entry::qualified_masternode_list_entry::QualifiedMasternodeListEntry;
 use dash_sdk::dpp::dashcore::sml::quorum_entry::qualified_quorum_entry::{
     QualifiedQuorumEntry, VerifyingChainLockSignaturesType,
 };
-use dash_sdk::dpp::dashcore::sml::quorum_validation_error::ClientDataRetrievalError;
 use dash_sdk::dpp::dashcore::transaction::special_transaction::quorum_commitment::QuorumEntry;
 use dash_sdk::dpp::dashcore::{
     Block, BlockHash as BlockHash2, ChainLock, InstantLock, Transaction,
@@ -369,42 +369,106 @@ impl MasternodeListDiffScreen {
         }
     }
 
-    fn get_height_and_cache(&mut self, block_hash: &BlockHash) -> Result<CoreBlockHeight, String> {
-        let Some(height) = self
+    /// Resolve a block hash to its height without mutating the engine.
+    ///
+    /// Reads in order from: engine `block_container`, `block_height_cache`, then Core RPC
+    /// (populating `block_height_cache` on success). Unlike [`Self::get_height_and_cache`],
+    /// this helper deliberately does **not** call `feed_block_height` — callers that need
+    /// to stage pre-commit lookups (e.g. `build_qr_info_block_data`) use this so a partial
+    /// failure leaves the engine untouched.
+    fn resolve_height(&mut self, block_hash: &BlockHash) -> Result<CoreBlockHeight, String> {
+        if let Some(height) = self
             .data
             .masternode_list_engine
             .block_container
             .get_height(block_hash)
-        else {
-            let Some(height) = self.cache.block_height_cache.get(block_hash) else {
-                tracing::debug!(
-                    "Asking core for height {} ({})",
-                    block_hash,
-                    block_hash.reverse()
-                );
-                return match self
-                    .app_context
-                    .core_client
-                    .read()
-                    .unwrap()
-                    .get_block_header_info(
-                        &(BlockHash2::from_byte_array(block_hash.to_byte_array())),
-                    ) {
-                    Ok(result) => {
-                        self.cache
-                            .block_height_cache
-                            .insert(*block_hash, result.height as CoreBlockHeight);
-                        self.data
-                            .masternode_list_engine
-                            .feed_block_height(result.height as CoreBlockHeight, *block_hash);
-                        Ok(result.height as CoreBlockHeight)
-                    }
-                    Err(e) => Err(e.to_string()),
-                };
-            };
+        {
+            return Ok(height);
+        }
+        if let Some(height) = self.cache.block_height_cache.get(block_hash) {
             return Ok(*height);
-        };
+        }
+        tracing::debug!(
+            "Asking core for height {} ({})",
+            block_hash,
+            block_hash.reverse()
+        );
+        match self
+            .app_context
+            .core_client
+            .read()
+            .unwrap()
+            .get_block_header_info(&(BlockHash2::from_byte_array(block_hash.to_byte_array())))
+        {
+            Ok(result) => {
+                let height = result.height as CoreBlockHeight;
+                self.cache.block_height_cache.insert(*block_hash, height);
+                Ok(height)
+            }
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    fn get_height_and_cache(&mut self, block_hash: &BlockHash) -> Result<CoreBlockHeight, String> {
+        let height = self.resolve_height(block_hash)?;
+        self.data
+            .masternode_list_engine
+            .block_container
+            .feed_block_height(height, *block_hash);
         Ok(height)
+    }
+
+    /// Resolve every block hash referenced by a QRInfo to its height so the engine's
+    /// `block_container` can be pre-populated before [`MasternodeListEngine::feed_qr_info`].
+    ///
+    /// Walks the hash set the engine enumerates from the QRInfo and resolves each from
+    /// our local cache first, then via Core RPC (populating the cache on success). For
+    /// every referenced hash we additionally fetch the cycle-boundary block at
+    /// `height + WORK_DIFF_DEPTH` (the engine needs it to compute rotated quorum keys).
+    /// Returns a flat list of `(height, hash)` pairs the caller feeds into
+    /// `engine.block_container.feed_block_height`.
+    ///
+    /// This is a pure "build" step: it uses [`Self::resolve_height`] (which populates
+    /// the local height cache but never touches the engine) so a mid-loop failure does
+    /// not leave the engine partially populated. The caller commits the returned entries
+    /// to the engine only after the full set resolves successfully.
+    ///
+    /// If a cycle-boundary block is not yet available from Core RPC, the referenced-hash
+    /// entry is still kept and the boundary lookup is skipped with a warning. The engine
+    /// may still succeed in `feed_qr_info`; if it does not, the error surfaces from that
+    /// call where it belongs.
+    fn build_qr_info_block_data(
+        &mut self,
+        qr_info: &QRInfo,
+    ) -> Result<Vec<(CoreBlockHeight, BlockHash)>, String> {
+        let mut entries = Vec::new();
+
+        for hash in MasternodeListEngine::qr_info_referenced_block_hashes(qr_info) {
+            if hash.as_byte_array() == &[0; 32] {
+                continue;
+            }
+            let height = self.resolve_height(&hash)?;
+            entries.push((height, hash));
+
+            let cycle_boundary_height = height + WORK_DIFF_DEPTH;
+            match self.get_block_hash_and_cache(cycle_boundary_height) {
+                Ok(cycle_boundary_hash) => {
+                    entries.push((cycle_boundary_height, cycle_boundary_hash));
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        referenced_hash = %hash,
+                        referenced_height = height,
+                        cycle_boundary_height,
+                        error = %e,
+                        "cycle-boundary block not yet available; skipping and letting feed_qr_info decide"
+                    );
+                    continue;
+                }
+            }
+        }
+
+        Ok(entries)
     }
 
     #[allow(dead_code)]
@@ -638,6 +702,7 @@ impl MasternodeListDiffScreen {
             tracing::debug!("feeding {} {}", base_height, mn_list_diff.base_block_hash);
             self.data
                 .masternode_list_engine
+                .block_container
                 .feed_block_height(base_height, mn_list_diff.base_block_hash);
         } else {
             self.ui_state.error = Some(format!(
@@ -651,6 +716,7 @@ impl MasternodeListDiffScreen {
             tracing::debug!("feeding {} {}", block_height, mn_list_diff.block_hash);
             self.data
                 .masternode_list_engine
+                .block_container
                 .feed_block_height(block_height, mn_list_diff.block_hash);
         } else {
             self.ui_state.error = Some(format!(
@@ -665,6 +731,7 @@ impl MasternodeListDiffScreen {
         if let Ok(height) = self.get_height(&quorum_entry.quorum_hash) {
             self.data
                 .masternode_list_engine
+                .block_container
                 .feed_block_height(height, quorum_entry.quorum_hash);
         } else {
             self.ui_state.error = Some(format!(
@@ -1356,39 +1423,30 @@ impl MasternodeListDiffScreen {
             Some(core_p2phandler) => core_p2phandler,
         };
 
-        // Extracting immutable references before calling `feed_qr_info`
-        let get_height_fn = {
-            let block_height_cache = &self.cache.block_height_cache;
-            let app_context = &self.app_context;
-
-            move |block_hash: &BlockHash| {
-                if block_hash.as_byte_array() == &[0; 32] {
-                    return Ok(0);
-                }
-                if let Some(height) = block_height_cache.get(block_hash) {
-                    return Ok(*height);
-                }
-                match app_context
-                    .core_client
-                    .read()
-                    .unwrap()
-                    .get_block_header_info(
-                        &(BlockHash2::from_byte_array(block_hash.to_byte_array())),
-                    ) {
-                    Ok(block_info) => Ok(block_info.height as CoreBlockHeight),
-                    Err(_) => Err(ClientDataRetrievalError::RequiredBlockNotPresent(
-                        *block_hash,
-                    )),
-                }
+        // Pre-populate hash↔height data the engine needs (cycle boundary hashes are
+        // not carried in the QRInfo message and must be resolved locally).
+        let block_data = match self.build_qr_info_block_data(&qr_info) {
+            Ok(data) => data,
+            Err(e) => {
+                self.ui_state.error = Some(e);
+                self.task.pending = None;
+                return;
             }
         };
-
-        if let Err(e) =
+        for (height, hash) in block_data {
             self.data
                 .masternode_list_engine
-                .feed_qr_info(qr_info, false, true, Some(get_height_fn))
+                .block_container
+                .feed_block_height(height, hash);
+        }
+
+        if let Err(e) = self
+            .data
+            .masternode_list_engine
+            .feed_qr_info(qr_info, false, true)
         {
             self.ui_state.error = Some(e.to_string());
+            self.task.pending = None;
             return;
         }
 
@@ -3558,7 +3616,7 @@ impl MasternodeListDiffScreen {
                 cycle_hash
             ));
         }
-        for (index, commitment) in cycle_quorums.iter().enumerate() {
+        for (quorum_index, commitment) in cycle_quorums.iter() {
             // Determine the appropriate symbol based on verification status
             let verification_symbol = match commitment.verified {
                 LLMQEntryVerificationStatus::Verified => "✔", // Checkmark
@@ -3568,16 +3626,16 @@ impl MasternodeListDiffScreen {
                 } // Box
             };
 
-            let label_text = format!("{} Quorum at Index {}", verification_symbol, index);
+            let label_text = format!("{} Quorum at Index {}", verification_symbol, quorum_index);
 
             if ui
                 .selectable_label(
-                    self.selection.selected_qr_list_index == Some(index.to_string()),
+                    self.selection.selected_qr_list_index == Some(quorum_index.to_string()),
                     label_text,
                 )
                 .clicked()
             {
-                self.selection.selected_qr_list_index = Some(index.to_string());
+                self.selection.selected_qr_list_index = Some(quorum_index.to_string());
                 self.selection.selected_qr_item =
                     Some(SelectedQRItem::QuorumEntry(Box::new(commitment.clone())));
             }
@@ -4228,6 +4286,25 @@ impl ScreenLike for MasternodeListDiffScreen {
                 self.selection.selected_quorum_in_diff_index = None;
             }
             BackendTaskSuccessResult::MnListFetchedQrInfo { qr_info } => {
+                // Pre-populate hash↔height data the engine needs (cycle boundary hashes
+                // are not carried in the QRInfo message and must be resolved locally).
+                // Build this BEFORE inserting diffs into the cache so a failure does not
+                // leave the cache partially populated.
+                let block_data = match self.build_qr_info_block_data(&qr_info) {
+                    Ok(data) => data,
+                    Err(e) => {
+                        self.ui_state.error = Some(e);
+                        self.task.pending = None;
+                        return;
+                    }
+                };
+                for (height, hash) in block_data {
+                    self.data
+                        .masternode_list_engine
+                        .block_container
+                        .feed_block_height(height, hash);
+                }
+
                 // Warm heights and cache diffs before feed_qr_info (replicates old flow)
                 self.insert_mn_list_diff(&qr_info.mn_list_diff_tip);
                 self.insert_mn_list_diff(&qr_info.mn_list_diff_h);
@@ -4240,36 +4317,11 @@ impl ScreenLike for MasternodeListDiffScreen {
                 for d in &qr_info.mn_list_diff_list {
                     self.insert_mn_list_diff(d);
                 }
-
-                // Apply to engine using the same closure as before to resolve heights
-                let block_height_cache = self.cache.block_height_cache.clone();
-                let app_context = self.app_context.clone();
-                let get_height_fn = move |block_hash: &BlockHash| {
-                    if block_hash.as_byte_array() == &[0; 32] {
-                        return Ok(0);
-                    }
-                    if let Some(height) = block_height_cache.get(block_hash) {
-                        return Ok(*height);
-                    }
-                    match app_context
-                        .core_client
-                        .read()
-                        .unwrap()
-                        .get_block_header_info(
-                            &(BlockHash2::from_byte_array(block_hash.to_byte_array())),
-                        ) {
-                        Ok(block_info) => Ok(block_info.height as CoreBlockHeight),
-                        Err(_) => Err(ClientDataRetrievalError::RequiredBlockNotPresent(
-                            *block_hash,
-                        )),
-                    }
-                };
-                if let Err(e) = self.data.masternode_list_engine.feed_qr_info(
-                    qr_info.clone(),
-                    false,
-                    true,
-                    Some(get_height_fn),
-                ) {
+                if let Err(e) =
+                    self.data
+                        .masternode_list_engine
+                        .feed_qr_info(qr_info.clone(), false, true)
+                {
                     self.ui_state.error = Some(e.to_string());
                 }
                 // Store full qr_info for the QR tab

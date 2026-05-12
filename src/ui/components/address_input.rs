@@ -211,14 +211,21 @@ impl AddressInput {
         self
     }
 
-    /// Provide wallet data for Core and Platform autocomplete.
+    /// Provide wallet data for **Core and Platform** autocomplete only.
+    ///
+    /// This extracts BIP44 (Core) addresses from `known_addresses` and
+    /// PlatformPayment addresses from `watched_addresses`. It does NOT
+    /// extract identities or shielded addresses — those live outside the
+    /// `Wallet` struct and must be added separately:
+    ///
+    /// - **Identities**: call [`with_identities()`] with `QualifiedIdentity`
+    ///   data from `AppContext::load_local_qualified_identities()`.
+    /// - **Shielded**: call [`with_shielded_balance()`] with the address
+    ///   string from `AppContext::shielded_states`.
     ///
     /// Entries are extracted immediately (read lock acquired once per wallet).
     /// Skips gracefully if a wallet lock is poisoned.
     /// When more than one wallet is provided, entries are prefixed with the wallet alias.
-    // TODO: Once shielded state is moved from AppContext::shielded_states into
-    // Wallet, extract shielded addresses here automatically (like Core and
-    // Platform) instead of requiring callers to call with_shielded_balance().
     pub fn with_wallets(mut self, wallets: &[Arc<RwLock<Wallet>>]) -> Self {
         let multi = wallets.len() > 1;
         for wallet in wallets {

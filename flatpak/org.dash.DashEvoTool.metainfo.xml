@@ -43,6 +43,7 @@
     <name>Dash Core Group</name>
   </developer>
 
+  <!-- Version and date are auto-synced from Cargo.toml by CI (flatpak.yml) -->
   <releases>
     <release version="1.0.0-dev" date="2026-02-17" type="development" />
   </releases>

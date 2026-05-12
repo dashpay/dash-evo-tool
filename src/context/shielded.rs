@@ -107,14 +107,14 @@ impl AppContext {
         seed_hash: &WalletSeedHash,
         from_address: &dash_sdk::dpp::address_funds::PlatformAddress,
     ) {
-        let wallets = self.wallets.read().unwrap();
+        let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
         let wallet_arc = match wallets.get(seed_hash) {
             Some(w) => w.clone(),
             None => return,
         };
         drop(wallets);
 
-        let mut wallet = wallet_arc.write().unwrap();
+        let mut wallet = wallet_arc.write().unwrap_or_else(|e| e.into_inner());
         // Find the matching entry (platform_address_info is keyed by core Address)
         let mut found: Option<(dash_sdk::dpp::dashcore::Address, u64, u32)> = None;
         for (core_addr, info) in wallet.platform_address_info.iter_mut() {
@@ -150,14 +150,14 @@ impl AppContext {
         from_address: &dash_sdk::dpp::address_funds::PlatformAddress,
         nonce: u32,
     ) {
-        let wallets = self.wallets.read().unwrap();
+        let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
         let wallet_arc = match wallets.get(seed_hash) {
             Some(w) => w.clone(),
             None => return,
         };
         drop(wallets);
 
-        let mut wallet = wallet_arc.write().unwrap();
+        let mut wallet = wallet_arc.write().unwrap_or_else(|e| e.into_inner());
         for (core_addr, info) in wallet.platform_address_info.iter_mut() {
             if let Ok(pa) =
                 dash_sdk::dpp::address_funds::PlatformAddress::try_from(core_addr.clone())
@@ -201,7 +201,10 @@ impl AppContext {
         &self,
         seed_hash: &WalletSeedHash,
     ) -> Option<dash_sdk::grovedb_commitment_tree::PaymentAddress> {
-        let states = self.shielded_states.lock().unwrap();
+        let states = self
+            .shielded_states
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         states.get(seed_hash).map(|s| s.keys.default_address)
     }
 
@@ -212,7 +215,7 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         // Check if already initialized
         {
-            let states = self.shielded_states.lock().unwrap();
+            let states = self.shielded_states.lock()?;
             if states.contains_key(&seed_hash) {
                 let balance = states
                     .get(&seed_hash)
@@ -224,9 +227,9 @@ impl AppContext {
 
         // Get the wallet seed
         let seed_bytes = {
-            let wallets = self.wallets.read().unwrap();
+            let wallets = self.wallets.read()?;
             let wallet_arc = wallets.get(&seed_hash).ok_or(TaskError::WalletNotFound)?;
-            let wallet = wallet_arc.read().unwrap();
+            let wallet = wallet_arc.read()?;
             match &wallet.wallet_seed {
                 crate::model::wallet::WalletSeed::Open(open) => open.seed,
                 crate::model::wallet::WalletSeed::Closed(_) => {
@@ -326,7 +329,7 @@ impl AppContext {
 
         let balance = state.shielded_balance;
 
-        let mut states = self.shielded_states.lock().unwrap();
+        let mut states = self.shielded_states.lock()?;
         states.insert(seed_hash, state);
 
         Ok(BackendTaskSuccessResult::ShieldedInitialized { seed_hash, balance })
@@ -339,7 +342,7 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         // Take the state temporarily for the async operation
         let mut state = {
-            let mut states = self.shielded_states.lock().unwrap();
+            let mut states = self.shielded_states.lock()?;
             states.remove(&seed_hash).ok_or(TaskError::WalletNotFound)?
         };
 
@@ -357,7 +360,7 @@ impl AppContext {
 
         // Put state back
         {
-            let mut states = self.shielded_states.lock().unwrap();
+            let mut states = self.shielded_states.lock()?;
             states.insert(seed_hash, state);
         }
 
@@ -382,7 +385,7 @@ impl AppContext {
         nonce_override: Option<u32>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let default_address = {
-            let states = self.shielded_states.lock().unwrap();
+            let states = self.shielded_states.lock()?;
             let state = states.get(&seed_hash).ok_or(TaskError::WalletNotFound)?;
             state.keys.default_address
         };
@@ -531,7 +534,7 @@ impl AppContext {
         operation: impl AsyncFn(&ShieldedWalletState) -> Result<Vec<Nullifier>, TaskError>,
     ) -> Result<Vec<Nullifier>, TaskError> {
         let mut state = {
-            let mut states = self.shielded_states.lock().unwrap();
+            let mut states = self.shielded_states.lock()?;
             states.remove(seed_hash).ok_or(TaskError::WalletNotFound)?
         };
 
@@ -591,7 +594,7 @@ impl AppContext {
         }
 
         {
-            let mut states = self.shielded_states.lock().unwrap();
+            let mut states = self.shielded_states.lock()?;
             states.insert(*seed_hash, state);
         }
 
@@ -610,7 +613,7 @@ impl AppContext {
         source_address: Option<dash_sdk::dashcore_rpc::dashcore::Address>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let state_ref = {
-            let mut states = self.shielded_states.lock().unwrap();
+            let mut states = self.shielded_states.lock()?;
             states.remove(&seed_hash).ok_or(TaskError::WalletNotFound)?
         };
 
@@ -625,7 +628,7 @@ impl AppContext {
 
         // Always put state back
         {
-            let mut states = self.shielded_states.lock().unwrap();
+            let mut states = self.shielded_states.lock()?;
             states.insert(seed_hash, state_ref);
         }
 
@@ -642,7 +645,7 @@ impl AppContext {
         seed_hash: WalletSeedHash,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let mut state = {
-            let mut states = self.shielded_states.lock().unwrap();
+            let mut states = self.shielded_states.lock()?;
             states.remove(&seed_hash).ok_or(TaskError::WalletNotFound)?
         };
 
@@ -660,7 +663,7 @@ impl AppContext {
 
         // Put state back
         {
-            let mut states = self.shielded_states.lock().unwrap();
+            let mut states = self.shielded_states.lock()?;
             states.insert(seed_hash, state);
         }
 

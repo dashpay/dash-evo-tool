@@ -1,4 +1,6 @@
-use egui::{Button, Color32, CursorIcon, FontFamily, FontId, RichText, Stroke, Vec2, WidgetText};
+use egui::{
+    Button, Color32, CursorIcon, FontFamily, FontId, RichText, Stroke, Ui, Vec2, WidgetText,
+};
 
 /// Theme mode enumeration
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -76,8 +78,14 @@ impl DashColors {
     pub const DANGER_HOVER: Color32 = Color32::from_rgb(200, 0, 0);
     /// Red for danger/destructive action buttons (delete, remove)
     pub const DANGER_RED: Color32 = Color32::from_rgb(200, 60, 60);
-    /// Gray fill for disabled/inactive buttons
-    pub const BUTTON_DISABLED: Color32 = Color32::from_rgb(100, 100, 100);
+    /// Gray fill for disabled/inactive buttons — dark mode variant (slightly lighter than background)
+    pub const BUTTON_DISABLED_DARK: Color32 = Color32::from_rgb(100, 100, 100);
+    /// Gray fill for disabled/inactive buttons — light mode variant (fades toward white background)
+    pub const BUTTON_DISABLED_LIGHT: Color32 = Color32::from_rgb(220, 220, 220);
+    /// Text color on disabled buttons — light mode (dark gray, ≥4.5:1 on BUTTON_DISABLED_LIGHT)
+    pub const BUTTON_DISABLED_TEXT_LIGHT: Color32 = Color32::from_rgb(85, 85, 85);
+    /// Text color on disabled buttons — dark mode (near-white, ≥4.5:1 on BUTTON_DISABLED_DARK)
+    pub const BUTTON_DISABLED_TEXT_DARK: Color32 = Color32::from_rgb(230, 230, 230);
     /// Salmon/orange for input validation warnings
     pub const VALIDATION_WARNING: Color32 = Color32::from_rgb(255, 150, 100);
     /// Bright orange for important warnings (e.g., private key exposure, missing identities)
@@ -517,13 +525,6 @@ impl DashColors {
                     Self::REGTEST_BROWN
                 }
             }
-            _ => {
-                if dark_mode {
-                    Self::DASH_BLUE_DARK
-                } else {
-                    Self::DASH_BLUE
-                }
-            }
         }
     }
 
@@ -601,6 +602,14 @@ impl Typography {
 
     pub fn button() -> FontId {
         FontId::new(Self::SCALE_BASE, FontFamily::Proportional)
+    }
+
+    /// Measure the width of a representative sample using egui's active font metrics.
+    pub fn measure_text_width(ui: &Ui, sample: impl Into<String>, font_id: FontId) -> f32 {
+        ui.painter()
+            .layout_no_wrap(sample.into(), font_id, Color32::TRANSPARENT)
+            .size()
+            .x
     }
 }
 
@@ -762,6 +771,22 @@ impl ComponentStyles {
         DashColors::WHITE
     }
 
+    pub fn button_disabled_fill(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            DashColors::BUTTON_DISABLED_DARK
+        } else {
+            DashColors::BUTTON_DISABLED_LIGHT
+        }
+    }
+
+    pub fn button_disabled_text(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            DashColors::BUTTON_DISABLED_TEXT_DARK
+        } else {
+            DashColors::BUTTON_DISABLED_TEXT_LIGHT
+        }
+    }
+
     pub fn input_stroke() -> Stroke {
         Stroke::new(1.0, DashColors::BORDER)
     }
@@ -850,16 +875,20 @@ impl ComponentStyles {
 
     /// Add a primary button (conditionally enabled) with pointer cursor on hover.
     ///
-    /// When disabled, uses distinct greyed-out fill and text so the button
-    /// visually reads as inactive (egui's default disabled visuals are bypassed
-    /// by the explicit fill/text styling in `primary_button()`).
+    /// When disabled, uses `Sense::hover()` instead of `add_enabled(false, …)` so
+    /// egui's disabled-state machinery (painter opacity multiplier, visuals
+    /// desaturation) is never triggered. Our explicit fill and text colors render
+    /// at full opacity with no interference.  The returned Response has
+    /// `.clicked() == false` always when disabled — callers that gate on `.clicked()`
+    /// need no changes.
     pub fn add_primary_button_enabled(
         ui: &mut egui::Ui,
         enabled: bool,
         label: impl Into<WidgetText>,
     ) -> egui::Response {
-        let button = if enabled {
-            Self::primary_button(label)
+        if enabled {
+            ui.add(Self::primary_button(label))
+                .on_hover_cursor(CursorIcon::PointingHand)
         } else {
             let dark_mode = ui.ctx().style().visuals.dark_mode;
             let text = match label.into() {
@@ -867,20 +896,28 @@ impl ComponentStyles {
                     .as_ref()
                     .clone()
                     .strong()
-                    .color(DashColors::disabled(dark_mode)),
+                    .color(Self::button_disabled_text(dark_mode)),
                 // INTENTIONAL(CMT-010): LayoutJob/Galley variants not used by any callsite
                 other => RichText::new(other.text().to_string())
                     .strong()
-                    .color(DashColors::disabled(dark_mode)),
+                    .color(Self::button_disabled_text(dark_mode)),
             };
-            Button::new(text)
-                .fill(DashColors::BUTTON_DISABLED)
-                .stroke(egui::Stroke::NONE)
-                .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-                .min_size(Self::DIALOG_BUTTON_MIN_SIZE)
-        };
-        ui.add_enabled(enabled, button)
-            .on_hover_cursor(CursorIcon::PointingHand)
+            // `add_sized` sets up a `centered_and_justified` inner layout so the button's
+            // `AtomLayout` inherits `horizontal_align = Center`, centering the text within
+            // the fill rect.  Without this, the default top-down-left layout causes the text
+            // atom to be left-aligned inside the button even when the rect is wider than the
+            // text content.
+            ui.add_sized(
+                Self::DIALOG_BUTTON_MIN_SIZE,
+                Button::new(text)
+                    .fill(Self::button_disabled_fill(dark_mode))
+                    .stroke(egui::Stroke::NONE)
+                    .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+                    .min_size(Self::DIALOG_BUTTON_MIN_SIZE)
+                    .sense(egui::Sense::hover()),
+            )
+            .on_hover_cursor(CursorIcon::NotAllowed)
+        }
     }
 
     /// Add a secondary button to the UI with pointer cursor on hover.

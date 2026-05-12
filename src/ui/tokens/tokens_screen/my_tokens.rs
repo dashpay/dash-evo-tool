@@ -196,11 +196,18 @@ impl TokensScreen {
 
                                     ui.separator();
                                     let dark_mode = ui.ctx().style().visuals.dark_mode;
-                                    if ComponentStyles::add_secondary_button(ui, "Close", dark_mode)
-                                        .clicked()
-                                    {
-                                        close_popup = true;
-                                    }
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            if ComponentStyles::add_secondary_button(
+                                                ui, "Close", dark_mode,
+                                            )
+                                            .clicked()
+                                            {
+                                                close_popup = true;
+                                            }
+                                        },
+                                    );
                                 });
                             });
                     });
@@ -262,7 +269,7 @@ impl TokensScreen {
                     match self.tokens_subscreen {
                         TokensSubscreen::MyTokens => {
                             let button = egui::Button::new(
-                                RichText::new("Add Token")
+                                RichText::new("Import Token")
                                     .color(egui::Color32::WHITE)
                                     .strong(),
                             )
@@ -617,11 +624,16 @@ impl TokensScreen {
 
                             ui.separator();
                             let dark_mode = ui.ctx().style().visuals.dark_mode;
-                            if ComponentStyles::add_secondary_button(ui, "Close", dark_mode)
-                                .clicked()
-                            {
-                                self.show_explanation_popup = None;
-                            }
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ComponentStyles::add_secondary_button(ui, "Close", dark_mode)
+                                        .clicked()
+                                    {
+                                        self.show_explanation_popup = None;
+                                    }
+                                },
+                            );
                         });
                     });
 
@@ -661,6 +673,7 @@ impl TokensScreen {
         let mut pos = 0;
         let mut action = AppAction::None;
         ui.spacing_mut().item_spacing.x = 5.0;
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
 
         if range.contains(&pos) {
             if itb.available_actions.can_transfer {
@@ -679,7 +692,9 @@ impl TokensScreen {
                 // Disabled, grayed-out Transfer button
                 ui.add_enabled(
                     false,
-                    egui::Button::new(RichText::new("Transfer").color(Color32::GRAY)),
+                    egui::Button::new(
+                        RichText::new("Transfer").color(DashColors::muted_color(dark_mode)),
+                    ),
                 )
                 .disabled_tooltip("Transfer not available");
             }
@@ -942,7 +957,7 @@ impl TokensScreen {
                         // Disabled, grayed-out Purchase button
                         ui.add_enabled(
                                 false,
-                                egui::Button::new(RichText::new("Purchase").color(egui::Color32::GRAY)),
+                                egui::Button::new(RichText::new("Purchase").color(DashColors::muted_color(dark_mode))),
                             )
                             .disabled_tooltip({
                                 if let Some(Some(pricing)) = self.token_pricing_data.get(&itb.token_id) {

@@ -581,9 +581,14 @@ impl ScreenLike for AddNewWalletScreen {
     fn ui(&mut self, ctx: &Context) -> AppAction {
         let mut pending_action = AppAction::None;
         if self.core_wallets.is_none() && !self.core_wallets_loading {
-            self.core_wallets_loading = true;
-            pending_action =
-                AppAction::BackendTask(BackendTask::CoreTask(CoreTask::ListCoreWallets));
+            // SPV mode has no Dash Core RPC — skip listing Core wallets entirely.
+            if self.app_context.core_backend_mode() == crate::spv::CoreBackendMode::Spv {
+                self.core_wallets = Some(vec![]);
+            } else {
+                self.core_wallets_loading = true;
+                pending_action =
+                    AppAction::BackendTask(BackendTask::CoreTask(CoreTask::ListCoreWallets));
+            }
         }
 
         let mut action = add_top_panel(

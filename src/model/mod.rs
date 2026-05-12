@@ -1,6 +1,8 @@
 pub mod address;
 pub mod amount;
 pub mod contested_name;
+pub mod dpns;
+pub mod feature_gate;
 pub mod fee_estimation;
 pub mod grovestark_prover;
 pub mod password_info;

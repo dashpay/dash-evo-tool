@@ -9,7 +9,6 @@ pub struct TestContext {
     pub balance_duffs: u64,
     pub spv_synced: bool,
     pub network: String,
-    pub wallet_reused: bool,
     /// Identity ID created in Phase 5
     pub identity_id: Option<Identifier>,
     /// DPNS name registered in Phase 6
@@ -35,7 +34,6 @@ impl Default for TestContext {
             balance_duffs: 0,
             spv_synced: false,
             network: "testnet".to_string(),
-            wallet_reused: false,
             identity_id: None,
             dpns_name: None,
             header_height: 0,

@@ -1,7 +1,7 @@
 use crate::helpers::context::{TestContext, seed_hash_prefix};
 use crate::helpers::harness::*;
 use dash_evo_tool::app::AppState;
-use dash_evo_tool::model::wallet::{ClosedKeyItem, Wallet, WalletSeedHash};
+use dash_evo_tool::model::wallet::{Wallet, WalletSeedHash};
 use dash_evo_tool::spv::CoreBackendMode;
 use dash_evo_tool::spv::SpvStatus;
 use dash_sdk::dash_spv::sync::ProgressPercentage;
@@ -12,29 +12,9 @@ use std::time::{Duration, Instant};
 
 const E2E_WALLET_ALIAS: &str = "E2E Test Wallet";
 
-/// Compute the deterministic wallet fingerprint used for E2E wallet reuse.
-fn e2e_wallet_seed_hash(words: &[&str]) -> WalletSeedHash {
-    let phrase = words.join(" ");
-    let mnemonic = bip39::Mnemonic::parse_normalized(&phrase)
-        .unwrap_or_else(|e| panic!("Invalid mnemonic: {}", e));
-    ClosedKeyItem::compute_seed_hash(&mnemonic.to_seed(""))
-}
-
-/// Reuse only the wallet whose seed hash matches the configured E2E mnemonic.
-fn find_existing_e2e_wallet(
-    harness: &Harness<'_, AppState>,
-    expected_seed_hash: &WalletSeedHash,
-) -> Option<WalletSeedHash> {
-    let app_ctx = harness.state().current_app_context();
-    let wallets = app_ctx.wallets().read().unwrap();
-    wallets
-        .contains_key(expected_seed_hash)
-        .then_some(*expected_seed_hash)
-}
-
 /// Import a funded wallet fixture through the AppContext/model layer.
-/// This setup path is intentionally non-UI so Phase 0 can create a reusable
-/// funded wallet quickly; UI coverage for mnemonic import lives in
+/// This setup path is intentionally non-UI so Phase 0 can create the funded
+/// test fixture quickly; UI coverage for mnemonic import lives in
 /// `tests/kittest/interactions.rs`.
 fn import_wallet_via_context(
     harness: &mut Harness<'_, AppState>,
@@ -105,7 +85,6 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
         words.len()
     );
     println!("  Mnemonic: {} words", words.len());
-    let expected_seed_hash = e2e_wallet_seed_hash(&words);
 
     // 2. Dismiss welcome screen
     dismiss_welcome_screen(harness);
@@ -118,44 +97,8 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
     app_ctx.set_core_backend_mode(CoreBackendMode::Spv);
     println!("  Switched to testnet (SPV mode)");
 
-    // 4. Check if wallet already exists (idempotent re-run support)
-    if let Some(seed_hash) = find_existing_e2e_wallet(harness, &expected_seed_hash) {
-        ctx.wallet_seed_hash = Some(seed_hash);
-        ctx.wallet_reused = true;
-        println!(
-            "  Reusing existing wallet. Seed hash prefix: {}",
-            seed_hash_prefix(&seed_hash)
-        );
-
-        // Unlock the wallet so SPV can register its addresses.
-        // Wallets loaded from DB are in a closed state — SPV needs the
-        // seed bytes to build the bloom filter and discover transactions.
-        let app_ctx = harness.state().current_app_context().clone();
-        let wallet_arc = {
-            let wallets = app_ctx.wallets().read().unwrap();
-            wallets.get(&seed_hash).cloned()
-        };
-        // Drop wallets lock before calling bootstrap/unlock methods
-        if let Some(wallet_arc) = wallet_arc {
-            {
-                let mut w = wallet_arc.write().unwrap();
-                if !w.is_open() {
-                    w.wallet_seed
-                        .open_no_password()
-                        .unwrap_or_else(|e| panic!("Failed to unlock reused wallet: {}", e));
-                    println!("  Wallet unlocked (no password)");
-                } else {
-                    println!("  Wallet already open");
-                }
-            }
-            app_ctx.bootstrap_wallet_addresses(&wallet_arc);
-            app_ctx.handle_wallet_unlocked(&wallet_arc);
-            println!("  Wallet bootstrapped for SPV");
-        }
-    } else {
-        // 5-10. Create the funded wallet fixture via the model layer.
-        import_wallet_via_context(harness, ctx, &words);
-    }
+    // 4. Create the funded wallet fixture via the model layer.
+    import_wallet_via_context(harness, ctx, &words);
 
     // 11. Clear stale cached wallet state so the balance/UTXO check below only
     //     passes after a FRESH SPV reconciliation (not from DB-cached values
@@ -344,9 +287,8 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
     );
 
     println!(
-        "  Setup complete. Balance: {} duffs ({:.8} DASH){}",
+        "  Setup complete. Balance: {} duffs ({:.8} DASH)",
         ctx.balance_duffs,
-        ctx.balance_duffs as f64 / 1e8,
-        if ctx.wallet_reused { " (reused)" } else { "" }
+        ctx.balance_duffs as f64 / 1e8
     );
 }

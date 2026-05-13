@@ -349,9 +349,7 @@ pub fn emergency_cleanup(harness: &Harness<'_, AppState>, ctx: &TestContext) {
         }
     }
 
-    if ctx.wallet_reused {
-        eprintln!("  Emergency: reused wallet preserved");
-    } else if let Some(seed_hash) = &ctx.wallet_seed_hash {
+    if let Some(seed_hash) = &ctx.wallet_seed_hash {
         match app_ctx.remove_wallet(seed_hash) {
             Ok(()) => eprintln!("  Emergency: wallet removed"),
             Err(e) => eprintln!("  Emergency: wallet removal failed: {}", e),

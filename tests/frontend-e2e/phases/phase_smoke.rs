@@ -1,5 +1,6 @@
 use dash_evo_tool::app::AppState;
 use dash_evo_tool::spv::SpvStatus;
+use dash_sdk::dpp::dashcore::Network;
 use egui_kittest::Harness;
 
 /// Read-only smoke tests that verify the app boots correctly.
@@ -44,12 +45,16 @@ pub fn run(harness: &mut Harness<'_, AppState>) {
         show, has_screen
     );
 
-    // 7. Testnet context exists (required for E2E)
+    // 7. Testnet context starts lazily and should not be active before Phase 0.
     assert!(
-        harness.state().testnet_app_context.is_some(),
-        "Testnet AppContext must exist for E2E tests"
+        !harness
+            .state()
+            .network_contexts
+            .contains_key(&Network::Testnet)
+            || harness.state().chosen_network == Network::Testnet,
+        "Testnet AppContext should only exist before Phase 0 when testnet is active"
     );
-    println!("  Testnet context exists: OK");
+    println!("  Testnet context lazy-init state: OK");
 
     println!("  Smoke tests passed!");
 }

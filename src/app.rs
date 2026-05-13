@@ -44,10 +44,10 @@ use std::collections::BTreeMap;
 use std::ops::BitOrAssign;
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
-#[cfg(feature = "testing")]
-use std::time::UNIX_EPOCH;
 use std::time::{Duration, Instant, SystemTime};
 use std::vec;
+#[cfg(feature = "testing")]
+use tempfile::TempDir;
 use tokio::sync::mpsc as tokiompsc;
 
 #[cfg(feature = "testing")]
@@ -137,6 +137,8 @@ pub struct AppState {
     pub chosen_network: Network,
     pub connection_status: Arc<ConnectionStatus>,
     pub network_contexts: BTreeMap<Network, Arc<AppContext>>,
+    #[cfg(feature = "testing")]
+    _testing_data_dir_owner: Option<TempDir>,
     /// Network whose context is being created asynchronously. While `Some`,
     /// the UI shows a progress banner and ignores further switch requests.
     network_switch_pending: Option<Network>,
@@ -261,7 +263,14 @@ impl AppState {
         let db_file_path = data_file_path(&data_dir, "data.db")?;
         let db = Arc::new(Database::new(&db_file_path)?);
         db.initialize(&db_file_path)?;
-        Self::new_inner(ctx, db, data_dir)
+        #[cfg(feature = "testing")]
+        {
+            Self::new_inner(ctx, db, data_dir, None)
+        }
+        #[cfg(not(feature = "testing"))]
+        {
+            Self::new_inner(ctx, db, data_dir)
+        }
     }
 
     /// Creates a new `AppState` using an in-memory database for testing.
@@ -272,7 +281,7 @@ impl AppState {
     pub fn new_for_testing(
         ctx: egui::Context,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let data_dir = Self::testing_data_dir()?;
+        let (data_dir, testing_data_dir_owner) = Self::testing_data_dir()?;
         ensure_data_dir_exists(&data_dir)?;
         ensure_env_file(&data_dir);
 
@@ -280,37 +289,33 @@ impl AppState {
             crate::database::test_helpers::create_test_database()
                 .map_err(|e| format!("Failed to create test database: {}", e))?,
         );
-        Self::new_inner(ctx, db, data_dir)
+        Self::new_inner(ctx, db, data_dir, testing_data_dir_owner)
     }
 
     #[cfg(feature = "testing")]
-    fn testing_data_dir() -> Result<PathBuf, std::io::Error> {
+    fn testing_data_dir() -> Result<(PathBuf, Option<TempDir>), std::io::Error> {
         if std::env::var(TESTING_USE_REAL_DATA_DIR_ENV)
             .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
             .unwrap_or(false)
         {
-            return app_user_data_dir_path();
+            return Ok((app_user_data_dir_path()?, None));
         }
 
         if let Ok(dir) = std::env::var("DASH_EVO_DATA_DIR") {
-            return Ok(PathBuf::from(dir));
+            return Ok((PathBuf::from(dir), None));
         }
 
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(std::io::Error::other)?
-            .as_nanos();
-        Ok(std::env::temp_dir().join(format!(
-            "dash-evo-tool-testing-{}-{}",
-            std::process::id(),
-            unique
-        )))
+        let dir = tempfile::Builder::new()
+            .prefix("dash-evo-tool-testing-")
+            .tempdir()?;
+        Ok((dir.path().to_path_buf(), Some(dir)))
     }
 
     fn new_inner(
         ctx: egui::Context,
         db: Arc<Database>,
         data_dir: PathBuf,
+        #[cfg(feature = "testing")] testing_data_dir_owner: Option<TempDir>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let settings = db.get_settings()?.map(Settings::from).unwrap_or_default();
         let password_info = settings.password_info;
@@ -584,6 +589,8 @@ impl AppState {
             chosen_network,
             connection_status,
             network_contexts,
+            #[cfg(feature = "testing")]
+            _testing_data_dir_owner: testing_data_dir_owner,
             network_switch_pending: None,
             network_switch_banner: None,
             zmq_listeners,

@@ -454,6 +454,10 @@ impl MessageBanner {
         let text = text.to_string();
         let mut banners = get_banners(ctx);
         banners.retain(|b| b.text != text);
+        #[cfg(any(test, feature = "testing"))]
+        if banners.is_empty() {
+            clear_last_global_task_error_category(ctx);
+        }
         set_banners(ctx, banners);
     }
 
@@ -483,6 +487,10 @@ impl MessageBanner {
         // Always write back: process_banner() mutates state (auto-dismiss timers,
         // expanded flags) even when no banners are removed.
         banners.retain_mut(|b| process_banner(ui, b) == BannerStatus::Visible);
+        #[cfg(any(test, feature = "testing"))]
+        if banners.is_empty() {
+            clear_last_global_task_error_category(ui.ctx());
+        }
         set_banners(ui.ctx(), banners);
     }
 

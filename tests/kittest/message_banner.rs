@@ -5,6 +5,8 @@ use dash_evo_tool::ui::MessageType;
 use dash_evo_tool::ui::components::{BannerStatus, Component, ComponentResponse, MessageBanner};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 /// Test that show_global renders nothing and does not panic when no message is set.
 #[test]
@@ -99,6 +101,72 @@ fn test_clear_all_global_clears_testing_error_category() {
     MessageBanner::set_last_global_task_error_category(&ctx, TaskErrorCategory::Validation);
     MessageBanner::clear_all_global(&ctx);
 
+    assert!(!MessageBanner::has_global(&ctx));
+    assert_eq!(MessageBanner::last_global_task_error_category(&ctx), None);
+}
+
+#[test]
+fn test_clear_global_message_clears_testing_category_when_last_banner_removed() {
+    let ctx = egui::Context::default();
+
+    MessageBanner::set_last_global_task_error_category(&ctx, TaskErrorCategory::Network);
+    MessageBanner::set_global(&ctx, "Old error", MessageType::Error);
+
+    MessageBanner::clear_global_message(&ctx, "Old error");
+
+    assert!(!MessageBanner::has_global(&ctx));
+    assert_eq!(MessageBanner::last_global_task_error_category(&ctx), None);
+
+    MessageBanner::set_global(&ctx, "New error", MessageType::Error);
+    assert_eq!(
+        MessageBanner::last_global_task_error_category(&ctx),
+        Some(TaskErrorCategory::Fatal)
+    );
+}
+
+#[test]
+fn test_clear_global_message_preserves_testing_category_when_banner_remains() {
+    let ctx = egui::Context::default();
+
+    MessageBanner::set_last_global_task_error_category(&ctx, TaskErrorCategory::Validation);
+    MessageBanner::set_global(&ctx, "Keep this", MessageType::Error);
+    MessageBanner::set_global(&ctx, "Remove this", MessageType::Warning);
+
+    MessageBanner::clear_global_message(&ctx, "Remove this");
+
+    assert!(MessageBanner::has_global(&ctx));
+    assert_eq!(
+        MessageBanner::last_global_task_error_category(&ctx),
+        Some(TaskErrorCategory::Validation)
+    );
+}
+
+#[test]
+fn test_show_global_clears_testing_category_when_last_banner_is_dismissed() {
+    let ctx_slot = Arc::new(Mutex::new(None::<egui::Context>));
+    let ctx_slot_for_ui = Arc::clone(&ctx_slot);
+    let initialized = Arc::new(AtomicBool::new(false));
+    let initialized_for_ui = Arc::clone(&initialized);
+
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(600.0, 200.0))
+        .build_ui(move |ui| {
+            *ctx_slot_for_ui.lock().unwrap() = Some(ui.ctx().clone());
+            if !initialized_for_ui.swap(true, Ordering::SeqCst) {
+                MessageBanner::set_last_global_task_error_category(
+                    ui.ctx(),
+                    TaskErrorCategory::Network,
+                );
+                MessageBanner::set_global(ui.ctx(), "Dismiss me", MessageType::Error);
+            }
+            MessageBanner::show_global(ui);
+        });
+
+    harness.run_steps(5);
+    harness.get_by_label("\u{274C}").click();
+    harness.run_steps(5);
+
+    let ctx = ctx_slot.lock().unwrap().clone().unwrap();
     assert!(!MessageBanner::has_global(&ctx));
     assert_eq!(MessageBanner::last_global_task_error_category(&ctx), None);
 }

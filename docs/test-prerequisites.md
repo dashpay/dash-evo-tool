@@ -17,6 +17,8 @@ Test mnemonics and passwords are stored in `~/.secrets/det-qa-mnemonics.env` on 
 
 ### Required Variables
 
+These are the only variables the current executable weekly smoke run references. Set these before running the suite.
+
 | Variable | Words | Purpose |
 |---|---|---|
 | `BANK_MNEMONIC` | 24 | Bank wallet — pre-funded, password-protected |
@@ -24,13 +26,20 @@ Test mnemonics and passwords are stored in `~/.secrets/det-qa-mnemonics.env` on 
 | `TC_WAL_MNEMONIC` | 24 | Wallet management tests (import, rename, lock, remove) |
 | `TC_WAL_PASSWORD` | — | Password for wallet-management test wallet |
 | `TC_SND_MNEMONIC` | 21 | Send/receive tests |
-| `TC_IDN_MNEMONIC` | 21 | Identity registration and top-up tests |
-| `TC_TOK_MNEMONIC` | 18 | Token operation tests |
-| `TC_DPY_MNEMONIC` | 18 | DashPay profile and contact tests |
-| `TC_DOC_MNEMONIC` | 15 | Contract and document tests |
-| `TC_DEV_MNEMONIC` | 15 | Developer tools tests |
-| `TC_NET_MNEMONIC` | 12 | Network/settings tests |
-| `TC_ALK_MNEMONIC` | 12 | Asset lock tests |
+| `TC_IDN_MNEMONIC` | 21 | Identity registration, top-up, DPNS, DashPay, token, and contract tests |
+
+### Optional / Future-Isolation Variables
+
+These mnemonics are reserved for potential future per-domain wallet isolation. They are **not required** for the current smoke suite — the active suite reuses the **Identity Test** wallet (`TC_IDN_MNEMONIC`) for token, DashPay, contract, developer, network, and asset-lock cases. Provision these only if you plan to run isolated per-domain variants.
+
+| Variable | Words | Potential Purpose |
+|---|---|---|
+| `TC_TOK_MNEMONIC` | 18 | Token operation tests (isolated wallet) |
+| `TC_DPY_MNEMONIC` | 18 | DashPay profile and contact tests (isolated wallet) |
+| `TC_DOC_MNEMONIC` | 15 | Contract and document tests (isolated wallet) |
+| `TC_DEV_MNEMONIC` | 15 | Developer tools tests (isolated wallet) |
+| `TC_NET_MNEMONIC` | 12 | Network/settings tests (isolated wallet) |
+| `TC_ALK_MNEMONIC` | 12 | Asset lock tests (isolated wallet) |
 
 ### Derived Addresses
 
@@ -46,24 +55,38 @@ Each mnemonic deterministically produces the same addresses. After first import,
 
 ```env
 # DO NOT COMMIT — test wallet mnemonics
+
+# --- Required for the current weekly smoke run ---
 BANK_MNEMONIC="word1 word2 ... word24"
 BANK_PASSWORD="strong-bank-password"
 TC_WAL_MNEMONIC="word1 word2 ... word24"
 TC_WAL_PASSWORD="waltest1234"
 TC_SND_MNEMONIC="word1 word2 ... word21"
 TC_IDN_MNEMONIC="word1 word2 ... word21"
-TC_TOK_MNEMONIC="word1 word2 ... word18"
-TC_DPY_MNEMONIC="word1 word2 ... word18"
-TC_DOC_MNEMONIC="word1 word2 ... word15"
-TC_DEV_MNEMONIC="word1 word2 ... word15"
-TC_NET_MNEMONIC="word1 word2 ... word12"
-TC_ALK_MNEMONIC="word1 word2 ... word12"
 
 # Derived addresses — fill in after first import of each wallet
 BANK_ADDRESS_0=yXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 TC_SND_ADDRESS_0=yXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 TC_IDN_ADDRESS_0=yXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+# --- Optional: future per-domain isolation (not used by the active suite) ---
+# Uncomment only if you plan to run isolated per-domain test variants.
+# TC_TOK_MNEMONIC="word1 word2 ... word18"
+# TC_DPY_MNEMONIC="word1 word2 ... word18"
+# TC_DOC_MNEMONIC="word1 word2 ... word15"
+# TC_DEV_MNEMONIC="word1 word2 ... word15"
+# TC_NET_MNEMONIC="word1 word2 ... word12"
+# TC_ALK_MNEMONIC="word1 word2 ... word12"
 ```
+
+## Reusable Test Data
+
+Test cases reference these placeholders for shared, non-secret inputs. They are not stored in `~/.secrets/det-qa-mnemonics.env` — they live here in the test plan because they are either stable system constants or values discovered at runtime.
+
+| Placeholder | Source | Value / How to obtain |
+|---|---|---|
+| `${DPNS_CONTRACT_ID}` | Stable system contract (Base58) — see `src/backend_task/dashpay/contact_requests.rs` | `GWRSAVFMjXx8HpQFaNJMqBV7MBgMK4br5UESsB4S31Ec` |
+| `${TC_TOK_CONTRACT_ID}` | Discovered at runtime from TC-TOK-002-01 results | Run TC-TOK-002-01 (**Tokens → Search Tokens**, keyword `test`), then record the **Contract ID** column from any one result row before running TC-TOK-003-01. If TC-TOK-002-01 returns no results, TC-TOK-003-01 is blocked pending a seeded testnet token contract ID. |
 
 ## .env Configuration
 
@@ -73,34 +96,21 @@ Place the following `.env` file at the DET configuration path:
 |---|---|
 | **macOS** | `~/Library/Application Support/Dash-Evo-Tool/.env` |
 | **Linux** | `~/.config/dash-evo-tool/.env` |
-| **Windows** | `C:\Users\<User>\AppData\Roaming\Dash-Evo-Tool\.env` |
+| **Windows** | `C:\Users\<User>\AppData\Roaming\Dash-Evo-Tool\config\.env` |
 
-```env
-# Mainnet context is required at startup even though smoke tests stay on Testnet.
-# Supply placeholder values and leave Testnet as the active smoke-test network.
-MAINNET_dapi_addresses=https://mainnet-dapi.example:443
-MAINNET_show_in_ui=true
-MAINNET_core_host=127.0.0.1
-MAINNET_core_rpc_port=9998
-MAINNET_core_rpc_user=user
-MAINNET_core_rpc_password=password
-MAINNET_insight_api_url=https://insight.dash.org/insight-api
+Use the bundled `.env.example` as the source of truth for all `MAINNET_*` and
+`TESTNET_*` endpoint and config values. DET copies that file into the app
+data directory on first launch, so this guide should only call out
+smoke-test-specific constraints and edits:
 
-# Testnet SPV mode — DAPI addresses plus placeholder Core RPC fields
-TESTNET_dapi_addresses=https://34.214.48.68:1443,https://52.12.176.90:1443,https://52.34.144.50:1443,https://44.240.98.102:1443,https://54.201.32.131:1443,https://52.10.229.11:1443,https://52.13.132.146:1443,https://52.40.219.41:1443,https://54.149.33.167:1443,https://35.164.23.245:1443,https://52.33.28.47:1443,https://52.43.13.92:1443,https://52.89.154.48:1443,https://52.24.124.162:1443,https://35.85.21.179:1443,https://54.187.14.232:1443,https://54.68.235.201:1443,https://52.13.250.182:1443
-TESTNET_show_in_ui=true
-
-# Core RPC fields are structurally required by NetworkConfig even in SPV mode,
-# but are not actively used at runtime. Supply placeholder values.
-TESTNET_core_host=127.0.0.1
-TESTNET_core_rpc_port=19998
-TESTNET_core_rpc_user=user
-TESTNET_core_rpc_password=password
-TESTNET_insight_api_url=https://insight.testnet.networks.dash.org:3002/insight-api
-# core_zmq_endpoint is optional and can be omitted
-```
-
-> **Note:** DET requires a valid `MAINNET_*` config at startup and uses `TESTNET_*` for this smoke suite. While Core RPC settings (`core_host`, `core_rpc_port`, `core_rpc_user`, `core_rpc_password`, `insight_api_url`) are not actively used in SPV mode, the `NetworkConfig` struct requires them to be present during deserialization. Use placeholder values as shown above. The `core_zmq_endpoint` field is optional (`Option<String>`) and may be omitted.
+- `MAINNET_*` values must be present at startup even though this smoke suite
+  runs on Testnet.
+- The smoke suite uses `TESTNET_*`; ensure
+  `TESTNET_show_in_ui=true`.
+- If you customize the file for SPV mode, the Testnet Core RPC fields can
+  stay as placeholder values because they are not actively used at runtime,
+  but they still need to be present for config deserialization.
+- `core_zmq_endpoint` is optional and may be omitted.
 
 ## Enabling Developer Mode and SPV Backend
 
@@ -109,9 +119,10 @@ SPV backend selection is only visible when Developer Mode is enabled.
 ### Enable Developer Mode
 
 1. Click **"Settings"** in the left sidebar.
-2. Check the **"Developer mode"** checkbox.
-3. Verify the **"Connection Type"** dropdown appears in **"Connection Settings"** on **Settings (Network Chooser)**.
-4. Click **"Wallets"** and verify additional developer UI appears (for example, address tables and refresh controls).
+2. Click the **"Advanced Settings"** header to expand it.
+3. Check the **"Developer mode"** checkbox.
+4. Verify the **"Connection Type"** dropdown appears in **"Connection Settings"** on **Settings (Network Chooser)**.
+5. Click **"Wallets"** and verify additional developer UI appears (for example, address tables and refresh controls).
 
 ### Select SPV Backend
 
@@ -121,7 +132,8 @@ The backend mode selector is part of **Settings (Network Chooser)**.
 2. Locate the **"Connection Settings"** section.
 3. Open the **"Connection Type"** dropdown (visible only when Developer Mode is enabled).
 4. Select **"SPV Client"**.
-5. Wait for the connection status indicator (top bar) to turn green, indicating SPV sync is complete.
+5. Click the **"Connect"** button to start the SPV client.
+6. Wait for the connection status indicator (top bar) to turn green, indicating SPV sync is complete.
 
 > **Note:** The selected backend mode is stored in the `Settings` struct as `core_backend_mode` and persisted to the local database. Developer Mode also reveals additional UI elements (address tables, refresh controls). This is expected.
 
@@ -131,7 +143,10 @@ The bank wallet is a pre-funded, password-protected testnet wallet. It distribut
 
 ### Requirements
 
-- **Minimum balance:** 10 tDASH (recommended: 50+ tDASH for full test suite)
+- **Minimum balance:** 20 tDASH (recommended: 50+ tDASH for full test suite)
+  This covers the 4 tDASH Session Setup outflow plus normal transaction
+  fees while leaving comfortably more than 10 tDASH for later Bank balance
+  checks.
 - **Password:** Must be set during import (value from `${BANK_PASSWORD}`)
 - **Mnemonic:** Stored in `~/.secrets/det-qa-mnemonics.env`, never typed in clear text outside DET
 
@@ -144,7 +159,7 @@ The bank wallet is a pre-funded, password-protected testnet wallet. It distribut
 5. Enter each word of `${BANK_MNEMONIC}` into the numbered fields (**"1:"**, **"2:"**, ... **"24:"**).
 6. In the **"Name:"** field, type `Bank`.
 7. In the **"Optional Password:"** field, enter `${BANK_PASSWORD}`.
-8. Click **"Import Wallet"**.
+8. Click **"Save Wallet"**.
 9. Wait for the balance to sync (**"Core balance:"** appears under the wallet name).
 
 ### Fund Consolidation
@@ -154,12 +169,13 @@ If bank wallet funds are spread across multiple UTXOs, consolidate to address in
 1. Select the **Bank** wallet on the **"Wallets"** screen.
 2. Click **"Receive"** and note the address shown (this is `${BANK_ADDRESS_0}`).
 3. Click **"Send"**.
-4. In the **"To:"** field, paste `${BANK_ADDRESS_0}`.
+4. In the **"Send to"** field (hint: *"Enter address (X.../y.../evo1.../tevo1...)"*), paste `${BANK_ADDRESS_0}`.
 5. Click **"Max"** to set the maximum sendable amount.
 6. Click **"Send"** in the form.
-7. A **"Fee Confirmation Required"** dialog appears — review the fee and total.
-8. Confirm the transaction.
-9. Wait for at least one confirmation.
+7. Verify the form is replaced by a spinner and a **"Sending..."** heading while the transaction is broadcast.
+8. Wait for the success banner and verify it shows the sent amount and destination address (**"Sent {amount} DASH to ${BANK_ADDRESS_0}"**).
+9. Click **"Back to Wallet"**.
+10. Wait for at least one confirmation.
 
 ### Obtaining Test Dash
 

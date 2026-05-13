@@ -6,7 +6,7 @@ Weekly smoke test specification for Dash Evo Tool, covering implemented user sto
 
 See [test-prerequisites.md](test-prerequisites.md) for environment setup, `.env` configuration, secrets file, and the bank wallet concept.
 
-All mnemonic and address placeholders (e.g., `${BANK_MNEMONIC}`, `${TC_SND_ADDRESS_0}`) refer to values defined in `~/.secrets/det-qa-mnemonics.env`.
+All mnemonic and address placeholders (e.g., `${BANK_MNEMONIC}`, `${TC_SND_ADDRESS_0}`) refer to values defined in `~/.secrets/det-qa-mnemonics.env`. Non-secret shared inputs such as `${DPNS_CONTRACT_ID}` and `${TC_TOK_CONTRACT_ID}` are defined in [test-prerequisites.md → Reusable Test Data](test-prerequisites.md#reusable-test-data).
 
 ---
 
@@ -32,10 +32,13 @@ Perform these steps before running any test cases. If running TC-NET-010-01 (onb
 ### 1. Configure SPV Mode
 
 1. Click **"Settings"** in the left sidebar.
-2. Check the **"Developer mode"** checkbox.
-3. Stay on **Settings (Network Chooser)** and verify the **"Connection Type"** dropdown appears in **"Connection Settings"**.
-4. In **"Connection Settings"**, open the **"Connection Type"** dropdown and select **"SPV Client"**.
-5. Wait for the connection status indicator (top bar) to turn green.
+2. Click the **"Advanced Settings"** header to expand it.
+3. Check the **"Developer mode"** checkbox.
+4. Stay on **Settings (Network Chooser)** and verify the **"Connection Type"** dropdown appears in **"Connection Settings"**.
+5. In **"Connection Settings"**, open the **"Network:"** dropdown and select **"Testnet"**.
+6. In **"Connection Settings"**, open the **"Connection Type"** dropdown and select **"SPV Client"**.
+7. Click the **"Connect"** button to start the SPV client.
+8. Wait for the connection status indicator (top bar) to turn green.
 
 ### 2. Import the Bank Wallet
 
@@ -46,8 +49,9 @@ Perform these steps before running any test cases. If running TC-NET-010-01 (onb
 5. Enter each word into the numbered fields (**"1:"**, **"2:"**, ...).
 6. In **"Name:"**, type `Bank`.
 7. In **"Optional Password:"**, enter `${BANK_PASSWORD}`.
-8. Click **"Import Wallet"**.
-9. Wait for **"Core balance:"** to appear (should show >= 10 tDASH).
+8. Click **"Save Wallet"**.
+9. Wait for **"Core balance:"** to appear. It should show >= 20 tDASH
+   before setup funding.
 
 ### 3. Import the Send-Test Wallet
 
@@ -56,7 +60,7 @@ Perform these steps before running any test cases. If running TC-NET-010-01 (onb
 3. Enter each word of `${TC_SND_MNEMONIC}` into the numbered fields.
 4. In **"Name:"**, type `Send Test`.
 5. Leave **"Optional Password:"** empty.
-6. Click **"Import Wallet"**.
+6. Click **"Save Wallet"**.
 
 ### 4. Import the Identity-Test Wallet
 
@@ -65,27 +69,26 @@ Perform these steps before running any test cases. If running TC-NET-010-01 (onb
 3. Enter each word of `${TC_IDN_MNEMONIC}` into the numbered fields.
 4. In **"Name:"**, type `Identity Test`.
 5. Leave **"Optional Password:"** empty.
-6. Click **"Import Wallet"**.
+6. Click **"Save Wallet"**.
 
 ### 5. Fund Test Wallets from Bank
 
 1. Select the **Bank** wallet on the **"Wallets"** screen.
 2. If the wallet shows **"Unlock"** instead of **"Lock"**, click **"Unlock"**, enter `${BANK_PASSWORD}` in the popup, and click **"Unlock"**.
 3. Click **"Send"**.
-4. In the **"To:"** field (hint: *"Enter Dash address"*), enter `${TC_SND_ADDRESS_0}`.
-5. In the **"Amount:"** field (hint: *"0.00"*), enter `1`.
-6. The **"Fee:"** label displays the estimated fee.
-7. Click **"Send"** in the form.
-8. A **"Fee Confirmation Required"** dialog appears — confirm the transaction.
-9. Wait for the transaction to appear in the **"Transactions"** section.
-10. Click **"Send"** again.
-11. In **"To:"**, enter `${TC_IDN_ADDRESS_0}`.
-12. In **"Amount:"**, enter `3`.
-13. Click **"Send"** in the form.
-14. Confirm in the **"Fee Confirmation Required"** dialog.
-15. Wait for both transactions to confirm.
-16. Select the **Send Test** wallet — verify **"Core balance:"** shows ~1 tDASH.
-17. Select the **Identity Test** wallet — verify **"Core balance:"** shows ~3 tDASH.
+4. In the **"Send to"** field (hint: *"Enter address (X.../y.../evo1.../tevo1...)"*), enter `${TC_SND_ADDRESS_0}`.
+5. In the **"Amount"** field (hint: *"Enter amount"*), enter `1`.
+6. Click **"Send"** in the form and verify the form is replaced by a spinner and a **"Sending..."** heading while the transaction is broadcast.
+7. Wait for the success banner and verify it shows **"Sent 1 DASH to ${TC_SND_ADDRESS_0}"** (sent amount and destination address).
+8. Click **"Send Another"**.
+9. In the **"Send to"** field, enter `${TC_IDN_ADDRESS_0}`.
+10. In the **"Amount"** field, enter `3`.
+11. Click **"Send"** in the form and verify the form is replaced by a spinner and a **"Sending..."** heading while the transaction is broadcast.
+12. Wait for the success banner and verify it shows **"Sent 3 DASH to ${TC_IDN_ADDRESS_0}"** (sent amount and destination address).
+13. Click **"Back to Wallet"**.
+14. Wait for both transactions to appear in the **"Transactions"** section and confirm.
+15. Select the **Send Test** wallet — verify **"Core balance:"** shows ~1 tDASH.
+16. Select the **Identity Test** wallet — verify **"Core balance:"** shows ~3 tDASH.
 
 ---
 
@@ -112,7 +115,7 @@ Perform these steps before running any test cases. If running TC-NET-010-01 (onb
 | **Test Case ID** | TC-NET-001-01 |
 | **Short Description** | Verify DET is on testnet and network options are visible |
 | **Pre-Conditions** | DET running, SPV synced |
-| **Test Steps** | 1. Click **"Settings"** in the left sidebar.<br>2. Locate the network chooser at the top of the settings screen.<br>3. Verify **"Testnet"** is the currently selected network.<br>4. Verify the other chooser entry listed by the documented config is **"Mainnet"**.<br>5. Do NOT switch networks. |
+| **Test Steps** | 1. Click **"Settings"** in the left sidebar.<br>2. In the **"Connection Settings"** section, locate the **"Network:"** dropdown.<br>3. Verify **"Testnet"** is the currently selected network.<br>4. Verify the other chooser entry listed by the documented config is **"Mainnet"**.<br>5. Do NOT switch networks. |
 | **Test Data** | N/A |
 | **Expected Result** | **"Testnet"** is selected. The chooser shows the documented configured networks: **"Mainnet"** and **"Testnet"**. |
 | **Post-Condition** | Remain on Testnet. |
@@ -125,7 +128,7 @@ Perform these steps before running any test cases. If running TC-NET-010-01 (onb
 | **Test Case ID** | TC-NET-004-01 |
 | **Short Description** | Switch between light and dark themes |
 | **Pre-Conditions** | DET running |
-| **Test Steps** | 1. Click **"Settings"** in the left sidebar.<br>2. Locate the **"Theme:"** selector.<br>3. Select **"🌙 Dark"**.<br>4. Verify the UI updates immediately to dark colors (dark background, light text).<br>5. Select **"☀ Light"**.<br>6. Verify the UI updates immediately to light colors (light background, dark text). |
+| **Test Steps** | 1. Click **"Settings"** in the left sidebar.<br>2. Click the **"Advanced Settings"** header to expand it.<br>3. Locate the **"Theme:"** selector.<br>4. Select **"🌙 Dark"**.<br>5. Verify the UI updates immediately to dark colors (dark background, light text).<br>6. Select **"☀ Light"**.<br>7. Verify the UI updates immediately to light colors (light background, dark text). |
 | **Test Data** | N/A |
 | **Expected Result** | Theme changes apply immediately when a new option is selected. UI is readable in both modes. |
 | **Post-Condition** | Set theme to preferred value. |
@@ -138,7 +141,7 @@ Perform these steps before running any test cases. If running TC-NET-010-01 (onb
 | **Test Case ID** | TC-NET-005-01 |
 | **Short Description** | Enable and disable Developer mode |
 | **Pre-Conditions** | DET running |
-| **Test Steps** | 1. Click **"Settings"** in the left sidebar.<br>2. Locate the **"Developer mode"** checkbox.<br>3. If unchecked, check **"Developer mode"**.<br>4. Stay on **Settings (Network Chooser)** and locate **"Connection Settings"**.<br>5. Verify the **"Connection Type"** selector appears (shows **"SPV Client"** or **"Dash Core RPC"**).<br>6. Navigate to **"Wallets"** and verify additional developer UI appears (for example, address tables and refresh controls).<br>7. Return to **"Settings"**.<br>8. Uncheck **"Developer mode"**.<br>9. Verify the **"Connection Type"** selector is hidden on **Settings (Network Chooser)**.<br>10. Navigate to **"Wallets"** and verify the additional developer UI is hidden. |
+| **Test Steps** | 1. Click **"Settings"** in the left sidebar.<br>2. Click the **"Advanced Settings"** header to expand it.<br>3. Locate the **"Developer mode"** checkbox.<br>4. If unchecked, check **"Developer mode"**.<br>5. Stay on **Settings (Network Chooser)** and locate **"Connection Settings"**.<br>6. Verify the **"Connection Type"** selector appears (shows **"SPV Client"** or **"Dash Core RPC"**).<br>7. Navigate to **"Wallets"** and verify additional developer UI appears (for example, address tables and refresh controls).<br>8. Return to **"Settings"**.<br>9. Click the **"Advanced Settings"** header to expand it again if it is collapsed.<br>10. Uncheck **"Developer mode"**.<br>11. Verify the **"Connection Type"** selector is hidden on **Settings (Network Chooser)**.<br>12. Navigate to **"Wallets"** and verify the additional developer UI is hidden. |
 | **Test Data** | N/A |
 | **Expected Result** | Checking **"Developer mode"** immediately reveals advanced controls, including the **"Connection Type"** selector on **Settings (Network Chooser)** and additional Wallets developer UI. Unchecking it hides those elements. |
 | **Post-Condition** | Re-enable **"Developer mode"** if needed for SPV backend selection, then leave **"Connection Type"** set to **"SPV Client"**. |
@@ -168,7 +171,7 @@ Perform these steps before running any test cases. If running TC-NET-010-01 (onb
 | **Test Case ID** | TC-WAL-001-01 |
 | **Short Description** | Create a new wallet with generated mnemonic |
 | **Pre-Conditions** | DET running, SPV synced |
-| **Test Steps** | 1. Click **"Wallets"** in the left sidebar.<br>2. Click **"Create Wallet"** in the top-right corner.<br>3. Verify the breadcrumb reads **Wallets > Create Wallet**.<br>4. **Step 1 — Entropy:** Move the mouse around the entropy grid until the progress bar fills.<br>5. **Step 2 — Generate:** Under the heading *"Select your desired seed phrase language and word count and press Generate"*, select **English** and **24 words**, then click **"Generate"**.<br>6. **Step 3 — Record:** Under the heading *"Write down the passphrase on a piece of paper"*, write down all 24 displayed words.<br>7. Check **"I wrote it down"**.<br>8. **Step 4 — Name:** Under the heading *"Enter a wallet name"*, type `Created Wallet` in the **"Wallet Name:"** field.<br>9. **Step 5 — Password:** Under the heading *"Add a password"*, leave the **"Optional Password:"** field empty.<br>10. Click **"Save Wallet"**. |
+| **Test Steps** | 1. Click **"Wallets"** in the left sidebar.<br>2. Click **"Create Wallet"** in the top-right corner.<br>3. Verify the breadcrumb reads **Wallets > Create Wallet**.<br>4. **Step 1 — Entropy:** Move the cursor over the 8x32 entropy grid and optionally click cells to flip bits until you are ready to continue.<br>5. **Step 2 — Generate:** Under the heading *"Select your desired seed phrase language and word count and press Generate"*, select **English** and **24 words**, then click **"Generate"**.<br>6. **Step 3 — Record:** Under the heading *"Write down the passphrase on a piece of paper"*, write down all 24 displayed words.<br>7. Check **"I wrote it down"**.<br>8. **Step 4 — Name:** Under the heading *"Enter a wallet name"*, type `Created Wallet` in the **"Wallet Name:"** field.<br>9. **Step 5 — Password:** Under the heading *"Add a password"*, leave the **"Optional Password:"** field empty.<br>10. Click **"Save Wallet"**. |
 | **Test Data** | Wallet name: `Created Wallet`, no password |
 | **Expected Result** | Wallet appears on the **"Wallets"** screen. **"Core balance:"** shows `0.0000 DASH`. The generated mnemonic was 24 English words. |
 | **Post-Condition** | `Created Wallet` exists with zero balance. |
@@ -181,7 +184,7 @@ Perform these steps before running any test cases. If running TC-NET-010-01 (onb
 | **Test Case ID** | TC-WAL-002-01 |
 | **Short Description** | Import a wallet from a fixed test mnemonic |
 | **Pre-Conditions** | DET running, SPV synced, `${TC_WAL_MNEMONIC}` available from `~/.secrets/det-qa-mnemonics.env` |
-| **Test Steps** | 1. Click **"Wallets"** in the left sidebar.<br>2. Click **"Import Wallet"** in the top-right corner.<br>3. Verify the breadcrumb reads **Wallets > Import Wallet** and the heading reads *"Follow these steps to import your wallet."*<br>4. Verify the mnemonic seed phrase import screen is shown by default.<br>5. Under **"Select the seed phrase length"**, choose the word count matching `${TC_WAL_MNEMONIC}`.<br>6. Enter each word of `${TC_WAL_MNEMONIC}` into the numbered fields (**"1:"**, **"2:"**, ...).<br>7. In the **"Name:"** field, type `Imported Wallet`.<br>8. In the **"Optional Password:"** field, enter `${TC_WAL_PASSWORD}`.<br>9. Click **"Import Wallet"**.<br>10. Wait for sync to complete. |
+| **Test Steps** | 1. Click **"Wallets"** in the left sidebar.<br>2. Click **"Import Wallet"** in the top-right corner.<br>3. Verify the breadcrumb reads **Wallets > Import Wallet** and the heading reads *"Follow these steps to import your wallet."*<br>4. Verify the mnemonic seed phrase import screen is shown by default.<br>5. Under **"Select the seed phrase length"**, choose the word count matching `${TC_WAL_MNEMONIC}`.<br>6. Enter each word of `${TC_WAL_MNEMONIC}` into the numbered fields (**"1:"**, **"2:"**, ...).<br>7. In the **"Name:"** field, type `Imported Wallet`.<br>8. In the **"Optional Password:"** field, enter `${TC_WAL_PASSWORD}`.<br>9. Click **"Save Wallet"**.<br>10. Wait for sync to complete. |
 | **Test Data** | Mnemonic: `${TC_WAL_MNEMONIC}`, Name: `Imported Wallet`, Password: `${TC_WAL_PASSWORD}` |
 | **Expected Result** | Wallet appears on the **"Wallets"** screen as **Imported Wallet**. Balance syncs (may be `0.0000 DASH` if never funded). |
 | **Post-Condition** | `Imported Wallet` exists and is password-protected. |
@@ -294,18 +297,18 @@ Perform these steps before running any test cases. If running TC-NET-010-01 (onb
 | **Expected Result** | QR code renders correctly. Text address matches QR content. Copy to clipboard works. |
 | **Post-Condition** | N/A |
 
-### TC-SND-005-01: See fee estimate before confirming
+### TC-SND-005-01: Verify send success banner and transaction history
 
 | Field | Value |
 |-------|-------|
 | **Use Case ID** | SND-005 |
 | **Test Case ID** | TC-SND-005-01 |
-| **Short Description** | Verify fee estimate is shown in the send confirmation dialog |
+| **Short Description** | Verify the send success banner reports the sent amount and destination, and the transaction is visible in both wallets' history |
 | **Pre-Conditions** | **Send Test** wallet selected with >= 1 tDASH |
-| **Test Steps** | 1. Click **"Wallets"** in the left sidebar.<br>2. Select the **Send Test** wallet.<br>3. Click **"Send"**.<br>4. In the **"To:"** field (hint: *"Enter Dash address"*), enter `${BANK_ADDRESS_0}`.<br>5. In the **"Amount:"** field (hint: *"0.00"*), enter `0.01`.<br>6. Verify the **"Fee:"** label shows a non-zero fee estimate.<br>7. Click **"Send"** in the form.<br>8. A **"Fee Confirmation Required"** dialog appears.<br>9. Verify the dialog shows the amount, fee, and total deduction.<br>10. Cancel or close the dialog — do NOT confirm the send. |
+| **Test Steps** | 1. Click **"Wallets"** in the left sidebar.<br>2. Select the **Send Test** wallet.<br>3. Click **"Send"**.<br>4. In the **"Send to"** field (hint: *"Enter address (X.../y.../evo1.../tevo1...)"*), enter `${BANK_ADDRESS_0}`.<br>5. In the **"Amount"** field (hint: *"Enter amount"*), enter `0.01`.<br>6. Click **"Send"** in the form.<br>7. Verify the form is replaced by a spinner and a **"Sending..."** heading while the transaction is broadcast.<br>8. Wait for the success banner.<br>9. Verify the success banner shows **"Sent 0.01 DASH to ${BANK_ADDRESS_0}"** (sent amount and destination address).<br>10. Click **"Back to Wallet"**.<br>11. In the **"Transactions"** section, verify the just-sent transaction row shows the outgoing 0.01 tDASH transaction with the **Date**, **Type**, **Amount**, **Status**, and **TxID** columns populated.<br>12. Select the **Bank** wallet and verify the **"Transactions"** section shows the incoming 0.01 tDASH transaction. |
 | **Test Data** | Amount: `0.01` tDASH, Destination: `${BANK_ADDRESS_0}` |
-| **Expected Result** | **"Fee:"** estimate and total deduction are clearly visible before confirming. |
-| **Post-Condition** | No funds moved. |
+| **Expected Result** | The success banner shows the sent amount and destination address. The sender's **"Transactions"** row shows the outgoing 0.01 tDASH transaction (Date, Type, Amount, Status, TxID). The receiving wallet shows the incoming 0.01 tDASH transaction. |
+| **Post-Condition** | 0.01 tDASH transferred from **Send Test** to **Bank**. |
 
 ### TC-SND-001-01: Send Dash to an address
 
@@ -315,7 +318,7 @@ Perform these steps before running any test cases. If running TC-NET-010-01 (onb
 | **Test Case ID** | TC-SND-001-01 |
 | **Short Description** | Send tDASH from the Send Test wallet to the bank wallet |
 | **Pre-Conditions** | **Send Test** wallet selected with >= 0.5 tDASH |
-| **Test Steps** | 1. Click **"Wallets"** in the left sidebar.<br>2. Select the **Send Test** wallet.<br>3. Note the current **"Core balance:"** value.<br>4. Click **"Send"**.<br>5. In the **"To:"** field (hint: *"Enter Dash address"*), enter `${BANK_ADDRESS_0}`.<br>6. In the **"Amount:"** field (hint: *"0.00"*), enter `0.1`.<br>7. Verify the **"Fee:"** label shows a fee estimate.<br>8. Click **"Send"** in the form.<br>9. A **"Fee Confirmation Required"** dialog appears — confirm the transaction.<br>10. Wait for the transaction to appear in the **"Transactions"** section.<br>11. Verify **"Core balance:"** decreased by approximately 0.1 tDASH plus the fee.<br>12. Select the **Bank** wallet.<br>13. Verify the **"Transactions"** section shows the incoming 0.1 tDASH transaction. |
+| **Test Steps** | 1. Click **"Wallets"** in the left sidebar.<br>2. Select the **Send Test** wallet.<br>3. Note the current **"Core balance:"** value.<br>4. Click **"Send"**.<br>5. In the **"Send to"** field (hint: *"Enter address (X.../y.../evo1.../tevo1...)"*), enter `${BANK_ADDRESS_0}`.<br>6. In the **"Amount"** field (hint: *"Enter amount"*), enter `0.1`.<br>7. Click **"Send"** in the form.<br>8. Verify the form is replaced by a spinner and a **"Sending..."** heading while the transaction is broadcast.<br>9. Wait for the success banner showing **"Sent 0.1 DASH to ${BANK_ADDRESS_0}"**.<br>10. Click **"Back to Wallet"**.<br>11. Wait for the transaction to appear in the **"Transactions"** section.<br>12. Verify **"Core balance:"** decreased by approximately 0.1 tDASH plus the fee.<br>13. Select the **Bank** wallet.<br>14. Verify the **"Transactions"** section shows the incoming 0.1 tDASH transaction. |
 | **Test Data** | Amount: `0.1` tDASH, Destination: `${BANK_ADDRESS_0}` |
 | **Expected Result** | Transaction broadcasts. Sender balance decreases. Receiver shows the incoming transaction. |
 | **Post-Condition** | 0.1 tDASH transferred from **Send Test** to **Bank**. |
@@ -332,7 +335,7 @@ Perform these steps before running any test cases. If running TC-NET-010-01 (onb
 | **Test Case ID** | TC-ALK-001-01 |
 | **Short Description** | Create an asset lock from the Identity Test wallet |
 | **Pre-Conditions** | **Identity Test** wallet selected with >= 2 tDASH |
-| **Test Steps** | 1. Click **"Wallets"** in the left sidebar.<br>2. Select the **Identity Test** wallet.<br>3. In the **"Asset Locks"** section, click **"Create Asset Lock"**.<br>4. Verify the breadcrumb/heading shows **Wallets > Create Asset Lock** / **"Create Asset Lock"**.<br>5. Under **"Select Asset Lock Purpose"**, click **"Registration"**.<br>6. In **"Select how much you would like to transfer?"**, enter `0.5` tDASH.<br>7. Review the generated funding address/QR code and the estimated fee.<br>8. Send funds from the **Identity Test** wallet to the displayed address if prompted, then wait through **"Waiting for funds..."** and **"Waiting for Core Chain to produce proof of asset lock..."**.<br>9. Verify **"Asset Lock Created Successfully!"** and wait for the asset lock transaction/proof to confirm. |
+| **Test Steps** | 1. Click **"Wallets"** in the left sidebar.<br>2. Select the **Identity Test** wallet.<br>3. In the **"Asset Locks"** section, click **"Create Asset Lock"**.<br>4. Verify the breadcrumb/heading shows **Wallets > Create Asset Lock** / **"Create Asset Lock"**.<br>5. Under **"Select Asset Lock Purpose"**, click **"Registration"**.<br>6. In **"Select how much you would like to transfer?"**, enter `0.5` tDASH.<br>7. Review the generated funding address/QR code.<br>8. Send `0.5` tDASH from the **Identity Test** wallet to the displayed funding address, then wait through **"Waiting for funds..."** and **"Waiting for Core Chain to produce proof of asset lock..."**.<br>9. Verify **"Asset Lock Created Successfully!"** and wait for the asset lock transaction/proof to confirm. |
 | **Test Data** | Amount: `0.5` tDASH |
 | **Expected Result** | Asset lock created. Transaction ID is shown. **"Core balance:"** decreases by ~0.5 tDASH + fee. |
 | **Post-Condition** | Asset lock available for identity registration in TC-IDN-001-01. |
@@ -349,7 +352,7 @@ Perform these steps before running any test cases. If running TC-NET-010-01 (onb
 | **Test Case ID** | TC-IDN-001-01 |
 | **Short Description** | Register a new identity funded by asset lock |
 | **Pre-Conditions** | **Identity Test** wallet selected; asset lock from TC-ALK-001-01 is confirmed |
-| **Test Steps** | 1. Click **"Identities"** in the left sidebar.<br>2. Click **"Create Identity"** and verify the breadcrumb shows **Identities > Create Identity**.<br>3. Select the **Identity Test** wallet as the funding source (unlock it if prompted).<br>4. Review the generated identity keys and optional **"Alias:"** field.<br>5. Open the **"Select funding method"** combobox and choose **"Unused Asset Lock (recommended)"**.<br>6. Under **"Select an unused asset lock:"**, choose the asset lock created in TC-ALK-001-01 and click **"Select"**.<br>7. Verify the **"Estimated Fee:"** summary, then click **"Create Identity"**.<br>8. Wait through **"=> Waiting for Platform acknowledgement <="** until the success screen appears.<br>9. Verify the new identity appears in the identities list with an identity ID (Base58 string). |
+| **Test Steps** | 1. Click **"Identities"** in the left sidebar.<br>2. Click **"Create Identity"** and verify the breadcrumb shows **Identities > Create Identity**.<br>3. Select the **Identity Test** wallet as the funding source (unlock it if prompted).<br>4. Review the generated identity keys and optional **"Alias:"** field.<br>5. Open the **"Select funding method"** combobox and choose **"Unused Evo Funding Locks (recommended)"**.<br>6. Under **"Select an unused asset lock:"**, choose the asset lock created in TC-ALK-001-01 and click **"Select"**.<br>7. Verify the **"Estimated Fee:"** summary, then click **"Create Identity"**.<br>8. Wait through **"=> Waiting for Platform acknowledgement <="** until the success screen appears.<br>9. Verify the new identity appears in the identities list with an identity ID (Base58 string). |
 | **Test Data** | Funding: asset lock from TC-ALK-001-01 |
 | **Expected Result** | Identity registered. Identity ID displayed. Credits balance > 0. |
 | **Post-Condition** | New identity available for DPNS, DashPay, and token tests. |
@@ -362,7 +365,7 @@ Perform these steps before running any test cases. If running TC-NET-010-01 (onb
 | **Test Case ID** | TC-IDN-004-01 |
 | **Short Description** | Add credits to an existing identity |
 | **Pre-Conditions** | Identity from TC-IDN-001-01 exists; **Identity Test** wallet has remaining funds |
-| **Test Steps** | 1. Click **"Identities"** in the left sidebar.<br>2. Select the identity created in TC-IDN-001-01.<br>3. Open top-up and verify the breadcrumb shows **Top Up Identity**.<br>4. Under **"Choose your funding method"**, choose **"Wallet Balance"** or **"Unused Asset Locks"**, whichever is available.<br>5. Enter amount: `0.1` tDASH worth of credits.<br>6. Confirm the top-up transaction.<br>7. Wait for Platform confirmation.<br>8. Verify the identity's credit balance increased. |
+| **Test Steps** | 1. Click **"Identities"** in the left sidebar.<br>2. Select the identity created in TC-IDN-001-01.<br>3. Click the **"💰 Top up"** button for that identity and verify the breadcrumb shows **Top Up Identity**.<br>4. Under **"Choose your funding method"**, choose **"Wallet Balance"** or **"Unused Asset Locks"**, whichever is available.<br>5. Enter amount: `0.1` tDASH worth of credits.<br>6. Confirm the top-up transaction.<br>7. Wait for Platform confirmation.<br>8. Verify the identity's credit balance increased. |
 | **Test Data** | Top-up amount: `0.1` tDASH |
 | **Expected Result** | Credits increase. Transaction confirmed on Platform. |
 | **Post-Condition** | Identity has sufficient credits for DPNS registration, DashPay profile, etc. |
@@ -405,7 +408,7 @@ Perform these steps before running any test cases. If running TC-NET-010-01 (onb
 | **Test Case ID** | TC-DPN-001-01 |
 | **Short Description** | Register a unique DPNS username for the test identity |
 | **Pre-Conditions** | Identity from TC-IDN-001-01 with sufficient credits |
-| **Test Steps** | 1. Click **"Identities"** in the left sidebar.<br>2. Select the identity from TC-IDN-001-01.<br>3. Navigate to DPNS registration — the heading reads **"Register DPNS Name"**.<br>4. Enter a unique username: `detsmoke-{timestamp}` (e.g., `detsmoke-1710770000`).<br>5. Review the cost estimate.<br>6. Click **"Register Name"**.<br>7. Wait for Platform confirmation. |
+| **Test Steps** | 1. Click **"Identities"** in the left sidebar.<br>2. Select the identity from TC-IDN-001-01.<br>3. Click the **"📛 Register DPNS Name"** button for that identity and verify the heading reads **"Register DPNS Name"**.<br>4. Enter a unique username: `detsmoke-{timestamp}` (e.g., `detsmoke-1710770000`).<br>5. Review the cost estimate.<br>6. Click **"Register Name"**.<br>7. Wait for Platform confirmation. |
 | **Test Data** | Username: `detsmoke-{timestamp}` (use current Unix timestamp for uniqueness) |
 | **Expected Result** | Username registered. Appears in the identity's owned names. Credits decreased by the registration cost. |
 | **Post-Condition** | Identity has a DPNS username for DashPay tests. |
@@ -448,7 +451,7 @@ Perform these steps before running any test cases. If running TC-NET-010-01 (onb
 | **Test Case ID** | TC-DPY-001-01 |
 | **Short Description** | Create a DashPay profile for the test identity |
 | **Pre-Conditions** | Identity from TC-IDN-001-01 with DPNS username and sufficient credits |
-| **Test Steps** | 1. Click **"Dashpay"** in the left sidebar.<br>2. Click **"My Profile"** in the DashPay subscreen chooser.<br>3. Click **"Refresh"** in the top panel and wait for the profile view to load.<br>4. If the **"No DashPay Profile"** card appears, click **"Create Profile"**.<br>5. In the **"Display Name:"** field (hint: *"Enter your display name (required)"*), type `Smoke Test Bot`.<br>6. In the **"Bio/Status:"** field, type `Automated QA testing`.<br>7. Leave the **"Avatar URL:"** field empty.<br>8. Click **"Save Profile"**.<br>9. Wait for Platform confirmation.<br>10. Verify the profile screen shows **Display Name:** `Smoke Test Bot` and **Bio/Status:** `Automated QA testing`. |
+| **Test Steps** | 1. Click **"Dashpay"** in the left sidebar.<br>2. Click **"My Profile"** in the DashPay subscreen chooser.<br>3. Click **"Refresh"** in the top panel and wait for the profile view to load.<br>4. If the **"No DashPay Profile"** card appears, click **"Create Profile"**.<br>5. In the **"Display Name:"** field (hint: *"Enter your display name (required)"*), type `Smoke Test Bot`.<br>6. In the **"Bio/Status:"** field, type `Automated QA testing`.<br>7. Leave the **"Avatar URL:"** field empty.<br>8. Click **"Save Profile"**.<br>9. Wait for Platform confirmation.<br>10. Verify the profile screen shows `Smoke Test Bot` as the prominent heading, shows the TC-DPN-001-01 username as `@<dpns-name>` below it, and shows **Bio:** `Automated QA testing` as a labeled field underneath. |
 | **Test Data** | Display Name: `Smoke Test Bot`, Bio: `Automated QA testing` |
 | **Expected Result** | Profile created. Display name and bio visible on the profile screen. |
 | **Post-Condition** | Profile exists for search test. |
@@ -461,9 +464,9 @@ Perform these steps before running any test cases. If running TC-NET-010-01 (onb
 | **Test Case ID** | TC-DPY-002-01 |
 | **Short Description** | Search for a known DashPay profile by username |
 | **Pre-Conditions** | DashPay profile created in TC-DPY-001-01 |
-| **Test Steps** | 1. Click **"Dashpay"** in the left sidebar.<br>2. Click **"Search Profiles"** in the DashPay subscreen chooser.<br>3. Locate the search field (hint: *"Enter DPNS username..."*).<br>4. Type the username registered in TC-DPN-001-01.<br>5. Verify search results appear.<br>6. Verify the result shows **Display Name:** `Smoke Test Bot` and **Bio/Status:** `Automated QA testing`. |
+| **Test Steps** | 1. Click **"Dashpay"** in the left sidebar.<br>2. Click **"Search Profiles"** in the DashPay subscreen chooser.<br>3. Locate the search field (hint: *"Enter DPNS username..."*).<br>4. Type the username registered in TC-DPN-001-01.<br>5. Trigger the search by pressing **Enter** in the field (after the field loses focus) or by clicking the **"Search"** button, then wait for the **"Search Results"** section to appear (the count is shown as **"Search Results (N)"**).<br>6. Locate the result card and verify it displays, as visible text (no field labels): the username from TC-DPN-001-01 as the bold primary heading, `Smoke Test Bot` as an unlabeled secondary line (display name), `Automated QA testing` as an unlabeled italic preview line (public message), and a line beginning with `ID:` followed by the Base58 identity ID. |
 | **Test Data** | Search query: username from TC-DPN-001-01 |
-| **Expected Result** | Profile found in search results. Display name and bio match what was set in TC-DPY-001-01. |
+| **Expected Result** | Profile found in the **"Search Results"** section. The result card shows the TC-DPN-001-01 username as the primary heading, `Smoke Test Bot` as the unlabeled secondary line, `Automated QA testing` as the unlabeled italic preview, and an `ID:` line — with no **"Display Name:"** or **"Bio:"** labels on the card. |
 | **Post-Condition** | N/A |
 
 ---
@@ -491,10 +494,10 @@ Perform these steps before running any test cases. If running TC-NET-010-01 (onb
 | **Test Case ID** | TC-TOK-002-01 |
 | **Short Description** | Search for tokens by keyword |
 | **Pre-Conditions** | DET running on testnet, SPV synced |
-| **Test Steps** | 1. Click **"Tokens"** in the left sidebar.<br>2. Select the **"Search Tokens"** tab.<br>3. Enter the keyword `test` in the search field.<br>4. Execute the search.<br>5. Verify results appear, or a "no results" message is shown.<br>6. If results appear, verify each entry shows a token name and metadata. |
+| **Test Steps** | 1. Click **"Tokens"** in the left sidebar.<br>2. Select the **"Search Tokens"** tab.<br>3. Enter the keyword `test` in the search field.<br>4. Execute the search.<br>5. Verify the contract-results table appears with at least one row. If **"No tokens match your keyword."** is shown instead, stop and mark TC-TOK-002-01 blocked until seeded testnet token data exists for the keyword.<br>6. Verify the contract-results table shows **"Contract ID"**, **"Contract Description"**, and **"Action"** columns with a **"More Info"** action; record one **Contract ID** as `${TC_TOK_CONTRACT_ID}` for TC-TOK-003-01. |
 | **Test Data** | Keyword: `test` |
-| **Expected Result** | Search executes without error. Results or empty-state message displayed. |
-| **Post-Condition** | N/A |
+| **Expected Result** | Search executes without error and returns at least one contract row; `${TC_TOK_CONTRACT_ID}` is recorded from the **"Contract ID"** column. The no-results message is a blocking data-seeding condition, not a successful outcome. |
+| **Post-Condition** | `${TC_TOK_CONTRACT_ID}` recorded from a result row so TC-TOK-003-01 can execute. |
 
 ### TC-TOK-003-01: Add a token by contract ID
 
@@ -503,10 +506,10 @@ Perform these steps before running any test cases. If running TC-NET-010-01 (onb
 | **Use Case ID** | TOK-003 |
 | **Test Case ID** | TC-TOK-003-01 |
 | **Short Description** | Add a token using a contract or token ID |
-| **Pre-Conditions** | DET running on testnet, a known token contract ID available |
-| **Test Steps** | 1. Click **"Tokens"** in the left sidebar.<br>2. Click the **"Add Token"** button.<br>3. Verify the heading reads **"Add Token"**.<br>4. In the **"Contract or Token ID:"** field, enter a known testnet token contract ID.<br>5. Click **"Search"** and select the desired token if multiple results are shown.<br>6. Click **"Add Token"** and verify the **"Token Added Successfully"** screen appears.<br>7. Click **"Back to Tokens screen"**, open **"Search Tokens"**, and verify the added token/contract can be found by its name or ID. |
-| **Test Data** | A valid token contract ID from testnet |
-| **Expected Result** | Token is saved/tracked locally and searchable by name or ID. **"My Tokens"** only shows the token if one of the local identities holds a non-zero balance. |
+| **Pre-Conditions** | DET running on testnet. TC-TOK-002-01 has been executed and a **Contract ID** value from its results table has been recorded as `${TC_TOK_CONTRACT_ID}` (see [test-prerequisites.md → Reusable Test Data](test-prerequisites.md#reusable-test-data)). If TC-TOK-002-01 returned no results, this case is **blocked** pending a seeded testnet token contract ID. |
+| **Test Steps** | 1. Click **"Tokens"** in the left sidebar.<br>2. Click the **"Add Token"** button.<br>3. Verify the heading reads **"Add Token"**.<br>4. In the **"Contract or Token ID:"** field, enter `${TC_TOK_CONTRACT_ID}` (the Contract ID recorded from TC-TOK-002-01).<br>5. Click **"Search"** and select the desired token if multiple results are shown.<br>6. Click **"Add Token"** and verify the **"Token Added Successfully"** screen appears.<br>7. Click **"Back to Tokens screen"**, return to **"My Tokens"**, and verify the added token appears in the local tracked token list by **Token Name** or **Token ID**. |
+| **Test Data** | Contract ID: `${TC_TOK_CONTRACT_ID}` (recorded from a TC-TOK-002-01 result row) |
+| **Expected Result** | Token is added successfully and saved as a locally tracked token in **"My Tokens"**. The tracked entry is visible by **Token Name** or **Token ID**; token balance may remain zero or absent unless a local identity holds a non-zero balance. |
 | **Post-Condition** | Token available for viewing. |
 
 ---
@@ -521,8 +524,8 @@ Perform these steps before running any test cases. If running TC-NET-010-01 (onb
 | **Test Case ID** | TC-DOC-003-01 |
 | **Short Description** | Import the DPNS system contract by ID |
 | **Pre-Conditions** | DET running on testnet |
-| **Test Steps** | 1. Click **"Contracts"** in the left sidebar.<br>2. Click the **"Add Contracts"** button.<br>3. Verify the breadcrumb reads **Contracts > Add Contracts**.<br>4. Enter the DPNS contract ID in the input field.<br>5. Confirm the import.<br>6. Verify the contract appears in the contracts list with its name and available document types. |
-| **Test Data** | DPNS contract ID (system contract, available on testnet) |
+| **Test Steps** | 1. Click **"Contracts"** in the left sidebar.<br>2. Click the **"Add Contracts"** button.<br>3. Verify the breadcrumb reads **Contracts > Add Contracts**.<br>4. Under the **"Enter Contract Identifiers:"** heading, enter `${DPNS_CONTRACT_ID}` in the **"Contract 1:"** input field.<br>5. Click the **"Add Contracts"** button to submit.<br>6. Verify the contract appears in the contracts list with its name and available document types. |
+| **Test Data** | DPNS contract ID: `${DPNS_CONTRACT_ID}` (stable Base58 system contract — see [test-prerequisites.md → Reusable Test Data](test-prerequisites.md#reusable-test-data)) |
 | **Expected Result** | Contract imported. Shows contract name and document types in the list. |
 | **Post-Condition** | DPNS contract available for document browsing. |
 
@@ -567,21 +570,23 @@ Perform these steps after all tests are complete to return funds and remove test
 1. Click **"Wallets"** in the left sidebar.
 2. Select the **Send Test** wallet.
 3. Click **"Send"**.
-4. In the **"To:"** field, enter `${BANK_ADDRESS_0}`.
+4. In the **"Send to"** field (hint: *"Enter address (X.../y.../evo1.../tevo1...)"*), enter `${BANK_ADDRESS_0}`.
 5. Click **"Max"** to send the entire remaining balance minus fee.
-6. Click **"Send"** in the form.
-7. Confirm in the **"Fee Confirmation Required"** dialog.
-8. Wait for the transaction to confirm.
+6. Click **"Send"** in the form and verify the form is replaced by a spinner and a **"Sending..."** heading while the transaction is broadcast.
+7. Wait for the success banner and verify it shows the sent amount and destination address (**"Sent {amount} DASH to ${BANK_ADDRESS_0}"**).
+8. Click **"Back to Wallet"**.
+9. Wait for the transaction to confirm.
 
 ### 2. Return Funds from Identity Test Wallet
 
 1. Select the **Identity Test** wallet.
 2. If any **"Core balance:"** remains (> 0), click **"Send"**.
-3. In the **"To:"** field, enter `${BANK_ADDRESS_0}`.
+3. In the **"Send to"** field (hint: *"Enter address (X.../y.../evo1.../tevo1...)"*), enter `${BANK_ADDRESS_0}`.
 4. Click **"Max"**.
-5. Click **"Send"** in the form.
-6. Confirm in the **"Fee Confirmation Required"** dialog.
-7. Wait for the transaction to confirm.
+5. Click **"Send"** in the form and verify the form is replaced by a spinner and a **"Sending..."** heading while the transaction is broadcast.
+6. Wait for the success banner and verify it shows the sent amount and destination address (**"Sent {amount} DASH to ${BANK_ADDRESS_0}"**).
+7. Click **"Back to Wallet"**.
+8. Wait for the transaction to confirm.
 
 ### 3. Remove Test Wallets
 
@@ -616,7 +621,7 @@ Execute tests in this order to build on each other and minimize setup/cleanup:
 | 9 | TC-WAL-016-01 | Transaction history |
 | 10 | TC-WAL-006-01 | Lock/unlock wallet |
 | 11 | TC-SND-003-01 | Receive with QR |
-| 12 | TC-SND-005-01 | Fee estimate |
+| 12 | TC-SND-005-01 | Send success banner and transaction history |
 | 13 | TC-SND-001-01 | Send tDASH |
 | 14 | TC-ALK-001-01 | Create asset lock |
 | 15 | TC-IDN-001-01 | Register identity |

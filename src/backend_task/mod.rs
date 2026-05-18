@@ -411,6 +411,21 @@ impl AppContext {
         sender: SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let sdk = self.sdk.load().as_ref().clone();
+
+        // Wallet/identity/DashPay/core flows go through `WalletBackend`.
+        // Build it lazily on first such task (idempotent) — this is where
+        // the `AppState`-owned `TaskResult` sender is available.
+        if matches!(
+            task,
+            BackendTask::WalletTask(_)
+                | BackendTask::CoreTask(_)
+                | BackendTask::IdentityTask(_)
+                | BackendTask::DashPayTask(_)
+        ) && let Err(e) = self.ensure_wallet_backend(sender.clone()).await
+        {
+            tracing::warn!(error = %e, "Wallet backend initialization deferred");
+        }
+
         match task {
             BackendTask::ContractTask(contract_task) => {
                 Ok(self.run_contract_task(*contract_task, &sdk, sender).await?)

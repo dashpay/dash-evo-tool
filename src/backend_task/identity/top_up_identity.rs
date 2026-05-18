@@ -90,74 +90,21 @@ impl AppContext {
                     identity_index,
                     top_up_index,
                 ) => {
-                    // Scope the write lock to avoid holding it across an await.
-                    // UTXOs are selected but NOT removed yet — removal happens after broadcast.
-                    let (
-                        asset_lock_transaction,
-                        asset_lock_proof_private_key,
-                        _,
-                        used_utxos,
-                        wallet_seed_hash,
-                    ) = {
-                        let mut wallet = wallet.write().map_err(TaskError::from)?;
-                        let seed_hash = wallet.seed_hash();
-                        let tx_result = match wallet.top_up_asset_lock_transaction(
-                            self,
-                            sdk.network,
+                    // Asset-lock build/broadcast/track-to-proof is owned by the
+                    // upstream `AssetLockManager`. `identity_index` is the
+                    // funding-account derivation index for an `IdentityTopUp`
+                    // lock; the legacy `top_up_index` is preserved only for
+                    // downstream DET credit bookkeeping.
+                    let seed_hash = wallet.read().map_err(TaskError::from)?.seed_hash();
+                    let backend = self.wallet_backend()?;
+                    let (asset_lock_proof, asset_lock_proof_private_key, tx_id) = backend
+                        .create_asset_lock_proof(
+                            &seed_hash,
                             amount,
-                            true,
+                            crate::wallet_backend::AssetLockKind::IdentityTopUp,
                             identity_index,
-                            top_up_index,
-                            None,
-                        ) {
-                            Ok(transaction) => transaction,
-                            Err(e) => {
-                                // Reload UTXOs (RPC: fetches from Core; SPV: no-op).
-                                // Only retry if something actually changed.
-                                if !wallet
-                                    .reload_utxos(self)
-                                    .map_err(|e| TaskError::UtxoUpdateFailed { detail: e })?
-                                {
-                                    return Err(TaskError::AssetLockTransactionBuildFailed {
-                                        detail: e,
-                                    });
-                                }
-                                wallet
-                                    .top_up_asset_lock_transaction(
-                                        self,
-                                        sdk.network,
-                                        amount,
-                                        true,
-                                        identity_index,
-                                        top_up_index,
-                                        None,
-                                    )
-                                    .map_err(|e| TaskError::AssetLockTransactionBuildFailed {
-                                        detail: e,
-                                    })?
-                            }
-                        };
-                        (
-                            tx_result.0,
-                            tx_result.1,
-                            tx_result.2,
-                            tx_result.3,
-                            seed_hash,
-                        )
-                    };
-
-                    let tx_id = self
-                        .broadcast_and_commit_asset_lock(
-                            &asset_lock_transaction,
-                            amount,
-                            &wallet_seed_hash,
-                            &wallet,
-                            &used_utxos,
                         )
                         .await?;
-
-                    let asset_lock_proof = self.wait_for_asset_lock_proof(tx_id).await?;
-
                     (
                         asset_lock_proof,
                         asset_lock_proof_private_key,

@@ -2,13 +2,7 @@ use super::AppContext;
 use crate::backend_task::error::TaskError;
 use crate::database::is_unique_constraint_violation;
 use crate::model::feature_gate::FeatureGate;
-use crate::model::wallet::{
-    AddressInfo as WalletAddressInfo, DerivationPathHelpers, DerivationPathReference,
-    DerivationPathType, Wallet, WalletSeedHash,
-};
-use dash_sdk::dpp::dashcore::{Address, Network};
-use dash_sdk::dpp::key_wallet::Network as WalletNetwork;
-use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
+use crate::model::wallet::{DerivationPathReference, DerivationPathType, Wallet, WalletSeedHash};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 
@@ -326,93 +320,5 @@ impl AppContext {
         }
 
         Ok(())
-    }
-
-    // TODO(P0.5): re-wired in P2 (WalletBackend address registration).
-    #[allow(dead_code)]
-    pub(crate) fn register_spv_address(
-        &self,
-        wallet: &Arc<RwLock<Wallet>>,
-        address: Address,
-        derivation_path: DerivationPath,
-        path_type: DerivationPathType,
-        path_reference: DerivationPathReference,
-    ) -> Result<bool, TaskError> {
-        let mut guard = wallet.write()?;
-        if guard.known_addresses.contains_key(&address) {
-            return Ok(false);
-        }
-
-        let (path_reference, path_type) =
-            self.classify_derivation_metadata(&derivation_path, path_reference, path_type);
-
-        let seed_hash = guard.seed_hash();
-
-        self.db.add_address_if_not_exists(
-            &seed_hash,
-            &address,
-            &self.network,
-            &derivation_path,
-            path_reference,
-            path_type,
-            None,
-        )?;
-
-        guard
-            .known_addresses
-            .insert(address.clone(), derivation_path.clone());
-        guard.watched_addresses.insert(
-            derivation_path,
-            WalletAddressInfo {
-                address,
-                path_type,
-                path_reference,
-            },
-        );
-
-        Ok(true)
-    }
-
-    // TODO(P0.5): re-wired in P2 (WalletBackend network mapping).
-    #[allow(dead_code)]
-    pub(crate) fn wallet_network_key(&self) -> WalletNetwork {
-        match self.network {
-            Network::Mainnet => WalletNetwork::Mainnet,
-            Network::Testnet => WalletNetwork::Testnet,
-            Network::Devnet => WalletNetwork::Devnet,
-            Network::Regtest => WalletNetwork::Regtest,
-        }
-    }
-
-    fn classify_derivation_metadata(
-        &self,
-        derivation_path: &DerivationPath,
-        default_ref: DerivationPathReference,
-        default_type: DerivationPathType,
-    ) -> (DerivationPathReference, DerivationPathType) {
-        let components = derivation_path.as_ref();
-        if components.len() >= 5
-            && matches!(components[0], ChildNumber::Hardened { index: 9 })
-            && matches!(components[2], ChildNumber::Hardened { index: 5 })
-            && matches!(components[3], ChildNumber::Hardened { .. })
-        {
-            let hardened_leaf = matches!(components.last(), Some(ChildNumber::Hardened { .. }));
-            if !hardened_leaf {
-                return (
-                    DerivationPathReference::BlockchainIdentities,
-                    DerivationPathType::SINGLE_USER_AUTHENTICATION,
-                );
-            }
-        }
-
-        if derivation_path.is_bip32() {
-            return (DerivationPathReference::BIP32, default_type);
-        }
-
-        if derivation_path.is_bip44(self.network) {
-            return (DerivationPathReference::BIP44, default_type);
-        }
-
-        (default_ref, default_type)
     }
 }

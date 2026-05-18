@@ -132,3 +132,89 @@ impl PlatformEventHandler for EventBridge {
     // `serde`), so that callback never fires. DET's shielded path is the
     // separate retained grovestark flow, unrelated to this event.
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::utils::egui_mpsc::EguiMpscAsync;
+    use std::sync::Arc;
+
+    fn make_bridge() -> (
+        EventBridge,
+        Arc<ConnectionStatus>,
+        tokio::sync::mpsc::Receiver<TaskResult>,
+    ) {
+        let cs = Arc::new(ConnectionStatus::new());
+        let (tx, rx) =
+            tokio::sync::mpsc::channel::<TaskResult>(8).with_egui_ctx(egui::Context::default());
+        let bridge = EventBridge::new(Arc::clone(&cs), tx);
+        (bridge, cs, rx)
+    }
+
+    fn drained_refresh(rx: &mut tokio::sync::mpsc::Receiver<TaskResult>) -> bool {
+        let mut saw_refresh = false;
+        while let Ok(r) = rx.try_recv() {
+            if matches!(r, TaskResult::Refresh) {
+                saw_refresh = true;
+            }
+        }
+        saw_refresh
+    }
+
+    #[test]
+    fn sync_complete_sets_running_and_nudges() {
+        let (bridge, cs, mut rx) = make_bridge();
+        bridge.on_sync_event(&SyncEvent::SyncComplete {
+            header_tip: 100,
+            cycle: 0,
+        });
+        assert_eq!(cs.spv_status(), SpvStatus::Running);
+        assert!(drained_refresh(&mut rx));
+    }
+
+    #[test]
+    fn manager_error_sets_error_status_and_records_message() {
+        let (bridge, cs, mut rx) = make_bridge();
+        bridge.on_sync_event(&SyncEvent::ManagerError {
+            manager: dash_sdk::dash_spv::sync::ManagerIdentifier::BlockHeader,
+            error: "boom".to_string(),
+        });
+        assert_eq!(cs.spv_status(), SpvStatus::Error);
+        assert!(cs.spv_last_error().is_some_and(|e| e.contains("boom")));
+        assert!(drained_refresh(&mut rx));
+    }
+
+    #[test]
+    fn peers_updated_nudges_refresh() {
+        let (bridge, _cs, mut rx) = make_bridge();
+        bridge.on_network_event(&NetworkEvent::PeersUpdated {
+            connected_count: 3,
+            addresses: Vec::new(),
+            best_height: None,
+        });
+        // ConnectionStatus has no public peer-count getter; its own tests
+        // cover the internal mutation. Here we assert the frame-loop nudge.
+        assert!(drained_refresh(&mut rx));
+    }
+
+    #[test]
+    fn progress_default_maps_to_syncing() {
+        let (bridge, cs, mut rx) = make_bridge();
+        bridge.on_progress(&SyncProgress::default());
+        // A default (no-manager) progress is neither synced nor errored.
+        assert_eq!(cs.spv_status(), SpvStatus::Syncing);
+        assert!(drained_refresh(&mut rx));
+    }
+
+    #[test]
+    fn on_error_sets_error_and_records_message() {
+        let (bridge, cs, mut rx) = make_bridge();
+        bridge.on_error("network down");
+        assert_eq!(cs.spv_status(), SpvStatus::Error);
+        assert!(
+            cs.spv_last_error()
+                .is_some_and(|e| e.contains("network down"))
+        );
+        assert!(drained_refresh(&mut rx));
+    }
+}

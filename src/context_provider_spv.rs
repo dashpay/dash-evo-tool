@@ -89,18 +89,36 @@ impl ContextProvider for SpvProvider {
 
     fn get_quorum_public_key(
         &self,
-        _quorum_type: u32,
-        _quorum_hash: [u8; 32],
-        _core_chain_locked_height: u32,
+        quorum_type: u32,
+        quorum_hash: [u8; 32],
+        core_chain_locked_height: u32,
     ) -> Result<[u8; 48], ContextProviderError> {
-        // Quorum keys come from chain sync, owned by upstream
-        // `platform-wallet`'s `SpvRuntime`. The P1 `WalletBackend` that wraps
-        // it is not yet held by `AppContext` (parallel/skeleton path), so
-        // there is nothing to delegate to here. P2 places `WalletBackend` in
-        // `AppContext` and wires this to `wallet_backend` quorum resolution.
-        Err(ContextProviderError::Generic(
-            "Quorum key resolution is being upgraded and is temporarily unavailable.".to_string(),
-        ))
+        // Quorum keys come from upstream `platform-wallet`'s `SpvRuntime`,
+        // wrapped by `WalletBackend`. The trait method is sync but the
+        // upstream lookup is async; bridge with `block_in_place` (this runs
+        // inside SDK proof verification on a tokio worker, never the UI
+        // thread).
+        let guard = self
+            .app_context
+            .lock()
+            .map_err(|_| ContextProviderError::Config("SpvProvider lock poisoned".to_string()))?;
+        let app_ctx = guard
+            .as_ref()
+            .ok_or(ContextProviderError::Config("no app context".to_string()))?
+            .clone();
+        drop(guard);
+
+        let backend = app_ctx
+            .wallet_backend()
+            .map_err(|e| ContextProviderError::Generic(e.to_string()))?;
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(backend.get_quorum_public_key(
+                quorum_type,
+                quorum_hash,
+                core_chain_locked_height,
+            ))
+        })
+        .map_err(|e| ContextProviderError::Generic(e.to_string()))
     }
 
     fn get_platform_activation_height(

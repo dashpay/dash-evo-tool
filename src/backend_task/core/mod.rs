@@ -1,7 +1,5 @@
-mod create_asset_lock;
 mod recover_asset_locks;
 mod refresh_single_key_wallet_info;
-mod refresh_wallet_info;
 mod send_single_key_wallet_payment;
 mod start_dash_qt;
 
@@ -15,11 +13,13 @@ use crate::model::wallet::single_key::SingleKeyWallet;
 use dash_sdk::dashcore_rpc;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dashcore_rpc::{Auth, Client};
+use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use dash_sdk::dpp::dashcore::{
     Address, Block, ChainLock, InstantLock, Network, OutPoint, Transaction, TxOut,
 };
 use dash_sdk::dpp::fee::Credits;
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 
 #[derive(Debug, Clone)]
@@ -198,8 +198,29 @@ impl AppContext {
                     active_rpc_error,
                 )))
             }
-            CoreTask::RefreshWalletInfo(_wallet, _sync_platform) => {
-                Err(TaskError::WalletBackendNotYetWired)
+            CoreTask::RefreshWalletInfo(wallet, sync_platform) => {
+                // Core wallet state (balances/UTXOs/transactions) is kept
+                // current continuously by the upstream runtime and pushed via
+                // the EventBridge — there is no explicit Core reconcile to
+                // run. Ensure the backend exists, then optionally refresh the
+                // DAPI-sourced Platform-address balances (retained DET path).
+                self.wallet_backend()?;
+                let seed_hash = {
+                    let guard = wallet.read()?;
+                    guard.seed_hash()
+                };
+                let warning = if sync_platform {
+                    match self.fetch_platform_address_balances(seed_hash).await {
+                        Ok(_) => None,
+                        Err(e) => {
+                            tracing::warn!("Failed to fetch Platform address balances: {}", e);
+                            Some(format!("Platform sync failed: {e}"))
+                        }
+                    }
+                } else {
+                    None
+                };
+                Ok(BackendTaskSuccessResult::RefreshedWallet { warning })
             }
             CoreTask::RefreshSingleKeyWalletInfo(_wallet) => {
                 Err(TaskError::SingleKeyWalletsUnsupported)
@@ -208,16 +229,70 @@ impl AppContext {
                 .start_dash_qt(network, custom_dash_qt, overwrite_dash_conf)
                 .map_err(|e| TaskError::DashCoreStartError { source: e })
                 .map(|_| BackendTaskSuccessResult::None),
-            CoreTask::CreateRegistrationAssetLock(_wallet, _amount, _identity_index) => {
-                Err(TaskError::WalletBackendNotYetWired)
+            CoreTask::CreateRegistrationAssetLock(wallet, amount, identity_index) => {
+                let backend = self.wallet_backend()?;
+                let seed_hash = wallet.read()?.seed_hash();
+                let amount_duffs = amount / CREDITS_PER_DUFF;
+                let (_, _, txid) = backend
+                    .create_asset_lock_proof(
+                        &seed_hash,
+                        amount_duffs,
+                        crate::wallet_backend::AssetLockKind::IdentityRegistration,
+                        identity_index,
+                    )
+                    .await?;
+                Ok(BackendTaskSuccessResult::Message(format!(
+                    "Asset lock transaction broadcast successfully. TX ID: {txid}"
+                )))
             }
-            CoreTask::CreateTopUpAssetLock(_wallet, _amount, _identity_index, _top_up_index) => {
-                Err(TaskError::WalletBackendNotYetWired)
+            CoreTask::CreateTopUpAssetLock(wallet, amount, identity_index, _top_up_index) => {
+                let backend = self.wallet_backend()?;
+                let seed_hash = wallet.read()?.seed_hash();
+                let amount_duffs = amount / CREDITS_PER_DUFF;
+                let (_, _, txid) = backend
+                    .create_asset_lock_proof(
+                        &seed_hash,
+                        amount_duffs,
+                        crate::wallet_backend::AssetLockKind::IdentityTopUp,
+                        identity_index,
+                    )
+                    .await?;
+                Ok(BackendTaskSuccessResult::Message(format!(
+                    "Asset lock transaction broadcast successfully. TX ID: {txid}"
+                )))
             }
-            CoreTask::SendWalletPayment {
-                wallet: _,
-                request: _,
-            } => Err(TaskError::WalletBackendNotYetWired),
+            CoreTask::SendWalletPayment { wallet, request } => {
+                let backend = self.wallet_backend()?;
+                let seed_hash = {
+                    let guard = wallet.read()?;
+                    guard.seed_hash()
+                };
+                let mut recipients = Vec::with_capacity(request.recipients.len());
+                for r in &request.recipients {
+                    let parsed = Address::from_str(&r.address).map_err(|source| {
+                        TaskError::InvalidRecipientAddress {
+                            address: r.address.clone(),
+                            source,
+                        }
+                    })?;
+                    let addr = parsed
+                        .require_network(self.network)
+                        .map_err(|source| TaskError::AddressNetworkMismatch { source })?;
+                    recipients.push((addr, r.amount_duffs));
+                }
+                let total_amount: u64 = request.recipients.iter().map(|r| r.amount_duffs).sum();
+                let result_recipients: Vec<(String, u64)> = request
+                    .recipients
+                    .iter()
+                    .map(|r| (r.address.clone(), r.amount_duffs))
+                    .collect();
+                let txid = backend.send_payment(&seed_hash, recipients).await?;
+                Ok(BackendTaskSuccessResult::WalletPayment {
+                    txid: txid.to_string(),
+                    recipients: result_recipients,
+                    total_amount,
+                })
+            }
             CoreTask::SendSingleKeyWalletPayment {
                 wallet: _,
                 request: _,

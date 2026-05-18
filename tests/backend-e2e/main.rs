@@ -24,6 +24,7 @@ mod tx_is_ours;
 
 mod core_tasks;
 mod dashpay_tasks;
+mod event_bridge_live;
 mod identity_tasks;
 mod mnlist_tasks;
 mod shielded_tasks;

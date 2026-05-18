@@ -12,15 +12,13 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, RwLock};
 
 impl AppContext {
-    /// Broadcast a raw transaction.
-    ///
-    /// Inert at the P0.5 compile floor: chain broadcast is owned by upstream
-    /// `platform-wallet`'s `SpvRuntime`. P2 wires this to the upstream runtime.
+    /// Broadcast a raw transaction over the network via the wallet backend's
+    /// upstream `SpvRuntime`.
     pub(crate) async fn broadcast_raw_transaction(
         &self,
-        _tx: &Transaction,
+        tx: &Transaction,
     ) -> Result<Txid, TaskError> {
-        Err(TaskError::WalletBackendNotYetWired)
+        self.wallet_backend()?.broadcast_transaction(tx).await
     }
 
     /// Wait for an asset lock proof (InstantLock or ChainLock) for the given transaction.

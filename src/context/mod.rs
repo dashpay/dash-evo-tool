@@ -22,7 +22,8 @@ use crate::model::wallet::single_key::{SingleKeyHash, SingleKeyWallet};
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::sdk_wrapper::initialize_sdk;
 use crate::utils::tasks::TaskManager;
-use arc_swap::ArcSwap;
+use crate::wallet_backend::{SeedReregistrationLoader, WalletBackend};
+use arc_swap::{ArcSwap, ArcSwapOption};
 use connection_status::ConnectionStatus;
 use crossbeam_channel::{Receiver, Sender};
 use dash_sdk::Sdk;
@@ -121,6 +122,12 @@ pub struct AppContext {
     /// The egui context, stored for use in non-UI code paths (e.g. display_task_result).
     /// Clone is O(1) — egui::Context is Arc-backed and the same instance for the app lifetime.
     egui_ctx: egui::Context,
+    /// The wallet seam. Lazily built once `AppState` has wired the
+    /// `TaskResult` sender (it lives on `AppState`, not here) — see
+    /// [`Self::ensure_wallet_backend`]. `None` until that first call;
+    /// wallet/identity task arms degrade to `WalletBackendNotYetWired`
+    /// while unset.
+    wallet_backend: ArcSwapOption<WalletBackend>,
 }
 
 impl AppContext {
@@ -328,6 +335,7 @@ impl AppContext {
             platform_protocol_version: AtomicU32::new(0),
             shielded_states: Mutex::new(std::collections::HashMap::new()),
             egui_ctx,
+            wallet_backend: ArcSwapOption::const_empty(),
         };
 
         let app_context = Arc::new(app_context);
@@ -615,6 +623,43 @@ impl AppContext {
             }
             e => TaskError::from(e),
         }
+    }
+
+    /// Lazily build the wallet seam, idempotently.
+    ///
+    /// `WalletBackend::new` is async and needs the `TaskResult` sender, which
+    /// lives on `AppState` — so construction cannot happen in `Self::new`.
+    /// `AppState` calls this once it has both the context and the sender.
+    /// Subsequent calls are no-ops (first writer wins).
+    pub async fn ensure_wallet_backend(
+        self: &Arc<Self>,
+        task_result_sender: crate::utils::egui_mpsc::SenderAsync<crate::app::TaskResult>,
+    ) -> Result<(), TaskError> {
+        if self.wallet_backend.load().is_some() {
+            return Ok(());
+        }
+        let sdk = std::sync::Arc::new(self.sdk());
+        let loader = Arc::new(SeedReregistrationLoader::new());
+        let backend = WalletBackend::new(
+            self,
+            sdk,
+            Arc::clone(&self.connection_status),
+            task_result_sender,
+            loader,
+        )
+        .await?;
+        // Idempotent: if a racing call already installed one, keep it.
+        if self.wallet_backend.load().is_none() {
+            self.wallet_backend.store(Some(Arc::new(backend)));
+        }
+        Ok(())
+    }
+
+    /// The wallet seam, or `WalletBackendNotYetWired` if not yet built.
+    pub fn wallet_backend(&self) -> Result<Arc<WalletBackend>, TaskError> {
+        self.wallet_backend
+            .load_full()
+            .ok_or(TaskError::WalletBackendNotYetWired)
     }
 }
 

@@ -35,6 +35,7 @@ use crate::app::TaskResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::context::connection_status::ConnectionStatus;
+use crate::model::wallet::WalletSeedHash;
 use crate::utils::egui_mpsc::SenderAsync;
 
 /// The upstream persister DET consumes. Authored upstream (PR #3625) — DET
@@ -42,9 +43,32 @@ use crate::utils::egui_mpsc::SenderAsync;
 /// reimplement).
 type DetPersister = SqlitePersister;
 
+/// Default BIP-44 account index for wallet receive/send operations. DET has
+/// always operated account 0; multi-account support is out of P2 scope.
+const DEFAULT_BIP44_ACCOUNT: u32 = 0;
+
+/// DET-facing asset-lock funding selector. Hides the upstream
+/// `AssetLockFundingType` (M-DONT-LEAK-TYPES).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssetLockKind {
+    /// Funds a new identity registration.
+    IdentityRegistration,
+    /// Tops up an existing identity.
+    IdentityTopUp,
+    /// Funds a Platform (DIP-17) address directly.
+    PlatformAddressTopUp,
+}
+
+/// Upstream `WalletId` = `SHA256(root_xpub || root_chain_code)`, distinct
+/// from DET's `WalletSeedHash` = `SHA256(seed_bytes)`. The map is the bridge:
+/// populated once per wallet at registration, read by every DET-keyed call.
+type WalletId = [u8; 32];
+
 struct Inner {
     pwm: PlatformWalletManager<DetPersister>,
     loader: Arc<dyn PersistedWalletLoader>,
+    /// `WalletSeedHash` → upstream `WalletId`. See [`WalletId`].
+    id_map: std::sync::RwLock<std::collections::BTreeMap<WalletSeedHash, WalletId>>,
     /// Optional peer `host:port` for Devnet/Regtest or a user-selected local
     /// node. `None` ⇒ DNS-seed discovery (Mainnet/Testnet default).
     peer: Option<std::net::SocketAddr>,
@@ -102,6 +126,7 @@ impl WalletBackend {
             inner: Arc::new(Inner {
                 pwm,
                 loader,
+                id_map: std::sync::RwLock::new(std::collections::BTreeMap::new()),
                 peer,
                 network,
                 spv_storage_dir,
@@ -125,7 +150,8 @@ impl WalletBackend {
             // `create_wallet_from_seed_bytes` also loads persisted
             // identity/address deltas and runs identity discovery upstream
             // (see upstream `manager/wallet_lifecycle.rs`).
-            self.inner
+            let pw = self
+                .inner
                 .pwm
                 .create_wallet_from_seed_bytes(
                     reg.network,
@@ -136,6 +162,10 @@ impl WalletBackend {
                 .map_err(|e| TaskError::WalletBackend {
                     source: Box::new(e),
                 })?;
+            self.inner
+                .id_map
+                .write()?
+                .insert(reg.seed_hash, pw.wallet_id());
             tracing::debug!(
                 wallet = %hex::encode(reg.seed_hash),
                 "Wallet registered with backend"
@@ -180,12 +210,148 @@ impl WalletBackend {
         self.inner.pwm.wallet_ids().await.len()
     }
 
+    /// Broadcast a raw transaction over the network via the upstream
+    /// `SpvRuntime`. Network-level (not tied to a specific wallet); used for
+    /// asset-lock transactions built outside the per-wallet send path.
+    pub async fn broadcast_transaction(
+        &self,
+        tx: &dash_sdk::dpp::dashcore::Transaction,
+    ) -> Result<dash_sdk::dpp::dashcore::Txid, TaskError> {
+        use platform_wallet::broadcaster::{SpvBroadcaster, TransactionBroadcaster};
+        let broadcaster = SpvBroadcaster::new(self.inner.pwm.spv_arc());
+        broadcaster
+            .broadcast(tx)
+            .await
+            .map_err(|e| TaskError::WalletBackend {
+                source: Box::new(e),
+            })
+    }
+
+    /// Resolve a quorum public key from the upstream SPV masternode state.
+    /// This is the SDK proof-verification path (fed by `SpvProvider`).
+    pub async fn get_quorum_public_key(
+        &self,
+        quorum_type: u32,
+        quorum_hash: [u8; 32],
+        core_chain_locked_height: u32,
+    ) -> Result<[u8; 48], TaskError> {
+        self.inner
+            .pwm
+            .spv()
+            .get_quorum_public_key(quorum_type, quorum_hash, core_chain_locked_height)
+            .await
+            .map_err(|e| TaskError::WalletBackend {
+                source: Box::new(e),
+            })
+    }
+
     /// Whether chain sync has not yet reached the tip.
     pub async fn is_syncing(&self) -> bool {
         match self.inner.pwm.spv().sync_progress().await {
             Some(p) => !p.is_synced(),
             None => false,
         }
+    }
+
+    /// Map a DET `WalletSeedHash` to the upstream wallet handle.
+    async fn resolve_wallet(
+        &self,
+        seed_hash: &WalletSeedHash,
+    ) -> Result<Arc<platform_wallet::PlatformWallet>, TaskError> {
+        let wallet_id = *self
+            .inner
+            .id_map
+            .read()?
+            .get(seed_hash)
+            .ok_or(TaskError::WalletBackendNotYetWired)?;
+        self.inner
+            .pwm
+            .get_wallet(&wallet_id)
+            .await
+            .ok_or(TaskError::WalletBackendNotYetWired)
+    }
+
+    /// Derive the next unused receive address for the wallet's default BIP-44
+    /// account, as a DET address string.
+    pub async fn next_receive_address(
+        &self,
+        seed_hash: &WalletSeedHash,
+    ) -> Result<String, TaskError> {
+        let wallet = self.resolve_wallet(seed_hash).await?;
+        let addr = wallet
+            .core()
+            .next_receive_address_for_account(DEFAULT_BIP44_ACCOUNT)
+            .await
+            .map_err(|e| TaskError::WalletBackend {
+                source: Box::new(e),
+            })?;
+        Ok(addr.to_string())
+    }
+
+    /// Build, sign, and broadcast a payment from the wallet's default BIP-44
+    /// account to `recipients` (`(address, duffs)`). Returns the txid.
+    pub async fn send_payment(
+        &self,
+        seed_hash: &WalletSeedHash,
+        recipients: Vec<(dash_sdk::dpp::dashcore::Address, u64)>,
+    ) -> Result<dash_sdk::dpp::dashcore::Txid, TaskError> {
+        use dash_sdk::dpp::key_wallet::account::account_type::StandardAccountType;
+        let wallet = self.resolve_wallet(seed_hash).await?;
+        let tx = wallet
+            .core()
+            .send_to_addresses(
+                StandardAccountType::BIP44Account,
+                DEFAULT_BIP44_ACCOUNT,
+                recipients,
+            )
+            .await
+            .map_err(|e| TaskError::WalletBackend {
+                source: Box::new(e),
+            })?;
+        Ok(tx.txid())
+    }
+
+    /// Build, track, and broadcast an asset lock via the upstream
+    /// `AssetLockManager` (which also continuously tracks it to finality and
+    /// returns the finalized proof). `kind` selects the funding derivation;
+    /// `identity_index` is the funding-account derivation index. Returns the
+    /// finalized asset-lock proof, its one-time private key, and the txid —
+    /// everything an identity create/top-up or platform-address top-up state
+    /// transition needs.
+    pub async fn create_asset_lock_proof(
+        &self,
+        seed_hash: &WalletSeedHash,
+        amount_duffs: u64,
+        kind: AssetLockKind,
+        identity_index: u32,
+    ) -> Result<
+        (
+            dash_sdk::dpp::prelude::AssetLockProof,
+            dash_sdk::dpp::dashcore::PrivateKey,
+            dash_sdk::dpp::dashcore::Txid,
+        ),
+        TaskError,
+    > {
+        use platform_wallet::AssetLockFundingType;
+        let wallet = self.resolve_wallet(seed_hash).await?;
+        let funding_type = match kind {
+            AssetLockKind::IdentityRegistration => AssetLockFundingType::IdentityRegistration,
+            AssetLockKind::IdentityTopUp => AssetLockFundingType::IdentityTopUp,
+            AssetLockKind::PlatformAddressTopUp => AssetLockFundingType::AssetLockAddressTopUp,
+        };
+        let (proof, key, out_point) = wallet
+            .asset_locks()
+            .create_funded_asset_lock_proof(
+                amount_duffs,
+                DEFAULT_BIP44_ACCOUNT,
+                funding_type,
+                identity_index,
+            )
+            .await
+            .map_err(|e| TaskError::WalletBackend {
+                source: Box::new(e),
+            })?;
+        Ok((proof, key, out_point.txid))
     }
 
     fn build_client_config(&self) -> ClientConfig {

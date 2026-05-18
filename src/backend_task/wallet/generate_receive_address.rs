@@ -4,15 +4,13 @@ use crate::model::wallet::WalletSeedHash;
 use std::sync::Arc;
 
 impl AppContext {
-    /// Generate a fresh receive address.
-    ///
-    /// Inert at the P0.5 compile floor: address derivation moves to the
-    /// upstream `platform-wallet` runtime. P2 wires this to
-    /// `wallet_backend.next_receive_address`.
+    /// Generate a fresh receive address via the wallet backend.
     pub(crate) async fn generate_receive_address(
         self: &Arc<Self>,
-        _seed_hash: WalletSeedHash,
+        seed_hash: WalletSeedHash,
     ) -> Result<BackendTaskSuccessResult, crate::backend_task::error::TaskError> {
-        Err(crate::backend_task::error::TaskError::WalletBackendNotYetWired)
+        let backend = self.wallet_backend()?;
+        let address = backend.next_receive_address(&seed_hash).await?;
+        Ok(BackendTaskSuccessResult::GeneratedReceiveAddress { seed_hash, address })
     }
 }

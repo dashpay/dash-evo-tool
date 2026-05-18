@@ -128,6 +128,11 @@ pub struct AppContext {
     /// wallet/identity task arms degrade to `WalletBackendNotYetWired`
     /// while unset.
     wallet_backend: ArcSwapOption<WalletBackend>,
+    /// Serialises the one-time platform-wallet (Stage-B) migration so
+    /// exactly one runs process-wide even under reentrant/concurrent
+    /// `ensure_wallet_backend` (ratified invariant C6). Acquired BEFORE the
+    /// pending-marker check.
+    stage_b_migration_lock: tokio::sync::Mutex<()>,
 }
 
 impl AppContext {
@@ -336,6 +341,7 @@ impl AppContext {
             shielded_states: Mutex::new(std::collections::HashMap::new()),
             egui_ctx,
             wallet_backend: ArcSwapOption::const_empty(),
+            stage_b_migration_lock: tokio::sync::Mutex::new(()),
         };
 
         let app_context = Arc::new(app_context);
@@ -651,6 +657,27 @@ impl AppContext {
         // Idempotent: if a racing call already installed one, keep it.
         if self.wallet_backend.load().is_none() {
             self.wallet_backend.store(Some(Arc::new(backend)));
+        }
+
+        // One-time platform-wallet migration (Stage B). The C6 mutex is
+        // acquired BEFORE the marker check so exactly one Stage-B runs
+        // process-wide under reentrant/concurrent calls; the persistent
+        // marker provides cross-launch idempotency. A migration failure must
+        // not block app start — it is logged and retried next launch (marker
+        // stays set), keeping the app usable in the degraded state.
+        let _stage_b_guard = self.stage_b_migration_lock.lock().await;
+        if self
+            .db
+            .get_platform_wallet_migration_pending()
+            .unwrap_or(false)
+            && let Some(backend) = self.wallet_backend.load_full()
+            && let Err(e) = crate::database::migration_pw::run_stage_b(self, &backend).await
+        {
+            tracing::error!(
+                error = %e,
+                "Platform-wallet Stage-B migration did not complete; \
+                 will retry on next launch (marker retained)"
+            );
         }
         Ok(())
     }

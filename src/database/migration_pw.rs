@@ -1,312 +1,165 @@
-//! Platform-wallet one-time migration (RATIFIED two-stage model).
+//! Platform-wallet one-time migration — Stage B (post-unlock async engine).
 //!
-//! Stage A (SQL v35, sync, pre-unlock) lives in `initialization.rs` and only
-//! arms `settings.platform_wallet_migration_pending`. This module is Stage B:
-//! the post-unlock async engine plus the fund-safety-critical DIP-14/15
-//! migrate-or-quarantine predicate.
+//! Stage A (SQL v35, sync, pre-unlock; `initialization.rs`) only arms
+//! `settings.platform_wallet_migration_pending` and writes the retained
+//! `<db>.premigration` recovery floor. Stage B (here) does the actual data
+//! migration once, post-unlock, async, marker-gated, behind the
+//! `AppContext`-owned `tokio::sync::Mutex` (invariant C6).
 //!
-//! The predicate ([`classify_contact`]) is pure and synchronous — no DB, no
-//! SDK, no network. It re-derives a contact's payment addresses with BOTH the
-//! legacy DET engine (`derive_dashpay_incoming_xpub` / `derive_payment_address`,
-//! the historical ground truth) and the upstream engine
-//! (`derive_contact_xpub` / `derive_contact_payment_address`) and asserts
-//! byte-equality over the contact's ENTIRE historical used-index range. A
-//! single divergent index ⇒ the contact is quarantined: it is NEVER inferred
-//! migratable from identifier class. See
-//! `docs/ai-design/2026-05-18-platform-wallet-migration/dip14-migration-hardstop.md`
-//! §6.1–6.4 (authoritative).
+//! Back-compat for legacy DashPay DIP-14 derivation is DROPPED
+//! (Decision #6 — `dip14-migration-hardstop.md` SUPERSEDED). Contacts are
+//! re-established on UPSTREAM derivation unconditionally; there is no
+//! DET re-derivation, no comparison, no quarantine. The accepted
+//! fund-accessibility trade-off is covered by the mandatory one-time notice
+//! (P3e), the sole compensating control.
+//!
+//! Each step is idempotent so a crash-and-relaunch re-runs cleanly. The
+//! legacy-table DROP is the strictly-last destructive step and is performed
+//! only after a durable upstream flush — GATED OFF until the P3d invariant
+//! tests pass (see [`LEGACY_DROP_ENABLED`]).
 
-// TODO(P3c): the Stage-B async engine (next sub-step, in this module)
-// consumes the predicate. Until then it is exercised only by its own unit
-// tests, which dead-code analysis does not count. This allow is removed in
-// P3c when the engine wires `classify_contact` in.
-#![allow(dead_code)]
+use std::sync::Arc;
 
-use dash_sdk::dpp::dashcore::Network;
-use dash_sdk::dpp::key_wallet::Network as WalletNetwork;
-use dash_sdk::dpp::key_wallet::wallet::Wallet as KeyWallet;
-use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
-use platform_wallet::wallet::identity::{derive_contact_payment_address, derive_contact_xpub};
 
-use crate::backend_task::dashpay::hd_derivation::{
-    derive_dashpay_incoming_xpub, derive_payment_address,
-};
+use crate::backend_task::error::TaskError;
+use crate::context::AppContext;
+use crate::wallet_backend::WalletBackend;
 
-/// Outcome of classifying one established DashPay contact for migration.
-///
-/// `Quarantine` is a SUCCESSFUL TERMINAL classification, not an error
-/// (dip14-migration-hardstop.md §6.1) — the engine records it and continues;
-/// it never triggers a premigration restore.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ContactClassification {
-    /// Every historical index reproduces byte-identically under upstream and
-    /// the contact xpub matches — safe to record into the upstream persister.
-    Migratable,
-    /// At least one historically-used address cannot be reproduced by the
-    /// upstream engine. Funds at that address would be unreachable via the
-    /// new backend, so the contact is isolated and legacy data retained.
-    Quarantine {
-        /// First index (in the union range) whose address diverged, or
-        /// `None` when only the contact xpub itself diverged.
-        first_divergent_index: Option<u32>,
-        /// DET (ground-truth) address at the first divergent index, if any.
-        det_address: Option<String>,
-        /// Upstream address at the first divergent index, if any.
-        upstream_address: Option<String>,
-    },
-}
+/// Default DashPay account index. DET established contacts have always used
+/// account 0 (the legacy DIP-14 path hardcoded it); upstream
+/// `register_contact_account` re-derives on account 0 to match.
+const DEFAULT_DASHPAY_ACCOUNT: u32 = 0;
 
-/// DET → key-wallet network mapping (DET uses `dashcore::Network`; the
-/// upstream derivation API takes `key_wallet::Network`).
-fn to_wallet_network(network: Network) -> WalletNetwork {
-    match network {
-        Network::Mainnet => WalletNetwork::Mainnet,
-        Network::Testnet => WalletNetwork::Testnet,
-        Network::Devnet => WalletNetwork::Devnet,
-        Network::Regtest => WalletNetwork::Regtest,
-    }
-}
+/// The legacy-table DROP (the single destructive step) is enabled only once
+/// the P3d invariant suite (backup-before-destroy, DROP-strictly-last,
+/// crash/relaunch idempotency, restore-only-on-exception) is in place. Until
+/// then Stage B runs every step EXCEPT the drop and leaves the marker set,
+/// so it is fully reversible and re-runnable.
+const LEGACY_DROP_ENABLED: bool = false;
 
-/// Inclusive upper bound of the historical used-index range for a contact.
-///
-/// NORMATIVE (dip14-migration-hardstop.md §6.1, data-model-and-migration.md
-/// Stage-B step 4): the range is the UNION of the receive range
-/// `[0, highest_receive_index]` and the send range
-/// `[0, next_send_index − 1]` (saturating). Because both start at 0, the
-/// union is `[0, max(highest_receive_index, next_send_index − 1)]`. Checking
-/// receive-only (or any sampled prefix) is the silent fund-loss hazard this
-/// function exists to prevent.
-pub fn historical_max_index(highest_receive_index: u32, next_send_index: u32) -> u32 {
-    highest_receive_index.max(next_send_index.saturating_sub(1))
-}
+/// Run the one-time Stage-B migration. Idempotent; marker-gated by the
+/// caller. On success (and once [`LEGACY_DROP_ENABLED`]) clears
+/// `platform_wallet_migration_pending`; on any error the marker is left set
+/// (caller logs; next launch retries). Restore-from-`premigration` is the
+/// caller/launch responsibility and happens ONLY on an exceptional path,
+/// never here.
+pub async fn run_stage_b(ctx: &Arc<AppContext>, backend: &WalletBackend) -> Result<(), TaskError> {
+    tracing::info!("Platform-wallet Stage-B migration: starting");
 
-/// Pure, synchronous DIP-14/15 migrate-or-quarantine predicate for one
-/// established contact. No DB / SDK / network — derivation only.
-///
-/// `seed_bytes` is the wallet's in-memory 64-byte BIP-39 seed (caller owns
-/// the zeroize-on-drop secret boundary). `owner_id` is the local (sender)
-/// identity, `contact_id` the remote (recipient) identity.
-#[allow(clippy::too_many_arguments)]
-pub fn classify_contact(
-    seed_bytes: &[u8; 64],
-    network: Network,
-    account: u32,
-    owner_id: &Identifier,
-    contact_id: &Identifier,
-    highest_receive_index: u32,
-    next_send_index: u32,
-) -> Result<ContactClassification, String> {
-    // DET ground-truth contact xpub (raw-seed driven).
-    let det_xpub =
-        derive_dashpay_incoming_xpub(seed_bytes, network, account, owner_id, contact_id)?;
-
-    // Upstream candidate contact xpub (key-wallet driven).
-    let wallet = KeyWallet::from_seed_bytes(
-        *seed_bytes,
-        to_wallet_network(network),
-        WalletAccountCreationOptions::Default,
-    )
-    .map_err(|e| format!("upstream wallet from seed failed: {e}"))?;
-    let upstream = derive_contact_xpub(
-        &wallet,
-        to_wallet_network(network),
-        account,
-        owner_id,
-        contact_id,
-    )
-    .map_err(|e| format!("upstream contact xpub derivation failed: {e}"))?;
-
-    // Contact-xpub equality: compare the canonical public material
-    // (compressed pubkey + chain code). Version/parent-fingerprint bytes are
-    // path-structural and intentionally NOT part of the fund-reachability
-    // check — only the key material that determines derived addresses.
-    let det_pubkey = det_xpub.public_key.serialize();
-    let det_chain_code = det_xpub.chain_code.to_bytes();
-    let xpub_matches = det_pubkey == upstream.public_key && det_chain_code == upstream.chain_code;
-
-    if !xpub_matches {
-        return Ok(ContactClassification::Quarantine {
-            first_divergent_index: None,
-            det_address: None,
-            upstream_address: None,
-        });
-    }
-
-    // Address byte-equality over the FULL union range [0, max].
-    let max_index = historical_max_index(highest_receive_index, next_send_index);
-    for index in 0..=max_index {
-        let det_addr = derive_payment_address(&det_xpub, index)?;
-        let upstream_addr =
-            derive_contact_payment_address(&upstream.xpub, index, to_wallet_network(network))
-                .map_err(|e| {
-                    format!("upstream payment address derivation failed at {index}: {e}")
-                })?;
-        if det_addr != upstream_addr {
-            return Ok(ContactClassification::Quarantine {
-                first_divergent_index: Some(index),
-                det_address: Some(det_addr.to_string()),
-                upstream_address: Some(upstream_addr.to_string()),
+    // Step 1 — backup precondition. The retained recovery floor must exist
+    // before any later (eventually destructive) step. `initialize()`
+    // (re)creates it idempotently on every post-marker launch; re-assert it
+    // here so Stage B never proceeds without the floor.
+    if let Some(path) = ctx.db.db_file_path() {
+        let backup = crate::database::Database::premigration_backup_path(&path);
+        if !backup.exists() {
+            return Err(TaskError::WalletBackend {
+                source: Box::new(platform_wallet::error::PlatformWalletError::WalletCreation(
+                    "pre-migration backup missing; refusing to migrate without recovery floor"
+                        .to_string(),
+                )),
             });
         }
     }
 
-    Ok(ContactClassification::Migratable)
+    // Step 2 — re-register every wallet from seed (idempotent; skips
+    // already-registered, tolerates upstream WalletAlreadyExists). Upstream
+    // `create_wallet_from_seed_bytes` also runs identity discovery from
+    // chain, which is Step 3's mechanism.
+    backend.ensure_wallets_registered(ctx).await?;
+
+    // Step 3 — identities. The DET `QualifiedIdentity` blob and the
+    // identity/platform-address/token tables are RETAINED (upstream "Outside
+    // scope", data-model-and-migration.md conversion surface). Upstream
+    // `IdentityManager` is repopulated by the chain-driven identity sync that
+    // step 2's wallet registration already performed — no separate
+    // low-level `add_identity` push is needed (and it would risk
+    // IdentityAlreadyExists against that sync). Intentional no-op.
+
+    // Step 4 — re-establish every accepted DashPay contact on UPSTREAM
+    // derivation only. Idempotent: upstream `register_contact_account`
+    // no-ops if the contact account already exists. No DET re-derivation,
+    // no comparison, no quarantine (Decision #6).
+    //
+    // The owning wallet for a contact is the one whose seed derives the
+    // contact's owner identity. DET tracks that linkage as
+    // (QualifiedIdentity, owner-wallet seed_hash); build owner-id →
+    // seed_hash so each contact account is registered on the right wallet.
+    let owner_seed: std::collections::HashMap<Identifier, [u8; 32]> = ctx
+        .db
+        .get_local_user_identities(ctx)
+        .map_err(|source| TaskError::Database { source })?
+        .into_iter()
+        .filter_map(|(qi, seed)| seed.map(|s| (qi.identity.id(), s)))
+        .collect();
+
+    let contacts = ctx
+        .db
+        .load_all_accepted_dashpay_contacts()
+        .map_err(|source| TaskError::Database { source })?;
+    tracing::info!(
+        count = contacts.len(),
+        "Stage-B: re-establishing DashPay contacts on upstream derivation"
+    );
+    for c in &contacts {
+        let owner = Identifier::from_bytes(&c.owner_identity_id).map_err(|_| {
+            invalid_identity("stored DashPay owner identity id is not a valid Identifier")
+        })?;
+        let contact = Identifier::from_bytes(&c.contact_identity_id).map_err(|_| {
+            invalid_identity("stored DashPay contact identity id is not a valid Identifier")
+        })?;
+        let Some(seed_hash) = owner_seed.get(&owner) else {
+            // Owner identity not linked to any local wallet (e.g. an
+            // imported-by-id identity without its seed). The contact cannot
+            // be re-established on upstream derivation; skip it — the
+            // accepted-trade-off notice (P3e) already informs the user that
+            // some DashPay state may not carry over.
+            tracing::warn!(
+                owner = %owner,
+                "Stage-B: accepted DashPay contact has no local owner wallet; skipping"
+            );
+            continue;
+        };
+        // A per-contact derivation/registration failure aborts Stage B with
+        // the marker left set (idempotent re-run next launch) rather than
+        // silently skipping — DashPay correctness is not best-effort.
+        backend
+            .register_dashpay_contact(seed_hash, &owner, &contact, DEFAULT_DASHPAY_ACCOUNT)
+            .await?;
+    }
+
+    // Step 5 — finalize (SINGLE fork: success). The exception fork is
+    // implicit: any `?` above returns Err with the marker still set, so the
+    // next launch re-runs Stage B (idempotent) and the caller restores from
+    // `premigration` only if the new persister is corrupt.
+    if LEGACY_DROP_ENABLED {
+        // Durable upstream flush BEFORE the destructive drop, then DROP as
+        // the strictly-last step, then clear the marker. Enabled in P3d once
+        // the invariant suite proves the ordering.
+        backend.flush_persister().await?;
+        ctx.db
+            .drop_legacy_migrated_tables()
+            .map_err(|source| TaskError::Database { source })?;
+        ctx.db
+            .set_platform_wallet_migration_pending(false)
+            .map_err(|source| TaskError::Database { source })?;
+        tracing::info!("Platform-wallet Stage-B migration: complete (legacy tables dropped)");
+    } else {
+        tracing::info!(
+            "Platform-wallet Stage-B migration: data steps complete; legacy-table \
+             DROP gated off until P3d invariants land (marker retained)"
+        );
+    }
+
+    Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Deterministic 64-byte seed for golden vectors.
-    fn seed() -> [u8; 64] {
-        let mut s = [0u8; 64];
-        for (i, b) in s.iter_mut().enumerate() {
-            *b = (i as u8).wrapping_mul(7).wrapping_add(13);
-        }
-        s
-    }
-
-    /// Identifier with a chosen low byte (first 28 bytes zero ⇒ low-index
-    /// class) — the class P0 expects to converge on mainnet/account-0.
-    fn id_low(tag: u8) -> Identifier {
-        let mut b = [0u8; 32];
-        b[31] = tag;
-        Identifier::from_bytes(&b).unwrap()
-    }
-
-    /// Identifier with high bytes set (full-256-bit class).
-    fn id_full(tag: u8) -> Identifier {
-        let mut b = [tag; 32];
-        b[0] = 0xF0 | (tag & 0x0F);
-        Identifier::from_bytes(&b).unwrap()
-    }
-
-    #[test]
-    fn historical_max_index_is_union_not_receive_only() {
-        // Send range extends past receive — must NOT be ignored.
-        assert_eq!(historical_max_index(2, 10), 9);
-        // Receive range extends past send.
-        assert_eq!(historical_max_index(20, 3), 20);
-        // No sends yet (next_send_index 0 saturates to 0).
-        assert_eq!(historical_max_index(5, 0), 5);
-        // Equal.
-        assert_eq!(historical_max_index(7, 8), 7);
-    }
-
-    #[test]
-    fn mainnet_account0_low_index_contact_is_quarantined() {
-        // FUND-SAFETY FINDING (this predicate, empirically). The
-        // dip14-migration-hardstop.md §6.2 expectation that low-index
-        // contacts are "expected migratable" is DISPROVEN here:
-        //
-        //   DET `ckd_priv_256` has a `< 2^32` compatibility branch — for a
-        //   low-index identifier (first 28 bytes zero) it HMACs only
-        //   `index[28..32]` (ser_32). Upstream `ChildNumber::Normal256`
-        //   ALWAYS HMACs the full 32-byte index (ser_256), with no
-        //   compatibility shortcut. Different HMAC input ⇒ different child
-        //   key ⇒ different xpub/addresses. Funds at DET low-index contact
-        //   addresses are unreachable via the upstream engine.
-        //
-        // This is the §6.5 release-blocking scenario realised: the predicate
-        // MUST quarantine (never silently "assume equivalent"). Weakening
-        // the predicate to migrate this would be the exact silent fund-loss
-        // P3 exists to prevent. Quarantine is the sole safety net here until
-        // an upstream `ser_32`-compatibility fix or explicit acceptance.
-        let owner = id_low(1);
-        let contact = id_low(2);
-        let r = classify_contact(&seed(), Network::Mainnet, 0, &owner, &contact, 5, 3)
-            .expect("classify must not error");
-        assert!(
-            matches!(r, ContactClassification::Quarantine { .. }),
-            "low-index DET ser_32 vs upstream ser_256 divergence MUST quarantine, got {r:?}"
-        );
-    }
-
-    #[test]
-    fn mainnet_account0_full_256bit_contact_is_migratable() {
-        // Full-256-bit identifiers still use the raw 32-byte index in BOTH
-        // engines (ckd_priv_256 / Normal256) — account-0/mainnet converges.
-        let owner = id_full(3);
-        let contact = id_full(4);
-        let r = classify_contact(&seed(), Network::Mainnet, 0, &owner, &contact, 8, 8)
-            .expect("classify must not error");
-        assert_eq!(r, ContactClassification::Migratable);
-    }
-
-    #[test]
-    fn testnet_contact_is_quarantined() {
-        // P0-confirmed structural divergence: DET hardcodes coin-type 5'
-        // for all networks; upstream uses coin-type 1' on testnet. The
-        // contact xpub (or addresses) cannot reproduce ⇒ quarantine.
-        let owner = id_low(1);
-        let contact = id_low(2);
-        let r = classify_contact(&seed(), Network::Testnet, 0, &owner, &contact, 5, 5)
-            .expect("classify must not error");
-        assert!(
-            matches!(r, ContactClassification::Quarantine { .. }),
-            "testnet must quarantine (coin-type path divergence), got {r:?}"
-        );
-    }
-
-    #[test]
-    fn non_account0_contact_is_quarantined() {
-        // P0-confirmed: DET puts the account in the path
-        // (m/9'/5'/15'/{account}') while upstream fixes account at 0' and
-        // moves it elsewhere — non-account-0 diverges even on mainnet.
-        let owner = id_low(1);
-        let contact = id_low(2);
-        let r = classify_contact(&seed(), Network::Mainnet, 1, &owner, &contact, 4, 4)
-            .expect("classify must not error");
-        assert!(
-            matches!(r, ContactClassification::Quarantine { .. }),
-            "non-account-0 must quarantine (account path-placement divergence), got {r:?}"
-        );
-    }
-
-    #[test]
-    fn quarantine_reports_first_divergent_index_or_xpub() {
-        let owner = id_low(1);
-        let contact = id_low(2);
-        let r = classify_contact(&seed(), Network::Testnet, 0, &owner, &contact, 3, 3)
-            .expect("classify must not error");
-        match r {
-            ContactClassification::Quarantine {
-                first_divergent_index,
-                det_address,
-                upstream_address,
-            } => {
-                // Either the xpub diverged (index None, addrs None) or an
-                // address diverged (index Some, both addrs Some) — never a
-                // half-populated state.
-                let xpub_div = first_divergent_index.is_none()
-                    && det_address.is_none()
-                    && upstream_address.is_none();
-                let addr_div = first_divergent_index.is_some()
-                    && det_address.is_some()
-                    && upstream_address.is_some();
-                assert!(
-                    xpub_div || addr_div,
-                    "quarantine diagnostic must be internally consistent"
-                );
-            }
-            other => panic!("expected quarantine, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn send_side_only_contact_checks_send_range() {
-        // A contact with receive index 0 but sends made (next_send_index>0):
-        // the predicate must still derive over the send range, not stop at
-        // receive 0. On testnet this quarantines (proves the send range was
-        // actually walked rather than a 1-address receive-only shortcut).
-        let owner = id_low(5);
-        let contact = id_low(6);
-        let r = classify_contact(&seed(), Network::Testnet, 0, &owner, &contact, 0, 12)
-            .expect("classify must not error");
-        assert!(
-            matches!(r, ContactClassification::Quarantine { .. }),
-            "send-side-only contact must still be classified over the send range"
-        );
+fn invalid_identity(msg: &str) -> TaskError {
+    TaskError::WalletBackend {
+        source: Box::new(
+            platform_wallet::error::PlatformWalletError::InvalidIdentityData(msg.to_string()),
+        ),
     }
 }

@@ -388,6 +388,61 @@ impl crate::database::Database {
         Ok(contacts)
     }
 
+    /// Every established (`accepted`) DashPay contact across ALL owner
+    /// identities and networks. Used by the one-time migration to
+    /// re-establish contacts on upstream derivation. DET has no
+    /// `'established'` `contact_status` literal — values are
+    /// `pending|accepted|blocked`; `accepted` is the established proxy.
+    pub fn load_all_accepted_dashpay_contacts(&self) -> rusqlite::Result<Vec<StoredContact>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT owner_identity_id, contact_identity_id, username, display_name,
+                    avatar_url, public_message, contact_status, created_at, updated_at, last_seen
+             FROM dashpay_contacts
+             WHERE contact_status = 'accepted'",
+        )?;
+        let contacts = stmt
+            .query_map([], |row| {
+                Ok(StoredContact {
+                    owner_identity_id: row.get(0)?,
+                    contact_identity_id: row.get(1)?,
+                    username: row.get(2)?,
+                    display_name: row.get(3)?,
+                    avatar_url: row.get(4)?,
+                    public_message: row.get(5)?,
+                    contact_status: row.get(6)?,
+                    created_at: row.get(7)?,
+                    updated_at: row.get(8)?,
+                    last_seen: row.get(9)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(contacts)
+    }
+
+    /// Drop all legacy tables superseded by the upstream persister after a
+    /// successful one-time migration. Strictly the LAST destructive step,
+    /// only after a durable upstream flush (caller enforces ordering).
+    /// Retained per data-model-and-migration.md: identity blob, platform
+    /// addresses, token balances, single_key_wallet, settings, shielded,
+    /// contested votes, DashPay payment/avatar cache.
+    pub fn drop_legacy_migrated_tables(&self) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        for table in [
+            "wallet",
+            "utxos",
+            "wallet_transactions",
+            "dashpay_contacts",
+            "dashpay_contact_requests",
+            "dashpay_contact_address_indices",
+            "dashpay_address_mappings",
+            "contact_private_info",
+        ] {
+            conn.execute(&format!("DROP TABLE IF EXISTS {table}"), [])?;
+        }
+        Ok(())
+    }
+
     pub fn update_contact_last_seen(
         &self,
         owner_identity_id: &Identifier,

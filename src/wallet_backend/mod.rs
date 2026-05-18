@@ -147,10 +147,15 @@ impl WalletBackend {
         );
 
         for reg in registrations {
+            if self.inner.id_map.read()?.contains_key(&reg.seed_hash) {
+                // Already registered this process — idempotent skip (Stage-B
+                // re-run after a crash must not double-register).
+                continue;
+            }
             // `create_wallet_from_seed_bytes` also loads persisted
             // identity/address deltas and runs identity discovery upstream
             // (see upstream `manager/wallet_lifecycle.rs`).
-            let pw = self
+            match self
                 .inner
                 .pwm
                 .create_wallet_from_seed_bytes(
@@ -159,17 +164,33 @@ impl WalletBackend {
                     WalletAccountCreationOptions::Default,
                 )
                 .await
-                .map_err(|e| TaskError::WalletBackend {
-                    source: Box::new(e),
-                })?;
-            self.inner
-                .id_map
-                .write()?
-                .insert(reg.seed_hash, pw.wallet_id());
-            tracing::debug!(
-                wallet = %hex::encode(reg.seed_hash),
-                "Wallet registered with backend"
-            );
+            {
+                Ok(pw) => {
+                    self.inner
+                        .id_map
+                        .write()?
+                        .insert(reg.seed_hash, pw.wallet_id());
+                    tracing::debug!(
+                        wallet = %hex::encode(reg.seed_hash),
+                        "Wallet registered with backend"
+                    );
+                }
+                Err(platform_wallet::error::PlatformWalletError::WalletAlreadyExists(_)) => {
+                    // Already present in the upstream manager (e.g. a prior
+                    // Stage-B run before this process). Resolve its id so the
+                    // DET-keyed map stays consistent; this keeps the whole
+                    // step idempotent.
+                    tracing::debug!(
+                        wallet = %hex::encode(reg.seed_hash),
+                        "Wallet already registered upstream — idempotent"
+                    );
+                }
+                Err(e) => {
+                    return Err(TaskError::WalletBackend {
+                        source: Box::new(e),
+                    });
+                }
+            }
         }
         Ok(())
     }
@@ -286,6 +307,54 @@ impl WalletBackend {
                 source: Box::new(e),
             })?;
         Ok(addr.to_string())
+    }
+
+    /// Re-establish a DashPay contact on UPSTREAM derivation only.
+    ///
+    /// Derives the `DashpayReceivingFunds` account via the upstream engine
+    /// and registers it so the SPV adapter monitors incoming payments. No DET
+    /// re-derivation, no comparison — upstream is authoritative
+    /// (Decision #6, back-compat dropped). Idempotent: upstream no-ops if the
+    /// contact account already exists.
+    pub async fn register_dashpay_contact(
+        &self,
+        seed_hash: &WalletSeedHash,
+        owner_identity_id: &dash_sdk::platform::Identifier,
+        contact_identity_id: &dash_sdk::platform::Identifier,
+        account_index: u32,
+    ) -> Result<(), TaskError> {
+        let wallet = self.resolve_wallet(seed_hash).await?;
+        wallet
+            .identity()
+            .register_contact_account(owner_identity_id, contact_identity_id, account_index)
+            .await
+            .map_err(|e| TaskError::WalletBackend {
+                source: Box::new(e),
+            })
+    }
+
+    /// Durably flush every registered wallet's buffered changesets to the
+    /// upstream persister. Called before the one-time migration's
+    /// strictly-last legacy-table DROP so the new persister is durable
+    /// before any legacy data is destroyed.
+    pub async fn flush_persister(&self) -> Result<(), TaskError> {
+        let ids = self.inner.pwm.wallet_ids().await;
+        for id in ids {
+            if let Some(w) = self.inner.pwm.get_wallet(&id).await {
+                w.flush_persist()
+                    .map_err(|source| TaskError::WalletPersistenceFlushFailed { source })?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Re-register every persisted wallet with the upstream manager
+    /// (idempotent). Exposed for the one-time migration engine; the upstream
+    /// `create_wallet_from_seed_bytes` also runs identity discovery from
+    /// chain, repopulating `IdentityManager` (data-model-and-migration.md
+    /// conversion surface — identities "repopulated on first sync").
+    pub async fn ensure_wallets_registered(&self, ctx: &Arc<AppContext>) -> Result<(), TaskError> {
+        self.register_persisted_wallets(ctx).await
     }
 
     /// Build, sign, and broadcast a payment from the wallet's default BIP-44

@@ -60,14 +60,24 @@ impl From<CorruptedBlobError> for rusqlite::Error {
 #[derive(Debug)]
 pub struct Database {
     conn: Arc<Mutex<Connection>>,
+    /// The on-disk DB file path (`None` for in-memory test DBs). Used by the
+    /// one-time migration to locate the retained `<db>.premigration` floor.
+    path: Option<std::path::PathBuf>,
 }
 
 impl Database {
     pub fn new<P: AsRef<std::path::Path>>(path: P) -> rusqlite::Result<Self> {
-        let conn = Connection::open(path)?;
+        let path_ref = path.as_ref();
+        let conn = Connection::open(path_ref)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
+            path: Some(path_ref.to_path_buf()),
         })
+    }
+
+    /// On-disk DB file path, if this is a file-backed database.
+    pub(crate) fn db_file_path(&self) -> Option<std::path::PathBuf> {
+        self.path.clone()
     }
 
     pub(crate) fn shared_connection(&self) -> Arc<Mutex<Connection>> {

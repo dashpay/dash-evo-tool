@@ -67,6 +67,13 @@ pub enum TaskError {
         source: Box<platform_wallet::error::PlatformWalletError>,
     },
 
+    /// Buffered wallet data could not be durably written to storage.
+    #[error("Could not save wallet data. Check available disk space and restart the application.")]
+    WalletPersistenceFlushFailed {
+        #[source]
+        source: platform_wallet::changeset::PersistenceError,
+    },
+
     /// A stored wallet seed could not be decrypted (wrong password or
     /// corrupted seed store).
     #[error(

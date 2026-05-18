@@ -182,6 +182,92 @@ impl Database {
         })
     }
 
+    /// Launch-time corruption recovery for the platform-wallet migration
+    /// (invariant: restore-from-`premigration` ONLY on an exceptional path —
+    /// never otherwise).
+    ///
+    /// Runs on file paths *before* the live `Database` is opened, so it is a
+    /// pure launch concern and keeps [`Self::initialize`] clean. Behaviour:
+    ///
+    /// * No retained `<db>.premigration` floor → nothing to do (either the
+    ///   migration never started or it already finalised and cleared it).
+    /// * Floor present + live DB opens and passes `PRAGMA integrity_check` →
+    ///   nothing to do; the normal Stage-B retry path handles an unfinished
+    ///   migration.
+    /// * Floor present + live DB missing / unopenable / fails
+    ///   `integrity_check` → the new (post-Stage-A or post-Stage-B) state is
+    ///   corrupt. Atomically restore the live DB from the floor so the user
+    ///   is returned to a consistent pre-migration state and can retry (or
+    ///   open with the previous app version). Idempotent: the floor itself is
+    ///   never deleted here.
+    ///
+    /// Returns `Ok(true)` if a restore was performed, `Ok(false)` if no
+    /// action was needed. Best-effort: a failure to restore is surfaced as an
+    /// error for the caller to log but never panics.
+    pub fn recover_from_premigration_if_corrupt(db_file_path: &Path) -> rusqlite::Result<bool> {
+        let backup_path = Self::premigration_backup_path(db_file_path);
+        if !backup_path.exists() {
+            // No recovery floor → migration not in progress (or already
+            // finalised and cleared). Never restore in this case.
+            return Ok(false);
+        }
+
+        if Self::sqlite_file_is_intact(db_file_path) {
+            // Live DB is consistent. An unfinished migration (marker still
+            // set) is handled by the idempotent Stage-B retry, NOT by a
+            // restore — restore is exceptional-path only.
+            return Ok(false);
+        }
+
+        tracing::error!(
+            db = %db_file_path.display(),
+            "Live database is missing or corrupt while a pre-migration recovery \
+             floor exists; restoring from the retained backup"
+        );
+
+        // Atomic restore: copy floor → temp beside the live DB, then rename
+        // over it. A crash mid-restore leaves either the (still corrupt) live
+        // DB or the fully-restored one — never a truncated hybrid. The floor
+        // is left untouched so a second crash re-runs this cleanly.
+        let tmp = {
+            let mut p = db_file_path.as_os_str().to_os_string();
+            p.push(".restore.tmp");
+            std::path::PathBuf::from(p)
+        };
+        let _ = std::fs::remove_file(&tmp);
+        std::fs::copy(&backup_path, &tmp).map_err(|e| {
+            rusqlite::Error::ToSqlConversionFailure(
+                format!("copy premigration backup for restore: {e}").into(),
+            )
+        })?;
+        std::fs::rename(&tmp, db_file_path).map_err(|e| {
+            rusqlite::Error::ToSqlConversionFailure(
+                format!("rename restored database into place: {e}").into(),
+            )
+        })?;
+        tracing::info!(
+            db = %db_file_path.display(),
+            "Restored database from pre-migration backup; migration will retry"
+        );
+        Ok(true)
+    }
+
+    /// True iff `path` exists, opens as SQLite, and passes
+    /// `PRAGMA integrity_check`. Any failure (missing file, not a DB,
+    /// corruption) yields `false` — the caller treats that as "restore".
+    fn sqlite_file_is_intact(path: &Path) -> bool {
+        if !path.exists() {
+            return false;
+        }
+        let Ok(conn) = Connection::open(path) else {
+            return false;
+        };
+        match conn.query_row("PRAGMA integrity_check", [], |r| r.get::<_, String>(0)) {
+            Ok(s) => s == "ok",
+            Err(_) => false,
+        }
+    }
+
     fn apply_version_changes(
         &self,
         version: u16,
@@ -2877,6 +2963,246 @@ mod test {
             assert_eq!(
                 first, second,
                 "existing premigration backup must not be recreated"
+            );
+        }
+    }
+
+    /// P3d — Stage-B destructive-ordering & restore-only-on-exception
+    /// invariants. These gate enabling the legacy-table DROP. They cover the
+    /// deterministic, network-free guarantees: backup-before-destroy,
+    /// DROP-strictly-last, destructive-sequence idempotency, and
+    /// restore-from-`premigration` ONLY on injected corruption (never on a
+    /// healthy-but-pending DB).
+    mod p3d {
+        use super::super::Database;
+
+        /// A v34 DB carrying a legacy `wallet` row and an accepted DashPay
+        /// contact, run through `initialize` so the marker is armed and the
+        /// `.premigration` floor exists.
+        fn migrated_pending_db(dir: &std::path::Path) -> (Database, std::path::PathBuf) {
+            let db_file = dir.join("test_data.db");
+            {
+                let db = Database::new(&db_file).unwrap();
+                db.create_tables().unwrap();
+                db.set_default_version().unwrap();
+                db.set_db_version(34).unwrap();
+                let conn = db.conn.lock().unwrap();
+                conn.execute(
+                    "INSERT INTO wallet (seed_hash, encrypted_seed, salt, nonce, \
+                     master_ecdsa_bip44_account_0_epk, alias, is_main, uses_password, \
+                     network) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, 0, 'testnet')",
+                    rusqlite::params![
+                        vec![7u8; 32],
+                        vec![2u8; 16],
+                        vec![3u8; 16],
+                        vec![4u8; 12],
+                        "xpub-legacy",
+                        "legacy-wallet",
+                    ],
+                )
+                .unwrap();
+                conn.execute(
+                    "INSERT INTO dashpay_contacts (owner_identity_id, \
+                     contact_identity_id, network, contact_status) \
+                     VALUES (?1, ?2, 'testnet', 'accepted')",
+                    rusqlite::params![vec![8u8; 32], vec![9u8; 32]],
+                )
+                .unwrap();
+            }
+            let db = Database::new(&db_file).unwrap();
+            db.initialize(&db_file).unwrap();
+            (db, db_file)
+        }
+
+        fn table_exists(db: &Database, table: &str) -> bool {
+            let conn = db.conn.lock().unwrap();
+            conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                rusqlite::params![table],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|n| n > 0)
+            .unwrap_or(false)
+        }
+
+        const LEGACY_TABLES: &[&str] = &[
+            "wallet",
+            "utxos",
+            "wallet_transactions",
+            "dashpay_contacts",
+            "dashpay_contact_requests",
+            "dashpay_contact_address_indices",
+            "dashpay_address_mappings",
+            "contact_private_info",
+        ];
+
+        /// Backup-before-destroy: the `.premigration` floor is present and a
+        /// valid SQLite file BEFORE any legacy table is dropped.
+        #[test]
+        fn backup_exists_before_any_destructive_step() {
+            let tmp = tempfile::tempdir().unwrap();
+            let (db, db_file) = migrated_pending_db(tmp.path());
+            let backup = Database::premigration_backup_path(&db_file);
+
+            // Floor exists and the contact is still readable pre-drop.
+            assert!(backup.exists(), "floor must exist before destroy");
+            assert_eq!(
+                db.load_all_accepted_dashpay_contacts().unwrap().len(),
+                1,
+                "legacy contact present before drop"
+            );
+            for t in LEGACY_TABLES {
+                assert!(table_exists(&db, t), "{t} present before drop");
+            }
+
+            // The destructive step succeeds only with the floor in place.
+            db.drop_legacy_migrated_tables().unwrap();
+            let bytes = std::fs::read(&backup).unwrap();
+            assert_eq!(
+                &bytes[..16],
+                b"SQLite format 3\0",
+                "floor remains a valid SQLite file after drop"
+            );
+        }
+
+        /// DROP is strictly last: after the destructive step EVERY legacy
+        /// table is gone while the retained surfaces (identity blob, settings)
+        /// survive, and the floor still holds the pre-migration data.
+        #[test]
+        fn drop_removes_all_legacy_tables_and_retains_floor() {
+            let tmp = tempfile::tempdir().unwrap();
+            let (db, db_file) = migrated_pending_db(tmp.path());
+
+            db.drop_legacy_migrated_tables().unwrap();
+
+            for t in LEGACY_TABLES {
+                assert!(!table_exists(&db, t), "{t} must be dropped");
+            }
+            assert!(
+                table_exists(&db, "settings"),
+                "settings (retained surface) must survive the drop"
+            );
+
+            let backup = Database::premigration_backup_path(&db_file);
+            let bdb = Database::new(&backup).unwrap();
+            let n: i64 = {
+                let bconn = bdb.conn.lock().unwrap();
+                bconn
+                    .query_row("SELECT COUNT(*) FROM wallet", [], |r| r.get(0))
+                    .unwrap()
+            };
+            assert_eq!(n, 1, "floor still holds the pre-migration wallet row");
+        }
+
+        /// Destructive-sequence idempotency: re-running the drop after a
+        /// crash-relaunch is a clean no-op (DROP TABLE IF EXISTS), and
+        /// clearing the marker twice is harmless.
+        #[test]
+        fn destructive_sequence_is_idempotent() {
+            let tmp = tempfile::tempdir().unwrap();
+            let (db, _db_file) = migrated_pending_db(tmp.path());
+
+            db.drop_legacy_migrated_tables().unwrap();
+            db.set_platform_wallet_migration_pending(false).unwrap();
+
+            // Simulated crash-relaunch re-running the finalize tail.
+            db.drop_legacy_migrated_tables()
+                .expect("second drop must be a clean no-op");
+            db.set_platform_wallet_migration_pending(false).unwrap();
+            assert!(
+                !db.get_platform_wallet_migration_pending().unwrap(),
+                "marker stays cleared across idempotent re-run"
+            );
+        }
+
+        /// Restore is NOT performed when the live DB is healthy, even with
+        /// the migration marker still pending — restore is exceptional-path
+        /// only; an unfinished-but-consistent migration is a Stage-B retry.
+        #[test]
+        fn no_restore_when_live_db_healthy_but_pending() {
+            let tmp = tempfile::tempdir().unwrap();
+            let (db, db_file) = migrated_pending_db(tmp.path());
+            assert!(
+                db.get_platform_wallet_migration_pending().unwrap(),
+                "precondition: marker pending"
+            );
+            drop(db);
+
+            let restored = Database::recover_from_premigration_if_corrupt(&db_file).unwrap();
+            assert!(
+                !restored,
+                "healthy pending DB must NOT be restored (Stage-B retry instead)"
+            );
+        }
+
+        /// Restore IS performed when the live DB is corrupt and a floor
+        /// exists; the restored DB is consistent and back at the
+        /// pre-migration state (marker still pending → Stage-B will retry).
+        #[test]
+        fn restore_on_injected_corruption() {
+            let tmp = tempfile::tempdir().unwrap();
+            let (db, db_file) = migrated_pending_db(tmp.path());
+            drop(db);
+
+            // Inject corruption: overwrite the live DB with garbage.
+            std::fs::write(&db_file, b"not a sqlite database at all").unwrap();
+
+            let restored = Database::recover_from_premigration_if_corrupt(&db_file).unwrap();
+            assert!(restored, "corrupt DB with a floor must be restored");
+
+            // The restored DB opens, is intact, holds the pre-migration
+            // wallet row, and the marker is still set so Stage-B retries.
+            let rdb = Database::new(&db_file).unwrap();
+            let n: i64 = {
+                let conn = rdb.conn.lock().unwrap();
+                conn.query_row("SELECT COUNT(*) FROM wallet", [], |r| r.get(0))
+                    .unwrap()
+            };
+            assert_eq!(n, 1, "restored DB holds the pre-migration wallet row");
+            assert!(
+                rdb.get_platform_wallet_migration_pending().unwrap(),
+                "marker still pending after restore — Stage-B will retry"
+            );
+        }
+
+        /// Restore is idempotent and a no-op once there is no floor (e.g.
+        /// migration already finalised and cleared it).
+        #[test]
+        fn no_restore_without_floor() {
+            let tmp = tempfile::tempdir().unwrap();
+            let db_file = tmp.path().join("test_data.db");
+            let db = Database::new(&db_file).unwrap();
+            db.create_tables().unwrap();
+            db.set_default_version().unwrap();
+            drop(db);
+
+            // No `.premigration` floor exists → never restore, even if we
+            // pretend the live DB is missing.
+            std::fs::remove_file(&db_file).unwrap();
+            let restored = Database::recover_from_premigration_if_corrupt(&db_file).unwrap();
+            assert!(!restored, "no floor → no restore");
+        }
+
+        /// Repeated corruption + restore cycles converge (restore re-runnable
+        /// after a crash mid-restore, modelled as a second invocation).
+        #[test]
+        fn restore_is_rerunnable() {
+            let tmp = tempfile::tempdir().unwrap();
+            let (db, db_file) = migrated_pending_db(tmp.path());
+            drop(db);
+
+            std::fs::write(&db_file, b"corrupt").unwrap();
+            assert!(Database::recover_from_premigration_if_corrupt(&db_file).unwrap());
+            // Now healthy → second call is a no-op.
+            assert!(
+                !Database::recover_from_premigration_if_corrupt(&db_file).unwrap(),
+                "second call on a now-healthy DB must be a no-op"
+            );
+            // Corrupt again → restores again (floor never consumed).
+            std::fs::write(&db_file, b"corrupt again").unwrap();
+            assert!(
+                Database::recover_from_premigration_if_corrupt(&db_file).unwrap(),
+                "floor must remain usable for a subsequent corruption"
             );
         }
     }

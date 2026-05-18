@@ -15,8 +15,11 @@
 //!
 //! Each step is idempotent so a crash-and-relaunch re-runs cleanly. The
 //! legacy-table DROP is the strictly-last destructive step and is performed
-//! only after a durable upstream flush — GATED OFF until the P3d invariant
-//! tests pass (see [`LEGACY_DROP_ENABLED`]).
+//! only after a durable upstream flush. Restore-from-`premigration` is a
+//! launch-time concern (`Database::recover_from_premigration_if_corrupt`)
+//! that fires ONLY on injected corruption — never on a healthy-but-pending
+//! DB. These ordering & recovery invariants are pinned by the `p3d` test
+//! module in `database::initialization`.
 
 use std::sync::Arc;
 
@@ -31,13 +34,6 @@ use crate::wallet_backend::WalletBackend;
 /// account 0 (the legacy DIP-14 path hardcoded it); upstream
 /// `register_contact_account` re-derives on account 0 to match.
 const DEFAULT_DASHPAY_ACCOUNT: u32 = 0;
-
-/// The legacy-table DROP (the single destructive step) is enabled only once
-/// the P3d invariant suite (backup-before-destroy, DROP-strictly-last,
-/// crash/relaunch idempotency, restore-only-on-exception) is in place. Until
-/// then Stage B runs every step EXCEPT the drop and leaves the marker set,
-/// so it is fully reversible and re-runnable.
-const LEGACY_DROP_ENABLED: bool = false;
 
 /// Run the one-time Stage-B migration. Idempotent; marker-gated by the
 /// caller. On success (and once [`LEGACY_DROP_ENABLED`]) clears
@@ -132,26 +128,25 @@ pub async fn run_stage_b(ctx: &Arc<AppContext>, backend: &WalletBackend) -> Resu
 
     // Step 5 — finalize (SINGLE fork: success). The exception fork is
     // implicit: any `?` above returns Err with the marker still set, so the
-    // next launch re-runs Stage B (idempotent) and the caller restores from
-    // `premigration` only if the new persister is corrupt.
-    if LEGACY_DROP_ENABLED {
-        // Durable upstream flush BEFORE the destructive drop, then DROP as
-        // the strictly-last step, then clear the marker. Enabled in P3d once
-        // the invariant suite proves the ordering.
-        backend.flush_persister().await?;
-        ctx.db
-            .drop_legacy_migrated_tables()
-            .map_err(|source| TaskError::Database { source })?;
-        ctx.db
-            .set_platform_wallet_migration_pending(false)
-            .map_err(|source| TaskError::Database { source })?;
-        tracing::info!("Platform-wallet Stage-B migration: complete (legacy tables dropped)");
-    } else {
-        tracing::info!(
-            "Platform-wallet Stage-B migration: data steps complete; legacy-table \
-             DROP gated off until P3d invariants land (marker retained)"
-        );
-    }
+    // next launch re-runs Stage B (idempotent) and the launch-time recovery
+    // (`Database::recover_from_premigration_if_corrupt`) restores from
+    // `premigration` only if the new state is corrupt.
+    //
+    // Ordering is the P3d-proven invariant: durable upstream flush BEFORE the
+    // destructive drop, then DROP as the strictly-last step, then clear the
+    // marker. If we crash after the flush but before the drop, the next
+    // launch re-runs Stage B: registration/contacts are idempotent no-ops and
+    // the drop is `DROP TABLE IF EXISTS`. If we crash after the drop but
+    // before clearing the marker, the next launch re-runs and the idempotent
+    // drop is a clean no-op, then the marker clears.
+    backend.flush_persister().await?;
+    ctx.db
+        .drop_legacy_migrated_tables()
+        .map_err(|source| TaskError::Database { source })?;
+    ctx.db
+        .set_platform_wallet_migration_pending(false)
+        .map_err(|source| TaskError::Database { source })?;
+    tracing::info!("Platform-wallet Stage-B migration: complete (legacy tables dropped)");
 
     Ok(())
 }

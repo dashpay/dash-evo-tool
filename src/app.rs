@@ -260,6 +260,22 @@ impl AppState {
 
         initialize_logger();
         let db_file_path = data_file_path(&data_dir, "data.db")?;
+        // Launch-time platform-wallet migration recovery: if a retained
+        // pre-migration floor exists and the live DB is corrupt/unopenable,
+        // restore from the floor BEFORE opening it. Exceptional-path only —
+        // a healthy DB with an unfinished migration is left for Stage-B
+        // retry. Best-effort: a restore failure is logged, not fatal.
+        match Database::recover_from_premigration_if_corrupt(&db_file_path) {
+            Ok(true) => {
+                tracing::warn!("Database was restored from the pre-migration backup at startup")
+            }
+            Ok(false) => {}
+            Err(e) => tracing::error!(
+                error = %e,
+                "Could not restore database from the pre-migration backup; \
+                 continuing with the existing file"
+            ),
+        }
         let db = Arc::new(Database::new(&db_file_path)?);
         db.initialize(&db_file_path)?;
         Self::new_inner(ctx, db, data_dir)

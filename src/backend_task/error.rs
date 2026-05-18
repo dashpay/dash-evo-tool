@@ -42,6 +42,47 @@ pub enum TaskError {
     )]
     SingleKeyWalletsUnsupported,
 
+    /// A wallet operation failed inside the upstream wallet runtime.
+    #[error("The wallet service could not complete this operation. Please retry in a moment.")]
+    WalletBackend {
+        #[source]
+        source: Box<platform_wallet::error::PlatformWalletError>,
+    },
+
+    /// The wallet storage backend could not read or write wallet data.
+    #[error(
+        "Could not access wallet data. Check available disk space and restart the application."
+    )]
+    WalletStorage {
+        #[source]
+        source: platform_wallet_storage::WalletStorageError,
+    },
+
+    /// Chain sync could not be started.
+    #[error(
+        "Could not start wallet sync. Please check your connection and restart the application."
+    )]
+    WalletSyncStartFailed {
+        #[source]
+        source: Box<platform_wallet::error::PlatformWalletError>,
+    },
+
+    /// A stored wallet seed could not be decrypted (wrong password or
+    /// corrupted seed store).
+    #[error(
+        "Could not unlock a saved wallet. Re-enter your password; if it persists, restore the wallet from its recovery phrase."
+    )]
+    WalletSeedDecryptFailed,
+
+    /// A local filesystem operation failed (e.g. creating a data directory).
+    #[error(
+        "Could not access local files. Check available disk space and restart the application."
+    )]
+    FileSystem {
+        #[source]
+        source: std::io::Error,
+    },
+
     /// DashPay domain errors.
     #[error(transparent)]
     DashPay(#[from] crate::backend_task::dashpay::errors::DashPayError),

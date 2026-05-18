@@ -93,9 +93,11 @@ impl ContextProvider for SpvProvider {
         _quorum_hash: [u8; 32],
         _core_chain_locked_height: u32,
     ) -> Result<[u8; 48], ContextProviderError> {
-        // Quorum keys come from chain sync, which is owned by upstream
-        // `platform-wallet`'s `SpvRuntime`. P2 wires this provider to the
-        // upstream runtime; until then quorum-verified operations are inert.
+        // Quorum keys come from chain sync, owned by upstream
+        // `platform-wallet`'s `SpvRuntime`. The P1 `WalletBackend` that wraps
+        // it is not yet held by `AppContext` (parallel/skeleton path), so
+        // there is nothing to delegate to here. P2 places `WalletBackend` in
+        // `AppContext` and wires this to `wallet_backend` quorum resolution.
         Err(ContextProviderError::Generic(
             "Quorum key resolution is being upgraded and is temporarily unavailable.".to_string(),
         ))

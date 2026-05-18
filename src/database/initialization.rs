@@ -35,7 +35,7 @@ impl<T> MigrationResultExt<T> for rusqlite::Result<T> {
     }
 }
 
-pub const DEFAULT_DB_VERSION: u16 = 34;
+pub const DEFAULT_DB_VERSION: u16 = 35;
 
 /// Minimal view of `.env` values the v34 migration needs.
 struct V34EnvSnapshot {
@@ -115,7 +115,71 @@ impl Database {
             }
         }
 
+        // C1/C2: if the platform-wallet migration is pending, ensure the
+        // retained `*.db.premigration` corruption-recovery floor exists.
+        // Created here POST-commit via the SQLite online-backup API (never
+        // inside a live write-tx); idempotent (skipped if already present);
+        // (re)created on first post-marker launch even if the user never
+        // unlocks. Best-effort: a backup failure is logged but does not block
+        // app start — Stage B will not finalize without it.
+        if self
+            .get_platform_wallet_migration_pending()
+            .unwrap_or(false)
+        {
+            self.ensure_premigration_backup(db_file_path);
+        }
+
         Ok(())
+    }
+
+    /// Path of the retained pre-migration backup: `<db>.premigration`.
+    pub(crate) fn premigration_backup_path(db_file_path: &Path) -> std::path::PathBuf {
+        let mut p = db_file_path.as_os_str().to_os_string();
+        p.push(".premigration");
+        std::path::PathBuf::from(p)
+    }
+
+    /// Create the retained `*.db.premigration` backup via the SQLite
+    /// online-backup API if it does not already exist. Idempotent and
+    /// best-effort (never panics, never blocks app start).
+    fn ensure_premigration_backup(&self, db_file_path: &Path) {
+        let backup_path = Self::premigration_backup_path(db_file_path);
+        if backup_path.exists() {
+            return;
+        }
+        match self.online_backup_to(&backup_path) {
+            Ok(()) => tracing::info!(
+                path = %backup_path.display(),
+                "Created retained pre-migration database backup"
+            ),
+            Err(e) => tracing::error!(
+                error = %e,
+                "Failed to create pre-migration backup; Stage B will not finalize until it exists"
+            ),
+        }
+    }
+
+    /// Consistent online backup of the live DB to `dest` via
+    /// `rusqlite::backup::Backup`. Writes atomically (temp file + rename) so a
+    /// crash mid-backup never leaves a truncated `*.premigration`.
+    fn online_backup_to(&self, dest: &Path) -> rusqlite::Result<()> {
+        let tmp = {
+            let mut p = dest.as_os_str().to_os_string();
+            p.push(".tmp");
+            std::path::PathBuf::from(p)
+        };
+        let _ = std::fs::remove_file(&tmp);
+        {
+            let src = self.conn.lock().unwrap();
+            let mut dst = Connection::open(&tmp)?;
+            let backup = rusqlite::backup::Backup::new(&src, &mut dst)?;
+            backup.run_to_completion(64, std::time::Duration::from_millis(0), None)?;
+        }
+        std::fs::rename(&tmp, dest).map_err(|e| {
+            rusqlite::Error::ToSqlConversionFailure(
+                format!("rename premigration backup into place: {e}").into(),
+            )
+        })
     }
 
     fn apply_version_changes(
@@ -125,6 +189,24 @@ impl Database {
         data_dir: Option<&Path>,
     ) -> Result<(), MigrationError> {
         match version {
+            35 => {
+                // Stage A of the platform-wallet migration (RATIFIED two-stage
+                // model, data-model-and-migration.md). This SQL arm is sync /
+                // pre-unlock / in-tx and does NO destructive work and NO
+                // backup (online backup cannot run inside a live write-tx).
+                // It only arms the persistent marker; Stage B
+                // (`src/database/migration_pw.rs`, post-unlock, async) does
+                // the actual data migration and the DIP-14/15
+                // migrate-or-quarantine. The marker is the authoritative
+                // "pending" signal.
+                self.add_platform_wallet_migration_columns(tx)
+                    .migration_err("settings", "v35: add migration marker columns")?;
+                tx.execute(
+                    "UPDATE settings SET platform_wallet_migration_pending = 1 WHERE id = 1",
+                    [],
+                )
+                .migration_err("settings", "v35: arm platform-wallet migration marker")?;
+            }
             34 => {
                 // SPV is now the default Core-level backend. Users who have a
                 // configured local Dash Core node (Expert mode + at least one
@@ -512,7 +594,9 @@ impl Database {
             auto_start_spv INTEGER DEFAULT 0,
             close_dash_qt_on_exit INTEGER DEFAULT 1,
             selected_wallet_hash BLOB,
-            selected_single_key_hash BLOB
+            selected_single_key_hash BLOB,
+            platform_wallet_migration_pending INTEGER DEFAULT 0,
+            dashpay_dip14_quarantine_active INTEGER DEFAULT 0
         )",
             [],
         )?;
@@ -2620,6 +2704,180 @@ mod test {
                 "try_perform_migration should report no migration needed"
             );
             assert_eq!(db.db_schema_version().unwrap(), 34);
+        }
+    }
+
+    /// P3a — Stage-A SQL v35 + markers + retained premigration backup.
+    mod p3a {
+        /// A fresh v34 DB (the last pre-platform-wallet schema), with a
+        /// representative legacy `wallet` row so "no destructive step" is
+        /// observable.
+        fn fresh_v34_db(dir: &std::path::Path) -> super::super::Database {
+            let db_file = dir.join("test_data.db");
+            let db = super::super::Database::new(&db_file).unwrap();
+            db.create_tables().unwrap();
+            db.set_default_version().unwrap();
+            db.set_db_version(34).unwrap();
+            {
+                let conn = db.conn.lock().unwrap();
+                conn.execute(
+                    "INSERT INTO wallet (seed_hash, encrypted_seed, salt, nonce, \
+                     master_ecdsa_bip44_account_0_epk, alias, is_main, uses_password, \
+                     network) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, 0, 'testnet')",
+                    rusqlite::params![
+                        vec![1u8; 32],
+                        vec![2u8; 16],
+                        vec![3u8; 16],
+                        vec![4u8; 12],
+                        "xpub-legacy",
+                        "legacy-wallet",
+                    ],
+                )
+                .unwrap();
+            }
+            db
+        }
+
+        fn migration_pending(db: &super::super::Database) -> bool {
+            db.get_platform_wallet_migration_pending().unwrap()
+        }
+
+        fn wallet_row_count(db: &super::super::Database) -> i64 {
+            let conn = db.conn.lock().unwrap();
+            conn.query_row("SELECT COUNT(*) FROM wallet", [], |r| r.get(0))
+                .unwrap()
+        }
+
+        #[test]
+        fn v35_arms_marker_and_is_non_destructive() {
+            let tmp = tempfile::tempdir().unwrap();
+            let db = fresh_v34_db(tmp.path());
+            assert!(!migration_pending(&db), "marker must start clear at v34");
+            assert_eq!(wallet_row_count(&db), 1);
+
+            let result = db.try_perform_migration(34, 35, Some(tmp.path()));
+            assert!(result.is_ok(), "v35 migration failed: {:?}", result.err());
+            assert_eq!(db.db_schema_version().unwrap(), 35);
+            assert!(migration_pending(&db), "v35 must arm the pending marker");
+            // No destructive step: the legacy wallet row is untouched.
+            assert_eq!(wallet_row_count(&db), 1, "v35 must not drop legacy data");
+            assert!(
+                !db.get_dashpay_dip14_quarantine_active().unwrap(),
+                "quarantine flag must default off"
+            );
+        }
+
+        #[test]
+        fn v35_is_idempotent_rerun_is_noop() {
+            let tmp = tempfile::tempdir().unwrap();
+            let db = fresh_v34_db(tmp.path());
+            db.try_perform_migration(34, 35, Some(tmp.path())).unwrap();
+
+            let again = db.try_perform_migration(35, 35, Some(tmp.path()));
+            assert!(again.is_ok(), "re-run should be no-op: {:?}", again.err());
+            assert!(
+                !again.unwrap(),
+                "try_perform_migration should report no migration needed at v35"
+            );
+            assert_eq!(db.db_schema_version().unwrap(), 35);
+            assert!(migration_pending(&db), "marker stays armed across re-run");
+            assert_eq!(wallet_row_count(&db), 1);
+        }
+
+        #[test]
+        fn fresh_install_at_v35_has_no_pending_marker() {
+            let tmp = tempfile::tempdir().unwrap();
+            let db_file = tmp.path().join("test_data.db");
+            let db = super::super::Database::new(&db_file).unwrap();
+            // Fresh install path: create_tables + set_default_version, no
+            // legacy data, nothing to migrate.
+            db.create_tables().unwrap();
+            db.set_default_version().unwrap();
+            assert_eq!(db.db_schema_version().unwrap(), 35);
+            assert!(
+                !migration_pending(&db),
+                "fresh v35 install has nothing to migrate — marker must be clear"
+            );
+        }
+
+        #[test]
+        fn premigration_backup_created_post_migration_and_consistent() {
+            let tmp = tempfile::tempdir().unwrap();
+            let db_file = tmp.path().join("test_data.db");
+            // Build a v34 DB with legacy data, then run full `initialize`
+            // (which performs the migration and the post-commit backup).
+            {
+                let db = super::super::Database::new(&db_file).unwrap();
+                db.create_tables().unwrap();
+                db.set_default_version().unwrap();
+                db.set_db_version(34).unwrap();
+                {
+                    let conn = db.conn.lock().unwrap();
+                    conn.execute(
+                        "INSERT INTO wallet (seed_hash, encrypted_seed, salt, nonce, \
+                         master_ecdsa_bip44_account_0_epk, alias, is_main, uses_password, \
+                         network) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, 0, 'testnet')",
+                        rusqlite::params![
+                            vec![9u8; 32],
+                            vec![2u8; 16],
+                            vec![3u8; 16],
+                            vec![4u8; 12],
+                            "xpub-legacy",
+                            "legacy-wallet",
+                        ],
+                    )
+                    .unwrap();
+                }
+            }
+            let db = super::super::Database::new(&db_file).unwrap();
+            db.initialize(&db_file).unwrap();
+
+            let backup = super::super::Database::premigration_backup_path(&db_file);
+            assert!(
+                backup.exists(),
+                "premigration backup must exist post-migration while marker set"
+            );
+            // The backup is a consistent SQLite DB still at the pre-migration
+            // version with the legacy row preserved.
+            let bdb = super::super::Database::new(&backup).unwrap();
+            let bconn = bdb.conn.lock().unwrap();
+            let n: i64 = bconn
+                .query_row("SELECT COUNT(*) FROM wallet", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(n, 1, "backup must contain the legacy wallet row");
+            let bytes = std::fs::read(&backup).unwrap();
+            assert_eq!(
+                &bytes[..16],
+                b"SQLite format 3\0",
+                "premigration backup must be a valid SQLite file"
+            );
+        }
+
+        #[test]
+        fn premigration_backup_is_idempotent() {
+            let tmp = tempfile::tempdir().unwrap();
+            let db_file = tmp.path().join("test_data.db");
+            {
+                let db = super::super::Database::new(&db_file).unwrap();
+                db.create_tables().unwrap();
+                db.set_default_version().unwrap();
+                db.set_db_version(34).unwrap();
+            }
+            let db = super::super::Database::new(&db_file).unwrap();
+            db.initialize(&db_file).unwrap();
+            let backup = super::super::Database::premigration_backup_path(&db_file);
+            assert!(backup.exists());
+            let first = std::fs::metadata(&backup).unwrap().modified().unwrap();
+
+            // A second initialize while still pending must NOT overwrite the
+            // retained pre-migration backup (it is the recovery floor).
+            let db2 = super::super::Database::new(&db_file).unwrap();
+            db2.initialize(&db_file).unwrap();
+            let second = std::fs::metadata(&backup).unwrap().modified().unwrap();
+            assert_eq!(
+                first, second,
+                "existing premigration backup must not be recreated"
+            );
         }
     }
 }

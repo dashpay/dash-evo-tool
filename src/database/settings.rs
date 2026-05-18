@@ -405,6 +405,73 @@ impl Database {
         Ok(result.unwrap_or(true)) // Default to true
     }
 
+    /// Adds the two platform-wallet-migration marker columns if missing.
+    /// Idempotent (column-existence guarded), mirroring the other settings
+    /// column migrations.
+    pub fn add_platform_wallet_migration_columns(&self, conn: &rusqlite::Connection) -> Result<()> {
+        for col in [
+            "platform_wallet_migration_pending",
+            "dashpay_dip14_quarantine_active",
+        ] {
+            let exists: bool = conn.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name = ?1",
+                rusqlite::params![col],
+                |row| row.get::<_, i32>(0).map(|c| c > 0),
+            )?;
+            if !exists {
+                conn.execute(
+                    &format!("ALTER TABLE settings ADD COLUMN {col} INTEGER DEFAULT 0;"),
+                    (),
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether the post-unlock platform-wallet (Stage-B) migration is still
+    /// pending. Cleared only once every wallet is re-registered and every
+    /// DashPay contact classified (migrated XOR quarantined).
+    pub fn get_platform_wallet_migration_pending(&self) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let result: Option<bool> = conn.query_row(
+            "SELECT platform_wallet_migration_pending FROM settings WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(result.unwrap_or(false))
+    }
+
+    /// Set/clear the Stage-B pending marker.
+    pub fn set_platform_wallet_migration_pending(&self, pending: bool) -> Result<()> {
+        self.execute(
+            "UPDATE settings SET platform_wallet_migration_pending = ? WHERE id = 1",
+            rusqlite::params![pending],
+        )?;
+        Ok(())
+    }
+
+    /// Whether ≥1 DashPay contact was quarantined by the DIP-14/15 migration.
+    /// While set, legacy DashPay/contact tables and `data.db.premigration`
+    /// are retained and DashPay is blocked for quarantined contacts.
+    pub fn get_dashpay_dip14_quarantine_active(&self) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let result: Option<bool> = conn.query_row(
+            "SELECT dashpay_dip14_quarantine_active FROM settings WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(result.unwrap_or(false))
+    }
+
+    /// Set/clear the DIP-14/15 quarantine-active flag.
+    pub fn set_dashpay_dip14_quarantine_active(&self, active: bool) -> Result<()> {
+        self.execute(
+            "UPDATE settings SET dashpay_dip14_quarantine_active = ? WHERE id = 1",
+            rusqlite::params![active],
+        )?;
+        Ok(())
+    }
+
     /// Ensures all required columns exist in the settings table.
     /// This handles the case where an old database has a settings table with missing columns.
     pub fn ensure_settings_columns_exist(&self, conn: &Connection) -> Result<()> {
@@ -417,6 +484,7 @@ impl Database {
         self.add_auto_start_spv_column(conn)?;
         self.add_close_dash_qt_on_exit_column(conn)?;
         self.add_selected_wallet_columns_if_missing(conn)?;
+        self.add_platform_wallet_migration_columns(conn)?;
 
         // Ensure database_version column exists
         let version_column_exists: bool = conn.query_row(

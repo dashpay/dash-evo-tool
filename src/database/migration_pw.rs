@@ -143,6 +143,14 @@ pub async fn run_stage_b(ctx: &Arc<AppContext>, backend: &WalletBackend) -> Resu
     ctx.db
         .drop_legacy_migrated_tables()
         .map_err(|source| TaskError::Database { source })?;
+    // Record completion BEFORE clearing the pending marker so that, if we
+    // crash between the two writes, the next launch still re-runs Stage B
+    // (pending stays set) and the idempotent finalise re-asserts both bits.
+    // `completed` distinguishes a migrated user from a fresh install for the
+    // one-time post-migration notice.
+    ctx.db
+        .set_platform_wallet_migration_completed(true)
+        .map_err(|source| TaskError::Database { source })?;
     ctx.db
         .set_platform_wallet_migration_pending(false)
         .map_err(|source| TaskError::Database { source })?;

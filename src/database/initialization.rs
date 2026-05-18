@@ -682,6 +682,8 @@ impl Database {
             selected_wallet_hash BLOB,
             selected_single_key_hash BLOB,
             platform_wallet_migration_pending INTEGER DEFAULT 0,
+            platform_wallet_migration_completed INTEGER DEFAULT 0,
+            platform_wallet_migration_notice_shown INTEGER DEFAULT 0,
             dashpay_dip14_quarantine_active INTEGER DEFAULT 0
         )",
             [],

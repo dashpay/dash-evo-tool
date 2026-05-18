@@ -405,12 +405,26 @@ impl Database {
         Ok(result.unwrap_or(true)) // Default to true
     }
 
-    /// Adds the two platform-wallet-migration marker columns if missing.
+    /// Adds the platform-wallet-migration marker columns if missing.
     /// Idempotent (column-existence guarded), mirroring the other settings
     /// column migrations.
+    ///
+    /// * `platform_wallet_migration_pending` — Stage-B pending marker.
+    /// * `platform_wallet_migration_completed` — set once Stage-B finalises;
+    ///   distinguishes a migrated user from a fresh install (both have
+    ///   `pending == 0`) so the one-time notice never reaches a brand-new
+    ///   user who never migrated.
+    /// * `platform_wallet_migration_notice_shown` — one-shot guard for the
+    ///   mandatory one-time post-migration notice (the sole compensating
+    ///   control for the accepted DashPay fund-visibility trade-off).
+    /// * `dashpay_dip14_quarantine_active` — retained dead column (the
+    ///   quarantine apparatus was withdrawn; column kept for schema
+    ///   compatibility, batched-removed in P4).
     pub fn add_platform_wallet_migration_columns(&self, conn: &rusqlite::Connection) -> Result<()> {
         for col in [
             "platform_wallet_migration_pending",
+            "platform_wallet_migration_completed",
+            "platform_wallet_migration_notice_shown",
             "dashpay_dip14_quarantine_active",
         ] {
             let exists: bool = conn.query_row(
@@ -429,8 +443,9 @@ impl Database {
     }
 
     /// Whether the post-unlock platform-wallet (Stage-B) migration is still
-    /// pending. Cleared only once every wallet is re-registered and every
-    /// DashPay contact classified (migrated XOR quarantined).
+    /// pending. Cleared only once every wallet is re-registered, every
+    /// accepted DashPay contact is re-established on upstream derivation, and
+    /// the legacy tables have been dropped after a durable flush.
     pub fn get_platform_wallet_migration_pending(&self) -> Result<bool> {
         let conn = self.conn.lock().unwrap();
         let result: Option<bool> = conn.query_row(
@@ -446,6 +461,56 @@ impl Database {
         self.execute(
             "UPDATE settings SET platform_wallet_migration_pending = ? WHERE id = 1",
             rusqlite::params![pending],
+        )?;
+        Ok(())
+    }
+
+    /// Whether the one-time platform-wallet migration has ever finalised on
+    /// this database. Set by Stage-B as part of the same finalise step that
+    /// clears the pending marker. Used to tell a migrated user (who must see
+    /// the one-time notice) apart from a fresh install (who must not) — both
+    /// have `pending == false`. Defaults to `false`.
+    pub fn get_platform_wallet_migration_completed(&self) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let result: Option<bool> = conn.query_row(
+            "SELECT platform_wallet_migration_completed FROM settings WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(result.unwrap_or(false))
+    }
+
+    /// Mark the one-time migration as finalised. Idempotent.
+    pub fn set_platform_wallet_migration_completed(&self, completed: bool) -> Result<()> {
+        self.execute(
+            "UPDATE settings SET platform_wallet_migration_completed = ? WHERE id = 1",
+            rusqlite::params![completed],
+        )?;
+        Ok(())
+    }
+
+    /// Whether the mandatory one-time post-migration notice has already been
+    /// shown to this user. The notice (the sole compensating control for the
+    /// accepted DashPay fund-visibility trade-off) is shown exactly once,
+    /// unconditionally, to every migrated user after Stage-B finalises.
+    /// Defaults to `false` (never shown) so a missing/legacy row still gets
+    /// the notice.
+    pub fn get_platform_wallet_migration_notice_shown(&self) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let result: Option<bool> = conn.query_row(
+            "SELECT platform_wallet_migration_notice_shown FROM settings WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(result.unwrap_or(false))
+    }
+
+    /// Mark the one-time post-migration notice as shown. Idempotent — called
+    /// after the user dismisses the notice; setting it twice is harmless.
+    pub fn set_platform_wallet_migration_notice_shown(&self, shown: bool) -> Result<()> {
+        self.execute(
+            "UPDATE settings SET platform_wallet_migration_notice_shown = ? WHERE id = 1",
+            rusqlite::params![shown],
         )?;
         Ok(())
     }

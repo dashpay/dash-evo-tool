@@ -172,6 +172,11 @@ pub struct AppState {
     /// Shared MCP context -- follows network switches via `ArcSwap`.
     #[cfg(feature = "mcp")]
     pub mcp_app_context: Option<Arc<arc_swap::ArcSwap<AppContext>>>,
+    /// One-shot guard for the mandatory post-migration notice. The DB flag
+    /// (`platform_wallet_migration_notice_shown`) is the durable source of
+    /// truth; this field just stops us re-querying it every frame once the
+    /// notice has been handled for this launch.
+    migration_notice_checked: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -597,6 +602,7 @@ impl AppState {
             accessibility_retries: 0,
             #[cfg(feature = "mcp")]
             mcp_app_context,
+            migration_notice_checked: false,
         };
 
         // Initialize welcome screen if needed (uses whichever context is active)
@@ -837,6 +843,85 @@ impl AppState {
             .ok();
     }
 
+    /// Show the mandatory one-time post-migration notice exactly once, to
+    /// every user whose data went through the platform-wallet migration.
+    ///
+    /// This is the SOLE compensating control for the accepted DashPay
+    /// fund-visibility trade-off (Testnet/Devnet or secondary-account contact
+    /// payments may not appear in this version). It is therefore
+    /// unconditional and never downgraded: any user whose Stage-B migration
+    /// has finalised (`migration_completed == true`) and who has not yet seen
+    /// the notice sees it — independent of network, account, or contact
+    /// contents. A fresh install (never migrated) never sees it. The durable
+    /// settings flags are the source of truth; the in-memory
+    /// `migration_notice_checked` only avoids re-querying the DB every frame
+    /// within this launch.
+    ///
+    /// Shown as a dismissible info banner with jargon-free, verbatim text.
+    /// Technical detail (if any) goes to logs, never the message.
+    fn maybe_show_migration_notice(&mut self, ctx: &egui::Context, app_context: &Arc<AppContext>) {
+        if self.migration_notice_checked {
+            return;
+        }
+
+        // Read the two durable bits the (pure) gating decision needs:
+        // whether the one-time migration actually finalised on this DB, and
+        // whether the notice was already shown. A read failure is logged and
+        // the launch guard set so we neither spam nor crash.
+        let completed = match app_context.db.get_platform_wallet_migration_completed() {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(error = %e, "Could not read migration completed flag");
+                self.migration_notice_checked = true;
+                return;
+            }
+        };
+        let already_shown = match app_context.db.get_platform_wallet_migration_notice_shown() {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(error = %e, "Could not read migration notice flag");
+                self.migration_notice_checked = true;
+                return;
+            }
+        };
+
+        if !completed {
+            // Either a fresh install (never migrated → never notify) or
+            // Stage-B has not finalised yet (re-check on a later frame). The
+            // in-launch guard is intentionally NOT set here so a migration
+            // finishing later this session still triggers the notice.
+            if !already_shown {
+                return;
+            }
+            self.migration_notice_checked = true;
+            return;
+        }
+        if !crate::migration_notice::should_show(completed, already_shown) {
+            // Already shown in a previous launch — never show again.
+            self.migration_notice_checked = true;
+            return;
+        }
+
+        MessageBanner::set_global(
+            ctx,
+            crate::migration_notice::MIGRATION_NOTICE_TEXT,
+            MessageType::Info,
+        );
+
+        // Persist the one-shot guard immediately so the notice is shown
+        // exactly once even across an immediate restart. A write failure is
+        // logged; we still set the in-memory guard so we do not spam the
+        // banner this launch (worst case it shows once more next launch —
+        // acceptable; never fewer than once).
+        if let Err(e) = app_context
+            .db
+            .set_platform_wallet_migration_notice_shown(true)
+        {
+            tracing::error!(error = %e, "Could not persist migration notice flag");
+        }
+        self.migration_notice_checked = true;
+    }
+
     /// Update the connection status banner when the overall connection state
     /// transitions between Disconnected, Connecting, Syncing, and Synced.
     ///
@@ -1035,6 +1120,11 @@ impl App for AppState {
 
         self.enforce_network_context_invariant();
         let active_context = self.current_app_context().clone();
+
+        // Mandatory one-time post-migration notice (sole compensating control
+        // for the accepted DashPay fund-visibility trade-off). No-op once
+        // handled for this launch / shown in a previous one.
+        self.maybe_show_migration_notice(ctx, &active_context);
 
         // Poll the receiver for any new task results
         while let Ok(task_result) = self.task_result_receiver.try_recv() {

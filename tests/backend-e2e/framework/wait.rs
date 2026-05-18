@@ -18,10 +18,8 @@ pub async fn wait_for_balance(
     timeout(wait_timeout, async {
         let mut poll_count = 0u32;
         loop {
-            // Trigger reconcile so DET wallet model reflects latest SPV state
-            if let Err(e) = app_context.reconcile_spv_wallets().await {
-                tracing::warn!("reconcile_spv_wallets failed: {e}");
-            }
+            // TODO(P0.5): re-enable in P2 — chain sync is owned by upstream
+            // platform-wallet; reconcile is wired in the WalletBackend rewire.
 
             let balance = {
                 let wallets = app_context.wallets().read().expect("wallets lock");
@@ -78,10 +76,8 @@ pub async fn wait_for_spendable_balance(
     timeout(wait_timeout, async {
         let mut poll_count = 0u32;
         loop {
-            // Trigger reconcile so DET wallet model reflects latest SPV state
-            if let Err(e) = app_context.reconcile_spv_wallets().await {
-                tracing::warn!("reconcile_spv_wallets failed: {e}");
-            }
+            // TODO(P0.5): re-enable in P2 — chain sync is owned by upstream
+            // platform-wallet; reconcile is wired in the WalletBackend rewire.
 
             let balance = {
                 let wallets = app_context.wallets().read().expect("wallets lock");
@@ -139,22 +135,14 @@ pub async fn wait_for_spendable_balance(
 }
 
 /// Wait until a wallet appears in the SPV subsystem.
+// TODO(P0.5): re-enable in P2 — chain sync is owned by upstream
+// platform-wallet; wallet registration is observed via the EventBridge.
 pub async fn wait_for_wallet_in_spv(
-    app_context: &Arc<AppContext>,
-    wallet_hash: WalletSeedHash,
-    wait_timeout: Duration,
+    _app_context: &Arc<AppContext>,
+    _wallet_hash: WalletSeedHash,
+    _wait_timeout: Duration,
 ) -> Result<(), String> {
-    timeout(wait_timeout, async {
-        loop {
-            let snapshot = app_context.spv_manager().det_wallets_snapshot();
-            if snapshot.contains_key(&wallet_hash) {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        }
-    })
-    .await
-    .map_err(|_| "Timed out waiting for wallet in SPV".to_string())
+    Err("wait_for_wallet_in_spv is not wired until P2".to_string())
 }
 
 /// Wait for SPV to complete initial sync (all managers including masternodes).
@@ -165,7 +153,7 @@ pub async fn wait_for_spv_running(
     app_context: &Arc<AppContext>,
     wait_timeout: Duration,
 ) -> Result<(), String> {
-    use dash_evo_tool::spv::SpvStatus;
+    use dash_evo_tool::model::spv_status::SpvStatus;
     timeout(wait_timeout, async {
         loop {
             if app_context.connection_status().spv_status() == SpvStatus::Running {
@@ -184,20 +172,11 @@ pub async fn wait_for_spv_running(
 }
 
 /// Wait for SPV to connect to at least one peer.
+// TODO(P0.5): re-enable in P2 — peer count comes from upstream
+// platform-wallet sync status via the EventBridge.
 pub async fn wait_for_spv_peers(
-    app_context: &Arc<AppContext>,
-    wait_timeout: Duration,
+    _app_context: &Arc<AppContext>,
+    _wait_timeout: Duration,
 ) -> Result<(), String> {
-    let spv = app_context.spv_manager().clone();
-    timeout(wait_timeout, async move {
-        loop {
-            let snapshot = spv.status_async().await;
-            if snapshot.connected_peers > 0 {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        }
-    })
-    .await
-    .map_err(|_| format!("Timed out after {:?} waiting for SPV peers", wait_timeout))
+    Err("wait_for_spv_peers is not wired until P2".to_string())
 }

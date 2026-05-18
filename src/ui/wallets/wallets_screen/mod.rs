@@ -14,8 +14,8 @@ use crate::context::AppContext;
 use crate::context::connection_status::spv_phase_summary;
 use crate::model::amount::Amount;
 use crate::model::feature_gate::FeatureGate;
+use crate::model::spv_status::SpvStatus;
 use crate::model::wallet::{TransactionStatus, Wallet, WalletSeedHash, WalletTransaction};
-use crate::spv::{CoreBackendMode, SpvStatus};
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
@@ -389,10 +389,7 @@ impl WalletsBalancesScreen {
         if let Some(hash) = seed_hash {
             self.persist_selected_wallet_hash(Some(hash));
             self.refresh_platform_sync_info_cache(&hash);
-            // Trigger a refresh on the next frame for the newly selected wallet
-            if self.app_context.core_backend_mode() == CoreBackendMode::Rpc {
-                self.pending_wallet_refresh_on_switch = true;
-            }
+            // Chain sync is SPV-only and continuous; no RPC refresh-on-switch.
         } else {
             self.persist_selected_wallet_hash(None);
             self.platform_sync_info = None;
@@ -1137,14 +1134,13 @@ impl WalletsBalancesScreen {
                             self.app_context.network,
                             dash_sdk::dpp::dashcore::Network::Regtest
                                 | dash_sdk::dpp::dashcore::Network::Devnet
-                        ) && self.app_context.core_backend_mode() == CoreBackendMode::Rpc
-                            && ui
-                                .button(
-                                    RichText::new("Mine")
-                                        .color(DashColors::text_primary(dark_mode))
-                                        .strong(),
-                                )
-                                .clicked()
+                        ) && ui
+                            .button(
+                                RichText::new("Mine")
+                                    .color(DashColors::text_primary(dark_mode))
+                                    .strong(),
+                            )
+                            .clicked()
                         {
                             self.open_mine_dialog();
                         }
@@ -1768,73 +1764,56 @@ impl WalletsBalancesScreen {
                             .strong()
                             .color(DashColors::text_primary(dark_mode)),
                     );
-                    match self.app_context.core_backend_mode() {
-                        CoreBackendMode::Rpc => {
-                            if self.app_context.connection_status().rpc_online() {
-                                ui.colored_label(
-                                    Color32::DARK_GREEN,
-                                    RichText::new("Connected").size(sz),
-                                );
-                            } else {
-                                ui.colored_label(
-                                    DashColors::ERROR,
-                                    RichText::new("Disconnected").size(sz),
+                    {
+                        // Chain sync is owned by upstream platform-wallet;
+                        // P1's EventBridge feeds live status. Inert at the floor.
+                        let snapshot = crate::model::spv_status::SpvStatusSnapshot::default();
+                        match snapshot.status {
+                            SpvStatus::Idle | SpvStatus::Stopped => {
+                                ui.label(RichText::new("Disconnected").size(sz).color(secondary));
+                            }
+                            SpvStatus::Starting => {
+                                ui.add(egui::Spinner::new().size(sz).color(syncing_color));
+                                ui.label(
+                                    RichText::new("Connecting...").size(sz).color(syncing_color),
                                 );
                             }
-                        }
-                        CoreBackendMode::Spv => {
-                            let snapshot = self.app_context.spv_manager().status();
-                            match snapshot.status {
-                                SpvStatus::Idle | SpvStatus::Stopped => {
-                                    ui.label(
-                                        RichText::new("Disconnected").size(sz).color(secondary),
-                                    );
-                                }
-                                SpvStatus::Starting => {
-                                    ui.add(egui::Spinner::new().size(sz).color(syncing_color));
-                                    ui.label(
-                                        RichText::new("Connecting...")
-                                            .size(sz)
-                                            .color(syncing_color),
-                                    );
-                                }
-                                SpvStatus::Syncing => {
-                                    ui.add(egui::Spinner::new().size(sz).color(syncing_color));
-                                    let phase_text = snapshot
-                                        .sync_progress
-                                        .as_ref()
-                                        .map(spv_phase_summary)
-                                        .unwrap_or_else(|| "starting...".to_string());
-                                    ui.label(
-                                        RichText::new(format!("Syncing — {phase_text}"))
-                                            .size(sz)
-                                            .color(syncing_color),
-                                    );
-                                }
-                                SpvStatus::Running => {
-                                    ui.colored_label(
-                                        Color32::DARK_GREEN,
-                                        RichText::new(format!(
-                                            "Synced — {} peers",
-                                            snapshot.connected_peers
-                                        ))
-                                        .size(sz),
-                                    );
-                                }
-                                SpvStatus::Stopping => {
-                                    ui.add(egui::Spinner::new().size(sz).color(syncing_color));
-                                    ui.label(
-                                        RichText::new("Disconnecting...")
-                                            .size(sz)
-                                            .color(syncing_color),
-                                    );
-                                }
-                                SpvStatus::Error => {
-                                    ui.colored_label(
-                                        DashColors::ERROR,
-                                        RichText::new("Error").size(sz),
-                                    );
-                                }
+                            SpvStatus::Syncing => {
+                                ui.add(egui::Spinner::new().size(sz).color(syncing_color));
+                                let phase_text = snapshot
+                                    .sync_progress
+                                    .as_ref()
+                                    .map(spv_phase_summary)
+                                    .unwrap_or_else(|| "starting...".to_string());
+                                ui.label(
+                                    RichText::new(format!("Syncing — {phase_text}"))
+                                        .size(sz)
+                                        .color(syncing_color),
+                                );
+                            }
+                            SpvStatus::Running => {
+                                ui.colored_label(
+                                    Color32::DARK_GREEN,
+                                    RichText::new(format!(
+                                        "Synced — {} peers",
+                                        snapshot.connected_peers
+                                    ))
+                                    .size(sz),
+                                );
+                            }
+                            SpvStatus::Stopping => {
+                                ui.add(egui::Spinner::new().size(sz).color(syncing_color));
+                                ui.label(
+                                    RichText::new("Disconnecting...")
+                                        .size(sz)
+                                        .color(syncing_color),
+                                );
+                            }
+                            SpvStatus::Error => {
+                                ui.colored_label(
+                                    DashColors::ERROR,
+                                    RichText::new("Error").size(sz),
+                                );
                             }
                         }
                     }
@@ -2269,10 +2248,7 @@ impl ScreenLike for WalletsBalancesScreen {
         ];
 
         // Add Refresh button for HD wallet
-        if !self.refreshing
-            && self.app_context.core_backend_mode() == CoreBackendMode::Rpc
-            && self.selected_wallet.is_some()
-        {
+        if !self.refreshing && self.selected_wallet.is_some() {
             right_buttons.push((
                 "Refresh",
                 DesiredAppAction::Custom("RefreshHDWallet".to_string()),
@@ -2280,10 +2256,7 @@ impl ScreenLike for WalletsBalancesScreen {
         }
 
         // Add Refresh button for single key wallet
-        if !self.refreshing
-            && self.app_context.core_backend_mode() == CoreBackendMode::Rpc
-            && self.selected_single_key_wallet.is_some()
-        {
+        if !self.refreshing && self.selected_single_key_wallet.is_some() {
             right_buttons.push((
                 "Refresh",
                 DesiredAppAction::Custom("RefreshSKWallet".to_string()),

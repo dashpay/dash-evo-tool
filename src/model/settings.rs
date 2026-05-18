@@ -1,5 +1,4 @@
 use crate::model::password_info::PasswordInfo;
-use crate::spv::CoreBackendMode;
 use crate::ui::RootScreenType;
 use crate::ui::theme::ThemeMode;
 use dash_sdk::dpp::dashcore::Network;
@@ -34,7 +33,9 @@ pub struct Settings {
     pub overwrite_dash_conf: bool,
     pub disable_zmq: bool,
     pub theme_mode: ThemeMode,
-    pub core_backend_mode: CoreBackendMode,
+    /// Legacy DB column (raw value). Chain sync is SPV-only; this is retained
+    /// only until the P3 migration drops the column.
+    pub core_backend_mode: u8,
     /// Whether the user has completed the initial onboarding
     pub onboarding_completed: bool,
     /// Whether to show Evonode-related tools
@@ -81,18 +82,8 @@ impl
         ),
     ) -> Self {
         Self::new(
-            tuple.0,
-            tuple.1,
-            tuple.2,
-            tuple.3,
-            tuple.4,
-            tuple.5,
-            tuple.6,
-            CoreBackendMode::from(tuple.7),
-            tuple.8,
-            tuple.9,
-            tuple.10,
-            tuple.11,
+            tuple.0, tuple.1, tuple.2, tuple.3, tuple.4, tuple.5, tuple.6, tuple.7, tuple.8,
+            tuple.9, tuple.10, tuple.11,
         )
     }
 }
@@ -108,11 +99,11 @@ impl Default for Settings {
             true,
             false,
             ThemeMode::System,
-            CoreBackendMode::Spv, // Default to SPV mode
-            false,                // onboarding not completed
-            false,                // don't show evonode tools by default
-            UserMode::Advanced,   // default to advanced mode
-            true,                 // close Dash-Qt on exit by default
+            1,                  // legacy core_backend_mode column: SPV (=1)
+            false,              // onboarding not completed
+            false,              // don't show evonode tools by default
+            UserMode::Advanced, // default to advanced mode
+            true,               // close Dash-Qt on exit by default
         )
     }
 }
@@ -128,7 +119,7 @@ impl Settings {
         overwrite_dash_conf: bool,
         disable_zmq: bool,
         theme_mode: ThemeMode,
-        core_backend_mode: CoreBackendMode,
+        core_backend_mode: u8,
         onboarding_completed: bool,
         show_evonode_tools: bool,
         user_mode: UserMode,

@@ -1,5 +1,4 @@
 use crate::context::AppContext;
-use crate::spv::CoreBackendMode;
 use dash_sdk::dpp::version::PlatformVersion;
 use egui::Ui;
 
@@ -42,11 +41,11 @@ pub enum FeatureGate {
     DashPay,
     /// Expert/developer mode — unlocks advanced UI elements
     DeveloperMode,
-    /// SPV backend mode — active when the app is running in SPV (light client) mode
+    /// SPV backend — always active. Chain sync is SPV-only, owned by upstream
+    /// `platform-wallet`.
     SpvBackend,
-    /// Dash Core RPC backend mode — active when the app is running against a local Dash Core node.
-    /// Use this gate for functionality that requires the Core RPC / ZMQ surface (e.g. the ZMQ
-    /// listener) instead of reaching for a raw `core_backend_mode() == Rpc` comparison.
+    /// Dash Core RPC backend — never active. The RPC wallet backend was
+    /// removed; retained as a gate so RPC/ZMQ-only UI is hidden.
     RpcBackend,
 }
 
@@ -74,8 +73,9 @@ impl FeatureGate {
             }
             FeatureGate::DashPay => true, // Always for now; future: network/version gate
             FeatureGate::DeveloperMode => ctx.is_developer_mode(),
-            FeatureGate::SpvBackend => ctx.core_backend_mode() == CoreBackendMode::Spv,
-            FeatureGate::RpcBackend => ctx.core_backend_mode() == CoreBackendMode::Rpc,
+            // Chain sync is SPV-only (owned by upstream platform-wallet).
+            FeatureGate::SpvBackend => true,
+            FeatureGate::RpcBackend => false,
         }
     }
 }

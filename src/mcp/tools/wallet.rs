@@ -70,12 +70,6 @@ impl AsyncTool<DashMcpService> for GenerateReceiveAddress {
 
         resolve::ensure_spv_synced(&ctx).await?;
 
-        if ctx.spv_manager.wallet_id_for_seed(seed_hash).is_none() {
-            return Err(McpToolError::Internal(
-                "Wallet is not loaded into SPV. Please retry in a moment.".to_string(),
-            ));
-        }
-
         let task = BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { seed_hash });
         let result = dispatch_task(&ctx, task)
             .await

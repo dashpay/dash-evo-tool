@@ -13,10 +13,7 @@ use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{OutPoint, PrivateKey};
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
-use dash_sdk::dpp::native_bls::NativeBlsModule;
 use dash_sdk::dpp::prelude::{AddressNonce, AssetLockProof};
-use dash_sdk::dpp::state_transition::identity_create_transition::IdentityCreateTransition;
-use dash_sdk::dpp::state_transition::identity_create_transition::methods::IdentityCreateTransitionMethodsV0;
 use dash_sdk::platform::transition::put_identity::PutIdentity;
 use dash_sdk::platform::{Fetch, FetchMany, Identity};
 use dash_sdk::query_types::AddressInfo;
@@ -485,27 +482,10 @@ impl AppContext {
                         )
                         .await
                         .map_err(|retry_err| {
-                            let logged = self.log_drive_proof_error(retry_err, RequestType::BroadcastStateTransition);
-                            // If the logged variant is ProofError, return it directly;
-                            // otherwise log the reconstructed transition for debugging.
-                            if matches!(logged, TaskError::ProofError { .. }) {
-                                return logged;
-                            }
-                            if let Ok(transition) = IdentityCreateTransition::try_from_identity_with_signer(
-                                identity,
-                                asset_lock_proof,
-                                asset_lock_proof_private_key.inner.as_ref(),
-                                &qualified_identity,
-                                &NativeBlsModule,
-                                0,
-                                self.platform_version(),
-                            ) {
-                                tracing::debug!(
-                                    "Register identity retry failed; reconstructed transition: {:?}",
-                                    transition
-                                );
-                            }
-                            logged
+                            self.log_drive_proof_error(
+                                retry_err,
+                                RequestType::BroadcastStateTransition,
+                            )
                         })
                 } else {
                     Err(self.log_drive_proof_error(e, RequestType::BroadcastStateTransition))

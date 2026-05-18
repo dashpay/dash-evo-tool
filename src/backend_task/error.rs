@@ -24,9 +24,23 @@ const RPC_WALLET_NOT_SPECIFIED: i32 = -19;
 /// App-level error envelope for backend tasks.
 #[derive(Debug, Error)]
 pub enum TaskError {
-    /// SPV subsystem errors.
-    #[error("{}", spv_user_message(.0))]
-    Spv(#[from] crate::spv::SpvError),
+    /// A wallet/identity/DashPay action whose backend is being rewired to the
+    /// upstream `platform-wallet` runtime. Inert until P2 wires the real call.
+    #[error(
+        "This action is being upgraded and is temporarily unavailable. \
+        Please use the previous version of the app to transact, \
+        or wait for the next update."
+    )]
+    WalletBackendNotYetWired,
+
+    /// Single-key wallets are not supported in this version. Their data is
+    /// preserved; HD (recovery-phrase) wallets remain fully functional.
+    #[error(
+        "Single-key wallets are not supported in this version. \
+        Your single-key wallet data is preserved and will work again in a \
+        future update. To manage funds now, use an HD (recovery-phrase) wallet."
+    )]
+    SingleKeyWalletsUnsupported,
 
     /// DashPay domain errors.
     #[error(transparent)]
@@ -690,23 +704,6 @@ pub enum TaskError {
     NoCoreWalletsLoaded,
 
     // ──────────────────────────────────────────────────────────────────────────
-    // SPV operation errors
-    // ──────────────────────────────────────────────────────────────────────────
-    /// The SPV data directory could not be cleared.
-    #[error(
-        "Could not clear SPV data. Please close the application and manually delete the SPV data directory."
-    )]
-    SpvClearDataFailed { detail: String },
-
-    /// The SPV client could not be started.
-    #[error("Could not start the SPV client. Please check your network settings and retry.")]
-    SpvStartFailed { detail: String },
-
-    /// A transaction could not be broadcast via the SPV client.
-    #[error("Could not broadcast the transaction. Please check your connection and retry.")]
-    SpvBroadcastFailed { detail: String },
-
-    // ──────────────────────────────────────────────────────────────────────────
     // UTXO / asset-lock transaction build errors
     // ──────────────────────────────────────────────────────────────────────────
     /// A UTXO reload or removal operation failed.
@@ -1167,31 +1164,6 @@ pub fn shielded_broadcast_error(e: SdkError) -> TaskError {
     }
     TaskError::ShieldedBroadcastFailed {
         source: Box::new(e),
-    }
-}
-
-/// Produce a user-friendly message for SPV subsystem errors.
-///
-/// Inspects the specific `SpvError` variant to give actionable guidance.
-fn spv_user_message(e: &crate::spv::SpvError) -> &'static str {
-    use crate::spv::SpvError;
-    match e {
-        SpvError::LockPoisoned(_) | SpvError::ChannelError(_) => {
-            "An internal error occurred. Please restart the application."
-        }
-        SpvError::ClientNotInitialized | SpvError::NotRunning => {
-            "The wallet sync service is not ready. Please restart the application."
-        }
-        SpvError::NetworkError(_) | SpvError::SyncFailed(_) => {
-            "Could not sync wallet data. Please check your connection and retry."
-        }
-        SpvError::WalletError(_) => {
-            "Could not process wallet data. Please check your wallet and retry."
-        }
-        SpvError::ConfigError(_) => {
-            "Wallet sync is not configured properly. Please check your settings."
-        }
-        SpvError::Other(_) => "Could not sync wallet data. Please retry.",
     }
 }
 

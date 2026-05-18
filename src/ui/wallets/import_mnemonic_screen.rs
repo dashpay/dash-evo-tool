@@ -1,7 +1,5 @@
 use crate::app::AppAction;
-use crate::backend_task::BackendTask;
 use crate::backend_task::BackendTaskSuccessResult;
-use crate::backend_task::core::CoreTask;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::wallet::single_key::SingleKeyWallet;
@@ -482,15 +480,10 @@ impl ScreenLike for ImportMnemonicScreen {
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
-        let mut pending_action = AppAction::None;
+        let pending_action = AppAction::None;
         if self.core_wallets.is_none() && !self.core_wallets_loading {
-            if self.app_context.core_backend_mode() == crate::spv::CoreBackendMode::Spv {
-                self.core_wallets = Some(vec![]);
-            } else {
-                self.core_wallets_loading = true;
-                pending_action =
-                    AppAction::BackendTask(BackendTask::CoreTask(CoreTask::ListCoreWallets));
-            }
+            // Chain sync is SPV-only — there is no Dash Core RPC wallet list.
+            self.core_wallets = Some(vec![]);
         }
 
         let mut action = add_top_panel(

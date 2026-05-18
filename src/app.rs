@@ -13,7 +13,6 @@ use crate::database::Database;
 use crate::logging::initialize_logger;
 use crate::model::feature_gate::FeatureGate;
 use crate::model::settings::Settings;
-use crate::spv::CoreBackendMode;
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
 use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen, ProfileSearchScreen};
@@ -799,8 +798,7 @@ impl AppState {
             screen.change_context(app_context.clone())
         }
 
-        self.connection_status
-            .reset(app_context.core_backend_mode());
+        self.connection_status.reset();
 
         // Reset connection banner tracking so the next frame re-evaluates
         // the new network's state (even if it matches the old state).
@@ -846,13 +844,9 @@ impl AppState {
         }
 
         // Display new banner based on current state
-        let backend_mode = connection_status.backend_mode();
         match current_state {
             OverallConnectionState::Disconnected => {
-                let msg = match backend_mode {
-                    CoreBackendMode::Rpc => "Disconnected — check that Dash Core is running",
-                    CoreBackendMode::Spv => "Disconnected — check your internet connection",
-                };
+                let msg = "Disconnected — check your internet connection";
                 self.connection_banner_handle =
                     Some(MessageBanner::set_global(ctx, msg, MessageType::Error));
             }
@@ -874,10 +868,7 @@ impl AppState {
                 }
             }
             OverallConnectionState::Syncing => {
-                let msg = match backend_mode {
-                    CoreBackendMode::Rpc => "Syncing with Dash Core…",
-                    CoreBackendMode::Spv => "SPV sync in progress…",
-                };
+                let msg = "SPV sync in progress…";
                 self.connection_banner_handle =
                     Some(MessageBanner::set_global(ctx, msg, MessageType::Warning));
             }

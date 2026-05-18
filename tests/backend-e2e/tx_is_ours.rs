@@ -93,11 +93,8 @@ async fn test_spv_transactions_is_ours_flag() {
     .await
     .expect("B should receive funds");
 
-    // Force a reconcile to ensure latest SPV state is reflected
-    app_context
-        .reconcile_spv_wallets()
-        .await
-        .expect("reconcile should succeed");
+    // TODO(P0.5): re-enable in P2 — chain sync is owned by upstream
+    // platform-wallet; reconcile is wired in the WalletBackend rewire.
 
     // Check is_ours on wallet A (sender) — should be true
     {

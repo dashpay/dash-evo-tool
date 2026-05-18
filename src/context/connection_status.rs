@@ -1,10 +1,9 @@
 use crate::app::AppAction;
 use crate::app::TaskResult;
-use crate::backend_task::BackendTask;
 use crate::backend_task::BackendTaskSuccessResult;
-use crate::backend_task::core::{CoreItem, CoreTask};
+use crate::backend_task::core::CoreItem;
 use crate::components::core_zmq_listener::ZMQConnectionEvent;
-use crate::spv::{CoreBackendMode, SpvStatus};
+use crate::model::spv_status::SpvStatus;
 use dash_sdk::dash_spv::sync::{ProgressPercentage, SyncProgress as SpvSyncProgress, SyncState};
 use dash_sdk::dpp::dashcore::{ChainLock, Network};
 use std::sync::Mutex;
@@ -53,7 +52,6 @@ pub struct ConnectionStatus {
     rpc_online: AtomicBool,
     zmq_status: Mutex<ZMQConnectionEvent>,
     spv_status: AtomicU8,
-    backend_mode: AtomicU8,
     disable_zmq: AtomicBool,
     overall_state: AtomicU8,
     // NOTE: Mutex (not RwLock) is intentional — single reader (tooltip hover),
@@ -75,7 +73,6 @@ impl ConnectionStatus {
             rpc_online: AtomicBool::new(false),
             zmq_status: Mutex::new(ZMQConnectionEvent::Disconnected),
             spv_status: AtomicU8::new(SpvStatus::Idle as u8),
-            backend_mode: AtomicU8::new(CoreBackendMode::Spv.as_u8()),
             disable_zmq: AtomicBool::new(false),
             overall_state: AtomicU8::new(OverallConnectionState::Disconnected as u8),
             spv_last_error: Mutex::new(None),
@@ -90,18 +87,13 @@ impl ConnectionStatus {
 
     /// Reset all connection state. Called when switching the active network
     /// so the status reflects the new network from a clean slate.
-    ///
-    /// `backend_mode` should be the new network's current backend mode so that
-    /// `overall_state()` and `tooltip_text()` read the correct mode immediately.
-    pub fn reset(&self, backend_mode: CoreBackendMode) {
+    pub fn reset(&self) {
         self.rpc_online.store(false, Ordering::Relaxed);
         if let Ok(mut status) = self.zmq_status.lock() {
             *status = ZMQConnectionEvent::Disconnected;
         }
         self.spv_status
             .store(SpvStatus::Idle as u8, Ordering::Relaxed);
-        self.backend_mode
-            .store(backend_mode.as_u8(), Ordering::Relaxed);
         self.disable_zmq.store(false, Ordering::Relaxed);
         self.spv_connected_peers.store(0, Ordering::Relaxed);
         *self
@@ -208,14 +200,6 @@ impl ConnectionStatus {
         }
     }
 
-    pub fn backend_mode(&self) -> CoreBackendMode {
-        self.backend_mode.load(Ordering::Relaxed).into()
-    }
-
-    pub fn set_backend_mode(&self, mode: CoreBackendMode) {
-        self.backend_mode.store(mode.as_u8(), Ordering::Relaxed);
-    }
-
     pub fn disable_zmq(&self) -> bool {
         self.disable_zmq.load(Ordering::Relaxed)
     }
@@ -289,124 +273,60 @@ impl ConnectionStatus {
     /// frame (1-4 s cadence) and any transient inconsistency self-corrects on
     /// the next poll.
     pub fn refresh_state(&self) {
-        let backend_mode = self.backend_mode();
-        let disable_zmq = self.disable_zmq();
         let spv_status = self.spv_status();
         let dapi_available = self.dapi_available();
 
-        let state = match backend_mode {
-            CoreBackendMode::Rpc => {
-                // RPC mode: no intermediate syncing state exposed, so red or green only.
-                if self.rpc_online() && (disable_zmq || self.zmq_connected()) && dapi_available {
-                    OverallConnectionState::Synced
-                } else {
-                    OverallConnectionState::Disconnected
-                }
-            }
-            CoreBackendMode::Spv => {
-                if !dapi_available {
-                    OverallConnectionState::Disconnected
-                } else {
-                    let has_peers = self.spv_connected_peers.load(Ordering::Relaxed) > 0;
-                    match spv_status {
-                        SpvStatus::Running if has_peers => OverallConnectionState::Synced,
-                        SpvStatus::Running
-                        | SpvStatus::Starting
-                        | SpvStatus::Syncing
-                        | SpvStatus::Stopping => {
-                            if has_peers {
-                                OverallConnectionState::Syncing
-                            } else {
-                                OverallConnectionState::Connecting
-                            }
-                        }
-                        SpvStatus::Error => OverallConnectionState::Error,
-                        _ => OverallConnectionState::Disconnected,
+        let state = if !dapi_available {
+            OverallConnectionState::Disconnected
+        } else {
+            let has_peers = self.spv_connected_peers.load(Ordering::Relaxed) > 0;
+            match spv_status {
+                SpvStatus::Running if has_peers => OverallConnectionState::Synced,
+                SpvStatus::Running
+                | SpvStatus::Starting
+                | SpvStatus::Syncing
+                | SpvStatus::Stopping => {
+                    if has_peers {
+                        OverallConnectionState::Syncing
+                    } else {
+                        OverallConnectionState::Connecting
                     }
                 }
+                SpvStatus::Error => OverallConnectionState::Error,
+                _ => OverallConnectionState::Disconnected,
             }
         };
         self.overall_state.store(state as u8, Ordering::Relaxed);
     }
 
     /// Build the tooltip string for the connection indicator.
-    ///
-    /// In SPV mode, fetches sync progress from the [`SpvManager`] to display
-    /// a detailed phase summary (e.g. `"SPV: Headers: 12345 / 27000 (45%)"`)
-    /// instead of the bare `"SPV: Syncing"`.
-    // TODO: decouple from AppContext — accept a struct with the needed fields
-    // (spv_manager status, settings) instead of the full context reference.
-    pub fn tooltip_text(&self, app_context: &crate::context::AppContext) -> String {
-        let backend_mode = self.backend_mode();
-        let disable_zmq = self.disable_zmq();
+    pub fn tooltip_text(&self, _app_context: &crate::context::AppContext) -> String {
         let spv_status = self.spv_status();
         let overall = self.overall_state();
         let dapi_status = format!("DAPI: {}", self.dapi_status_label());
-        match backend_mode {
-            CoreBackendMode::Rpc => {
-                let rpc_status = if self.rpc_online() {
-                    "RPC: Connected"
-                } else {
-                    "RPC: Disconnected"
-                };
-                let zmq_status = if disable_zmq {
-                    "ZMQ: Disabled"
-                } else if self.zmq_connected() {
-                    "ZMQ: Connected"
-                } else {
-                    "ZMQ: Disconnected"
-                };
-
-                let header = match overall {
-                    OverallConnectionState::Synced => "Connected to Dash Core Wallet",
-                    // RPC mode doesn't currently produce Connecting/Syncing/Error, but kept for forward-compat.
-                    OverallConnectionState::Connecting | OverallConnectionState::Syncing => {
-                        "Syncing to Dash Core Wallet"
-                    }
-                    OverallConnectionState::Error => "Connection error",
-                    OverallConnectionState::Disconnected if self.rpc_online() => {
-                        "Dash Core connection incomplete"
-                    }
-                    OverallConnectionState::Disconnected => {
-                        "Disconnected from Dash Core Wallet. Click to start it."
-                    }
-                };
-                format!("{header}\n{rpc_status}\n{zmq_status}\n{dapi_status}")
+        let header: std::borrow::Cow<'_, str> = match overall {
+            OverallConnectionState::Synced => "Ready".into(),
+            OverallConnectionState::Connecting => "Connecting...".into(),
+            OverallConnectionState::Syncing => "Syncing".into(),
+            OverallConnectionState::Error => {
+                let detail = self
+                    .spv_last_error()
+                    .unwrap_or_else(|| "unknown error".to_string());
+                format!("SPV sync error: {detail}").into()
             }
-            CoreBackendMode::Spv => {
-                let header: std::borrow::Cow<'_, str> = match overall {
-                    OverallConnectionState::Synced => "Ready".into(),
-                    OverallConnectionState::Connecting => "Connecting...".into(),
-                    OverallConnectionState::Syncing => "Syncing".into(),
-                    OverallConnectionState::Error => {
-                        let detail = self
-                            .spv_last_error()
-                            .unwrap_or_else(|| "unknown error".to_string());
-                        format!("SPV sync error: {detail}").into()
-                    }
-                    OverallConnectionState::Disconnected => "Disconnected".into(),
-                };
-                let spv_label = if spv_status == SpvStatus::Running {
-                    "SPV: Synced".to_string()
-                } else if spv_status == SpvStatus::Error {
-                    "SPV: Error".to_string()
-                } else {
-                    app_context
-                        .spv_manager()
-                        .status()
-                        .sync_progress
-                        .as_ref()
-                        .map(|p| format!("SPV: {}", spv_phase_summary(p)))
-                        .unwrap_or_else(|| format!("SPV: {:?}", spv_status))
-                };
-                let degraded_warning = if self.spv_peer_degraded() {
-                    "\nHaving trouble finding peers. Check your connection."
-                } else {
-                    ""
-                };
-                format!("{header}\n{spv_label}{degraded_warning}\n{dapi_status}")
-            }
-        }
+            OverallConnectionState::Disconnected => "Disconnected".into(),
+        };
+        let spv_label = match spv_status {
+            SpvStatus::Running => "SPV: Synced".to_string(),
+            SpvStatus::Error => "SPV: Error".to_string(),
+            other => format!("SPV: {other:?}"),
+        };
+        let degraded_warning = if self.spv_peer_degraded() {
+            "\nHaving trouble finding peers. Check your connection."
+        } else {
+            ""
+        };
+        format!("{header}\n{spv_label}{degraded_warning}\n{dapi_status}")
     }
 
     pub fn update_from_chainlocks(
@@ -481,40 +401,15 @@ impl ConnectionStatus {
         }
         *last_update = now;
 
-        self.refresh_zmq_and_spv(app_context);
-        // SPV mode does not use RPC chain lock polling.
-        if self.backend_mode() == CoreBackendMode::Spv {
-            return AppAction::None;
-        }
-        AppAction::BackendTask(BackendTask::CoreTask(CoreTask::GetBestChainLocks))
+        self.refresh_dapi(app_context);
+        // SPV status is push-based; no RPC chain lock polling.
+        AppAction::None
     }
 
-    fn refresh_zmq_and_spv(&self, app_context: &crate::context::AppContext) {
-        // Get current backend mode
-        let backend_mode = app_context.core_backend_mode();
-        self.set_backend_mode(backend_mode);
-
-        match backend_mode {
-            CoreBackendMode::Spv => {
-                // SPV status is push-based: SpvManager event handlers call
-                // set_spv_status / set_spv_connected_peers / set_spv_last_error
-                // directly, so no polling is needed here.
-            }
-            CoreBackendMode::Rpc => {
-                // Update ZMQ status if there's a new event
-                let disable_zmq = app_context
-                    .get_settings()
-                    .ok()
-                    .flatten()
-                    .map(|s| s.disable_zmq)
-                    .unwrap_or(false);
-                self.set_disable_zmq(disable_zmq);
-
-                if let Ok(event) = app_context.rx_zmq_status.try_recv() {
-                    self.set_zmq_status(event);
-                }
-            }
-        }
+    fn refresh_dapi(&self, app_context: &crate::context::AppContext) {
+        // SPV status is push-based: chain sync (owned by upstream
+        // platform-wallet) feeds set_spv_status / set_spv_connected_peers /
+        // set_spv_last_error, so no polling is needed here.
 
         // Update DAPI endpoint status
         {
@@ -636,7 +531,7 @@ mod tests {
         assert!(status.spv_peer_degraded());
 
         // After reset the timestamp should be cleared.
-        status.reset(CoreBackendMode::Spv);
+        status.reset();
         assert!(!status.spv_peer_degraded());
     }
 }

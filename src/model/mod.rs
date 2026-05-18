@@ -11,4 +11,5 @@ pub mod qualified_contract;
 pub mod qualified_identity;
 pub mod secret;
 pub mod settings;
+pub mod spv_status;
 pub mod wallet;

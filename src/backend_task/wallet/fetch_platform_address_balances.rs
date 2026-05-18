@@ -88,11 +88,10 @@ impl AppContext {
         };
 
         tracing::info!(
-            "Sync complete: duration={:?}, found={}, absent={}, highest_index={:?}, checkpoint={}, new_sync_height={}, new_sync_timestamp={}",
+            "Sync complete: duration={:?}, found={}, absent={}, checkpoint={}, new_sync_height={}, new_sync_timestamp={}",
             start_time.elapsed(),
             result.found.len(),
             result.absent.len(),
-            result.highest_found_index,
             result.checkpoint_height,
             result.new_sync_height,
             result.new_sync_timestamp,

@@ -12,7 +12,6 @@ use crate::app_dir::core_cookie_path;
 use crate::backend_task::error::{TaskError, is_rpc_connection_error};
 use crate::components::core_zmq_listener::ZMQConnectionEvent;
 use crate::config::{Config, NetworkConfig};
-use crate::context_provider::Provider as RpcProvider;
 use crate::context_provider_spv::SpvProvider;
 use crate::database::Database;
 use crate::model::feature_gate::FeatureGate;
@@ -22,14 +21,13 @@ use crate::model::proof_log_item::RequestType;
 use crate::model::wallet::single_key::{SingleKeyHash, SingleKeyWallet};
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::sdk_wrapper::initialize_sdk;
-use crate::spv::{CoreBackendMode, SpvManager};
 use crate::utils::tasks::TaskManager;
 use arc_swap::ArcSwap;
 use connection_status::ConnectionStatus;
 use crossbeam_channel::{Receiver, Sender};
 use dash_sdk::Sdk;
 use dash_sdk::dapi_client::AddressList;
-use dash_sdk::dashcore_rpc::{Auth, Client, RpcApi};
+use dash_sdk::dashcore_rpc::{Auth, Client};
 use dash_sdk::dpp::dashcore::{Address, Network, Txid};
 #[cfg(any(test, feature = "testing"))]
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
@@ -46,7 +44,7 @@ use egui::Context;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::str::FromStr as _;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
 
 use crate::model::settings::Settings;
@@ -66,10 +64,13 @@ pub struct AppContext {
     developer_mode: AtomicBool,
     pub(crate) db: Arc<Database>,
     pub(crate) sdk: ArcSwap<Sdk>,
-    // Context providers for SDK, so we can switch when backend mode changes
+    // SDK context provider (quorum keys via DAPI). Chain sync is SPV-only,
+    // owned by upstream platform-wallet.
     spv_context_provider: RwLock<SpvProvider>,
-    rpc_context_provider: RwLock<RpcProvider>,
     pub(crate) config: Arc<RwLock<NetworkConfig>>,
+    // TODO(P0.5): ZMQ listener usage is audited in P4 (Decision #3); the
+    // receiver is retained until that audit decides its fate.
+    #[allow(dead_code)]
     pub(crate) rx_zmq_status: Receiver<ZMQConnectionEvent>,
     pub(crate) sx_zmq_status: Sender<ZMQConnectionEvent>,
     pub(crate) dpns_contract: Arc<DataContract>,
@@ -94,8 +95,6 @@ pub struct AppContext {
     cached_settings: RwLock<Option<Settings>>,
     // subtasks started by the app context, used for graceful shutdown
     pub(crate) subtasks: Arc<TaskManager>,
-    pub(crate) spv_manager: Arc<SpvManager>,
-    core_backend_mode: AtomicU8,
     /// Tracks the connection status to currently active network
     pub(crate) connection_status: Arc<ConnectionStatus>,
     /// Pending wallet selection - set after creating/importing a wallet
@@ -146,18 +145,12 @@ impl AppContext {
         let config_lock = Arc::new(RwLock::new(network_config.clone()));
         let (sx_zmq_status, rx_zmq_status) = crossbeam_channel::unbounded();
 
-        // Create both providers; bind to app context later (post construction) due to circularity
+        // Create the SDK context provider; bind to app context later
+        // (post construction) due to circularity.
         let spv_provider = match SpvProvider::new(db.clone(), network) {
             Ok(p) => p,
             Err(e) => {
                 tracing::error!(?network, "Failed to initialize SPV provider: {e}");
-                return None;
-            }
-        };
-        let rpc_provider = match RpcProvider::new(db.clone(), network, &network_config) {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::error!(?network, "Failed to initialize RPC provider: {e}");
                 return None;
             }
         };
@@ -292,37 +285,6 @@ impl AppContext {
             false => AtomicBool::new(true), // Animations are enabled by default
         };
 
-        let spv_manager = match SpvManager::new(
-            &data_dir,
-            network,
-            Arc::clone(&config_lock),
-            subtasks.clone(),
-        ) {
-            Ok(manager) => manager,
-            Err(err) => {
-                tracing::error!(?err, ?network, "Failed to initialize SPV manager");
-                return None;
-            }
-        };
-
-        // Load the use_local_spv_node setting and apply to SPV manager
-        let use_local_spv_node = db.get_use_local_spv_node().unwrap_or(false);
-        spv_manager.set_use_local_node(use_local_spv_node);
-
-        // Wire up push-based SPV status updates to ConnectionStatus
-        spv_manager.set_connection_status(Arc::clone(&connection_status));
-
-        // Load the core backend mode from settings. The DB column default is
-        // SPV (=1), and the v34 migration pins every existing user who does
-        // not have a configured local Dash Core node onto SPV. Developer mode
-        // is a visibility toggle — it does not override the persisted choice.
-        let saved_core_backend_mode = db
-            .get_settings()
-            .ok()
-            .flatten()
-            .map(|s| s.7) // core_backend_mode is the 8th element (index 7)
-            .unwrap_or(CoreBackendMode::Spv.as_u8());
-
         // Load saved wallet selection, validating that the wallets still exist
         let (saved_wallet_hash, saved_single_key_hash) =
             db.get_selected_wallet_hashes().unwrap_or((None, None));
@@ -339,7 +301,6 @@ impl AppContext {
             db,
             sdk: ArcSwap::from_pointee(sdk),
             spv_context_provider: spv_provider.into(),
-            rpc_context_provider: rpc_provider.into(),
             config: config_lock,
             sx_zmq_status,
             rx_zmq_status,
@@ -357,8 +318,6 @@ impl AppContext {
             animate,
             cached_settings: RwLock::new(None),
             subtasks,
-            spv_manager,
-            core_backend_mode: AtomicU8::new(saved_core_backend_mode),
             connection_status,
             pending_wallet_selection: Mutex::new(None),
             selected_wallet_hash: Mutex::new(selected_wallet_hash),
@@ -372,10 +331,9 @@ impl AppContext {
         };
 
         let app_context = Arc::new(app_context);
-        // Bind providers to the newly created app_context. The saved mode in
-        // `settings.core_backend_mode` is the single source of truth: we bind
-        // SPV first to ensure a provider is always registered, then rebind to
-        // RPC only if that is the saved choice.
+        // Bind the SDK context provider. Chain sync is SPV-only (owned by
+        // upstream platform-wallet); the SPV provider is the sole SDK
+        // quorum/context provider.
         if let Err(e) = app_context
             .spv_context_provider
             .read()
@@ -383,18 +341,6 @@ impl AppContext {
             .and_then(|provider| provider.bind_app_context(app_context.clone()))
         {
             tracing::error!("Failed to bind SPV provider: {}", e);
-            return None;
-        }
-
-        // If the saved mode is RPC, rebind the RPC provider (overrides SPV registration above).
-        if app_context.core_backend_mode() == CoreBackendMode::Rpc
-            && let Err(e) = app_context
-                .rpc_context_provider
-                .read()
-                .map_err(|e| e.to_string())
-                .and_then(|provider| provider.bind_app_context(app_context.clone()))
-        {
-            tracing::error!("Failed to bind RPC provider: {}", e);
             return None;
         }
 
@@ -424,85 +370,12 @@ impl AppContext {
         self.network
     }
 
-    pub fn core_backend_mode(&self) -> CoreBackendMode {
-        self.core_backend_mode.load(Ordering::Relaxed).into()
-    }
-
     pub fn connection_status(&self) -> &ConnectionStatus {
         &self.connection_status
     }
 
     pub fn egui_ctx(&self) -> &egui::Context {
         &self.egui_ctx
-    }
-
-    pub fn set_core_backend_mode(self: &Arc<Self>, mode: CoreBackendMode) {
-        self.set_core_backend_mode_inner(mode, true);
-    }
-
-    /// Switch the backend mode in-memory only, without persisting to the DB.
-    /// Used by headless (MCP/CLI) mode to force SPV without overwriting the
-    /// GUI's saved preference.
-    pub fn set_core_backend_mode_volatile(self: &Arc<Self>, mode: CoreBackendMode) {
-        self.set_core_backend_mode_inner(mode, false);
-    }
-
-    fn set_core_backend_mode_inner(self: &Arc<Self>, mode: CoreBackendMode, persist: bool) {
-        // TODO: mid-session mode switches here do not manage ZMQ listener
-        // lifecycle.
-        //   - RPC → SPV: any listener spawned at startup or on the last
-        //     network switch keeps running, burning a socket + retry loop
-        //     against a Core node that is no longer in use (pre-existing
-        //     bug, predates the SPV-default flip).
-        //   - SPV → RPC: no listener is spawned here, so Expert users
-        //     toggling to Local Dash Core node mid-session lose ZMQ
-        //     real-time events until restart or network switch (the
-        //     FeatureGate::RpcBackend gate in spawn_zmq_listener blocks
-        //     the startup spawn while in SPV mode).
-        // Fixing this requires an AppContext → AppState signal so the
-        // listener map (owned by AppState) can be torn down or spawned
-        // in response to mode changes. Cross-module refactor, deliberately
-        // scoped out of PR #836.
-        // Ref: CR-1 on dashpay/dash-evo-tool#836.
-
-        // Switch SDK context provider to match the selected backend.
-        // Only store/persist the mode after binding succeeds — otherwise the app
-        // would report the new mode while still wired to the old provider.
-        #[allow(clippy::needless_return)]
-        match mode {
-            CoreBackendMode::Spv => {
-                if let Err(e) = self
-                    .spv_context_provider
-                    .read()
-                    .map_err(|e| e.to_string())
-                    .and_then(|provider| provider.bind_app_context(Arc::clone(self)))
-                {
-                    tracing::error!("Failed to bind SPV provider: {}", e);
-                    return;
-                }
-            }
-            CoreBackendMode::Rpc => {
-                if let Err(e) = self
-                    .rpc_context_provider
-                    .read()
-                    .map_err(|e| e.to_string())
-                    .and_then(|provider| provider.bind_app_context(Arc::clone(self)))
-                {
-                    tracing::error!("Failed to bind RPC provider: {}", e);
-                    return;
-                }
-            }
-        }
-
-        self.core_backend_mode
-            .store(mode.as_u8(), Ordering::Relaxed);
-
-        if persist {
-            let _guard = self.invalidate_settings_cache();
-            if let Err(e) = self.db.update_core_backend_mode(mode.as_u8()) {
-                tracing::error!("Failed to persist core backend mode: {}", e);
-            }
-        }
     }
 
     /// Get the cached fee multiplier permille (1000 = 1x, 2000 = 2x)
@@ -612,23 +485,9 @@ impl AppContext {
             }
         };
 
-        let new_sdk = match self.core_backend_mode() {
-            CoreBackendMode::Spv => {
-                let provider = self.spv_context_provider.read()?.clone();
-                initialize_sdk(address_list, self.network, provider)
-                    .map_err(|e| TaskError::SdkInitializationFailed { detail: e })?
-            }
-            CoreBackendMode::Rpc => {
-                let rpc_provider = RpcProvider::new(self.db.clone(), self.network, &cfg)
-                    .map_err(|e| TaskError::RpcProviderCreationFailed { detail: e })?;
-                {
-                    let mut guard = self.rpc_context_provider.write()?;
-                    *guard = rpc_provider.clone();
-                }
-                initialize_sdk(address_list, self.network, rpc_provider)
-                    .map_err(|e| TaskError::SdkInitializationFailed { detail: e })?
-            }
-        };
+        let provider = self.spv_context_provider.read()?.clone();
+        let new_sdk = initialize_sdk(address_list, self.network, provider)
+            .map_err(|e| TaskError::SdkInitializationFailed { detail: e })?;
 
         // 4. Swap in the new SDK and client
         {
@@ -637,19 +496,12 @@ impl AppContext {
         }
         self.sdk.store(Arc::new(new_sdk));
 
-        // Rebind providers to ensure they hold the new AppContext reference.
-        // bind_app_context also registers the provider with the SDK, so the
-        // active provider (last bound) wins.
+        // Rebind the provider to hold the new AppContext reference.
+        // bind_app_context also registers the provider with the SDK.
         self.spv_context_provider
             .read()?
             .bind_app_context(self.clone())
             .map_err(|e| TaskError::SdkInitializationFailed { detail: e })?;
-        if self.core_backend_mode() == CoreBackendMode::Rpc {
-            self.rpc_context_provider
-                .read()?
-                .bind_app_context(self.clone())
-                .map_err(|e| TaskError::SdkInitializationFailed { detail: e })?;
-        }
 
         Ok(())
     }
@@ -681,77 +533,28 @@ impl AppContext {
         .map_err(|e| TaskError::CoreRpc { source: e })
     }
 
-    /// Build an RPC client targeting a specific Core wallet by name.
-    /// Returns the base (no-wallet) client if `wallet_name` is `None`.
-    pub fn core_client_for_wallet(&self, wallet_name: Option<&str>) -> Result<Client, TaskError> {
-        let cfg = self.config.read().map_err(|_| TaskError::LockPoisoned {
-            resource: "NetworkConfig",
-        })?;
-        let base = format!("http://{}:{}", cfg.rpc_host(), cfg.rpc_port(self.network));
-        let url = match wallet_name {
-            Some(name) if !name.is_empty() => {
-                if name.contains("..") {
-                    return Err(TaskError::InvalidCoreWalletName {
-                        name: name.to_string(),
-                    });
-                }
-                let encoded = urlencoding::encode(name);
-                format!("{}/wallet/{}", base, encoded)
-            }
-            _ => base,
-        };
-        Self::create_core_rpc_client(&url, self.network, &cfg.devnet_name, &cfg)
-    }
-
-    /// Import an address into the correct Core wallet if it's not already known.
-    /// Uses `core_wallet_name` to target the right wallet on multi-wallet nodes.
-    /// No-op if the address is already watched/mine.
+    /// Ensure an address is tracked for incoming funds.
     ///
-    /// In SPV mode this is a no-op: there is no Dash Core node to import into.
-    /// HD-derived addresses are tracked by the SPV wallet manager watching the
-    /// BIP44 account derived from the same xprv — `Wallet::register_address`
-    /// records them in wallet state (`known_addresses`) but does not update the
-    /// SPV bloom filter directly. Incoming UTXOs for these addresses are
-    /// populated via the SPV reconciliation path (`reconcile_spv_wallets()`),
-    /// which is what downstream checks such as
-    /// `capture_qr_funding_utxo_if_available` observe.
+    /// No-op: chain sync is SPV-only and owned by upstream `platform-wallet`,
+    /// which watches the BIP44 account derived from the wallet seed. There is
+    /// no Dash Core node to import addresses into.
     pub fn ensure_address_imported(
         &self,
-        address: &Address,
-        core_wallet_name: Option<&str>,
-        label: Option<&str>,
+        _address: &Address,
+        _core_wallet_name: Option<&str>,
+        _label: Option<&str>,
     ) -> Result<(), TaskError> {
-        if self.core_backend_mode() != CoreBackendMode::Rpc {
-            return Ok(());
-        }
-        let client = self.core_client_for_wallet(core_wallet_name)?;
-        let info = client
-            .get_address_info(address)
-            .map_err(|e| self.rpc_error_with_url(e))?;
-        if !(info.is_watchonly || info.is_mine) {
-            client
-                .import_address(address, label, Some(false))
-                .map_err(|e| self.rpc_error_with_url(e))?;
-        }
         Ok(())
     }
 
-    /// Import address into Core, ignoring errors. For best-effort registration.
-    ///
-    /// No-ops in SPV mode — mirroring [`Self::ensure_address_imported`] — because there is no
-    /// RPC client to talk to and every call would fail silently, wasting resources.
+    /// Best-effort address registration. No-op for the same reason as
+    /// [`Self::ensure_address_imported`].
     pub fn try_import_address(
         &self,
-        address: &Address,
-        core_wallet_name: Option<&str>,
-        label: Option<&str>,
+        _address: &Address,
+        _core_wallet_name: Option<&str>,
+        _label: Option<&str>,
     ) {
-        if self.core_backend_mode() != CoreBackendMode::Rpc {
-            return;
-        }
-        if let Ok(client) = self.core_client_for_wallet(core_wallet_name) {
-            let _ = client.import_address(address, label, Some(false));
-        }
     }
 
     /// Convert an RPC error to `TaskError`, enriching connection failures with
@@ -770,49 +573,6 @@ impl AppContext {
             }
         } else {
             TaskError::from(e)
-        }
-    }
-
-    /// List wallets currently loaded in Dash Core.
-    pub fn list_core_wallets(&self) -> Result<Vec<String>, TaskError> {
-        let client = self.core_client_for_wallet(None)?;
-        client
-            .list_wallets()
-            .map_err(|e| self.rpc_error_with_url(e))
-    }
-
-    /// Try to detect which loaded Core wallet owns the given address.
-    ///
-    /// Returns `Ok(Some(name))` if exactly one wallet recognizes it,
-    /// `Ok(None)` if ambiguous (0 or >1 matches).
-    pub fn try_detect_core_wallet_for_address(
-        &self,
-        address: &Address,
-    ) -> Result<Option<String>, TaskError> {
-        let core_wallets = self.list_core_wallets()?;
-        if core_wallets.is_empty() {
-            return Err(TaskError::NoCoreWalletsLoaded);
-        }
-        if core_wallets.len() == 1 {
-            return Ok(Some(core_wallets.into_iter().next().unwrap()));
-        }
-        // Multiple wallets — check which one recognizes the address
-        let mut matches = Vec::new();
-        for wallet_name in &core_wallets {
-            let client = self.core_client_for_wallet(Some(wallet_name))?;
-            match client.get_address_info(address) {
-                Ok(info) if info.is_mine || info.is_watchonly => {
-                    matches.push(wallet_name.clone());
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    tracing::debug!(?e, wallet_name, "get_address_info failed");
-                }
-            }
-        }
-        match matches.len() {
-            1 => Ok(Some(matches.into_iter().next().unwrap())),
-            _ => Ok(None), // 0 or >1 matches — ambiguous
         }
     }
 
@@ -895,8 +655,6 @@ pub(crate) const fn default_platform_version(network: &Network) -> &'static Plat
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn wallet_name_with_spaces_is_url_encoded() {
         let base = "http://127.0.0.1:9998";
@@ -907,12 +665,9 @@ mod tests {
         assert!(!url.contains(' '));
     }
 
-    /// A fresh data directory (no pre-existing settings) must resolve to the
-    /// SPV backend — both because the `settings.core_backend_mode` column
-    /// defaults to 1 (SPV) and because `AppContext::new()`'s `unwrap_or`
-    /// fallback now uses SPV. This is the non-network-dependent replacement
-    /// for a full `AppContext::new()` integration test: it exercises the same
-    /// DB-column/unwrap pathway that drives the stored mode at startup.
+    /// A fresh data directory (no pre-existing settings) must persist the
+    /// SPV backend marker (`settings.core_backend_mode` column defaults to 1).
+    /// The column is retained until the P3 migration; chain sync is SPV-only.
     #[test]
     fn fresh_db_resolves_to_spv_backend_mode() {
         let tmp = tempfile::tempdir().unwrap();
@@ -920,25 +675,11 @@ mod tests {
         let db = crate::database::Database::new(&db_file_path).unwrap();
         db.initialize(&db_file_path).unwrap();
 
-        // Column default path: a freshly initialized DB reports SPV (=1).
         let settings = db
             .get_settings()
             .expect("settings read")
             .expect("settings row present");
-        // Settings tuple: index 7 is core_backend_mode (see AppContext::new).
-        assert_eq!(
-            settings.7,
-            CoreBackendMode::Spv.as_u8(),
-            "fresh DB should default to SPV"
-        );
-
-        // Default-fallback path: if settings were missing/unreadable, the
-        // fallback used by `AppContext::new()` must also resolve to SPV. Guard
-        // against silent drift of both the enum default and the as_u8 mapping.
-        assert_eq!(CoreBackendMode::default(), CoreBackendMode::Spv);
-        assert_eq!(
-            CoreBackendMode::from(CoreBackendMode::Spv.as_u8()),
-            CoreBackendMode::Spv
-        );
+        // Settings tuple: index 7 is the legacy core_backend_mode column.
+        assert_eq!(settings.7, 1, "fresh DB should default to SPV (=1)");
     }
 }

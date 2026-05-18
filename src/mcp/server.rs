@@ -2,7 +2,6 @@
 
 use crate::context::AppContext;
 use crate::mcp::tools;
-use crate::spv::CoreBackendMode;
 use rmcp::handler::server::tool::{ToolCallContext, ToolRouter};
 use rmcp::model::*;
 use rmcp::{ErrorData as McpError, RoleServer, ServerHandler, service::RequestContext};
@@ -255,16 +254,8 @@ pub async fn init_app_context() -> Result<Arc<AppContext>, McpError> {
         )
     })?;
 
-    // Headless mode has no Dash Core RPC credentials — force SPV backend so
-    // wallet tools work without a local node. This is defence-in-depth even
-    // after the v34 migration: a user could point `det_cli` at a GUI data dir
-    // where someone explicitly chose RPC. We flip the in-memory mode only
-    // (volatile) so the GUI's saved preference is never overwritten.
-    if app_context.core_backend_mode() != CoreBackendMode::Spv {
-        tracing::info!("Headless mode: forcing SPV backend (was RPC)");
-        app_context.set_core_backend_mode_volatile(CoreBackendMode::Spv);
-    }
-
+    // Chain sync is SPV-only (owned by upstream platform-wallet); no backend
+    // mode to force.
     if let Err(e) = app_context.start_spv() {
         tracing::warn!("SPV start failed (wallet tools may not work): {e}");
     } else {

@@ -1,9 +1,7 @@
 use super::AppContext;
 use crate::backend_task::error::TaskError;
 use crate::model::wallet::{Wallet, WalletSeedHash};
-use crate::spv::CoreBackendMode;
 use dash_sdk::Sdk;
-use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayload::AssetLockPayloadType;
 use dash_sdk::dpp::dashcore::{Address, InstantLock, OutPoint, Transaction, TxOut, Txid};
@@ -14,25 +12,15 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, RwLock};
 
 impl AppContext {
-    /// Broadcast a raw transaction via Core RPC or SPV depending on backend mode.
+    /// Broadcast a raw transaction.
+    ///
+    /// Inert at the P0.5 compile floor: chain broadcast is owned by upstream
+    /// `platform-wallet`'s `SpvRuntime`. P2 wires this to the upstream runtime.
     pub(crate) async fn broadcast_raw_transaction(
         &self,
-        tx: &Transaction,
+        _tx: &Transaction,
     ) -> Result<Txid, TaskError> {
-        match self.core_backend_mode() {
-            CoreBackendMode::Rpc => self
-                .core_client
-                .read()?
-                .send_raw_transaction(tx)
-                .map_err(TaskError::from),
-            CoreBackendMode::Spv => {
-                self.spv_manager
-                    .broadcast_transaction(tx)
-                    .await
-                    .map_err(|e| TaskError::SpvBroadcastFailed { detail: e })?;
-                Ok(tx.txid())
-            }
-        }
+        Err(TaskError::WalletBackendNotYetWired)
     }
 
     /// Wait for an asset lock proof (InstantLock or ChainLock) for the given transaction.
@@ -46,10 +34,7 @@ impl AppContext {
     ) -> Result<AssetLockProof, TaskError> {
         use tokio::time::Duration;
 
-        let timeout_duration = match self.core_backend_mode() {
-            CoreBackendMode::Spv => Duration::from_secs(300),
-            CoreBackendMode::Rpc => Duration::from_secs(120),
-        };
+        let timeout_duration = Duration::from_secs(300);
 
         match tokio::time::timeout(timeout_duration, async {
             loop {

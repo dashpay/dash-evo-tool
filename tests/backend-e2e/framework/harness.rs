@@ -24,7 +24,6 @@ use dash_evo_tool::context::AppContext;
 use dash_evo_tool::context::connection_status::ConnectionStatus;
 use dash_evo_tool::database::test_helpers::create_database_at_path;
 use dash_evo_tool::model::wallet::WalletSeedHash;
-use dash_evo_tool::spv::CoreBackendMode;
 use dash_evo_tool::utils::tasks::TaskManager;
 use dash_sdk::dpp::dashcore::Network;
 use std::path::PathBuf;
@@ -205,8 +204,8 @@ impl BackendTestContext {
             }
         }
 
-        // Switch to SPV mode and start
-        app_context.set_core_backend_mode(CoreBackendMode::Spv);
+        // Chain sync is SPV-only (owned by upstream platform-wallet); no
+        // backend mode to set. TODO(P0.5): re-enable real start in P2.
         app_context.start_spv().expect("Failed to start SPV");
 
         // Stash the cancellation token so the panic hook can stop SPV if

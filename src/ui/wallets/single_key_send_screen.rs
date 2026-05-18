@@ -6,7 +6,6 @@ use crate::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest
 use crate::context::AppContext;
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::wallet::single_key::SingleKeyWallet;
-use crate::spv::CoreBackendMode;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::left_panel::add_left_panel;
@@ -818,7 +817,8 @@ impl SingleKeyWalletSendScreen {
                 .selected_wallet
                 .as_ref()
                 .is_some_and(|w| w.read().map(|g| g.is_open()).unwrap_or(false));
-            let is_rpc_mode = self.app_context.core_backend_mode() == CoreBackendMode::Rpc;
+            // Single-key wallets are unsupported in this version.
+            let is_rpc_mode = false;
 
             let button_enabled = wallet_is_open && !self.sending && is_rpc_mode;
             // Only force white label text when the button is actually clickable;
@@ -874,7 +874,8 @@ impl ScreenLike for SingleKeyWalletSendScreen {
             RootScreenType::RootScreenWalletsBalances,
         );
 
-        let is_rpc_mode = self.app_context.core_backend_mode() == CoreBackendMode::Rpc;
+        // Single-key wallets are unsupported in this version.
+        let is_rpc_mode = false;
 
         action |= island_central_panel(ctx, |ui| {
             let mut inner_action = AppAction::None;

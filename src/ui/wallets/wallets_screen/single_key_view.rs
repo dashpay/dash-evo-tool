@@ -1,5 +1,4 @@
 use crate::app::AppAction;
-use crate::spv::CoreBackendMode;
 use crate::ui::components::component_trait::Component;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenType};
@@ -40,7 +39,8 @@ impl WalletsBalancesScreen {
         drop(wallet);
 
         let text_color = DashColors::text_primary(dark_mode);
-        let is_rpc_mode = self.app_context.core_backend_mode() == CoreBackendMode::Rpc;
+        // Single-key wallets are unsupported in this version.
+        let is_rpc_mode = false;
 
         Frame::group(ui.style())
             .fill(DashColors::surface(dark_mode))

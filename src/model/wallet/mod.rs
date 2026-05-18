@@ -17,7 +17,7 @@ use dash_sdk::dpp::key_wallet::bip32::{
 };
 use dash_sdk::dpp::key_wallet::psbt::serialize::Serialize;
 use dash_sdk::dpp::prelude::AddressNonce;
-use dash_sdk::platform::address_sync::{AddressFunds, AddressIndex, AddressKey, AddressProvider};
+use dash_sdk::platform::address_sync::{AddressFunds, AddressIndex, AddressProvider};
 
 use dash_sdk::dpp::dashcore::secp256k1::{Message, Secp256k1};
 use dash_sdk::dpp::dashcore::sighash::SighashCache;
@@ -1199,10 +1199,6 @@ impl Wallet {
             },
         );
 
-        if app_context.core_backend_mode() == crate::spv::CoreBackendMode::Rpc {
-            app_context.try_import_address(&address, self.core_wallet_name.as_deref(), None);
-        }
-
         tracing::trace!(
             address = ?&address,
             network = &address.network().to_string(),
@@ -2295,8 +2291,9 @@ impl Wallet {
 
 /// Signer implementation for Platform addresses
 /// Allows the wallet to sign transactions that spend from Platform addresses
+#[async_trait]
 impl Signer<PlatformAddress> for Wallet {
-    fn sign(
+    async fn sign(
         &self,
         platform_address: &PlatformAddress,
         data: &[u8],
@@ -2329,7 +2326,7 @@ impl Signer<PlatformAddress> for Wallet {
         Ok(BinaryData::new(signature.to_vec()))
     }
 
-    fn sign_create_witness(
+    async fn sign_create_witness(
         &self,
         platform_address: &PlatformAddress,
         data: &[u8],
@@ -2402,8 +2399,8 @@ pub struct WalletAddressProvider {
     account: u32,
     /// Key class for Platform payment addresses (default 0)
     key_class: u32,
-    /// Map of index to (AddressKey, CoreAddress) for pending addresses
-    pending: BTreeMap<AddressIndex, (AddressKey, Address)>,
+    /// Map of index to (PlatformAddress, CoreAddress) for pending addresses
+    pending: BTreeMap<AddressIndex, (PlatformAddress, Address)>,
     /// Set of indices that have been resolved (found or absent)
     resolved: BTreeSet<AddressIndex>,
     /// Highest index found with a non-zero balance
@@ -2411,7 +2408,7 @@ pub struct WalletAddressProvider {
     /// Results: address -> balance for addresses found with balance
     found_balances: BTreeMap<Address, AddressFunds>,
     /// Known balances from previous sync for incremental catch-up
-    stored_balances: Vec<(AddressIndex, AddressKey, AddressFunds)>,
+    stored_balances: Vec<(AddressIndex, PlatformAddress, AddressFunds)>,
     /// Last sync height from previous sync for incremental catch-up
     stored_sync_height: u64,
 }
@@ -2578,7 +2575,7 @@ impl WalletAddressProvider {
                 if &canonical == core_addr {
                     self.stored_balances.push((
                         *index,
-                        key.clone(),
+                        *key,
                         AddressFunds {
                             balance: info.balance,
                             nonce: info.nonce,
@@ -2596,7 +2593,7 @@ impl WalletAddressProvider {
     fn derive_address_at_index(
         &self,
         index: AddressIndex,
-    ) -> Result<(AddressKey, Address), String> {
+    ) -> Result<(PlatformAddress, Address), String> {
         let derivation_path = DerivationPath::platform_payment_path(
             self.network,
             self.account,
@@ -2615,12 +2612,11 @@ impl WalletAddressProvider {
         // Create P2PKH address
         let address = Address::p2pkh(&public_key, self.network);
 
-        // Convert to PlatformAddress to get the key
+        // Convert to PlatformAddress (the SDK address-sync key type)
         let platform_addr = PlatformAddress::try_from(address.clone())
             .map_err(|e| format!("Failed to convert to PlatformAddress: {}", e))?;
-        let key = platform_addr.to_bytes();
 
-        Ok((key, address))
+        Ok((platform_addr, address))
     }
 
     /// Ensure we have addresses derived up to and including the given index.
@@ -2647,19 +2643,26 @@ impl WalletAddressProvider {
 
 #[async_trait]
 impl AddressProvider for WalletAddressProvider {
+    type Tag = AddressIndex;
+    type Address = PlatformAddress;
+
     fn gap_limit(&self) -> AddressIndex {
         self.gap_limit
     }
 
-    fn pending_addresses(&self) -> Vec<(AddressIndex, AddressKey)> {
+    fn pending_addresses(&self) -> impl Iterator<Item = (AddressIndex, PlatformAddress)> + '_ {
         self.pending
             .iter()
             .filter(|(index, _)| !self.resolved.contains(index))
-            .map(|(index, (key, _))| (*index, key.clone()))
-            .collect()
+            .map(|(index, (platform_addr, _))| (*index, *platform_addr))
     }
 
-    async fn on_address_found(&mut self, index: AddressIndex, _key: &[u8], funds: AddressFunds) {
+    async fn on_address_found(
+        &mut self,
+        index: AddressIndex,
+        _address: &PlatformAddress,
+        funds: AddressFunds,
+    ) {
         self.resolved.insert(index);
 
         // Log what the SDK is returning
@@ -2700,7 +2703,7 @@ impl AddressProvider for WalletAddressProvider {
         }
     }
 
-    async fn on_address_absent(&mut self, index: AddressIndex, _key: &[u8]) {
+    async fn on_address_absent(&mut self, index: AddressIndex, _address: &PlatformAddress) {
         self.resolved.insert(index);
     }
 
@@ -2710,12 +2713,10 @@ impl AddressProvider for WalletAddressProvider {
             .any(|index| !self.resolved.contains(index))
     }
 
-    fn highest_found_index(&self) -> Option<AddressIndex> {
-        self.highest_found
-    }
-
-    fn current_balances(&self) -> Vec<(AddressIndex, AddressKey, AddressFunds)> {
-        self.stored_balances.clone()
+    fn current_balances(
+        &self,
+    ) -> impl Iterator<Item = (AddressIndex, PlatformAddress, AddressFunds)> + '_ {
+        self.stored_balances.iter().copied()
     }
 
     fn last_sync_height(&self) -> u64 {

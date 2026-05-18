@@ -65,12 +65,19 @@ pub(crate) fn resolve_token_configuration(
         .map_err(|e| ContextProviderError::Generic(e.to_string()))
 }
 
+// TODO(P0.5): the RPC SDK context provider is orphaned now that chain sync
+// is SPV-only; the whole RPC provider is removed in P4 (removal-inventory
+// "SPV context wiring"). Retained as dead code until then so the
+// `resolve_data_contract` / `resolve_token_configuration` helpers in this
+// module (still used by `SpvProvider`) keep compiling.
+#[allow(dead_code)]
 pub(crate) struct Provider {
     db: Arc<Database>,
     app_context: Mutex<Option<Arc<AppContext>>>,
     pub core: CoreClient,
 }
 
+#[allow(dead_code)] // TODO(P0.5): RPC provider removed in P4 (see struct above).
 impl Provider {
     /// Create new ContextProvider.
     ///

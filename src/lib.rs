@@ -15,7 +15,6 @@ pub mod mcp;
 pub mod model;
 pub mod platform;
 pub mod sdk_wrapper;
-pub mod spv;
 pub mod ui;
 pub mod utils;
 

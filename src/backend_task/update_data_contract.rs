@@ -104,6 +104,7 @@ impl AppContext {
                     allow_signing_with_any_purpose: false,
                 },
             )
+            .await
             .map_err(|e| TaskError::from(dash_sdk::Error::Protocol(e)))?;
 
         match state_transition.broadcast_and_wait(sdk, None).await {

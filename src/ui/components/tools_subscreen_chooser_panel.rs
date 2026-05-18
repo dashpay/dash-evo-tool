@@ -1,5 +1,4 @@
 use crate::context::AppContext;
-use crate::spv::CoreBackendMode;
 use crate::ui::RootScreenType;
 use crate::ui::theme::{DashColors, Shadow, Shape, Spacing, Typography};
 use crate::{app::AppAction, ui};
@@ -48,7 +47,8 @@ impl ToolsSubscreen {
 pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext) -> AppAction {
     let mut action = AppAction::None;
     let dark_mode = ctx.style().visuals.dark_mode;
-    let is_rpc_mode = app_context.core_backend_mode() == CoreBackendMode::Rpc;
+    // Chain sync is SPV-only; the RPC wallet backend was removed.
+    let is_rpc_mode = false;
 
     let subscreens = vec![
         ToolsSubscreen::PlatformInfo,

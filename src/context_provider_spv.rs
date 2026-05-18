@@ -9,8 +9,9 @@ use std::sync::{Arc, Mutex};
 
 /// SPV-based ContextProvider for the Dash SDK.
 ///
-/// - DataContract and TokenConfiguration are served from the local DB (same as RPC provider)
-/// - Quorum public keys are resolved via dash-spv (through SpvManager) when in SPV mode
+/// - DataContract and TokenConfiguration are served from the local DB.
+/// - Quorum public keys are resolved by upstream `platform-wallet` chain sync
+///   (wired in P2).
 #[derive(Debug)]
 pub(crate) struct SpvProvider {
     db: Arc<Database>,
@@ -88,23 +89,16 @@ impl ContextProvider for SpvProvider {
 
     fn get_quorum_public_key(
         &self,
-        quorum_type: u32,
-        quorum_hash: [u8; 32],
-        core_chain_locked_height: u32,
+        _quorum_type: u32,
+        _quorum_hash: [u8; 32],
+        _core_chain_locked_height: u32,
     ) -> Result<[u8; 48], ContextProviderError> {
-        let app_ctx_guard = self
-            .app_context
-            .lock()
-            .map_err(|_| ContextProviderError::Config("SpvProvider lock poisoned".to_string()))?;
-        let app_ctx = app_ctx_guard
-            .as_ref()
-            .ok_or(ContextProviderError::Config("no app context".to_string()))?;
-
-        let spv_manager = app_ctx.spv_manager();
-
-        spv_manager
-            .get_quorum_public_key(quorum_type, quorum_hash, core_chain_locked_height)
-            .map_err(ContextProviderError::Generic)
+        // Quorum keys come from chain sync, which is owned by upstream
+        // `platform-wallet`'s `SpvRuntime`. P2 wires this provider to the
+        // upstream runtime; until then quorum-verified operations are inert.
+        Err(ContextProviderError::Generic(
+            "Quorum key resolution is being upgraded and is temporarily unavailable.".to_string(),
+        ))
     }
 
     fn get_platform_activation_height(

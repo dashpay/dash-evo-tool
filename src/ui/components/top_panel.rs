@@ -1,9 +1,6 @@
 use crate::app::{AppAction, DesiredAppAction};
-use crate::backend_task::BackendTask;
-use crate::backend_task::core::CoreTask;
 use crate::context::AppContext;
 use crate::context::connection_status::OverallConnectionState;
-use crate::spv::CoreBackendMode;
 use crate::ui::ScreenType;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Shadow, Shape};
 use egui::{Align2, Context, FontId, Frame, Margin, RichText, TextureHandle, TopBottomPanel, Ui};
@@ -96,9 +93,8 @@ fn add_location_view(ui: &mut Ui, location: Vec<(&str, AppAction)>, dark_mode: b
 }
 
 fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAction {
-    let mut action = AppAction::None;
+    let action = AppAction::None;
     let status = app_context.connection_status();
-    let backend_mode = status.backend_mode();
     let overall = status.overall_state();
 
     let dark_mode = ui.ctx().style().visuals.dark_mode;
@@ -168,31 +164,7 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAc
                         app_context.repaint_animation(ui.ctx());
                     }
                     let tip = status.tooltip_text(app_context);
-                    let can_start_dash_qt = overall == OverallConnectionState::Disconnected
-                        && backend_mode == CoreBackendMode::Rpc
-                        && !status.rpc_online();
-                    let resp = if can_start_dash_qt {
-                        resp.clickable_tooltip(tip)
-                    } else {
-                        resp.info_tooltip(tip)
-                    };
-
-                    if resp.clicked() && can_start_dash_qt {
-                        let settings = app_context.get_settings().ok().flatten();
-
-                        let (custom_path, overwrite) = settings
-                            .map(|s| (s.dash_qt_path, s.overwrite_dash_conf))
-                            .unwrap_or((None, true));
-                        if let Some(dash_qt_path) = custom_path {
-                            action |= AppAction::BackendTask(BackendTask::CoreTask(
-                                CoreTask::StartDashQT(app_context.network, dash_qt_path, overwrite),
-                            ));
-                        } else {
-                            tracing::debug!(
-                                "Dash-Qt path not set in settings, not starting Dash-Qt from connection indicator."
-                            );
-                        }
-                    }
+                    let _resp = resp.info_tooltip(tip);
                 });
             },
         );

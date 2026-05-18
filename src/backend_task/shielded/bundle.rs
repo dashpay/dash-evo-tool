@@ -116,7 +116,10 @@ pub fn build_shield_credit(
 
     let wallet = wallet_arc.read()?;
     // memo: 36-byte structured memo (4-byte type tag + 32-byte payload); all zeros = empty memo
-    build_shield_transition(
+    // `build_shield_transition` is async (signer trait is async). This fn is
+    // sync and only ever called from inside `spawn_blocking`, so bridge with
+    // a local executor rather than propagating async up the call stack.
+    futures::executor::block_on(build_shield_transition(
         &recipient_addr,
         amount,
         inputs,
@@ -126,7 +129,7 @@ pub fn build_shield_credit(
         &prover,
         [0u8; 36],
         sdk.version(),
-    )
+    ))
     .map_err(|e| shielded_build_error(e.to_string()))
 }
 
@@ -197,7 +200,9 @@ pub async fn shield_credits(
     let state_transition = {
         let wallet = wallet_arc.read()?;
         // memo: 36-byte structured memo (4-byte type tag + 32-byte payload); all zeros = empty memo
-        build_shield_transition(
+        // `build_shield_transition` is async (signer trait is async); bridge
+        // with a local executor so the std read guard never crosses an await.
+        futures::executor::block_on(build_shield_transition(
             &recipient_addr,
             amount,
             inputs,
@@ -207,7 +212,7 @@ pub async fn shield_credits(
             &prover,
             [0u8; 36],
             sdk.version(),
-        )
+        ))
         .map_err(|e| shielded_build_error(e.to_string()))?
     };
 
@@ -572,18 +577,8 @@ pub async fn shield_from_asset_lock(
                     }
                 }
 
-                if app_context.core_backend_mode() == crate::spv::CoreBackendMode::Rpc
-                    && let Some(wallet_arc) = app_context.wallets.read().ok()
-                        .and_then(|w| w.get(seed_hash).cloned())
-                {
-                    let ctx = Arc::clone(app_context);
-                    tokio::task::spawn_blocking(move || {
-                        if let Err(e) = ctx.refresh_wallet_info(wallet_arc) {
-                            tracing::warn!("Failed to auto-refresh wallet after timeout: {}", e);
-                        }
-                    });
-                }
-
+                // Chain sync is owned by upstream platform-wallet; spent
+                // UTXOs reconcile automatically on the next sync cycle.
                 return Err(TaskError::ShieldedAssetLockTimeout);
             }
             _ = tokio::time::sleep(Duration::from_millis(200)) => {

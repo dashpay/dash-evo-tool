@@ -10,7 +10,6 @@ use crate::backend_task::platform_info::{PlatformInfoTaskRequestType, PlatformIn
 use crate::backend_task::system_task::SystemTask;
 use crate::backend_task::wallet::WalletTask;
 use crate::context::AppContext;
-use crate::spv::CoreBackendMode;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::dashcore::bls_sig_utils::BLSSignature;
@@ -483,9 +482,6 @@ impl AppContext {
                 })?;
 
                 let spv_started = if start_spv {
-                    if new_ctx.core_backend_mode() != CoreBackendMode::Spv {
-                        new_ctx.set_core_backend_mode_volatile(CoreBackendMode::Spv);
-                    }
                     match new_ctx.start_spv() {
                         Ok(()) => {
                             tracing::info!(?network, "SPV started after network switch");

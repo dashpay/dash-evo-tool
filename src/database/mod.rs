@@ -5,6 +5,7 @@ pub(crate) mod contracts;
 mod dashpay;
 mod identities;
 mod initialization;
+pub(crate) mod migration_pw;
 mod proof_log;
 mod scheduled_votes;
 mod settings;

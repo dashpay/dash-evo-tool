@@ -6,9 +6,9 @@ DET becomes a thin adapter: `platform-wallet` owns chain sync, HD wallet managem
 
 > **STATUS**
 >
-> P0 complete — PROCEED. All 8 decisions resolved. Execution underway (spec-only doc pass; code on the same branch).
-> P0.5 "Compile Floor" is the next phase: atomic pin bump + delete/stub/fixup to reach green build + clippy.
-> P1–P5 build on the P0.5 green floor.
+> P0 — DONE (GREEN). P0.5 — DONE (GREEN). P1 — DONE (GREEN). P2 — DONE (GREEN).
+> P3 — ratified two-stage marker-gated migration architecture; in progress (P3a–P3e). Run is mid-execution on this branch.
+> P4–P5 — pending P3 completion.
 > Only release-blocking gate: Decision #6 DIP-14/15 migration/hard-stop QA lane (P3+P4).
 > Supersedes the prior incremental plan (architecture.md, migration-plan.md, spv-rpc-correctness.md, verification.md — all deleted).
 > Verified at PR #3625 head `738091f734e05c7a1b822bb1ebff336c93b67891`.

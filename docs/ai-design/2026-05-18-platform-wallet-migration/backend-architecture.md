@@ -37,6 +37,19 @@ AppContext
 
 `WalletBackend` is the single seam (rust-best-practices M-DONT-LEAK-TYPES, C-NEWTYPE-HIDE): no `WalletManager<PlatformWalletInfo>` / `PlatformWallet` / `IdentityManager` type ever escapes it. It exposes DET-shaped methods and DET-shaped result types only.
 
+**Migration marker fields in `AppContext`/settings inventory:**
+
+Two settings keys are added by the two-stage migration (see [data-model-and-migration.md — Migration execution model](data-model-and-migration.md#migration-execution-model--two-stage-marker-gated-ratified)):
+
+| Key | Type | Meaning |
+|---|---|---|
+| `platform_wallet_migration_pending` | bool (0/1) | Set by Stage-A v35 tx; cleared by Stage B only when every wallet re-registered AND every identity added AND every contact classified. Authoritative "pending" signal — the backup file's existence is NOT the signal. |
+| `dashpay_dip14_quarantine_active` | bool (0/1) | Set by Stage B iff ≥1 DashPay contact quarantined. Gates legacy DashPay/contact table retention and `data.db.premigration` retention. Independent of `platform_wallet_migration_pending`. |
+
+**`ensure_wallet_backend` as the Stage-B seam (`src/context/mod.rs:634`):**
+
+`AppContext::ensure_wallet_backend` is the post-unlock async entry point and the sole invocation site for Stage-B migration. It is called after seed unlock, when `seed + SDK + persister + WalletBackend` are all available. Stage B runs here, behind an `AppContext`-owned `tokio::sync::Mutex` acquired BEFORE the `platform_wallet_migration_pending` marker check, guaranteeing exactly one Stage-B execution process-wide even under reentrant or concurrent callers. Stage B completes before `WalletBackend` is published to its `ArcSwapOption`, so no task ever observes a partially-migrated backend. If the user never unlocks, Stage B never runs; the marker persists and the app operates in `WalletBackendNotYetWired`-degraded state.
+
 ### `BackendTask` Dispatch — Unchanged Shape
 
 `AppContext::run_backend_task()` (`src/backend_task/mod.rs:409`) still matches the `BackendTask` enum and dispatches. Wallet/identity/DashPay task arms now call `self.wallet_backend.<method>()` instead of `spv_manager` / `run_wallet_task` / `reconcile`. The action→channel→`TaskResult`→`display_task_result` loop (CLAUDE.md "App Task System") is preserved verbatim — that is the frozen frontend contract. See [backendtask-contract.md](backendtask-contract.md) for the full task-by-task mapping.

@@ -29,6 +29,10 @@ For every existing established DashPay contact: prove upstream derivation reprod
 
 Per-contact: all-or-nothing.
 
+**Index range (normative, cross-ref):** The historical index range is the UNION of the receive range `[0, highest_receive_index]` and the send range `[0, next_send_index−1]` (saturating), both sourced from `Database::get_contact_address_indices` (`src/database/dashpay.rs:649`). No sampled prefix. This supersedes any earlier description of "highest-used index" as a single scalar. Authoritative integration is in [data-model-and-migration.md — Stage-B step 4](data-model-and-migration.md#migration-execution-model--two-stage-marker-gated-ratified).
+
+**Quarantine as terminal classification (normative, cross-ref):** Quarantine is a SUCCESSFUL TERMINAL CLASSIFICATION, not a failure. When ≥1 contact is quarantined, Stage B clears `platform_wallet_migration_pending` (nothing left to attempt) and sets `settings.dashpay_dip14_quarantine_active=1`. Legacy DashPay/contact tables and `data.db.premigration` are retained while the quarantine flag is set. Restore-from-premigration does NOT occur because contacts are quarantined — restore is reserved for irreconcilable exceptions (crash, corruption). See §6.3 and [data-model-and-migration.md](data-model-and-migration.md).
+
 ## 6.2 — Possible vs Impossible
 
 **Structural finding from P0 (CONFIRMED — state as fact, not risk):**

@@ -8,9 +8,11 @@ DET becomes a thin adapter: `platform-wallet` owns chain sync, HD wallet managem
 >
 > P0 — DONE (GREEN). P0.5 — DONE (GREEN). P1 — DONE (GREEN). P2 — DONE (GREEN).
 > P3a — DONE (GREEN, commit `6d348566`). P3b — DONE (GREEN, commit `d5a3e51b`; `classify_contact` + 7 tests now DEAD, deleted in P3c).
-> P3 re-scoped 2026-05-18: drop backwards compatibility, upstream-only DashPay derivation, no quarantine. Run continuing P3c→P5.
-> P4–P5 — pending P3 completion.
-> Only release-blocking gate: simplified Stage-B engine + QA lane (P3c–P3e).
+> P3c–P3e — DONE (GREEN). P4-partial done.
+> P3 re-scoped 2026-05-18: drop backwards compatibility, upstream-only DashPay derivation, no quarantine. Run continuing.
+> P4 split into P4a (UI data-path rewire, blocks P4b) and P4b (mechanical prune, only after P4a). P5 pending.
+> Fund-safety spend path is upstream-authoritative from P2 — the remaining gap is display-only (wallets UI reading balance/tx/UTXO from legacy model). P4a rewires the display data-path to the WalletSnapshot push model.
+> Only release-blocking gate: simplified Stage-B engine + QA lane (P3c–P3e) + post-migration UI data-path test (P5).
 > Supersedes the prior incremental plan (architecture.md, migration-plan.md, spv-rpc-correctness.md, verification.md — all deleted).
 > Verified at PR #3625 head `738091f734e05c7a1b822bb1ebff336c93b67891`.
 

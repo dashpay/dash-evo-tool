@@ -34,10 +34,11 @@ Each phase is independently reviewable. Do not collapse phases.
 | **P1 WalletBackend skeleton + EventBridge** | New `src/wallet_backend/` wrapping `PlatformWalletManager`; `EventBridge`: `PlatformEventHandler` → `TaskResult` MPSC; `PersistedWalletLoader` trait + `SeedReregistrationLoader` impl (G2 seam — see [g2-mock-boundary.md](g2-mock-boundary.md)); no DET wiring yet (parallel to old path, behind a feature). Builds on the P0.5 green floor. | New `src/wallet_backend/*`, `src/backend_task/error.rs` (typed variants) | L | Med | `WalletBackend` public method set; `EventBridge`→`TaskResult` mapping; `PersistedWalletLoader` seam |
 | **P2 BackendTask rewire** | Point wallet/identity/DashPay task arms at `WalletBackend`; replace P0.5 stubs with real `WalletBackend` calls; extract Core-RPC mining utility. | `src/backend_task/{mod,core,wallet,identity,dashpay}/*`, `src/context/*`, new `src/core_rpc_util.rs` | L | High | `BackendTask` result variants stable (frontend contract) |
 | **P3 One-time migration** | Two-stage marker-gated migration (see P3a–P3e below). Ratified architecture: Stage A SQL v35 (sync, pre-unlock, sets marker) + Stage B async post-unlock engine at `ensure_wallet_backend`. Re-scoped 2026-05-18: drop backwards compatibility, upstream-only DashPay derivation, no quarantine. Gated on G1. | New `src/database/migration_pw.rs`, `database/initialization.rs` | L | High | Migration forward-only, fail-safe, idempotent; two-stage design ratified |
-| **P4 Cleanup** | Most destructive deletion was already done in P0.5 to reach compile. P4 = remove remaining dead code; UI prune (RPC-mode toggle, Core-wallet picker, local-node settings); ZMQ-listener usage audit + drop if no non-wallet consumer; batched dead-settings-column cleanup including `dashpay_dip14_quarantine_active` + RPC-era dead columns + `TaskError::DashPayContactDerivationIrreconcilable` if no other caller. | `src/ui/**`, `src/database/**`, `src/context/**`, remaining dead code from P0.5 stubs | L | Med | Final state; docs + user-stories updated with dropped back-compat + accepted trade-off |
-| **P5 Hardening** | Single-key swap-readiness, `ConnectionStatus` adapter polish, full QA matrix including migration lane; §2(d) notice regression; single push to #860. User-stories/docs note dropped back-compat + accepted trade-off. | Cross-cutting | M | Low | Release-ready |
+| **P4a Tx/UTXO/Balance UI data-path rewire** | Add `DetWalletBalance`/`DetUtxo` view models; retain `WalletTransaction` (detach from `Wallet`/DB); add 4 `WalletBackend` accessors + `TransactionRecord`→`WalletTransaction` mapping (relocated from deleted reconcile); add `WalletSnapshot` (`ArcSwap`) + `EventBridge` recompute/swap/emit-`Refresh`; rewire HD reads in wallets UI to read snapshot via `app_context.wallet_backend()`. Single-key paths untouched. **Blocks P4b.** | `src/wallet_backend/mod.rs`, `src/ui/wallets/wallets_screen/mod.rs`, `src/ui/wallets/address_table.rs`, `src/ui/screens/create_asset_lock_screen.rs` | L | Med | Post-migration HD wallets screen shows correct balance/tx/utxo from upstream. Reviewer gate: no spendable-input selection from snapshot. |
+| **P4b Mechanical dead-code/UI prune** | Remove RPC-mode toggle, Core-wallet picker, local-node settings UI; delete `Wallet.{transactions,utxos,address_balances,confirmed_balance,unconfirmed_balance,total_balance,spv_balance_known,address_total_received}` + dead methods; `src/database/utxo.rs` + legacy balance/utxo/tx queries; batched schema cleanup (`dashpay_dip14_quarantine_active` + RPC-era dead columns); ZMQ-listener audit + drop-if-unused. **Only after P4a.** | `src/ui/**`, `src/database/**`, `src/model/wallet/mod.rs`, `src/context/**`, remaining dead code from P0.5 stubs | L | Med | Final state; docs + user-stories updated with dropped back-compat + accepted trade-off |
+| **P5 Hardening** | Single-key swap-readiness, `ConnectionStatus` adapter polish, full QA matrix including migration lane + post-migration UI data-path test; §2(d) notice regression; single push to #860. User-stories/docs note dropped back-compat + accepted trade-off. | Cross-cutting | M | Low | Release-ready |
 
-**Sequencing:** P0 done (PROCEED). P0.5 done (GREEN). P1 done (GREEN). P2 done (GREEN). P3 is the highest-risk phase (irreversible data migration) — two-stage marker-gated design ratified (see P3a–P3e); re-scoped 2026-05-18 (drop back-compat, upstream-only, no quarantine). P3a (GREEN, commit `6d348566`). P3b (GREEN, commit `d5a3e51b`; `classify_contact` + 7 tests now DEAD — deleted in P3c). P3c→P5 continuing. P3 ships only after G1 resolves to a released rev. The only release-blocking gate is the simplified Stage-B engine + QA lane (P3c–P3e).
+**Sequencing:** P0 done (PROCEED). P0.5 done (GREEN). P1 done (GREEN). P2 done (GREEN). P3 is the highest-risk phase (irreversible data migration) — two-stage marker-gated design ratified (see P3a–P3e); re-scoped 2026-05-18 (drop back-compat, upstream-only, no quarantine). P3a (GREEN, commit `6d348566`). P3b (GREEN, commit `d5a3e51b`; `classify_contact` + 7 tests now DEAD — deleted in P3c). P3c–P3e complete (GREEN). P4 split into P4a (UI data-path rewire, blocks P4b) and P4b (mechanical prune, only after P4a); P4-partial done. P5 pending. Run continuing. Fund-safety spend path is upstream-authoritative from P2; the remaining display-only gap is addressed in P4a. P3 ships only after G1 resolves to a released rev. The only release-blocking gate is the simplified Stage-B engine + QA lane (P3c–P3e).
 
 ---
 
@@ -59,6 +60,49 @@ Dedicated tests before enabling finalize: backup-before-destroy invariant; DROP 
 
 **P3e — QA lane (standalone-crate harness).**
 Fixtures MUST cover: Stage-B crash at each sub-step + relaunch idempotency; restore-from-premigration on injected new-persister corruption; user-never-unlocks (marker persists, app usable, backup exists); reentrant `ensure_wallet_backend` (single Stage-B run); send-side-only contact. No quarantine fixtures — quarantine apparatus is WITHDRAWN. PLUS a mandatory release-blocking test: legacy-address-abandonment notice shows exactly once, one-shot `settings.platform_wallet_migration_notice_shown` gates it, dismissible, jargon-free, shown to all migrated users. Release-blocking; runs alongside P3d and P5 regression.
+
+---
+
+## P4 Sub-Steps
+
+P4 is split into two sequenced sub-steps. P4b must not start before P4a exit criteria are met.
+
+### P4a — Tx/UTXO/Balance UI Data-Path Rewire (blocks P4b)
+
+**Goal:** eliminate all wallets-screen reads from the legacy `Wallet` model and DB tables that P3c's migration drops. The fund-safety spend path is already upstream-authoritative (P2) — this sub-step is display-only.
+
+**Deliverables:**
+
+1. **New view models:** `DetWalletBalance { confirmed: u64, unconfirmed: u64, total: u64 }` and `DetUtxo { outpoint, value, script_pubkey, address }`. `WalletTransaction` is retained as-is; detached from `Wallet`/DB.
+
+2. **Four `WalletBackend` accessors:** `wallet_balance`, `transaction_history`, `utxos`, `address_balances` — DET types only across the boundary (see [backend-architecture.md § WalletBackend Read-Accessor Surface + WalletSnapshot Push Model](backend-architecture.md#walletbackend-read-accessor-surface--walletsnapshot-push-model)).
+
+3. **`TransactionRecord`→`WalletTransaction` mapping** relocated from the deleted `reconcile_spv_wallets` into `WalletBackend`.
+
+4. **`WalletSnapshot` + `EventBridge` push:** `WalletSnapshot` (`ArcSwap`) per wallet; `EventBridge` recomputes and atomically swaps on upstream callbacks; emits existing `TaskResult::Refresh`.
+
+5. **UI rewire:** HD reads in `src/ui/wallets/wallets_screen/mod.rs` (`:451,469,517,527,1141,1156,1227,1245,1478-1589,1845,1861,2593`), `src/ui/wallets/address_table.rs:120`, `src/ui/screens/create_asset_lock_screen.rs` — all read from `app_context.wallet_backend()` snapshot. `WalletTransaction`-row helpers unchanged. Single-key paths untouched (Decision #7 stubbed).
+
+**Exit criteria:** post-migration HD wallets screen shows correct balance, transaction history, and UTXO set from the upstream snapshot — not blank, not stale.
+
+**Reviewer gate (A04):** no code path selects spendable inputs from `WalletSnapshot`. Any such path must be rejected. The spend path remains `WalletBackend::send_payment` / `create_asset_lock_proof` (upstream live UTXO set, P2).
+
+### P4b — Mechanical Dead-Code/UI Prune (only after P4a)
+
+**Goal:** delete all code whose last readers were relocated by P4a. These are deletable ONLY after P4a exits — P4a is the prerequisite.
+
+**Deliverables:**
+
+- Remove RPC-mode toggle, Core-wallet picker, and "Local Dash Core node" settings UI.
+- Delete now-unreachable `Wallet` fields: `transactions`, `utxos`, `address_balances`, `confirmed_balance`, `unconfirmed_balance`, `total_balance`, `spv_balance_known`, `address_total_received`.
+- Delete dead `Wallet` methods: `total_balance_duffs`, `confirmed_balance_duffs`, `has_balance`, `max_balance`, `update_spv_balances`, `set_transactions`, `update_address_balance`, `select_unspent_utxos_for`, `remove_selected_utxos`, `build_multi_recipient_payment_transaction`.
+- Delete `src/database/utxo.rs` and legacy balance/utxo/tx queries in `src/database/wallet.rs` (`:233,254,302,734`).
+- Batched schema cleanup: `dashpay_dip14_quarantine_active` (INERT/RESERVED — see [backend-architecture.md](backend-architecture.md)), remaining RPC-era dead settings columns.
+- ZMQ-listener usage audit: drop if no non-wallet consumer remains.
+- Remove `TaskError::DashPayContactDerivationIrreconcilable` if no other caller.
+- M-NO-TOMBSTONES: delete, do not comment out.
+
+**Crew assignment:** Correctness reviewer mandatory. DIP-14/15 parity gate must be green before this sub-step ships.
 
 ---
 
@@ -201,7 +245,8 @@ Standard Requirements → Architecture (this spec) → Implementation → QA →
 | P1 | Rust impl agent | Architect (boundary/frozen-contract review) | rust-best-practices (M-DONT-LEAK-TYPES, C-NEWTYPE-HIDE, M-SERVICES-CLONE) |
 | P2 | Rust impl agent | Architect (BackendTask contract) | rust-best-practices (error taxonomy, M-APP-ERROR); security (A09 error wrapping) |
 | P3 | Rust impl agent | Data-integrity reviewer — mandatory | security (A08 safe deserialization, A04 fail-safe migration, ASVS V14.2 secret boundary — seeds never enter persister) |
-| P4 | Rust impl agent | Correctness reviewer — mandatory (DIP-14/15 parity gate green) | rust-best-practices (M-NO-TOMBSTONES, test quality) |
+| P4a | Rust impl agent | Architect (fund-safety reviewer gate — no snapshot-based coin selection) | rust-best-practices (M-DONT-LEAK-TYPES); security (A04 — no snapshot-based spend path) |
+| P4b | Rust impl agent | Correctness reviewer — mandatory (DIP-14/15 parity gate green) | rust-best-practices (M-NO-TOMBSTONES, test quality) |
 | P5 | Rust impl agent + Architect | — | Full static verification |
 
 ### QA Matrix
@@ -224,6 +269,7 @@ Plus targeted lanes:
 | **Backend E2E (testnet, `tests/backend-e2e/`)** | P2, P4 | Wallet load, balance, send, identity register/top-up, DashPay contact — through `WalletBackend`. |
 | **ConnectionStatus adapter** | P4, P5 | UI sync-progress visually matches former SPV behavior, fed from `SpvRuntime::sync_progress()`. |
 | **Single-key stub** | P2, P5 | Stub returns typed error + correct banner; swap-boundary trait compiles with a no-op alternate impl. |
+| **Post-migration UI data-path test (release-blocking)** | P4a, P5 | Synthetic legacy DB → P3c migrate (tables dropped) → assert wallets screen shows correct balance + tx history + UTXO set from the upstream snapshot (not blank, not stale); assert snapshot updates on an `EventBridge` `TaskResult::Refresh`. Assert empty pre-sync snapshot renders as "syncing", not a zero-balance bug. Runs alongside §2(d) migration-notice regression + migration crash/restore lane + clippy `-D warnings` + `+nightly fmt` + full workspace + backend-e2e. Single push to #860 at P5 end. |
 
 `docs/user-stories.md` updated at P4 (RPC mode removed, single-key degraded). `claudius:lessons-learned` invoked at each phase close.
 

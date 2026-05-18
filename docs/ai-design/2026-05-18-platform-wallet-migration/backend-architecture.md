@@ -108,6 +108,60 @@ WalletBackend::new()
 
 The 230-line `reconcile_spv_wallets` is deleted; its job is now upstream's changeset + event pipeline.
 
+### WalletBackend Read-Accessor Surface + WalletSnapshot Push Model
+
+#### Read Accessors
+
+`WalletBackend` exposes four DET-typed read accessors. No upstream types (`PlatformWallet`, `WalletManager`, `IdentityManager`, etc.) cross the boundary — only DET view models come out (M-DONT-LEAK-TYPES, C-NEWTYPE-HIDE):
+
+```rust
+fn wallet_balance(wallet_id: WalletId) -> DetWalletBalance
+// DetWalletBalance { confirmed: u64, unconfirmed: u64, total: u64 }
+
+fn transaction_history(wallet_id: WalletId) -> Vec<WalletTransaction>
+// WalletTransaction — existing DET view model, retained (detached from Wallet/DB)
+
+fn utxos(wallet_id: WalletId) -> Vec<DetUtxo>
+// DetUtxo { outpoint: OutPoint, value: u64, script_pubkey: ScriptBuf, address: Address }
+
+fn address_balances(wallet_id: WalletId) -> BTreeMap<Address, u64>
+```
+
+Sources inside `WalletBackend`: `PlatformWalletManager` / `CoreWallet` / `WalletBalance` / `SpvRuntime` / the upstream `DetPersister`.
+
+The `TransactionRecord`→`WalletTransaction` mapping (the surviving piece of the deleted `reconcile_spv_wallets`) lives in `WalletBackend`, not in the UI or in any DB query layer.
+
+#### WalletSnapshot Push Model
+
+`WalletBackend` holds one `WalletSnapshot` per wallet behind an `ArcSwap`, consistent with the existing `wallet_backend: ArcSwapOption` at `src/context/mod.rs:130` and the `ConnectionStatus` push model:
+
+```rust
+struct WalletSnapshot {
+    balance:      DetWalletBalance,
+    transactions: Vec<WalletTransaction>,
+    utxos:        Vec<DetUtxo>,
+}
+// Held inside WalletBackend as: ArcSwap<HashMap<WalletId, WalletSnapshot>>
+```
+
+**Update flow:** The `EventBridge` (`src/wallet_backend/event_bridge.rs`), on the `PlatformEventHandler` callbacks it already handles (`on_platform_address_sync_completed`, `on_shielded_sync_completed`, SPV supertrait callbacks), recomputes the affected wallet's snapshot off the four read accessors above and atomically swaps it in via `ArcSwap::store`. It then emits the existing `TaskResult::Refresh` on the MPSC channel.
+
+**Read flow:** UI reads the snapshot synchronously via `app_context.wallet_backend()`. The load is lock-free and infallible — the egui frame thread never awaits, never calls upstream directly, and never blocks. A pre-first-sync snapshot is empty, which maps to the existing "syncing" state, not an error.
+
+#### FUND-SAFETY MANDATE — Display-Only Snapshot
+
+> **A04 — Reintroducing snapshot-based coin selection recreates the double-spend exposure the architecture eliminated. This is a P4a reviewer gate.**
+
+The `WalletSnapshot` is **DISPLAY-ONLY**. It exists to drive the wallets screen (balance, transaction list, UTXO list) without blocking the UI thread.
+
+Coin selection and transaction construction **MUST** go through:
+- `WalletBackend::send_payment` — uses the upstream-authoritative live UTXO set at send time
+- `WalletBackend::create_asset_lock_proof` — same
+
+Both are already implemented in P2 (`src/wallet_backend/mod.rs:362,390`). No code path may select spendable inputs from `WalletSnapshot`. Any PR that routes coin selection through the snapshot must be rejected at review.
+
+---
+
 ### Error Model
 
 `PlatformWalletError` and `PersistenceError` are wrapped into dedicated typed `TaskError` variants with `#[source]` (rust-best-practices error rules; CLAUDE.md "Never store user-facing strings in error variants"). No catch-all `String` variant. Every error gets a dedicated variant enabling structural matching, clean `Display`/`Debug` separation, and testable user-facing text.

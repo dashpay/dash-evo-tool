@@ -47,6 +47,12 @@ The `BackendTask` enum (`src/backend_task/mod.rs:92-100`) and the action/channel
 | `BackendTask::ReinitCoreClientAndSdk` | **modified** | Core client only relevant to thin RPC mining utility; SDK reinit stays. |
 | Token / contested-voting / document / contract / shielded / grovestark tasks | **kept as-is** | Out of `platform-wallet` scope. Zero change. |
 
+### UI Display Data-Path — No BackendTask Changes
+
+The wallets UI tx/balance/UTXO display data-path rewire (P4a) introduces **no `BackendTask` variant changes**. It is a read-path relocation behind the `WalletBackend` seam: display is fed by the `WalletSnapshot` (updated via the existing `EventBridge` `TaskResult::Refresh`), not by task results. `WalletTransaction`-row helpers continue to take `&WalletTransaction` unchanged. The action/channel contract is frozen; no frontend plumbing changes for this gap.
+
+See [backend-architecture.md § WalletBackend Read-Accessor Surface + WalletSnapshot Push Model](backend-architecture.md#walletbackend-read-accessor-surface--walletsnapshot-push-model) for the snapshot design.
+
 ### Net Frontend Impact
 
 Result variants and the action/channel contract are preserved — UI screens are largely unchanged. Concrete UI changes:

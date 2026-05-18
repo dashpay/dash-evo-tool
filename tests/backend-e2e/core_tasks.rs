@@ -189,46 +189,8 @@ async fn test_tc005_create_top_up_asset_lock() {
     }
 }
 
-// TC-006: RecoverAssetLocks
-//
-// In SPV mode the backend returns an empty `RecoveredAssetLocks { 0, 0 }`
-// result because asset lock finality is delivered via InstantLock / ChainLock
-// events — no explicit recovery pass is needed. In RPC mode the Core wallet
-// is scanned for untracked asset lock transactions.
-#[ignore]
-#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
-async fn test_tc006_recover_asset_locks() {
-    let ctx = ctx().await;
-    let app_context = &ctx.app_context;
-
-    let wallet = {
-        let wallets = app_context.wallets().read().expect("wallets lock");
-        wallets
-            .get(&ctx.framework_wallet_hash)
-            .expect("framework wallet must exist")
-            .clone()
-    };
-
-    let task = BackendTask::CoreTask(CoreTask::RecoverAssetLocks(wallet.clone()));
-    let result = run_task(app_context, task)
-        .await
-        .expect("RecoverAssetLocks should succeed");
-
-    match result {
-        BackendTaskSuccessResult::RecoveredAssetLocks {
-            recovered_count,
-            total_amount,
-        } => {
-            // 0 recoveries is valid if no asset locks exist
-            tracing::info!(
-                "RecoverAssetLocks: count={}, total={} duffs",
-                recovered_count,
-                total_amount
-            );
-        }
-        other => panic!("Expected RecoveredAssetLocks, got: {:?}", other),
-    }
-}
+// TC-006: RecoverAssetLocks — REMOVED (Decision #8: hard-removed; upstream
+// AssetLockManager tracks asset locks continuously, no explicit recovery pass)
 
 // TC-007: GetBestChainLock — REMOVED (Core RPC-specific, not available in SPV mode)
 // TC-008: GetBestChainLocks — REMOVED (Core RPC-specific, not available in SPV mode)

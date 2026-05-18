@@ -1,4 +1,3 @@
-mod recover_asset_locks;
 mod refresh_single_key_wallet_info;
 mod send_single_key_wallet_payment;
 mod start_dash_qt;
@@ -42,13 +41,11 @@ pub enum CoreTask {
         wallet: Arc<RwLock<SingleKeyWallet>>,
         request: WalletPaymentRequest,
     },
-    RecoverAssetLocks(Arc<RwLock<Wallet>>),
     MineBlocks {
         block_count: u64,
         address: Address,
         wallet: Arc<RwLock<Wallet>>,
     },
-    ListCoreWallets,
 }
 impl PartialEq for CoreTask {
     fn eq(&self, other: &Self) -> bool {
@@ -84,12 +81,7 @@ impl PartialEq for CoreTask {
                     CoreTask::SendSingleKeyWalletPayment { .. },
                     CoreTask::SendSingleKeyWalletPayment { .. },
                 )
-                | (
-                    CoreTask::RecoverAssetLocks(_),
-                    CoreTask::RecoverAssetLocks(_),
-                )
                 | (CoreTask::MineBlocks { .. }, CoreTask::MineBlocks { .. })
-                | (CoreTask::ListCoreWallets, CoreTask::ListCoreWallets)
         )
     }
 }
@@ -297,7 +289,6 @@ impl AppContext {
                 wallet: _,
                 request: _,
             } => Err(TaskError::SingleKeyWalletsUnsupported),
-            CoreTask::RecoverAssetLocks(_wallet) => Err(TaskError::WalletBackendNotYetWired),
             CoreTask::MineBlocks {
                 block_count,
                 address,
@@ -321,13 +312,9 @@ impl AppContext {
 
                 let _ = wallet;
                 let mined_count = mined.len() as u64;
-                // Balances refresh once the wallet backend is wired (P2).
+                // Balances refresh via the EventBridge once sync observes the
+                // mined block.
                 Ok(BackendTaskSuccessResult::MineBlocksSuccess(mined_count))
-            }
-            CoreTask::ListCoreWallets => {
-                // Named Core wallets are RPC-only; the RPC wallet backend was
-                // removed. Returns empty until the UI entry point is dropped (P4).
-                Ok(BackendTaskSuccessResult::CoreWalletsList(Vec::new()))
             }
         }
     }

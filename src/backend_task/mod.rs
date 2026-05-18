@@ -294,10 +294,6 @@ pub enum BackendTaskSuccessResult {
         /// Optional warning message (e.g., Platform sync failed but Core refresh succeeded)
         warning: Option<String>,
     },
-    RecoveredAssetLocks {
-        recovered_count: usize,
-        total_amount: u64,
-    },
 
     // DPNS operation results (replacing string messages)
     ScheduledVotes,
@@ -309,9 +305,6 @@ pub enum BackendTaskSuccessResult {
 
     // Mining results (dev mode, Regtest/Devnet only)
     MineBlocksSuccess(u64),
-
-    // Core wallet list (async fetch of loaded Core wallets)
-    CoreWalletsList(Vec<String>),
 
     // Shielded pool results
     ShieldedInitialized {

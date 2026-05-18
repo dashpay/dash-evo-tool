@@ -1,6 +1,4 @@
 use crate::app::AppAction;
-use crate::backend_task::BackendTaskSuccessResult;
-use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
 use crate::model::wallet::encryption::{DASH_SECRET_MESSAGE, encrypt_message};
@@ -72,12 +70,6 @@ pub struct AddNewWalletScreen {
     receive_qr_texture: Option<TextureHandle>,
     show_receive_popup: bool,
     funds_received: bool,
-    /// Cached list of Core wallets (fetched asynchronously via backend task)
-    core_wallets: Option<Vec<String>>,
-    /// Whether the backend task to fetch Core wallets has been dispatched
-    core_wallets_loading: bool,
-    /// Index of selected Core wallet in the ComboBox
-    selected_core_wallet_index: usize,
 }
 
 impl AddNewWalletScreen {
@@ -102,15 +94,7 @@ impl AddNewWalletScreen {
             receive_qr_texture: None,
             show_receive_popup: false,
             funds_received: false,
-            core_wallets: None,
-            core_wallets_loading: false,
-            selected_core_wallet_index: 0,
         }
-    }
-
-    pub fn reset_core_wallets_cache(&mut self) {
-        self.core_wallets = None;
-        self.core_wallets_loading = false;
     }
 
     /// Generate a new seed phrase based on the selected language and word count
@@ -157,18 +141,13 @@ impl AddNewWalletScreen {
                 self.alias_input.clone()
             };
 
-            let mut wallet = Wallet::new_from_seed(
+            let wallet = Wallet::new_from_seed(
                 seed,
                 self.app_context.network,
                 Some(wallet_alias),
                 password.as_ref(),
             )
             .map_err(|e| e.to_string())?;
-
-            wallet.core_wallet_name = self
-                .core_wallets
-                .as_ref()
-                .and_then(|ws| ws.get(self.selected_core_wallet_index).cloned());
 
             // Extract first receive address for display before registering
             if let Some((address, _)) = wallet.known_addresses.first_key_value() {
@@ -561,27 +540,8 @@ impl AddNewWalletScreen {
 }
 
 impl ScreenLike for AddNewWalletScreen {
-    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::CoreWalletsList(wallets) = backend_task_success_result {
-            self.selected_core_wallet_index = self
-                .selected_core_wallet_index
-                .min(wallets.len().saturating_sub(1));
-            self.core_wallets = Some(wallets);
-        }
-    }
-
-    fn display_task_error(&mut self, _error: &TaskError) -> bool {
-        self.core_wallets_loading = false;
-        self.core_wallets = Some(vec![]);
-        false
-    }
-
     fn ui(&mut self, ctx: &Context) -> AppAction {
         let pending_action = AppAction::None;
-        if self.core_wallets.is_none() && !self.core_wallets_loading {
-            // Chain sync is SPV-only — there is no Dash Core RPC wallet list.
-            self.core_wallets = Some(vec![]);
-        }
 
         let mut action = add_top_panel(
             ctx,
@@ -734,43 +694,7 @@ impl ScreenLike for AddNewWalletScreen {
                     ui.separator();
                     ui.add_space(10.0);
 
-                    let save_step = if self
-                        .core_wallets
-                        .as_ref()
-                        .is_some_and(|w| w.len() > 1)
-                    {
-                        let core_wallets = self.core_wallets.as_ref().unwrap();
-                        ui.heading(
-                            "6. Select the Dash Core wallet to use for RPC operations.",
-                        );
-                        ui.add_space(8.0);
-
-                        ui.horizontal(|ui| {
-                            ui.label("Dash Core Wallet:");
-                            let selected_name =
-                                &core_wallets[self.selected_core_wallet_index];
-                            ComboBox::from_id_salt("core_wallet_selector")
-                                .selected_text(selected_name.as_str())
-                                .show_ui(ui, |ui| {
-                                    for (i, name) in core_wallets.iter().enumerate() {
-                                        ui.selectable_value(
-                                            &mut self.selected_core_wallet_index,
-                                            i,
-                                            name,
-                                        );
-                                    }
-                                });
-                        });
-
-                        ui.add_space(10.0);
-                        ui.separator();
-                        ui.add_space(10.0);
-                        "7"
-                    } else {
-                        "6"
-                    };
-
-                    ui.heading(format!("{save_step}. Save the wallet."));
+                    ui.heading("6. Save the wallet.");
                     ui.add_space(10.0);
 
                     // Save Wallet button styled like Load Identity button

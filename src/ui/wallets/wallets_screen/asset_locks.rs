@@ -12,7 +12,6 @@ impl WalletsBalancesScreen {
     pub(super) fn render_wallet_asset_locks(&mut self, ui: &mut Ui) -> AppAction {
         let mut app_action = AppAction::None;
         let mut open_fund_dialog_for_idx: Option<(usize, Vec<(String, u64)>)> = None;
-        let mut recover_asset_locks_clicked = false;
 
         if let Some(arc_wallet) = &self.selected_wallet {
             let wallet = arc_wallet.read().unwrap();
@@ -32,9 +31,6 @@ impl WalletsBalancesScreen {
                                 app_action = AppAction::AddScreen(
                                     ScreenType::CreateAssetLock(arc_wallet.clone()).create_screen(&self.app_context)
                                 );
-                            }
-                            if ui.button("Search for Unused").clickable_tooltip("Scan Core wallet for untracked asset locks").clicked() {
-                                recover_asset_locks_clicked = true;
                             }
                         });
                     });
@@ -154,11 +150,6 @@ impl WalletsBalancesScreen {
             self.fund_platform_dialog.selected_platform_address = None;
             self.fund_platform_dialog.status = None;
             self.fund_platform_dialog.is_processing = false;
-        }
-
-        // Handle recover asset locks button click - use custom action to check lock status
-        if recover_asset_locks_clicked {
-            app_action = AppAction::Custom("SearchAssetLocks".to_string());
         }
 
         app_action

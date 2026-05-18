@@ -798,7 +798,6 @@ impl Screen {
             }
             Screen::AddNewWalletScreen(screen) => {
                 screen.app_context = app_context;
-                screen.reset_core_wallets_cache();
                 return;
             }
             Screen::TransferScreen(screen) => {
@@ -808,7 +807,6 @@ impl Screen {
             }
             Screen::WalletsBalancesScreen(screen) => {
                 screen.app_context = app_context;
-                screen.reset_pending_list_state();
                 screen.update_selected_wallet_for_network();
                 screen.invalidate_address_inputs();
                 screen.reset_transient_state();
@@ -816,7 +814,6 @@ impl Screen {
             }
             Screen::ImportMnemonicScreen(screen) => {
                 screen.app_context = app_context;
-                screen.reset_core_wallets_cache();
                 return;
             }
             Screen::WalletSendScreen(screen) => {

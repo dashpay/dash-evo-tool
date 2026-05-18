@@ -6,7 +6,7 @@
 
 ---
 
-Relates to: [phasing.md § P3](phasing.md#phase-table) — P3 implements the migration procedure; [open-questions.md #2](open-questions.md) — G2 seed-re-registration UX.
+Relates to: [phasing.md § P3](phasing.md#phase-table) — P3 implements the migration procedure; [g2-mock-boundary.md](g2-mock-boundary.md) — `PersistedWalletLoader` seam (seed re-registration); [dip14-migration-hardstop.md](dip14-migration-hardstop.md) — per-contact DashPay derivation migration and quarantine.
 
 ## D. Data Model and Conversions
 
@@ -36,13 +36,16 @@ Runs on first launch post-upgrade. Steps are idempotent; the procedure is fail-s
 
 **Step 2.** Back up the legacy DB file before any destructive step: copy `*.db → *.db.premigration`.
 
-**Step 3.** For each legacy `Wallet`: decrypt seed (existing DET path), call `create_wallet_from_seed_bytes`; `load_persisted()` rehydrates identity/contact/address deltas from the upstream persister (fresh DB, empty first time — repopulated by first sync).
+**Step 3.** For each legacy `Wallet`: via `PersistedWalletLoader::SeedReregistrationLoader` ([g2-mock-boundary.md](g2-mock-boundary.md)), decrypt seed and call `create_wallet_from_seed_bytes`; `load_persisted()` rehydrates identity/contact/address deltas from the upstream persister (fresh DB, empty first time — repopulated by first sync).
 
 **Step 4.** For each `QualifiedIdentity` blob: keep the DET identity table; call `add_identity` into upstream `IdentityManager` so it is sync-tracked.
 
-**Step 5.** Migrate DashPay established contacts and profile into upstream via `add_*`.
+**Step 5 — DashPay derivation migration (per-contact, all-or-nothing).**
+For each established DashPay contact: attempt migration per the procedure in [dip14-migration-hardstop.md § 6.1](dip14-migration-hardstop.md#61--what-migrate-means). Migratable contacts are recorded into upstream/persister. Impossible contacts are collected into the quarantine set and left intact in legacy `dashpay`/`contacts` tables. On any impossible contact: retain ALL DashPay/contact legacy tables (even if other data migrated cleanly); mark upgrade incomplete via persistent flag; block DashPay cutover for quarantined contacts; surface escalation banner (see §6.4). Non-DashPay migration continues normally.
 
-**Step 6.** On full success: drop legacy tables `wallet`, `utxos`, `wallet_transactions`, SPV-derived rows, and the dead settings columns. Keep retained tables: identity blob, platform addresses, tokens, `single_key_wallet`, settings (minus dead cols), contested votes, shielded, contacts payment cache.
+**Step 5b.** Migrate DashPay profile into upstream via `add_*`.
+
+**Step 6.** On full success (quarantine set empty): drop legacy tables `wallet`, `utxos`, `wallet_transactions`, SPV-derived rows, DashPay/contact legacy tables, and the dead settings columns. Keep retained tables: identity blob, platform addresses, tokens, `single_key_wallet`, settings (minus dead cols), contested votes, shielded, contacts payment cache. Preserve `*.db.premigration` while any quarantine flag is set — do not drop until quarantine is cleared.
 
 **Step 7.** On any failure: do not drop legacy tables; restore from `*.db.premigration`; surface a calm, actionable banner:
 

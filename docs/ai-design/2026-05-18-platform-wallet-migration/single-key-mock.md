@@ -6,7 +6,7 @@
 
 ---
 
-Cross-references: [open-questions.md #7](open-questions.md) — decision on single-key timeline; [backendtask-contract.md](backendtask-contract.md) — `SendSingleKeyWalletPayment` and `RefreshSingleKeyWalletInfo` dispositions; [removal-inventory.md § RETAIN](removal-inventory.md#retain) — why the legacy table is not dropped.
+Cross-references: [open-questions.md #7](open-questions.md) — Decision #7: ship mock now, swap to `SingleKeyPlatformWallet` when upstream ships a non-HD wallet type; [backendtask-contract.md](backendtask-contract.md) — `SendSingleKeyWalletPayment` and `RefreshSingleKeyWalletInfo` dispositions; [removal-inventory.md § RETAIN](removal-inventory.md#retain) — why the legacy table is not dropped; [g2-mock-boundary.md](g2-mock-boundary.md) — `PersistedWalletLoader` follows this same swappable-stub pattern.
 
 ## F. Single-Key Mock Design
 

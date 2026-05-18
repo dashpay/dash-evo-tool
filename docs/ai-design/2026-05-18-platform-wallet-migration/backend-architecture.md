@@ -21,7 +21,10 @@ AppContext
         │         // = upstream SqliteWalletPersister (PR #3625); no DET-authored persister
         ├── EventBridge: Arc<dyn PlatformEventHandler>
         │         // DET-authored; receives upstream events → TaskResult channel
-        ├── seed_store: encrypted-seed access (DET-retained, decision #3 secret boundary)
+        ├── loader: Arc<dyn PersistedWalletLoader>
+        │         // = SeedReregistrationLoader now; UpstreamFromPersisted when G2 closes
+        │         // see g2-mock-boundary.md
+        ├── seed_store: encrypted-seed access (DET-retained, secret boundary)
         └── single_key_stub: SingleKeyBackend (mock — see single-key-mock.md)
 ```
 
@@ -67,10 +70,17 @@ Callbacks are sync and must not block. Each maps the upstream event into a DET `
 **4. Frame loop — unchanged.**
 `AppState::update()` continues to poll `task_result_receiver.try_recv()` and route to `display_task_result()`. `ConnectionStatus` gains a thin adapter fed by the sync/progress callbacks + `SpvRuntime::sync_progress()` / `tip_block_time()` instead of DET-owned SPV atomics.
 
+**`PersistedWalletLoader` step (between construction and `start()`).**
+After constructing `PlatformWalletManager` (which does not auto-start), `WalletBackend::new()` calls `loader.wallets_to_register(ctx)` to obtain `Vec<WalletRegistration>`. For each registration it calls `create_wallet_from_seed_bytes` then `load_persisted()` (rehydrates identity/contact/address deltas from the persister), then calls `PlatformWalletManager.start()`. This is the G2 seam: today `loader` is `SeedReregistrationLoader`; the one-line swap to `UpstreamFromPersisted` requires zero other changes. See [g2-mock-boundary.md](g2-mock-boundary.md).
+
 **Prose sequence (end to end):**
 
 ```
-PlatformWalletManager.start()
+WalletBackend::new()
+  → PlatformWalletManager constructed (not yet started)
+    → loader.wallets_to_register() → Vec<WalletRegistration>
+      → for each: create_wallet_from_seed_bytes + load_persisted()
+        → PlatformWalletManager.start()
   → SpvRuntime spawns sync loop
     → blocks/filters processed internally
       → wallet/identity/dashpay state mutates inside PlatformWalletInfo

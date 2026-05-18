@@ -81,6 +81,8 @@ Rustdoc: "Partial reconstruction caveat — leaves `ClientStartState::wallets` e
 
 **DET consequence:** DET must retain the encrypted seed and re-register each wallet from seed on every launch. The persister supplies identity/contact/UTXO/asset-lock deltas around the freshly derived wallet. This is the frozen Phase-2↔Phase-3 contract and shapes the one-time migration design in [data-model-and-migration.md](data-model-and-migration.md). See [phasing.md](phasing.md) for gate timing.
 
+**Mitigated (Decision #2 resolved):** The `PersistedWalletLoader` seam ([g2-mock-boundary.md](g2-mock-boundary.md)) wraps seed-re-registration behind an object-safe trait. `SeedReregistrationLoader` ships now with identical behavior; `UpstreamFromPersisted` is a one-line construction swap when upstream closes this gap. G2 is downgraded from a hard implementation gate to a deferred swap-in.
+
 ## Provenance
 
 Upstream @ `738091f734…`:

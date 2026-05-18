@@ -68,7 +68,7 @@ Verified at PR #3625 head `738091f734e05c7a1b822bb1ebff336c93b67891`.
 Confirmed upstream exports at PR head include:
 
 - `PlatformWalletManager`
-- `SpvRuntime` — a thin bridge only; does **not** do chain sync (sync stays in DET's `src/spv/`)
+- `SpvRuntime` — owns `DashSpvClient` and drives its own sync loop; `PlatformWalletManager` owns `SpvRuntime`; DET `src/spv/` is fully deletable (see [upstream-reality.md](upstream-reality.md))
 - `broadcaster`
 - `AssetLockManager`
 - `CoreWallet` / `WalletBalance`
@@ -81,13 +81,13 @@ Confirmed upstream exports at PR head include:
 - `TokenBalanceChangeSet` / `IdentityTokenSyncInfo` — balance sync only, not token administration
 - `PlatformAddressSyncManager`
 
-This means DashPay derivation functions (`derive_contact_xpub`, `derive_contact_payment_address(_es)`, `calculate_account_reference`) are **upstream-full** — the DET hand-rolled equivalents (`src/backend_task/dashpay/dip14_derivation.rs`, `hd_derivation.rs`) are P4 deletion targets, subject to the DIP-14/15 parity probe clearing (see [phasing.md QA matrix](phasing.md#qa-matrix)).
+This means DashPay derivation functions (`derive_contact_xpub`, `derive_contact_payment_address(_es)`, `calculate_account_reference`) are **upstream-full** — the DET hand-rolled equivalents (`src/backend_task/dashpay/dip14_derivation.rs`, `hd_derivation.rs`) are P4 deletion targets, conditioned on one-time migration execution + hard-stop path proven per the migrate-or-quarantine policy (see [dip14-migration-hardstop.md §6.5](dip14-migration-hardstop.md#65--p0-probe-and-phasing-interaction) and [phasing.md QA matrix](phasing.md#qa-matrix)).
 
 ### Feature Gap Table
 
 | DET feature / domain | Upstream status | Class | DET files that stay | Upstream ref |
 |---|---|---|---|---|
-| **SPV chain sync** | Full — `SpvRuntime` owns DashSpvClient + sync loop; `PlatformWalletManager` owns `SpvRuntime` | (a→deleted) | DET `src/spv/**` and `reconcile_spv_wallets` are deleted; only a thin ConnectionStatus adapter remains — see [removal-inventory.md](removal-inventory.md) | `SpvRuntime`, `PlatformWalletManager` |
+| **SPV chain sync** | Full — `SpvRuntime` constructs `DashSpvClient` internally and runs its own sync loop; `PlatformWalletManager` owns `SpvRuntime`; no host-feed API exists | (a→deleted) | DET `src/spv/**` and `reconcile_spv_wallets` are deleted; only a thin `ConnectionStatus` adapter remains — see [upstream-reality.md](upstream-reality.md) and [removal-inventory.md](removal-inventory.md) | `SpvRuntime`, `PlatformWalletManager` |
 | **Shielded / zk** | None | (a) | `src/backend_task/shielded/*`, `src/model/wallet/shielded.rs`, `src/context/shielded.rs`, `src/database/shielded.rs`, `src/model/grovestark_prover.rs` | — |
 | **DPNS registration + contested-name / masternode voting** | `DpnsNameInfo` read-only type only; no register flow | (a) | `src/backend_task/identity/register_dpns_name.rs`, `src/backend_task/contested_names/*`, `src/database/scheduled_votes.rs` | `DpnsNameInfo` |
 | **Token administration** (17 files) | `TokenBalanceChangeSet`/`IdentityTokenSyncInfo` for balance sync only | (a) | `src/backend_task/tokens/*` | Balance sync types only |
@@ -96,7 +96,7 @@ This means DashPay derivation functions (`derive_contact_xpub`, `derive_contact_
 | **Persister-excluded DET persistence** | Explicitly out of upstream scope | (a) | `QualifiedIdentity` blob (`src/database/identities.rs:157`), platform-address balances (`src/backend_task/wallet/fetch_platform_address_balances.rs`), token balances | Upstream trait doc "Outside scope" section |
 | **GUI / MCP / CLI / settings / ZMQ** | None | (a) | `src/ui/**`, `src/mcp/**`, `src/bin/det_cli/**`, `src/context/settings_db.rs`, `components/core_zmq_listener` | — |
 | **Identity lifecycle orchestration** (register/topup/transfer/withdraw/add-key ST flow) + `QualifiedIdentity` model | `IdentityWallet<B>`, `IdentityManager`, `ManagedIdentity` — upstream primitives; DET orchestration and blob stay | (b) | `src/backend_task/identity/*` (shrinks in Phase 4), `src/database/identities.rs` | `IdentityWallet<B>`, `IdentityManager` |
-| **DashPay orchestration** (contact-request/accept/auto-accept/incoming-payment/avatar I/O) | `IdentityWallet<B>` covers lifecycle + DashPay ops; full type set and derivation functions upstream | (b) | `src/backend_task/dashpay/*` except DIP-14/15 derivation (deleted Phase 4 subject to E.1 probe) | `ContactRequest`, `EstablishedContact`, `DashPayProfile`, `derive_contact_xpub`, etc. |
+| **DashPay orchestration** (contact-request/accept/auto-accept/incoming-payment/avatar I/O) | `IdentityWallet<B>` covers lifecycle + DashPay ops; full type set and derivation functions upstream | (b) | `src/backend_task/dashpay/*` except DIP-14/15 derivation (deleted P4, conditioned on migration executed + hard-stop path proven — see [dip14-migration-hardstop.md](dip14-migration-hardstop.md)) | `ContactRequest`, `EstablishedContact`, `DashPayProfile`, `derive_contact_xpub`, etc. |
 | **Asset-lock funding-flow orchestration** | `AssetLockManager` upstream | (b) | Orchestration wiring in `src/backend_task/core/create_asset_lock.rs`, `src/context/transaction_processing.rs` | `AssetLockManager` |
 | **Token-balance display** | `TokenBalanceChangeSet`/`IdentityTokenSyncInfo` for sync | (b) | Display/UI layer, token balance DB | Balance sync types |
 | **DashPay ECDH encryption** | `derive_auto_accept_private_key` upstream; full ECDH pending Phase-0 parity confirmation | (b) | `src/backend_task/dashpay/encryption.rs` | `derive_auto_accept_private_key` |

@@ -1,141 +1,88 @@
 # Open Questions
 
-**Purpose:** Eight decisions still needed from the user before implementation begins. Each is actionable; the architect's recommendation or assumption is called out explicitly.
+**Purpose:** Record of the eight decisions needed before implementation. All eight are now RESOLVED.
 
 [← back to README](README.md)
 
 ---
 
-No implementation starts until all decisions are confirmed (or explicitly deferred with a documented rationale). See [phasing.md](phasing.md) for how each decision gates a specific phase.
+All 8 decisions resolved. Implementation is unblocked. See [phasing.md § Combined Gate Posture](phasing.md#combined-gate-posture) for the updated gate state.
 
 ---
 
 ## Decision #1 — G1 Timing
 
-**Needed before:** P2 (P0–P1 can proceed)
+**RESOLVED: Pin to PR branch now.**
 
-**Context:** PR #3625 is an open draft on `v3.1-dev`. DET's platform pin (`Cargo.toml:21`, `54048b9352…`) predates it. DET cannot reference the persister crate until #3625 merges and a containing platform rev is pinnable.
+DET pins its platform dep to dashpay/platform PR #3625 head and starts P0–P2 immediately, accepting rework if the PR changes before merge. G1 is reclassified from a start blocker to a release-hardening item: track #3625 until it merges, then bump the pin to a released rev before shipping.
 
-**Options:**
-
-| Option | Description |
-|---|---|
-| **(a) Wait for #3625 merge + release** | Safer; spec assumes this for shipping |
-| **(b) Temporarily pin to PR branch for P0–P2** | Faster iteration on the spike; acceptable for exploratory work; not for production |
-
-**Architect assumption:** (a) for shipping; (b) tolerated for spike only.
-
-**Confirmation needed:** Confirm (a), or approve (b) for the spike with an understanding that the pin reverts before P3.
+~~Options (a) wait / (b) pin~~: option (b) confirmed for all phases; option (a) applies only at release time.
 
 ---
 
 ## Decision #2 — G2 Seed-Re-Registration UX
 
-**Needed before:** P3 migration design is finalized
+**RESOLVED: Mock it via `PersistedWalletLoader` seam.**
 
-**Context:** Because `Wallet::from_persisted` does not yet exist upstream (Gate G2), DET must decrypt the seed and re-register each wallet on every launch. Password-protected wallets prompt on launch today — this behavior continues. See [upstream-reality.md § G2 Caveat](upstream-reality.md#g2-caveat--walletfrom_persisted-load-gap).
+The `PersistedWalletLoader` DET-internal trait provides the seam. `SeedReregistrationLoader` (ships now) performs seed-re-registration exactly as upstream prescribes — behavior is identical to today. `UpstreamFromPersisted` (ships when `Wallet::from_persisted` lands) is a one-line construction swap. G2 is downgraded from a hard gate to a deferred swap-in.
 
-**Options:**
-
-| Option | Description |
-|---|---|
-| **(a) Accept seed-re-registration (current behavior)** | No UX regression; prescribed upstream pattern |
-| **(b) Wait for upstream `Wallet::from_persisted`** | Defers P3 start until upstream ships the constructor |
-
-**Architect recommendation:** (a) — this is what upstream prescribes and what DET does today.
-
-**Confirmation needed:** Confirm (a) acceptable, or indicate a preference to wait for (b).
+Full design: [g2-mock-boundary.md](g2-mock-boundary.md).
 
 ---
 
 ## Decision #3 — ZMQ Listener
 
-**Needed before:** P4 (deletion pass)
+**RESOLVED: Audit before P4; delete only if no non-wallet consumer.**
 
-**Context:** `components/core_zmq_listener` feeds non-wallet Core events (e.g. ChainLock notifications, InstantSend events). Once wallet no longer uses Core RPC, it may be droppable — but it may have consumers outside the wallet path. A usage audit is needed before P4 removes it.
-
-**Architect recommendation:** Audit usages before P4; likely droppable; confirm scope.
-
-**Confirmation needed:** Confirm ZMQ listener scope — retained, dropped, or "audit first."
+`components/core_zmq_listener` usage audit runs before P4. If no non-wallet consumer is found, the listener is deleted in P4. If a non-wallet consumer exists (e.g. ChainLock notifications for UI), it is retained with scope trimmed to that consumer. No decision possible before the audit; the audit is a P4 precondition. See [removal-inventory.md § RETAIN](removal-inventory.md#retain).
 
 ---
 
 ## Decision #4 — Devnet Identity Discovery
 
-**Needed before:** P2 (IdentityTask rewire)
+**RESOLVED: Keep DET path permanently.**
 
-**Context:** Upstream `AssetLockManager` and identity discovery cover Mainnet/Testnet only. DET's DAPI-based Devnet path (`discover_identities.rs`) has no upstream equivalent and no upstream timeline.
-
-**Architect recommendation:** Confirm DET-permanent. The Devnet path is isolated in `discover_identities.rs` and branches on `network`, not on `CoreBackendMode`, so it coexists cleanly with the new backend.
-
-**Confirmation needed:** Confirm DET-permanent Devnet path is acceptable indefinitely.
+`discover_identities.rs` Devnet branch stays DET-owned indefinitely. Upstream has no Devnet timeline. The branch is on `network`, not `CoreBackendMode`, so it coexists cleanly with the new backend.
 
 ---
 
 ## Decision #5 — DashPay Scope Boundary
 
-**Needed before:** P2 (DashPayTask rewire)
-
-**Context:** The upstream export surface includes the full DashPay type set and derivation functions. A "replace all DashPay" reading would pull avatar processing, auto-accept proof, and incoming-payment detection into migration scope — significantly expanding risk and effort.
-
-**Proposed hybrid split:**
+**RESOLVED: Hybrid split confirmed.**
 
 | Owner | Owns |
 |---|---|
 | Upstream (`IdentityWallet<B>`, derivation functions) | Contact-request/established-contact state, DashPay profile, derivation crypto |
 | DET (unchanged) | Avatar I/O (`avatar_processing.rs`), auto-accept proof, incoming-payment detection, payment-history cache |
 
-**Architect recommendation:** Confirm the hybrid. The DET-owned items above are not addressed by the upstream persister's trait surface.
-
-**Confirmation needed:** Approve hybrid split as stated, or identify items to re-scope.
+See [backendtask-contract.md § DashPayTask](backendtask-contract.md) for the task-level mapping.
 
 ---
 
 ## Decision #6 — DIP-14/15 Parity Policy
 
-**Needed before:** P4 (deletion of `dip14_derivation.rs` / `hd_derivation.rs`)
+**RESOLVED: Migrate or hard-stop + escalate.**
 
-**Context:** DET's `index_to_child_number` (`dip14_derivation.rs:213-240`) collapses a 256-bit child index to 31 bits for legacy `ChildNumber` storage. Upstream uses native `ChildNumber::Normal256` (full 256-bit, no lossy collapse). The P0 golden-vector parity probe (DIP-14/15 lane — see [phasing.md QA matrix](phasing.md#qa-matrix)) determines whether the on-curve derived addresses are byte-identical.
+The soft fallback ("keep DET derivation for existing contacts, use upstream for new") is WITHDRAWN. Dual-derivation coexistence is not permitted.
 
-**If probe is green:** DET derivation deleted in P4; upstream functions used exclusively.
+Policy: for every existing established DashPay contact, prove upstream derivation reproduces the exact historical address set, then record upstream mapping. If any contact is impossible to migrate (upstream derivation diverges), quarantine it, block DashPay cutover for that contact, preserve legacy data, and surface a blocking escalation banner to the user. Never silently proceed. Never silently fall back. Never mutate or delete user data.
 
-**If probe is red — proposed fallback:**
+P0 full-256-bit probe divergence is reclassified release-blocking. P4 DashPay derivation deletion is gated on migration execution + hard-stop path proven — not on zero probe divergence.
 
-Keep DET derivation for existing contacts; use upstream for new contacts. On first boot post-deletion, re-derive each contact payment address and compare to persisted. On mismatch: structured log + non-blocking banner:
-
-> "A DashPay contact address could not be re-derived after the upgrade. Your funds are safe; please re-verify contact `Abc123…` before sending."
-
-Never auto-delete; never use freshly-derived address over persisted; never block startup (A04 fail-safe). Optional `det_cli` audit subcommand reports mismatches without mutation. The key invariant: **never silently use a freshly-derived address that differs from the persisted address.**
-
-**Architect recommendation:** Run the P0 probe; approve the fallback approach now so P4 planning is not gated on the probe result.
-
-**Confirmation needed:** Approve fallback policy, or specify an alternative (e.g. block P4 deletion until upstream alignment; rewrite addresses in-place).
+Full design: [dip14-migration-hardstop.md](dip14-migration-hardstop.md).
 
 ---
 
 ## Decision #7 — Single-Key Timeline
 
-**Needed before:** P2 (single-key stub shipped to users)
+**RESOLVED: Ship mock now, swap later (confirmed).**
 
-**Context:** Single-key wallets are mocked: operations return `TaskError::SingleKeyWalletsUnsupported`; existing data is preserved and surfaced read-only with a clear message. The `SingleKeyBackend` trait boundary makes a future swap a one-file change when upstream ships a non-HD wallet type. See [single-key-mock.md](single-key-mock.md).
-
-**Architect recommendation:** "Mock now, swap later" — single-key users get read-only + a clear, calm message for at least one release.
-
-**Confirmation needed:** Confirm "mock now, swap later" is acceptable to ship. If not, state the constraint (e.g. must ship full single-key support in the same release).
+Single-key wallets ship as read-only + clear message for at least one release. Data preserved. `SingleKeyBackend` trait boundary makes the future swap a one-line change. See [single-key-mock.md](single-key-mock.md).
 
 ---
 
 ## Decision #8 — One-Release No-Op Grace for Removed Tasks
 
-**Needed before:** P2 (tasks removed or demoted)
+**RESOLVED: Hard-remove immediately.**
 
-**Context:** `CoreTask::RecoverAssetLocks` and `CoreTask::ListCoreWallets` are removed. `AssetLockManager` continuous tracking makes explicit recovery obsolete; named Core wallets have no meaning without RPC mode. Two options:
-
-| Option | Description |
-|---|---|
-| **(a) Immediate removal** | Task variants deleted in P2; UI entry points removed or guarded |
-| **(b) One-release no-op grace** | Task variants return graceful no-op success in P2, removed in P5; old UI entry points degrade gracefully rather than error |
-
-**Architect recommendation:** (b) for `RecoverAssetLocks` (users may have the old UI cached); (a) for `ListCoreWallets` (Core-wallet picker is being removed from the UI in P2 regardless).
-
-**Confirmation needed:** Approve this split, or choose (a) or (b) uniformly.
+`CoreTask::RecoverAssetLocks` and `CoreTask::ListCoreWallets` and their UI entry points are deleted in the same release — no one-release no-op grace. `AssetLockManager` continuous tracking makes explicit recovery obsolete; named Core wallets have no meaning without RPC mode. See [backendtask-contract.md](backendtask-contract.md) (updated rows) and [removal-inventory.md](removal-inventory.md).

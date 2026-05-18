@@ -6,7 +6,9 @@ DET becomes a thin adapter: `platform-wallet` owns chain sync, HD wallet managem
 
 > **STATUS**
 >
-> SPEC ONLY — no implementation until user-approved.
+> All 8 decisions resolved. Implementation is unblocked.
+> P0–P2 start immediately against the pinned #3625 head (Decision #1).
+> Only release-blocking gate: Decision #6 DIP-14/15 migration/hard-stop QA lane (P3+P4).
 > Supersedes the prior incremental plan (architecture.md, migration-plan.md, spv-rpc-correctness.md, verification.md — all deleted).
 > Verified at PR #3625 head `738091f734e05c7a1b822bb1ebff336c93b67891`.
 
@@ -16,13 +18,18 @@ DET becomes a thin adapter: `platform-wallet` owns chain sync, HD wallet managem
 
 `packages/rs-platform-wallet/Cargo.toml` declares `dash-spv` as a direct dependency. `SpvRuntime` (`packages/rs-platform-wallet/src/spv/runtime.rs`) constructs `DashSpvClient::new()` internally, owns `PeerNetworkManager` + `DiskStorageManager`, and exposes `run(config, cancel_token)` — its own sync loop. There is no host-feed API. `PlatformWalletManager` owns the `SpvRuntime`. DET's `src/spv/` is deletable; only a thin ConnectionStatus display adapter remains. See [upstream-reality.md](upstream-reality.md) for the full evidence chain.
 
-## Hard Sequencing Gates
+## Gate Posture (Updated)
 
-**G1 — PR #3625 merge + pin bump.**
-PR #3625 (`platform-wallet-storage`) is open, draft, not merged (base `v3.1-dev`, milestone v3.1.0, last updated 2026-05-14). DET's platform pin (`Cargo.toml:21`) is `54048b9352…`, which predates the persister crate. Phase P3+ are blocked until #3625 merges and DET bumps to a containing rev. P0–P1 are not blocked (spike can compile against the PR branch).
+With Decision #1 (pin to #3625 head now) and Decision #2 (G2 downgraded via `PersistedWalletLoader` seam), implementation is no longer upstream-blocked.
 
-**G2 — upstream `Wallet::from_persisted` (`load()` gap).**
-`ClientStartState.wallets` is not reconstructed by `persister.load()` (`LOAD_UNIMPLEMENTED = ["ClientStartState::wallets"]` in `rs-platform-wallet-storage/src/sqlite/persister.rs`). Upstream works around this by re-registering wallets from seed at startup (`create_wallet_from_seed_bytes → load_persisted()`). DET must retain encrypted seeds and re-register each wallet from seed on every launch; the persister supplies identity/contact/UTXO/asset-lock deltas around it. Not a blocker — it is the prescribed upstream pattern — but it is a frozen contract. See [upstream-reality.md § G2 Caveat](upstream-reality.md#g2-caveat--walletfrom_persisted-load-gap).
+**G1 — PR #3625 — now a release-hardening track, not a start blocker.**
+DET is pinned to PR #3625 head now. P0–P2 proceed immediately. G1 resolves to: track #3625 until it merges, then bump pin to a released rev before shipping P3+. See [phasing.md § Combined Gate Posture](phasing.md#combined-gate-posture).
+
+**G2 — `Wallet::from_persisted` gap — downgraded to deferred swap.**
+`ClientStartState.wallets` is not reconstructed by `persister.load()` at PR head (`LOAD_UNIMPLEMENTED = ["ClientStartState::wallets"]` in `rs-platform-wallet-storage/src/sqlite/persister.rs`). Mitigated by the `PersistedWalletLoader` seam: `SeedReregistrationLoader` ships now with seed-re-registration behavior; `UpstreamFromPersisted` is a one-line swap when upstream ships `Wallet::from_persisted`. G2 is no longer a gate. See [g2-mock-boundary.md](g2-mock-boundary.md) and [upstream-reality.md § G2 Caveat](upstream-reality.md#g2-caveat--walletfrom_persisted-load-gap).
+
+**Only release-blocking gate: Decision #6 DIP-14/15 migration/hard-stop QA lane.**
+The per-contact migrate-or-quarantine path must be implemented and QA-proven before P3+P4 ship. See [dip14-migration-hardstop.md](dip14-migration-hardstop.md) and [phasing.md](phasing.md).
 
 ## Table of Contents
 
@@ -35,18 +42,20 @@ PR #3625 (`platform-wallet-storage`) is open, draft, not merged (base `v3.1-dev`
 | [removal-inventory.md](removal-inventory.md) | DELETE vs RETAIN lists; RPC backend mode fate; thin Core-RPC mining utility |
 | [single-key-mock.md](single-key-mock.md) | `SingleKeyBackend` trait boundary, stub behavior, user message, isolation |
 | [phasing.md](phasing.md) | P0–P5 phase table with gates; skills/agents/crew; QA matrix; highest-risk assumption verdict |
-| [open-questions.md](open-questions.md) | Eight decisions/questions still needed from the user, with architect recommendations |
+| [g2-mock-boundary.md](g2-mock-boundary.md) | `PersistedWalletLoader` seam design — seed-re-registration now, one-line swap when upstream `Wallet::from_persisted` lands |
+| [dip14-migration-hardstop.md](dip14-migration-hardstop.md) | DIP-14/15 per-contact migrate-or-quarantine policy, hard-stop behavior, escalation, revised P4 gate |
+| [open-questions.md](open-questions.md) | All 8 decisions — now fully RESOLVED |
 | [feature-coverage.md](feature-coverage.md) | Supporting analysis: RPC-vs-SPV capability matrix; DET features absent from `platform-wallet` |
 
-## Open Decisions Still Needed
+## Decisions — All Resolved
 
-See [open-questions.md](open-questions.md) for full context and architect recommendations:
+See [open-questions.md](open-questions.md) for full resolutions:
 
-- **#1** G1 timing — wait for #3625 merge vs. temporarily pin to PR branch for P0–P2
-- **#2** G2 seed-re-registration UX — acceptable today, or wait for upstream persisted rehydration
-- **#3** ZMQ listener — audit and likely drop once wallet no longer uses Core RPC
-- **#4** Devnet identity discovery — confirm DET-permanent
-- **#5** DashPay scope boundary — confirm hybrid split
-- **#6** DIP-14/15 parity policy — policy if P0 probe shows divergence
-- **#7** Single-key timeline — confirm "mock now, swap later" acceptable for one release
-- **#8** One-release no-op grace for removed tasks vs. immediate removal
+- **#1** G1 timing — RESOLVED: pin to #3625 head now; release-hardening only
+- **#2** G2 seed-re-registration — RESOLVED: `PersistedWalletLoader` seam; G2 downgraded
+- **#3** ZMQ listener — RESOLVED: audit before P4; delete if wallet-only
+- **#4** Devnet identity discovery — RESOLVED: DET-permanent
+- **#5** DashPay scope boundary — RESOLVED: hybrid split confirmed
+- **#6** DIP-14/15 parity policy — RESOLVED: migrate or hard-stop + escalate (see [dip14-migration-hardstop.md](dip14-migration-hardstop.md))
+- **#7** Single-key timeline — RESOLVED: mock now, swap later
+- **#8** Removed tasks grace — RESOLVED: hard-remove immediately

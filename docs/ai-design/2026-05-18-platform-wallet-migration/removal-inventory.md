@@ -37,7 +37,7 @@ Cross-references: [backendtask-contract.md](backendtask-contract.md) for task-le
 **Wallet model and DashPay derivation:**
 - Most of `src/model/wallet/mod.rs` (`Wallet` struct minus what migration reads)
 - `src/model/wallet/utxos.rs`, balance/UTXO/tx logic
-- `src/backend_task/dashpay/dip14_derivation.rs` + `hd_derivation.rs` (delegated upstream, subject to DIP-14/15 parity probe — see [phasing.md QA matrix](phasing.md#qa-matrix))
+- `src/backend_task/dashpay/dip14_derivation.rs` + `hd_derivation.rs` (delegated upstream, subject to one-time migration execution + hard-stop path proven — see [dip14-migration-hardstop.md §6.5](dip14-migration-hardstop.md#65--p0-probe-and-phasing-interaction) and [phasing.md QA matrix](phasing.md#qa-matrix))
 
 **DET wallet/UTXO/tx persistence:**
 - `src/database/wallet.rs` — `wallet`/`utxo`/`tx` tables + balance writers
@@ -74,7 +74,7 @@ Cross-references: [backendtask-contract.md](backendtask-contract.md) for task-le
 
 **Settings / network config** — minus dead columns.
 
-**ZMQ listener** — `components/core_zmq_listener` — orthogonal, but confirm scope (see [open-questions.md #3](open-questions.md)).
+**ZMQ listener** — `components/core_zmq_listener` — audit before P4; delete only if no non-wallet consumer exists (Decision #3 — see [open-questions.md #3](open-questions.md)).
 
 ---
 

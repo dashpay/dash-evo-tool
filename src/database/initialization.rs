@@ -282,9 +282,9 @@ impl Database {
                 // backup (online backup cannot run inside a live write-tx).
                 // It only arms the persistent marker; Stage B
                 // (`src/database/migration_pw.rs`, post-unlock, async) does
-                // the actual data migration and the DIP-14/15
-                // migrate-or-quarantine. The marker is the authoritative
-                // "pending" signal.
+                // the actual data migration (upstream-only DashPay
+                // re-derivation, no quarantine — Decision #6). The marker is
+                // the authoritative "pending" signal.
                 self.add_platform_wallet_migration_columns(tx)
                     .migration_err("settings", "v35: add migration marker columns")?;
                 tx.execute(
@@ -683,8 +683,7 @@ impl Database {
             selected_single_key_hash BLOB,
             platform_wallet_migration_pending INTEGER DEFAULT 0,
             platform_wallet_migration_completed INTEGER DEFAULT 0,
-            platform_wallet_migration_notice_shown INTEGER DEFAULT 0,
-            dashpay_dip14_quarantine_active INTEGER DEFAULT 0
+            platform_wallet_migration_notice_shown INTEGER DEFAULT 0
         )",
             [],
         )?;
@@ -2849,10 +2848,6 @@ mod test {
             assert!(migration_pending(&db), "v35 must arm the pending marker");
             // No destructive step: the legacy wallet row is untouched.
             assert_eq!(wallet_row_count(&db), 1, "v35 must not drop legacy data");
-            assert!(
-                !db.get_dashpay_dip14_quarantine_active().unwrap(),
-                "quarantine flag must default off"
-            );
         }
 
         #[test]

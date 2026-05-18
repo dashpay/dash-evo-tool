@@ -90,22 +90,6 @@ pub enum TaskError {
         source: std::io::Error,
     },
 
-    /// A DashPay contact's historical payment-address derivation cannot be
-    /// reproduced by the new wallet engine, so it was quarantined (DIP-14/15
-    /// migrate-or-hard-stop, Decision #6). Payments to/from this contact are
-    /// paused; all other wallets and contacts work normally. The Base58
-    /// contact id is a copyable handle (CLAUDE.md rule 6), not jargon.
-    #[error(
-        "DashPay contact {contact} could not be upgraded to the new wallet engine. \
-        Your funds are safe and unchanged. Payments to and from this contact are \
-        paused while this is unresolved; all your other wallets and contacts work \
-        normally. You can keep using the previous version of the app for this \
-        contact, or wait for an update that resolves this."
-    )]
-    DashPayContactDerivationIrreconcilable {
-        contact: dash_sdk::platform::Identifier,
-    },
-
     /// DashPay domain errors.
     #[error(transparent)]
     DashPay(#[from] crate::backend_task::dashpay::errors::DashPayError),

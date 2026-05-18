@@ -417,15 +417,11 @@ impl Database {
     /// * `platform_wallet_migration_notice_shown` — one-shot guard for the
     ///   mandatory one-time post-migration notice (the sole compensating
     ///   control for the accepted DashPay fund-visibility trade-off).
-    /// * `dashpay_dip14_quarantine_active` — retained dead column (the
-    ///   quarantine apparatus was withdrawn; column kept for schema
-    ///   compatibility, batched-removed in P4).
     pub fn add_platform_wallet_migration_columns(&self, conn: &rusqlite::Connection) -> Result<()> {
         for col in [
             "platform_wallet_migration_pending",
             "platform_wallet_migration_completed",
             "platform_wallet_migration_notice_shown",
-            "dashpay_dip14_quarantine_active",
         ] {
             let exists: bool = conn.query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name = ?1",
@@ -511,28 +507,6 @@ impl Database {
         self.execute(
             "UPDATE settings SET platform_wallet_migration_notice_shown = ? WHERE id = 1",
             rusqlite::params![shown],
-        )?;
-        Ok(())
-    }
-
-    /// Whether ≥1 DashPay contact was quarantined by the DIP-14/15 migration.
-    /// While set, legacy DashPay/contact tables and `data.db.premigration`
-    /// are retained and DashPay is blocked for quarantined contacts.
-    pub fn get_dashpay_dip14_quarantine_active(&self) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
-        let result: Option<bool> = conn.query_row(
-            "SELECT dashpay_dip14_quarantine_active FROM settings WHERE id = 1",
-            [],
-            |row| row.get(0),
-        )?;
-        Ok(result.unwrap_or(false))
-    }
-
-    /// Set/clear the DIP-14/15 quarantine-active flag.
-    pub fn set_dashpay_dip14_quarantine_active(&self, active: bool) -> Result<()> {
-        self.execute(
-            "UPDATE settings SET dashpay_dip14_quarantine_active = ? WHERE id = 1",
-            rusqlite::params![active],
         )?;
         Ok(())
     }

@@ -108,6 +108,32 @@ impl WalletsBalancesScreen {
     ) -> AppAction {
         let action = AppAction::None;
 
+        // Per-address UTXO counts + balances come from the display-only
+        // `WalletBackend` snapshot (P4a). `total_received` (cumulative
+        // historical receipts) has no upstream source post-migration — the
+        // best truthful proxy is the address's current snapshot balance
+        // (funds received and still held); see user-stories (degraded).
+        let seed_hash = self
+            .selected_wallet
+            .as_ref()
+            .and_then(|w| w.read().ok())
+            .map(|g| g.seed_hash());
+        let snap_address_balances = seed_hash
+            .map(|sh| self.snapshot_address_balances(&sh))
+            .unwrap_or_default();
+        let snap_utxo_counts: std::collections::HashMap<Address, usize> = seed_hash
+            .map(|sh| {
+                let mut counts: std::collections::HashMap<Address, usize> =
+                    std::collections::HashMap::new();
+                if let Ok(wb) = self.app_context.wallet_backend() {
+                    for u in wb.utxos(&sh) {
+                        *counts.entry(u.address).or_insert(0) += 1;
+                    }
+                }
+                counts
+            })
+            .unwrap_or_default();
+
         // Move the data preparation into its own scope
         let mut address_data = {
             let wallet = self.selected_wallet.as_ref().unwrap().read().unwrap();
@@ -117,16 +143,10 @@ impl WalletsBalancesScreen {
                 .known_addresses
                 .iter()
                 .map(|(address, derivation_path)| {
-                    let utxo_info = wallet.utxos.get(address);
+                    let utxo_count = snap_utxo_counts.get(address).copied().unwrap_or(0);
 
-                    let utxo_count = utxo_info.map(|outpoints| outpoints.len()).unwrap_or(0);
-
-                    // Get total received from the wallet (fetched from Core RPC)
-                    let total_received = wallet
-                        .address_total_received
-                        .get(address)
-                        .cloned()
-                        .unwrap_or(0u64);
+                    let total_received =
+                        snap_address_balances.get(address).copied().unwrap_or(0u64);
 
                     let index = derivation_path
                         .into_iter()
@@ -178,10 +198,9 @@ impl WalletsBalancesScreen {
 
                     AddressData {
                         address: address.clone(),
-                        balance: wallet
-                            .address_balances
+                        balance: snap_address_balances
                             .get(address)
-                            .cloned()
+                            .copied()
                             .unwrap_or_default(),
                         platform_credits,
                         utxo_count,

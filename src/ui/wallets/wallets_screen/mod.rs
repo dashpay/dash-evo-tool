@@ -448,7 +448,7 @@ impl WalletsBalancesScreen {
         if let Ok(wallets_guard) = self.app_context.wallets.read() {
             for wallet in wallets_guard.values() {
                 let guard = wallet.read().unwrap();
-                let core_balance = guard.total_balance_duffs();
+                let core_balance = self.core_balance_duffs(&guard.seed_hash());
                 let platform_balance = Self::platform_balance_duffs(&guard);
                 let shielded_balance = self.shielded_balance_duffs(&guard.seed_hash());
                 let balance_dash =
@@ -514,7 +514,7 @@ impl WalletsBalancesScreen {
                 .read()
                 .ok()
                 .map(|g| {
-                    let core = g.total_balance_duffs();
+                    let core = self.core_balance_duffs(&g.seed_hash());
                     let platform = Self::platform_balance_duffs(&g);
                     let shielded = self.shielded_balance_duffs(&g.seed_hash());
                     core + platform + shielded
@@ -968,6 +968,37 @@ impl WalletsBalancesScreen {
             .and_then(|states| states.get(seed_hash).map(|s| s.shielded_balance))
             .unwrap_or(0)
             / CREDITS_PER_DUFF
+    }
+
+    /// Core (chain) balance in duffs, read from the display-only
+    /// `WalletBackend` snapshot (P4a). Pre-first-sync ⇒ `0`, which the
+    /// surrounding UI renders as the "syncing" state.
+    fn core_balance_duffs(&self, seed_hash: &WalletSeedHash) -> u64 {
+        self.app_context
+            .wallet_backend()
+            .map(|wb| wb.wallet_balance(seed_hash).total)
+            .unwrap_or(0)
+    }
+
+    /// UTXO-derived per-address balances from the snapshot (P4a). Replaces
+    /// the dropped `Wallet.address_balances`.
+    fn snapshot_address_balances(
+        &self,
+        seed_hash: &WalletSeedHash,
+    ) -> std::collections::BTreeMap<Address, u64> {
+        self.app_context
+            .wallet_backend()
+            .map(|wb| wb.address_balances(seed_hash))
+            .unwrap_or_default()
+    }
+
+    /// Full transaction history from the snapshot (P4a). Replaces the
+    /// dropped `Wallet.transactions`.
+    fn snapshot_transactions(&self, seed_hash: &WalletSeedHash) -> Vec<WalletTransaction> {
+        self.app_context
+            .wallet_backend()
+            .map(|wb| wb.transaction_history(seed_hash))
+            .unwrap_or_default()
     }
 
     fn render_action_buttons(&mut self, ui: &mut Ui, ctx: &Context) -> AppAction {
@@ -1455,38 +1486,37 @@ impl WalletsBalancesScreen {
             return;
         };
 
-        // Defensive check: verify the selected wallet Arc matches the one in
-        // app_context.wallets. If they diverge (stale reference), skip rendering
-        // to avoid showing another wallet's data.
-        let wallet_guard = wallet_arc.read().unwrap();
-        let selected_seed_hash = wallet_guard.seed_hash();
-        let arc_matches = self
+        let selected_seed_hash = {
+            let wallet_guard = wallet_arc.read().unwrap();
+            wallet_guard.seed_hash()
+        };
+
+        // Transaction history comes from the display-only `WalletBackend`
+        // snapshot (P4a), not the legacy `Wallet.transactions`. Pre-first-sync
+        // there is no snapshot yet → render the "syncing" state rather than a
+        // misleading "no transactions" message.
+        let backend_ready = self
             .app_context
-            .wallets
-            .read()
-            .ok()
-            .and_then(|wallets| wallets.get(&selected_seed_hash).cloned())
-            .is_some_and(|canonical| Arc::ptr_eq(wallet_arc, &canonical));
-        if !arc_matches {
-            tracing::warn!(
-                "selected_wallet Arc does not match app_context.wallets — skipping transaction render"
-            );
-            ui.label("Wallet data is being updated. Please re-select the wallet.");
+            .wallet_backend()
+            .map(|wb| wb.has_snapshot(&selected_seed_hash))
+            .unwrap_or(false);
+        let transactions = self.snapshot_transactions(&selected_seed_hash);
+
+        if !backend_ready {
+            ui.label("Syncing transactions from the network…");
             return;
         }
 
-        if wallet_guard.transactions.is_empty() {
-            ui.label(
-                "No transactions found. Try refreshing your wallet to load transaction history.",
-            );
+        if transactions.is_empty() {
+            ui.label("No transactions found for this wallet yet.");
             return;
         }
 
-        // Filter to transactions involving this wallet's addresses.
-        // The `is_ours` flag is set by both RPC and SPV paths for all
-        // transactions that belong to this wallet (sends and receives).
-        // Invalidate cache when source tx count changes or indices go stale.
-        let tx_len = wallet_guard.transactions.len();
+        // Filter to transactions involving this wallet's addresses (`is_ours`
+        // is always true on the per-wallet snapshot, but the filter is kept
+        // for parity and future cross-wallet views). Invalidate the index
+        // cache when the source length changes or cached indices go stale.
+        let tx_len = transactions.len();
         if self.cached_tx_source_len != Some(tx_len)
             || self
                 .cached_tx_indices
@@ -1496,16 +1526,12 @@ impl WalletsBalancesScreen {
             self.cached_tx_indices = None;
             self.cached_tx_source_len = Some(tx_len);
         }
-        let relevant_indices = self.cached_tx_indices.get_or_insert_with(|| {
-            (0..tx_len)
-                .filter(|&i| wallet_guard.transactions[i].is_ours)
-                .collect()
-        });
+        let relevant_indices = self
+            .cached_tx_indices
+            .get_or_insert_with(|| (0..tx_len).filter(|&i| transactions[i].is_ours).collect());
 
         if relevant_indices.is_empty() {
-            ui.label(
-                "No transactions found. Try refreshing your wallet to load transaction history.",
-            );
+            ui.label("No transactions found for this wallet yet.");
             return;
         }
 
@@ -1513,14 +1539,10 @@ impl WalletsBalancesScreen {
         let show_fee = self.app_context.is_developer_mode();
         let mut order: Vec<usize> = relevant_indices.clone();
         order.sort_by(|&a, &b| {
-            wallet_guard.transactions[b]
+            transactions[b]
                 .timestamp
-                .cmp(&wallet_guard.transactions[a].timestamp)
-                .then_with(|| {
-                    wallet_guard.transactions[b]
-                        .txid
-                        .cmp(&wallet_guard.transactions[a].txid)
-                })
+                .cmp(&transactions[a].timestamp)
+                .then_with(|| transactions[b].txid.cmp(&transactions[a].txid))
         });
 
         let row_height = 26.0;
@@ -1586,7 +1608,7 @@ impl WalletsBalancesScreen {
             })
             .body(|mut body| {
                 for idx in order {
-                    let tx = &wallet_guard.transactions[idx];
+                    let tx = &transactions[idx];
                     body.row(row_height, |mut row| {
                         row.col(|ui| {
                             ui.label(Self::format_transaction_timestamp(tx.timestamp));
@@ -1842,7 +1864,7 @@ impl WalletsBalancesScreen {
     /// Render the total balance label only (used in the left column of the header).
     fn render_balance_total(&self, ui: &mut Ui, wallet: &Wallet) {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
-        let core_balance = wallet.total_balance_duffs();
+        let core_balance = self.core_balance_duffs(&wallet.seed_hash());
         let platform_balance = Self::platform_balance_duffs(wallet);
         let shielded_balance = self.shielded_balance_duffs(&wallet.seed_hash());
         let total = core_balance + platform_balance + shielded_balance;
@@ -1858,7 +1880,7 @@ impl WalletsBalancesScreen {
     /// Render the collapsible breakdown detail (used in the right column of the header).
     fn render_balance_breakdown_detail(&mut self, ui: &mut Ui, wallet: &Wallet) {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
-        let core_balance = wallet.total_balance_duffs();
+        let core_balance = self.core_balance_duffs(&wallet.seed_hash());
         let platform_balance = Self::platform_balance_duffs(wallet);
         let shielded_balance = self.shielded_balance_duffs(&wallet.seed_hash());
 
@@ -1966,7 +1988,13 @@ impl WalletsBalancesScreen {
 
                         let summaries = {
                             let wallet = wallet_arc.read().unwrap();
-                            collect_account_summaries(&wallet, self.app_context.network)
+                            let address_balances =
+                                self.snapshot_address_balances(&wallet.seed_hash());
+                            collect_account_summaries(
+                                &wallet,
+                                self.app_context.network,
+                                &address_balances,
+                            )
                         };
                         self.ensure_account_selection(&summaries);
                         action |= self.render_account_tabs(ui, &summaries);
@@ -2581,17 +2609,20 @@ impl ScreenLike for WalletsBalancesScreen {
                 MessageBanner::set_global(self.app_context.egui_ctx(), &msg, MessageType::Success);
             }
             crate::ui::BackendTaskSuccessResult::GeneratedReceiveAddress { seed_hash, address } => {
-                if let Some(selected) = &self.selected_wallet
-                    && let Ok(wallet) = selected.read()
-                    && wallet.seed_hash() == seed_hash
-                {
-                    // Parse address and get balance
+                let is_selected = self
+                    .selected_wallet
+                    .as_ref()
+                    .and_then(|w| w.read().ok())
+                    .is_some_and(|g| g.seed_hash() == seed_hash);
+                if is_selected {
+                    // Look up the address balance in the display snapshot
+                    // (P4a). A freshly-derived receive address is virtually
+                    // always 0 until it is funded; absent ⇒ 0.
+                    let balances = self.snapshot_address_balances(&seed_hash);
                     let balance = address
                         .parse::<Address<_>>()
                         .ok()
-                        .and_then(|addr| {
-                            wallet.address_balances.get(&addr.assume_checked()).copied()
-                        })
+                        .and_then(|addr| balances.get(&addr.assume_checked()).copied())
                         .unwrap_or(0);
                     self.receive_dialog
                         .core_addresses

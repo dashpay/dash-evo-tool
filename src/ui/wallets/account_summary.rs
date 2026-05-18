@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use dash_sdk::dpp::balances::credits::Credits;
-use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::dashcore::{Address, Network};
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 
 use crate::model::wallet::{DerivationPathHelpers, DerivationPathReference, Wallet};
@@ -241,16 +241,25 @@ impl AccountSummaryBuilder {
     }
 }
 
-pub fn collect_account_summaries(wallet: &Wallet, network: Network) -> Vec<AccountSummary> {
+/// Build per-account summaries from the wallet's watched-address derivation
+/// metadata plus the display-only chain balances from the `WalletBackend`
+/// snapshot (`address_balances`, P4a — replaces the dropped
+/// `Wallet.address_balances`). Platform credits still come off the
+/// DET-retained `Wallet.platform_address_info` (out of `platform-wallet`
+/// scope).
+pub fn collect_account_summaries(
+    wallet: &Wallet,
+    network: Network,
+    address_balances: &BTreeMap<Address, u64>,
+) -> Vec<AccountSummary> {
     let mut builders: BTreeMap<AccountKey, AccountSummaryBuilder> = BTreeMap::new();
 
     for (path, info) in &wallet.watched_addresses {
         let (category, index) = categorize_account_path(path, network, info.path_reference);
 
-        let balance = wallet
-            .address_balances
+        let balance = address_balances
             .get(&info.address)
-            .cloned()
+            .copied()
             .unwrap_or_default();
 
         // Get Platform credits balance for Platform Payment addresses

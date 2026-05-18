@@ -15,6 +15,7 @@ use dash_sdk::dash_spv::sync::{SyncEvent, SyncProgress, SyncState};
 use platform_wallet::events::{EventHandler, PlatformEventHandler, WalletEvent};
 use platform_wallet::manager::platform_address_sync::PlatformAddressSyncSummary;
 
+use super::snapshot::SnapshotStore;
 use crate::app::TaskResult;
 use crate::context::connection_status::ConnectionStatus;
 use crate::model::spv_status::SpvStatus;
@@ -26,16 +27,19 @@ use crate::utils::egui_mpsc::SenderAsync;
 pub struct EventBridge {
     connection_status: Arc<ConnectionStatus>,
     task_result_sender: SenderAsync<TaskResult>,
+    snapshots: Arc<SnapshotStore>,
 }
 
 impl EventBridge {
-    pub fn new(
+    pub(super) fn new(
         connection_status: Arc<ConnectionStatus>,
         task_result_sender: SenderAsync<TaskResult>,
+        snapshots: Arc<SnapshotStore>,
     ) -> Self {
         Self {
             connection_status,
             task_result_sender,
+            snapshots,
         }
     }
 
@@ -108,8 +112,37 @@ impl EventHandler for EventBridge {
         }
     }
 
-    fn on_wallet_event(&self, _event: &WalletEvent) {
-        // Wallet balances/transactions mutated upstream — re-read next frame.
+    fn on_wallet_event(&self, event: &WalletEvent) {
+        // Accumulate the event's transaction records (upstream drops
+        // finalized records from memory — `keep-finalized-transactions` is
+        // off — so the snapshot's history is event-sourced), then recompute
+        // and publish the affected wallet's display snapshot off the
+        // lock-free balance + non-blocking UTXO read. UI re-reads next frame.
+        let wallet_id = match event {
+            WalletEvent::TransactionDetected {
+                wallet_id, record, ..
+            } => {
+                self.snapshots
+                    .accumulate_transactions(wallet_id, std::iter::once(record.as_ref()));
+                *wallet_id
+            }
+            WalletEvent::BlockProcessed {
+                wallet_id,
+                inserted,
+                updated,
+                matured,
+                ..
+            } => {
+                self.snapshots.accumulate_transactions(
+                    wallet_id,
+                    inserted.iter().chain(updated.iter()).chain(matured.iter()),
+                );
+                *wallet_id
+            }
+            WalletEvent::TransactionInstantLocked { wallet_id, .. }
+            | WalletEvent::SyncHeightAdvanced { wallet_id, .. } => *wallet_id,
+        };
+        self.snapshots.recompute(&wallet_id);
         self.nudge_refresh();
     }
 
@@ -147,7 +180,7 @@ mod tests {
         let cs = Arc::new(ConnectionStatus::new());
         let (tx, rx) =
             tokio::sync::mpsc::channel::<TaskResult>(8).with_egui_ctx(egui::Context::default());
-        let bridge = EventBridge::new(Arc::clone(&cs), tx);
+        let bridge = EventBridge::new(Arc::clone(&cs), tx, Arc::new(SnapshotStore::new()));
         (bridge, cs, rx)
     }
 

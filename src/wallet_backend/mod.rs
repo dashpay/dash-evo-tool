@@ -15,9 +15,12 @@
 
 mod event_bridge;
 mod loader;
+mod snapshot;
 
 pub use event_bridge::EventBridge;
 pub use loader::{PersistedWalletLoader, SeedReregistrationLoader, WalletRegistration};
+use snapshot::SnapshotStore;
+pub use snapshot::{DetUtxo, DetWalletBalance, WalletSnapshot};
 
 use std::path::Path;
 use std::sync::Arc;
@@ -67,6 +70,10 @@ type WalletId = [u8; 32];
 struct Inner {
     pwm: PlatformWalletManager<DetPersister>,
     loader: Arc<dyn PersistedWalletLoader>,
+    /// Display-only snapshot store (balance/tx/utxo), pushed by the
+    /// `EventBridge`. See [`snapshot`]. DISPLAY-ONLY — never feeds coin
+    /// selection (A04 fund-safety gate).
+    snapshots: Arc<SnapshotStore>,
     /// `WalletSeedHash` → upstream `WalletId`. See [`WalletId`].
     id_map: std::sync::RwLock<std::collections::BTreeMap<WalletSeedHash, WalletId>>,
     /// Optional peer `host:port` for Devnet/Regtest or a user-selected local
@@ -116,7 +123,13 @@ impl WalletBackend {
                 .map_err(|source| TaskError::WalletStorage { source })?,
         );
 
-        let bridge = Arc::new(EventBridge::new(connection_status, task_result_sender));
+        let snapshots = Arc::new(SnapshotStore::new());
+
+        let bridge = Arc::new(EventBridge::new(
+            connection_status,
+            task_result_sender,
+            Arc::clone(&snapshots),
+        ));
 
         let pwm = PlatformWalletManager::new(sdk, persister, bridge);
 
@@ -126,6 +139,7 @@ impl WalletBackend {
             inner: Arc::new(Inner {
                 pwm,
                 loader,
+                snapshots,
                 id_map: std::sync::RwLock::new(std::collections::BTreeMap::new()),
                 peer,
                 network,
@@ -166,10 +180,11 @@ impl WalletBackend {
                 .await
             {
                 Ok(pw) => {
+                    let wallet_id = pw.wallet_id();
+                    self.inner.id_map.write()?.insert(reg.seed_hash, wallet_id);
                     self.inner
-                        .id_map
-                        .write()?
-                        .insert(reg.seed_hash, pw.wallet_id());
+                        .snapshots
+                        .register_wallet(reg.seed_hash, wallet_id, pw);
                     tracing::debug!(
                         wallet = %hex::encode(reg.seed_hash),
                         "Wallet registered with backend"
@@ -177,9 +192,20 @@ impl WalletBackend {
                 }
                 Err(platform_wallet::error::PlatformWalletError::WalletAlreadyExists(_)) => {
                     // Already present in the upstream manager (e.g. a prior
-                    // Stage-B run before this process). Resolve its id so the
-                    // DET-keyed map stays consistent; this keeps the whole
-                    // step idempotent.
+                    // Stage-B run before this process). Resolve its id by
+                    // re-deriving deterministically from the seed (NOT by
+                    // parsing the error string — CLAUDE.md), so the DET-keyed
+                    // map and the snapshot store stay consistent and the
+                    // whole step is idempotent.
+                    if let Some(wallet_id) = Self::wallet_id_from_seed(reg.network, &reg.seed_bytes)
+                    {
+                        self.inner.id_map.write()?.insert(reg.seed_hash, wallet_id);
+                        if let Some(pw) = self.inner.pwm.get_wallet(&wallet_id).await {
+                            self.inner
+                                .snapshots
+                                .register_wallet(reg.seed_hash, wallet_id, pw);
+                        }
+                    }
                     tracing::debug!(
                         wallet = %hex::encode(reg.seed_hash),
                         "Wallet already registered upstream — idempotent"
@@ -355,6 +381,68 @@ impl WalletBackend {
     /// conversion surface — identities "repopulated on first sync").
     pub async fn ensure_wallets_registered(&self, ctx: &Arc<AppContext>) -> Result<(), TaskError> {
         self.register_persisted_wallets(ctx).await
+    }
+
+    // -----------------------------------------------------------------
+    // Read accessors — DET-typed display surface (P4a).
+    //
+    // These read the EventBridge-pushed `WalletSnapshot`. They are
+    // synchronous, lock-free, and infallible: an absent (pre-first-sync)
+    // snapshot yields empties, which the UI renders as "syncing". The
+    // snapshot is DISPLAY-ONLY — coin selection / tx construction MUST go
+    // through `send_payment` / `create_asset_lock_proof` (A04 gate).
+    // -----------------------------------------------------------------
+
+    /// Confirmed / unconfirmed / total balance for the wallet.
+    pub fn wallet_balance(&self, seed_hash: &WalletSeedHash) -> DetWalletBalance {
+        self.inner.snapshots.snapshot(seed_hash).balance
+    }
+
+    /// Full transaction history for the wallet (event-sourced).
+    pub fn transaction_history(
+        &self,
+        seed_hash: &WalletSeedHash,
+    ) -> Vec<crate::model::wallet::WalletTransaction> {
+        self.inner
+            .snapshots
+            .snapshot(seed_hash)
+            .transactions
+            .clone()
+    }
+
+    /// Current unspent outputs for the wallet. DISPLAY-ONLY — never feed
+    /// these into coin selection (A04 fund-safety gate).
+    pub fn utxos(&self, seed_hash: &WalletSeedHash) -> Vec<DetUtxo> {
+        self.inner.snapshots.snapshot(seed_hash).utxos.clone()
+    }
+
+    /// UTXO-derived per-address balances for the wallet.
+    pub fn address_balances(
+        &self,
+        seed_hash: &WalletSeedHash,
+    ) -> std::collections::BTreeMap<dash_sdk::dpp::dashcore::Address, u64> {
+        self.inner
+            .snapshots
+            .snapshot(seed_hash)
+            .address_balances
+            .clone()
+    }
+
+    /// Whether a (post-first-sync) snapshot has been published for the
+    /// wallet. `false` ⇒ render the "syncing" state, not a zero balance.
+    pub fn has_snapshot(&self, seed_hash: &WalletSeedHash) -> bool {
+        self.inner.snapshots.has_snapshot(seed_hash)
+    }
+
+    /// Deterministically derive the upstream `WalletId` from seed bytes
+    /// without touching the manager. Used only to recover the id on the
+    /// idempotent `WalletAlreadyExists` re-registration path (avoids
+    /// parsing the upstream error string — CLAUDE.md).
+    fn wallet_id_from_seed(network: Network, seed_bytes: &[u8; 64]) -> Option<WalletId> {
+        use dash_sdk::dpp::key_wallet::wallet::Wallet;
+        Wallet::from_seed_bytes(*seed_bytes, network, WalletAccountCreationOptions::Default)
+            .ok()
+            .map(|w| w.wallet_id)
     }
 
     /// Build, sign, and broadcast a payment from the wallet's default BIP-44

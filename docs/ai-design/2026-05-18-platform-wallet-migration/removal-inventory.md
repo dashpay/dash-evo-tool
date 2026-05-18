@@ -78,6 +78,20 @@ Cross-references: [backendtask-contract.md](backendtask-contract.md) for task-le
 
 ---
 
+## Retained Code Requiring SDK-Rev Signature Updates at P0.5
+
+The following clusters appear in the P0.5 error list but are **explicitly NOT migration deletions**. They are retained code broken only by upstream API drift. Future readers must not mistake these drift fixes for removal inventory items.
+
+| Cluster | Location | Classification | Notes |
+|---|---|---|---|
+| **E — Qualified identity** | `src/model/qualified_identity/mod.rs` | SDK-DRIFT-FIXUP — RETAIN | Fix `sign`/`sign_create_witness` lifetimes, `AddressProvider` members, missing assoc types `Tag`/`Address`. Out of migration scope. |
+| **F — Shielded bundle** | `src/backend_task/shielded/bundle.rs` | SDK-DRIFT-FIXUP — RETAIN | Fix `AddressKey`→`AddressOps`, async `?`-on-`Pin<Box<dyn Future>>`, trait sigs. If unfixable in budget, escalate as BLOCKING; do not stub. |
+| **G — Identity/contract tasks** | `src/backend_task/identity/**`, `src/backend_task/contract/**` | SDK-DRIFT-FIXUP — RETAIN | Mechanical signature and import updates. Never stub. |
+
+**Rule:** Never place `unimplemented!()` or a stub error in Cluster E, F, or G code. Silent capability loss on retained code is an A04 violation. If a fixup is too expensive, it surfaces as a blocking finding — not a quiet stub.
+
+---
+
 ## RPC Backend Mode — Fate
 
 `CoreBackendMode` collapses entirely. `platform-wallet` is SPV-internal only — no RPC/full-node wallet option (`Cargo.toml` has `dash-spv` only; `SpvRuntime` is the sole chain backend). With chain sync owned by `platform-wallet`, the dual RPC/SPV wallet mode disappears: enum, settings, UI toggle, all RPC wallet call sites — deleted.

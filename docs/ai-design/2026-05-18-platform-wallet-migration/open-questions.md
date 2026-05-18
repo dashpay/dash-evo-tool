@@ -67,6 +67,8 @@ The soft fallback ("keep DET derivation for existing contacts, use upstream for 
 
 Policy: for every existing established DashPay contact, prove upstream derivation reproduces the exact historical address set, then record upstream mapping. If any contact is impossible to migrate (upstream derivation diverges), quarantine it, block DashPay cutover for that contact, preserve legacy data, and surface a blocking escalation banner to the user. Never silently proceed. Never silently fall back. Never mutate or delete user data.
 
+**P0 confirmed structural finding (FACT, not risk):** DET hardcodes `m/9'/5'/15'/{account}'` all networks (`dip14_derivation.rs:176`); upstream `AccountType::DashpayReceivingFunds` = `m/9'/{coin}'/15'/0'/(sender)/(recipient)` (testnet coin=1', account fixed 0' not in path). Mainnet / full-256-bit / account-0 addresses 0–5 are byte-identical — `CKDpriv256` primitive converges. Divergence is confined to path coin-type, account placement, xpub version bytes, and account-reference. Migration is mechanically tractable (re-derive on upstream path); no upstream crypto fix is required. Expected quarantine residue = non-mainnet + non-account-0 contacts. P0 probe divergence is recorded as a release-blocking finding; execution continues with quarantine machinery as the sole safety net.
+
 P0 full-256-bit probe divergence is reclassified release-blocking. P4 DashPay derivation deletion is gated on migration execution + hard-stop path proven — not on zero probe divergence.
 
 Full design: [dip14-migration-hardstop.md](dip14-migration-hardstop.md).

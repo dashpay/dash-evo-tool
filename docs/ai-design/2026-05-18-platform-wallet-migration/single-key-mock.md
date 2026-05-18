@@ -6,7 +6,9 @@
 
 ---
 
-Cross-references: [open-questions.md #7](open-questions.md) — Decision #7: ship mock now, swap to `SingleKeyPlatformWallet` when upstream ships a non-HD wallet type; [backendtask-contract.md](backendtask-contract.md) — `SendSingleKeyWalletPayment` and `RefreshSingleKeyWalletInfo` dispositions; [removal-inventory.md § RETAIN](removal-inventory.md#retain) — why the legacy table is not dropped; [g2-mock-boundary.md](g2-mock-boundary.md) — `PersistedWalletLoader` follows this same swappable-stub pattern.
+Cross-references: [open-questions.md #7](open-questions.md) — Decision #7: ship mock now, swap to `SingleKeyPlatformWallet` when upstream ships a non-HD wallet type; [backendtask-contract.md](backendtask-contract.md) — `SendSingleKeyWalletPayment` and `RefreshSingleKeyWalletInfo` dispositions; [removal-inventory.md § RETAIN](removal-inventory.md#retain) — why the legacy table is not dropped; [g2-mock-boundary.md](g2-mock-boundary.md) — `PersistedWalletLoader` follows this same swappable-stub pattern; [phasing.md § Cluster C](phasing.md#cluster-c----srcbackend_taskcoremodrs-8-errors) — P0.5 routes single-key dispatch arms to `TaskError::SingleKeyWalletsUnsupported` as part of the compile floor.
+
+> **Phasing note:** The stub boundary is established at **P0.5**, not P1. Single-key task arms (Cluster C of the P0.5 compile-floor work) return `TaskError::SingleKeyWalletsUnsupported` from the compile floor onward. The `SingleKeyBackend` trait and `SingleKeyStub` type are formalized in P1 but the observable behavior (typed error, user-facing banner) is present from P0.5.
 
 ## F. Single-Key Mock Design
 

@@ -6,6 +6,18 @@
 
 ---
 
+## Transitional State: P0.5 → P2
+
+Between P0.5 and P2, the `BackendTask` enum shape is preserved but wallet/identity/DashPay dispatch arms are inert. Specifically:
+
+- **`TaskError::WalletBackendNotYetWired`** — new typed fieldless variant introduced at P0.5 for all wallet/identity/DashPay task arms that have been delete-and-stub'd (Cluster C in the [P0.5 Compile-Floor Task List](phasing.md#p05-compile-floor-task-list)). These arms return this error from P0.5 until P2 replaces them with real `WalletBackend` calls. User-facing message: *"This action is being upgraded and is temporarily unavailable. Please use the previous version of the app to transact, or wait for the next update."* UI renders a calm `MessageBanner`; no action required from the user.
+
+- **`TaskError::SingleKeyWalletsUnsupported`** — typed fieldless variant for all single-key task arms, introduced at P0.5. Permanent from P0.5 onward (not replaced in P2; swap happens only when upstream ships a non-HD wallet type). See [single-key-mock.md](single-key-mock.md).
+
+Both variants follow the error taxonomy rules (CLAUDE.md): dedicated fieldless variants, message via `#[error("…")]`, no `String` fields, no raw technical details in the user-facing message, `Debug` repr via `BannerHandle::with_details`.
+
+---
+
 ## C. BackendTask Contract Mapping
 
 The `BackendTask` enum (`src/backend_task/mod.rs:92-100`) and the action/channel/`TaskResult`/`display_task_result` loop are preserved. Signatures are modified only where the wallet model type changes. Verified DET task surface: `WalletTask` (`src/backend_task/wallet/mod.rs`), `CoreTask` (`src/backend_task/core/mod.rs:44`), `IdentityTask` (`src/backend_task/identity/mod.rs`), `DashPayTask` (`src/backend_task/dashpay.rs`).

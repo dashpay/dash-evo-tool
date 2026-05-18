@@ -6,8 +6,9 @@ DET becomes a thin adapter: `platform-wallet` owns chain sync, HD wallet managem
 
 > **STATUS**
 >
-> All 8 decisions resolved. Implementation is unblocked.
-> P0–P2 start immediately against the pinned #3625 head (Decision #1).
+> P0 complete — PROCEED. All 8 decisions resolved. Execution underway (spec-only doc pass; code on the same branch).
+> P0.5 "Compile Floor" is the next phase: atomic pin bump + delete/stub/fixup to reach green build + clippy.
+> P1–P5 build on the P0.5 green floor.
 > Only release-blocking gate: Decision #6 DIP-14/15 migration/hard-stop QA lane (P3+P4).
 > Supersedes the prior incremental plan (architecture.md, migration-plan.md, spv-rpc-correctness.md, verification.md — all deleted).
 > Verified at PR #3625 head `738091f734e05c7a1b822bb1ebff336c93b67891`.
@@ -41,7 +42,7 @@ The per-contact migrate-or-quarantine path must be implemented and QA-proven bef
 | [data-model-and-migration.md](data-model-and-migration.md) | Conversion table, one-time migration procedure with backup/fail-safe, dead fields |
 | [removal-inventory.md](removal-inventory.md) | DELETE vs RETAIN lists; RPC backend mode fate; thin Core-RPC mining utility |
 | [single-key-mock.md](single-key-mock.md) | `SingleKeyBackend` trait boundary, stub behavior, user message, isolation |
-| [phasing.md](phasing.md) | P0–P5 phase table with gates; skills/agents/crew; QA matrix; highest-risk assumption verdict |
+| [phasing.md](phasing.md) | P0–P5 phase table (including P0.5 compile floor) with gates; skills/agents/crew; QA matrix; highest-risk assumption verdict |
 | [g2-mock-boundary.md](g2-mock-boundary.md) | `PersistedWalletLoader` seam design — seed-re-registration now, one-line swap when upstream `Wallet::from_persisted` lands |
 | [dip14-migration-hardstop.md](dip14-migration-hardstop.md) | DIP-14/15 per-contact migrate-or-quarantine policy, hard-stop behavior, escalation, revised P4 gate |
 | [open-questions.md](open-questions.md) | All 8 decisions — now fully RESOLVED |

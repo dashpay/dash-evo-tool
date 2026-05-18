@@ -31,18 +31,24 @@ Per-contact: all-or-nothing.
 
 ## 6.2 — Possible vs Impossible
 
-DET's `index_to_child_number` (`src/backend_task/dashpay/dip14_derivation.rs:213-240`) collapses the 256-bit index to 31 bits via `sha256(index)[0..4] & 0x7FFFFFFF` ONLY where a legacy `ChildNumber` is stored; the derived key uses the full 256-bit index in both implementations (`ckd_priv_256` in DET, `ChildNumber::Normal256` upstream). Both agree on path, identifier-to-index encoding (raw 32 bytes, not hashed), and P2PKH address format.
+**Structural finding from P0 (CONFIRMED — state as fact, not risk):**
 
-The divergence risk is whether the two CKDpriv256 implementations produce byte-identical `I_L` (endianness of `ser_256(i)`, point serialization choice).
+DET hardcodes the derivation path `m/9'/5'/15'/{account}'` for all networks (`dip14_derivation.rs:176`). Upstream `AccountType::DashpayReceivingFunds` uses `m/9'/{coin}'/15'/0'/(sender)/(recipient)`, where coin-type varies by network (testnet coin=1') and account is fixed at 0' rather than appearing in the path.
+
+On Mainnet with full-256-bit inputs and account 0, addresses at indices 0–5 are **byte-identical** between DET and upstream — the `CKDpriv256` primitive converges. Divergence is confined to: path coin-type differences, account placement in the path, xpub version bytes, and account-reference encoding. Migration is mechanically tractable via re-derivation on the upstream path; no upstream crypto fix is required.
+
+Expected post-migration residue: non-mainnet contacts and non-account-0 contacts may be quarantined. P0 probe divergence on the full-256-bit class is recorded as a **release-blocking finding** — execution continues, but the quarantine machinery is the sole safety net until an upstream crypto fix or explicit acceptance is recorded.
+
+**Identifier classes:**
+- **Low-index** (first 28 bytes zero, `is_index_less_than_2_32` true, `dip14_derivation.rs:205`) — expected migratable but still asserted.
+- **Full-256-bit** (high bytes set) — class where path divergence is most visible; focus of P0 probe and runtime audit.
+
+DET's `index_to_child_number` (`src/backend_task/dashpay/dip14_derivation.rs:213-240`) collapses the 256-bit index to 31 bits via `sha256(index)[0..4] & 0x7FFFFFFF` ONLY where a legacy `ChildNumber` is stored; the derived key uses the full 256-bit index in both implementations (`ckd_priv_256` in DET, `ChildNumber::Normal256` upstream). Both agree on identifier-to-index encoding (raw 32 bytes, not hashed) and P2PKH address format.
 
 | Predicate | Definition |
 |---|---|
 | **Migratable(contact)** | ∀ index ∈ [0, highest_used]: `upstream_addr == det_addr` AND `upstream_contact_xpub == det_contact_xpub` |
 | **Impossible(contact)** | ∃ index: `upstream_addr != det_addr` — a historically-transacted address upstream cannot reproduce → funds unreachable via new backend |
-
-**Identifier classes:**
-- **Low-index** (first 28 bytes zero, `is_index_less_than_2_32` true, `dip14_derivation.rs:205`) — expected migratable but still asserted.
-- **Full-256-bit** (high bytes set) — only class where divergence can manifest; focus of P0 probe and runtime audit.
 
 Migratability is NEVER inferred from identifier class. It is computed per contact over the real historical index range.
 

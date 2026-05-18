@@ -1,3 +1,5 @@
+> **SUPERSEDED 2026-05-18 by the "drop backwards compatibility" decision.** The migrate-or-quarantine / hard-stop apparatus described below is WITHDRAWN and NOT implemented. Retained as historical design record only. See `data-model-and-migration.md` → "Accepted fund-accessibility trade-off" and `open-questions.md` #6.
+
 # DIP-14/15 Contact-Derivation Migration and Hard-Stop
 
 **Purpose:** Full design for the DIP-14/15 derivation migration — per-contact migrate-or-quarantine policy, hard-stop behavior, escalation (user + developer), P0 probe reclassification, revised P4 gate, and secret boundary.

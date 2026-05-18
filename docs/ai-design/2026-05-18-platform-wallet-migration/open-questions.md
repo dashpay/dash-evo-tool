@@ -61,17 +61,13 @@ See [backendtask-contract.md § DashPayTask](backendtask-contract.md) for the ta
 
 ## Decision #6 — DIP-14/15 Parity Policy
 
-**RESOLVED: Migrate or hard-stop + escalate.**
+**RESOLVED 2026-05-18 — drop backwards compatibility; upstream-only DashPay derivation. The migrate-or-quarantine/hard-stop apparatus is WITHDRAWN. Accepted fund-accessibility trade-off recorded in data-model-and-migration.md with a mandatory one-time user notice. Supersedes the prior 'migrate-or-hard-stop' resolution and dip14-migration-hardstop.md.**
 
 The soft fallback ("keep DET derivation for existing contacts, use upstream for new") is WITHDRAWN. Dual-derivation coexistence is not permitted.
 
-Policy: for every existing established DashPay contact, prove upstream derivation reproduces the exact historical address set, then record upstream mapping. If any contact is impossible to migrate (upstream derivation diverges), quarantine it, block DashPay cutover for that contact, preserve legacy data, and surface a blocking escalation banner to the user. Never silently proceed. Never silently fall back. Never mutate or delete user data.
+The per-contact migrate-or-quarantine apparatus (previously documented in [dip14-migration-hardstop.md](dip14-migration-hardstop.md)) is WITHDRAWN. DashPay contacts are re-established on upstream derivation unconditionally. The fund-accessibility trade-off this introduces is accepted and documented in [data-model-and-migration.md](data-model-and-migration.md) — "Accepted fund-accessibility trade-off (user decision, 2026-05-18)". The mandatory one-time informational notice to migrated users is the sole compensating control.
 
-**P0 confirmed structural finding (FACT, not risk):** DET hardcodes `m/9'/5'/15'/{account}'` all networks (`dip14_derivation.rs:176`); upstream `AccountType::DashpayReceivingFunds` = `m/9'/{coin}'/15'/0'/(sender)/(recipient)` (testnet coin=1', account fixed 0' not in path). Mainnet / full-256-bit / account-0 addresses 0–5 are byte-identical — `CKDpriv256` primitive converges. Divergence is confined to path coin-type, account placement, xpub version bytes, and account-reference. Migration is mechanically tractable (re-derive on upstream path); no upstream crypto fix is required. Expected quarantine residue = non-mainnet + non-account-0 contacts. P0 probe divergence is recorded as a release-blocking finding; execution continues with quarantine machinery as the sole safety net.
-
-P0 full-256-bit probe divergence is reclassified release-blocking. P4 DashPay derivation deletion is gated on migration execution + hard-stop path proven — not on zero probe divergence.
-
-Full design: [dip14-migration-hardstop.md](dip14-migration-hardstop.md).
+Historical quarantine design: see [dip14-migration-hardstop.md](dip14-migration-hardstop.md) (retained as historical record only).
 
 ---
 

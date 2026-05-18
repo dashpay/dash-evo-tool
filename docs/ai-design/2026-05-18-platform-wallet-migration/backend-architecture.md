@@ -43,8 +43,8 @@ Two settings keys are added by the two-stage migration (see [data-model-and-migr
 
 | Key | Type | Meaning |
 |---|---|---|
-| `platform_wallet_migration_pending` | bool (0/1) | Set by Stage-A v35 tx; cleared by Stage B only when every wallet re-registered AND every identity added AND every contact classified. Authoritative "pending" signal — the backup file's existence is NOT the signal. |
-| `dashpay_dip14_quarantine_active` | bool (0/1) | Set by Stage B iff ≥1 DashPay contact quarantined. Gates legacy DashPay/contact table retention and `data.db.premigration` retention. Independent of `platform_wallet_migration_pending`. |
+| `platform_wallet_migration_pending` | bool (0/1) | Set by Stage-A v35 tx; cleared by Stage B only when every wallet re-registered AND every identity added AND all contacts re-established AND legacy tables dropped. Authoritative "pending" signal — the backup file's existence is NOT the signal. |
+| `dashpay_dip14_quarantine_active` | bool (0/1) | INERT/RESERVED — column added in Stage A (commit `6d348566`) but the quarantine apparatus was WITHDRAWN (user decision 2026-05-18). Never set to 1 by the simplified Stage-B engine. Removal deferred to P4's batched dead-column cleanup. |
 
 **`ensure_wallet_backend` as the Stage-B seam (`src/context/mod.rs:634`):**
 

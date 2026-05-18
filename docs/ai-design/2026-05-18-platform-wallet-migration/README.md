@@ -7,9 +7,10 @@ DET becomes a thin adapter: `platform-wallet` owns chain sync, HD wallet managem
 > **STATUS**
 >
 > P0 — DONE (GREEN). P0.5 — DONE (GREEN). P1 — DONE (GREEN). P2 — DONE (GREEN).
-> P3 — ratified two-stage marker-gated migration architecture; in progress (P3a–P3e). Run is mid-execution on this branch.
+> P3a — DONE (GREEN, commit `6d348566`). P3b — DONE (GREEN, commit `d5a3e51b`; `classify_contact` + 7 tests now DEAD, deleted in P3c).
+> P3 re-scoped 2026-05-18: drop backwards compatibility, upstream-only DashPay derivation, no quarantine. Run continuing P3c→P5.
 > P4–P5 — pending P3 completion.
-> Only release-blocking gate: Decision #6 DIP-14/15 migration/hard-stop QA lane (P3+P4).
+> Only release-blocking gate: simplified Stage-B engine + QA lane (P3c–P3e).
 > Supersedes the prior incremental plan (architecture.md, migration-plan.md, spv-rpc-correctness.md, verification.md — all deleted).
 > Verified at PR #3625 head `738091f734e05c7a1b822bb1ebff336c93b67891`.
 
@@ -29,8 +30,8 @@ DET is pinned to PR #3625 head now. P0–P2 proceed immediately. G1 resolves to:
 **G2 — `Wallet::from_persisted` gap — downgraded to deferred swap.**
 `ClientStartState.wallets` is not reconstructed by `persister.load()` at PR head (`LOAD_UNIMPLEMENTED = ["ClientStartState::wallets"]` in `rs-platform-wallet-storage/src/sqlite/persister.rs`). Mitigated by the `PersistedWalletLoader` seam: `SeedReregistrationLoader` ships now with seed-re-registration behavior; `UpstreamFromPersisted` is a one-line swap when upstream ships `Wallet::from_persisted`. G2 is no longer a gate. See [g2-mock-boundary.md](g2-mock-boundary.md) and [upstream-reality.md § G2 Caveat](upstream-reality.md#g2-caveat--walletfrom_persisted-load-gap).
 
-**Only release-blocking gate: Decision #6 DIP-14/15 migration/hard-stop QA lane.**
-The per-contact migrate-or-quarantine path must be implemented and QA-proven before P3+P4 ship. See [dip14-migration-hardstop.md](dip14-migration-hardstop.md) and [phasing.md](phasing.md).
+**Only release-blocking gate: simplified Stage-B engine + QA lane (P3c–P3e).**
+The upstream-only DashPay derivation path must be implemented and QA-proven before P3+P4 ship. Quarantine apparatus WITHDRAWN (user decision 2026-05-18). See [data-model-and-migration.md](data-model-and-migration.md) — "Accepted fund-accessibility trade-off" and [phasing.md](phasing.md).
 
 ## Table of Contents
 
@@ -44,7 +45,7 @@ The per-contact migrate-or-quarantine path must be implemented and QA-proven bef
 | [single-key-mock.md](single-key-mock.md) | `SingleKeyBackend` trait boundary, stub behavior, user message, isolation |
 | [phasing.md](phasing.md) | P0–P5 phase table (including P0.5 compile floor) with gates; skills/agents/crew; QA matrix; highest-risk assumption verdict |
 | [g2-mock-boundary.md](g2-mock-boundary.md) | `PersistedWalletLoader` seam design — seed-re-registration now, one-line swap when upstream `Wallet::from_persisted` lands |
-| [dip14-migration-hardstop.md](dip14-migration-hardstop.md) | DIP-14/15 per-contact migrate-or-quarantine policy, hard-stop behavior, escalation, revised P4 gate |
+| [dip14-migration-hardstop.md](dip14-migration-hardstop.md) | SUPERSEDED 2026-05-18 — quarantine apparatus WITHDRAWN; retained as historical record only. See data-model-and-migration.md "Accepted fund-accessibility trade-off". |
 | [open-questions.md](open-questions.md) | All 8 decisions — now fully RESOLVED |
 | [feature-coverage.md](feature-coverage.md) | Supporting analysis: RPC-vs-SPV capability matrix; DET features absent from `platform-wallet` |
 
@@ -57,6 +58,6 @@ See [open-questions.md](open-questions.md) for full resolutions:
 - **#3** ZMQ listener — RESOLVED: audit before P4; delete if wallet-only
 - **#4** Devnet identity discovery — RESOLVED: DET-permanent
 - **#5** DashPay scope boundary — RESOLVED: hybrid split confirmed
-- **#6** DIP-14/15 parity policy — RESOLVED: migrate or hard-stop + escalate (see [dip14-migration-hardstop.md](dip14-migration-hardstop.md))
+- **#6** DIP-14/15 parity policy — RE-RESOLVED 2026-05-18: drop backwards compatibility, upstream-only derivation, quarantine apparatus WITHDRAWN (see [open-questions.md #6](open-questions.md#decision-6--dip-1415-parity-policy) and [data-model-and-migration.md](data-model-and-migration.md))
 - **#7** Single-key timeline — RESOLVED: mock now, swap later
 - **#8** Removed tasks grace — RESOLVED: hard-remove immediately

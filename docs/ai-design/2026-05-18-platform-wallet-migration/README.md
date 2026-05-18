@@ -1,42 +1,52 @@
-# DET → `platform-wallet` Migration
+# DET → platform-wallet: Clean-Slate Backend Rewrite
 
 ## Executive Summary
 
-This design covers the incremental migration of dash-evo-tool's wallet infrastructure to the upstream `platform-wallet` crate and its companion `platform-wallet-storage` persister. The core structural insight is that `PlatformWalletInfo` is a composition over the existing `ManagedWalletInfo` — it wraps, not replaces it — which is the structural reason the migration is tractable phase by phase. The equally important supply-side insight is that a canonical SQLite persister (`SqliteWalletPersister`, from the new `platform-wallet-storage` crate in PR #3625) already exists upstream; dash-evo-tool's job is to consume and wire it, not build one.
+DET becomes a thin adapter: `platform-wallet` owns chain sync, HD wallet management, identity lifecycle, DashPay, asset locks, and persistence. DET's `src/spv/` is deleted entirely — `SpvRuntime` inside `platform-wallet` drives all of it. The `CoreBackendMode` RPC/SPV dual-path disappears; there is one backend. The upgrade path is a one-time from_/into_ migration on first launch (backup → re-register wallets from seed → migrate identity/DashPay state → drop legacy tables). Single-key wallets are mocked with a clean swap boundary for a future upstream non-HD type.
 
 > **STATUS**
 >
-> Investigation and planning: COMPLETE
-> Implementation: NOT STARTED
-> Blocked on: Gate G1 (PR #3625 merge + platform pin bump) before Phases 2–4 can begin.
-> Phases 0–1 are executable now.
+> SPEC ONLY — no implementation until user-approved.
+> Supersedes the prior incremental plan (architecture.md, migration-plan.md, spv-rpc-correctness.md, verification.md — all deleted).
+> Verified at PR #3625 head `738091f734e05c7a1b822bb1ebff336c93b67891`.
+
+## Load-Bearing Confirmed Assumption
+
+**Decision #1 — `platform-wallet` owns SPV internally: CONFIRMED at source. Not contradicted.**
+
+`packages/rs-platform-wallet/Cargo.toml` declares `dash-spv` as a direct dependency. `SpvRuntime` (`packages/rs-platform-wallet/src/spv/runtime.rs`) constructs `DashSpvClient::new()` internally, owns `PeerNetworkManager` + `DiskStorageManager`, and exposes `run(config, cancel_token)` — its own sync loop. There is no host-feed API. `PlatformWalletManager` owns the `SpvRuntime`. DET's `src/spv/` is deletable; only a thin ConnectionStatus display adapter remains. See [upstream-reality.md](upstream-reality.md) for the full evidence chain.
 
 ## Hard Sequencing Gates
 
-Two gates are non-negotiable before certain phases can start:
-
 **G1 — PR #3625 merge + pin bump.**
-PR #3625 (upstream `platform-wallet-storage`) is open, draft, not merged (base `v3.1-dev`, milestone v3.1.0, last updated 2026-05-14). dash-evo-tool's platform pin (`Cargo.toml:21`) points to `54048b9352…`, which predates the persister crate. Phases 2, 3, and 4 are blocked until #3625 merges and dash-evo-tool bumps to a containing rev. Phases 0 and 1 are unblocked — they use only `ManagedWalletInfo`, already available.
+PR #3625 (`platform-wallet-storage`) is open, draft, not merged (base `v3.1-dev`, milestone v3.1.0, last updated 2026-05-14). DET's platform pin (`Cargo.toml:21`) is `54048b9352…`, which predates the persister crate. Phase P3+ are blocked until #3625 merges and DET bumps to a containing rev. P0–P1 are not blocked (spike can compile against the PR branch).
 
-**G2 — upstream `Wallet::from_persisted` (the `load()` gap).**
-Confirmed at PR #3625 head (`738091f734…`): `persister.rs` declares `LOAD_UNIMPLEMENTED = ["ClientStartState::wallets"]`; `load()` populates only `platform_addresses`, not wallet handles. The upstream `Wallet::from_persisted` constructor does not yet exist. Consequence: Phase 3 must not rely on `persister.load()` to rebuild wallets. dash-evo-tool's seed-driven `SpvManager::load_wallet_from_seed` remains the wallet-rehydration path; the persister supplies identity/contact/asset-lock/UTXO deltas around it. This is the frozen Phase-2↔Phase-3 contract until G2 closes upstream.
+**G2 — upstream `Wallet::from_persisted` (`load()` gap).**
+`ClientStartState.wallets` is not reconstructed by `persister.load()` (`LOAD_UNIMPLEMENTED = ["ClientStartState::wallets"]` in `rs-platform-wallet-storage/src/sqlite/persister.rs`). Upstream works around this by re-registering wallets from seed at startup (`create_wallet_from_seed_bytes → load_persisted()`). DET must retain encrypted seeds and re-register each wallet from seed on every launch; the persister supplies identity/contact/UTXO/asset-lock deltas around it. Not a blocker — it is the prescribed upstream pattern — but it is a frozen contract. See [upstream-reality.md § G2 Caveat](upstream-reality.md#g2-caveat--walletfrom_persisted-load-gap).
 
 ## Table of Contents
 
 | File | Description |
 |---|---|
-| [architecture.md](architecture.md) | Target component layout, `DetWalletManager` newtype rationale, persistence design, two-DB coexistence, secret boundary |
-| [migration-plan.md](migration-plan.md) | Four-phase plan with effort/risk/blast-radius table, sequencing gates, skills and agents, QA matrix |
-| [spv-rpc-correctness.md](spv-rpc-correctness.md) | Per-phase correctness verdicts for SPV and RPC modes; the mandatory RPC-rehydration E2E gate |
-| [verification.md](verification.md) | All verification findings: DIP-14/15 parity analysis, `DiskStorageManager` byte-compat, PR #3625 drift check, Phase-0 runtime probe specs |
-| [open-questions.md](open-questions.md) | Four decisions still needed from the user, with architect recommendations and decision rationale |
+| [upstream-reality.md](upstream-reality.md) | Verified upstream facts: what `platform-wallet` owns, the `src/spv/`-deletion answer, G2 caveat |
+| [backend-architecture.md](backend-architecture.md) | New `src/wallet_backend/` module, `AppContext` placement, threading, event flow replacing reconcile, error model |
+| [backendtask-contract.md](backendtask-contract.md) | Full kept/modified/removed/new `BackendTask` table; net frontend impact |
+| [data-model-and-migration.md](data-model-and-migration.md) | Conversion table, one-time migration procedure with backup/fail-safe, dead fields |
+| [removal-inventory.md](removal-inventory.md) | DELETE vs RETAIN lists; RPC backend mode fate; thin Core-RPC mining utility |
+| [single-key-mock.md](single-key-mock.md) | `SingleKeyBackend` trait boundary, stub behavior, user message, isolation |
+| [phasing.md](phasing.md) | P0–P5 phase table with gates; skills/agents/crew; QA matrix; highest-risk assumption verdict |
+| [open-questions.md](open-questions.md) | Eight decisions/questions still needed from the user, with architect recommendations |
+| [feature-coverage.md](feature-coverage.md) | Supporting analysis: RPC-vs-SPV capability matrix; DET features absent from `platform-wallet` |
 
 ## Open Decisions Still Needed
 
-See [open-questions.md](open-questions.md) for full context and recommendations. The blocking items are:
+See [open-questions.md](open-questions.md) for full context and architect recommendations:
 
-- **#4** `DiskStorageManager` rebuild UX — silent re-sync vs explicit user prompt
-- **#5** DashPay scope boundary — confirm the hybrid split between persister and DET ownership
-- **#6** `QualifiedIdentity` longevity — confirm alignment with upstream's deferral through this migration
-- **#7** Devnet fallback longevity — confirm two code paths are acceptable indefinitely
-- **#3-resid** DIP-14/15 mismatch policy — if E.1 probe shows divergence, approve migration-tool approach as the Phase-4 unblock
+- **#1** G1 timing — wait for #3625 merge vs. temporarily pin to PR branch for P0–P2
+- **#2** G2 seed-re-registration UX — acceptable today, or wait for upstream persisted rehydration
+- **#3** ZMQ listener — audit and likely drop once wallet no longer uses Core RPC
+- **#4** Devnet identity discovery — confirm DET-permanent
+- **#5** DashPay scope boundary — confirm hybrid split
+- **#6** DIP-14/15 parity policy — policy if P0 probe shows divergence
+- **#7** Single-key timeline — confirm "mock now, swap later" acceptable for one release
+- **#8** One-release no-op grace for removed tasks vs. immediate removal

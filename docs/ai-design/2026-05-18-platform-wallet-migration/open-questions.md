@@ -1,110 +1,141 @@
 # Open Questions
 
-**Purpose:** Decisions still needed from the user before or during implementation. Each decision is actionable; the architect's recommendation is called out explicitly.
+**Purpose:** Eight decisions still needed from the user before implementation begins. Each is actionable; the architect's recommendation or assumption is called out explicitly.
 
 [← back to README](README.md)
 
 ---
 
-These are not design gaps — the architect has a recommendation for each. They are user-authority decisions: scope commitments, UX policy, and migration strategy that the team lead must confirm before the relevant phase starts.
+No implementation starts until all decisions are confirmed (or explicitly deferred with a documented rationale). See [phasing.md](phasing.md) for how each decision gates a specific phase.
 
-## Decision #4 — `DiskStorageManager` Rebuild UX
+---
 
-**Needed before:** Phase 3 (affects the upgrade path from Phase 2 to Phase 3)
+## Decision #1 — G1 Timing
 
-**Context:** The [verification.md § E.2](verification.md#e2--diskstoragemanager-byte-compat) probe may find that `DiskStorageManager`'s on-disk cache is not byte-compatible between `WalletManager<ManagedWalletInfo>` and `WalletManager<PlatformWalletInfo>`. If so, a strategy is needed for existing users upgrading.
+**Needed before:** P2 (P0–P1 can proceed)
+
+**Context:** PR #3625 is an open draft on `v3.1-dev`. DET's platform pin (`Cargo.toml:21`, `54048b9352…`) predates it. DET cannot reference the persister crate until #3625 merges and a containing platform rev is pinnable.
 
 **Options:**
 
-| Option | Description | Tradeoffs |
-|---|---|---|
-| A — Silent re-sync + info banner (recommended) | Detect version-marker mismatch on first launch; call `SpvManager::clear_data_dir()` (`src/spv/manager.rs:800`); display: "Updating wallet data for the new version. This may take a few minutes." | No user decision required; data dir is a cache (not authoritative); consistent with existing "SPV sync in progress" UX |
-| B — Explicit user prompt | Show a dialog explaining the cache must be rebuilt | Exposes internal cache concept to users; jargon; outcome is the same regardless of user response |
+| Option | Description |
+|---|---|
+| **(a) Wait for #3625 merge + release** | Safer; spec assumes this for shipping |
+| **(b) Temporarily pin to PR branch for P0–P2** | Faster iteration on the spike; acceptable for exploratory work; not for production |
 
-**Architect recommendation:** Option A — silent re-sync. The data directory is a cache; wallet truth is the encrypted seed + SQLite. Requiring user confirmation for an internal cache rebuild is self-resolving jargon. Do not wipe without the version-marker check to avoid gratuitous re-sync every launch (A04 fail-safe).
+**Architect assumption:** (a) for shipping; (b) tolerated for spike only.
 
-**Confirmation needed:** Approve Option A, or specify Option B / a variation.
+**Confirmation needed:** Confirm (a), or approve (b) for the spike with an understanding that the pin reverts before P3.
+
+---
+
+## Decision #2 — G2 Seed-Re-Registration UX
+
+**Needed before:** P3 migration design is finalized
+
+**Context:** Because `Wallet::from_persisted` does not yet exist upstream (Gate G2), DET must decrypt the seed and re-register each wallet on every launch. Password-protected wallets prompt on launch today — this behavior continues. See [upstream-reality.md § G2 Caveat](upstream-reality.md#g2-caveat--walletfrom_persisted-load-gap).
+
+**Options:**
+
+| Option | Description |
+|---|---|
+| **(a) Accept seed-re-registration (current behavior)** | No UX regression; prescribed upstream pattern |
+| **(b) Wait for upstream `Wallet::from_persisted`** | Defers P3 start until upstream ships the constructor |
+
+**Architect recommendation:** (a) — this is what upstream prescribes and what DET does today.
+
+**Confirmation needed:** Confirm (a) acceptable, or indicate a preference to wait for (b).
+
+---
+
+## Decision #3 — ZMQ Listener
+
+**Needed before:** P4 (deletion pass)
+
+**Context:** `components/core_zmq_listener` feeds non-wallet Core events (e.g. ChainLock notifications, InstantSend events). Once wallet no longer uses Core RPC, it may be droppable — but it may have consumers outside the wallet path. A usage audit is needed before P4 removes it.
+
+**Architect recommendation:** Audit usages before P4; likely droppable; confirm scope.
+
+**Confirmation needed:** Confirm ZMQ listener scope — retained, dropped, or "audit first."
+
+---
+
+## Decision #4 — Devnet Identity Discovery
+
+**Needed before:** P2 (IdentityTask rewire)
+
+**Context:** Upstream `AssetLockManager` and identity discovery cover Mainnet/Testnet only. DET's DAPI-based Devnet path (`discover_identities.rs`) has no upstream equivalent and no upstream timeline.
+
+**Architect recommendation:** Confirm DET-permanent. The Devnet path is isolated in `discover_identities.rs` and branches on `network`, not on `CoreBackendMode`, so it coexists cleanly with the new backend.
+
+**Confirmation needed:** Confirm DET-permanent Devnet path is acceptable indefinitely.
 
 ---
 
 ## Decision #5 — DashPay Scope Boundary
 
-**Needed before:** Phase 3 design is frozen
+**Needed before:** P2 (DashPayTask rewire)
 
-**Context:** The upstream persister owns contact-requests, established-contacts, DashPay profile, and payment history. A "replace all DashPay" reading of the migration would pull avatar processing, auto-accept logic, incoming-payment UI, and profile UI into scope — significantly ballooning effort and risk.
+**Context:** The upstream export surface includes the full DashPay type set and derivation functions. A "replace all DashPay" reading would pull avatar processing, auto-accept proof, and incoming-payment detection into migration scope — significantly expanding risk and effort.
 
 **Proposed hybrid split:**
 
 | Owner | Owns |
 |---|---|
-| `platform-wallet-storage` persister | Contact requests, established contacts, DashPay profile, payment history |
-| dash-evo-tool (unchanged) | Avatar processing, auto-accept, incoming-payment UI, profile UI (`src/backend_task/dashpay/{avatar_processing,auto_accept_*,incoming_payments,profile}.rs`) |
+| Upstream (`IdentityWallet<B>`, derivation functions) | Contact-request/established-contact state, DashPay profile, derivation crypto |
+| DET (unchanged) | Avatar I/O (`avatar_processing.rs`), auto-accept proof, incoming-payment detection, payment-history cache |
 
-**Architect recommendation:** Confirm the hybrid. Moving the DET-owned items above is out of scope for this migration; they are not addressed by the upstream persister's trait surface.
+**Architect recommendation:** Confirm the hybrid. The DET-owned items above are not addressed by the upstream persister's trait surface.
 
-**Confirmation needed:** Approve the hybrid split as stated, or identify any specific items to re-scope.
-
----
-
-## Decision #6 — `QualifiedIdentity` Longevity
-
-**Needed before:** Phase 3 (governs dual-write design)
-
-**Context:** The upstream trait doc explicitly defers moving the `QualifiedIdentity` blob to a later milestone ("evo-tool task #130 / Phase 9c"). `QualifiedIdentity` carries DET-only fields (`ManagedIdentity` lacks) — identity status, voter/operator associations, DPNS — so it remains as the UI/display model regardless. The `identity.data` bincode blob in dash-evo-tool's SQLite (`src/database/identities.rs:157`) stays in place through this migration.
-
-**Architect recommendation:** Align with upstream's deferral. Keep the `QualifiedIdentity` blob in DET through this migration; revisit at upstream "Phase 9c". No action needed in Phases 0–4.
-
-**Confirmation needed:** Confirm alignment with upstream deferral, or indicate a different timeline.
+**Confirmation needed:** Approve hybrid split as stated, or identify items to re-scope.
 
 ---
 
-## Decision #7 — Devnet Fallback Longevity
+## Decision #6 — DIP-14/15 Parity Policy
 
-**Needed before:** Phase 3
+**Needed before:** P4 (deletion of `dip14_derivation.rs` / `hd_derivation.rs`)
 
-**Context:** Upstream has no Devnet timeline. The legacy DET asset-lock identity discovery path for Devnet cannot be removed. Phase 3 will retain two code paths: the upstream `IdentityManager`-based path for Mainnet/Testnet, and the legacy DET path for Devnet. These persist side by side indefinitely until upstream adds Devnet support.
+**Context:** DET's `index_to_child_number` (`dip14_derivation.rs:213-240`) collapses a 256-bit child index to 31 bits for legacy `ChildNumber` storage. Upstream uses native `ChildNumber::Normal256` (full 256-bit, no lossy collapse). The P0 golden-vector parity probe (DIP-14/15 lane — see [phasing.md QA matrix](phasing.md#qa-matrix)) determines whether the on-curve derived addresses are byte-identical.
 
-**Architect recommendation:** Accept retaining the legacy Devnet fallback indefinitely. The two paths are branched on `network`, not on `core_backend_mode`, so they compose cleanly without coupling SPV/RPC to Devnet behavior.
+**If probe is green:** DET derivation deleted in P4; upstream functions used exclusively.
 
-**Confirmation needed:** Confirm the two code paths are acceptable indefinitely, or indicate a preferred deprecation trigger (e.g., upstream Devnet support lands).
+**If probe is red — proposed fallback:**
+
+Keep DET derivation for existing contacts; use upstream for new contacts. On first boot post-deletion, re-derive each contact payment address and compare to persisted. On mismatch: structured log + non-blocking banner:
+
+> "A DashPay contact address could not be re-derived after the upgrade. Your funds are safe; please re-verify contact `Abc123…` before sending."
+
+Never auto-delete; never use freshly-derived address over persisted; never block startup (A04 fail-safe). Optional `det_cli` audit subcommand reports mismatches without mutation. The key invariant: **never silently use a freshly-derived address that differs from the persisted address.**
+
+**Architect recommendation:** Run the P0 probe; approve the fallback approach now so P4 planning is not gated on the probe result.
+
+**Confirmation needed:** Approve fallback policy, or specify an alternative (e.g. block P4 deletion until upstream alignment; rewrite addresses in-place).
 
 ---
 
-## Decision #3-resid — DIP-14/15 Mismatch Handling Policy
+## Decision #7 — Single-Key Timeline
 
-**Needed before:** Phase 4 planning (depends on E.1 probe result from Phase 0)
+**Needed before:** P2 (single-key stub shipped to users)
 
-**Context:** The [E.1 golden-vector probe](verification.md#e1--dip-1415-dashpay-derivation-parity) runs in Phase 0. If it finds a mismatch between dash-evo-tool's hand-rolled derivation and the upstream `key_wallet`-based derivation, Phase 4 deletion is blocked. The question is: what is the policy for handling existing users who have established DashPay contacts with addresses derived by the old path?
+**Context:** Single-key wallets are mocked: operations return `TaskError::SingleKeyWalletsUnsupported`; existing data is preserved and surfaced read-only with a clear message. The `SingleKeyBackend` trait boundary makes a future swap a one-file change when upstream ships a non-HD wallet type. See [single-key-mock.md](single-key-mock.md).
 
-| Scenario | What it means |
+**Architect recommendation:** "Mock now, swap later" — single-key users get read-only + a clear, calm message for at least one release.
+
+**Confirmation needed:** Confirm "mock now, swap later" is acceptable to ship. If not, state the constraint (e.g. must ship full single-key support in the same release).
+
+---
+
+## Decision #8 — One-Release No-Op Grace for Removed Tasks
+
+**Needed before:** P2 (tasks removed or demoted)
+
+**Context:** `CoreTask::RecoverAssetLocks` and `CoreTask::ListCoreWallets` are removed. `AssetLockManager` continuous tracking makes explicit recovery obsolete; named Core wallets have no meaning without RPC mode. Two options:
+
+| Option | Description |
 |---|---|
-| E.1 probe green | No mismatch; Phase 4 proceeds normally |
-| E.1 probe red | Addresses derived by old and new code differ for some contacts; Phase 4 deletion waits for the migration tool |
+| **(a) Immediate removal** | Task variants deleted in P2; UI entry points removed or guarded |
+| **(b) One-release no-op grace** | Task variants return graceful no-op success in P2, removed in P5; old UI entry points degrade gracefully rather than error |
 
-**Proposed approach (if red):**
+**Architect recommendation:** (b) for `RecoverAssetLocks` (users may have the old UI cached); (a) for `ListCoreWallets` (Core-wallet picker is being removed from the UI in P2 regardless).
 
-**Phase-4 startup sanity check:** On first boot post-deletion, for each wallet with established DashPay contacts, re-derive the contact payment address via upstream and compare to the persisted address. On mismatch:
-- Structured log entry
-- Non-blocking `MessageBanner`: "A DashPay contact address could not be re-derived after the upgrade. Your funds are safe; please re-verify contact `Abc123…` before sending."
-- Fall back to the persisted address, never the freshly-derived one (A04 fail-safe)
-- Never auto-delete; never block startup
-
-**Optional migration tool:** A `det_cli` audit subcommand reporting mismatches across all wallets without mutating state.
-
-**Architect recommendation:** Approve the migration-tool + startup-sanity-check approach as the Phase-4 unblock, accepting that Phase 4 deletion waits until the tool ships if the probe is red.
-
-**Confirmation needed:** Approve this approach, or specify an alternative (e.g., block Phase 4 entirely until upstream alignment; rewrite old addresses in-place).
-
----
-
-## DIP-14/15 Mismatch Handling Policy
-
-This section consolidates the Phase-0 and Phase-4 handling strategy for completeness. It is referenced from [migration-plan.md Phase 0 and Phase 4](migration-plan.md#phase-table) and [verification.md § E.1](verification.md#e1--dip-1415-dashpay-derivation-parity).
-
-**Phase 0 detection probe:** E.1 golden vectors. Green → proceed to Phase 1. Red → divergence is characterized, not silently shipped; Phase 4 is paused pending migration-tool completion.
-
-**Phase 4 startup sanity check (if probe was red):** As described in Decision #3-resid above — non-blocking banner, fallback to persisted address, never auto-delete.
-
-**Optional migration tool:** `det_cli` audit subcommand; reports mismatches across all wallets; no mutation.
-
-The key invariant: **never silently use a freshly-derived address that differs from the persisted address**. Funds must not be sent to the wrong contact. User funds safety takes priority over code cleanliness.
+**Confirmation needed:** Approve this split, or choose (a) or (b) uniformly.

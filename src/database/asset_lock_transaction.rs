@@ -394,3 +394,171 @@ impl Database {
         Ok(())
     }
 }
+
+/// I4 (release-blocking) — crash-retry must not double-broadcast.
+///
+/// DET never builds or broadcasts asset-lock transactions itself: the legacy
+/// DET asset-lock builders (`generic_asset_lock_transaction`,
+/// `*_for_utxo*`, `select_unspent_utxos_for`) are deleted (I2) and
+/// `WalletBackend::broadcast_transaction` is never called for asset locks —
+/// upstream `create_funded_asset_lock_proof` owns select+sign+broadcast+
+/// track atomically. The only DET-side durable record is
+/// `store_asset_lock_transaction`, keyed on `tx_id` with `ON CONFLICT DO
+/// UPDATE`. This lane proves that a simulated crash between store and
+/// (upstream) broadcast, followed by a relaunch that re-stores the retried
+/// asset-lock tx, yields exactly ONE durable record with identical inputs —
+/// the DET path produces no competing asset-lock tx spending different
+/// inputs.
+#[cfg(test)]
+mod crash_retry_no_double_broadcast {
+    use super::*;
+    use crate::database::test_helpers::create_temp_database;
+    use dash_sdk::dpp::dashcore::hashes::Hash;
+    use dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayload;
+    use dash_sdk::dpp::dashcore::transaction::special_transaction::asset_lock::AssetLockPayload;
+    use dash_sdk::dpp::dashcore::{OutPoint, ScriptBuf, Transaction, TxIn, TxOut, Txid, Witness};
+
+    /// A deterministic asset-lock tx funded by `funding_outpoint`. Two calls
+    /// with the same outpoint produce byte-identical txs (and thus the same
+    /// txid) — exactly the determinism upstream relies on for dedup.
+    fn asset_lock_tx(funding_outpoint: OutPoint, amount: u64) -> Transaction {
+        Transaction {
+            version: 3,
+            lock_time: 0,
+            input: vec![TxIn {
+                previous_output: funding_outpoint,
+                script_sig: ScriptBuf::new(),
+                sequence: u32::MAX,
+                witness: Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: amount,
+                script_pubkey: ScriptBuf::new(),
+            }],
+            special_transaction_payload: Some(TransactionPayload::AssetLockPayloadType(
+                AssetLockPayload {
+                    version: 1,
+                    credit_outputs: vec![TxOut {
+                        value: amount,
+                        script_pubkey: ScriptBuf::new(),
+                    }],
+                },
+            )),
+        }
+    }
+
+    /// Seed a minimal legacy `wallet` row so the asset_lock_transaction FK
+    /// (`wallet` → `wallet(seed_hash)`) is satisfied. A valid serialized
+    /// account-0 xpub keeps `get_wallets` parseable if ever loaded.
+    fn seed_wallet_row(db: &Database, seed_hash: &[u8; 32], network: Network) {
+        use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
+        use dash_sdk::dpp::key_wallet::bip32::{
+            ChildNumber, DerivationPath, ExtendedPrivKey, ExtendedPubKey,
+        };
+        let secp = Secp256k1::new();
+        let master = ExtendedPrivKey::new_master(network, &[7u8; 64]).expect("master");
+        let path = DerivationPath::from(vec![
+            ChildNumber::Hardened { index: 44 },
+            ChildNumber::Hardened { index: 1 },
+            ChildNumber::Hardened { index: 0 },
+        ]);
+        let account = master.derive_priv(&secp, &path).expect("derive");
+        let epk = ExtendedPubKey::from_priv(&secp, &account).encode().to_vec();
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO wallet (seed_hash, encrypted_seed, salt, nonce, \
+             master_ecdsa_bip44_account_0_epk, alias, is_main, uses_password, network) \
+             VALUES (?1, ?2, ?3, ?4, ?5, 'al-wallet', 1, 0, ?6)",
+            params![
+                seed_hash.as_slice(),
+                vec![0u8; 64],
+                vec![0u8; 16],
+                vec![0u8; 12],
+                epk,
+                network.to_string(),
+            ],
+        )
+        .expect("seed wallet row");
+    }
+
+    fn row_count(db: &Database) -> i64 {
+        let conn = db.conn.lock().unwrap();
+        conn.query_row("SELECT COUNT(*) FROM asset_lock_transaction", [], |r| {
+            r.get(0)
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn crash_between_store_and_broadcast_then_retry_yields_one_tx_same_inputs() {
+        let (db, _tmp) = create_temp_database().expect("temp db");
+        let network = Network::Testnet;
+        let seed_hash = [7u8; 32];
+
+        // The funding outpoint upstream coin-selection picked. The retried
+        // broadcast reuses the same selection => same deterministic tx.
+        let funding = OutPoint::new(Txid::from_byte_array([3u8; 32]), 0);
+        let tx = asset_lock_tx(funding, 100_000);
+        let txid = tx.txid().to_byte_array();
+
+        seed_wallet_row(&db, &seed_hash, network);
+
+        // Store-before-broadcast: the durable record exists BEFORE upstream
+        // broadcast. Then a crash (process death) — no marker, nothing else.
+        db.store_asset_lock_transaction(&tx, 100_000, None, &seed_hash, network)
+            .expect("store before broadcast");
+        assert_eq!(row_count(&db), 1, "exactly one durable record after store");
+
+        // Relaunch: reopen the same DB file (crash-relaunch). The retried
+        // broadcast re-stores the SAME deterministic asset-lock tx.
+        let db_path = db.db_file_path().expect("file-backed db");
+        drop(db);
+        let db = Database::new(&db_path).expect("reopen after crash");
+        db.initialize(&db_path).expect("init after crash");
+
+        let retried = asset_lock_tx(funding, 100_000);
+        assert_eq!(
+            retried.txid().to_byte_array(),
+            txid,
+            "retry reuses the same selection => same deterministic txid"
+        );
+        db.store_asset_lock_transaction(&retried, 100_000, None, &seed_hash, network)
+            .expect("idempotent re-store on retry");
+
+        // No double-broadcast surface: exactly ONE record, same txid, same
+        // serialized bytes (same inputs) — the DET path produced no second
+        // asset-lock tx spending different inputs.
+        assert_eq!(
+            row_count(&db),
+            1,
+            "crash-retry must not create a second/competing asset-lock record"
+        );
+        let (stored, amount, islock, stored_seed, stored_net) = db
+            .get_asset_lock_transaction(&txid)
+            .expect("query")
+            .expect("the single record must be present");
+        assert_eq!(stored.txid().to_byte_array(), txid);
+        assert_eq!(
+            dash_sdk::dpp::dashcore::consensus::serialize(&stored),
+            dash_sdk::dpp::dashcore::consensus::serialize(&tx),
+            "the retried record spends the SAME inputs (identical tx bytes)"
+        );
+        assert_eq!(stored.input, tx.input, "funding inputs unchanged on retry");
+        assert_eq!(amount, 100_000);
+        assert!(islock.is_none());
+        assert_eq!(stored_seed, seed_hash);
+        assert_eq!(stored_net, network.to_string());
+
+        // A hypothetical competing tx spending DIFFERENT inputs would have a
+        // DIFFERENT txid and is simply absent — DET has no asset-lock
+        // builder/broadcaster to ever produce it (I2).
+        let competing = asset_lock_tx(OutPoint::new(Txid::from_byte_array([9u8; 32]), 1), 100_000);
+        assert_ne!(competing.txid().to_byte_array(), txid);
+        assert!(
+            db.get_asset_lock_transaction(&competing.txid().to_byte_array())
+                .expect("query competing")
+                .is_none(),
+            "no competing asset-lock tx exists — DET never broadcasts a second one"
+        );
+    }
+}

@@ -426,11 +426,15 @@ impl crate::database::Database {
     /// Retained per data-model-and-migration.md: identity blob, platform
     /// addresses, token balances, single_key_wallet, settings, shielded,
     /// contested votes, DashPay payment/avatar cache.
+    ///
+    /// The `utxos` table is deliberately NOT dropped: it is the single-key
+    /// wallet load path under Decision #7 (`single_key_wallet.rs` →
+    /// `get_utxos_by_address`). Dropping it would be fund-data loss. See
+    /// phasing.md P4b carve-out and data-model-and-migration.md.
     pub fn drop_legacy_migrated_tables(&self) -> rusqlite::Result<()> {
         let conn = self.conn.lock().unwrap();
         for table in [
             "wallet",
-            "utxos",
             "wallet_transactions",
             "dashpay_contacts",
             "dashpay_contact_requests",

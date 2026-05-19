@@ -3093,9 +3093,11 @@ mod test {
             .unwrap_or(false)
         }
 
+        /// Legacy tables the migration DROPs once upstream has durably
+        /// flushed. `utxos` is intentionally absent — it is RETAINED under
+        /// the Decision-#7 single-key carve-out (see `RETAINED_TABLES`).
         const LEGACY_TABLES: &[&str] = &[
             "wallet",
-            "utxos",
             "wallet_transactions",
             "dashpay_contacts",
             "dashpay_contact_requests",
@@ -3103,6 +3105,11 @@ mod test {
             "dashpay_address_mappings",
             "contact_private_info",
         ];
+
+        /// Tables that MUST survive the migration drop. `utxos` is the
+        /// single-key wallet load path (Decision #7); dropping it would be
+        /// fund-data loss.
+        const RETAINED_TABLES: &[&str] = &["utxos", "single_key_wallet", "settings"];
 
         /// Backup-before-destroy: the `.premigration` floor is present and a
         /// valid SQLite file BEFORE any legacy table is dropped.
@@ -3134,8 +3141,9 @@ mod test {
         }
 
         /// DROP is strictly last: after the destructive step EVERY legacy
-        /// table is gone while the retained surfaces (identity blob, settings)
-        /// survive, and the floor still holds the pre-migration data.
+        /// table is gone while the retained surfaces (identity blob, settings,
+        /// and the Decision-#7 `utxos` carve-out) survive, and the floor
+        /// still holds the pre-migration data.
         #[test]
         fn drop_removes_all_legacy_tables_and_retains_floor() {
             let tmp = tempfile::tempdir().unwrap();
@@ -3146,10 +3154,12 @@ mod test {
             for t in LEGACY_TABLES {
                 assert!(!table_exists(&db, t), "{t} must be dropped");
             }
-            assert!(
-                table_exists(&db, "settings"),
-                "settings (retained surface) must survive the drop"
-            );
+            for t in RETAINED_TABLES {
+                assert!(
+                    table_exists(&db, t),
+                    "{t} (retained surface) must survive the drop"
+                );
+            }
 
             let backup = Database::premigration_backup_path(&db_file);
             let bdb = Database::new(&backup).unwrap();

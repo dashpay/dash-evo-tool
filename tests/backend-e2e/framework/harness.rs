@@ -48,16 +48,27 @@ static CTX: tokio::sync::OnceCell<BackendTestContext> = tokio::sync::OnceCell::c
 /// serialized. The long waits (recipient balance, IS lock) run concurrently.
 static FUNDING_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// Cancellation token for the task manager that owns SPV tasks.
+/// Cancellation token for the DET `TaskManager` that owns DET-side subtasks.
 ///
 /// `tokio::sync::OnceCell` does not cache panicked inits — if `init()`
 /// panics (e.g. framework wallet unfunded), the next test retries from
-/// scratch. But the orphaned SPV tasks from the panicked init still run
-/// on the shared tokio runtime, holding the data directory lock. A global
-/// panic hook cancels this token, which stops SPV (its stop_token is a
-/// child) and releases the lock file.
+/// scratch. A global panic hook cancels this token to stop DET subtasks
+/// from a panicked init. The upstream `SpvRuntime` (which holds the SPV
+/// data-directory lock) is a separate concern handled by [`LEAKED_BACKEND`].
 static SPV_CANCEL: std::sync::Mutex<Option<tokio_util::sync::CancellationToken>> =
     std::sync::Mutex::new(None);
+
+/// The most recently constructed `WalletBackend`.
+///
+/// The upstream `SpvRuntime` takes an exclusive lock on its data directory.
+/// If `init()` panics after the backend is built, that runtime keeps running
+/// on the shared tokio runtime and holds the lock, so every retried `init()`
+/// fails at `start()` with "Data directory locked". Before constructing a
+/// new backend, a retry calls `shutdown()` on the leaked predecessor stored
+/// here to release the lock.
+static LEAKED_BACKEND: tokio::sync::Mutex<
+    Option<Arc<dash_evo_tool::wallet_backend::WalletBackend>>,
+> = tokio::sync::Mutex::const_new(None);
 
 /// Get (or initialize) the shared test context.
 pub async fn ctx() -> &'static BackendTestContext {
@@ -92,6 +103,17 @@ impl BackendTestContext {
         {
             tracing::warn!("Cancelling orphaned SPV tasks from a previous init attempt");
             token.cancel();
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+
+        // Shut down a leaked upstream SpvRuntime from a previous panicked
+        // init so it releases the SPV data-directory lock before we build a
+        // new backend (otherwise `start()` fails with "Data directory
+        // locked"). `OnceCell` does not cache panicked inits, so this runs
+        // on every retry until one init succeeds.
+        if let Some(stale_backend) = LEAKED_BACKEND.lock().await.take() {
+            tracing::warn!("Shutting down leaked wallet backend from a previous init attempt");
+            stale_backend.shutdown().await;
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
 
@@ -243,9 +265,16 @@ impl BackendTestContext {
             .ensure_wallet_backend(task_result_sender)
             .await
             .expect("Failed to construct wallet backend");
-        app_context
+        let backend = app_context
             .wallet_backend()
-            .expect("wallet backend must be wired after ensure_wallet_backend")
+            .expect("wallet backend must be wired after ensure_wallet_backend");
+
+        // Track the backend before starting sync so a later panic in init
+        // (peer wait, balance check, …) doesn't leak the SpvRuntime's
+        // data-directory lock — the next retry shuts this down first.
+        *LEAKED_BACKEND.lock().await = Some(Arc::clone(&backend));
+
+        backend
             .start()
             .await
             .expect("Failed to start wallet backend chain sync");

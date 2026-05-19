@@ -2,7 +2,7 @@ use crate::database::{CorruptedBlobError, Database};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::{
     AddressInfo, ClosedKeyItem, DerivationPathReference, DerivationPathType, OpenWalletSeed,
-    TransactionStatus, Wallet, WalletSeed, WalletTransaction,
+    Wallet, WalletSeed, WalletTransaction,
 };
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
@@ -10,9 +10,7 @@ use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::dashcore::address::{NetworkChecked, NetworkUnchecked};
 use dash_sdk::dpp::dashcore::consensus::{deserialize, serialize};
 use dash_sdk::dpp::dashcore::hashes::Hash;
-use dash_sdk::dpp::dashcore::{
-    self, BlockHash, InstantLock, Network, OutPoint, ScriptBuf, Transaction, TxOut, Txid,
-};
+use dash_sdk::dpp::dashcore::{self, InstantLock, Network, OutPoint, Transaction};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::InstantAssetLockProof;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
@@ -52,8 +50,8 @@ impl Database {
         let tx = conn.transaction()?;
 
         tx.execute(
-            "INSERT INTO wallet (seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, alias, is_main, uses_password, password_hint, network, confirmed_balance, unconfirmed_balance, total_balance, core_wallet_name)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO wallet (seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, alias, is_main, uses_password, password_hint, network, core_wallet_name)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 wallet.seed_hash(),
                 wallet.encrypted_seed_slice(),
@@ -65,9 +63,6 @@ impl Database {
                 wallet.uses_password,
                 wallet.password_hint().clone(),
                 network_str,
-                wallet.confirmed_balance as i64,
-                wallet.unconfirmed_balance as i64,
-                wallet.total_balance as i64,
                 wallet.core_wallet_name.as_deref(),
             ],
         )?;
@@ -487,7 +482,7 @@ impl Database {
 
         tracing::trace!("step 1: retrieve all wallets for the given network");
         let mut stmt = conn.prepare(
-            "SELECT seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, alias, is_main, uses_password, password_hint, confirmed_balance, unconfirmed_balance, total_balance, core_wallet_name FROM wallet WHERE network = ?",
+            "SELECT seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, alias, is_main, uses_password, password_hint, core_wallet_name FROM wallet WHERE network = ?",
         )?;
 
         let mut wallets_map: BTreeMap<[u8; 32], Wallet> = BTreeMap::new();
@@ -502,10 +497,7 @@ impl Database {
             let is_main: bool = row.get(6)?;
             let uses_password: bool = row.get(7)?;
             let password_hint: Option<String> = row.get(8)?;
-            let confirmed_balance: i64 = row.get::<_, Option<i64>>(9)?.unwrap_or(0);
-            let unconfirmed_balance: i64 = row.get::<_, Option<i64>>(10)?.unwrap_or(0);
-            let total_balance: i64 = row.get::<_, Option<i64>>(11)?.unwrap_or(0);
-            let core_wallet_name: Option<String> = row.get(12)?;
+            let core_wallet_name: Option<String> = row.get(9)?;
 
             // Reconstruct the extended public keys
             let master_ecdsa_extended_public_key =
@@ -567,20 +559,12 @@ impl Database {
                     wallet_seed,
                     uses_password,
                     master_bip44_ecdsa_extended_public_key: master_ecdsa_extended_public_key,
-                    address_balances: BTreeMap::new(),
-                    address_total_received: BTreeMap::new(),
                     known_addresses: BTreeMap::new(),
                     watched_addresses: BTreeMap::new(),
                     unused_asset_locks: vec![],
                     alias,
                     identities: HashMap::new(),
-                    utxos: HashMap::new(),
-                    transactions: Vec::new(),
                     is_main,
-                    confirmed_balance: confirmed_balance as u64,
-                    unconfirmed_balance: unconfirmed_balance as u64,
-                    total_balance: total_balance as u64,
-                    spv_balance_known: false,
                     platform_address_info: BTreeMap::new(),
                     core_wallet_name,
                 },
@@ -685,27 +669,14 @@ impl Database {
                 seed_array,
                 address,
                 derivation_path,
-                balance,
+                _balance,
                 path_reference,
                 path_type,
-                total_received,
+                _total_received,
             ) = row?;
             if let Some(wallet) = wallets_map.get_mut(&seed_array) {
                 // Canonicalize Platform addresses to avoid duplicate representations
                 let canonical_address = Wallet::canonical_address(&address, *network);
-
-                // Update the address balance if available.
-                if let Some(balance) = balance {
-                    wallet
-                        .address_balances
-                        .insert(canonical_address.clone(), balance);
-                }
-                // Update total received if available.
-                if let Some(total_received) = total_received {
-                    wallet
-                        .address_total_received
-                        .insert(canonical_address.clone(), total_received);
-                }
 
                 // Add the address to the `known_addresses` map.
                 wallet
@@ -729,55 +700,7 @@ impl Database {
             }
         }
 
-        tracing::trace!("step 4: retrieve UTXOs for each wallet and add them to the wallets");
-        let mut utxo_stmt = conn.prepare(
-            "SELECT txid, vout, address, value, script_pubkey FROM utxos WHERE network = ?",
-        )?;
-
-        let utxo_rows = utxo_stmt.query_map([network_str.clone()], |row| {
-            let txid: Vec<u8> = row.get(0)?;
-            let vout: i64 = row.get(1)?;
-            let address: String = row.get(2)?;
-            let value: i64 = row.get(3)?;
-            let script_pubkey: Vec<u8> = row.get(4)?;
-
-            let address = Address::from_str(&address)
-                .map_err(|e| {
-                    rusqlite::Error::InvalidParameterName(format!(
-                        "Invalid UTXO address format '{}': {}",
-                        address, e
-                    ))
-                })?
-                .assume_checked();
-
-            let outpoint = OutPoint {
-                txid: Txid::from_slice(&txid).map_err(|e| {
-                    rusqlite::Error::InvalidParameterName(format!("Invalid UTXO txid: {}", e))
-                })?,
-                vout: vout as u32,
-            };
-            let tx_out = TxOut {
-                value: value as u64,
-                script_pubkey: ScriptBuf::from_bytes(script_pubkey),
-            };
-            Ok((address, outpoint, tx_out))
-        })?;
-
-        tracing::trace!("step 5: add the UTXOs to the corresponding wallets.");
-        for row in utxo_rows {
-            let (address, outpoint, tx_out) = row?;
-
-            for wallet in wallets_map.values_mut() {
-                if wallet.known_addresses.contains_key(&address) {
-                    wallet
-                        .utxos
-                        .entry(address.clone())
-                        .or_insert_with(HashMap::new)
-                        .insert(outpoint, tx_out.clone());
-                }
-            }
-        }
-        tracing::trace!("step 6: load asset lock transactions for each wallet");
+        tracing::trace!("step 4: load asset lock transactions for each wallet");
         let mut asset_lock_stmt = conn.prepare(
             "SELECT wallet, amount, transaction_data, instant_lock_data, chain_locked_height FROM asset_lock_transaction where identity_id IS NULL AND network = ?",
         )?;
@@ -863,72 +786,6 @@ impl Database {
                 wallet
                     .unused_asset_locks
                     .push((tx, address, amount, islock, proof));
-            }
-        }
-
-        tracing::trace!("step 7: load wallet transactions for each wallet");
-        let mut tx_stmt = conn.prepare(
-            "SELECT seed_hash, txid, timestamp, height, block_hash, net_amount, fee, label, is_ours, raw_transaction, status
-             FROM wallet_transactions WHERE network = ? ORDER BY timestamp DESC",
-        )?;
-
-        let tx_rows = tx_stmt.query_map([network_str.clone()], |row| {
-            let seed_hash: Vec<u8> = row.get(0)?;
-            let txid_bytes: Vec<u8> = row.get(1)?;
-            let timestamp: i64 = row.get(2)?;
-            let height: Option<i64> = row.get(3)?;
-            let block_hash_bytes: Option<Vec<u8>> = row.get(4)?;
-            let net_amount: i64 = row.get(5)?;
-            let fee: Option<i64> = row.get(6)?;
-            let label: Option<String> = row.get(7)?;
-            let is_ours: bool = row.get(8)?;
-            let raw_transaction: Vec<u8> = row.get(9)?;
-            let status_u8: u8 = row.get(10)?;
-
-            let seed_hash_array: [u8; 32] = seed_hash.try_into().map_err(|_| {
-                rusqlite::Error::InvalidParameterName("Seed hash should be 32 bytes".to_string())
-            })?;
-            let txid = Txid::from_slice(&txid_bytes).map_err(|e| {
-                rusqlite::Error::InvalidParameterName(format!("Invalid transaction txid: {}", e))
-            })?;
-            let transaction: Transaction = deserialize(&raw_transaction).map_err(|e| {
-                rusqlite::Error::InvalidParameterName(format!(
-                    "Failed to deserialize transaction: {}",
-                    e
-                ))
-            })?;
-            let block_hash = block_hash_bytes
-                .as_ref()
-                .map(|bytes| {
-                    BlockHash::from_slice(bytes).map_err(|e| {
-                        rusqlite::Error::InvalidParameterName(format!("Invalid block hash: {}", e))
-                    })
-                })
-                .transpose()?;
-            let fee = fee.map(|f| f as u64);
-            let height = height.map(|h| h as u32);
-
-            Ok((
-                seed_hash_array,
-                WalletTransaction {
-                    txid,
-                    transaction,
-                    timestamp: timestamp as u64,
-                    height,
-                    block_hash,
-                    net_amount,
-                    fee,
-                    label,
-                    is_ours,
-                    status: TransactionStatus::from_u8(status_u8),
-                },
-            ))
-        })?;
-
-        for row in tx_rows {
-            let (seed_hash, transaction) = row?;
-            if let Some(wallet) = wallets_map.get_mut(&seed_hash) {
-                wallet.transactions.push(transaction);
             }
         }
 

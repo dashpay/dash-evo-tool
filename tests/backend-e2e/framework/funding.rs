@@ -42,8 +42,8 @@ fn get_wallet_balance_and_address(
         .get(&wallet_hash)
         .expect("framework wallet must exist");
 
+    let balance = app_context.snapshot_balance(&wallet_hash).total;
     let mut wallet = wallet_arc.write().expect("wallet lock");
-    let balance = wallet.total_balance_duffs();
     let address = wallet
         .receive_address(
             dash_sdk::dpp::dashcore::Network::Testnet,

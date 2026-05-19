@@ -35,7 +35,9 @@ async fn test_tc001_refresh_wallet_info_core_only() {
         other => panic!("Expected RefreshedWallet, got: {:?}", other),
     }
 
-    let balance = wallet.read().expect("wallet lock").total_balance_duffs();
+    let balance = app_context
+        .snapshot_balance(&ctx.framework_wallet_hash)
+        .total;
     assert!(balance > 0, "Framework wallet balance should be > 0");
 }
 

@@ -693,8 +693,15 @@ impl WalletSendScreen {
         let Ok(wallet) = wallet_arc.read() else {
             return vec![];
         };
+        let seed_hash = wallet.seed_hash();
+        drop(wallet);
 
-        let mut addresses = wallet.utxos_by_address();
+        let mut addresses: Vec<(Address, u64)> = self
+            .app_context
+            .snapshot_address_balances(&seed_hash)
+            .into_iter()
+            .filter(|(_, balance)| *balance > 0)
+            .collect();
         // Sort by balance descending for better UX
         addresses.sort_by(|a, b| b.1.cmp(&a.1));
         addresses

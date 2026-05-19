@@ -71,11 +71,8 @@ pub async fn cleanup_test_wallets(
             wait::wait_for_spendable_balance(app_context, hash, 1, Duration::from_secs(1)).await;
 
         let (spendable, total) = {
-            let wallet = wallet_arc.read().expect("wallet lock");
-            (
-                wallet.confirmed_balance_duffs(),
-                wallet.total_balance_duffs(),
-            )
+            let snap = app_context.snapshot_balance(&hash);
+            (snap.confirmed, snap.total)
         };
 
         // Delete wallets with no funds at all — they're fully spent orphans

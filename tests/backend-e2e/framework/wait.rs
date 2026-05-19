@@ -18,16 +18,7 @@ pub async fn wait_for_balance(
     timeout(wait_timeout, async {
         let mut poll_count = 0u32;
         loop {
-            // TODO(P0.5): re-enable in P2 — chain sync is owned by upstream
-            // platform-wallet; reconcile is wired in the WalletBackend rewire.
-
-            let balance = {
-                let wallets = app_context.wallets().read().expect("wallets lock");
-                wallets.get(&wallet_hash).map(|wallet_arc| {
-                    let wallet = wallet_arc.read().expect("wallet lock");
-                    wallet.total_balance_duffs()
-                })
-            };
+            let balance = Some(app_context.snapshot_balance(&wallet_hash).total);
             poll_count += 1;
             if let Some(b) = balance
                 && b >= min_balance
@@ -76,16 +67,7 @@ pub async fn wait_for_spendable_balance(
     timeout(wait_timeout, async {
         let mut poll_count = 0u32;
         loop {
-            // TODO(P0.5): re-enable in P2 — chain sync is owned by upstream
-            // platform-wallet; reconcile is wired in the WalletBackend rewire.
-
-            let balance = {
-                let wallets = app_context.wallets().read().expect("wallets lock");
-                wallets.get(&wallet_hash).and_then(|wallet_arc| {
-                    let wallet = wallet_arc.read().expect("wallet lock");
-                    wallet.spv_confirmed_balance()
-                })
-            };
+            let balance = Some(app_context.snapshot_balance(&wallet_hash).confirmed);
             poll_count += 1;
             if let Some(b) = balance
                 && b >= min_balance
@@ -113,19 +95,8 @@ pub async fn wait_for_spendable_balance(
     .await
     .map_err(|_| {
         // Report both confirmed and total for diagnostics
-        let (confirmed, total) = {
-            let wallets = app_context.wallets().read().expect("wallets lock");
-            wallets
-                .get(&wallet_hash)
-                .map(|wallet_arc| {
-                    let wallet = wallet_arc.read().expect("wallet lock");
-                    (
-                        wallet.spv_confirmed_balance().unwrap_or(0),
-                        wallet.total_balance_duffs(),
-                    )
-                })
-                .unwrap_or((0, 0))
-        };
+        let snap = app_context.snapshot_balance(&wallet_hash);
+        let (confirmed, total) = (snap.confirmed, snap.total);
         format!(
             "Timed out waiting for spendable balance >= {} duffs \
              (confirmed: {}, total: {})",

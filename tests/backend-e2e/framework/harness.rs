@@ -180,13 +180,7 @@ impl BackendTestContext {
                 );
                 for hash in stale {
                     // Log the wallet's balance before removal for audit trail
-                    let balance = {
-                        let wallets = app_context.wallets().read().expect("wallets lock");
-                        wallets
-                            .get(&hash)
-                            .map(|w| w.read().expect("wallet lock").total_balance_duffs())
-                            .unwrap_or(0)
-                    };
+                    let balance = app_context.snapshot_balance(&hash).total;
                     if balance > 0 {
                         tracing::warn!(
                             "Purging stale wallet {:?} with {} duffs (not swept!)",
@@ -295,20 +289,19 @@ impl BackendTestContext {
             }
             Err(e) => {
                 let (confirmed, total, address) = {
+                    let snap = app_context.snapshot_balance(&framework_wallet_hash);
                     let wallets = app_context.wallets().read().expect("wallets lock");
-                    wallets
+                    let addr = wallets
                         .get(&framework_wallet_hash)
-                        .map(|w| {
-                            let mut guard = w.write().expect("wallet lock");
-                            let bal =
-                                (guard.confirmed_balance_duffs(), guard.total_balance_duffs());
-                            let addr = guard
+                        .and_then(|w| {
+                            w.write()
+                                .expect("wallet lock")
                                 .receive_address(Network::Testnet, false, Some(&app_context))
+                                .ok()
                                 .map(|a| a.to_string())
-                                .unwrap_or_else(|_| "<unknown>".to_string());
-                            (bal.0, bal.1, addr)
                         })
-                        .unwrap_or((0, 0, "<unknown>".to_string()))
+                        .unwrap_or_else(|| "<unknown>".to_string());
+                    (snap.confirmed, snap.total, addr)
                 };
                 panic!(
                     "Framework wallet has no spendable balance: {} \

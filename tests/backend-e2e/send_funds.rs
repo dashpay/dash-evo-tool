@@ -18,10 +18,7 @@ async fn test_send_and_receive_funds() {
     let (hash_a, wallet_a) = ctx.create_funded_test_wallet(5_000_000).await;
     let (hash_b, wallet_b) = ctx.create_funded_test_wallet(1_000_000).await;
 
-    let initial_b_balance = {
-        let w = wallet_b.read().expect("lock");
-        w.total_balance_duffs()
-    };
+    let initial_b_balance = app_context.snapshot_balance(&hash_b).total;
 
     // Send 2,000,000 duffs from A to B
     let send_amount: u64 = 2_000_000;

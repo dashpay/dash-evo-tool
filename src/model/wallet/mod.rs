@@ -1,10 +1,9 @@
 pub mod encryption;
 pub mod shielded;
 pub mod single_key;
-mod utxos;
 
 use crate::backend_task::error::TaskError;
-use crate::database::{Database, WalletError};
+use crate::database::WalletError;
 use crate::model::secret::Secret;
 use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::address_funds::{AddressWitness, PlatformAddress};
@@ -19,8 +18,7 @@ use dash_sdk::platform::address_sync::{AddressFunds, AddressIndex, AddressProvid
 
 use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
 use dash_sdk::dpp::dashcore::{
-    Address, BlockHash, InstantLock, Network, OutPoint, PrivateKey, PublicKey, Transaction, TxOut,
-    Txid,
+    Address, BlockHash, InstantLock, Network, PrivateKey, PublicKey, Transaction, Txid,
 };
 use dash_sdk::dpp::platform_value::BinaryData;
 use std::cmp;
@@ -251,7 +249,6 @@ impl DerivationPathHelpers for DerivationPath {
 
 use crate::context::AppContext;
 use bitflags::bitflags;
-use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::prelude::AssetLockProof;
@@ -340,9 +337,6 @@ pub struct Wallet {
     pub wallet_seed: WalletSeed,
     pub uses_password: bool,
     pub master_bip44_ecdsa_extended_public_key: ExtendedPubKey,
-    pub address_balances: BTreeMap<Address, u64>,
-    /// Historical total received per address (not just current UTXOs)
-    pub address_total_received: BTreeMap<Address, u64>,
     pub known_addresses: BTreeMap<Address, DerivationPath>,
     pub watched_addresses: BTreeMap<DerivationPath, AddressInfo>,
     #[allow(clippy::type_complexity)]
@@ -355,15 +349,7 @@ pub struct Wallet {
     )>,
     pub alias: Option<String>,
     pub identities: HashMap<u32, Identity>,
-    pub utxos: HashMap<Address, HashMap<OutPoint, TxOut>>,
-    pub transactions: Vec<WalletTransaction>,
     pub is_main: bool,
-    pub confirmed_balance: u64,
-    pub unconfirmed_balance: u64,
-    pub total_balance: u64,
-    /// True once SPV has reported balances at least once; distinguishes synced
-    /// zero-balance from not-yet-synced.
-    pub spv_balance_known: bool,
     /// DIP-17: Platform address balances and nonces (keyed by Core Address for lookup)
     pub platform_address_info: BTreeMap<Address, PlatformAddressInfo>,
     /// Dash Core wallet name for multi-wallet RPC calls
@@ -431,20 +417,12 @@ impl Wallet {
             }),
             uses_password,
             master_bip44_ecdsa_extended_public_key,
-            address_balances: Default::default(),
-            address_total_received: Default::default(),
             known_addresses,
             watched_addresses,
             unused_asset_locks: Default::default(),
             alias,
             identities: Default::default(),
-            utxos: Default::default(),
-            transactions: Vec::new(),
             is_main: true,
-            confirmed_balance: 0,
-            unconfirmed_balance: 0,
-            total_balance: 0,
-            spv_balance_known: false,
             platform_address_info: Default::default(),
             core_wallet_name: None,
         })
@@ -732,58 +710,8 @@ impl Wallet {
     pub fn is_open(&self) -> bool {
         matches!(self.wallet_seed, WalletSeed::Open(_))
     }
-    pub fn has_balance(&self) -> bool {
-        self.confirmed_balance_duffs() > 0 || self.unconfirmed_balance > 0
-    }
-
     pub fn has_unused_asset_lock(&self) -> bool {
         !self.unused_asset_locks.is_empty()
-    }
-
-    pub fn max_balance(&self) -> u64 {
-        self.utxos
-            .values()
-            .flat_map(|outpoints_to_tx_out| outpoints_to_tx_out.values().map(|tx_out| tx_out.value))
-            .sum::<Duffs>()
-    }
-
-    pub fn confirmed_balance_duffs(&self) -> u64 {
-        if self.total_balance > 0 || self.confirmed_balance > 0 || self.unconfirmed_balance > 0 {
-            self.confirmed_balance
-        } else {
-            self.max_balance()
-        }
-    }
-
-    /// Returns the SPV-reported confirmed balance, or `None` if SPV hasn't
-    /// synced balance data yet. Unlike `confirmed_balance_duffs()`, this
-    /// never falls back to `max_balance()` — callers that need certainty
-    /// (e.g., test waiters) should use this and retry on `None`.
-    pub fn spv_confirmed_balance(&self) -> Option<u64> {
-        if self.spv_balance_known {
-            Some(self.confirmed_balance)
-        } else {
-            None
-        }
-    }
-
-    pub fn unconfirmed_balance_duffs(&self) -> u64 {
-        self.unconfirmed_balance
-    }
-
-    pub fn total_balance_duffs(&self) -> u64 {
-        if self.total_balance > 0 {
-            self.total_balance
-        } else {
-            self.max_balance()
-        }
-    }
-
-    pub fn update_spv_balances(&mut self, confirmed: u64, unconfirmed: u64, total: u64) {
-        self.confirmed_balance = confirmed;
-        self.unconfirmed_balance = unconfirmed;
-        self.total_balance = total;
-        self.spv_balance_known = true;
     }
 
     pub fn bootstrap_known_addresses(&mut self, app_context: &AppContext) {
@@ -940,6 +868,9 @@ impl Wallet {
         let mut address_index = 0;
         let mut found_unused_derivation_path = None;
         let mut known_public_key = None;
+        let snapshot_address_balances = register
+            .map(|ctx| ctx.snapshot_address_balances(&self.seed_hash()))
+            .unwrap_or_default();
         while found_unused_derivation_path.is_none() {
             let derivation_path_extension = DerivationPath::from(
                 [
@@ -958,7 +889,7 @@ impl Wallet {
             if let Some(address_info) = self.watched_addresses.get(&derivation_path) {
                 // Address is known
                 let address = &address_info.address;
-                let balance = self.address_balances.get(address).cloned().unwrap_or(0);
+                let balance = snapshot_address_balances.get(address).cloned().unwrap_or(0);
 
                 if balance > 0 {
                     // Address has funds, skip it
@@ -1774,112 +1705,6 @@ impl Wallet {
         Ok(Address::p2pkh(&public_key, network))
     }
 
-    pub fn update_address_balance(
-        &mut self,
-        address: &Address,
-        new_balance: Duffs,
-        context: &AppContext,
-    ) -> Result<(), String> {
-        // Check if the new balance differs from the current one.
-        if let Some(current_balance) = self.address_balances.get(address)
-            && *current_balance == new_balance
-        {
-            // If the balance hasn't changed, skip the update.
-            return Ok(());
-        }
-
-        // If there's no current balance or it has changed, update it.
-        self.address_balances.insert(address.clone(), new_balance);
-
-        // Update the database with the new balance.
-        context
-            .db
-            .update_address_balance(&self.seed_hash(), address, new_balance)
-            .map_err(|e| e.to_string())
-    }
-
-    /// Recalculate and persist balances for all addresses affected by spent UTXOs.
-    ///
-    /// Call this after removing entries from `self.utxos` to keep `address_balances`
-    /// and the database in sync.
-    pub fn recalculate_affected_address_balances(
-        &mut self,
-        used_utxos: &BTreeMap<OutPoint, (TxOut, Address)>,
-        context: &AppContext,
-    ) -> Result<(), String> {
-        self.recalculate_affected_address_balances_with_db(used_utxos, &context.db)
-    }
-
-    /// Core implementation: recalculate and persist balances for addresses affected
-    /// by spent UTXOs, using the database directly.
-    ///
-    /// Prefer [`Self::recalculate_affected_address_balances`] when an `AppContext`
-    /// is available; this variant takes `&Database` directly.
-    fn recalculate_affected_address_balances_with_db(
-        &mut self,
-        used_utxos: &BTreeMap<OutPoint, (TxOut, Address)>,
-        db: &Database,
-    ) -> Result<(), String> {
-        let seed_hash = self.seed_hash();
-        let affected_addresses: BTreeSet<_> =
-            used_utxos.values().map(|(_, addr)| addr.clone()).collect();
-        for address in affected_addresses {
-            let new_balance: u64 = self
-                .utxos
-                .get(&address)
-                .map(|utxo_map| utxo_map.values().map(|tx_out| tx_out.value).sum())
-                .unwrap_or(0);
-            if let Some(current) = self.address_balances.get(&address)
-                && *current == new_balance
-            {
-                continue;
-            }
-            self.address_balances.insert(address.clone(), new_balance);
-            db.update_address_balance(&seed_hash, &address, new_balance)
-                .map_err(|e| e.to_string())?;
-        }
-        Ok(())
-    }
-
-    /// Recalculate and persist the balance for a single address from its remaining UTXOs.
-    pub fn recalculate_address_balance(
-        &mut self,
-        address: &Address,
-        context: &AppContext,
-    ) -> Result<(), String> {
-        let new_balance = self
-            .utxos
-            .get(address)
-            .map(|utxo_map| utxo_map.values().map(|tx_out| tx_out.value).sum())
-            .unwrap_or(0);
-        self.update_address_balance(address, new_balance, context)
-    }
-
-    pub fn update_address_total_received(
-        &mut self,
-        address: &Address,
-        total_received: Duffs,
-        context: &AppContext,
-    ) -> Result<(), String> {
-        // Check if the total received differs from the current value
-        if let Some(current_total) = self.address_total_received.get(address)
-            && *current_total == total_received
-        {
-            // If the total received hasn't changed, skip the update.
-            return Ok(());
-        }
-
-        // Update in memory
-        self.address_total_received
-            .insert(address.clone(), total_received);
-
-        // Update the database
-        context
-            .db
-            .update_address_total_received(&self.seed_hash(), address, total_received)
-            .map_err(|e| e.to_string())
-    }
-
     /// Get all Platform payment addresses from this wallet
     pub fn platform_addresses(&self, network: Network) -> Vec<(Address, PlatformAddress)> {
         self.watched_addresses
@@ -2483,20 +2308,12 @@ mod tests {
             }),
             uses_password: false,
             master_bip44_ecdsa_extended_public_key,
-            address_balances: BTreeMap::new(),
-            address_total_received: BTreeMap::new(),
             known_addresses: BTreeMap::new(),
             watched_addresses: BTreeMap::new(),
             unused_asset_locks: Vec::new(),
             alias: Some("Test Wallet".to_string()),
             identities: HashMap::new(),
-            utxos: HashMap::new(),
-            transactions: Vec::new(),
             is_main: true,
-            confirmed_balance: 0,
-            unconfirmed_balance: 0,
-            total_balance: 0,
-            spv_balance_known: false,
             platform_address_info: BTreeMap::new(),
             core_wallet_name: None,
         }
@@ -2512,148 +2329,6 @@ mod tests {
         let inner = dash_sdk::dpp::dashcore::secp256k1::PublicKey::from_secret_key(&secp, &sk);
         let pubkey = PublicKey::from_slice(&inner.serialize()).expect("valid pubkey");
         Address::p2pkh(&pubkey, Network::Testnet)
-    }
-
-    /// Helper: create an OutPoint with a deterministic txid
-    fn test_outpoint(tx_index: u8, vout: u32) -> OutPoint {
-        let mut txid_bytes = [0u8; 32];
-        txid_bytes[0] = tx_index;
-        OutPoint::new(Txid::from_slice(&txid_bytes).unwrap(), vout)
-    }
-
-    /// Helper: add a UTXO to a wallet
-    fn add_utxo(wallet: &mut Wallet, address: &Address, tx_index: u8, vout: u32, value: u64) {
-        let outpoint = test_outpoint(tx_index, vout);
-        let tx_out = TxOut {
-            value,
-            script_pubkey: address.script_pubkey(),
-        };
-        wallet
-            .utxos
-            .entry(address.clone())
-            .or_default()
-            .insert(outpoint, tx_out);
-    }
-
-    // ========================================================================
-    // Balance calculation tests
-    // ========================================================================
-
-    #[test]
-    fn test_max_balance_empty_wallet() {
-        let wallet = test_wallet();
-        assert_eq!(wallet.max_balance(), 0);
-    }
-
-    #[test]
-    fn test_max_balance_with_utxos() {
-        let mut wallet = test_wallet();
-        let addr1 = test_address(1);
-        let addr2 = test_address(2);
-
-        add_utxo(&mut wallet, &addr1, 1, 0, 50_000);
-        add_utxo(&mut wallet, &addr1, 2, 0, 30_000);
-        add_utxo(&mut wallet, &addr2, 3, 0, 20_000);
-
-        assert_eq!(wallet.max_balance(), 100_000);
-    }
-
-    #[test]
-    fn test_confirmed_balance_uses_spv_when_set() {
-        let mut wallet = test_wallet();
-        let addr = test_address(1);
-        add_utxo(&mut wallet, &addr, 1, 0, 50_000);
-
-        // With SPV balances set, confirmed_balance should return the SPV value
-        wallet.update_spv_balances(75_000, 5_000, 80_000);
-        assert_eq!(wallet.confirmed_balance_duffs(), 75_000);
-    }
-
-    #[test]
-    fn test_confirmed_balance_falls_back_to_max_balance() {
-        let mut wallet = test_wallet();
-        let addr = test_address(1);
-        add_utxo(&mut wallet, &addr, 1, 0, 50_000);
-
-        // Without SPV balances, falls back to max_balance()
-        assert_eq!(wallet.confirmed_balance_duffs(), 50_000);
-    }
-
-    #[test]
-    fn test_unconfirmed_balance() {
-        let mut wallet = test_wallet();
-        wallet.update_spv_balances(100_000, 25_000, 125_000);
-        assert_eq!(wallet.unconfirmed_balance_duffs(), 25_000);
-    }
-
-    #[test]
-    fn test_total_balance_uses_spv_when_set() {
-        let mut wallet = test_wallet();
-        let addr = test_address(1);
-        add_utxo(&mut wallet, &addr, 1, 0, 50_000);
-
-        wallet.update_spv_balances(75_000, 5_000, 80_000);
-        assert_eq!(wallet.total_balance_duffs(), 80_000);
-    }
-
-    #[test]
-    fn test_total_balance_falls_back_to_max_balance() {
-        let mut wallet = test_wallet();
-        let addr = test_address(1);
-        add_utxo(&mut wallet, &addr, 1, 0, 50_000);
-
-        assert_eq!(wallet.total_balance_duffs(), 50_000);
-    }
-
-    #[test]
-    fn test_has_balance() {
-        let mut wallet = test_wallet();
-        assert!(!wallet.has_balance());
-
-        let addr = test_address(1);
-        add_utxo(&mut wallet, &addr, 1, 0, 50_000);
-        // has_balance checks confirmed_balance_duffs() > 0 || unconfirmed > 0
-        // Without SPV, confirmed falls back to max_balance = 50_000
-        assert!(wallet.has_balance());
-    }
-
-    #[test]
-    fn test_has_balance_with_only_unconfirmed() {
-        let mut wallet = test_wallet();
-        wallet.update_spv_balances(0, 1000, 1000);
-        assert!(wallet.has_balance());
-    }
-
-    #[test]
-    fn test_update_spv_balances() {
-        let mut wallet = test_wallet();
-        wallet.update_spv_balances(100, 50, 150);
-        assert_eq!(wallet.confirmed_balance, 100);
-        assert_eq!(wallet.unconfirmed_balance, 50);
-        assert_eq!(wallet.total_balance, 150);
-    }
-
-    #[test]
-    fn test_spv_confirmed_balance_none_before_sync() {
-        let wallet = test_wallet();
-        // Before any SPV sync, spv_confirmed_balance must return None regardless
-        // of the UTXO state — callers cannot distinguish synced-zero from unsynced.
-        assert_eq!(wallet.spv_confirmed_balance(), None);
-    }
-
-    #[test]
-    fn test_spv_confirmed_balance_zero_after_sync() {
-        let mut wallet = test_wallet();
-        // After SPV reports zero balance, Some(0) must be returned — not None.
-        wallet.update_spv_balances(0, 0, 0);
-        assert_eq!(wallet.spv_confirmed_balance(), Some(0));
-    }
-
-    #[test]
-    fn test_spv_confirmed_balance_nonzero_after_sync() {
-        let mut wallet = test_wallet();
-        wallet.update_spv_balances(75_000, 5_000, 80_000);
-        assert_eq!(wallet.spv_confirmed_balance(), Some(75_000));
     }
 
     // ========================================================================
@@ -3152,33 +2827,6 @@ mod tests {
         assert_ne!(addr0, addr_next);
     }
 
-    #[test]
-    fn test_receive_address_skips_funded_addresses() {
-        let mut wallet = test_wallet();
-
-        // Derive and register address at index 0
-        let addr0 = wallet
-            .derive_bip44_address(Network::Testnet, false, 0)
-            .unwrap();
-        let path0 = DerivationPath::from(vec![
-            ChildNumber::Hardened { index: 44 },
-            ChildNumber::Hardened { index: 1 },
-            ChildNumber::Hardened { index: 0 },
-            ChildNumber::Normal { index: 0 },
-            ChildNumber::Normal { index: 0 },
-        ]);
-        register_address_locally(&mut wallet, &addr0, &path0);
-
-        // Fund it
-        wallet.address_balances.insert(addr0.clone(), 100_000);
-
-        // With skip=false, should skip funded address and derive next index
-        let addr_next = wallet
-            .receive_address(Network::Testnet, false, None)
-            .unwrap();
-        assert_ne!(addr0, addr_next, "Should skip funded address");
-    }
-
     // ========================================================================
     // WalletSeed tests
     // ========================================================================
@@ -3205,44 +2853,6 @@ mod tests {
         wallet.wallet_seed.open_no_password().unwrap();
         assert!(wallet.is_open());
         assert_eq!(wallet.seed_hash(), original_hash);
-    }
-
-    // ========================================================================
-    // utxos_by_address tests
-    // ========================================================================
-
-    #[test]
-    fn test_utxos_by_address_empty() {
-        let wallet = test_wallet();
-        assert!(wallet.utxos_by_address().is_empty());
-    }
-
-    #[test]
-    fn test_utxos_by_address_with_entries() {
-        let mut wallet = test_wallet();
-        let addr1 = test_address(1);
-        let addr2 = test_address(2);
-
-        add_utxo(&mut wallet, &addr1, 1, 0, 50_000);
-        add_utxo(&mut wallet, &addr1, 2, 0, 30_000);
-        add_utxo(&mut wallet, &addr2, 3, 0, 20_000);
-
-        let utxos = wallet.utxos_by_address();
-        assert_eq!(utxos.len(), 2);
-
-        let addr1_balance: u64 = utxos
-            .iter()
-            .filter(|(a, _)| a == &addr1)
-            .map(|(_, b)| b)
-            .sum();
-        assert_eq!(addr1_balance, 80_000);
-
-        let addr2_balance: u64 = utxos
-            .iter()
-            .filter(|(a, _)| a == &addr2)
-            .map(|(_, b)| b)
-            .sum();
-        assert_eq!(addr2_balance, 20_000);
     }
 
     // ========================================================================

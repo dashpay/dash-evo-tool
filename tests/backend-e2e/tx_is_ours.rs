@@ -34,10 +34,7 @@ async fn test_spv_transactions_is_ours_flag() {
     // Capture B's balance BEFORE sending, so we know the exact target to
     // wait for. Reading this after the send risks including the send amount
     // (via reconciliation), which inflates the target and causes a timeout.
-    let initial_b = {
-        let w = wallet_b.read().expect("lock");
-        w.total_balance_duffs()
-    };
+    let initial_b = app_context.snapshot_balance(&hash_b).total;
     tracing::info!("initial_b balance = {} duffs", initial_b);
 
     // Wait for A to have spendable funds
@@ -93,19 +90,14 @@ async fn test_spv_transactions_is_ours_flag() {
     .await
     .expect("B should receive funds");
 
-    // TODO(P0.5): re-enable in P2 — chain sync is owned by upstream
-    // platform-wallet; reconcile is wired in the WalletBackend rewire.
+    let wallet_backend = app_context
+        .wallet_backend()
+        .expect("wallet backend available");
 
     // Check is_ours on wallet A (sender) — should be true
     {
-        let wallets = app_context.wallets().read().expect("wallets lock");
-        let wallet = wallets
-            .get(&hash_a)
-            .expect("wallet A")
-            .read()
-            .expect("lock");
-        let tx = wallet
-            .transactions
+        let history = wallet_backend.transaction_history(&hash_a);
+        let tx = history
             .iter()
             .find(|t| t.txid.to_string() == payment_txid)
             .unwrap_or_else(|| panic!("Wallet A should have tx {payment_txid}"));
@@ -121,14 +113,8 @@ async fn test_spv_transactions_is_ours_flag() {
 
     // Check is_ours on wallet B (receiver) — should be true
     {
-        let wallets = app_context.wallets().read().expect("wallets lock");
-        let wallet = wallets
-            .get(&hash_b)
-            .expect("wallet B")
-            .read()
-            .expect("lock");
-        let tx = wallet
-            .transactions
+        let history = wallet_backend.transaction_history(&hash_b);
+        let tx = history
             .iter()
             .find(|t| t.txid.to_string() == payment_txid)
             .unwrap_or_else(|| panic!("Wallet B should have tx {payment_txid}"));

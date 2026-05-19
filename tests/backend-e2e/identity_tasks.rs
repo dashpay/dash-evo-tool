@@ -748,3 +748,58 @@ async fn tc_031_incremental_address_discovery() {
         direct_balance
     );
 }
+
+// --- TC-021: identity funding-account survives a backend reload ---
+//
+// Recurrence trap for a5538dc8: the upstream persister `load()` does NOT
+// reconstruct `IdentityTopUp`/`IdentityRegistration` HD funding accounts.
+// Without the loader-side re-provision, a top-up succeeds on first run but
+// fails after every relaunch (`AssetLockTransaction("Identity top-up
+// account for index N not found")`). `ensure_wallets_registered()` is the
+// exact reload chokepoint (re-runs the `SeedReregistrationLoader` path),
+// so calling it again faithfully simulates an app restart.
+#[ignore]
+#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
+async fn tc_021_identity_funding_account_survives_reload() {
+    let ctx = ctx().await;
+    let si = shared_identity().await;
+
+    // Simulate an app relaunch: re-run the persisted-wallet registration
+    // path. Idempotent for the wallet itself; the funding accounts must be
+    // re-provisioned here or the top-up below fails.
+    ctx.app_context
+        .wallet_backend()
+        .expect("wallet backend must be wired")
+        .ensure_wallets_registered(&ctx.app_context)
+        .await
+        .expect("ensure_wallets_registered (reload simulation) must succeed");
+
+    let top_up_info = IdentityTopUpInfo {
+        qualified_identity: si.qualified_identity.clone(),
+        wallet: si.wallet_arc.clone(),
+        identity_funding_method: TopUpIdentityFundingMethod::FundWithWallet(500_000, 0, 1),
+    };
+
+    let result = run_task_with_nonce_retry(
+        &ctx.app_context,
+        BackendTask::IdentityTask(IdentityTask::TopUpIdentity(top_up_info)),
+    )
+    .await
+    .expect(
+        "TopUpIdentity must succeed AFTER a backend reload — the identity \
+         funding account has to be re-provisioned on the loader path",
+    );
+
+    match result {
+        BackendTaskSuccessResult::ToppedUpIdentity(qi, fee_result) => {
+            assert_eq!(
+                qi.identity.id(),
+                si.qualified_identity.identity.id(),
+                "wrong identity returned"
+            );
+            assert!(fee_result.actual_fee > 0, "fee should be > 0");
+            tracing::info!("TC-021 PASSED: top-up survived backend reload");
+        }
+        other => panic!("expected ToppedUpIdentity, got: {:?}", other),
+    }
+}

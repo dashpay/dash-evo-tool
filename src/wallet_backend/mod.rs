@@ -80,6 +80,17 @@ impl AssetLockKind {
     }
 }
 
+/// DET-facing selector for an identity funding HD account. Hides the upstream
+/// `key_wallet::AccountType` (M-DONT-LEAK-TYPES).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdentityFundingAccount {
+    /// The wallet-wide identity-registration funding account (singular).
+    Registration,
+    /// The per-identity top-up funding account, keyed by the identity's
+    /// wallet HD registration index.
+    TopUp { registration_index: u32 },
+}
+
 /// Upstream `WalletId` = `SHA256(root_xpub || root_chain_code)`, distinct
 /// from DET's `WalletSeedHash` = `SHA256(seed_bytes)`. The map is the bridge:
 /// populated once per wallet at registration, read by every DET-keyed call.
@@ -179,61 +190,77 @@ impl WalletBackend {
         );
 
         for reg in registrations {
-            if self.inner.id_map.read()?.contains_key(&reg.seed_hash) {
-                // Already registered this process — idempotent skip (Stage-B
-                // re-run after a crash must not double-register).
-                continue;
-            }
-            // `create_wallet_from_seed_bytes` also loads persisted
-            // identity/address deltas and runs identity discovery upstream
-            // (see upstream `manager/wallet_lifecycle.rs`).
-            match self
-                .inner
-                .pwm
-                .create_wallet_from_seed_bytes(
-                    reg.network,
-                    *reg.seed_bytes,
-                    WalletAccountCreationOptions::Default,
-                )
-                .await
-            {
-                Ok(pw) => {
-                    let wallet_id = pw.wallet_id();
-                    self.inner.id_map.write()?.insert(reg.seed_hash, wallet_id);
-                    self.inner
-                        .snapshots
-                        .register_wallet(reg.seed_hash, wallet_id, pw);
-                    tracing::debug!(
-                        wallet = %hex::encode(reg.seed_hash),
-                        "Wallet registered with backend"
-                    );
-                }
-                Err(platform_wallet::error::PlatformWalletError::WalletAlreadyExists(_)) => {
-                    // Already present in the upstream manager (e.g. a prior
-                    // Stage-B run before this process). Resolve its id by
-                    // re-deriving deterministically from the seed (NOT by
-                    // parsing the error string — CLAUDE.md), so the DET-keyed
-                    // map and the snapshot store stay consistent and the
-                    // whole step is idempotent.
-                    if let Some(wallet_id) = Self::wallet_id_from_seed(reg.network, &reg.seed_bytes)
-                    {
+            let already_this_process = self.inner.id_map.read()?.contains_key(&reg.seed_hash);
+            if !already_this_process {
+                // `create_wallet_from_seed_bytes` also loads persisted
+                // identity/address deltas and runs identity discovery
+                // upstream (see upstream `manager/wallet_lifecycle.rs`).
+                match self
+                    .inner
+                    .pwm
+                    .create_wallet_from_seed_bytes(
+                        reg.network,
+                        *reg.seed_bytes,
+                        WalletAccountCreationOptions::Default,
+                    )
+                    .await
+                {
+                    Ok(pw) => {
+                        let wallet_id = pw.wallet_id();
                         self.inner.id_map.write()?.insert(reg.seed_hash, wallet_id);
-                        if let Some(pw) = self.inner.pwm.get_wallet(&wallet_id).await {
-                            self.inner
-                                .snapshots
-                                .register_wallet(reg.seed_hash, wallet_id, pw);
-                        }
+                        self.inner
+                            .snapshots
+                            .register_wallet(reg.seed_hash, wallet_id, pw);
+                        tracing::debug!(
+                            wallet = %hex::encode(reg.seed_hash),
+                            "Wallet registered with backend"
+                        );
                     }
-                    tracing::debug!(
-                        wallet = %hex::encode(reg.seed_hash),
-                        "Wallet already registered upstream — idempotent"
-                    );
+                    Err(platform_wallet::error::PlatformWalletError::WalletAlreadyExists(_)) => {
+                        // Already present in the upstream manager (e.g. a
+                        // prior Stage-B run before this process). Resolve its
+                        // id by re-deriving deterministically from the seed
+                        // (NOT by parsing the error string — CLAUDE.md), so
+                        // the DET-keyed map and the snapshot store stay
+                        // consistent and the whole step is idempotent.
+                        if let Some(wallet_id) =
+                            Self::wallet_id_from_seed(reg.network, &reg.seed_bytes)
+                        {
+                            self.inner.id_map.write()?.insert(reg.seed_hash, wallet_id);
+                            if let Some(pw) = self.inner.pwm.get_wallet(&wallet_id).await {
+                                self.inner
+                                    .snapshots
+                                    .register_wallet(reg.seed_hash, wallet_id, pw);
+                            }
+                        }
+                        tracing::debug!(
+                            wallet = %hex::encode(reg.seed_hash),
+                            "Wallet already registered upstream — idempotent"
+                        );
+                    }
+                    Err(e) => {
+                        return Err(TaskError::WalletBackend {
+                            source: Box::new(e),
+                        });
+                    }
                 }
-                Err(e) => {
-                    return Err(TaskError::WalletBackend {
-                        source: Box::new(e),
-                    });
+            }
+
+            // Recurrence trap (a5538dc8): the upstream persister `load()`
+            // does NOT reconstruct identity funding HD accounts, so they
+            // must be re-provisioned for every persisted identity on every
+            // (re-)registration — including the idempotent re-run path,
+            // which is exactly an app relaunch. Idempotent per account.
+            let identity_indices: Vec<u32> = {
+                let wallets = ctx.wallets().read()?;
+                match wallets.get(&reg.seed_hash) {
+                    Some(w) => w.read()?.identities.keys().copied().collect(),
+                    None => Vec::new(),
                 }
+            };
+            for idx in identity_indices {
+                self.ensure_identity_funding_accounts(&reg.seed_hash, idx)
+                    .await?;
             }
         }
         Ok(())
@@ -533,6 +560,110 @@ impl WalletBackend {
                 source: Box::new(e),
             })?;
         Ok((proof, key, out_point.txid))
+    }
+
+    // UPSTREAM GAP: rs-platform-wallet has no identity-funding-account
+    // registrar (sibling to register_contact_account). Contained exception —
+    // key_wallet plumbing lives ONLY here, never leaks past WalletBackend.
+    // Do not replicate; do not collapse the dual-insert; do not use the
+    // funds-bearing API. Tracked: upstream-contribution TODO 9cdcfb25.
+    //
+    // `peek_next_funding_address` reads BOTH `wallet.accounts.*` (xpub
+    // source) AND `wallet_info.accounts.*` (mutable managed account), so the
+    // account must exist in both collections. The upstream persister
+    // `load()` reconstructs neither, hence the reload re-provision.
+    // Idempotent: probes both collections and no-ops if present (no error-
+    // string parsing — direct membership checks).
+    async fn provision_identity_funding_account(
+        &self,
+        seed_hash: &WalletSeedHash,
+        account: IdentityFundingAccount,
+    ) -> Result<(), TaskError> {
+        use dash_sdk::dpp::key_wallet::AccountType;
+        use dash_sdk::dpp::key_wallet::managed_account::ManagedCoreKeysAccount;
+
+        let account_type = match account {
+            IdentityFundingAccount::Registration => AccountType::IdentityRegistration,
+            IdentityFundingAccount::TopUp { registration_index } => {
+                AccountType::IdentityTopUp { registration_index }
+            }
+        };
+
+        let wallet = self.resolve_wallet(seed_hash).await?;
+        let wallet_id = wallet.wallet_id();
+        let mut wm = wallet.wallet_manager().write().await;
+        let (kw, info) = wm
+            .get_wallet_mut_and_info_mut(&wallet_id)
+            .ok_or(TaskError::WalletBackendNotYetWired)?;
+
+        let in_wallet = match account {
+            IdentityFundingAccount::Registration => kw.accounts.identity_registration.is_some(),
+            IdentityFundingAccount::TopUp { registration_index } => {
+                kw.accounts.identity_topup.contains_key(&registration_index)
+            }
+        };
+        let in_managed = match account {
+            IdentityFundingAccount::Registration => {
+                info.core_wallet.accounts.identity_registration.is_some()
+            }
+            IdentityFundingAccount::TopUp { registration_index } => info
+                .core_wallet
+                .accounts
+                .identity_topup
+                .contains_key(&registration_index),
+        };
+        if in_wallet && in_managed {
+            return Ok(());
+        }
+
+        if !in_wallet {
+            kw.add_account(account_type, None)
+                .map_err(|e| TaskError::WalletBackend {
+                    source: Box::new(
+                        platform_wallet::error::PlatformWalletError::AssetLockTransaction(
+                            e.to_string(),
+                        ),
+                    ),
+                })?;
+        }
+
+        let derived = match account {
+            IdentityFundingAccount::Registration => kw.accounts.identity_registration.as_ref(),
+            IdentityFundingAccount::TopUp { registration_index } => {
+                kw.accounts.identity_topup.get(&registration_index)
+            }
+        }
+        .ok_or(TaskError::WalletBackendNotYetWired)?;
+
+        let managed = ManagedCoreKeysAccount::from_account(derived);
+        info.core_wallet
+            .accounts
+            .insert_keys_bearing_account(managed)
+            .map_err(|e| TaskError::WalletBackend {
+                source: Box::new(
+                    platform_wallet::error::PlatformWalletError::AssetLockTransaction(
+                        e.to_string(),
+                    ),
+                ),
+            })?;
+        Ok(())
+    }
+
+    /// Provision the identity-registration funding account and the per-
+    /// identity top-up funding account for the given wallet identity index.
+    /// Idempotent; safe to call before every asset-lock and on every reload.
+    pub async fn ensure_identity_funding_accounts(
+        &self,
+        seed_hash: &WalletSeedHash,
+        registration_index: u32,
+    ) -> Result<(), TaskError> {
+        self.provision_identity_funding_account(seed_hash, IdentityFundingAccount::Registration)
+            .await?;
+        self.provision_identity_funding_account(
+            seed_hash,
+            IdentityFundingAccount::TopUp { registration_index },
+        )
+        .await
     }
 
     fn build_client_config(&self) -> ClientConfig {

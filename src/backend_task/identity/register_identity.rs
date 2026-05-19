@@ -90,6 +90,13 @@ impl AppContext {
                 // returns the finalized proof + one-time key.
                 wallet_id = wallet.read().map_err(TaskError::from)?.seed_hash();
                 let backend = self.wallet_backend()?;
+                // Provision the identity registration + per-identity top-up
+                // funding accounts (idempotent) before the asset lock; the
+                // upstream funding path requires them and the persister does
+                // not reconstruct them (a5538dc8).
+                backend
+                    .ensure_identity_funding_accounts(&wallet_id, identity_index)
+                    .await?;
                 let (asset_lock_proof, asset_lock_proof_private_key, tx_id) = backend
                     .create_asset_lock_proof(
                         &wallet_id,

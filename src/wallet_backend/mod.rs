@@ -242,19 +242,18 @@ impl WalletBackend {
     /// Start chain sync and the periodic upstream coordinators.
     ///
     /// Upstream has no single `PlatformWalletManager::start()`; this
-    /// orchestrates the parts: `SpvRuntime::start(ClientConfig)` plus the
-    /// platform-address / identity / shielded sync coordinators.
+    /// orchestrates the parts: `SpvRuntime::spawn_in_background(ClientConfig)`
+    /// plus the platform-address / identity / shielded sync coordinators.
+    ///
+    /// `SpvRuntime::start()` only *constructs* the client; the network and
+    /// sync loop runs inside `SpvRuntime::run()`, which itself calls
+    /// `start()` and which `spawn_in_background()` drives on the tokio
+    /// runtime. Sync failures surface asynchronously via the upstream run
+    /// task and the `EventBridge` `on_error` callback, not from this call.
     pub async fn start(&self) -> Result<(), TaskError> {
         let config = self.build_client_config();
 
-        self.inner
-            .pwm
-            .spv()
-            .start(config)
-            .await
-            .map_err(|e| TaskError::WalletSyncStartFailed {
-                source: Box::new(e),
-            })?;
+        self.inner.pwm.spv_arc().spawn_in_background(config);
 
         self.inner.pwm.platform_address_sync_arc().start();
         self.inner.pwm.identity_sync_arc().start();

@@ -36,10 +36,10 @@ Each phase is independently reviewable. Do not collapse phases.
 | **P3 One-time migration** | Two-stage marker-gated migration (see P3a–P3e below). Ratified architecture: Stage A SQL v35 (sync, pre-unlock, sets marker) + Stage B async post-unlock engine at `ensure_wallet_backend`. Re-scoped 2026-05-18: drop backwards compatibility, upstream-only DashPay derivation, no quarantine. Gated on G1. | New `src/database/migration_pw.rs`, `database/initialization.rs` | L | High | Migration forward-only, fail-safe, idempotent; two-stage design ratified |
 | **P4a Tx/UTXO/Balance UI data-path rewire** | Add `DetWalletBalance`/`DetUtxo` view models; retain `WalletTransaction` (detach from `Wallet`/DB); add 4 `WalletBackend` accessors + `TransactionRecord`→`WalletTransaction` mapping (relocated from deleted reconcile); add `WalletSnapshot` (`ArcSwap`) + `EventBridge` recompute/swap/emit-`Refresh`; rewire HD reads in wallets UI to read snapshot via `app_context.wallet_backend()`. Single-key paths untouched. **Blocks P4b.** | `src/wallet_backend/mod.rs`, `src/ui/wallets/wallets_screen/mod.rs`, `src/ui/wallets/address_table.rs`, `src/ui/screens/create_asset_lock_screen.rs` | L | Med | Post-migration HD wallets screen shows correct balance/tx/utxo from upstream. Reviewer gate: no spendable-input selection from snapshot. |
 | **P4a.5 Fund-safety spend-path completion** | Three spend-path correctness tasks gated between P4a and P4b. **(1) Add `AssetLockKind::Shielded`** and rewire `src/backend_task/shielded/bundle.rs:463,478` (Path 1 — real coin-selection) from `generic_asset_lock_transaction` / `select_unspent_utxos_for`-over-`Wallet.utxos` → `WalletBackend::create_asset_lock_proof` (upstream-authoritative selection at construction time). **(2) Remove `RegisterIdentityFundingMethod::FundWithUtxo` + `TopUpIdentityFundingMethod::FundWithUtxo` variants**, QR-direct-fund UI, and the three functions `registration_asset_lock_transaction_for_utxo` / `top_up_asset_lock_transaction_for_utxo` / `asset_lock_transaction_for_utxo_from_private_key` (Path 2 — no upstream funding-outpoint API exists at #3625 head; cannot be preserved; removed with disclosure via post-migration notice). **(3) Slim `context/transaction_processing.rs::received_transaction_finality`** to asset-lock-finality-only: delete the `Wallet.utxos` / `address_balances` / legacy-`utxos`-table writes; RETAIN the asset-lock detection/registration branch (`store_asset_lock_transaction` + finality-wait channel that `broadcast_and_commit_asset_lock` / `wait_for_asset_lock_proof` depend on). ZMQ call sites `app.rs:1267,1285` stay. Tests per §4.4. **Exit:** zero live readers of `Wallet.{utxos,address_balances,transactions}`; zero callers of `select_unspent_utxos_for` / `generic_asset_lock_transaction` / `*_for_utxo*`. **Blocks P4b.** | `src/backend_task/shielded/bundle.rs`, `src/backend_task/identity/mod.rs`, `src/context/transaction_processing.rs`, funding-method enums + UI, `AssetLockKind` enum | M | Med | Exit: zero live readers of legacy wallet-UTXO fields; zero callers of deleted functions; asset-lock finality channel intact |
-| **P4b Mechanical dead-code/UI prune** | Remove RPC-mode toggle, Core-wallet picker, local-node settings UI; delete `Wallet.{transactions,utxos,address_balances,confirmed_balance,unconfirmed_balance,total_balance,spv_balance_known,address_total_received}` + dead methods; `src/database/utxo.rs` + legacy balance/utxo/tx queries; batched schema cleanup (`dashpay_dip14_quarantine_active` + RPC-era dead columns); ZMQ-listener audit + drop-if-unused. **Only after P4a.5 exit criteria are met.** Additional deletions gated on P4a.5 exit: `select_utxos_with_fee_retry`, `generic_asset_lock_transaction`, `registration_asset_lock_transaction_for_utxo`, `top_up_asset_lock_transaction_for_utxo`, `asset_lock_transaction_for_utxo_from_private_key`, `remove_selected_utxos`, `build_multi_recipient_payment_transaction`. | `src/ui/**`, `src/database/**`, `src/model/wallet/mod.rs`, `src/context/**`, remaining dead code from P0.5 stubs | L | Med | Final state; docs + user-stories updated with dropped back-compat + accepted trade-off |
+| **P4b Mechanical dead-code/UI prune** | Remove RPC-mode toggle, Core-wallet picker, local-node settings UI; delete 8 dead HD `Wallet` fields + ~7 orphaned methods (`src/model/wallet/mod.rs`); `src/model/wallet/utxos.rs` (HD-only, entire); `database/wallet.rs` HD-only balance columns + save/load paths; batched `settings`-column migration (`dashpay_dip14_quarantine_active` + RPC-era dead columns, existence-guarded, `settings`-table-only — object-disjoint from P3c); ZMQ-listener audit + drop-if-unused. **RETAIN `src/database/utxo.rs` + `utxos` table (Decision #7 single-key carve-out — see §P4b below).** **Only after P4a.5 exit criteria are met.** 5-commit structure C1–C5 (see §P4b). P5 adds mandatory single-key regression lane. | `src/ui/**`, `src/database/wallet.rs`, `src/model/wallet/mod.rs`, `src/model/wallet/utxos.rs`, `src/context/**`, remaining dead code from P0.5 stubs | L | Med | Final state; docs + user-stories updated with dropped back-compat + accepted trade-off |
 | **P5 Hardening** | Single-key swap-readiness, `ConnectionStatus` adapter polish, full QA matrix including migration lane + post-migration UI data-path test; §2(d) notice regression; **Smythe double-spend/fund-safety audit (RELEASE-BLOCKING — see below)**; single push to #860. User-stories/docs note dropped back-compat + accepted trade-off. | Cross-cutting | M | Low | Release-ready; Smythe audit green |
 
-**Sequencing:** P0 done (PROCEED). P0.5 done (GREEN). P1 done (GREEN). P2 done (GREEN). P3 is the highest-risk phase (irreversible data migration) — two-stage marker-gated design ratified (see P3a–P3e); re-scoped 2026-05-18 (drop back-compat, upstream-only, no quarantine). P3a (GREEN, commit `6d348566`). P3b (GREEN, commit `d5a3e51b`; `classify_contact` + 7 tests now DEAD — deleted in P3c). P3c–P3e complete (GREEN). P4 split into P4a (UI data-path rewire, blocks P4a.5) and P4a.5 (fund-safety spend-path completion, blocks P4b) and P4b (mechanical prune, only after P4a.5); P4-partial done. P5 pending. Run continuing. Fund-safety spend path is upstream-authoritative from P2; the display-only gap is addressed in P4a; the remaining spend-path correctness tasks (Path 1 shielded, Path 2 FundWithUtxo removal, Path 3 finality slim) are addressed in P4a.5 before P4b's prune. P3 ships only after G1 resolves to a released rev. The only release-blocking gate is the simplified Stage-B engine + QA lane (P3c–P3e), plus the P5 Smythe fund-safety audit.
+**Sequencing:** P0 done (PROCEED). P0.5 done (GREEN). P1 done (GREEN). P2 done (GREEN). P3 is the highest-risk phase (irreversible data migration) — two-stage marker-gated design ratified (see P3a–P3e); re-scoped 2026-05-18 (drop back-compat, upstream-only, no quarantine). P3a (GREEN, commit `6d348566`). P3b (GREEN, commit `d5a3e51b`; `classify_contact` + 7 tests now DEAD — deleted in P3c). P3c–P3e complete (GREEN). P4 split into P4a (UI data-path rewire, blocks P4a.5) and P4a.5 (fund-safety spend-path completion, blocks P4b) and P4b (mechanical prune, only after P4a.5); P4-partial done. P4b narrowed (Decision #7 single-key carve-out): `src/database/utxo.rs` + `utxos` table RETAINED — single-key load path depends on them; see §P4b below. P5 pending. Run continuing. Fund-safety spend path is upstream-authoritative from P2; the display-only gap is addressed in P4a; the remaining spend-path correctness tasks (Path 1 shielded, Path 2 FundWithUtxo removal, Path 3 finality slim) are addressed in P4a.5 before P4b's prune. P3 ships only after G1 resolves to a released rev. The only release-blocking gate is the simplified Stage-B engine + QA lane (P3c–P3e), plus the P5 Smythe fund-safety audit.
 
 ---
 
@@ -122,17 +122,58 @@ Slim `context/transaction_processing.rs::received_transaction_finality` to handl
 
 **Goal:** delete all code whose last readers were relocated by P4a. These are deletable ONLY after P4a exits — P4a is the prerequisite.
 
-**Deliverables:**
+#### What P4b RETAINS (carve-outs — do NOT delete)
 
-- Remove RPC-mode toggle, Core-wallet picker, and "Local Dash Core node" settings UI.
-- Delete now-unreachable `Wallet` fields: `transactions`, `utxos`, `address_balances`, `confirmed_balance`, `unconfirmed_balance`, `total_balance`, `spv_balance_known`, `address_total_received`.
-- Delete dead `Wallet` methods: `total_balance_duffs`, `confirmed_balance_duffs`, `has_balance`, `max_balance`, `update_spv_balances`, `set_transactions`, `update_address_balance`, `select_unspent_utxos_for`, `select_utxos_with_fee_retry`, `remove_selected_utxos`, `build_multi_recipient_payment_transaction`.
-- Delete functions confirmed dead by P4a.5 exit: `generic_asset_lock_transaction`, `registration_asset_lock_transaction_for_utxo`, `top_up_asset_lock_transaction_for_utxo`, `asset_lock_transaction_for_utxo_from_private_key`.
-- Delete `src/database/utxo.rs` and legacy balance/utxo/tx queries in `src/database/wallet.rs` (`:233,254,302,734`).
-- Batched schema cleanup: `dashpay_dip14_quarantine_active` (INERT/RESERVED — see [backend-architecture.md](backend-architecture.md)), remaining RPC-era dead settings columns.
-- ZMQ-listener usage audit: drop if no non-wallet consumer remains.
-- Remove `TaskError::DashPayContactDerivationIrreconcilable` if no other caller.
-- M-NO-TOMBSTONES: delete, do not comment out.
+- **`src/database/utxo.rs` + the `utxos` table — RETAINED.** Decision #7 single-key load path: `src/database/single_key_wallet.rs:211` → `get_utxos_by_address`; rationale already in-source at `src/database/utxo.rs:22-24`, commit `1089b568`. Single-key migration is out of scope this run; revisit when single-key moves to upstream. **P4b must NOT drop the `utxos` table — dropping it would be fund-data loss.**
+- **`database/wallet.rs` `wallet_addresses`-driven `known_addresses`/`watched_addresses` reconstruction (`:601-771`) and `platform_address_balances`→`platform_address_info` reconstruction (`:999`)** — these are column-independent and survive byte-for-byte.
+- **`Wallet` core identity/seed/address fields** — untouched.
+
+#### What P4b DELETES
+
+**Dead HD `Wallet` fields** (`src/model/wallet/mod.rs`) — 8 fields:
+`utxos`, `address_balances`, `address_total_received`, `transactions`, `confirmed_balance`, `unconfirmed_balance`, `total_balance`, `spv_balance_known`.
+
+**Dead HD `Wallet` methods** — ~7 orphaned methods:
+`total_balance_duffs`, `confirmed_balance_duffs`, `has_balance`, `max_balance`, `update_spv_balances`, `set_transactions`, `update_address_balance`.
+Plus, if zero callers remain after P4a.5 exit (STOP-flag and verify before deleting):
+`select_unspent_utxos_for`, `select_utxos_with_fee_retry`, `remove_selected_utxos`, `generic_asset_lock_transaction`, `build_multi_recipient_payment_transaction`, `registration_asset_lock_transaction_for_utxo`, `top_up_asset_lock_transaction_for_utxo`, `asset_lock_transaction_for_utxo_from_private_key` (and any other `*_asset_lock_transaction_for_utxo*` variants not already removed).
+
+**`src/model/wallet/utxos.rs`** — entire file (HD-only; not the same as `src/database/utxo.rs`).
+
+**`database/wallet.rs` HD-only balance columns + paths:**
+- The 3 balance columns from `INSERT INTO wallet` (`:55-70`)
+- Their reads in `get_wallets` (`:490,505-507,580-583`)
+- `add_wallet_balance_columns` (`:275-293,357`)
+- `update_wallet_balances` (`:302-311`)
+- `replace_wallet_transactions` (`:413`)
+- The `wallet.transactions.push` reconstruction (`:931`)
+
+**Batched dead-`settings`-column schema migration** — new DB version (verify the live `DEFAULT_DB_VERSION` at impl time; do not hardcode):
+drops `dashpay_dip14_quarantine_active` + RPC-era dead settings columns; existence-guarded + idempotent (mirror the inverted `add_wallet_balance_columns:278` `pragma_table_info` check pattern). This migration mutates ONLY the `settings` table — object-disjoint from P3c's conditional `wallet`/`utxos`/`wallet_transactions` table DROP. No double-drop, no ordering hazard. Runs at the normal sync DB-init migration point.
+
+**UI:** RPC-mode toggle, Core-wallet picker, local-node settings controls.
+
+**Other:** Remove `TaskError::DashPayContactDerivationIrreconcilable` if no other caller. ZMQ-listener usage audit: drop if no non-wallet consumer remains.
+
+**M-NO-TOMBSTONES:** delete, do not comment out.
+
+#### P4b Commit Structure
+
+Five commits, in order — do not collapse:
+
+- **C1** — model fields/methods: delete the 8 dead HD `Wallet` fields and ~7 orphaned methods (STOP-flag any with callers, check before proceeding).
+- **C2** — `database/wallet.rs` save/load prune: remove the HD-only balance columns, insert paths, and reconstruction paths; surviving `wallet_addresses`-driven reconstruction (`:601-771`) and `platform_address_balances`→`platform_address_info` reconstruction (`:999`) untouched.
+- **C3** — dead-`settings`-column idempotent migration: batched schema cleanup (`dashpay_dip14_quarantine_active` + RPC-era dead settings columns); new DB version; existence-guarded; object-disjoint from P3c (mutates `settings` table only, not `wallet`/`utxos`/`wallet_transactions`).
+- **C4** — UI prune: RPC-mode toggle, Core-wallet picker, local-node settings controls.
+- **C5** — tests: delete untestable HD-field tests; `tests/backend-e2e/tx_is_ours.rs` retarget to `WalletSnapshot` or mark `#[ignore]` + TODO (do NOT delete); PRESERVE all `database/utxo.rs` tests and single-key tests.
+
+#### P5 — Single-Key Regression Lane (release-blocking, not optional)
+
+A mandatory release-blocking test lane must be added in P5, proving the `utxo.rs` carve-out:
+
+Seed the `utxos` table (via `#[cfg(test)] insert_utxo`) and a `single_key_wallet` row. Load single-key wallets. Assert `SingleKeyWallet.utxos` is populated via the RETAINED `get_utxos_by_address` path AND that the Decision #7 stub still surfaces `TaskError::SingleKeyWalletsUnsupported`. This proves the `utxo.rs` carve-out is intact — mandatory, not a nicety. Add this lane to the P5 Smythe gate; no push to #860 until it passes.
+
+P5 STOP-for-Smythe I1–I6 unchanged (see [P5 — Smythe Double-Spend / Fund-Safety Audit](#p5--smythe-double-spend--fund-safety-audit-release-blocking-gate) below).
 
 **Crew assignment:** Correctness reviewer mandatory. DIP-14/15 parity gate must be green before this sub-step ships.
 

@@ -10,7 +10,7 @@ DET becomes a thin adapter: `platform-wallet` owns chain sync, HD wallet managem
 > P3a — DONE (GREEN, commit `6d348566`). P3b — DONE (GREEN, commit `d5a3e51b`; `classify_contact` + 7 tests now DEAD, deleted in P3c).
 > P3c–P3e — DONE (GREEN). P4-partial done.
 > P3 re-scoped 2026-05-18: drop backwards compatibility, upstream-only DashPay derivation, no quarantine. Run continuing to completion + push.
-> P4 split into P4a (UI data-path rewire, blocks P4a.5) → P4a.5 (fund-safety spend-path completion: 3 paths, `FundWithUtxo` removed w/ disclosure, blocks P4b) → P4b (mechanical prune, only after P4a.5). P5 pending.
+> P4 split into P4a (UI data-path rewire, blocks P4a.5) → P4a.5 (fund-safety spend-path completion: 3 paths, `FundWithUtxo` removed w/ disclosure, blocks P4b) → P4b (mechanical prune, only after P4a.5; narrowed: `src/database/utxo.rs` + `utxos` table RETAINED — Decision #7 single-key carve-out; P5 adds mandatory single-key regression lane). P5 + Smythe gate pending.
 > P4a.5 inserted (P2-completeness gap): `AssetLockKind::Shielded` + shielded Path 1 rewired to `WalletBackend::create_asset_lock_proof`; `FundWithUtxo` variants removed (no upstream funding-outpoint API at #3625 head) w/ disclosure via post-migration notice; `received_transaction_finality` slimmed to asset-lock-finality-only (ZMQ retained). P4b gated on P4a.5 exit.
 > P5 gains release-blocking Smythe double-spend/fund-safety audit: invariants I1–I6 must all pass before push.
 > Fund-safety spend path is upstream-authoritative from P2 — display gap addressed in P4a; spend-path correctness gap addressed in P4a.5.

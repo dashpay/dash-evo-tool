@@ -1,4 +1,3 @@
-mod asset_lock_transaction;
 pub mod encryption;
 pub mod shielded;
 pub mod single_key;
@@ -15,15 +14,13 @@ use dash_sdk::dpp::key_wallet::account::AccountType;
 use dash_sdk::dpp::key_wallet::bip32::{
     ChildNumber, DerivationPath, ExtendedPrivKey, ExtendedPubKey, KeyDerivationType,
 };
-use dash_sdk::dpp::key_wallet::psbt::serialize::Serialize;
 use dash_sdk::dpp::prelude::AddressNonce;
 use dash_sdk::platform::address_sync::{AddressFunds, AddressIndex, AddressProvider};
 
-use dash_sdk::dpp::dashcore::secp256k1::{Message, Secp256k1};
-use dash_sdk::dpp::dashcore::sighash::SighashCache;
+use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
 use dash_sdk::dpp::dashcore::{
-    Address, BlockHash, InstantLock, Network, OutPoint, PrivateKey, PublicKey, ScriptBuf,
-    Transaction, TxIn, TxOut, Txid,
+    Address, BlockHash, InstantLock, Network, OutPoint, PrivateKey, PublicKey, Transaction, TxOut,
+    Txid,
 };
 use dash_sdk::dpp::platform_value::BinaryData;
 use std::cmp;
@@ -820,10 +817,6 @@ impl Wallet {
         if let Err(err) = self.bootstrap_platform_payment_addresses(network, app_context) {
             tracing::warn!("Failed to bootstrap Platform payment addresses: {}", err);
         }
-    }
-
-    pub fn set_transactions(&mut self, transactions: Vec<WalletTransaction>) {
-        self.transactions = transactions;
     }
 
     pub(crate) fn seed_bytes(&self) -> Result<&[u8; 64], String> {
@@ -1781,283 +1774,6 @@ impl Wallet {
         Ok(Address::p2pkh(&public_key, network))
     }
 
-    pub fn build_standard_payment_transaction(
-        &mut self,
-        app_context: &AppContext,
-        network: Network,
-        recipient: &Address,
-        amount: u64,
-        fee: u64,
-        subtract_fee_from_amount: bool,
-    ) -> Result<Transaction, String> {
-        if !networks_address_compatible(recipient.network(), &network) {
-            return Err(format!(
-                "Recipient address network ({}) does not match wallet network ({})",
-                recipient.network(),
-                network
-            ));
-        }
-
-        // Select UTXOs without removing them yet — UTXOs are only removed after
-        // the transaction is fully built and signed, so that a failure at any later
-        // step cannot permanently drop UTXOs from the wallet.
-        let (utxos, change_option) = self
-            .select_unspent_utxos_for(amount, fee, subtract_fee_from_amount, None)
-            .ok_or_else(|| "Insufficient funds".to_string())?;
-
-        let send_value = if change_option.is_none() && subtract_fee_from_amount {
-            let total_input: u64 = utxos.values().map(|(tx_out, _)| tx_out.value).sum();
-            total_input
-                .checked_sub(fee)
-                .ok_or_else(|| "Fee exceeds available amount".to_string())?
-        } else {
-            amount
-        };
-
-        if send_value == 0 {
-            return Err("Amount is zero after subtracting fee".to_string());
-        }
-
-        let mut outputs = vec![TxOut {
-            value: send_value,
-            script_pubkey: recipient.script_pubkey(),
-        }];
-
-        if let Some(change) = change_option {
-            let change_address = self.change_address(network, Some(app_context))?;
-            outputs.push(TxOut {
-                value: change,
-                script_pubkey: change_address.script_pubkey(),
-            });
-        }
-
-        let mut tx = Transaction {
-            version: 2,
-            lock_time: 0,
-            input: utxos
-                .keys()
-                .map(|outpoint| TxIn {
-                    previous_output: *outpoint,
-                    ..Default::default()
-                })
-                .collect(),
-            output: outputs,
-            special_transaction_payload: None,
-        };
-
-        let sighash_flag = 1u32;
-        let cache = SighashCache::new(&tx);
-        let sighashes: Vec<_> = tx
-            .input
-            .iter()
-            .enumerate()
-            .map(|(i, input)| {
-                let script_pubkey = utxos
-                    .get(&input.previous_output)
-                    .ok_or_else(|| {
-                        format!("missing utxo for outpoint {:?}", input.previous_output)
-                    })?
-                    .0
-                    .script_pubkey
-                    .clone();
-                cache
-                    .legacy_signature_hash(i, &script_pubkey, sighash_flag)
-                    .map_err(|source| {
-                        WalletError::Sighash {
-                            input_index: i,
-                            source,
-                        }
-                        .to_string()
-                    })
-            })
-            .collect::<Result<Vec<_>, String>>()?;
-
-        let secp = Secp256k1::new();
-        let mut utxo_lookup = utxos.clone();
-
-        tx.input
-            .iter_mut()
-            .zip(sighashes.into_iter())
-            .try_for_each(|(input, sighash)| {
-                let (_, input_address) =
-                    utxo_lookup.remove(&input.previous_output).ok_or_else(|| {
-                        format!("utxo missing for outpoint {:?}", input.previous_output)
-                    })?;
-                let private_key = self
-                    .private_key_for_address(&input_address, network)?
-                    .ok_or_else(|| format!("Address {} not managed by wallet", input_address))?;
-                let message = Message::from_digest(sighash.into());
-                let sig = secp.sign_ecdsa(&message, &private_key.inner);
-                let mut serialized_sig = sig.serialize_der().to_vec();
-                let mut script_sig = vec![serialized_sig.len() as u8 + 1];
-                script_sig.append(&mut serialized_sig);
-                script_sig.push(1);
-                let mut serialized_pub_key = private_key.public_key(&secp).serialize();
-                script_sig.push(serialized_pub_key.len() as u8);
-                script_sig.append(&mut serialized_pub_key);
-                input.script_sig = ScriptBuf::from_bytes(script_sig);
-                Ok::<(), String>(())
-            })?;
-
-        // Transaction is fully built and signed; commit the UTXO removals now.
-        self.remove_selected_utxos(&utxos, &app_context.db, network)?;
-
-        Ok(tx)
-    }
-
-    /// Build a transaction with multiple recipients
-    pub fn build_multi_recipient_payment_transaction(
-        &mut self,
-        app_context: &AppContext,
-        network: Network,
-        recipients: &[(Address, u64)],
-        fee: u64,
-        subtract_fee_from_amount: bool,
-    ) -> Result<Transaction, String> {
-        if recipients.is_empty() {
-            return Err("No recipients specified".to_string());
-        }
-
-        // Validate all recipients are on the correct network
-        for (recipient, _) in recipients {
-            if !networks_address_compatible(recipient.network(), &network) {
-                return Err(format!(
-                    "Recipient address network ({}) does not match wallet network ({})",
-                    recipient.network(),
-                    network
-                ));
-            }
-        }
-
-        // Calculate total amount needed
-        let total_amount: u64 = recipients.iter().map(|(_, amount)| *amount).sum();
-
-        // Select UTXOs without removing them yet — UTXOs are only removed after
-        // the transaction is fully built and signed, so that a failure at any later
-        // step cannot permanently drop UTXOs from the wallet.
-        let (utxos, change_option) = self
-            .select_unspent_utxos_for(total_amount, fee, subtract_fee_from_amount, None)
-            .ok_or_else(|| "Insufficient funds".to_string())?;
-
-        // Build outputs for each recipient
-        let mut outputs: Vec<TxOut> = if change_option.is_none() && subtract_fee_from_amount {
-            // If we're subtracting fee and using all funds, we need to reduce recipient amounts proportionally
-            let total_input: u64 = utxos.values().map(|(tx_out, _)| tx_out.value).sum();
-            let available_after_fee = total_input
-                .checked_sub(fee)
-                .ok_or_else(|| "Fee exceeds available amount".to_string())?;
-
-            // Distribute the reduction proportionally across recipients
-            let reduction_ratio = available_after_fee as f64 / total_amount as f64;
-
-            recipients
-                .iter()
-                .map(|(recipient, amount)| {
-                    let adjusted_amount = (*amount as f64 * reduction_ratio) as u64;
-                    TxOut {
-                        value: adjusted_amount,
-                        script_pubkey: recipient.script_pubkey(),
-                    }
-                })
-                .collect()
-        } else {
-            recipients
-                .iter()
-                .map(|(recipient, amount)| TxOut {
-                    value: *amount,
-                    script_pubkey: recipient.script_pubkey(),
-                })
-                .collect()
-        };
-
-        // Check that no output is zero
-        if outputs.iter().any(|o| o.value == 0) {
-            return Err("One or more amounts are zero after subtracting fee".to_string());
-        }
-
-        // Add change output if needed
-        if let Some(change) = change_option {
-            let change_address = self.change_address(network, Some(app_context))?;
-            outputs.push(TxOut {
-                value: change,
-                script_pubkey: change_address.script_pubkey(),
-            });
-        }
-
-        let mut tx = Transaction {
-            version: 2,
-            lock_time: 0,
-            input: utxos
-                .keys()
-                .map(|outpoint| TxIn {
-                    previous_output: *outpoint,
-                    ..Default::default()
-                })
-                .collect(),
-            output: outputs,
-            special_transaction_payload: None,
-        };
-
-        let sighash_flag = 1u32;
-        let cache = SighashCache::new(&tx);
-        let sighashes: Vec<_> = tx
-            .input
-            .iter()
-            .enumerate()
-            .map(|(i, input)| {
-                let script_pubkey = utxos
-                    .get(&input.previous_output)
-                    .ok_or_else(|| {
-                        format!("missing utxo for outpoint {:?}", input.previous_output)
-                    })?
-                    .0
-                    .script_pubkey
-                    .clone();
-                cache
-                    .legacy_signature_hash(i, &script_pubkey, sighash_flag)
-                    .map_err(|source| {
-                        WalletError::Sighash {
-                            input_index: i,
-                            source,
-                        }
-                        .to_string()
-                    })
-            })
-            .collect::<Result<Vec<_>, String>>()?;
-
-        let secp = Secp256k1::new();
-        let mut utxo_lookup = utxos.clone();
-
-        tx.input
-            .iter_mut()
-            .zip(sighashes.into_iter())
-            .try_for_each(|(input, sighash)| {
-                let (_, input_address) =
-                    utxo_lookup.remove(&input.previous_output).ok_or_else(|| {
-                        format!("utxo missing for outpoint {:?}", input.previous_output)
-                    })?;
-                let private_key = self
-                    .private_key_for_address(&input_address, network)?
-                    .ok_or_else(|| format!("Address {} not managed by wallet", input_address))?;
-                let message = Message::from_digest(sighash.into());
-                let sig = secp.sign_ecdsa(&message, &private_key.inner);
-                let mut serialized_sig = sig.serialize_der().to_vec();
-                let mut script_sig = vec![serialized_sig.len() as u8 + 1];
-                script_sig.append(&mut serialized_sig);
-                script_sig.push(1);
-                let mut serialized_pub_key = private_key.public_key(&secp).serialize();
-                script_sig.push(serialized_pub_key.len() as u8);
-                script_sig.append(&mut serialized_pub_key);
-                input.script_sig = ScriptBuf::from_bytes(script_sig);
-                Ok::<(), String>(())
-            })?;
-
-        // Transaction is fully built and signed; commit the UTXO removals now.
-        self.remove_selected_utxos(&utxos, &app_context.db, network)?;
-
-        Ok(tx)
-    }
-
     pub fn update_address_balance(
         &mut self,
         address: &Address,
@@ -2098,8 +1814,7 @@ impl Wallet {
     /// by spent UTXOs, using the database directly.
     ///
     /// Prefer [`Self::recalculate_affected_address_balances`] when an `AppContext`
-    /// is available.  This variant is used by [`Self::remove_selected_utxos`] which
-    /// already receives `&Database` directly.
+    /// is available; this variant takes `&Database` directly.
     fn recalculate_affected_address_balances_with_db(
         &mut self,
         used_utxos: &BTreeMap<OutPoint, (TxOut, Address)>,
@@ -2806,14 +2521,6 @@ mod tests {
         OutPoint::new(Txid::from_slice(&txid_bytes).unwrap(), vout)
     }
 
-    /// Helper: create a test wallet pre-loaded with a single UTXO of the given value.
-    fn test_wallet_with_utxo(value: u64) -> Wallet {
-        let mut wallet = test_wallet();
-        let addr = test_address(1);
-        add_utxo(&mut wallet, &addr, 1, 0, value);
-        wallet
-    }
-
     /// Helper: add a UTXO to a wallet
     fn add_utxo(wallet: &mut Wallet, address: &Address, tx_index: u8, vout: u32, value: u64) {
         let outpoint = test_outpoint(tx_index, vout);
@@ -2947,164 +2654,6 @@ mod tests {
         let mut wallet = test_wallet();
         wallet.update_spv_balances(75_000, 5_000, 80_000);
         assert_eq!(wallet.spv_confirmed_balance(), Some(75_000));
-    }
-
-    // ========================================================================
-    // select_unspent_utxos_for / remove_selected_utxos tests
-    // ========================================================================
-
-    #[test]
-    fn test_select_utxos_exact_amount() {
-        let wallet = test_wallet_with_utxo(100_000);
-
-        let result = wallet.select_unspent_utxos_for(90_000, 10_000, false, None);
-        assert!(result.is_some());
-        let (utxos, change) = result.unwrap();
-        assert_eq!(utxos.len(), 1);
-        assert!(change.is_none()); // exact amount, no change
-        // Selection is non-mutating — wallet UTXOs unchanged
-        assert!(!wallet.utxos.is_empty());
-    }
-
-    #[test]
-    fn test_select_utxos_with_change() {
-        let wallet = test_wallet_with_utxo(200_000);
-
-        let result = wallet.select_unspent_utxos_for(90_000, 10_000, false, None);
-        assert!(result.is_some());
-        let (utxos, change) = result.unwrap();
-        assert_eq!(utxos.len(), 1);
-        assert_eq!(change, Some(100_000)); // 200k - 90k - 10k = 100k change
-    }
-
-    #[test]
-    fn test_select_utxos_insufficient_funds() {
-        let wallet = test_wallet_with_utxo(50_000);
-
-        let result = wallet.select_unspent_utxos_for(90_000, 10_000, false, None);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_select_utxos_multiple_utxos_needed() {
-        let mut wallet = test_wallet();
-        let addr1 = test_address(1);
-        let addr2 = test_address(2);
-        add_utxo(&mut wallet, &addr1, 1, 0, 30_000);
-        add_utxo(&mut wallet, &addr2, 2, 0, 40_000);
-        add_utxo(&mut wallet, &addr1, 3, 0, 50_000);
-
-        let result = wallet.select_unspent_utxos_for(100_000, 10_000, false, None);
-        assert!(result.is_some());
-        let (utxos, change) = result.unwrap();
-        let total_collected: u64 = utxos.values().map(|(tx_out, _)| tx_out.value).sum();
-        assert!(total_collected >= 110_000);
-        if let Some(change_amount) = change {
-            assert_eq!(total_collected, 100_000 + 10_000 + change_amount);
-        }
-    }
-
-    #[test]
-    fn test_select_utxos_allow_take_fee_from_amount() {
-        let wallet = test_wallet_with_utxo(100_000);
-
-        // Request 100k amount + 10k fee = 110k total, but only 100k available
-        // With allow_take_fee_from_amount=true, should still succeed since total >= amount
-        let result = wallet.select_unspent_utxos_for(100_000, 10_000, true, None);
-        assert!(result.is_some());
-        let (_utxos, change) = result.unwrap();
-        assert!(change.is_none());
-    }
-
-    #[test]
-    fn test_select_utxos_allow_take_fee_but_not_enough_for_amount() {
-        let wallet = test_wallet_with_utxo(50_000);
-
-        // Request 100k amount + 10k fee = 110k, only 50k available
-        // Even with take_fee_from_amount, 50k < 100k amount, so should fail
-        let result = wallet.select_unspent_utxos_for(100_000, 10_000, true, None);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_select_utxos_zero_amount() {
-        let wallet = test_wallet_with_utxo(50_000);
-
-        let result = wallet.select_unspent_utxos_for(0, 0, false, None);
-        assert!(result.is_some());
-        let (utxos, change) = result.unwrap();
-        assert!(utxos.is_empty());
-        assert!(change.is_none());
-    }
-
-    /// Helper: register a wallet address in the test database so that
-    /// `update_address_balance` can find the row.
-    /// Caller must store the wallet first via `db.store_wallet()`.
-    fn register_test_address(db: &Database, wallet: &Wallet, address: &Address) {
-        let seed_hash = wallet.seed_hash();
-        let path = DerivationPath::from(vec![
-            ChildNumber::Hardened { index: 44 },
-            ChildNumber::Hardened { index: 1 },
-            ChildNumber::Hardened { index: 0 },
-            ChildNumber::Normal { index: 0 },
-            ChildNumber::Normal { index: 0 },
-        ]);
-        db.add_address_if_not_exists(
-            &seed_hash,
-            address,
-            &Network::Testnet,
-            &path,
-            DerivationPathReference::BIP44,
-            DerivationPathType::CLEAR_FUNDS,
-            Some(0),
-        )
-        .expect("register test address");
-    }
-
-    #[test]
-    fn test_remove_utxos_removes_from_wallet() {
-        use crate::database::test_helpers::create_test_database;
-
-        let mut wallet = test_wallet();
-        let addr = test_address(1);
-        add_utxo(&mut wallet, &addr, 1, 0, 100_000);
-        add_utxo(&mut wallet, &addr, 2, 0, 200_000);
-        assert_eq!(wallet.max_balance(), 300_000);
-
-        let db = create_test_database().expect("test db");
-        db.store_wallet(&wallet, &Network::Testnet)
-            .expect("store test wallet");
-        register_test_address(&db, &wallet, &addr);
-        let (selected, _) = wallet
-            .select_unspent_utxos_for(90_000, 10_000, false, None)
-            .unwrap();
-        wallet
-            .remove_selected_utxos(&selected, &db, Network::Testnet)
-            .unwrap();
-
-        assert!(wallet.max_balance() < 300_000);
-    }
-
-    #[test]
-    fn test_remove_utxos_cleans_empty_address_entries() {
-        use crate::database::test_helpers::create_test_database;
-
-        let mut wallet = test_wallet();
-        let addr = test_address(1);
-        add_utxo(&mut wallet, &addr, 1, 0, 100_000);
-
-        let db = create_test_database().expect("test db");
-        db.store_wallet(&wallet, &Network::Testnet)
-            .expect("store test wallet");
-        register_test_address(&db, &wallet, &addr);
-        let (selected, _) = wallet
-            .select_unspent_utxos_for(90_000, 10_000, false, None)
-            .unwrap();
-        wallet
-            .remove_selected_utxos(&selected, &db, Network::Testnet)
-            .unwrap();
-
-        assert!(!wallet.utxos.contains_key(&addr));
     }
 
     // ========================================================================

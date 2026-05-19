@@ -15,10 +15,10 @@ use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
-use crate::ui::identities::funding_common::{self, WalletFundedScreenStep, generate_qr_code_image};
+use crate::ui::identities::funding_common::{WalletFundedScreenStep, generate_qr_code_image};
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
-use dash_sdk::dashcore_rpc::dashcore::{Address, OutPoint, TxOut};
+use dash_sdk::dashcore_rpc::dashcore::Address;
 use eframe::egui::{self, Context, Ui};
 use egui::{Button, RichText, Vec2};
 use std::collections::HashSet;
@@ -42,7 +42,6 @@ pub struct CreateAssetLockScreen {
     amount_input: Option<AmountInput>,
     identity_index: u32,
     funding_address: Option<Address>,
-    funding_utxo: Option<(OutPoint, TxOut, Address)>,
     core_has_funding_address: Option<bool>,
     is_creating: bool,
     asset_lock_tx_id: Option<String>,
@@ -84,7 +83,6 @@ impl CreateAssetLockScreen {
             ),
             identity_index,
             funding_address: None,
-            funding_utxo: None,
             core_has_funding_address: None,
             is_creating: false,
             asset_lock_tx_id: None,
@@ -218,7 +216,6 @@ impl CreateAssetLockScreen {
                         .with_min_amount(Some(1000)),
                 );
                 self.funding_address = None;
-                self.funding_utxo = None;
                 self.core_has_funding_address = None;
                 self.asset_lock_tx_id = None;
                 self.show_advanced_options = false;
@@ -515,15 +512,6 @@ impl ScreenLike for CreateAssetLockScreen {
                         ui.separator();
                         ui.add_space(10.0);
 
-                        // Check if funds have arrived at the funding address
-                        if let Some(utxo) = funding_common::capture_qr_funding_utxo_if_available(
-                            &self.step,
-                            self.selected_wallet.as_ref(),
-                            self.funding_address.as_ref(),
-                        ) {
-                            self.funding_utxo = Some(utxo);
-                        }
-
                         let step = *self.step.read().unwrap();
 
                         // Request periodic repaints while waiting for funds
@@ -664,15 +652,11 @@ impl ScreenLike for CreateAssetLockScreen {
                     CoreItem::ReceivedAvailableUTXOTransaction(_, outpoints_with_addresses),
                 ) = result
                 {
-                    for utxo in outpoints_with_addresses {
-                        let (_, _, address) = &utxo;
+                    for (_, _, address) in outpoints_with_addresses {
                         if let Some(funding_address) = &self.funding_address
-                            && funding_address == address
+                            && *funding_address == address
                         {
-                            let mut step = self.step.write().unwrap();
-                            *step = WalletFundedScreenStep::FundsReceived;
-                            self.funding_utxo = Some(utxo);
-                            drop(step); // Release the lock before creating new action
+                            *self.step.write().unwrap() = WalletFundedScreenStep::FundsReceived;
 
                             // Refresh wallet to create the asset lock
                             self.is_creating = true;

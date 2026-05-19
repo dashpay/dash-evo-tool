@@ -142,7 +142,10 @@ fn notice_text_is_exact_and_jargon_free() {
          version. Your funds are not lost — your previous data has been \
          saved as a backup, and you can still access these payments using \
          the previous version of the app. Mainnet payments on your main \
-         account are unaffected."
+         account are unaffected. Funding an identity directly from a \
+         scanned external payment is no longer supported; receive the \
+         payment into your wallet first, then fund the identity from your \
+         wallet balance."
     );
     for jargon in [
         "DIP-14",

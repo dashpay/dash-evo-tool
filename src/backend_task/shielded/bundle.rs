@@ -423,21 +423,22 @@ pub async fn unshield_credits(
 
 /// Build and broadcast a ShieldFromAssetLock transition (core DASH -> shielded pool via asset lock).
 ///
-/// Creates an asset lock transaction from wallet UTXOs, broadcasts it, waits for
-/// an InstantLock/ChainLock proof, then builds and broadcasts a Type 18
-/// ShieldFromAssetLock state transition that deposits credits directly into the
-/// shielded pool.
+/// The asset lock is built, broadcast, and tracked to an InstantLock/ChainLock
+/// proof by the upstream wallet (`WalletBackend::create_asset_lock_proof` with
+/// [`AssetLockKind::Shielded`]) — coin selection runs against the upstream
+/// authoritative live UTXO set at construction time, with store-before-
+/// broadcast crash safety owned upstream. This function then builds and
+/// broadcasts the Type 18 ShieldFromAssetLock state transition that deposits
+/// credits directly into the shielded pool.
 pub async fn shield_from_asset_lock(
     app_context: &Arc<AppContext>,
     seed_hash: &WalletSeedHash,
     shielded_state: &ShieldedWalletState,
     amount_duffs: u64,
-    source_address: Option<&Address>,
 ) -> Result<u64, TaskError> {
+    use crate::wallet_backend::AssetLockKind;
     use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
-    use dash_sdk::dpp::prelude::AssetLockProof;
     use dash_sdk::dpp::shielded::builder::build_shield_from_asset_lock_transition;
-    use std::time::Duration;
 
     let proving_key = crate::context::shielded::get_proving_key();
 
@@ -446,158 +447,15 @@ pub async fn shield_from_asset_lock(
         .estimate_shield_from_core_fees_duffs();
     let asset_lock_duffs = amount_duffs.saturating_add(platform_fee_duffs);
 
-    // Step 1: Create the asset lock transaction
-    let (asset_lock_transaction, asset_lock_private_key, _asset_lock_address, used_utxos) = {
-        let wallet_arc = {
-            let wallets = app_context.wallets.read()?;
-            wallets
-                .get(seed_hash)
-                .cloned()
-                .ok_or(TaskError::WalletNotFound)?
-        };
+    // Build + broadcast + track-to-finality the asset lock via the upstream
+    // wallet. Selection, persistence-before-broadcast, and proof wait are all
+    // upstream-authoritative — DET performs no coin selection here.
+    let (asset_lock_proof, asset_lock_private_key, _tx_id) = app_context
+        .wallet_backend()?
+        .create_asset_lock_proof(seed_hash, asset_lock_duffs, AssetLockKind::Shielded, 0)
+        .await?;
 
-        let mut wallet = wallet_arc
-            .write()
-            .map_err(|_| TaskError::LockPoisoned { resource: "wallet" })?;
-
-        let first_result = wallet.generic_asset_lock_transaction(
-            app_context.as_ref(),
-            app_context.network,
-            asset_lock_duffs,
-            false,
-            source_address,
-        );
-
-        let (tx, private_key, address, _change, utxos) = match first_result {
-            Ok(ok) => ok,
-            Err(_) => {
-                wallet
-                    .reload_utxos(app_context.as_ref())
-                    .map_err(|detail| TaskError::WalletUtxoReloadFailed { detail })?;
-                wallet
-                    .generic_asset_lock_transaction(
-                        app_context.as_ref(),
-                        app_context.network,
-                        asset_lock_duffs,
-                        false,
-                        source_address,
-                    )
-                    .map_err(shielded_build_error)?
-            }
-        };
-
-        (tx, private_key, address, utxos)
-    };
-
-    let tx_id = asset_lock_transaction.txid();
-
-    // Step 2: Register this transaction as waiting for finality
-    {
-        let mut proofs = app_context.transactions_waiting_for_finality.lock()?;
-        proofs.insert(tx_id, None);
-    }
-
-    // Step 3: Broadcast the transaction (routes through SPV or RPC per
-    // `core_backend_mode()`). On failure, drop the finality tracking entry
-    // we just inserted so it does not leak across retries.
-    if let Err(e) = app_context
-        .broadcast_raw_transaction(&asset_lock_transaction)
-        .await
-    {
-        match app_context.transactions_waiting_for_finality.lock() {
-            Ok(mut proofs) => {
-                proofs.remove(&tx_id);
-            }
-            Err(poisoned) => {
-                tracing::warn!(
-                    %tx_id,
-                    "transactions_waiting_for_finality lock is poisoned after broadcast failure; \
-                     recovering through poisoned guard so the finality tracking entry is cleared"
-                );
-                let mut proofs = poisoned.into_inner();
-                proofs.remove(&tx_id);
-            }
-        }
-        return Err(e);
-    }
-
-    // Step 4: Remove used UTXOs from wallet
-    {
-        let wallet_arc = {
-            let wallets = app_context.wallets.read()?;
-            wallets
-                .get(seed_hash)
-                .cloned()
-                .ok_or(TaskError::WalletNotFound)?
-        };
-
-        let mut wallet = wallet_arc
-            .write()
-            .map_err(|_| TaskError::LockPoisoned { resource: "wallet" })?;
-        wallet.utxos.retain(|_, utxo_map| {
-            utxo_map.retain(|outpoint, _| !used_utxos.contains_key(outpoint));
-            !utxo_map.is_empty()
-        });
-
-        for utxo in used_utxos.keys() {
-            app_context
-                .db
-                .drop_utxo(utxo, &app_context.network.to_string())?;
-        }
-
-        wallet
-            .recalculate_affected_address_balances(&used_utxos, app_context.as_ref())
-            .map_err(|detail| TaskError::WalletBalanceRecalculationFailed { detail })?;
-    }
-
-    // Step 5: Wait for asset lock proof (InstantLock or ChainLock) with timeout
-    let asset_lock_proof: AssetLockProof;
-    let timeout = tokio::time::sleep(Duration::from_secs(300));
-    tokio::pin!(timeout);
-
-    loop {
-        tokio::select! {
-            _ = &mut timeout => {
-                // Block briefly to guarantee cleanup; the critical section is a
-                // small BTreeMap remove. Mirrors the broadcast-failure branch
-                // above so a timeout cannot leak a finality tracking entry
-                // that the finality listener would otherwise keep servicing.
-                match app_context.transactions_waiting_for_finality.lock() {
-                    Ok(mut proofs) => {
-                        proofs.remove(&tx_id);
-                    }
-                    Err(poisoned) => {
-                        tracing::warn!(
-                            %tx_id,
-                            "transactions_waiting_for_finality lock is poisoned on timeout; \
-                             recovering through poisoned guard so the finality tracking entry is cleared"
-                        );
-                        let mut proofs = poisoned.into_inner();
-                        proofs.remove(&tx_id);
-                    }
-                }
-
-                // Chain sync is owned by upstream platform-wallet; spent
-                // UTXOs reconcile automatically on the next sync cycle.
-                return Err(TaskError::ShieldedAssetLockTimeout);
-            }
-            _ = tokio::time::sleep(Duration::from_millis(200)) => {
-                let proofs = app_context.transactions_waiting_for_finality.lock()?;
-                if let Some(Some(proof)) = proofs.get(&tx_id) {
-                    asset_lock_proof = proof.clone();
-                    break;
-                }
-            }
-        }
-    }
-
-    // Step 6: Clean up the finality tracking
-    {
-        let mut proofs = app_context.transactions_waiting_for_finality.lock()?;
-        proofs.remove(&tx_id);
-    }
-
-    // Step 7: Build and broadcast the shield-from-asset-lock transition
+    // Build and broadcast the shield-from-asset-lock transition
     let sdk = { app_context.sdk.load().as_ref().clone() };
 
     let recipient = payment_address_to_orchard(&shielded_state.keys.default_address)?;

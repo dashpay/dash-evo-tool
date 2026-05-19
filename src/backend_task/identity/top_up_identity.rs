@@ -16,7 +16,6 @@ use dash_sdk::dpp::state_transition::identity_topup_transition::IdentityTopUpTra
 use dash_sdk::dpp::state_transition::identity_topup_transition::methods::IdentityTopUpTransitionMethodsV0;
 use dash_sdk::platform::Fetch;
 use dash_sdk::platform::transition::top_up_identity::TopUpIdentity;
-use std::collections::BTreeMap;
 
 impl AppContext {
     pub(super) async fn top_up_identity(
@@ -110,55 +109,6 @@ impl AppContext {
                         asset_lock_proof_private_key,
                         tx_id,
                         Some((amount, top_up_index)),
-                    )
-                }
-                TopUpIdentityFundingMethod::FundWithUtxo(
-                    utxo,
-                    tx_out,
-                    input_address,
-                    identity_index,
-                    top_up_index,
-                ) => {
-                    // Scope the write lock to avoid holding it across an await.
-                    let (asset_lock_transaction, asset_lock_proof_private_key, wallet_seed_hash) = {
-                        let mut wallet = wallet.write().map_err(TaskError::from)?;
-                        let seed_hash = wallet.seed_hash();
-                        let tx_result = wallet
-                            .top_up_asset_lock_transaction_for_utxo(
-                                self,
-                                sdk.network,
-                                utxo,
-                                tx_out.clone(),
-                                input_address.clone(),
-                                identity_index,
-                                top_up_index,
-                            )
-                            .map_err(|e| TaskError::AssetLockTransactionBuildFailed {
-                                detail: e,
-                            })?;
-                        (tx_result.0, tx_result.1, seed_hash)
-                    };
-
-                    let used_utxos =
-                        BTreeMap::from([(utxo, (tx_out.clone(), input_address.clone()))]);
-
-                    let tx_id = self
-                        .broadcast_and_commit_asset_lock(
-                            &asset_lock_transaction,
-                            tx_out.value,
-                            &wallet_seed_hash,
-                            &wallet,
-                            &used_utxos,
-                        )
-                        .await?;
-
-                    let asset_lock_proof = self.wait_for_asset_lock_proof(tx_id).await?;
-
-                    (
-                        asset_lock_proof,
-                        asset_lock_proof_private_key,
-                        tx_id,
-                        Some((tx_out.value, top_up_index)),
                     )
                 }
             };

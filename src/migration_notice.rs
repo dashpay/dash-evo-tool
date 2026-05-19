@@ -1,11 +1,12 @@
 //! The mandatory one-time post-migration notice.
 //!
-//! This is the SOLE compensating control for the accepted DashPay
-//! fund-visibility trade-off introduced by the platform-wallet migration:
-//! payments received from DashPay contacts on Testnet/Devnet, or on a
-//! secondary account, may not appear in this version (the funds are not
-//! lost — the pre-migration data is retained as a backup and remains
-//! reachable with the previous app version).
+//! This is the SOLE compensating control for two accepted trade-offs
+//! introduced by the platform-wallet migration: (a) payments received from
+//! DashPay contacts on Testnet/Devnet, or on a secondary account, may not
+//! appear in this version (the funds are not lost — the pre-migration data
+//! is retained as a backup and remains reachable with the previous app
+//! version), and (b) funding an identity directly from a scanned external
+//! payment (the former QR-direct-fund path) is no longer supported.
 //!
 //! Because it is the only compensating control it is **unconditional** and
 //! **never downgraded**: shown exactly once to *every* migrated user,
@@ -22,7 +23,10 @@ pub const MIGRATION_NOTICE_TEXT: &str = "This update changes how DashPay \
     not appear in this version. Your funds are not lost — your previous \
     data has been saved as a backup, and you can still access these \
     payments using the previous version of the app. Mainnet payments on \
-    your main account are unaffected.";
+    your main account are unaffected. Funding an identity directly from a \
+    scanned external payment is no longer supported; receive the payment \
+    into your wallet first, then fund the identity from your wallet \
+    balance.";
 
 /// Pure gating decision for the one-time notice.
 ///
@@ -75,7 +79,10 @@ mod tests {
              in this version. Your funds are not lost — your previous data \
              has been saved as a backup, and you can still access these \
              payments using the previous version of the app. Mainnet \
-             payments on your main account are unaffected."
+             payments on your main account are unaffected. Funding an \
+             identity directly from a scanned external payment is no longer \
+             supported; receive the payment into your wallet first, then \
+             fund the identity from your wallet balance."
         );
         // Jargon guard: none of the forbidden technical terms appear.
         for jargon in [

@@ -60,6 +60,24 @@ pub enum AssetLockKind {
     IdentityTopUp,
     /// Funds a Platform (DIP-17) address directly.
     PlatformAddressTopUp,
+    /// Funds a shielded-pool deposit (ShieldFromAssetLock).
+    Shielded,
+}
+
+impl AssetLockKind {
+    /// Map to the upstream funding-account selector. All variants — including
+    /// `Shielded` — resolve to an upstream `AssetLockFundingType`, so coin
+    /// selection always runs against the upstream authoritative live UTXO set
+    /// (no DET-side selection from a snapshot or legacy `Wallet.utxos`).
+    fn funding_type(self) -> platform_wallet::AssetLockFundingType {
+        use platform_wallet::AssetLockFundingType;
+        match self {
+            AssetLockKind::IdentityRegistration => AssetLockFundingType::IdentityRegistration,
+            AssetLockKind::IdentityTopUp => AssetLockFundingType::IdentityTopUp,
+            AssetLockKind::PlatformAddressTopUp => AssetLockFundingType::AssetLockAddressTopUp,
+            AssetLockKind::Shielded => AssetLockFundingType::AssetLockShieldedAddressTopUp,
+        }
+    }
 }
 
 /// Upstream `WalletId` = `SHA256(root_xpub || root_chain_code)`, distinct
@@ -489,13 +507,8 @@ impl WalletBackend {
         ),
         TaskError,
     > {
-        use platform_wallet::AssetLockFundingType;
         let wallet = self.resolve_wallet(seed_hash).await?;
-        let funding_type = match kind {
-            AssetLockKind::IdentityRegistration => AssetLockFundingType::IdentityRegistration,
-            AssetLockKind::IdentityTopUp => AssetLockFundingType::IdentityTopUp,
-            AssetLockKind::PlatformAddressTopUp => AssetLockFundingType::AssetLockAddressTopUp,
-        };
+        let funding_type = kind.funding_type();
         let (proof, key, out_point) = wallet
             .asset_locks()
             .create_funded_asset_lock_proof(
@@ -561,5 +574,34 @@ impl WalletBackend {
         });
         std::fs::create_dir_all(&dir).map_err(|source| TaskError::FileSystem { source })?;
         Ok(dir)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use platform_wallet::AssetLockFundingType;
+
+    /// I1: every asset-lock kind, including `Shielded`, resolves to an
+    /// upstream funding type — coin selection is therefore always upstream-
+    /// authoritative, never DET-side from a snapshot or legacy `Wallet.utxos`.
+    #[test]
+    fn asset_lock_kind_maps_to_upstream_funding_type() {
+        assert_eq!(
+            AssetLockKind::IdentityRegistration.funding_type(),
+            AssetLockFundingType::IdentityRegistration
+        );
+        assert_eq!(
+            AssetLockKind::IdentityTopUp.funding_type(),
+            AssetLockFundingType::IdentityTopUp
+        );
+        assert_eq!(
+            AssetLockKind::PlatformAddressTopUp.funding_type(),
+            AssetLockFundingType::AssetLockAddressTopUp
+        );
+        assert_eq!(
+            AssetLockKind::Shielded.funding_type(),
+            AssetLockFundingType::AssetLockShieldedAddressTopUp
+        );
     }
 }

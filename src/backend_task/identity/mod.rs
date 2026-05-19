@@ -21,11 +21,11 @@ use crate::model::secret::Secret;
 use crate::model::wallet::{Wallet, WalletArcRef, WalletSeedHash};
 use dash_sdk::Sdk;
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
-use dash_sdk::dashcore_rpc::dashcore::{Address, PrivateKey, TxOut};
+use dash_sdk::dashcore_rpc::dashcore::{Address, PrivateKey};
 use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::balances::credits::Duffs;
+use dash_sdk::dpp::dashcore::Transaction;
 use dash_sdk::dpp::dashcore::hashes::Hash;
-use dash_sdk::dpp::dashcore::{OutPoint, Transaction};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
@@ -290,7 +290,6 @@ pub type TopUpIndex = u32;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RegisterIdentityFundingMethod {
     UseAssetLock(Address, Box<AssetLockProof>, Box<Transaction>),
-    FundWithUtxo(OutPoint, TxOut, Address, IdentityIndex),
     FundWithWallet(Duffs, IdentityIndex),
     /// Fund identity creation from Platform addresses
     FundWithPlatformAddresses {
@@ -304,7 +303,6 @@ pub enum RegisterIdentityFundingMethod {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TopUpIdentityFundingMethod {
     UseAssetLock(Address, Box<AssetLockProof>, Box<Transaction>),
-    FundWithUtxo(OutPoint, TxOut, Address, IdentityIndex, TopUpIndex),
     FundWithWallet(Duffs, IdentityIndex, TopUpIndex),
 }
 

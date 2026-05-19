@@ -144,44 +144,6 @@ impl AppContext {
                     )
                     .await;
             }
-            RegisterIdentityFundingMethod::FundWithUtxo(
-                utxo,
-                tx_out,
-                input_address,
-                identity_index,
-            ) => {
-                // Scope the write lock to avoid holding it across an await.
-                let (asset_lock_transaction, asset_lock_proof_private_key) = {
-                    let mut wallet = wallet.write().map_err(TaskError::from)?;
-                    wallet_id = wallet.seed_hash();
-                    wallet
-                        .registration_asset_lock_transaction_for_utxo(
-                            self,
-                            sdk.network,
-                            utxo,
-                            tx_out.clone(),
-                            input_address.clone(),
-                            identity_index,
-                        )
-                        .map_err(|e| TaskError::AssetLockTransactionBuildFailed { detail: e })?
-                };
-
-                let used_utxos = BTreeMap::from([(utxo, (tx_out.clone(), input_address.clone()))]);
-
-                let tx_id = self
-                    .broadcast_and_commit_asset_lock(
-                        &asset_lock_transaction,
-                        tx_out.value,
-                        &wallet_id,
-                        &wallet,
-                        &used_utxos,
-                    )
-                    .await?;
-
-                let asset_lock_proof = self.wait_for_asset_lock_proof(tx_id).await?;
-
-                (asset_lock_proof, asset_lock_proof_private_key, tx_id)
-            }
         };
 
         let identity_id = asset_lock_proof

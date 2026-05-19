@@ -1,6 +1,7 @@
 use crate::database::Database;
 use dash_sdk::dashcore_rpc::dashcore::{OutPoint, ScriptBuf, TxOut, Txid};
 use dash_sdk::dpp::dashcore::hashes::Hash;
+#[cfg(test)]
 use dash_sdk::dpp::dashcore::{Address, Network};
 use rusqlite::params;
 
@@ -18,6 +19,10 @@ impl Database {
         Ok(())
     }
 
+    /// Test-only fixture: seeds a UTXO row so the still-live `drop_utxo` /
+    /// `get_utxos_by_address` paths can be exercised. Production no longer
+    /// writes the legacy `utxos` table — upstream owns wallet-UTXO state.
+    #[cfg(test)]
     pub(crate) fn insert_utxo(
         &self,
         txid: &[u8],

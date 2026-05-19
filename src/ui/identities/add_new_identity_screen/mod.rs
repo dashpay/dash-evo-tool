@@ -1,7 +1,6 @@
 mod by_platform_address;
 mod by_using_unused_asset_lock;
 mod by_using_unused_balance;
-mod by_wallet_qr_code;
 mod success_screen;
 
 use crate::app::AppAction;
@@ -27,8 +26,8 @@ use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
+use dash_sdk::dpp::dashcore::Transaction;
 use dash_sdk::dpp::dashcore::secp256k1::hashes::hex::DisplayHex;
-use dash_sdk::dpp::dashcore::{OutPoint, Transaction, TxOut};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
@@ -54,7 +53,6 @@ pub enum FundingMethod {
     NoSelection,
     UseUnusedAssetLock,
     UseWalletBalance,
-    AddressWithQRCode,
     /// Use Platform Address credits
     UsePlatformAddress,
 }
@@ -63,7 +61,6 @@ impl fmt::Display for FundingMethod {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let output = match self {
             FundingMethod::NoSelection => "Select funding method",
-            FundingMethod::AddressWithQRCode => "Address with QR Code",
             FundingMethod::UseWalletBalance => "Wallet Balance",
             FundingMethod::UseUnusedAssetLock => "Unused Asset Lock (recommended)",
             FundingMethod::UsePlatformAddress => "Platform Address",
@@ -77,12 +74,10 @@ pub struct AddNewIdentityScreen {
     step: Arc<RwLock<WalletFundedScreenStep>>,
     funding_asset_lock: Option<(Transaction, AssetLockProof, Address)>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
-    core_has_funding_address: Option<bool>,
     funding_address: Option<Address>,
     funding_method: Arc<RwLock<FundingMethod>>,
     funding_amount: Option<Amount>,
     funding_amount_input: Option<AmountInput>,
-    funding_utxo: Option<(OutPoint, TxOut, Address)>,
     alias_input: String,
     copied_to_clipboard: Option<Option<String>>,
     identity_keys: IdentityKeys,
@@ -138,12 +133,10 @@ impl AddNewIdentityScreen {
             step: Arc::new(RwLock::new(WalletFundedScreenStep::ChooseFundingMethod)),
             funding_asset_lock: None,
             selected_wallet: None, // updated later
-            core_has_funding_address: None,
             funding_address: None,
             funding_method: Arc::new(RwLock::new(FundingMethod::NoSelection)),
             funding_amount: None,
             funding_amount_input: None,
-            funding_utxo: None,
             alias_input: String::new(),
             copied_to_clipboard: None,
             // updated later
@@ -357,8 +350,6 @@ impl AddNewIdentityScreen {
                                 self.funding_address = None;
                                 // Reset the funding asset lock
                                 self.funding_asset_lock = None;
-                                // Reset the funding UTXO
-                                self.funding_utxo = None;
                                 // Reset the copied to clipboard state
                                 self.copied_to_clipboard = None;
                                 // Reset the step to choose funding method
@@ -484,20 +475,6 @@ impl AddNewIdentityScreen {
                     let mut step = self.step.write().unwrap(); // Write lock on step
                     *step = WalletFundedScreenStep::ReadyToCreate;
                 }
-                if ui
-                    .selectable_value(
-                        &mut *funding_method,
-                        FundingMethod::AddressWithQRCode,
-                        "Address with QR Code",
-                    )
-                    .changed()
-                {
-                    let mut step = self.step.write().unwrap();
-                    *step = WalletFundedScreenStep::WaitingOnFunds;
-                    self.funding_amount = None;
-                    self.funding_amount_input = None;
-                }
-
                 // Check if wallet has Platform address balance
                 let has_platform_balance = {
                     let wallet = selected_wallet.read().unwrap();
@@ -1054,20 +1031,7 @@ impl ScreenLike for AddNewIdentityScreen {
         let current_step = *step;
         match current_step {
             WalletFundedScreenStep::ChooseFundingMethod => {}
-            WalletFundedScreenStep::WaitingOnFunds => {
-                if let Some(funding_address) = self.funding_address.as_ref()
-                    && let BackendTaskSuccessResult::CoreItem(
-                        CoreItem::ReceivedAvailableUTXOTransaction(_, outpoints_with_addresses),
-                    ) = &backend_task_success_result
-                {
-                    for (outpoint, tx_out, address) in outpoints_with_addresses {
-                        if funding_address == address {
-                            *step = WalletFundedScreenStep::FundsReceived;
-                            self.funding_utxo = Some((*outpoint, tx_out.clone(), address.clone()))
-                        }
-                    }
-                }
-            }
+            WalletFundedScreenStep::WaitingOnFunds => {}
             WalletFundedScreenStep::FundsReceived => {}
             WalletFundedScreenStep::ReadyToCreate => {}
             WalletFundedScreenStep::WaitingForAssetLock => {
@@ -1300,9 +1264,6 @@ impl ScreenLike for AddNewIdentityScreen {
                     },
                     FundingMethod::UseWalletBalance => {
                         inner_action |= self.render_ui_by_using_unused_balance(ui, step_number);
-                    },
-                    FundingMethod::AddressWithQRCode => {
-                        inner_action |= self.render_ui_by_wallet_qr_code(ui, step_number)
                     },
                     FundingMethod::UsePlatformAddress => {
                         inner_action |= self.render_ui_by_platform_address(ui, step_number);

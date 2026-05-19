@@ -1,7 +1,6 @@
 mod by_platform_address;
 mod by_using_unused_asset_lock;
 mod by_using_unused_balance;
-mod by_wallet_qr_code;
 mod success_screen;
 
 use crate::app::AppAction;
@@ -30,7 +29,7 @@ use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::{Credits, Duffs};
-use dash_sdk::dpp::dashcore::{OutPoint, Transaction, TxOut};
+use dash_sdk::dpp::dashcore::Transaction;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::AssetLockProof;
@@ -52,7 +51,6 @@ pub struct TopUpIdentityScreen {
     funding_amount: String,
     funding_amount_exact: Option<Duffs>,
     funding_amount_input: Option<AmountInput>,
-    funding_utxo: Option<(OutPoint, TxOut, Address)>,
     copied_to_clipboard: Option<Option<String>>,
     wallet_unlock_popup: WalletUnlockPopup,
     wallet_open_attempted: bool,
@@ -78,7 +76,6 @@ impl TopUpIdentityScreen {
             funding_amount: "".to_string(),
             funding_amount_exact: None,
             funding_amount_input: None,
-            funding_utxo: None,
             copied_to_clipboard: None,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             wallet_open_attempted: false,
@@ -183,7 +180,6 @@ impl TopUpIdentityScreen {
             self.wallet_open_attempted = false;
             self.funding_address = None;
             self.funding_asset_lock = None;
-            self.funding_utxo = None;
             self.funding_amount_input = None;
             self.copied_to_clipboard = None;
 
@@ -202,7 +198,6 @@ impl TopUpIdentityScreen {
     fn update_step_after_wallet_change(&mut self, funding_method: FundingMethod) {
         let mut step = self.step.write().unwrap();
         *step = match funding_method {
-            FundingMethod::AddressWithQRCode => WalletFundedScreenStep::WaitingOnFunds,
             FundingMethod::UseUnusedAssetLock
             | FundingMethod::UseWalletBalance
             | FundingMethod::UsePlatformAddress => WalletFundedScreenStep::ReadyToCreate,
@@ -291,18 +286,6 @@ impl TopUpIdentityScreen {
                         *step = WalletFundedScreenStep::ReadyToCreate;
                     }
                 });
-
-                if ui
-                    .selectable_value(
-                        &mut *funding_method,
-                        FundingMethod::AddressWithQRCode,
-                        "Address with QR Code",
-                    )
-                    .changed()
-                {
-                    let mut step = self.step.write().unwrap();
-                    *step = WalletFundedScreenStep::WaitingOnFunds;
-                }
             });
     }
 
@@ -373,8 +356,7 @@ impl TopUpIdentityScreen {
     fn top_up_funding_amount_input(&mut self, ui: &mut egui::Ui) {
         let funding_method = *self.funding_method.read().unwrap();
 
-        // Only apply max amount restriction when using wallet balance
-        // For QR code funding, funds come from external source so no max applies
+        // Only apply max amount restriction when using wallet balance.
         let (max_amount, show_max_button, fee_hint) =
             if funding_method == FundingMethod::UseWalletBalance {
                 let max_amount_duffs = self
@@ -449,7 +431,6 @@ impl ScreenLike for TopUpIdentityScreen {
             self.identity = qualified_identity;
             self.completed_fee_result = Some(fee_result);
             self.funding_address = None;
-            self.funding_utxo = None;
             self.funding_amount.clear();
             self.funding_amount_exact = None;
             self.funding_amount_input = None;
@@ -464,20 +445,7 @@ impl ScreenLike for TopUpIdentityScreen {
         let current_step = *step;
         match current_step {
             WalletFundedScreenStep::ChooseFundingMethod => {}
-            WalletFundedScreenStep::WaitingOnFunds => {
-                if let Some(funding_address) = self.funding_address.as_ref()
-                    && let BackendTaskSuccessResult::CoreItem(
-                        CoreItem::ReceivedAvailableUTXOTransaction(_, outpoints_with_addresses),
-                    ) = &backend_task_success_result
-                {
-                    for (outpoint, tx_out, address) in outpoints_with_addresses {
-                        if funding_address == address {
-                            *step = WalletFundedScreenStep::FundsReceived;
-                            self.funding_utxo = Some((*outpoint, tx_out.clone(), address.clone()))
-                        }
-                    }
-                }
-            }
+            WalletFundedScreenStep::WaitingOnFunds => {}
             WalletFundedScreenStep::FundsReceived => {}
             WalletFundedScreenStep::ReadyToCreate => {}
             WalletFundedScreenStep::WaitingForAssetLock => {
@@ -581,7 +549,6 @@ impl ScreenLike for TopUpIdentityScreen {
 
                 if funding_method == FundingMethod::UseWalletBalance
                     || funding_method == FundingMethod::UseUnusedAssetLock
-                    || funding_method == FundingMethod::AddressWithQRCode
                     || funding_method == FundingMethod::UsePlatformAddress
                 {
                     // Check if there's more than one wallet to show selection UI
@@ -648,9 +615,6 @@ impl ScreenLike for TopUpIdentityScreen {
                     }
                     FundingMethod::UseWalletBalance => {
                         inner_action |= self.render_ui_by_using_unused_balance(ui, step_number);
-                    }
-                    FundingMethod::AddressWithQRCode => {
-                        inner_action |= self.render_ui_by_wallet_qr_code(ui, step_number)
                     }
                     FundingMethod::UsePlatformAddress => {
                         inner_action |= self.render_ui_by_platform_address(ui, step_number);

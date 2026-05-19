@@ -288,25 +288,6 @@ impl Database {
         Ok(())
     }
 
-    /// Adds the use_local_spv_node column to the settings table.
-    pub fn add_use_local_spv_node_column(&self, conn: &rusqlite::Connection) -> Result<()> {
-        let column_exists: bool = conn.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name='use_local_spv_node'",
-            [],
-            |row| row.get::<_, i32>(0).map(|count| count > 0),
-        )?;
-
-        if !column_exists {
-            // Default to false - use DNS seed discovery by default
-            conn.execute(
-                "ALTER TABLE settings ADD COLUMN use_local_spv_node INTEGER DEFAULT 0;",
-                (),
-            )?;
-        }
-
-        Ok(())
-    }
-
     /// Adds the auto_start_spv column to the settings table.
     pub fn add_auto_start_spv_column(&self, conn: &rusqlite::Connection) -> Result<()> {
         let column_exists: bool = conn.query_row(
@@ -324,26 +305,6 @@ impl Database {
         }
 
         Ok(())
-    }
-
-    /// Updates the use_local_spv_node flag in the settings table.
-    pub fn update_use_local_spv_node(&self, use_local: bool) -> Result<()> {
-        self.execute(
-            "UPDATE settings SET use_local_spv_node = ? WHERE id = 1",
-            rusqlite::params![use_local],
-        )?;
-        Ok(())
-    }
-
-    /// Gets the use_local_spv_node flag from the settings table.
-    pub fn get_use_local_spv_node(&self) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
-        let result: Option<bool> = conn.query_row(
-            "SELECT use_local_spv_node FROM settings WHERE id = 1",
-            [],
-            |row| row.get(0),
-        )?;
-        Ok(result.unwrap_or(false))
     }
 
     /// Updates the auto_start_spv flag in the settings table.
@@ -541,7 +502,6 @@ impl Database {
         self.add_disable_zmq_column(conn)?;
         self.add_core_backend_mode_column(conn)?;
         self.add_onboarding_columns(conn)?;
-        self.add_use_local_spv_node_column(conn)?;
         self.add_auto_start_spv_column(conn)?;
         self.add_close_dash_qt_on_exit_column(conn)?;
         self.add_selected_wallet_columns_if_missing(conn)?;
@@ -941,19 +901,6 @@ mod tests {
             .get_auto_start_spv()
             .expect("Failed to get auto_start_spv");
         assert!(auto_start);
-
-        // Test use_local_spv_node (default false)
-        let use_local = db
-            .get_use_local_spv_node()
-            .expect("Failed to get use_local_spv_node");
-        assert!(!use_local);
-
-        db.update_use_local_spv_node(true)
-            .expect("Failed to update use_local_spv_node");
-        let use_local = db
-            .get_use_local_spv_node()
-            .expect("Failed to get use_local_spv_node");
-        assert!(use_local);
     }
 
     #[test]

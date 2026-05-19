@@ -973,12 +973,15 @@ As a power user, I want to choose whether to refresh Core Only, Platform Only, o
 
 - Refresh mode selector available in detailed/developer view.
 
-### NET-008: Select Core backend mode [Implemented]
+### NET-008: Select Core backend mode [Removed]
 **Persona:** Priya, Jordan
 
-As a user, I want to choose between SPV, RPC, or Auto mode for the Core backend so that I can control how the app connects to the Dash Core network.
-
-- SPV for light sync, RPC for full node, Auto for app-selected.
+Withdrawn in the platform-wallet migration. Chain sync is owned entirely by
+the upstream platform-wallet engine, which is SPV-only — there is no RPC or
+full-node wallet backend, so the SPV/RPC/Auto mode selector, the
+"Use local Dash Core node" toggle, and the related settings have been
+removed. Single-key wallet send is consequently degraded in this version
+(receive still works); see the one-time post-migration notice.
 
 ### NET-009: Toggle ZMQ [Implemented]
 **Persona:** Priya, Jordan

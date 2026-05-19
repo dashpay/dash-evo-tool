@@ -86,7 +86,6 @@ pub struct NetworkChooserScreen {
     spv_clear_message: Option<SpvClearMessage>,
     db_clear_dialog: Option<ConfirmationDialog>,
     db_clear_message: Option<DatabaseClearMessage>,
-    use_local_spv_node: bool,
     auto_start_spv: bool,
     close_dash_qt_on_exit: bool,
     /// Tracks whether the last config save to disk failed (needed to show the
@@ -137,7 +136,6 @@ impl NetworkChooserScreen {
         let theme_preference = settings.theme_mode;
         let disable_zmq = settings.disable_zmq;
         let custom_dash_qt_path = settings.dash_qt_path;
-        let use_local_spv_node = db.get_use_local_spv_node().unwrap_or(false);
         let auto_start_spv = db.get_auto_start_spv().unwrap_or(false);
         let close_dash_qt_on_exit = db.get_close_dash_qt_on_exit().unwrap_or(true);
 
@@ -164,7 +162,6 @@ impl NetworkChooserScreen {
             spv_clear_message: None,
             db_clear_dialog: None,
             db_clear_message: None,
-            use_local_spv_node,
             auto_start_spv,
             close_dash_qt_on_exit,
             config_save_failed: false,
@@ -906,56 +903,6 @@ impl NetworkChooserScreen {
                 // Advanced SPV peer source configuration is Expert-only —
                 // fresh-install users get auto-discovery, which is the correct default.
                 if self.developer_mode {
-                    ui.add_space(12.0);
-                    ui.separator();
-                    ui.add_space(12.0);
-
-                    // SPV Peer Source
-                    ui.label(
-                        egui::RichText::new("SPV Peer Source")
-                            .strong()
-                            .color(DashColors::text_primary(dark_mode)),
-                    );
-                    ui.add_space(6.0);
-                    ui.label(
-                        egui::RichText::new(
-                            "Choose how SPV finds peers for blockchain sync on mainnet/testnet.",
-                        )
-                        .color(DashColors::text_secondary(dark_mode)),
-                    );
-                    ui.add_space(8.0);
-
-                    ui.horizontal(|ui| {
-                        if StyledCheckbox::new(&mut self.use_local_spv_node, "Use local Dash Core node")
-                            .show(ui)
-                            .clicked()
-                        {
-                            // Save to database. Chain sync is owned by upstream
-                            // platform-wallet; this preference is wired in P2.
-                            let _ = self
-                                .db
-                                .update_use_local_spv_node(self.use_local_spv_node);
-                        }
-                        ui.label(
-                            egui::RichText::new(if self.use_local_spv_node {
-                                "Connect to local node at 127.0.0.1"
-                            } else {
-                                "Use DNS seed discovery (default)"
-                            })
-                            .color(DashColors::TEXT_SECONDARY)
-                            .italics(),
-                        );
-                    });
-                    ui.add_space(4.0);
-                    ui.label(
-                        egui::RichText::new(
-                            "Note: Changes take effect on next SPV sync start. Devnet/local networks always use configured host.",
-                        )
-                        .size(11.0)
-                        .color(DashColors::text_secondary(dark_mode))
-                        .italics(),
-                    );
-
                     // Auto-start SPV on startup
                     ui.add_space(12.0);
                     ui.separator();

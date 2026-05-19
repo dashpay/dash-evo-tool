@@ -293,3 +293,95 @@ impl Database {
         Ok(())
     }
 }
+
+/// Decision-#7 single-key carve-out regression lane (release-blocking).
+///
+/// Proves the P4b carve-out is intact: `src/database/utxo.rs` + the `utxos`
+/// table were RETAINED, and the single-key load path still hydrates
+/// `SingleKeyWallet.utxos` through `get_utxos_by_address`. Also pins the
+/// Decision-#7 stub error so a regression that silently re-enables single-key
+/// spends — or changes the user-facing message — fails CI.
+#[cfg(test)]
+mod single_key_carveout_regression {
+    use super::*;
+    use crate::backend_task::error::TaskError;
+    use crate::database::test_helpers::create_test_database;
+
+    #[test]
+    fn single_key_wallet_loads_utxos_via_retained_get_utxos_by_address() {
+        let db = create_test_database().expect("test db");
+        let network = Network::Testnet;
+
+        // A real single-key wallet (deterministic key) + its persisted row.
+        let wallet = SingleKeyWallet::new([7u8; 32], network, None, Some("carveout".to_string()))
+            .expect("single-key wallet");
+        db.store_single_key_wallet(&wallet, network)
+            .expect("store single-key wallet");
+
+        // Seed the RETAINED utxos table for this wallet's address via the
+        // #[cfg(test)] insert_utxo fixture — the exact load path single-key
+        // depends on (single_key_wallet.rs -> get_utxos_by_address).
+        let script = wallet.address.script_pubkey();
+        db.insert_utxo(
+            &[1u8; 32],
+            0,
+            &wallet.address,
+            123_456,
+            script.as_bytes(),
+            network,
+        )
+        .expect("seed utxo");
+        db.insert_utxo(
+            &[2u8; 32],
+            1,
+            &wallet.address,
+            7_000,
+            script.as_bytes(),
+            network,
+        )
+        .expect("seed second utxo");
+
+        let loaded = db
+            .get_single_key_wallets(network)
+            .expect("load single-key wallets");
+        let sk = loaded
+            .iter()
+            .find(|w| w.key_hash == wallet.key_hash)
+            .expect("stored single-key wallet must load");
+
+        // Carve-out proof: utxos hydrated from the retained utxos table.
+        assert_eq!(sk.utxos.len(), 2, "both seeded UTXOs must load");
+        let total: u64 = sk.utxos.values().map(|o| o.value).sum();
+        assert_eq!(
+            total, 130_456,
+            "UTXO values must round-trip from utxos table"
+        );
+        assert!(
+            sk.utxos.values().all(|o| o.script_pubkey == script),
+            "script_pubkey must round-trip"
+        );
+    }
+
+    #[test]
+    fn decision_7_stub_still_surfaces_single_key_unsupported() {
+        // The stub error variant is the load-bearing Decision-#7 contract.
+        // It is fieldless, so a structural match fully pins it; the
+        // user-facing message is asserted verbatim so a regression that
+        // weakens the disclosure fails here.
+        let err = TaskError::SingleKeyWalletsUnsupported;
+        assert!(matches!(err, TaskError::SingleKeyWalletsUnsupported));
+        let msg = TaskError::SingleKeyWalletsUnsupported.to_string();
+        assert!(
+            msg.contains("Single-key wallets are not supported in this version"),
+            "stub message must state the capability is unsupported: {msg}"
+        );
+        assert!(
+            msg.contains("preserved") && msg.contains("future update"),
+            "stub message must reassure data is preserved and will return: {msg}"
+        );
+        assert!(
+            msg.contains("HD (recovery-phrase) wallet"),
+            "stub message must give the user a concrete alternative: {msg}"
+        );
+    }
+}

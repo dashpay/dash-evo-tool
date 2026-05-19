@@ -235,12 +235,12 @@ As a user, I want to send Dash to a recipient address so that I can make payment
 - Enter destination address and amount.
 - Confirmation dialog before broadcast.
 
-### SND-002: Send Dash from single-key wallet [Implemented]
+### SND-002: Send Dash from single-key wallet [Gap]
 **Persona:** Priya, Jordan
 
 As a user with an imported private key, I want to send Dash from that single-key wallet so that I can move funds to another address.
 
-- Send flow works the same as for HD wallets.
+- Temporarily unavailable in this version (Decision #7): single-key send returns a clear, calm "not supported in this version — your data is preserved; use an HD recovery-phrase wallet" message. Single-key wallet data and its UTXOs are retained on disk and load correctly; only the spend action is gated. Re-enabled when single-key moves onto the upstream wallet runtime.
 
 ### SND-003: Receive Dash with QR code [Implemented]
 **Persona:** Alex, Priya

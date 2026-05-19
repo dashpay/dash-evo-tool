@@ -224,48 +224,6 @@ impl Database {
         Ok(())
     }
 
-    /// Update the balance of an existing address.
-    pub fn update_address_balance(
-        &self,
-        seed_hash: &[u8; 32],
-        address: &Address,
-        new_balance: u64,
-    ) -> rusqlite::Result<()> {
-        let rows_affected = self.execute(
-            "UPDATE wallet_addresses
-         SET balance = ?
-         WHERE seed_hash = ? AND address = ?",
-            params![new_balance, seed_hash, address.to_string()],
-        )?;
-
-        if rows_affected == 0 {
-            Err(rusqlite::Error::QueryReturnedNoRows)
-        } else {
-            Ok(())
-        }
-    }
-
-    /// Add a balance to an existing address.
-    pub fn add_to_address_balance(
-        &self,
-        seed_hash: &[u8; 32],
-        address: &Address,
-        additional_balance: u64,
-    ) -> rusqlite::Result<()> {
-        let rows_affected = self.execute(
-            "UPDATE wallet_addresses
-         SET balance = balance + ?
-         WHERE seed_hash = ? AND address = ?",
-            params![additional_balance, seed_hash, address.to_string()],
-        )?;
-
-        if rows_affected == 0 {
-            Err(rusqlite::Error::QueryReturnedNoRows)
-        } else {
-            Ok(())
-        }
-    }
-
     /// Migration: Add balance columns to wallet table (version 16).
     pub fn add_wallet_balance_columns(&self, conn: &Connection) -> rusqlite::Result<()> {
         // Check if confirmed_balance column exists
@@ -290,21 +248,6 @@ impl Database {
             )?;
         }
 
-        Ok(())
-    }
-
-    /// Update the wallet's balance fields in the database.
-    pub fn update_wallet_balances(
-        &self,
-        seed_hash: &[u8; 32],
-        confirmed_balance: u64,
-        unconfirmed_balance: u64,
-        total_balance: u64,
-    ) -> rusqlite::Result<()> {
-        self.execute(
-            "UPDATE wallet SET confirmed_balance = ?, unconfirmed_balance = ?, total_balance = ? WHERE seed_hash = ?",
-            params![confirmed_balance as i64, unconfirmed_balance as i64, total_balance as i64, seed_hash],
-        )?;
         Ok(())
     }
 
@@ -356,19 +299,6 @@ impl Database {
     }
 
     /// Update the total_received for an address.
-    pub fn update_address_total_received(
-        &self,
-        seed_hash: &[u8; 32],
-        address: &Address,
-        total_received: u64,
-    ) -> rusqlite::Result<()> {
-        self.execute(
-            "UPDATE wallet_addresses SET total_received = ? WHERE seed_hash = ? AND address = ?",
-            params![total_received as i64, seed_hash, address.to_string()],
-        )?;
-        Ok(())
-    }
-
     pub fn initialize_wallet_transactions_table(&self, conn: &Connection) -> rusqlite::Result<()> {
         conn.execute(
             "CREATE TABLE IF NOT EXISTS wallet_transactions (
@@ -1164,7 +1094,6 @@ mod tests {
     use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
     use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
     use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, ExtendedPrivKey};
-    use std::str::FromStr;
 
     fn create_test_address(network: Network) -> Address {
         let pubkey_bytes = [0x02; 33];
@@ -1293,47 +1222,6 @@ mod tests {
             rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Blob, _) => {}
             _ => panic!("unexpected error variant: {}", err),
         }
-    }
-
-    #[test]
-    fn test_wallet_balance_update() {
-        let db = create_test_database().expect("Failed to create test database");
-        let seed_hash = create_test_seed_hash();
-
-        // We need to insert a wallet first (simplified - using raw SQL for test setup)
-        {
-            let conn = db.conn.lock().unwrap();
-            conn.execute(
-                "INSERT INTO wallet (seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, uses_password, network)
-                 VALUES (?, ?, ?, ?, ?, 0, 'testnet')",
-                rusqlite::params![
-                    seed_hash.as_slice(),
-                    vec![0u8; 64],  // Dummy encrypted seed
-                    vec![0u8; 16],  // Dummy salt
-                    vec![0u8; 12],  // Dummy nonce
-                    vec![0u8; 78],  // Dummy extended public key
-                ],
-            )
-            .expect("Failed to insert test wallet");
-        }
-
-        // Update balances
-        db.update_wallet_balances(&seed_hash, 1_000_000, 500_000, 1_500_000)
-            .expect("Failed to update wallet balances");
-
-        // Verify via raw query (since get_wallets is complex)
-        let conn = db.conn.lock().unwrap();
-        let (confirmed, unconfirmed, total): (i64, i64, i64) = conn
-            .query_row(
-                "SELECT confirmed_balance, unconfirmed_balance, total_balance FROM wallet WHERE seed_hash = ?",
-                rusqlite::params![seed_hash.as_slice()],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .expect("Failed to query balances");
-
-        assert_eq!(confirmed, 1_000_000);
-        assert_eq!(unconfirmed, 500_000);
-        assert_eq!(total, 1_500_000);
     }
 
     #[test]
@@ -1630,115 +1518,5 @@ mod tests {
             )
             .expect("Failed to query alias");
         assert!(alias.is_none());
-    }
-
-    #[test]
-    fn test_address_balance_operations() {
-        let db = create_test_database().expect("Failed to create test database");
-        let network = Network::Testnet;
-        let seed_hash = create_test_seed_hash();
-        let address = create_test_address(network);
-        let derivation_path = DerivationPath::from_str("m/44'/1'/0'/0/0").unwrap();
-
-        // Insert test wallet first
-        {
-            let conn = db.conn.lock().unwrap();
-            conn.execute(
-                "INSERT INTO wallet (seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, uses_password, network)
-                 VALUES (?, ?, ?, ?, ?, 0, 'testnet')",
-                rusqlite::params![
-                    seed_hash.as_slice(),
-                    vec![0u8; 64],
-                    vec![0u8; 16],
-                    vec![0u8; 12],
-                    vec![0u8; 78],
-                ],
-            )
-            .expect("Failed to insert test wallet");
-        }
-
-        // Add address
-        db.add_address_if_not_exists(
-            &seed_hash,
-            &address,
-            &network,
-            &derivation_path,
-            DerivationPathReference::BIP44,
-            DerivationPathType::CLEAR_FUNDS,
-            Some(1_000_000),
-        )
-        .expect("Failed to add address");
-
-        // Update address balance
-        db.update_address_balance(&seed_hash, &address, 2_000_000)
-            .expect("Failed to update address balance");
-
-        // Add to address balance
-        db.add_to_address_balance(&seed_hash, &address, 500_000)
-            .expect("Failed to add to address balance");
-
-        // Verify final balance
-        let conn = db.conn.lock().unwrap();
-        let balance: i64 = conn
-            .query_row(
-                "SELECT balance FROM wallet_addresses WHERE seed_hash = ? AND address = ?",
-                rusqlite::params![seed_hash.as_slice(), address.to_string()],
-                |row| row.get(0),
-            )
-            .expect("Failed to query balance");
-        assert_eq!(balance, 2_500_000);
-    }
-
-    #[test]
-    fn test_update_address_total_received() {
-        let db = create_test_database().expect("Failed to create test database");
-        let network = Network::Testnet;
-        let seed_hash = create_test_seed_hash();
-        let address = create_test_address(network);
-        let derivation_path = DerivationPath::from_str("m/44'/1'/0'/0/0").unwrap();
-
-        // Insert test wallet first
-        {
-            let conn = db.conn.lock().unwrap();
-            conn.execute(
-                "INSERT INTO wallet (seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, uses_password, network)
-                 VALUES (?, ?, ?, ?, ?, 0, 'testnet')",
-                rusqlite::params![
-                    seed_hash.as_slice(),
-                    vec![0u8; 64],
-                    vec![0u8; 16],
-                    vec![0u8; 12],
-                    vec![0u8; 78],
-                ],
-            )
-            .expect("Failed to insert test wallet");
-        }
-
-        // Add address
-        db.add_address_if_not_exists(
-            &seed_hash,
-            &address,
-            &network,
-            &derivation_path,
-            DerivationPathReference::BIP44,
-            DerivationPathType::CLEAR_FUNDS,
-            None,
-        )
-        .expect("Failed to add address");
-
-        // Update total received
-        db.update_address_total_received(&seed_hash, &address, 10_000_000)
-            .expect("Failed to update total received");
-
-        // Verify
-        let conn = db.conn.lock().unwrap();
-        let total_received: i64 = conn
-            .query_row(
-                "SELECT total_received FROM wallet_addresses WHERE seed_hash = ? AND address = ?",
-                rusqlite::params![seed_hash.as_slice(), address.to_string()],
-                |row| row.get(0),
-            )
-            .expect("Failed to query total_received");
-        assert_eq!(total_received, 10_000_000);
     }
 }

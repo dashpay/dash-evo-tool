@@ -1,5 +1,6 @@
 //! Polling helpers for waiting on async state changes.
 
+use dash_evo_tool::backend_task::error::TaskError;
 use dash_evo_tool::context::AppContext;
 use dash_evo_tool::model::wallet::WalletSeedHash;
 use std::sync::Arc;
@@ -131,6 +132,11 @@ pub async fn wait_for_wallet_in_spv(
                         return Ok(());
                     }
                 }
+                // `TaskError::WalletBackend` is the upstream wallet runtime's
+                // documented "retry in a moment" signal — transient under the
+                // serial suite's burst of registrations. Retry within the
+                // existing timeout budget. Any other typed error is terminal.
+                Err(TaskError::WalletBackend { .. }) => {}
                 Err(e) => return Err(format!("ensure_wallets_registered failed: {e}")),
             }
             tokio::time::sleep(Duration::from_millis(500)).await;

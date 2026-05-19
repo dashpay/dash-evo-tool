@@ -120,7 +120,9 @@ impl TopUpIdentityScreen {
                                     .unwrap_or_else(|| "Unnamed Wallet".to_string());
 
                                 let has_resources = match funding_method {
-                                    FundingMethod::UseWalletBalance => wallet_read.has_balance(),
+                                    FundingMethod::UseWalletBalance => self
+                                        .app_context
+                                        .snapshot_has_balance(&wallet_read.seed_hash()),
                                     FundingMethod::UseUnusedAssetLock => {
                                         wallet_read.has_unused_asset_lock()
                                     }
@@ -153,7 +155,9 @@ impl TopUpIdentityScreen {
                     let has_required_resources = {
                         let wallet_read = wallet.read().unwrap();
                         match funding_method {
-                            FundingMethod::UseWalletBalance => wallet_read.has_balance(),
+                            FundingMethod::UseWalletBalance => self
+                                .app_context
+                                .snapshot_has_balance(&wallet_read.seed_hash()),
                             FundingMethod::UseUnusedAssetLock => {
                                 wallet_read.has_unused_asset_lock()
                             }
@@ -221,7 +225,7 @@ impl TopUpIdentityScreen {
                 if wallet.has_unused_asset_lock() {
                     has_unused_asset_lock = true;
                 }
-                if wallet.has_balance() {
+                if self.app_context.snapshot_has_balance(&wallet.seed_hash()) {
                     has_balance = true;
                 }
                 if wallet.total_platform_balance() > 0 {
@@ -362,7 +366,8 @@ impl TopUpIdentityScreen {
                 let max_amount_duffs = self
                     .wallet
                     .as_ref()
-                    .map(|w| w.read().unwrap().total_balance_duffs())
+                    .and_then(|w| w.read().ok())
+                    .map(|w| self.app_context.snapshot_balance(&w.seed_hash()).total)
                     .unwrap_or(0);
                 // Convert Duffs to Credits (1 Duff = 1000 Credits)
                 let total_credits = max_amount_duffs * 1000;

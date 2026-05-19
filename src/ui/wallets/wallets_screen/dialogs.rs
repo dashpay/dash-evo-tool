@@ -262,20 +262,20 @@ impl WalletsBalancesScreen {
             return AppAction::None;
         }
 
-        // Refresh cached balances from the wallet so SPV updates are reflected
+        // Refresh cached balances from the display-only WalletBackend
+        // snapshot so chain updates are reflected.
         if let Some(wallet) = &self.selected_wallet
             && let Ok(wallet_guard) = wallet.read()
         {
             use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
+            let address_balances = self
+                .app_context
+                .snapshot_address_balances(&wallet_guard.seed_hash());
             for (addr_str, balance) in &mut self.receive_dialog.core_addresses {
                 if let Ok(addr) = addr_str.parse::<Address<NetworkUnchecked>>()
                     && let Ok(addr) = addr.require_network(self.app_context.network)
                 {
-                    *balance = wallet_guard
-                        .address_balances
-                        .get(&addr)
-                        .copied()
-                        .unwrap_or(0);
+                    *balance = address_balances.get(&addr).copied().unwrap_or(0);
                 }
             }
         }
@@ -679,12 +679,16 @@ impl WalletsBalancesScreen {
         &self,
         wallet: &Arc<RwLock<Wallet>>,
     ) -> Result<(String, u64), String> {
-        let mut wallet_guard = wallet.write().map_err(|e| e.to_string())?;
-        let address = wallet_guard
-            .receive_address(self.app_context.network, true, Some(&self.app_context))
-            .map_err(|e| e.to_string())?;
-        let balance = wallet_guard
-            .address_balances
+        let (address, seed_hash) = {
+            let mut wallet_guard = wallet.write().map_err(|e| e.to_string())?;
+            let address = wallet_guard
+                .receive_address(self.app_context.network, true, Some(&self.app_context))
+                .map_err(|e| e.to_string())?;
+            (address, wallet_guard.seed_hash())
+        };
+        let balance = self
+            .app_context
+            .snapshot_address_balances(&seed_hash)
             .get(&address)
             .copied()
             .unwrap_or(0);
@@ -1111,8 +1115,8 @@ impl WalletsBalancesScreen {
         }
 
         {
-            let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
-            if amount_duffs > wallet_guard.confirmed_balance_duffs() {
+            let seed_hash = wallet.read().map_err(|e| e.to_string())?.seed_hash();
+            if amount_duffs > self.app_context.snapshot_balance(&seed_hash).confirmed {
                 return Err("Insufficient confirmed balance".to_string());
             }
         }
@@ -1175,16 +1179,15 @@ impl WalletsBalancesScreen {
     ) -> Result<Vec<(String, u64)>, String> {
         let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
         let network = self.app_context.network;
+        let address_balances = self
+            .app_context
+            .snapshot_address_balances(&wallet_guard.seed_hash());
         let addresses: Vec<(String, u64)> = wallet_guard
             .watched_addresses
             .iter()
             .filter(|(path, _)| path.is_bip44_external(network))
             .map(|(_, info)| {
-                let balance = wallet_guard
-                    .address_balances
-                    .get(&info.address)
-                    .copied()
-                    .unwrap_or(0);
+                let balance = address_balances.get(&info.address).copied().unwrap_or(0);
                 (info.address.to_string(), balance)
             })
             .collect();
@@ -1285,10 +1288,12 @@ impl WalletsBalancesScreen {
             return;
         };
 
+        let seed_hash = wallet.read().map(|g| g.seed_hash()).unwrap_or_default();
+        let balances = self.app_context.snapshot_address_balances(&seed_hash);
         let address_input = AddressInput::new(self.app_context.network)
             .with_label("Mine to address:")
             .with_address_kinds(&[AddressKind::Core])
-            .with_wallets(&[wallet])
+            .with_wallets(&[(wallet, balances)])
             .with_selection_only(true)
             .with_full_addresses(true);
 

@@ -655,12 +655,13 @@ impl WalletSendScreen {
         }
     }
 
-    /// Get Core wallet balance
+    /// Get Core wallet balance from the display-only `WalletBackend`
+    /// snapshot (P4a). DISPLAY-ONLY — never feeds coin selection.
     fn get_core_balance(&self) -> u64 {
         self.selected_wallet
             .as_ref()
             .and_then(|w| w.read().ok())
-            .map(|w| w.confirmed_balance_duffs())
+            .map(|w| self.app_context.snapshot_balance(&w.seed_hash()).confirmed)
             .unwrap_or(0)
     }
 
@@ -2192,8 +2193,16 @@ impl WalletSendScreen {
 
                 // Provide all wallet addresses for autocomplete
                 if let Ok(wallets_guard) = self.app_context.wallets.read() {
-                    let all_wallets: Vec<Arc<RwLock<Wallet>>> =
-                        wallets_guard.values().cloned().collect();
+                    let all_wallets: Vec<_> = wallets_guard
+                        .values()
+                        .map(|w| {
+                            let seed_hash = w.read().map(|g| g.seed_hash()).unwrap_or_default();
+                            (
+                                w.clone(),
+                                self.app_context.snapshot_address_balances(&seed_hash),
+                            )
+                        })
+                        .collect();
                     if !all_wallets.is_empty() {
                         builder = builder.with_wallets(&all_wallets);
                     }
@@ -2225,9 +2234,10 @@ impl WalletSendScreen {
         let (max_amount_credits, max_hint) = match &self.selected_source {
             Some(SourceSelection::CoreWallet) => {
                 let mut max = self.selected_wallet.as_ref().and_then(|w| {
-                    w.read()
-                        .ok()
-                        .map(|wallet| wallet.total_balance_duffs() * CREDITS_PER_DUFF) // duffs to credits
+                    w.read().ok().map(|wallet| {
+                        self.app_context.snapshot_balance(&wallet.seed_hash()).total
+                            * CREDITS_PER_DUFF // duffs to credits
+                    })
                 });
                 let dest_kind = self.destination_kind();
                 let hint = match dest_kind {

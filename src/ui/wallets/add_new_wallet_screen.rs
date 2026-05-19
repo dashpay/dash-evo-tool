@@ -177,14 +177,10 @@ impl AddNewWalletScreen {
         let mut action = AppAction::None;
         let dark_mode = ui.ctx().style().visuals.dark_mode;
 
-        // Check for incoming funds by looking at wallet balance
-        // Use total_balance_duffs() which falls back to max_balance() (from UTXOs) if SPV balance not set
+        // Check for incoming funds via the display-only WalletBackend snapshot.
         if !self.funds_received {
             if let Some(seed_hash) = &self.created_wallet_seed_hash
-                && let Ok(wallets) = self.app_context.wallets.read()
-                && let Some(wallet) = wallets.get(seed_hash)
-                && let Ok(wallet_guard) = wallet.read()
-                && wallet_guard.total_balance_duffs() > 0
+                && self.app_context.snapshot_balance(seed_hash).total > 0
             {
                 self.funds_received = true;
                 // Auto-close the popup when funds are received

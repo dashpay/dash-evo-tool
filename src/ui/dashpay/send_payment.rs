@@ -258,7 +258,10 @@ impl SendPaymentScreen {
                     );
                     let balance_dash = if let Some(wallet) = &self.selected_wallet {
                         if let Ok(wallet_guard) = wallet.read() {
-                            wallet_guard.confirmed_balance_duffs() as f64 / 100_000_000.0
+                            self.app_context
+                                .snapshot_balance(&wallet_guard.seed_hash())
+                                .confirmed as f64
+                                / 100_000_000.0
                         } else {
                             0.0
                         }
@@ -298,7 +301,9 @@ impl SendPaymentScreen {
                 // Amount input - use wallet balance for max
                 let max_balance = if let Some(wallet) = &self.selected_wallet {
                     if let Ok(wallet_guard) = wallet.read() {
-                        wallet_guard.confirmed_balance_duffs()
+                        self.app_context
+                            .snapshot_balance(&wallet_guard.seed_hash())
+                            .confirmed
                     } else {
                         0
                     }

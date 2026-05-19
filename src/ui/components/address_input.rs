@@ -125,6 +125,15 @@ impl ComponentResponse for AddressInputResponse {
     }
 }
 
+/// A wallet paired with its display-only `WalletBackend`-snapshot per-address
+/// balances (`AppContext::snapshot_address_balances`). The component takes
+/// balances explicitly so it never reaches into wallet state for funds
+/// (A04 — snapshot is display-only).
+pub type WalletWithBalances = (
+    Arc<RwLock<Wallet>>,
+    std::collections::BTreeMap<Address, u64>,
+);
+
 /// Unified address input with autocomplete, type detection, and validation.
 ///
 /// Follows the Component design pattern: lazy-initialize as `Option<AddressInput>`
@@ -136,7 +145,7 @@ impl ComponentResponse for AddressInputResponse {
 /// ```rust,ignore
 /// let addr_input = self.address_input.get_or_insert_with(|| {
 ///     AddressInput::new(network)
-///         .with_wallets(&wallets)
+///         .with_wallets(&[(wallet, app_context.snapshot_address_balances(&seed_hash))])
 ///         .with_label("Destination address")
 ///         .with_hint_text("Enter address or username")
 /// });
@@ -226,10 +235,14 @@ impl AddressInput {
     /// Entries are extracted immediately (read lock acquired once per wallet).
     /// Skips gracefully if a wallet lock is poisoned.
     /// When more than one wallet is provided, entries are prefixed with the wallet alias.
-    pub fn with_wallets(mut self, wallets: &[Arc<RwLock<Wallet>>]) -> Self {
+    /// Each entry pairs a wallet with its display-only
+    /// `WalletBackend`-snapshot per-address balances
+    /// (`AppContext::snapshot_address_balances`); the component never reaches
+    /// into wallet state for balances (A04 — snapshot is display-only).
+    pub fn with_wallets(mut self, wallets: &[WalletWithBalances]) -> Self {
         let multi = wallets.len() > 1;
-        for wallet in wallets {
-            self.extract_wallet_entries(wallet, multi);
+        for (wallet, balances) in wallets {
+            self.extract_wallet_entries(wallet, balances, multi);
         }
         self
     }
@@ -333,13 +346,13 @@ impl AddressInput {
     /// Update wallet data after initialization (e.g., balance refresh).
     ///
     /// When more than one wallet is provided, entries are prefixed with the wallet alias.
-    pub fn set_wallets(&mut self, wallets: &[Arc<RwLock<Wallet>>]) {
+    pub fn set_wallets(&mut self, wallets: &[WalletWithBalances]) {
         self.all_entries.retain(|e| {
             e.address_kind != AddressKind::Core && e.address_kind != AddressKind::Platform
         });
         let multi = wallets.len() > 1;
-        for wallet in wallets {
-            self.extract_wallet_entries(wallet, multi);
+        for (wallet, balances) in wallets {
+            self.extract_wallet_entries(wallet, balances, multi);
         }
     }
 
@@ -364,7 +377,12 @@ impl AddressInput {
 
     // --- Entry extraction ---
 
-    fn extract_wallet_entries(&mut self, wallet: &Arc<RwLock<Wallet>>, multi_wallet: bool) {
+    fn extract_wallet_entries(
+        &mut self,
+        wallet: &Arc<RwLock<Wallet>>,
+        address_balances: &std::collections::BTreeMap<Address, u64>,
+        multi_wallet: bool,
+    ) {
         let guard = match wallet.read().ok() {
             Some(g) => g,
             None => return,
@@ -390,7 +408,7 @@ impl AddressInput {
             if self.exclude_change && is_change {
                 continue;
             }
-            let balance = guard.address_balances.get(address).copied().unwrap_or(0);
+            let balance = address_balances.get(address).copied().unwrap_or(0);
             let addr_str = address.to_string();
             let change_suffix = if is_change { " (change)" } else { "" };
             let display = if self.full_addresses {

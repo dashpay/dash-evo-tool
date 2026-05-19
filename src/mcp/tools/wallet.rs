@@ -138,13 +138,21 @@ impl AsyncTool<DashMcpService> for WalletBalancesQuery {
         resolve::ensure_spv_synced(&ctx).await?;
 
         let wallet_arc = resolve::wallet_arc(&ctx, seed_hash)?;
-        let wallet = wallet_arc.read().unwrap_or_else(|e| e.into_inner());
+        let alias = wallet_arc
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .alias
+            .clone();
+
+        // Balances come from the display-only WalletBackend snapshot (P4a);
+        // upstream owns chain UTXO/balance bookkeeping.
+        let balance = ctx.snapshot_balance(&seed_hash);
 
         Ok(WalletBalancesOutput {
-            alias: wallet.alias.clone(),
-            total_duffs: wallet.total_balance_duffs(),
-            confirmed_duffs: wallet.confirmed_balance_duffs(),
-            unconfirmed_duffs: wallet.unconfirmed_balance_duffs(),
+            alias,
+            total_duffs: balance.total,
+            confirmed_duffs: balance.confirmed,
+            unconfirmed_duffs: balance.unconfirmed,
         })
     }
 }

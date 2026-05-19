@@ -22,7 +22,7 @@ use crate::model::wallet::single_key::{SingleKeyHash, SingleKeyWallet};
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::sdk_wrapper::initialize_sdk;
 use crate::utils::tasks::TaskManager;
-use crate::wallet_backend::{SeedReregistrationLoader, WalletBackend};
+use crate::wallet_backend::{DetWalletBalance, SeedReregistrationLoader, WalletBackend};
 use arc_swap::{ArcSwap, ArcSwapOption};
 use connection_status::ConnectionStatus;
 use crossbeam_channel::{Receiver, Sender};
@@ -687,6 +687,38 @@ impl AppContext {
         self.wallet_backend
             .load_full()
             .ok_or(TaskError::WalletBackendNotYetWired)
+    }
+
+    /// Confirmed / unconfirmed / total chain balance for an HD wallet, read
+    /// from the display-only `WalletBackend` snapshot (P4a). Pre-first-sync
+    /// (or backend not yet wired) yields a zeroed balance, which callers
+    /// render as the existing "syncing" state.
+    ///
+    /// DISPLAY-ONLY: this never participates in coin selection — spending
+    /// goes through `WalletBackend::send_payment` /
+    /// `create_asset_lock_proof` (A04 fund-safety gate).
+    pub fn snapshot_balance(&self, seed_hash: &WalletSeedHash) -> DetWalletBalance {
+        self.wallet_backend()
+            .map(|wb| wb.wallet_balance(seed_hash))
+            .unwrap_or_default()
+    }
+
+    /// Whether the wallet's snapshot shows any confirmed or unconfirmed
+    /// funds. Replaces the legacy `Wallet::has_balance` predicate.
+    pub fn snapshot_has_balance(&self, seed_hash: &WalletSeedHash) -> bool {
+        let b = self.snapshot_balance(seed_hash);
+        b.confirmed > 0 || b.unconfirmed > 0
+    }
+
+    /// UTXO-derived per-address balances from the snapshot (P4a). Replaces
+    /// reads of the legacy `Wallet::address_balances` map.
+    pub fn snapshot_address_balances(
+        &self,
+        seed_hash: &WalletSeedHash,
+    ) -> std::collections::BTreeMap<dash_sdk::dpp::dashcore::Address, u64> {
+        self.wallet_backend()
+            .map(|wb| wb.address_balances(seed_hash))
+            .unwrap_or_default()
     }
 }
 

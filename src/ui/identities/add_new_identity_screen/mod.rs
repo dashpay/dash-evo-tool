@@ -442,7 +442,10 @@ impl AddNewIdentityScreen {
 
                 let (has_unused_asset_lock, has_balance) = {
                     let wallet = selected_wallet.read().unwrap();
-                    (wallet.has_unused_asset_lock(), wallet.has_balance())
+                    (
+                        wallet.has_unused_asset_lock(),
+                        self.app_context.snapshot_has_balance(&wallet.seed_hash()),
+                    )
                 };
 
                 if has_unused_asset_lock
@@ -901,7 +904,7 @@ impl AddNewIdentityScreen {
             self.selected_wallet.as_ref().map(|wallet| {
                 let wallet = wallet.read().unwrap();
                 // Convert duffs to credits (1 duff = 1000 credits)
-                wallet.total_balance_duffs() * 1000
+                self.app_context.snapshot_balance(&wallet.seed_hash()).total * 1000
             })
         } else {
             None

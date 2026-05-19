@@ -846,21 +846,6 @@ impl NetworkChooserScreen {
                                                 wallet.watched_addresses.retain(|path, _| {
                                                     !path.is_platform_payment(current_context.network)
                                                 });
-
-                                                // Remove platform addresses from address_balances
-                                                let platform_addrs: Vec<_> = wallet
-                                                    .address_balances
-                                                    .keys()
-                                                    .filter(|addr| {
-                                                        // Check if this address was a platform address
-                                                        // by seeing if it's not in known_addresses anymore
-                                                        !wallet.known_addresses.contains_key(*addr)
-                                                    })
-                                                    .cloned()
-                                                    .collect();
-                                                for addr in platform_addrs {
-                                                    wallet.address_balances.remove(&addr);
-                                                }
                                             }
                                         }
                                     }

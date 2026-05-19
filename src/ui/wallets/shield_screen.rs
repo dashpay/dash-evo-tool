@@ -188,12 +188,18 @@ impl ShieldScreen {
                 self.cached_platform_balance = None;
             }
 
-            // Core balance
+            // Core balance — from the display-only WalletBackend snapshot.
             if let Some(addr) = self.validated_source.as_ref().and_then(|v| v.as_core()) {
-                self.cached_core_balance =
-                    Some(wallet.address_balances.get(addr).copied().unwrap_or(0));
+                self.cached_core_balance = Some(
+                    self.app_context
+                        .snapshot_address_balances(&self.seed_hash)
+                        .get(addr)
+                        .copied()
+                        .unwrap_or(0),
+                );
             } else {
-                self.cached_core_balance = Some(wallet.total_balance_duffs());
+                self.cached_core_balance =
+                    Some(self.app_context.snapshot_balance(&self.seed_hash).total);
             }
         } else {
             self.cached_base_nonce = None;
@@ -715,7 +721,9 @@ impl ScreenLike for ShieldScreen {
                         if let Ok(wallets) = self.app_context.wallets.read()
                             && let Some(wallet) = wallets.get(&self.seed_hash)
                         {
-                            builder = builder.with_wallets(std::slice::from_ref(wallet));
+                            let balances =
+                                self.app_context.snapshot_address_balances(&self.seed_hash);
+                            builder = builder.with_wallets(&[(wallet.clone(), balances)]);
                         }
 
                         builder

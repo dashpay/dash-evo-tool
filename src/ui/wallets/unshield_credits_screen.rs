@@ -154,7 +154,16 @@ impl ScreenLike for UnshieldCreditsScreen {
                     );
 
                 if let Ok(wallets) = self.app_context.wallets.read() {
-                    let all_wallets: Vec<_> = wallets.values().cloned().collect();
+                    let all_wallets: Vec<_> = wallets
+                        .values()
+                        .map(|w| {
+                            let seed_hash = w.read().map(|g| g.seed_hash()).unwrap_or_default();
+                            (
+                                w.clone(),
+                                self.app_context.snapshot_address_balances(&seed_hash),
+                            )
+                        })
+                        .collect();
                     builder = builder.with_wallets(&all_wallets);
                 }
 

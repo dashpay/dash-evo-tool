@@ -96,12 +96,6 @@ impl AppContext {
                     // downstream DET credit bookkeeping.
                     let seed_hash = wallet.read().map_err(TaskError::from)?.seed_hash();
                     let backend = self.wallet_backend()?;
-                    // Idempotently ensure the per-identity top-up funding
-                    // account exists before the asset lock; the persister
-                    // does not reconstruct it across reloads (a5538dc8).
-                    backend
-                        .ensure_identity_funding_accounts(&seed_hash, identity_index)
-                        .await?;
                     let (asset_lock_proof, asset_lock_proof_private_key, tx_id) = backend
                         .create_asset_lock_proof(
                             &seed_hash,

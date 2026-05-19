@@ -545,6 +545,19 @@ impl WalletBackend {
         ),
         TaskError,
     > {
+        // Identity asset locks fund from the IdentityRegistration /
+        // IdentityTopUp HD accounts, which the upstream persister never
+        // reconstructs (a5538dc8). Provision them here — the single
+        // chokepoint every asset-lock caller funnels through — so no call
+        // site can bypass it. Idempotent. Non-identity kinds are no-ops.
+        match kind {
+            AssetLockKind::IdentityRegistration | AssetLockKind::IdentityTopUp => {
+                self.ensure_identity_funding_accounts(seed_hash, identity_index)
+                    .await?;
+            }
+            AssetLockKind::PlatformAddressTopUp | AssetLockKind::Shielded => {}
+        }
+
         let wallet = self.resolve_wallet(seed_hash).await?;
         let funding_type = kind.funding_type();
         let (proof, key, out_point) = wallet

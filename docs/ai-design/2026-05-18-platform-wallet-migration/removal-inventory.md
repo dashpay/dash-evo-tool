@@ -40,8 +40,8 @@ Cross-references: [backendtask-contract.md](backendtask-contract.md) for task-le
 - `src/backend_task/dashpay/dip14_derivation.rs` + `hd_derivation.rs` (delegated upstream, conditioned on one-time migration execution — quarantine apparatus WITHDRAWN; see [data-model-and-migration.md](data-model-and-migration.md) "Accepted fund-accessibility trade-off" and [phasing.md QA matrix](phasing.md#qa-matrix))
 
 **DET wallet/UTXO/tx persistence:**
-- `src/database/wallet.rs` — `wallet`/`utxo`/`tx` tables + balance writers
-- `src/database/utxo.rs` (after migration)
+- `src/database/wallet.rs` — `wallet`/`wallet_transactions` tables + balance writers (`utxos` table NOT dropped — see carve-out below)
+- `src/database/utxo.rs` — RETAINED, not deleted. Decision #7 single-key carve-out: `src/database/single_key_wallet.rs` → `get_utxos_by_address` depends on `src/database/utxo.rs` and the `utxos` table; dropping them would be fund-data loss. Revisit when single-key wallet moves to upstream. See phasing.md P4b carve-out.
 
 **SPV context wiring:**
 - `src/context_provider_spv.rs` — SPV provider wiring

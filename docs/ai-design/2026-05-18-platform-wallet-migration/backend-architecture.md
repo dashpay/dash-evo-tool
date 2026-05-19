@@ -168,6 +168,10 @@ Both are already implemented in P2 (`src/wallet_backend/mod.rs:362,390`). No cod
 
 ---
 
+### Seed / Secret Boundary
+
+The seed/secret boundary is enforced at source: `SeedReregistrationLoader` uses in-memory `Zeroizing` seed material (`src/wallet_backend/loader.rs`) and never writes seeds or private keys to the persister. Only public material (contact xpub, established-contact mapping, P2PKH addresses, identity ids) is written through the upstream `SqliteWalletPersister`. No automated `secrets_scan` test exists in the repository (add as future hardening). See `SECRETS.md` and `data-model-and-migration.md` conversion table (`WalletSeed`/`ClosedKeyItem` row).
+
 ### Error Model
 
 `PlatformWalletError` and `PersistenceError` are wrapped into dedicated typed `TaskError` variants with `#[source]` (rust-best-practices error rules; CLAUDE.md "Never store user-facing strings in error variants"). No catch-all `String` variant. Every error gets a dedicated variant enabling structural matching, clean `Display`/`Debug` separation, and testable user-facing text.

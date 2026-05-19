@@ -42,7 +42,7 @@ Stage-B steps (each idempotent; marker-gated; legacy DROP strictly last):
 3. `add_identity` each `QualifiedIdentity` blob (no-op if present; blob+platform-address+token tables RETAINED, upstream "Outside scope").
 4. Re-establish DashPay contacts on upstream `derive_contact_xpub`/`derive_contact_payment_address(es)` ONLY — no DET re-derivation, no comparison, no classify. Upsert-keyed `(owner,contact)`. No quarantine path.
 5. Finalize — **single fork**:
-   - **SUCCESS:** durable flush → drop legacy wallet/utxo/spv/DashPay/contact tables → clear `platform_wallet_migration_pending` → `premigration` retired per policy.
+   - **SUCCESS:** durable flush → drop legacy `wallet` and `wallet_transactions` tables → clear `platform_wallet_migration_pending` → `premigration` retired per policy. The `utxos` table is RETAINED (not dropped) — it is the single-key wallet load path under Decision #7 (`src/database/single_key_wallet.rs` → `get_utxos_by_address`); dropping it would be fund-data loss. See phasing.md P4b carve-out.
    - **EXCEPTION** (crash/kill/power-loss/new-persister corruption/seed-decrypt failure): do NOT clear marker; do NOT drop legacy tables; next launch restore from `data.db.premigration` if new persister corrupt, then re-run from marker. Restore ONLY on exception, never otherwise.
 
 **Simplified marker lifecycle:** Only `platform_wallet_migration_pending` is live. It clears ⇔ all wallets re-registered AND all identities added AND all contacts re-established upstream AND legacy tables dropped. `dashpay_dip14_quarantine_active` (column added in commit `6d348566`) is now INERT/RESERVED — removal is DEFERRED to P4's batched dead-column cleanup (do NOT add a P3 migration to drop it).
@@ -72,4 +72,5 @@ After migration these become dead and are deleted in P4:
 - `core_wallet_name` (RPC)
 - `core_backend_mode`, `use_local_spv_node`, `auto_start_spv` settings
 - `WalletTransaction` struct and DB table
-- UTXO model and DB table (`database/utxo.rs`)
+- `src/model/wallet/utxos.rs` (HD-only model; distinct from `src/database/utxo.rs`)
+- **NOT** `src/database/utxo.rs` or the `utxos` DB table — these are RETAINED under Decision #7 (single-key load path). See phasing.md P4b carve-out.

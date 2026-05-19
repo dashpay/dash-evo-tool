@@ -149,7 +149,7 @@ Plus, if zero callers remain after P4a.5 exit (STOP-flag and verify before delet
 - The `wallet.transactions.push` reconstruction (`:931`)
 
 **Batched dead-`settings`-column schema migration** — new DB version (verify the live `DEFAULT_DB_VERSION` at impl time; do not hardcode):
-drops `dashpay_dip14_quarantine_active` + RPC-era dead settings columns; existence-guarded + idempotent (mirror the inverted `add_wallet_balance_columns:278` `pragma_table_info` check pattern). This migration mutates ONLY the `settings` table — object-disjoint from P3c's conditional `wallet`/`utxos`/`wallet_transactions` table DROP. No double-drop, no ordering hazard. Runs at the normal sync DB-init migration point.
+drops `dashpay_dip14_quarantine_active` + RPC-era dead settings columns; existence-guarded + idempotent (mirror the inverted `add_wallet_balance_columns:278` `pragma_table_info` check pattern). This migration mutates ONLY the `settings` table — object-disjoint from P3c's conditional `wallet`/`wallet_transactions` table DROP (the `utxos` table is NOT dropped by P3c — see P4b carve-out). No double-drop, no ordering hazard. Runs at the normal sync DB-init migration point.
 
 **UI:** RPC-mode toggle, Core-wallet picker, local-node settings controls.
 
@@ -172,6 +172,8 @@ Five commits, in order — do not collapse:
 A mandatory release-blocking test lane must be added in P5, proving the `utxo.rs` carve-out:
 
 Seed the `utxos` table (via `#[cfg(test)] insert_utxo`) and a `single_key_wallet` row. Load single-key wallets. Assert `SingleKeyWallet.utxos` is populated via the RETAINED `get_utxos_by_address` path AND that the Decision #7 stub still surfaces `TaskError::SingleKeyWalletsUnsupported`. This proves the `utxo.rs` carve-out is intact — mandatory, not a nicety. Add this lane to the P5 Smythe gate; no push to #860 until it passes.
+
+**SEC-001 test-ordering requirement:** The single-key regression test MUST run the Stage-B migration DROP first (dropping `wallet` and `wallet_transactions`), then load the single-key wallet. The prior isolated seed+load approach was tautological and failed to prove that the `utxos` table survives the migration DROP — which is the actual SEC-001 regression being pinned.
 
 P5 STOP-for-Smythe I1–I6 unchanged (see [P5 — Smythe Double-Spend / Fund-Safety Audit](#p5--smythe-double-spend--fund-safety-audit-release-blocking-gate) below).
 

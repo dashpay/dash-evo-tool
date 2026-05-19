@@ -1,10 +1,10 @@
 //! Test: Verify `is_ours` flag is set correctly for SPV transactions.
 //!
-//! SPV transactions pass through bloom filter → `check_transaction()` (address
-//! matching) → `record_transaction()`. The upstream library sets `is_ours` only
-//! for sends (`net_amount < 0`). We override to `true` for all matched
-//! transactions in the SPV reconcile path, since `check_transaction` already
-//! verified address ownership (bloom filter FPs are filtered there).
+//! The upstream `platform-wallet` engine matches transactions against watched
+//! addresses and emits wallet events; DET's `EventBridge` accumulates them
+//! into the per-wallet snapshot read here via
+//! `WalletBackend::transaction_history`. Both the sender and receiver wallet
+//! must see the transaction with `is_ours: true`.
 //!
 //! This test sends funds between two wallets and verifies that both the sender
 //! and receiver have `is_ours: true` on the resulting transaction.

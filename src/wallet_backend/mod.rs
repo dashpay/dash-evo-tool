@@ -452,6 +452,18 @@ impl WalletBackend {
         self.inner.snapshots.has_snapshot(seed_hash)
     }
 
+    /// Whether the wallet is registered with the upstream manager (its
+    /// addresses are being watched by the `SpvRuntime`). This is the
+    /// pre-sync registration signal — distinct from [`Self::has_snapshot`],
+    /// which only flips after the first wallet event arrives.
+    pub fn is_wallet_registered(&self, seed_hash: &WalletSeedHash) -> bool {
+        self.inner
+            .id_map
+            .read()
+            .map(|m| m.contains_key(seed_hash))
+            .unwrap_or(false)
+    }
+
     /// Deterministically derive the upstream `WalletId` from seed bytes
     /// without touching the manager. Used only to recover the id on the
     /// idempotent `WalletAlreadyExists` re-registration path (avoids

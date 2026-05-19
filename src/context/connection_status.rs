@@ -200,6 +200,12 @@ impl ConnectionStatus {
         }
     }
 
+    /// Current SPV connected peer count (push-based from the wallet-backend
+    /// `EventBridge` `on_network_event` callback).
+    pub fn spv_connected_peers(&self) -> u16 {
+        self.spv_connected_peers.load(Ordering::Relaxed)
+    }
+
     pub fn disable_zmq(&self) -> bool {
         self.disable_zmq.load(Ordering::Relaxed)
     }

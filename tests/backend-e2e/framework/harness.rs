@@ -16,6 +16,7 @@ use crate::framework::funding;
 use crate::framework::task_runner::run_task;
 use crate::framework::wait;
 use bip39::{Language, Mnemonic};
+use dash_evo_tool::app::TaskResult;
 use dash_evo_tool::app_dir::ensure_env_file;
 use dash_evo_tool::backend_task::BackendTask;
 use dash_evo_tool::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
@@ -24,6 +25,7 @@ use dash_evo_tool::context::AppContext;
 use dash_evo_tool::context::connection_status::ConnectionStatus;
 use dash_evo_tool::database::test_helpers::create_database_at_path;
 use dash_evo_tool::model::wallet::WalletSeedHash;
+use dash_evo_tool::utils::egui_mpsc::EguiMpscAsync;
 use dash_evo_tool::utils::tasks::TaskManager;
 use dash_sdk::dpp::dashcore::Network;
 use std::path::PathBuf;
@@ -70,6 +72,11 @@ pub struct BackendTestContext {
     /// Lock file held for the lifetime of the test process to prevent
     /// concurrent test runs from using the same workdir.
     _lock_file: std::fs::File,
+    /// Receiver for the `TaskResult` channel handed to `WalletBackend`'s
+    /// `EventBridge`. Kept alive for the whole test process so the bridge's
+    /// non-blocking `try_send(Refresh)` never hits a closed channel — this
+    /// mirrors `AppState` owning the receiver in production.
+    _task_result_rx: tokio::sync::mpsc::Receiver<TaskResult>,
 }
 
 impl BackendTestContext {
@@ -198,9 +205,50 @@ impl BackendTestContext {
             }
         }
 
-        // Chain sync is SPV-only (owned by upstream platform-wallet); no
-        // backend mode to set. TODO(P0.5): re-enable real start in P2.
-        app_context.start_spv().expect("Failed to start SPV");
+        // Register the framework wallet into the DET wallet map BEFORE the
+        // backend is built — `SeedReregistrationLoader` reads `ctx.wallets`
+        // at `WalletBackend::new` time, so the wallet must be present for
+        // the upstream manager to monitor its addresses from the first sync.
+        tracing::info!("Restoring framework wallet from E2E_WALLET_MNEMONIC");
+        let wallet = dash_evo_tool::model::wallet::Wallet::new_from_seed(
+            seed,
+            Network::Testnet,
+            Some("E2E Framework Wallet".to_string()),
+            None,
+        )
+        .expect("Failed to create framework wallet");
+        match app_context.register_wallet(wallet) {
+            Ok((hash, _)) => {
+                tracing::info!("Registered framework wallet (seed_hash: {:?})", &hash[..4]);
+            }
+            Err(TaskError::WalletAlreadyImported) => {
+                tracing::info!("Framework wallet already registered (reusing from persistent DB)");
+            }
+            Err(e) => panic!("Failed to register framework wallet: {}", e),
+        }
+
+        // Build the long-lived `TaskResult` channel the `EventBridge` pushes
+        // `Refresh` nudges onto. Production hands `WalletBackend` the
+        // `AppState`-owned sender; the harness owns both ends and keeps the
+        // receiver alive in `BackendTestContext` so the bridge's
+        // non-blocking `try_send` never hits a closed channel.
+        let (task_result_sender, task_result_rx) = tokio::sync::mpsc::channel::<TaskResult>(256)
+            .with_egui_ctx(app_context.egui_ctx().clone());
+
+        // Construct + start the real wallet backend exactly as production
+        // does: `ensure_wallet_backend` builds `WalletBackend` (which loads
+        // the framework wallet via `SeedReregistrationLoader`), then
+        // `WalletBackend::start()` starts the upstream `SpvRuntime` sync.
+        app_context
+            .ensure_wallet_backend(task_result_sender)
+            .await
+            .expect("Failed to construct wallet backend");
+        app_context
+            .wallet_backend()
+            .expect("wallet backend must be wired after ensure_wallet_backend")
+            .start()
+            .await
+            .expect("Failed to start wallet backend chain sync");
 
         // Stash the cancellation token so the panic hook can stop SPV if
         // init panics later (e.g. framework wallet unfunded).
@@ -232,36 +280,18 @@ impl BackendTestContext {
             }));
         });
 
-        // Wait for SPV peers
+        // Wait for the upstream SpvRuntime to connect to peers (push-based
+        // via the EventBridge → ConnectionStatus).
         wait::wait_for_spv_peers(&app_context, Duration::from_secs(60))
             .await
             .expect("SPV failed to connect to any peers within 60s");
         tracing::info!("SPV connected to peers");
 
-        tracing::info!("Restoring framework wallet from E2E_WALLET_MNEMONIC");
-        let wallet = dash_evo_tool::model::wallet::Wallet::new_from_seed(
-            seed,
-            Network::Testnet,
-            Some("E2E Framework Wallet".to_string()),
-            None,
-        )
-        .expect("Failed to create framework wallet");
-
-        // Try to register; if the wallet already exists (persistent DB), just look it up.
-        match app_context.register_wallet(wallet) {
-            Ok((hash, _)) => {
-                tracing::info!("Registered framework wallet (seed_hash: {:?})", &hash[..4]);
-            }
-            Err(TaskError::WalletAlreadyImported) => {
-                tracing::info!("Framework wallet already registered (reusing from persistent DB)");
-            }
-            Err(e) => panic!("Failed to register framework wallet: {}", e),
-        }
-
-        // Wait for wallet to appear in SPV
+        // Confirm the framework wallet is registered with the upstream
+        // manager so its addresses are watched by the SpvRuntime.
         wait::wait_for_wallet_in_spv(&app_context, framework_wallet_hash, Duration::from_secs(30))
             .await
-            .expect("Framework wallet not picked up by SPV");
+            .expect("Framework wallet not registered with the wallet backend");
 
         // Wait for SPV to fully sync (including masternodes) so MempoolManager
         // is active and bloom filter is built before any test broadcasts.
@@ -332,6 +362,7 @@ impl BackendTestContext {
             framework_wallet_hash,
             _workdir: workdir,
             _lock_file: lock_file,
+            _task_result_rx: task_result_rx,
         }
     }
 

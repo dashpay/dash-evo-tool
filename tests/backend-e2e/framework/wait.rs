@@ -105,15 +105,44 @@ pub async fn wait_for_spendable_balance(
     })
 }
 
-/// Wait until a wallet appears in the SPV subsystem.
-// TODO(P0.5): re-enable in P2 — chain sync is owned by upstream
-// platform-wallet; wallet registration is observed via the EventBridge.
+/// Ensure a DET-registered wallet is registered with the upstream wallet
+/// backend so its addresses are monitored by the `SpvRuntime`.
+///
+/// Chain sync is owned by upstream `platform-wallet`. A wallet becomes
+/// "tracked" once `WalletBackend::ensure_wallets_registered` has run
+/// `create_wallet_from_seed_bytes` for it (idempotent), at which point its
+/// derived addresses are watched and balance events flow back through the
+/// `EventBridge`. This drives that registration and confirms the upstream
+/// backend has a snapshot slot for the wallet.
 pub async fn wait_for_wallet_in_spv(
-    _app_context: &Arc<AppContext>,
-    _wallet_hash: WalletSeedHash,
-    _wait_timeout: Duration,
+    app_context: &Arc<AppContext>,
+    wallet_hash: WalletSeedHash,
+    wait_timeout: Duration,
 ) -> Result<(), String> {
-    Err("wait_for_wallet_in_spv is not wired until P2".to_string())
+    let backend = app_context
+        .wallet_backend()
+        .map_err(|e| format!("Wallet backend not wired: {e}"))?;
+
+    timeout(wait_timeout, async {
+        loop {
+            match backend.ensure_wallets_registered(app_context).await {
+                Ok(()) => {
+                    if backend.is_wallet_registered(&wallet_hash) {
+                        return Ok(());
+                    }
+                }
+                Err(e) => return Err(format!("ensure_wallets_registered failed: {e}")),
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    })
+    .await
+    .map_err(|_| {
+        format!(
+            "Timed out after {:?} waiting for wallet to register with the upstream backend",
+            wait_timeout
+        )
+    })?
 }
 
 /// Wait for SPV to complete initial sync (all managers including masternodes).
@@ -142,12 +171,31 @@ pub async fn wait_for_spv_running(
     })
 }
 
-/// Wait for SPV to connect to at least one peer.
-// TODO(P0.5): re-enable in P2 — peer count comes from upstream
-// platform-wallet sync status via the EventBridge.
+/// Wait for the upstream `SpvRuntime` to connect to at least one peer.
+///
+/// Peer count is push-based: the wallet-backend `EventBridge`
+/// `on_network_event` callback writes it to `ConnectionStatus` as the
+/// upstream sync loop discovers peers. We poll that atomic — no direct
+/// SPV-manager API (it no longer exists; chain sync is upstream-owned).
 pub async fn wait_for_spv_peers(
-    _app_context: &Arc<AppContext>,
-    _wait_timeout: Duration,
+    app_context: &Arc<AppContext>,
+    wait_timeout: Duration,
 ) -> Result<(), String> {
-    Err("wait_for_spv_peers is not wired until P2".to_string())
+    let cs = app_context.connection_status();
+    timeout(wait_timeout, async {
+        loop {
+            if cs.spv_connected_peers() > 0 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    })
+    .await
+    .map_err(|_| {
+        format!(
+            "Timed out after {:?} waiting for SPV to connect to a peer (status: {})",
+            wait_timeout,
+            cs.spv_status()
+        )
+    })
 }

@@ -253,19 +253,20 @@ Add `mod my_new_test;` to `main.rs`. The test binary is defined by the
 ### SPV UTXO spendability timing
 
 After broadcasting a transaction, the change output is not immediately spendable.
-The SPV WalletManager reports **total balance** (including unconfirmed) but only
-includes confirmed/InstantSend-locked UTXOs in its spendable set. This means:
+The upstream `platform-wallet` engine drives chain sync and pushes wallet state
+through the `EventBridge` into a per-wallet display snapshot. The snapshot's
+`total` includes unconfirmed funds, while `confirmed` reflects the
+confirmed/InstantSend-locked set actually usable for spending. This means:
 
-- `total_balance_duffs()` may show funds, but `build_unsigned_payment_tx()` fails
-  with "Insufficient funds" because `account.utxos` is empty.
-- `confirmed_balance_duffs()` reflects actually spendable funds.
+- `snapshot_balance().total` may show funds, but a send fails with
+  "Insufficient funds" while the change output is still unconfirmed.
+- `snapshot_balance().confirmed` reflects actually spendable funds.
 
 The framework mitigates this with:
 
-- **`wait_for_spendable_balance()`** -- polls `Wallet::spv_confirmed_balance()`
-  (which returns `None` until SPV has synced balance data, avoiding false
-  positives from the `max_balance()` fallback) and triggers
-  `reconcile_spv_wallets()` on each iteration.
+- **`wait_for_spendable_balance()`** -- polls
+  `AppContext::snapshot_balance().confirmed` (the EventBridge-pushed snapshot),
+  waiting until confirmed funds reach the target.
 - **Post-send wait** -- after funding a test wallet, `create_funded_test_wallet()`
   waits for the full funded amount to become spendable, then waits for the
   framework wallet's change output to settle before returning.

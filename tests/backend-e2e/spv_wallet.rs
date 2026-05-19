@@ -57,7 +57,22 @@ async fn test_spv_sync_and_create_wallet() {
         );
     }
 
-    // TODO(P0.5): re-enable in P2 — chain sync is owned by upstream
-    // platform-wallet; wallet registration is observed via the EventBridge.
-    let _ = (&app_context, &seed_hash);
+    // The wallet must register with the upstream manager so the SpvRuntime
+    // watches its addresses (chain sync is upstream-owned; registration is
+    // driven via the wallet backend, observed through the EventBridge).
+    crate::framework::wait::wait_for_wallet_in_spv(
+        app_context,
+        seed_hash,
+        std::time::Duration::from_secs(30),
+    )
+    .await
+    .expect("New wallet should register with the wallet backend");
+
+    let backend = app_context
+        .wallet_backend()
+        .expect("wallet backend must be wired");
+    assert!(
+        backend.is_wallet_registered(&seed_hash),
+        "New wallet should be registered with the upstream manager"
+    );
 }

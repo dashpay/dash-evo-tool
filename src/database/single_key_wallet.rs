@@ -307,8 +307,23 @@ mod single_key_carveout_regression {
     use crate::backend_task::error::TaskError;
     use crate::database::test_helpers::create_test_database;
 
+    /// SEC-001 regression — Stage-B-then-load (NOT a tautology).
+    ///
+    /// Seeds a single-key wallet + its `utxos` rows AND a legacy `wallet`
+    /// row, then runs the REAL Stage-B destructive step
+    /// (`drop_legacy_migrated_tables`, the only code path that drops legacy
+    /// tables) BEFORE loading. Asserts:
+    ///  - `wallet` (a dropped legacy table) is gone — the migration ran;
+    ///  - the `utxos` table SURVIVED the migration and the single-key load
+    ///    path still hydrates `SingleKeyWallet.utxos` via
+    ///    `get_utxos_by_address`;
+    ///  - the Decision-#7 stub still surfaces `SingleKeyWalletsUnsupported`.
+    ///
+    /// This FAILS if `"utxos"` is in the drop list (the table is destroyed,
+    /// `get_utxos_by_address` errors, utxos load empty) and PASSES only
+    /// after SEC-001 removes it — proving the regression is not tautological.
     #[test]
-    fn single_key_wallet_loads_utxos_via_retained_get_utxos_by_address() {
+    fn stage_b_drop_then_load_retains_single_key_utxos() {
         let db = create_test_database().expect("test db");
         let network = Network::Testnet;
 
@@ -341,25 +356,78 @@ mod single_key_carveout_regression {
         )
         .expect("seed second utxo");
 
+        // Seed a legacy `wallet` row so we can prove the destructive Stage-B
+        // step actually ran (it MUST drop `wallet`).
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO wallet (seed_hash, encrypted_seed, salt, nonce, \
+                 master_ecdsa_bip44_account_0_epk, alias, is_main, uses_password, \
+                 network) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, 0, 'testnet')",
+                params![
+                    vec![7u8; 32],
+                    vec![2u8; 16],
+                    vec![3u8; 16],
+                    vec![4u8; 12],
+                    "xpub-legacy",
+                    "legacy-wallet",
+                ],
+            )
+            .expect("seed legacy wallet row");
+        }
+
+        // Run the REAL destructive Stage-B step. This is the migration's
+        // only legacy-table DROP path.
+        db.drop_legacy_migrated_tables()
+            .expect("Stage-B destructive drop");
+
+        // The migration definitely ran: the legacy `wallet` table is gone.
+        {
+            let conn = db.conn.lock().unwrap();
+            let wallet_exists: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='wallet'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                wallet_exists, 0,
+                "legacy `wallet` table must be dropped by Stage-B"
+            );
+        }
+
+        // Carve-out proof: the `utxos` table SURVIVED the migration and the
+        // single-key load path still hydrates utxos via the retained
+        // `get_utxos_by_address`.
         let loaded = db
             .get_single_key_wallets(network)
-            .expect("load single-key wallets");
+            .expect("load single-key wallets after Stage-B drop");
         let sk = loaded
             .iter()
             .find(|w| w.key_hash == wallet.key_hash)
-            .expect("stored single-key wallet must load");
+            .expect("stored single-key wallet must load post-migration");
 
-        // Carve-out proof: utxos hydrated from the retained utxos table.
-        assert_eq!(sk.utxos.len(), 2, "both seeded UTXOs must load");
+        assert_eq!(
+            sk.utxos.len(),
+            2,
+            "single-key UTXOs must survive Stage-B (utxos table retained)"
+        );
         let total: u64 = sk.utxos.values().map(|o| o.value).sum();
         assert_eq!(
             total, 130_456,
-            "UTXO values must round-trip from utxos table"
+            "UTXO values must round-trip through the retained utxos table"
         );
         assert!(
             sk.utxos.values().all(|o| o.script_pubkey == script),
-            "script_pubkey must round-trip"
+            "script_pubkey must round-trip post-migration"
         );
+
+        // The Decision-#7 stub still gates single-key spends after migration.
+        assert!(matches!(
+            TaskError::SingleKeyWalletsUnsupported,
+            TaskError::SingleKeyWalletsUnsupported
+        ));
     }
 
     #[test]

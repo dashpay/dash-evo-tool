@@ -70,6 +70,11 @@ static LEAKED_BACKEND: tokio::sync::Mutex<
     Option<Arc<dash_evo_tool::wallet_backend::WalletBackend>>,
 > = tokio::sync::Mutex::const_new(None);
 
+/// Minimum workdir slot for the next `init()`. Bumped each time a panicked
+/// init leaks an un-droppable SPV `LockFile`, so the retry starts from a
+/// fresh directory instead of colliding with the locked one.
+static WORKDIR_SLOT_FLOOR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 /// Get (or initialize) the shared test context.
 pub async fn ctx() -> &'static BackendTestContext {
     CTX.get_or_init(BackendTestContext::init).await
@@ -106,14 +111,22 @@ impl BackendTestContext {
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
 
-        // Shut down a leaked upstream SpvRuntime from a previous panicked
-        // init so it releases the SPV data-directory lock before we build a
-        // new backend (otherwise `start()` fails with "Data directory
-        // locked"). `OnceCell` does not cache panicked inits, so this runs
-        // on every retry until one init succeeds.
+        // Handle a leaked upstream SpvRuntime from a previous panicked init.
+        // `OnceCell` does not cache panicked inits, so this runs on every
+        // retry until one init succeeds. We `shutdown()` to stop its
+        // background tasks, but the SPV data-directory `LockFile` releases
+        // only on `Drop` (dash-spv `storage/lockfile.rs`), and leaked task
+        // clones keep the backend's `Arc` graph alive — so the lock cannot
+        // be reclaimed in-process. Instead, advance the workdir slot so the
+        // retry's SpvRuntime locks a fresh directory (this is exactly what
+        // `pick_available_workdir`'s slot fallback exists for).
         if let Some(stale_backend) = LEAKED_BACKEND.lock().await.take() {
-            tracing::warn!("Shutting down leaked wallet backend from a previous init attempt");
+            tracing::warn!(
+                "Leaked wallet backend from a previous init attempt; \
+                 shutting it down and advancing to a fresh workdir slot"
+            );
             stale_backend.shutdown().await;
+            WORKDIR_SLOT_FLOOR.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
 
@@ -135,7 +148,8 @@ impl BackendTestContext {
         // and SPV data persist across runs. If the primary path is locked by
         // another process, fall back to numbered alternatives (slot 1, 2, ...).
         let base = std::env::temp_dir().join("dash-evo-e2e-testnet");
-        let (workdir, lock_file) = pick_available_workdir(&base);
+        let slot_floor = WORKDIR_SLOT_FLOOR.load(std::sync::atomic::Ordering::SeqCst);
+        let (workdir, lock_file) = pick_available_workdir(&base, slot_floor);
         std::fs::create_dir_all(&workdir).expect("Failed to create workdir");
         tracing::info!("E2E workdir: {}", workdir.display());
 
@@ -578,15 +592,20 @@ impl BackendTestContext {
 /// etc. up to 10 slots. Each slot has a `.lock` file that is held for the
 /// lifetime of the returned `File` handle (via `flock` / `LockFile`).
 ///
+/// `slot_floor` is the first slot to try — bumped across init retries when a
+/// panicked predecessor leaked an un-droppable SPV `LockFile`, so the retry
+/// skips the still-locked directory.
+///
 /// This ensures:
 /// - The same workdir is reused across runs (wallets, SPV data, DB persist)
 /// - Concurrent test processes get separate workdirs automatically
-fn pick_available_workdir(base: &std::path::Path) -> (PathBuf, std::fs::File) {
+/// - A retried init after a leaked SPV lock gets a clean directory
+fn pick_available_workdir(base: &std::path::Path, slot_floor: usize) -> (PathBuf, std::fs::File) {
     use std::io::Write;
 
     let max_slots = 10;
 
-    for slot in 0..max_slots {
+    for slot in slot_floor..max_slots {
         let dir = if slot == 0 {
             base.to_path_buf()
         } else {

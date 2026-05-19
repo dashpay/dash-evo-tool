@@ -254,6 +254,19 @@ impl AppContext {
                 )))
             }
             CoreTask::SendWalletPayment { wallet, request } => {
+                // Upstream `WalletBackend::send_payment` →
+                // `core().send_to_addresses` builds via the upstream
+                // `TransactionBuilder` with an internally-computed fee and a
+                // fixed coin-selection strategy. It exposes no way to deduct
+                // the network fee from a recipient output, and no absolute
+                // fee override (only a fee *rate*, not the absolute
+                // `override_fee` DET passes for min-relay retry). Rather than
+                // silently ignore these options — which would send a
+                // different amount than the user asked for — reject
+                // explicitly with a typed error.
+                if request.subtract_fee_from_amount || request.override_fee.is_some() {
+                    return Err(TaskError::WalletPaymentOptionUnsupported);
+                }
                 let backend = self.wallet_backend()?;
                 let seed_hash = {
                     let guard = wallet.read()?;
@@ -385,5 +398,89 @@ impl AppContext {
             return Some(TaskError::CoreRpcConnectionFailed { url, source: None });
         }
         None
+    }
+}
+
+/// SEC-002 — `subtract_fee_from_amount` / `override_fee` must NOT be
+/// silently ignored on `SendWalletPayment`. Upstream
+/// `WalletBackend::send_payment` cannot express either (no
+/// deduct-fee-from-output, no absolute fee override — only a fee rate), so
+/// the handler rejects them with a typed error rather than sending a
+/// different amount than the user asked for. This lane proves the
+/// rejection happens (no silent ignore).
+#[cfg(test)]
+mod send_payment_unsupported_options {
+    use super::*;
+    use crate::context::AppContext;
+    use crate::model::wallet::Wallet;
+    use dash_sdk::dpp::dashcore::Network;
+
+    fn network_free_ctx(tmp: &std::path::Path) -> std::sync::Arc<AppContext> {
+        crate::app_dir::ensure_env_file(tmp);
+        let db_file = tmp.join("data.db");
+        let db = std::sync::Arc::new(crate::database::Database::new(&db_file).expect("db"));
+        db.initialize(&db_file).expect("init");
+        AppContext::new(
+            tmp.to_path_buf(),
+            Network::Testnet,
+            db,
+            None,
+            Default::default(),
+            Default::default(),
+            egui::Context::default(),
+        )
+        .expect("AppContext")
+    }
+
+    fn wallet_arc() -> Arc<RwLock<Wallet>> {
+        let w = Wallet::new_from_seed([5u8; 64], Network::Testnet, Some("sec002".into()), None)
+            .expect("wallet");
+        Arc::new(RwLock::new(w))
+    }
+
+    fn req(subtract: bool, override_fee: Option<u64>) -> WalletPaymentRequest {
+        WalletPaymentRequest {
+            recipients: vec![PaymentRecipient {
+                address: "yMLhEsf1bbDqM5p9LyrPHgM7g4Pvqp1Fbb".to_string(),
+                amount_duffs: 10_000,
+            }],
+            subtract_fee_from_amount: subtract,
+            memo: None,
+            override_fee,
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn subtract_fee_from_amount_is_rejected_not_ignored() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = network_free_ctx(tmp.path());
+        let err = ctx
+            .run_core_task(CoreTask::SendWalletPayment {
+                wallet: wallet_arc(),
+                request: req(true, None),
+            })
+            .await
+            .expect_err("subtract_fee_from_amount must be rejected");
+        assert!(
+            matches!(err, TaskError::WalletPaymentOptionUnsupported),
+            "expected WalletPaymentOptionUnsupported, got {err:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn override_fee_is_rejected_not_ignored() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = network_free_ctx(tmp.path());
+        let err = ctx
+            .run_core_task(CoreTask::SendWalletPayment {
+                wallet: wallet_arc(),
+                request: req(false, Some(5_000)),
+            })
+            .await
+            .expect_err("override_fee must be rejected");
+        assert!(
+            matches!(err, TaskError::WalletPaymentOptionUnsupported),
+            "expected WalletPaymentOptionUnsupported, got {err:?}"
+        );
     }
 }

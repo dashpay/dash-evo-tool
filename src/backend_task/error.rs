@@ -42,6 +42,18 @@ pub enum TaskError {
     )]
     SingleKeyWalletsUnsupported,
 
+    /// A payment requested an option the current wallet engine cannot honor
+    /// (deduct the network fee from the amount sent, or a manually set fee).
+    /// Rejected explicitly rather than silently ignored, so the amount that
+    /// actually leaves the wallet always matches what the user entered.
+    #[error(
+        "This payment uses an option that is not available in this version: \
+        the network fee cannot be taken out of the amount sent, and the fee \
+        cannot be set manually. Send the exact amount without these options \
+        and the wallet will add the network fee automatically."
+    )]
+    WalletPaymentOptionUnsupported,
+
     /// A wallet operation failed inside the upstream wallet runtime.
     #[error("The wallet service could not complete this operation. Please retry in a moment.")]
     WalletBackend {

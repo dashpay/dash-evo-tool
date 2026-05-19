@@ -438,6 +438,28 @@ impl Database {
         Ok(())
     }
 
+    /// Drop dead `settings` columns left behind by withdrawn features.
+    ///
+    /// Currently this removes `dashpay_dip14_quarantine_active`, introduced by
+    /// an early P3a build and withdrawn with the quarantine apparatus. The
+    /// column is no longer created by any code path but persists in databases
+    /// that ran that build. Existence-guarded and idempotent — safe to re-run.
+    /// Mutates only the `settings` table.
+    pub fn drop_dead_settings_columns(&self, conn: &rusqlite::Connection) -> Result<()> {
+        const DEAD_COLUMNS: &[&str] = &["dashpay_dip14_quarantine_active"];
+        for col in DEAD_COLUMNS {
+            let exists: bool = conn.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name = ?1",
+                rusqlite::params![col],
+                |row| row.get::<_, i32>(0).map(|c| c > 0),
+            )?;
+            if exists {
+                conn.execute(&format!("ALTER TABLE settings DROP COLUMN {col};"), ())?;
+            }
+        }
+        Ok(())
+    }
+
     /// Whether the post-unlock platform-wallet (Stage-B) migration is still
     /// pending. Cleared only once every wallet is re-registered, every
     /// accepted DashPay contact is re-established on upstream derivation, and

@@ -35,7 +35,7 @@ impl<T> MigrationResultExt<T> for rusqlite::Result<T> {
     }
 }
 
-pub const DEFAULT_DB_VERSION: u16 = 35;
+pub const DEFAULT_DB_VERSION: u16 = 36;
 
 /// Minimal view of `.env` values the v34 migration needs.
 struct V34EnvSnapshot {
@@ -275,6 +275,18 @@ impl Database {
         data_dir: Option<&Path>,
     ) -> Result<(), MigrationError> {
         match version {
+            36 => {
+                // Drop the orphaned platform-wallet dead settings column.
+                // `dashpay_dip14_quarantine_active` was introduced by an early
+                // P3a build and withdrawn with the quarantine apparatus; it is
+                // no longer created by any code path but lingers in DBs that
+                // ran that build. Existence-guarded and idempotent. Mutates
+                // ONLY the settings table — object-disjoint from the
+                // conditional wallet/utxos/wallet_transactions DROP in the
+                // post-unlock Stage-B engine.
+                self.drop_dead_settings_columns(tx)
+                    .migration_err("settings", "v36: drop dead settings columns")?;
+            }
             35 => {
                 // Stage A of the platform-wallet migration (RATIFIED two-stage
                 // model, data-model-and-migration.md). This SQL arm is sync /
@@ -2868,7 +2880,7 @@ mod test {
         }
 
         #[test]
-        fn fresh_install_at_v35_has_no_pending_marker() {
+        fn fresh_install_has_no_pending_marker() {
             let tmp = tempfile::tempdir().unwrap();
             let db_file = tmp.path().join("test_data.db");
             let db = super::super::Database::new(&db_file).unwrap();
@@ -2876,10 +2888,13 @@ mod test {
             // legacy data, nothing to migrate.
             db.create_tables().unwrap();
             db.set_default_version().unwrap();
-            assert_eq!(db.db_schema_version().unwrap(), 35);
+            assert_eq!(
+                db.db_schema_version().unwrap(),
+                super::super::DEFAULT_DB_VERSION
+            );
             assert!(
                 !migration_pending(&db),
-                "fresh v35 install has nothing to migrate — marker must be clear"
+                "a fresh install has nothing to migrate — marker must be clear"
             );
         }
 
@@ -2961,6 +2976,62 @@ mod test {
                 first, second,
                 "existing premigration backup must not be recreated"
             );
+        }
+
+        /// v36 drops the orphaned `dashpay_dip14_quarantine_active` column
+        /// when present, is idempotent, and is a no-op when absent. It only
+        /// touches the `settings` table — the legacy `wallet` row survives.
+        #[test]
+        fn v36_drops_orphaned_quarantine_column_idempotently() {
+            let tmp = tempfile::tempdir().unwrap();
+            let db = fresh_v34_db(tmp.path());
+
+            fn has_quarantine_col(db: &super::super::Database) -> bool {
+                let conn = db.conn.lock().unwrap();
+                conn.query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('settings') \
+                     WHERE name = 'dashpay_dip14_quarantine_active'",
+                    [],
+                    |row| row.get::<_, i32>(0).map(|c| c > 0),
+                )
+                .unwrap()
+            }
+
+            // Simulate a DB that ran the withdrawn early-P3a build.
+            {
+                let conn = db.conn.lock().unwrap();
+                conn.execute(
+                    "ALTER TABLE settings ADD COLUMN \
+                     dashpay_dip14_quarantine_active INTEGER DEFAULT 0;",
+                    (),
+                )
+                .unwrap();
+            }
+            assert!(has_quarantine_col(&db), "precondition: column present");
+
+            db.try_perform_migration(34, 36, Some(tmp.path()))
+                .expect("34->36 migration must succeed");
+            assert!(
+                !has_quarantine_col(&db),
+                "v36 must drop the orphaned column"
+            );
+            assert_eq!(wallet_row_count(&db), 1, "v36 must not touch wallet data");
+
+            // Re-running the drop is a no-op (column already absent).
+            {
+                let conn = db.conn.lock().unwrap();
+                db.drop_dead_settings_columns(&conn)
+                    .expect("idempotent re-run must succeed");
+            }
+            assert!(!has_quarantine_col(&db));
+
+            // A DB that never had the column migrates cleanly too.
+            let tmp2 = tempfile::tempdir().unwrap();
+            let db2 = fresh_v34_db(tmp2.path());
+            assert!(!has_quarantine_col(&db2), "fresh DB has no orphan column");
+            db2.try_perform_migration(34, 36, Some(tmp2.path()))
+                .expect("34->36 on a clean DB must succeed");
+            assert!(!has_quarantine_col(&db2));
         }
     }
 

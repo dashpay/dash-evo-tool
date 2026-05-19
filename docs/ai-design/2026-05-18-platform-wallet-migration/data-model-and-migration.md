@@ -59,7 +59,7 @@ Stage-B steps (each idempotent; marker-gated; legacy DROP strictly last):
 
 - **Mandatory one-time informational notice** (info `MessageBanner`, shown once after successful Stage-B completion, gated by a new one-shot `settings.platform_wallet_migration_notice_shown`, dismissible, unconditional for EVERY migrated user since the affected subset can no longer be computed, jargon-free, technical detail to logs only). Exact user-facing text:
 
-  > *"This update changes how DashPay contact payment addresses are calculated. Payments you received from DashPay contacts on Testnet or Devnet, or on a secondary account, may not appear in this version. Your funds are not lost — your previous data has been saved as a backup, and you can still access these payments using the previous version of the app. Mainnet payments on your main account are unaffected."*
+  > *"This update changes how DashPay contact payment addresses are calculated. Payments you received from DashPay contacts on Testnet or Devnet, or on a secondary account, may not appear in this version. Your funds are not lost — your previous data has been saved as a backup, and you can still access these payments using the previous version of the app. Mainnet payments on your main account are unaffected. Funding an identity directly from a scanned external payment is no longer supported; receive the payment into your wallet first, then fund the identity from your wallet balance."*
 
 - **Notice must be unconditional:** Removing the quarantine net removed the only per-user detector, so the notice MUST be unconditional for all migrated users and MUST NOT be downgraded to optional/conditional during implementation (A04 fail-safe → fail-informed; the notice is the sole compensating control).
 

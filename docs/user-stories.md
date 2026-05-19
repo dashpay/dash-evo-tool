@@ -481,6 +481,16 @@ As a user, I want to top up identity credits from a Platform address so that I c
 - Available as funding method in top-up screen.
 - Uses Platform address credits directly.
 
+### IDN-014: Fund identity directly from scanned external payment [Removed — upstream-only funding]
+**Persona:** Priya, Jordan
+
+As a user, I want to register or top up an identity by scanning a QR code or supplying an external outpoint directly, so that I can fund an identity without first receiving the payment into my wallet.
+
+- `RegisterIdentityFundingMethod::FundWithUtxo` and `TopUpIdentityFundingMethod::FundWithUtxo` variants removed.
+- QR-direct-fund UI removed.
+
+**Rationale:** No upstream funding-outpoint API exists in `platform-wallet` at PR #3625 head. The capability cannot be preserved or emulated; all asset-lock funding is upstream-authoritative wallet-managed selection. Superseded by funding from wallet balance (`WalletBackend::create_asset_lock_proof`). Disclosed via the one-time post-migration informational notice shown to all migrated users.
+
 ---
 
 ## DPNS (DPN)

@@ -9,10 +9,12 @@ DET becomes a thin adapter: `platform-wallet` owns chain sync, HD wallet managem
 > P0 — DONE (GREEN). P0.5 — DONE (GREEN). P1 — DONE (GREEN). P2 — DONE (GREEN).
 > P3a — DONE (GREEN, commit `6d348566`). P3b — DONE (GREEN, commit `d5a3e51b`; `classify_contact` + 7 tests now DEAD, deleted in P3c).
 > P3c–P3e — DONE (GREEN). P4-partial done.
-> P3 re-scoped 2026-05-18: drop backwards compatibility, upstream-only DashPay derivation, no quarantine. Run continuing.
-> P4 split into P4a (UI data-path rewire, blocks P4b) and P4b (mechanical prune, only after P4a). P5 pending.
-> Fund-safety spend path is upstream-authoritative from P2 — the remaining gap is display-only (wallets UI reading balance/tx/UTXO from legacy model). P4a rewires the display data-path to the WalletSnapshot push model.
-> Only release-blocking gate: simplified Stage-B engine + QA lane (P3c–P3e) + post-migration UI data-path test (P5).
+> P3 re-scoped 2026-05-18: drop backwards compatibility, upstream-only DashPay derivation, no quarantine. Run continuing to completion + push.
+> P4 split into P4a (UI data-path rewire, blocks P4a.5) → P4a.5 (fund-safety spend-path completion: 3 paths, `FundWithUtxo` removed w/ disclosure, blocks P4b) → P4b (mechanical prune, only after P4a.5). P5 pending.
+> P4a.5 inserted (P2-completeness gap): `AssetLockKind::Shielded` + shielded Path 1 rewired to `WalletBackend::create_asset_lock_proof`; `FundWithUtxo` variants removed (no upstream funding-outpoint API at #3625 head) w/ disclosure via post-migration notice; `received_transaction_finality` slimmed to asset-lock-finality-only (ZMQ retained). P4b gated on P4a.5 exit.
+> P5 gains release-blocking Smythe double-spend/fund-safety audit: invariants I1–I6 must all pass before push.
+> Fund-safety spend path is upstream-authoritative from P2 — display gap addressed in P4a; spend-path correctness gap addressed in P4a.5.
+> Only release-blocking gates: simplified Stage-B engine + QA lane (P3c–P3e) + post-migration UI data-path test + P5 Smythe I1–I6 audit.
 > Supersedes the prior incremental plan (architecture.md, migration-plan.md, spv-rpc-correctness.md, verification.md — all deleted).
 > Verified at PR #3625 head `738091f734e05c7a1b822bb1ebff336c93b67891`.
 
@@ -45,7 +47,7 @@ The upstream-only DashPay derivation path must be implemented and QA-proven befo
 | [data-model-and-migration.md](data-model-and-migration.md) | Conversion table, one-time migration procedure with backup/fail-safe, dead fields |
 | [removal-inventory.md](removal-inventory.md) | DELETE vs RETAIN lists; RPC backend mode fate; thin Core-RPC mining utility |
 | [single-key-mock.md](single-key-mock.md) | `SingleKeyBackend` trait boundary, stub behavior, user message, isolation |
-| [phasing.md](phasing.md) | P0–P5 phase table (including P0.5 compile floor) with gates; skills/agents/crew; QA matrix; highest-risk assumption verdict |
+| [phasing.md](phasing.md) | P0–P5 phase table (including P0.5 compile floor, P4a.5 fund-safety spend-path completion, P5 Smythe release-blocking audit) with gates; skills/agents/crew; QA matrix; highest-risk assumption verdict |
 | [g2-mock-boundary.md](g2-mock-boundary.md) | `PersistedWalletLoader` seam design — seed-re-registration now, one-line swap when upstream `Wallet::from_persisted` lands |
 | [dip14-migration-hardstop.md](dip14-migration-hardstop.md) | SUPERSEDED 2026-05-18 — quarantine apparatus WITHDRAWN; retained as historical record only. See data-model-and-migration.md "Accepted fund-accessibility trade-off". |
 | [open-questions.md](open-questions.md) | All 8 decisions — now fully RESOLVED |

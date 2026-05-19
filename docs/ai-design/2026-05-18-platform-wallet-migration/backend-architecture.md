@@ -156,9 +156,15 @@ The `WalletSnapshot` is **DISPLAY-ONLY**. It exists to drive the wallets screen 
 
 Coin selection and transaction construction **MUST** go through:
 - `WalletBackend::send_payment` — uses the upstream-authoritative live UTXO set at send time
-- `WalletBackend::create_asset_lock_proof` — same
+- `WalletBackend::create_asset_lock_proof` — same; covers all asset-lock kinds including `AssetLockKind::Shielded` (added in P4a.5)
 
 Both are already implemented in P2 (`src/wallet_backend/mod.rs:362,390`). No code path may select spendable inputs from `WalletSnapshot`. Any PR that routes coin selection through the snapshot must be rejected at review.
+
+**`AssetLockKind::Shielded` (added P4a.5):** The `AssetLockKind` enum gains a `Shielded` variant, wiring `src/backend_task/shielded/bundle.rs:463,478` through `WalletBackend::create_asset_lock_proof` instead of the legacy `generic_asset_lock_transaction` + `select_unspent_utxos_for` path. This closes the last spend path that could select inputs from a legacy `Wallet.utxos` snapshot.
+
+**No funding-outpoint API at #3625 head — `FundWithUtxo` removed, not emulated.** `platform-wallet` at PR #3625 head provides no API to fund an identity from a caller-supplied external outpoint. All asset-lock funding is upstream-authoritative wallet-managed selection via `WalletBackend::create_asset_lock_proof`. The `RegisterIdentityFundingMethod::FundWithUtxo` and `TopUpIdentityFundingMethod::FundWithUtxo` variants are removed in P4a.5 with disclosure via the one-time post-migration notice. They are not emulated, stubbed, or preserved behind a feature flag.
+
+**`received_transaction_finality` — asset-lock-finality-only (P4a.5).** `context/transaction_processing.rs::received_transaction_finality` is slimmed in P4a.5 to handle only asset-lock finality. The `Wallet.utxos` / `address_balances` / legacy-`utxos`-table write branches are deleted; upstream / `WalletSnapshot` owns wallet-UTXO bookkeeping. The asset-lock detection and registration branch (`store_asset_lock_transaction` + the finality-wait channel that `broadcast_and_commit_asset_lock` / `wait_for_asset_lock_proof` depend on) is retained. ZMQ call sites at `app.rs:1267,1285` stay — ZMQ is still needed for asset-lock detection.
 
 ---
 

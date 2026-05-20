@@ -491,8 +491,9 @@ mod stage_b_engine {
         assert_eq!(contacts[0].3, DEFAULT_DASHPAY_ACCOUNT);
         drop(contacts);
 
-        // Strictly-last destructive DROP ran: legacy tables gone.
-        assert!(!table_exists(&db, "wallet"), "legacy wallet table dropped");
+        // Strictly-last destructive DROP ran: only the upstream-owned
+        // legacy tables are gone. The `wallet` / `wallet_addresses` tables
+        // are the DET-retained seed store and must survive.
         assert!(
             !table_exists(&db, "wallet_transactions"),
             "legacy wallet_transactions table dropped"
@@ -500,6 +501,18 @@ mod stage_b_engine {
         assert!(
             !table_exists(&db, "dashpay_contacts"),
             "migrated dashpay_contacts table dropped"
+        );
+
+        // DET-retained seed store: must survive Stage-B so that the next
+        // `AppContext::new` rehydrates the persisted wallets and the GUI
+        // does not show an empty wallet list.
+        assert!(
+            table_exists(&db, "wallet"),
+            "DET-retained wallet table must survive Stage-B (seed store)"
+        );
+        assert!(
+            table_exists(&db, "wallet_addresses"),
+            "DET-retained wallet_addresses table must survive Stage-B"
         );
 
         // Decision-#7 carve-out: utxos RETAINED through the migration.

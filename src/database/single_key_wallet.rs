@@ -356,24 +356,36 @@ mod single_key_carveout_regression {
         )
         .expect("seed second utxo");
 
-        // Seed a legacy `wallet` row so we can prove the destructive Stage-B
-        // step actually ran (it MUST drop `wallet`).
+        // Seed a `wallet` row (the FK target) and a `wallet_transactions`
+        // row so we can prove the destructive Stage-B step actually ran
+        // (it MUST drop `wallet_transactions`). The `wallet` table itself
+        // is the DET-retained seed store and survives.
         {
             let conn = db.conn.lock().unwrap();
             conn.execute(
-                "INSERT INTO wallet (seed_hash, encrypted_seed, salt, nonce, \
-                 master_ecdsa_bip44_account_0_epk, alias, is_main, uses_password, \
-                 network) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, 0, 'testnet')",
+                "INSERT INTO wallet (
+                    seed_hash, encrypted_seed, salt, nonce,
+                    master_ecdsa_bip44_account_0_epk, alias, is_main,
+                    uses_password, network
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, 0, 'testnet')",
                 params![
-                    vec![7u8; 32],
+                    vec![6u8; 32],
                     vec![2u8; 16],
                     vec![3u8; 16],
                     vec![4u8; 12],
-                    "xpub-legacy",
-                    "legacy-wallet",
+                    "xpub-retained",
+                    "retained-wallet",
                 ],
             )
-            .expect("seed legacy wallet row");
+            .expect("seed retained wallet row");
+            conn.execute(
+                "INSERT INTO wallet_transactions (
+                    seed_hash, txid, network, timestamp, net_amount,
+                    is_ours, raw_transaction
+                 ) VALUES (?1, ?2, 'testnet', 0, 0, 1, ?3)",
+                params![vec![6u8; 32], vec![1u8; 32], vec![0u8; 32]],
+            )
+            .expect("seed legacy wallet_transactions row");
         }
 
         // Run the REAL destructive Stage-B step. This is the migration's
@@ -381,19 +393,20 @@ mod single_key_carveout_regression {
         db.drop_legacy_migrated_tables()
             .expect("Stage-B destructive drop");
 
-        // The migration definitely ran: the legacy `wallet` table is gone.
+        // The migration definitely ran: `wallet_transactions` is gone.
         {
             let conn = db.conn.lock().unwrap();
-            let wallet_exists: i64 = conn
+            let wt_exists: i64 = conn
                 .query_row(
-                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='wallet'",
+                    "SELECT COUNT(*) FROM sqlite_master \
+                     WHERE type='table' AND name='wallet_transactions'",
                     [],
                     |r| r.get(0),
                 )
                 .unwrap();
             assert_eq!(
-                wallet_exists, 0,
-                "legacy `wallet` table must be dropped by Stage-B"
+                wt_exists, 0,
+                "legacy `wallet_transactions` table must be dropped by Stage-B"
             );
         }
 

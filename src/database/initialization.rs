@@ -71,6 +71,32 @@ fn read_env_file_for_v34_migration(data_dir: &Path) -> std::io::Result<V34EnvSna
 
 pub const DEFAULT_NETWORK: &str = "mainnet";
 
+/// True iff `table` exists in the (possibly attached) schema and contains
+/// at least one row. `table` may be qualified, e.g. `"premigration.wallet"`.
+/// Returns `Ok(false)` for a missing table — the caller treats absence the
+/// same as emptiness for recovery purposes.
+fn table_has_rows(conn: &Connection, table: &str) -> rusqlite::Result<bool> {
+    let (schema, name) = match table.split_once('.') {
+        Some((s, n)) => (s, n),
+        None => ("main", table),
+    };
+    let exists: bool = conn.query_row(
+        &format!(
+            "SELECT EXISTS(SELECT 1 FROM {schema}.sqlite_master \
+             WHERE type='table' AND name=?1)"
+        ),
+        [name],
+        |row| row.get(0),
+    )?;
+    if !exists {
+        return Ok(false);
+    }
+    let count: i64 = conn.query_row(&format!("SELECT COUNT(1) FROM {table}"), [], |row| {
+        row.get(0)
+    })?;
+    Ok(count > 0)
+}
+
 impl Database {
     pub fn initialize(&self, db_file_path: &Path) -> rusqlite::Result<()> {
         // First, ensure all required columns exist in tables that may have been
@@ -127,6 +153,20 @@ impl Database {
             .unwrap_or(false)
         {
             self.ensure_premigration_backup(db_file_path);
+        }
+
+        // One-shot recovery for users whose Stage-B finalize ran a build
+        // that destroyed the DET-retained wallet seed store: restore the
+        // `wallet` / `wallet_addresses` rows from `<db>.premigration` so
+        // `AppContext::new` finds the persisted wallets on cold start.
+        // Idempotent (no-op once `wallet` is non-empty); best-effort
+        // (logged, never blocks app start).
+        if let Err(e) = self.recover_dropped_wallet_store_if_needed(db_file_path) {
+            tracing::error!(
+                error = %e,
+                "Failed to recover DET-retained wallet store from premigration \
+                 backup; wallets may be invisible until the user re-imports"
+            );
         }
 
         Ok(())
@@ -250,6 +290,125 @@ impl Database {
             "Restored database from pre-migration backup; migration will retry"
         );
         Ok(true)
+    }
+
+    /// Recovery for users whose Stage-B finalize ran an earlier build that
+    /// dropped the DET-retained wallet seed store (`wallet`,
+    /// `wallet_addresses`). Restore those rows from `<db>.premigration` so
+    /// `AppContext::new` finds the persisted wallets on cold start.
+    ///
+    /// Scenario: restore-from-backup → 1st launch runs Stage-B (which back
+    /// then dropped `wallet`) → 2nd launch finds an empty wallet map and the
+    /// GUI shows no wallets. This is the one-shot rehydration that fixes
+    /// that user; current Stage-B no longer drops these tables (see
+    /// `dashpay::drop_legacy_migrated_tables`), so this path is dormant on
+    /// fresh DBs.
+    ///
+    /// Idempotent: no-op once `wallet` exists with rows. Best-effort: any
+    /// error is returned to the caller for logging, never panics, never
+    /// blocks app start.
+    fn recover_dropped_wallet_store_if_needed(&self, db_file_path: &Path) -> rusqlite::Result<()> {
+        // Only consider recovery after a finalised migration. A pending
+        // migration is handled by the Stage-B retry path.
+        if !self
+            .get_platform_wallet_migration_completed()
+            .unwrap_or(false)
+        {
+            return Ok(());
+        }
+
+        let need_wallet;
+        let need_addresses;
+        {
+            let conn = self.conn.lock().unwrap();
+            need_wallet = !table_has_rows(&conn, "wallet")?;
+            need_addresses = !table_has_rows(&conn, "wallet_addresses")?;
+        }
+        if !need_wallet && !need_addresses {
+            return Ok(());
+        }
+
+        let backup_path = Self::premigration_backup_path(db_file_path);
+        if !backup_path.exists() {
+            tracing::warn!(
+                db = %db_file_path.display(),
+                "Wallet store is empty after a finalised platform-wallet \
+                 migration but no premigration backup is available; cannot \
+                 rehydrate persisted wallets"
+            );
+            return Ok(());
+        }
+
+        let backup_uri = format!("file:{}?mode=ro", backup_path.display());
+        let conn = self.conn.lock().unwrap();
+        conn.execute_batch(&format!("ATTACH DATABASE '{backup_uri}' AS premigration"))?;
+
+        let result = Self::restore_wallet_store_from_attached(&conn, need_wallet, need_addresses);
+
+        if let Err(e) = conn.execute_batch("DETACH DATABASE premigration") {
+            tracing::warn!(error = %e, "Failed to detach premigration database");
+        }
+        let (restored_wallets, restored_addresses) = result?;
+
+        if restored_wallets > 0 || restored_addresses > 0 {
+            tracing::info!(
+                wallets = restored_wallets,
+                addresses = restored_addresses,
+                backup = %backup_path.display(),
+                "Recovered DET-retained wallet store from premigration backup"
+            );
+        }
+        Ok(())
+    }
+
+    /// Copy DET-retained wallet rows from the attached `premigration` schema
+    /// into the live schema. Caller owns the `ATTACH` / `DETACH` lifecycle
+    /// so the detach always runs even on a partial restore.
+    fn restore_wallet_store_from_attached(
+        conn: &Connection,
+        need_wallet: bool,
+        need_addresses: bool,
+    ) -> rusqlite::Result<(u64, u64)> {
+        let mut restored_wallets: u64 = 0;
+        let mut restored_addresses: u64 = 0;
+
+        if need_wallet && table_has_rows(conn, "premigration.wallet")? {
+            // Restore only the DET-retained seed-store columns. Volatile
+            // balance / sync columns are intentionally left at their
+            // defaults — upstream `PlatformWalletManager` is now the source
+            // of truth for those.
+            restored_wallets = conn.execute(
+                "INSERT OR IGNORE INTO wallet (
+                    seed_hash, encrypted_seed, salt, nonce,
+                    master_ecdsa_bip44_account_0_epk, alias, is_main,
+                    uses_password, password_hint, network, core_wallet_name
+                 ) SELECT
+                    seed_hash, encrypted_seed, salt, nonce,
+                    master_ecdsa_bip44_account_0_epk, alias, is_main,
+                    uses_password, password_hint, network, core_wallet_name
+                 FROM premigration.wallet",
+                [],
+            )? as u64;
+        }
+
+        if need_addresses && table_has_rows(conn, "premigration.wallet_addresses")? {
+            // Re-import the per-wallet derivation paths so the cold-start
+            // `bootstrap_wallet_addresses` does not have to re-derive every
+            // known address from scratch.
+            restored_addresses = conn.execute(
+                "INSERT OR IGNORE INTO wallet_addresses (
+                    seed_hash, address, derivation_path, balance,
+                    path_reference, path_type, total_received
+                 ) SELECT
+                    seed_hash, address, derivation_path, balance,
+                    path_reference, path_type, total_received
+                 FROM premigration.wallet_addresses
+                 WHERE seed_hash IN (SELECT seed_hash FROM wallet)",
+                [],
+            )? as u64;
+        }
+
+        Ok((restored_wallets, restored_addresses))
     }
 
     /// True iff `path` exists, opens as SQLite, and passes
@@ -3094,10 +3253,9 @@ mod test {
         }
 
         /// Legacy tables the migration DROPs once upstream has durably
-        /// flushed. `utxos` is intentionally absent — it is RETAINED under
-        /// the Decision-#7 single-key carve-out (see `RETAINED_TABLES`).
+        /// flushed. `utxos`, `wallet`, and `wallet_addresses` are
+        /// intentionally absent — they are RETAINED (see `RETAINED_TABLES`).
         const LEGACY_TABLES: &[&str] = &[
-            "wallet",
             "wallet_transactions",
             "dashpay_contacts",
             "dashpay_contact_requests",
@@ -3107,9 +3265,17 @@ mod test {
         ];
 
         /// Tables that MUST survive the migration drop. `utxos` is the
-        /// single-key wallet load path (Decision #7); dropping it would be
-        /// fund-data loss.
-        const RETAINED_TABLES: &[&str] = &["utxos", "single_key_wallet", "settings"];
+        /// single-key wallet load path (Decision #7); `wallet` and
+        /// `wallet_addresses` are the DET-retained seed store
+        /// (data-model-and-migration.md line 22). Dropping any of these is
+        /// fund-data loss or breaks cold-start wallet rehydration.
+        const RETAINED_TABLES: &[&str] = &[
+            "utxos",
+            "single_key_wallet",
+            "settings",
+            "wallet",
+            "wallet_addresses",
+        ];
 
         /// Backup-before-destroy: the `.premigration` floor is present and a
         /// valid SQLite file BEFORE any legacy table is dropped.
@@ -3259,6 +3425,99 @@ mod test {
             std::fs::remove_file(&db_file).unwrap();
             let restored = Database::recover_from_premigration_if_corrupt(&db_file).unwrap();
             assert!(!restored, "no floor → no restore");
+        }
+
+        /// Cold-start rehydration after a Stage-B build that destroyed the
+        /// DET-retained seed store.
+        ///
+        /// Scenario: restore-from-backup → 1st launch ran the old Stage-B
+        /// (dropped `wallet` + `wallet_addresses`) and set
+        /// `migration_completed`. 2nd launch must rehydrate the seed store
+        /// from `<db>.premigration` so `AppContext::new` sees the persisted
+        /// wallets instead of an empty map. Idempotent (no-op on a healthy
+        /// DB) and survives without depending on the v35 pending marker.
+        #[test]
+        fn recover_dropped_wallet_store_from_premigration() {
+            let tmp = tempfile::tempdir().unwrap();
+            let db_file = tmp.path().join("test_data.db");
+
+            // Seed a finalised-migration DB: a wallet row exists, a backup
+            // floor is captured, and then the destructive build drops the
+            // seed store (mirroring the user's on-disk state).
+            {
+                let db = Database::new(&db_file).unwrap();
+                db.create_tables().unwrap();
+                db.set_default_version().unwrap();
+                {
+                    let conn = db.conn.lock().unwrap();
+                    conn.execute(
+                        "INSERT INTO wallet (
+                            seed_hash, encrypted_seed, salt, nonce,
+                            master_ecdsa_bip44_account_0_epk, alias, is_main,
+                            uses_password, password_hint, network
+                         ) VALUES (?1, ?2, ?3, ?4, ?5, 'main', 1, 0, NULL, 'testnet')",
+                        rusqlite::params![
+                            vec![7u8; 32],
+                            vec![1u8; 64],
+                            vec![2u8; 16],
+                            vec![3u8; 12],
+                            vec![4u8; 32],
+                        ],
+                    )
+                    .unwrap();
+                    conn.execute(
+                        "INSERT INTO wallet_addresses (
+                            seed_hash, address, derivation_path, balance,
+                            path_reference, path_type, total_received
+                         ) VALUES (?1, 'addr-1', 'm/44h/1h/0h/0/0', 0, 1, 1, 0)",
+                        rusqlite::params![vec![7u8; 32]],
+                    )
+                    .unwrap();
+                }
+                // Capture the floor (what Stage-A would have done), then
+                // simulate the destructive build that DROP'd the seed store
+                // and the marker writes that follow.
+                db.online_backup_to(&Database::premigration_backup_path(&db_file))
+                    .unwrap();
+                {
+                    let conn = db.conn.lock().unwrap();
+                    conn.execute("DROP TABLE wallet_addresses", []).unwrap();
+                    conn.execute("DROP TABLE wallet", []).unwrap();
+                }
+                // Recreate just the empty target tables so the recovery
+                // INSERT has somewhere to land (the real upgrade path on
+                // the affected user retains the schema via `create_tables`
+                // re-running at next launch).
+                db.create_tables().unwrap();
+                db.set_platform_wallet_migration_completed(true).unwrap();
+            }
+
+            // Cold-start path: reopen + initialize must rehydrate from the
+            // floor and leave the live DB with the original rows.
+            let db = Database::new(&db_file).unwrap();
+            db.initialize(&db_file).unwrap();
+            let (wallets, addrs) = {
+                let conn = db.conn.lock().unwrap();
+                let w: i64 = conn
+                    .query_row("SELECT COUNT(*) FROM wallet", [], |r| r.get(0))
+                    .unwrap();
+                let a: i64 = conn
+                    .query_row("SELECT COUNT(*) FROM wallet_addresses", [], |r| r.get(0))
+                    .unwrap();
+                (w, a)
+            };
+            assert_eq!(wallets, 1, "wallet row rehydrated from premigration");
+            assert_eq!(addrs, 1, "wallet_addresses row rehydrated");
+
+            // Idempotent: a second initialize is a no-op (rows still 1, no
+            // duplicates from `INSERT OR IGNORE`).
+            db.initialize(&db_file).unwrap();
+            let wallets2: i64 = {
+                let conn = db.conn.lock().unwrap();
+                conn.query_row("SELECT COUNT(*) FROM wallet", [], |r| r.get(0))
+                    .unwrap()
+            };
+            assert_eq!(wallets2, 1, "second init must not duplicate rows");
         }
 
         /// Repeated corruption + restore cycles converge (restore re-runnable

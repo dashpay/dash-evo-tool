@@ -431,10 +431,17 @@ impl crate::database::Database {
     /// wallet load path under Decision #7 (`single_key_wallet.rs` →
     /// `get_utxos_by_address`). Dropping it would be fund-data loss. See
     /// phasing.md P4b carve-out and data-model-and-migration.md.
+    ///
+    /// The `wallet` and `wallet_addresses` tables are ALSO deliberately NOT
+    /// dropped: per data-model-and-migration.md the encrypted seed + alias +
+    /// `is_main` belong to the DET-retained seed store (line 22, "Stays
+    /// DET"). Without those rows `AppContext::new` finds an empty wallet map
+    /// on the next launch and the GUI shows no wallets. The volatile balance
+    /// / sync columns on `wallet` are now stale but harmless — upstream
+    /// `PlatformWalletManager` owns the live values.
     pub fn drop_legacy_migrated_tables(&self) -> rusqlite::Result<()> {
         let conn = self.conn.lock().unwrap();
         for table in [
-            "wallet",
             "wallet_transactions",
             "dashpay_contacts",
             "dashpay_contact_requests",

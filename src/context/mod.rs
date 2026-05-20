@@ -644,7 +644,7 @@ impl AppContext {
         if self.wallet_backend.load().is_some() {
             return Ok(());
         }
-        let sdk = std::sync::Arc::new(self.sdk());
+        let sdk = std::sync::Arc::new(self.sdk.load().as_ref().clone());
         let loader = Arc::new(SeedReregistrationLoader::new());
         let backend = WalletBackend::new(
             self,

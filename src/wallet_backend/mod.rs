@@ -252,9 +252,9 @@ impl WalletBackend {
             // (re-)registration — including the idempotent re-run path,
             // which is exactly an app relaunch. Idempotent per account.
             let identity_indices: Vec<u32> = {
-                let wallets = ctx.wallets().read()?;
+                let wallets = ctx.wallets.read()?;
                 match wallets.get(&reg.seed_hash) {
-                    Some(w) => w.read()?.identities.keys().copied().collect(),
+                    Some(w) => w.read()?.identities.keys().copied().collect::<Vec<u32>>(),
                     None => Vec::new(),
                 }
             };

@@ -432,6 +432,23 @@ impl AppState {
         let (task_result_sender, task_result_receiver) =
             tokiompsc::channel(256).with_egui_ctx(ctx.clone());
 
+        // Eagerly build the wallet seam for every pre-created network context
+        // (typically just the active one) so the SpvProvider can serve
+        // chain-only lookups (e.g. `get_quorum_public_key`) before any
+        // wallet is unlocked. Without this, the SDK retry loop tight-loops
+        // at 10ms on `WalletBackendNotYetWired`. `PlatformWalletManager` is
+        // wallet-independent at construction (Case B); locked persisted
+        // wallets are skipped by `SeedReregistrationLoader` until unlock.
+        for app_ctx in network_contexts.values() {
+            let app_ctx = app_ctx.clone();
+            let sender = task_result_sender.clone();
+            subtasks.spawn_sync("wallet-backend-eager-init", async move {
+                if let Err(e) = app_ctx.ensure_wallet_backend(sender).await {
+                    tracing::warn!(error = %e, "eager wallet-backend init failed; SDK proof verification will retry once the lazy backend-task fallback fires");
+                }
+            });
+        }
+
         // Create a channel for communication with the InstantSendListener
         let (core_message_sender, core_message_receiver) =
             mpsc::channel().with_egui_ctx(ctx.clone());
@@ -803,6 +820,20 @@ impl AppState {
         self.chosen_network = network;
 
         let app_context = self.current_app_context().clone();
+
+        // Same eager wallet-backend init as at app start (Case B): chain-
+        // only SDK lookups must work pre-unlock on the freshly-switched
+        // context too, otherwise the SDK tight-loops on WalletBackendNotYetWired.
+        {
+            let app_ctx = app_context.clone();
+            let sender = self.task_result_sender.clone();
+            self.subtasks
+                .spawn_sync("wallet-backend-eager-init", async move {
+                    if let Err(e) = app_ctx.ensure_wallet_backend(sender).await {
+                        tracing::warn!(error = %e, "eager wallet-backend init after network switch failed; lazy fallback will retry");
+                    }
+                });
+        }
 
         // Update MCP server's context to follow network switch
         #[cfg(feature = "mcp")]

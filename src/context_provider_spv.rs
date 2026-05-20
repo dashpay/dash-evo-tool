@@ -108,9 +108,13 @@ impl ContextProvider for SpvProvider {
             .clone();
         drop(guard);
 
-        let backend = app_ctx
-            .wallet_backend()
-            .map_err(|e| ContextProviderError::Generic(e.to_string()))?;
+        // The wallet-backend gate ("not yet wired") is a startup-window
+        // configuration state — `Config`, not `Generic`. Do NOT broadcast
+        // the typed error's user-facing Display ("temporarily unavailable")
+        // into the SDK retry classifier; emit a non-user-facing diagnostic.
+        let backend = app_ctx.wallet_backend().map_err(|_| {
+            ContextProviderError::Config("chain backend not initialized (pre-unlock)".to_string())
+        })?;
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(backend.get_quorum_public_key(
                 quorum_type,

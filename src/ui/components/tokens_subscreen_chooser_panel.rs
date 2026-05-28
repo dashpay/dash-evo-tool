@@ -14,14 +14,11 @@ pub fn add_tokens_subscreen_chooser_panel(ctx: &Context, app_context: &AppContex
         TokensSubscreen::TokenCreator,
     ];
 
-    let active_screen = match app_context.get_settings() {
-        Ok(Some(settings)) => match settings.root_screen_type {
-            ui::RootScreenType::RootScreenMyTokenBalances => TokensSubscreen::MyTokens,
-            ui::RootScreenType::RootScreenTokenSearch => TokensSubscreen::SearchTokens,
-            ui::RootScreenType::RootScreenTokenCreator => TokensSubscreen::TokenCreator,
-            _ => TokensSubscreen::MyTokens,
-        },
-        _ => TokensSubscreen::MyTokens, // Fallback to Active screen if settings unavailable
+    let active_screen = match app_context.get_app_settings().root_screen_type {
+        ui::RootScreenType::RootScreenMyTokenBalances => TokensSubscreen::MyTokens,
+        ui::RootScreenType::RootScreenTokenSearch => TokensSubscreen::SearchTokens,
+        ui::RootScreenType::RootScreenTokenCreator => TokensSubscreen::TokenCreator,
+        _ => TokensSubscreen::MyTokens,
     };
 
     let dark_mode = ctx.style().visuals.dark_mode;

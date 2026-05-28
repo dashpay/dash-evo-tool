@@ -16,14 +16,11 @@ pub fn add_dpns_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext)
         DPNSSubscreen::ScheduledVotes,
     ];
 
-    let active_screen = match app_context.get_settings() {
-        Ok(Some(settings)) => match settings.root_screen_type {
-            ui::RootScreenType::RootScreenDPNSActiveContests => DPNSSubscreen::Active,
-            ui::RootScreenType::RootScreenDPNSPastContests => DPNSSubscreen::Past,
-            ui::RootScreenType::RootScreenDPNSOwnedNames => DPNSSubscreen::Owned,
-            ui::RootScreenType::RootScreenDPNSScheduledVotes => DPNSSubscreen::ScheduledVotes,
-            _ => DPNSSubscreen::Active,
-        },
+    let active_screen = match app_context.get_app_settings().root_screen_type {
+        ui::RootScreenType::RootScreenDPNSActiveContests => DPNSSubscreen::Active,
+        ui::RootScreenType::RootScreenDPNSPastContests => DPNSSubscreen::Past,
+        ui::RootScreenType::RootScreenDPNSOwnedNames => DPNSSubscreen::Owned,
+        ui::RootScreenType::RootScreenDPNSScheduledVotes => DPNSSubscreen::ScheduledVotes,
         _ => DPNSSubscreen::Active,
     };
 

@@ -20,7 +20,7 @@ impl AppContext {
         match task {
             SystemTask::WipePlatformData => self.wipe_devnet(),
             SystemTask::UpdateThemePreference(theme_mode) => {
-                self.update_theme_preference(theme_mode)
+                self.handle_update_theme_preference(theme_mode)
             }
         }
     }
@@ -39,13 +39,15 @@ impl AppContext {
         Ok(BackendTaskSuccessResult::Refresh)
     }
 
-    pub fn update_theme_preference(
+    /// Backend-task handler for `SystemTask::UpdateThemePreference`.
+    /// Wraps [`AppContext::update_theme_preference`] (the k/v writer) in
+    /// the `BackendTaskSuccessResult` envelope the dispatcher expects.
+    pub fn handle_update_theme_preference(
         self: &Arc<Self>,
         theme_mode: ThemeMode,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        let _guard = self.invalidate_settings_cache();
-
-        self.db.update_theme_preference(theme_mode)?;
+        self.update_theme_preference(theme_mode)
+            .map_err(|source| TaskError::AppSettingsWrite { source })?;
 
         Ok(BackendTaskSuccessResult::UpdatedThemePreference(theme_mode))
     }

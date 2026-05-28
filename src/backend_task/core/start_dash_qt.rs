@@ -3,7 +3,6 @@ use crate::context::AppContext;
 use crate::utils::path::format_path_for_display;
 use dash_sdk::dpp::dashcore::Network;
 use std::path::PathBuf;
-use std::sync::Arc;
 use tokio::process::{Child, Command};
 
 impl AppContext {
@@ -66,7 +65,7 @@ impl AppContext {
 
         // Spawn a task to wait for the Dash-Qt process to exit
         let cancel = self.subtasks.cancellation_token.clone();
-        let db = Arc::clone(&self.db);
+        let close_on_exit = self.get_app_settings().close_dash_qt_on_exit;
         self.subtasks.spawn_sync("dash_qt_watcher", async move {
             // Wait for the process to exit or current task to be cancelled
             tokio::select! {
@@ -81,17 +80,8 @@ impl AppContext {
                     };
                 },
                 _ = cancel.cancelled() => {
-                    // Check the setting to determine if we should close Dash-Qt
-                    let should_close = match db.get_close_dash_qt_on_exit() {
-                        Ok(value) => {
-                            tracing::debug!("close_dash_qt_on_exit setting read successfully: {}", value);
-                            value
-                        }
-                        Err(e) => {
-                            tracing::error!("Failed to read close_dash_qt_on_exit setting: {:?}, defaulting to true", e);
-                            true
-                        }
-                    };
+                    let should_close = close_on_exit;
+                    tracing::debug!("close_dash_qt_on_exit setting: {}", should_close);
                     if should_close {
                         tracing::debug!("dash-qt process was cancelled, sending SIGTERM");
                         signal_term(&dash_qt)

@@ -19,7 +19,7 @@ use crate::model::wallet::single_key::{SingleKeyHash, SingleKeyWallet};
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::sdk_wrapper::initialize_sdk;
 use crate::utils::tasks::TaskManager;
-use crate::wallet_backend::{DetWalletBalance, SeedReregistrationLoader, WalletBackend};
+use crate::wallet_backend::{DetKv, DetWalletBalance, SeedReregistrationLoader, WalletBackend};
 use arc_swap::{ArcSwap, ArcSwapOption};
 use connection_status::ConnectionStatus;
 use crossbeam_channel::{Receiver, Sender};
@@ -45,15 +45,15 @@ use std::str::FromStr as _;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
 
-use crate::model::settings::Settings;
+use crate::model::settings::AppSettings;
 
 const ANIMATION_REFRESH_TIME: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// A guard that ensures settings cache invalidation happens atomically
 ///
 /// This guard holds a write lock on the cached settings, preventing reads
-/// until the database update is complete and the cache is properly invalidated.
-pub(crate) type SettingsCacheGuard<'a> = RwLockWriteGuard<'a, Option<Settings>>;
+/// until the k/v update is complete and the cache is properly invalidated.
+pub(crate) type SettingsCacheGuard<'a> = RwLockWriteGuard<'a, Option<AppSettings>>;
 
 #[derive(Debug)]
 pub struct AppContext {
@@ -86,9 +86,14 @@ pub struct AppContext {
     /// This is used to control animations in the UI, such as loading spinners or transitions.
     /// Disable for automated tests.
     animate: AtomicBool,
-    /// Cached settings to avoid expensive database reads
-    /// Use RwLock to allow multiple readers but exclusive writers for cache invalidation
-    cached_settings: RwLock<Option<Settings>>,
+    /// Cached settings to avoid repeated k/v reads + bincode decoding.
+    /// Use RwLock to allow multiple readers but exclusive writers for cache invalidation.
+    cached_settings: RwLock<Option<AppSettings>>,
+    /// Shared app-level k/v store at `<data_dir>/det-app.sqlite`.
+    /// Cross-network, global-scoped slot used for `AppSettings` and other
+    /// DET-owned application data that must outlive a single network's
+    /// wallet persister. Cheap to clone (`Arc<DetKv>` is `Arc`-backed).
+    app_kv: Arc<DetKv>,
     // subtasks started by the app context, used for graceful shutdown
     pub(crate) subtasks: Arc<TaskManager>,
     /// Tracks the connection status to currently active network
@@ -133,6 +138,7 @@ impl AppContext {
         subtasks: Arc<TaskManager>,
         connection_status: Arc<ConnectionStatus>,
         egui_ctx: egui::Context,
+        app_kv: Arc<DetKv>,
     ) -> Option<Arc<Self>> {
         let config = match Config::load_from(&data_dir) {
             Ok(config) => config,
@@ -317,6 +323,7 @@ impl AppContext {
             transactions_waiting_for_finality: Mutex::new(BTreeMap::new()),
             animate,
             cached_settings: RwLock::new(None),
+            app_kv,
             subtasks,
             connection_status,
             pending_wallet_selection: Mutex::new(None),
@@ -365,6 +372,25 @@ impl AppContext {
 
     pub fn data_dir(&self) -> &std::path::Path {
         &self.data_dir
+    }
+
+    /// Shared app-level k/v store. Cheap clone — `Arc<DetKv>` is `Arc`-backed.
+    pub fn app_kv(&self) -> Arc<DetKv> {
+        Arc::clone(&self.app_kv)
+    }
+
+    /// Open (or create) the shared app k/v store at
+    /// `<data_dir>/det-app.sqlite`. Used by every `AppContext::new`
+    /// callsite — pass a single `Arc<DetKv>` to all per-network
+    /// contexts so they share the same blob.
+    pub fn open_app_kv(
+        data_dir: &std::path::Path,
+    ) -> Result<Arc<DetKv>, platform_wallet_storage::WalletStorageError> {
+        use platform_wallet_storage::{SqlitePersister, SqlitePersisterConfig};
+        let path = data_dir.join("det-app.sqlite");
+        let config = SqlitePersisterConfig::new(path);
+        let persister = Arc::new(SqlitePersister::open(config)?);
+        Ok(Arc::new(DetKv::new(persister)))
     }
 
     pub fn network(&self) -> Network {
@@ -751,21 +777,16 @@ mod tests {
         assert!(!url.contains(' '));
     }
 
-    /// A fresh data directory (no pre-existing settings) must persist the
-    /// SPV backend marker (`settings.core_backend_mode` column defaults to 1).
-    /// The column is retained until the P3 migration; chain sync is SPV-only.
+    /// A fresh data directory (no pre-existing app k/v blob) must resolve
+    /// to the SPV backend marker. The marker now lives in
+    /// `AppSettings::core_backend_mode` (the upstream k/v store) — the
+    /// legacy `settings.core_backend_mode` column was unwired in C3.
     #[test]
     fn fresh_db_resolves_to_spv_backend_mode() {
-        let tmp = tempfile::tempdir().unwrap();
-        let db_file_path = tmp.path().join("test_data.db");
-        let db = crate::database::Database::new(&db_file_path).unwrap();
-        db.initialize(&db_file_path).unwrap();
-
-        let settings = db
-            .get_settings()
-            .expect("settings read")
-            .expect("settings row present");
-        // Settings tuple: index 7 is the legacy core_backend_mode column.
-        assert_eq!(settings.6, 1, "fresh DB should default to SPV (=1)");
+        let s = crate::model::settings::AppSettings::default();
+        assert_eq!(
+            s.core_backend_mode, 1,
+            "fresh state should default to SPV (=1)"
+        );
     }
 }

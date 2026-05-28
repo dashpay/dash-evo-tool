@@ -3227,13 +3227,21 @@ mod tests {
         db.initialize(Path::new(&db_file_path)).unwrap();
 
         ensure_test_env();
+        // The upstream SQLite persister that backs `app_kv` is not safe
+        // to re-open concurrently from multiple tests on the same file,
+        // so each test gets its own scratch directory. Production opens
+        // a single persister per process via `AppContext::open_app_kv`.
+        let kv_tmp = tempfile::tempdir().expect("kv tmpdir");
+        let app_kv = AppContext::open_app_kv(kv_tmp.path()).expect("open app k/v");
+        let data_dir = crate::app_dir::app_user_data_dir_path().unwrap();
         let app_context = AppContext::new(
-            crate::app_dir::app_user_data_dir_path().unwrap(),
+            data_dir,
             Network::Regtest,
             db,
             Default::default(),
             Default::default(),
             egui::Context::default(),
+            app_kv,
         )
         .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
@@ -3540,13 +3548,21 @@ mod tests {
         db.initialize(Path::new(&db_file_path)).unwrap();
 
         ensure_test_env();
+        // The upstream SQLite persister that backs `app_kv` is not safe
+        // to re-open concurrently from multiple tests on the same file,
+        // so each test gets its own scratch directory. Production opens
+        // a single persister per process via `AppContext::open_app_kv`.
+        let kv_tmp = tempfile::tempdir().expect("kv tmpdir");
+        let app_kv = AppContext::open_app_kv(kv_tmp.path()).expect("open app k/v");
+        let data_dir = crate::app_dir::app_user_data_dir_path().unwrap();
         let app_context = AppContext::new(
-            crate::app_dir::app_user_data_dir_path().unwrap(),
+            data_dir,
             Network::Regtest,
             db,
             Default::default(),
             Default::default(),
             egui::Context::default(),
+            app_kv,
         )
         .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
@@ -3667,13 +3683,21 @@ mod tests {
         db.initialize(Path::new(&db_file_path)).unwrap();
 
         ensure_test_env();
+        // The upstream SQLite persister that backs `app_kv` is not safe
+        // to re-open concurrently from multiple tests on the same file,
+        // so each test gets its own scratch directory. Production opens
+        // a single persister per process via `AppContext::open_app_kv`.
+        let kv_tmp = tempfile::tempdir().expect("kv tmpdir");
+        let app_kv = AppContext::open_app_kv(kv_tmp.path()).expect("open app k/v");
+        let data_dir = crate::app_dir::app_user_data_dir_path().unwrap();
         let app_context = AppContext::new(
-            crate::app_dir::app_user_data_dir_path().unwrap(),
+            data_dir,
             Network::Regtest,
             db,
             Default::default(),
             Default::default(),
             egui::Context::default(),
+            app_kv,
         )
         .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);

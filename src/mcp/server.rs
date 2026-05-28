@@ -215,11 +215,16 @@ pub async fn init_app_context() -> Result<Arc<AppContext>, McpError> {
     db.initialize(&db_file_path)
         .map_err(|e| McpError::internal_error(format!("db init: {e}"), None))?;
 
-    let network = db
-        .get_settings()
+    let app_kv = AppContext::open_app_kv(&data_dir)
+        .map_err(|e| McpError::internal_error(format!("app k/v open: {e}"), None))?;
+    let network = app_kv
+        .get::<crate::model::settings::AppSettings>(
+            None,
+            crate::model::settings::AppSettings::KV_KEY,
+        )
         .ok()
         .flatten()
-        .map(|(network, ..)| network)
+        .map(|s| s.network)
         .unwrap_or(Network::Mainnet);
 
     let subtasks = Arc::new(TaskManager::new());
@@ -245,6 +250,7 @@ pub async fn init_app_context() -> Result<Arc<AppContext>, McpError> {
         subtasks,
         connection_status,
         egui::Context::default(),
+        app_kv,
     )
     .ok_or_else(|| {
         McpError::internal_error(

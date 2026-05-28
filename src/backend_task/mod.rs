@@ -472,8 +472,17 @@ impl AppContext {
                 let subtasks = self.subtasks.clone();
                 let connection_status = self.connection_status.clone();
                 let egui_ctx = self.egui_ctx().clone();
+                let app_kv = self.app_kv();
                 let new_ctx = tokio::task::block_in_place(|| {
-                    AppContext::new(data_dir, network, db, subtasks, connection_status, egui_ctx)
+                    AppContext::new(
+                        data_dir,
+                        network,
+                        db,
+                        subtasks,
+                        connection_status,
+                        egui_ctx,
+                        app_kv,
+                    )
                 })
                 .ok_or(TaskError::NetworkContextCreationFailed {
                     network,

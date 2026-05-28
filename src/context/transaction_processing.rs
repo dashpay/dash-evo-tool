@@ -170,6 +170,7 @@ mod path3_asset_lock_finality_no_wallet_mutation {
             .expect("seed legacy wallet row");
         }
 
+        let app_kv = AppContext::open_app_kv(tmp.path()).expect("open app k/v");
         let app_context = AppContext::new(
             tmp.path().to_path_buf(),
             network,
@@ -177,6 +178,7 @@ mod path3_asset_lock_finality_no_wallet_mutation {
             Default::default(),
             Default::default(),
             egui::Context::default(),
+            app_kv,
         )
         .expect("AppContext");
 

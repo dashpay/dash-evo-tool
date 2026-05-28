@@ -420,6 +420,7 @@ mod send_payment_unsupported_options {
         let db_file = tmp.join("data.db");
         let db = std::sync::Arc::new(crate::database::Database::new(&db_file).expect("db"));
         db.initialize(&db_file).expect("init");
+        let app_kv = AppContext::open_app_kv(tmp).expect("open app k/v");
         AppContext::new(
             tmp.to_path_buf(),
             Network::Testnet,
@@ -427,6 +428,7 @@ mod send_payment_unsupported_options {
             Default::default(),
             Default::default(),
             egui::Context::default(),
+            app_kv,
         )
         .expect("AppContext")
     }

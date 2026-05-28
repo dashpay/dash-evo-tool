@@ -87,8 +87,13 @@ mod tests {
         let db_path = temp_dir.path().join("test_data.db");
         assert!(db_path.exists(), "Database file should exist");
 
-        // Verify database is functional
-        let settings = db.get_settings();
-        assert!(settings.is_ok(), "Should be able to query settings");
+        // Verify the residual `settings` table is queryable — wallet-selection
+        // hashes still live there until the next unwire step. User
+        // preferences moved to the upstream k/v store in C3.
+        let hashes = db.get_selected_wallet_hashes();
+        assert!(
+            hashes.is_ok(),
+            "Should be able to query selected-wallet hashes"
+        );
     }
 }

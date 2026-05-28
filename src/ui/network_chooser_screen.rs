@@ -65,8 +65,6 @@ pub struct NetworkChooserScreen {
     pub network_contexts: BTreeMap<Network, Arc<AppContext>>,
     /// Shared data directory (same for all networks).
     data_dir: PathBuf,
-    /// Shared database handle (same for all networks).
-    db: Arc<crate::database::Database>,
     dashmate_password_input: PasswordInput,
     pub current_network: Network,
     pub recheck_time: Option<TimestampMillis>,
@@ -112,7 +110,6 @@ impl NetworkChooserScreen {
             .expect("BUG: NetworkChooserScreen requires at least one AppContext");
 
         let data_dir = any_context.data_dir.clone();
-        let db = any_context.db.clone();
 
         let mut dashmate_password_input = PasswordInput::new()
             .with_hint_text("Core RPC password")
@@ -128,21 +125,16 @@ impl NetworkChooserScreen {
         let current_context = contexts.get(&current_network).unwrap_or(any_context);
         let developer_mode = current_context.is_developer_mode();
 
-        let settings = current_context
-            .get_settings()
-            .ok()
-            .flatten()
-            .unwrap_or_default();
+        let settings = current_context.get_app_settings();
         let theme_preference = settings.theme_mode;
         let disable_zmq = settings.disable_zmq;
         let custom_dash_qt_path = settings.dash_qt_path;
-        let auto_start_spv = db.get_auto_start_spv().unwrap_or(false);
-        let close_dash_qt_on_exit = db.get_close_dash_qt_on_exit().unwrap_or(true);
+        let auto_start_spv = settings.auto_start_spv;
+        let close_dash_qt_on_exit = settings.close_dash_qt_on_exit;
 
         Self {
             network_contexts: contexts.clone(),
             data_dir,
-            db,
             dashmate_password_input,
             current_network,
             recheck_time: None,
@@ -870,9 +862,9 @@ impl NetworkChooserScreen {
                     .show(ui)
                     .clicked()
                     {
-                        // Save to database
+                        // Save to the shared app k/v store
                         match self
-                            .db
+                            .current_app_context()
                             .update_close_dash_qt_on_exit(self.close_dash_qt_on_exit)
                         {
                             Ok(_) => {
@@ -927,9 +919,9 @@ impl NetworkChooserScreen {
                             .show(ui)
                             .clicked()
                         {
-                            // Save to database
+                            // Save to the shared app k/v store
                             let _ = self
-                                .db
+                                .current_app_context()
                                 .update_auto_start_spv(self.auto_start_spv);
                         }
                         ui.label(
@@ -1655,12 +1647,11 @@ impl ScreenLike for NetworkChooserScreen {
         // This ensures dropdowns are closed when navigating back
         self.should_reset_collapsing_states = true;
 
-        // Reload settings from database to ensure we have the latest values
-        if let Ok(Some(settings)) = self.current_app_context().get_settings() {
-            self.custom_dash_qt_path = settings.dash_qt_path;
-            self.overwrite_dash_conf = settings.overwrite_dash_conf;
-            self.theme_preference = settings.theme_mode;
-        }
+        // Reload settings from the shared app k/v store to ensure we have the latest values
+        let settings = self.current_app_context().get_app_settings();
+        self.custom_dash_qt_path = settings.dash_qt_path;
+        self.overwrite_dash_conf = settings.overwrite_dash_conf;
+        self.theme_preference = settings.theme_mode;
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {

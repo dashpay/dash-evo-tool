@@ -63,34 +63,29 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
         ToolsSubscreen::DPNS,
     ];
 
-    let active_screen = match app_context.get_settings() {
-        Ok(Some(settings)) => match settings.root_screen_type {
-            ui::RootScreenType::RootScreenToolsPlatformInfoScreen => ToolsSubscreen::PlatformInfo,
-            ui::RootScreenType::RootScreenToolsAddressBalanceScreen => {
-                ToolsSubscreen::AddressBalance
-            }
-            ui::RootScreenType::RootScreenToolsProofLogScreen => ToolsSubscreen::ProofLog,
-            ui::RootScreenType::RootScreenToolsTransitionVisualizerScreen => {
-                ToolsSubscreen::TransactionViewer
-            }
-            ui::RootScreenType::RootScreenToolsProofVisualizerScreen => ToolsSubscreen::ProofViewer,
-            ui::RootScreenType::RootScreenToolsDocumentVisualizerScreen => {
-                ToolsSubscreen::DocumentViewer
-            }
-            ui::RootScreenType::RootScreenToolsContractVisualizerScreen => {
-                ToolsSubscreen::ContractViewer
-            }
-            ui::RootScreenType::RootScreenToolsMasternodeListDiffScreen => {
-                ToolsSubscreen::MasternodeListDiff
-            }
-            ui::RootScreenType::RootScreenToolsGroveSTARKScreen => ToolsSubscreen::GroveSTARK,
-            ui::RootScreenType::RootScreenDPNSActiveContests
-            | ui::RootScreenType::RootScreenDPNSPastContests
-            | ui::RootScreenType::RootScreenDPNSOwnedNames
-            | ui::RootScreenType::RootScreenDPNSScheduledVotes => ToolsSubscreen::DPNS,
-            _ => ToolsSubscreen::PlatformInfo,
-        },
-        _ => ToolsSubscreen::PlatformInfo, // Fallback to Active screen if settings unavailable
+    let active_screen = match app_context.get_app_settings().root_screen_type {
+        ui::RootScreenType::RootScreenToolsPlatformInfoScreen => ToolsSubscreen::PlatformInfo,
+        ui::RootScreenType::RootScreenToolsAddressBalanceScreen => ToolsSubscreen::AddressBalance,
+        ui::RootScreenType::RootScreenToolsProofLogScreen => ToolsSubscreen::ProofLog,
+        ui::RootScreenType::RootScreenToolsTransitionVisualizerScreen => {
+            ToolsSubscreen::TransactionViewer
+        }
+        ui::RootScreenType::RootScreenToolsProofVisualizerScreen => ToolsSubscreen::ProofViewer,
+        ui::RootScreenType::RootScreenToolsDocumentVisualizerScreen => {
+            ToolsSubscreen::DocumentViewer
+        }
+        ui::RootScreenType::RootScreenToolsContractVisualizerScreen => {
+            ToolsSubscreen::ContractViewer
+        }
+        ui::RootScreenType::RootScreenToolsMasternodeListDiffScreen => {
+            ToolsSubscreen::MasternodeListDiff
+        }
+        ui::RootScreenType::RootScreenToolsGroveSTARKScreen => ToolsSubscreen::GroveSTARK,
+        ui::RootScreenType::RootScreenDPNSActiveContests
+        | ui::RootScreenType::RootScreenDPNSPastContests
+        | ui::RootScreenType::RootScreenDPNSOwnedNames
+        | ui::RootScreenType::RootScreenDPNSScheduledVotes => ToolsSubscreen::DPNS,
+        _ => ToolsSubscreen::PlatformInfo,
     };
 
     SidePanel::left("tools_subscreen_chooser_panel")

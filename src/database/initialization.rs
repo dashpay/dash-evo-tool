@@ -69,8 +69,6 @@ fn read_env_file_for_v34_migration(data_dir: &Path) -> std::io::Result<V34EnvSna
     })
 }
 
-pub const DEFAULT_NETWORK: &str = "mainnet";
-
 impl Database {
     pub fn initialize(&self, db_file_path: &Path) -> rusqlite::Result<()> {
         // First, ensure all required columns exist in tables that may have been
@@ -164,13 +162,31 @@ impl Database {
                     None => true,
                 };
 
-                if migrate_to_spv {
-                    tx.execute("UPDATE settings SET core_backend_mode = 1 WHERE id = 1", [])
-                        .migration_err("settings", "v34: pin SPV as default backend")?;
+                // The `core_backend_mode` column itself was unwired in C3
+                // (user prefs moved to the upstream k/v store) — only a DB
+                // that was created before that change still has it. Guard
+                // the legacy update so synthetic v33 DBs created from the
+                // post-C3 schema are not rejected.
+                let has_legacy_column: bool = tx
+                    .query_row(
+                        "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name='core_backend_mode'",
+                        [],
+                        |row| row.get::<_, i32>(0).map(|c| c > 0),
+                    )
+                    .unwrap_or(false);
+                if has_legacy_column {
+                    if migrate_to_spv {
+                        tx.execute("UPDATE settings SET core_backend_mode = 1 WHERE id = 1", [])
+                            .migration_err("settings", "v34: pin SPV as default backend")?;
+                    } else {
+                        tracing::info!(
+                            "v34 migration: preserving existing core_backend_mode \
+                             (local Dash Core node configured)"
+                        );
+                    }
                 } else {
-                    tracing::info!(
-                        "v34 migration: preserving existing core_backend_mode \
-                         (local Dash Core node configured)"
+                    tracing::debug!(
+                        "v34 migration: legacy core_backend_mode column absent — no-op"
                     );
                 }
             }
@@ -507,24 +523,17 @@ impl Database {
     /// Creates all required tables with indexes if they don't already exist.
     fn create_tables(&self) -> rusqlite::Result<()> {
         let conn = self.conn.lock().unwrap();
-        // Create the settings table
+        // Create the settings table.
+        //
+        // User-preference columns (network, theme, ZMQ, evonode tools, …)
+        // were unwired in C3 of the data.db unwire and moved to the
+        // upstream k/v store. What survives here is the wallet-selection
+        // pair (C4 moves it next) and the migration runner's version
+        // counter.
         conn.execute(
             "CREATE TABLE IF NOT EXISTS settings (
             id INTEGER PRIMARY KEY CHECK (id = 1),
-            network TEXT NOT NULL,
-            start_root_screen INTEGER NOT NULL,
-            custom_dash_qt_path TEXT,
-            overwrite_dash_conf INTEGER,
-            disable_zmq INTEGER DEFAULT 0,
-            theme_preference TEXT DEFAULT 'System',
-            core_backend_mode INTEGER DEFAULT 1,
             database_version INTEGER NOT NULL,
-            onboarding_completed INTEGER DEFAULT 0,
-            show_evonode_tools INTEGER DEFAULT 0,
-            user_mode TEXT DEFAULT 'Advanced',
-            use_local_spv_node INTEGER DEFAULT 0,
-            auto_start_spv INTEGER DEFAULT 0,
-            close_dash_qt_on_exit INTEGER DEFAULT 1,
             selected_wallet_hash BLOB,
             selected_single_key_hash BLOB
         )",
@@ -757,12 +766,15 @@ impl Database {
         self.set_db_version(DEFAULT_DB_VERSION)
     }
     fn set_db_version(&self, version: u16) -> rusqlite::Result<()> {
-        // Default start_root_screen to 20 (RootScreenDashPayProfile)
+        // User-preference columns moved to the upstream k/v store (C3).
+        // Initialising the row only seeds the singleton primary key and
+        // the migration runner's version counter — everything else lives
+        // in `det:settings:v1` now.
         self.execute(
-            "INSERT INTO settings (id, network, start_root_screen, database_version)
-             VALUES (1, ?, 20, ?)
+            "INSERT INTO settings (id, database_version)
+             VALUES (1, ?)
              ON CONFLICT(id) DO UPDATE SET database_version = excluded.database_version",
-            params![DEFAULT_NETWORK, version],
+            params![version],
         )?;
         Ok(())
     }
@@ -1397,8 +1409,11 @@ impl Database {
     /// changing the `Display`/`FromStr` representation. This migration updates
     /// every table that stores the network as a string column.
     fn rename_network_dash_to_mainnet(&self, conn: &Connection) -> Result<(), MigrationError> {
+        // The `settings` table dropped its `network` column in C3 — the
+        // active-network pointer now lives in `AppSettings` in the
+        // upstream k/v store. Every other domain table still keys rows
+        // by a `network` string and needs the rename.
         let tables = [
-            "settings",
             "wallet",
             "identity_token_balances",
             "platform_address_balances",
@@ -1425,6 +1440,23 @@ impl Database {
                 [],
             )
             .migration_err(table, "rename network dash -> mainnet")?;
+        }
+        // The legacy `settings.network` column may still exist in DBs that
+        // pre-date C3. Update it defensively — `UPDATE` against a missing
+        // column would error, so we gate on existence.
+        let settings_has_network: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name='network'",
+                [],
+                |row| row.get::<_, i32>(0).map(|c| c > 0),
+            )
+            .unwrap_or(false);
+        if settings_has_network {
+            conn.execute(
+                "UPDATE settings SET network = 'mainnet' WHERE network = 'dash'",
+                [],
+            )
+            .migration_err("settings", "rename network dash -> mainnet")?;
         }
         Ok(())
     }
@@ -1706,21 +1738,10 @@ mod test {
             .unwrap();
         assert_eq!(version, DEFAULT_DB_VERSION);
 
-        // Fresh installs must land on SPV (core_backend_mode = 1). This is the
-        // user-visible contract of the v34 default-flip: non-Expert users never
-        // see an RPC config UI, so anything other than SPV here would strand them.
-        let core_backend_mode: u8 = conn
-            .query_row(
-                "SELECT core_backend_mode FROM settings WHERE id = 1",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(
-            core_backend_mode, 1,
-            "fresh install must default to SPV (core_backend_mode = 1)"
-        );
-
+        // The legacy `settings.core_backend_mode` column was unwired in C3
+        // (user prefs moved to the upstream k/v store). The "fresh installs
+        // default to SPV" contract is now enforced by
+        // `AppSettings::default()` — see the model crate's S1 test.
         assert_v33_schema(&conn);
     }
 
@@ -2507,10 +2528,23 @@ mod test {
 
         /// Set up a fresh v33 database in `dir` with `core_backend_mode = 0` (RPC),
         /// returning the `Database`.
+        ///
+        /// The v33 schema predates C3 — it still has the legacy
+        /// `core_backend_mode` column on the settings table — so the
+        /// fixture backfills it directly after `create_tables` to faithfully
+        /// reproduce the on-disk shape of a real pre-C3 install.
         fn fresh_v33_db(dir: &std::path::Path) -> super::super::Database {
             let db_file = dir.join("test_data.db");
             let db = super::super::Database::new(&db_file).unwrap();
             db.create_tables().unwrap();
+            {
+                let conn = db.conn.lock().unwrap();
+                conn.execute(
+                    "ALTER TABLE settings ADD COLUMN core_backend_mode INTEGER DEFAULT 1",
+                    [],
+                )
+                .unwrap();
+            }
             db.set_default_version().unwrap();
             // Set starting state: v33 with the legacy RPC default.
             db.set_db_version(33).unwrap();

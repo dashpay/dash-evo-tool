@@ -177,7 +177,7 @@ impl WelcomeScreen {
 
         if response.response.interact(egui::Sense::click()).clicked() {
             // Save settings to database
-            let _ = self.app_context.db.update_onboarding_completed(true);
+            let _ = self.app_context.update_onboarding_completed(true);
 
             // Return OnboardingComplete with navigation based on selection
             let (main_screen, add_screen) = match onboarding_action {

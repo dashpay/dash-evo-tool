@@ -167,6 +167,7 @@ impl BackendTestContext {
         let connection_status = Arc::new(ConnectionStatus::new());
         let egui_ctx = egui::Context::default();
 
+        let app_kv = AppContext::open_app_kv(&workdir).expect("open app k/v");
         let app_context = AppContext::new(
             workdir.clone(),
             Network::Testnet,
@@ -174,6 +175,7 @@ impl BackendTestContext {
             subtasks,
             connection_status,
             egui_ctx,
+            app_kv,
         )
         .expect("Failed to create AppContext for testnet");
 

@@ -12,7 +12,7 @@ use crate::database::Database;
 #[cfg(not(feature = "testing"))]
 use crate::logging::initialize_logger;
 use crate::model::feature_gate::FeatureGate;
-use crate::model::settings::Settings;
+use crate::model::settings::AppSettings;
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
 use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen, ProfileSearchScreen};
@@ -287,7 +287,21 @@ impl AppState {
         db: Arc<Database>,
         data_dir: PathBuf,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let settings = db.get_settings()?.map(Settings::from).unwrap_or_default();
+        // Boot path now reads preferences from the shared app k/v store
+        // (`<data_dir>/det-app.sqlite`). The store is opened once here and
+        // handed to every per-network `AppContext`.
+        let app_kv = AppContext::open_app_kv(&data_dir)?;
+        let settings = match app_kv.get::<AppSettings>(None, AppSettings::KV_KEY) {
+            Ok(Some(s)) => s,
+            Ok(None) => AppSettings::default(),
+            Err(e) => {
+                tracing::warn!(
+                    error = ?e,
+                    "Failed to read AppSettings at boot — using defaults"
+                );
+                AppSettings::default()
+            }
+        };
         let theme_preference = settings.theme_mode;
         let overwrite_dash_conf = settings.overwrite_dash_conf;
         let onboarding_completed = settings.onboarding_completed;
@@ -306,6 +320,7 @@ impl AppState {
                 subtasks.clone(),
                 connection_status.clone(),
                 ctx.clone(),
+                Arc::clone(&app_kv),
             )
         };
 
@@ -726,12 +741,7 @@ impl AppState {
             .core_zmq_endpoint
             .clone()
             .unwrap_or_else(|| default_endpoint.to_string());
-        let disable = ctx
-            .get_settings()
-            .ok()
-            .flatten()
-            .map(|s| s.disable_zmq)
-            .unwrap_or(false);
+        let disable = ctx.get_app_settings().disable_zmq;
         if disable {
             return None;
         }
@@ -783,11 +793,7 @@ impl AppState {
             format!("Connecting to {network:?}..."),
             MessageType::Info,
         ));
-        let start_spv = self
-            .current_app_context()
-            .db
-            .get_auto_start_spv()
-            .unwrap_or(false);
+        let start_spv = self.current_app_context().get_app_settings().auto_start_spv;
         self.handle_backend_task(BackendTask::SwitchNetwork { network, start_spv });
     }
 
@@ -948,7 +954,7 @@ impl AppState {
     /// backend mode is SPV.
     fn try_auto_start_spv(&self) {
         let ctx = self.current_app_context();
-        let auto_start = ctx.db.get_auto_start_spv().unwrap_or(false);
+        let auto_start = ctx.get_app_settings().auto_start_spv;
         if auto_start && FeatureGate::SpvBackend.is_available(ctx) {
             if let Err(e) = ctx.start_spv() {
                 tracing::warn!("Failed to auto-start SPV sync: {e}");

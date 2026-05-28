@@ -104,6 +104,13 @@ pub enum TaskError {
         source: platform_wallet_storage::WalletStorageError,
     },
 
+    /// Application settings could not be saved to the app k/v store.
+    #[error("Could not save your preferences. Check available disk space and try again.")]
+    AppSettingsWrite {
+        #[source]
+        source: crate::wallet_backend::KvAdapterError,
+    },
+
     /// Chain sync could not be started.
     #[error(
         "Could not start wallet sync. Please check your connection and restart the application."

@@ -27,7 +27,7 @@ use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicK
 use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, KeyDerivationType};
 use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::drive::query::{WhereClause, WhereOperator};
+use dash_sdk::drive::query::{SelectProjection, WhereClause, WhereOperator};
 use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identifier, Identity};
 use egui::ahash::HashMap;
 use std::collections::BTreeMap;
@@ -316,6 +316,7 @@ impl AppContext {
 
         // Fetch DPNS names using SDK
         let dpns_names_document_query = DocumentQuery {
+            select: SelectProjection::documents(),
             data_contract: self.dpns_contract.clone(),
             document_type_name: "domain".to_string(),
             where_clauses: vec![WhereClause {
@@ -323,6 +324,8 @@ impl AppContext {
                 operator: WhereOperator::Equal,
                 value: Value::Identifier(identity_id.into()),
             }],
+            group_by: Vec::new(),
+            having: Vec::new(),
             order_by_clauses: vec![],
             limit: 100,
             start: None,

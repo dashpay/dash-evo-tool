@@ -141,6 +141,12 @@ impl EventHandler for EventBridge {
             }
             WalletEvent::TransactionInstantLocked { wallet_id, .. }
             | WalletEvent::SyncHeightAdvanced { wallet_id, .. } => *wallet_id,
+            WalletEvent::ChainLockProcessed { wallet_id, .. } => {
+                // Upstream chain-lock notification: no transaction deltas to
+                // accumulate, but balances may shift from unconfirmed to
+                // confirmed — recompute and nudge the frame loop.
+                *wallet_id
+            }
         };
         self.snapshots.recompute(&wallet_id);
         self.nudge_refresh();

@@ -8,7 +8,7 @@ use crate::model::wallet::WalletSeedHash;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::platform_value::Value;
-use dash_sdk::drive::query::{WhereClause, WhereOperator};
+use dash_sdk::drive::query::{SelectProjection, WhereClause, WhereOperator};
 use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identity};
 
 impl AppContext {
@@ -23,6 +23,7 @@ impl AppContext {
 
         // Query the DPNS contract for the domain document
         let domain_query = DocumentQuery {
+            select: SelectProjection::documents(),
             data_contract: self.dpns_contract.clone(),
             document_type_name: "domain".to_string(),
             where_clauses: vec![
@@ -37,6 +38,8 @@ impl AppContext {
                     value: Value::Text(normalized_name.clone()),
                 },
             ],
+            group_by: Vec::new(),
+            having: Vec::new(),
             order_by_clauses: vec![],
             limit: 1,
             start: None,
@@ -73,6 +76,7 @@ impl AppContext {
 
         // Fetch all DPNS names owned by this identity
         let dpns_names_document_query = DocumentQuery {
+            select: SelectProjection::documents(),
             data_contract: self.dpns_contract.clone(),
             document_type_name: "domain".to_string(),
             where_clauses: vec![WhereClause {
@@ -80,6 +84,8 @@ impl AppContext {
                 operator: WhereOperator::Equal,
                 value: Value::Identifier(identity_id.into()),
             }],
+            group_by: Vec::new(),
+            having: Vec::new(),
             order_by_clauses: vec![],
             limit: 100,
             start: None,

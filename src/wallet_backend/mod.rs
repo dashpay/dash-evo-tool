@@ -13,9 +13,13 @@
 //! P2 points the task arms here. See
 //! `docs/ai-design/2026-05-18-platform-wallet-migration/backend-architecture.md`.
 
+mod asset_lock_signer;
 mod event_bridge;
 mod loader;
 mod snapshot;
+
+pub use asset_lock_signer::AssetLockSignerError;
+use asset_lock_signer::WalletAssetLockSigner;
 
 pub use event_bridge::EventBridge;
 pub use loader::{PersistedWalletLoader, SeedReregistrationLoader, WalletRegistration};
@@ -105,6 +109,12 @@ struct Inner {
     snapshots: Arc<SnapshotStore>,
     /// `WalletSeedHash` → upstream `WalletId`. See [`WalletId`].
     id_map: std::sync::RwLock<std::collections::BTreeMap<WalletSeedHash, WalletId>>,
+    /// `WalletSeedHash` → BIP-39 seed snapshot. Stored once at registration so
+    /// the upstream signer-driven asset-lock / payment builders can derive
+    /// secp256k1 keys without re-reading DET's wallet store on every call.
+    /// Zeroized on drop with the backend.
+    seeds:
+        std::sync::RwLock<std::collections::BTreeMap<WalletSeedHash, zeroize::Zeroizing<[u8; 64]>>>,
     /// Optional peer `host:port` for Devnet/Regtest or a user-selected local
     /// node. `None` ⇒ DNS-seed discovery (Mainnet/Testnet default).
     peer: Option<std::net::SocketAddr>,
@@ -170,6 +180,7 @@ impl WalletBackend {
                 loader,
                 snapshots,
                 id_map: std::sync::RwLock::new(std::collections::BTreeMap::new()),
+                seeds: std::sync::RwLock::new(std::collections::BTreeMap::new()),
                 peer,
                 network,
                 spv_storage_dir,
@@ -190,6 +201,13 @@ impl WalletBackend {
         );
 
         for reg in registrations {
+            // Snapshot the seed for the asset-lock / payment signer adapter.
+            // Idempotent: a re-registration on the same backend just rewrites
+            // the same bytes for the same hash.
+            self.inner
+                .seeds
+                .write()?
+                .insert(reg.seed_hash, reg.seed_bytes.clone());
             let already_this_process = self.inner.id_map.read()?.contains_key(&reg.seed_hash);
             if !already_this_process {
                 // `create_wallet_from_seed_bytes` also loads persisted
@@ -202,6 +220,7 @@ impl WalletBackend {
                         reg.network,
                         *reg.seed_bytes,
                         WalletAccountCreationOptions::Default,
+                        None,
                     )
                     .await
                 {
@@ -501,6 +520,47 @@ impl WalletBackend {
             .map(|w| w.wallet_id)
     }
 
+    /// Snapshot the cached seed and wrap it in a soft-wallet signer for the
+    /// upstream signer-driven asset-lock / payment builders. Snapshot is
+    /// cloned (and zeroized when the signer drops) so derivation can run
+    /// without contention on the upstream wallet-manager lock.
+    fn signer_for(&self, seed_hash: &WalletSeedHash) -> Result<WalletAssetLockSigner, TaskError> {
+        let seed = self
+            .inner
+            .seeds
+            .read()?
+            .get(seed_hash)
+            .cloned()
+            .ok_or(TaskError::WalletBackendNotYetWired)?;
+        Ok(WalletAssetLockSigner::new(seed, self.inner.network))
+    }
+
+    /// Derive the secp256k1 [`PrivateKey`] at `path` from the cached seed.
+    /// Used after `create_asset_lock_proof` to obtain the one-time
+    /// credit-output key needed to sign DET-retained non-identity state
+    /// transitions (Platform-address top-up, shielded deposit).
+    fn derive_private_key(
+        &self,
+        seed_hash: &WalletSeedHash,
+        path: &dash_sdk::dpp::key_wallet::bip32::DerivationPath,
+    ) -> Result<dash_sdk::dpp::dashcore::PrivateKey, TaskError> {
+        let seed = self
+            .inner
+            .seeds
+            .read()?
+            .get(seed_hash)
+            .cloned()
+            .ok_or(TaskError::WalletBackendNotYetWired)?;
+        let xprv = path
+            .derive_priv_ecdsa_for_master_seed(seed.as_ref(), self.inner.network)
+            .map_err(|source| TaskError::WalletBackend {
+                source: Box::new(platform_wallet::error::PlatformWalletError::KeyDerivation(
+                    source.to_string(),
+                )),
+            })?;
+        Ok(xprv.to_priv())
+    }
+
     /// Build, sign, and broadcast a payment from the wallet's default BIP-44
     /// account to `recipients` (`(address, duffs)`). Returns the txid.
     pub async fn send_payment(
@@ -509,6 +569,7 @@ impl WalletBackend {
         recipients: Vec<(dash_sdk::dpp::dashcore::Address, u64)>,
     ) -> Result<dash_sdk::dpp::dashcore::Txid, TaskError> {
         use dash_sdk::dpp::key_wallet::account::account_type::StandardAccountType;
+        let signer = self.signer_for(seed_hash)?;
         let wallet = self.resolve_wallet(seed_hash).await?;
         let tx = wallet
             .core()
@@ -516,6 +577,7 @@ impl WalletBackend {
                 StandardAccountType::BIP44Account,
                 DEFAULT_BIP44_ACCOUNT,
                 recipients,
+                &signer,
             )
             .await
             .map_err(|e| TaskError::WalletBackend {
@@ -524,14 +586,19 @@ impl WalletBackend {
         Ok(tx.txid())
     }
 
-    /// Build, track, and broadcast an asset lock via the upstream
-    /// `AssetLockManager` (which also continuously tracks it to finality and
-    /// returns the finalized proof). `kind` selects the funding derivation;
-    /// `identity_index` is the funding-account derivation index. Returns the
-    /// finalized asset-lock proof, its one-time private key, and the txid —
-    /// everything an identity create/top-up or platform-address top-up state
-    /// transition needs.
-    pub async fn create_asset_lock_proof(
+    /// Build, track, and broadcast a **non-identity** asset lock via the
+    /// upstream `AssetLockManager`. `kind` selects the funding derivation;
+    /// `identity_index` is the funding-account derivation index (ignored for
+    /// non-identity kinds). Returns the finalized asset-lock proof, its
+    /// one-time credit-output private key (derived locally from the wallet
+    /// seed at the path upstream selected), and the txid.
+    ///
+    /// For identity-funded asset locks (`IdentityRegistration` /
+    /// `IdentityTopUp`) the upstream `IdentityWallet::*_with_funding`
+    /// orchestrators submit the Platform-side state transition themselves
+    /// and never expose a credit-output `PrivateKey` — use
+    /// [`Self::register_identity`] / [`Self::top_up_identity`] instead.
+    pub(crate) async fn create_asset_lock_proof(
         &self,
         seed_hash: &WalletSeedHash,
         amount_duffs: u64,
@@ -558,21 +625,108 @@ impl WalletBackend {
             AssetLockKind::PlatformAddressTopUp | AssetLockKind::Shielded => {}
         }
 
+        let signer = self.signer_for(seed_hash)?;
         let wallet = self.resolve_wallet(seed_hash).await?;
         let funding_type = kind.funding_type();
-        let (proof, key, out_point) = wallet
+        let (proof, credit_output_path, out_point) = wallet
             .asset_locks()
             .create_funded_asset_lock_proof(
                 amount_duffs,
                 DEFAULT_BIP44_ACCOUNT,
                 funding_type,
                 identity_index,
+                &signer,
             )
             .await
             .map_err(|e| TaskError::WalletBackend {
                 source: Box::new(e),
             })?;
-        Ok((proof, key, out_point.txid))
+        let private_key = self.derive_private_key(seed_hash, &credit_output_path)?;
+        Ok((proof, private_key, out_point.txid))
+    }
+
+    /// Register a new identity on Platform funded by an asset lock built and
+    /// tracked-to-finality by the upstream `AssetLockManager`. Returns the
+    /// persisted [`Identity`].
+    ///
+    /// Wraps upstream `IdentityWallet::register_identity_with_funding` —
+    /// upstream handles asset-lock build/broadcast, IS→CL fallback with the
+    /// CL-height-too-low retry, the actual `PutIdentity` submission, and the
+    /// asset-lock cleanup. The DET retry loop around `UnknownVersionError`
+    /// and the manual IS-proof-invalid fallback are no longer needed at the
+    /// caller — upstream owns both paths.
+    pub async fn register_identity(
+        &self,
+        seed_hash: &WalletSeedHash,
+        identity_index: u32,
+        amount_duffs: u64,
+        keys_map: std::collections::BTreeMap<u32, dash_sdk::dpp::identity::IdentityPublicKey>,
+        identity_signer: &crate::model::qualified_identity::QualifiedIdentity,
+        settings: Option<dash_sdk::platform::transition::put_settings::PutSettings>,
+    ) -> Result<dash_sdk::platform::Identity, TaskError> {
+        use platform_wallet::wallet::asset_lock::AssetLockFunding;
+
+        // Re-provisioning idempotent. Run here so the chokepoint protection
+        // applies to upstream's signer-driven flow too.
+        self.ensure_identity_funding_accounts(seed_hash, identity_index)
+            .await?;
+
+        let asset_lock_signer = self.signer_for(seed_hash)?;
+        let wallet = self.resolve_wallet(seed_hash).await?;
+        let funding = AssetLockFunding::FromWalletBalance {
+            amount_duffs,
+            account_index: DEFAULT_BIP44_ACCOUNT,
+        };
+        wallet
+            .identity()
+            .register_identity_with_funding(
+                funding,
+                identity_index,
+                keys_map,
+                identity_signer,
+                &asset_lock_signer,
+                settings,
+            )
+            .await
+            .map_err(|e| TaskError::WalletBackend {
+                source: Box::new(e),
+            })
+    }
+
+    /// Top up an existing identity's credit balance from this wallet's
+    /// UTXOs. Returns the post-top-up identity balance (credits).
+    ///
+    /// Wraps upstream `IdentityWallet::top_up_identity_with_funding` —
+    /// upstream handles asset-lock build/broadcast, IS→CL fallback, the
+    /// `TopUpIdentity` submission, and the asset-lock cleanup. The
+    /// caller-side IS-proof-invalid fallback and `UnknownVersionError`
+    /// retry are no longer needed.
+    pub async fn top_up_identity(
+        &self,
+        seed_hash: &WalletSeedHash,
+        identity_id: &dash_sdk::platform::Identifier,
+        amount_duffs: u64,
+        identity_index: u32,
+        settings: Option<dash_sdk::platform::transition::put_settings::PutSettings>,
+    ) -> Result<u64, TaskError> {
+        use platform_wallet::wallet::asset_lock::AssetLockFunding;
+
+        self.ensure_identity_funding_accounts(seed_hash, identity_index)
+            .await?;
+
+        let asset_lock_signer = self.signer_for(seed_hash)?;
+        let wallet = self.resolve_wallet(seed_hash).await?;
+        let funding = AssetLockFunding::FromWalletBalance {
+            amount_duffs,
+            account_index: DEFAULT_BIP44_ACCOUNT,
+        };
+        wallet
+            .identity()
+            .top_up_identity_with_funding(identity_id, funding, &asset_lock_signer, settings)
+            .await
+            .map_err(|e| TaskError::WalletBackend {
+                source: Box::new(e),
+            })
     }
 
     // UPSTREAM GAP: rs-platform-wallet has no identity-funding-account

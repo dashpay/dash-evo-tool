@@ -16,7 +16,7 @@ use dash_sdk::{
         platform_value::{Bytes32, Value},
         util::{hash::hash_double, strings::convert_to_homograph_safe_chars},
     },
-    drive::query::{WhereClause, WhereOperator},
+    drive::query::{SelectProjection, WhereClause, WhereOperator},
     platform::Fetch,
     platform::{Document, DocumentQuery, FetchMany, transition::put_document::PutDocument},
 };
@@ -158,6 +158,7 @@ impl AppContext {
             .await?;
 
         let dpns_names_document_query = DocumentQuery {
+            select: SelectProjection::documents(),
             data_contract: self.dpns_contract.clone(),
             document_type_name: "domain".to_string(),
             where_clauses: vec![WhereClause {
@@ -165,6 +166,8 @@ impl AppContext {
                 operator: WhereOperator::Equal,
                 value: Value::Identifier(qualified_identity.identity.id().into()),
             }],
+            group_by: Vec::new(),
+            having: Vec::new(),
             order_by_clauses: vec![],
             limit: 100,
             start: None,

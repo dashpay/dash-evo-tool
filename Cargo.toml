@@ -18,7 +18,7 @@ qrcode = "0.14.1"
 nix = { version = "0.31.1", features = ["signal"] }
 eframe = { version = "0.33.3", features = ["persistence", "wgpu"] }
 base64 = "0.22.1"
-dash-sdk = { git = "https://github.com/dashpay/platform", rev = "738091f734e05c7a1b822bb1ebff336c93b67891", features = [
+dash-sdk = { git = "https://github.com/dashpay/platform", rev = "aab00e6b7e0920aec719f8263ec951279d4c2b19", features = [
     "core_key_wallet",
     "core_key_wallet_manager",
     "core_bincode",
@@ -28,11 +28,11 @@ dash-sdk = { git = "https://github.com/dashpay/platform", rev = "738091f734e05c7
     "core_spv",
     "shielded",
 ] }
-rs-sdk-trusted-context-provider = { git = "https://github.com/dashpay/platform", rev = "738091f734e05c7a1b822bb1ebff336c93b67891" }
-platform-wallet = { git = "https://github.com/dashpay/platform", rev = "738091f734e05c7a1b822bb1ebff336c93b67891", features = [
+rs-sdk-trusted-context-provider = { git = "https://github.com/dashpay/platform", rev = "aab00e6b7e0920aec719f8263ec951279d4c2b19" }
+platform-wallet = { git = "https://github.com/dashpay/platform", rev = "aab00e6b7e0920aec719f8263ec951279d4c2b19", features = [
     "serde",
 ] }
-platform-wallet-storage = { git = "https://github.com/dashpay/platform", rev = "738091f734e05c7a1b822bb1ebff336c93b67891" }
+platform-wallet-storage = { git = "https://github.com/dashpay/platform", rev = "aab00e6b7e0920aec719f8263ec951279d4c2b19" }
 zip32 = "0.2.0"
 grovestark = { git = "https://www.github.com/dashpay/grovestark", rev = "5b9e289cca54c79b1305d5f4f40bf1148f1eb0e3" }
 rayon = "1.8"
@@ -43,6 +43,7 @@ serde_yaml_ng = { version = "0.10.0" }
 tokio = { version = "1.46.1", features = ["full"] }
 bincode = { version = "=2.0.1", features = ["serde"] }
 hex = { version = "0.4.3" }
+async-trait = "0.1.89"
 itertools = "0.14.0"
 enum-iterator = "2.1.0"
 futures = "0.3.31"

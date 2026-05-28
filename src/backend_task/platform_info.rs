@@ -24,7 +24,7 @@ use dash_sdk::dpp::system_data_contracts::load_system_data_contract;
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::dpp::withdrawal::daily_withdrawal_limit::daily_withdrawal_limit;
 use dash_sdk::dpp::{dash_to_credits, version::ProtocolVersionVoteCount};
-use dash_sdk::drive::query::{OrderClause, WhereClause, WhereOperator};
+use dash_sdk::drive::query::{SelectProjection, OrderClause, WhereClause, WhereOperator};
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::platform::fetch_current_no_parameters::FetchCurrent;
 use dash_sdk::platform::{DocumentQuery, FetchMany, FetchUnproved};
@@ -490,9 +490,12 @@ impl AppContext {
                 .map_err(|e| TaskError::from(SdkError::Protocol(e)))?;
 
                 let queued_document_query = DocumentQuery {
+                    select: SelectProjection::documents(),
                     data_contract: Arc::new(withdrawal_contract),
                     document_type_name: "withdrawal".to_string(),
                     where_clauses: vec![],
+                    group_by: Vec::new(),
+                    having: Vec::new(),
                     order_by_clauses: vec![],
                     limit: 50,
                     start: None,
@@ -535,6 +538,7 @@ impl AppContext {
                 .map_err(|e| TaskError::from(SdkError::Protocol(e)))?;
 
                 let completed_document_query = DocumentQuery {
+                    select: SelectProjection::documents(),
                     data_contract: Arc::new(withdrawal_contract),
                     document_type_name: "withdrawal".to_string(),
                     where_clauses: vec![WhereClause {
@@ -545,6 +549,8 @@ impl AppContext {
                             Value::U8(WithdrawalStatus::EXPIRED as u8),
                         ]),
                     }],
+                    group_by: Vec::new(),
+                    having: Vec::new(),
                     order_by_clauses: vec![
                         OrderClause {
                             field: "status".to_string(),

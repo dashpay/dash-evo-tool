@@ -12,7 +12,7 @@ use crate::ui::{MessageType, ScreenLike};
 use chrono::{DateTime, Utc};
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::platform_value::Value;
-use dash_sdk::drive::query::{WhereClause, WhereOperator};
+use dash_sdk::drive::query::{SelectProjection, WhereClause, WhereOperator};
 use dash_sdk::platform::{Document, DocumentQuery};
 use egui::Context;
 use std::sync::Arc;
@@ -41,6 +41,7 @@ impl ViewTokenClaimsScreen {
         Self {
             identity_token_basic_info: identity_token_basic_info.clone(),
             new_claims_query: DocumentQuery {
+                select: SelectProjection::documents(),
                 data_contract: app_context.token_history_contract.clone(),
                 document_type_name: "claim".to_string(),
                 where_clauses: vec![
@@ -55,6 +56,8 @@ impl ViewTokenClaimsScreen {
                         value: Value::Identifier(identity_token_basic_info.identity_id.into()),
                     },
                 ],
+                group_by: Vec::new(),
+                having: Vec::new(),
                 order_by_clauses: vec![],
                 limit: 0,
                 start: None,

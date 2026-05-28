@@ -20,7 +20,7 @@ use dash_sdk::dpp::group::group_action::GroupAction;
 use dash_sdk::dpp::group::group_action_status::GroupActionStatus;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::Value;
-use dash_sdk::drive::query::{WhereClause, WhereOperator};
+use dash_sdk::drive::query::{SelectProjection, WhereClause, WhereOperator};
 use dash_sdk::platform::group_actions::GroupActionsQuery;
 use dash_sdk::platform::{
     DataContract, Document, DocumentQuery, Fetch, FetchMany, Identifier, IdentityPublicKey,
@@ -79,6 +79,7 @@ impl AppContext {
                                 // Fetch the contract description from the Search Contract
                                 let search_contract = &self.keyword_search_contract;
                                 let document_query = DocumentQuery {
+                                    select: SelectProjection::documents(),
                                     data_contract: search_contract.clone(),
                                     document_type_name: "fullDescription".to_string(),
                                     limit: 1,
@@ -88,6 +89,8 @@ impl AppContext {
                                         operator: WhereOperator::Equal,
                                         value: Value::Identifier(contract.id().into()),
                                     }],
+                                    group_by: Vec::new(),
+                                    having: Vec::new(),
                                     order_by_clauses: vec![],
                                 };
                                 let document_option = Document::fetch(sdk, document_query)

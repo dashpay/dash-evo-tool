@@ -4,16 +4,12 @@ use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::{AppContext, get_transaction_info};
 use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::proof_log_item::RequestType;
-use dash_sdk::Error;
-use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::block::extended_epoch_info::ExtendedEpochInfo;
 use dash_sdk::dpp::dashcore::OutPoint;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
 use dash_sdk::dpp::prelude::AssetLockProof;
-use dash_sdk::dpp::state_transition::identity_topup_transition::IdentityTopUpTransition;
-use dash_sdk::dpp::state_transition::identity_topup_transition::methods::IdentityTopUpTransitionMethodsV0;
 use dash_sdk::platform::Fetch;
 use dash_sdk::platform::transition::top_up_identity::TopUpIdentity;
 
@@ -30,87 +26,104 @@ impl AppContext {
 
         let sdk = self.sdk.load().as_ref().clone();
 
+        let balance_before = qualified_identity.identity.balance();
+        let estimated_fee = PlatformFeeEstimator::new().estimate_identity_topup();
+
+        // Fast-path: a wallet-funded top-up runs entirely through the upstream
+        // `IdentityWallet::top_up_identity_with_funding`. Upstream owns the
+        // asset-lock build/broadcast, the IS→CL fallback, the
+        // `TopUpIdentity` submission, and the asset-lock cleanup. DET only
+        // mirrors the new balance into its local stores.
+        if let TopUpIdentityFundingMethod::FundWithWallet(amount, identity_index, top_up_index) =
+            &identity_funding_method
+        {
+            let amount = *amount;
+            let identity_index = *identity_index;
+            let top_up_index = *top_up_index;
+            let seed_hash = wallet.read().map_err(TaskError::from)?.seed_hash();
+            let identity_id = qualified_identity.identity.id();
+            let backend = self.wallet_backend()?;
+            let new_balance = backend
+                .top_up_identity(&seed_hash, &identity_id, amount, identity_index, None)
+                .await?;
+            qualified_identity.identity.set_balance(new_balance);
+
+            let actual_fee = {
+                let expected_credits = amount.saturating_mul(1000);
+                let balance_increase = new_balance.saturating_sub(balance_before);
+                expected_credits.saturating_sub(balance_increase)
+            };
+            tracing::info!(
+                "Identity top-up complete: balance before {} credits, balance after {} credits, estimated fee {} credits, actual fee {} credits",
+                balance_before,
+                new_balance,
+                estimated_fee,
+                actual_fee,
+            );
+
+            self.update_local_qualified_identity(&qualified_identity)?;
+            self.db.insert_top_up(
+                qualified_identity.identity.id().as_bytes(),
+                top_up_index,
+                amount,
+            )?;
+
+            let fee_result = FeeResult::new(estimated_fee, actual_fee);
+            return Ok(BackendTaskSuccessResult::ToppedUpIdentity(
+                qualified_identity,
+                fee_result,
+            ));
+        }
+
         let (_, metadata) = ExtendedEpochInfo::fetch_with_metadata(&sdk, 0, None).await?;
 
-        let (asset_lock_proof, asset_lock_proof_private_key, tx_id, top_up_index) =
-            match identity_funding_method {
-                TopUpIdentityFundingMethod::UseAssetLock(
-                    address,
-                    asset_lock_proof,
-                    transaction,
-                ) => {
-                    let tx_id = transaction.txid();
+        // Staged-asset-lock path: caller supplies a pre-existing asset lock
+        // (and the wallet-derived spending key). DET still drives the
+        // Platform-side `TopUpIdentity` and the IS→CL fallback by hand
+        // because the upstream wallet backend never tracked this asset lock.
+        let TopUpIdentityFundingMethod::UseAssetLock(address, asset_lock_proof, transaction) =
+            identity_funding_method
+        else {
+            unreachable!("FundWithWallet handled by fast-path above")
+        };
 
-                    // Scope the read guard so it's dropped before the async DAPI call below
-                    let private_key = {
-                        let wallet = wallet.read().map_err(TaskError::from)?;
-                        wallet
-                            .private_key_for_address(&address, self.network)
-                            .map_err(|e| TaskError::WalletKeyLookupFailed { detail: e })?
-                            .ok_or(TaskError::AssetLockNotValidForWallet)?
-                    };
-                    let asset_lock_proof =
-                        if let AssetLockProof::Instant(instant_asset_lock_proof) =
-                            asset_lock_proof.as_ref()
-                        {
-                            // we need to make sure the instant send asset lock is recent
-                            let tx_info = get_transaction_info(&sdk, &tx_id).await?;
+        let tx_id = transaction.txid();
 
-                            if tx_info.is_chain_locked
-                                && tx_info.height > 0
-                                && tx_info.confirmations > 8
-                            {
-                                // Transaction is old enough that instant lock may have expired
-                                let tx_block_height = tx_info.height;
+        // Scope the read guard so it's dropped before the async DAPI call below
+        let private_key = {
+            let wallet = wallet.read().map_err(TaskError::from)?;
+            wallet
+                .private_key_for_address(&address, self.network)
+                .map_err(|e| TaskError::WalletKeyLookupFailed { detail: e })?
+                .ok_or(TaskError::AssetLockNotValidForWallet)?
+        };
+        let asset_lock_proof =
+            if let AssetLockProof::Instant(instant_asset_lock_proof) = asset_lock_proof.as_ref() {
+                // we need to make sure the instant send asset lock is recent
+                let tx_info = get_transaction_info(&sdk, &tx_id).await?;
 
-                                if tx_block_height <= metadata.core_chain_locked_height {
-                                    // Platform has verified this Core block, use chain lock proof
-                                    AssetLockProof::Chain(ChainAssetLockProof {
-                                        core_chain_locked_height: tx_block_height,
-                                        out_point: OutPoint::new(tx_id, 0),
-                                    })
-                                } else {
-                                    // Platform hasn't verified this Core block yet
-                                    return Err(TaskError::AssetLockExpired {
-                                        tx_block_height,
-                                        platform_height: metadata.core_chain_locked_height,
-                                    });
-                                }
-                            } else {
-                                AssetLockProof::Instant(instant_asset_lock_proof.clone())
-                            }
-                        } else {
-                            asset_lock_proof.as_ref().clone()
-                        };
-                    (asset_lock_proof, private_key, tx_id, None)
+                if tx_info.is_chain_locked && tx_info.height > 0 && tx_info.confirmations > 8 {
+                    // Transaction is old enough that instant lock may have expired
+                    let tx_block_height = tx_info.height;
+
+                    if tx_block_height <= metadata.core_chain_locked_height {
+                        // Platform has verified this Core block, use chain lock proof
+                        AssetLockProof::Chain(ChainAssetLockProof {
+                            core_chain_locked_height: tx_block_height,
+                            out_point: OutPoint::new(tx_id, 0),
+                        })
+                    } else {
+                        // Platform hasn't verified this Core block yet
+                        return Err(TaskError::AssetLockExpired {
+                            tx_block_height,
+                            platform_height: metadata.core_chain_locked_height,
+                        });
+                    }
+                } else {
+                    AssetLockProof::Instant(instant_asset_lock_proof.clone())
                 }
-                TopUpIdentityFundingMethod::FundWithWallet(
-                    amount,
-                    identity_index,
-                    top_up_index,
-                ) => {
-                    // Asset-lock build/broadcast/track-to-proof is owned by the
-                    // upstream `AssetLockManager`. `identity_index` is the
-                    // funding-account derivation index for an `IdentityTopUp`
-                    // lock; the legacy `top_up_index` is preserved only for
-                    // downstream DET credit bookkeeping.
-                    let seed_hash = wallet.read().map_err(TaskError::from)?.seed_hash();
-                    let backend = self.wallet_backend()?;
-                    let (asset_lock_proof, asset_lock_proof_private_key, tx_id) = backend
-                        .create_asset_lock_proof(
-                            &seed_hash,
-                            amount,
-                            crate::wallet_backend::AssetLockKind::IdentityTopUp,
-                            identity_index,
-                        )
-                        .await?;
-                    (
-                        asset_lock_proof,
-                        asset_lock_proof_private_key,
-                        tx_id,
-                        Some((amount, top_up_index)),
-                    )
-                }
+            } else {
+                asset_lock_proof.as_ref().clone()
             };
 
         self.db
@@ -119,19 +132,9 @@ impl AppContext {
                 qualified_identity.identity.id().as_bytes(),
             )?;
 
-        // Track balance before top-up for fee calculation
-        let balance_before = qualified_identity.identity.balance();
-        let estimated_fee = PlatformFeeEstimator::new().estimate_identity_topup();
-
         let updated_identity_balance = match qualified_identity
             .identity
-            .top_up_identity(
-                &sdk,
-                asset_lock_proof.clone(),
-                &asset_lock_proof_private_key,
-                None,
-                None,
-            )
+            .top_up_identity_with_private_key(&sdk, asset_lock_proof.clone(), &private_key, None)
             .await
         {
             Ok(updated_identity) => updated_identity,
@@ -151,14 +154,12 @@ impl AppContext {
                                     out_point: OutPoint::new(tx_id, 0),
                                 });
 
-                            // Retry with chain asset lock proof
                             qualified_identity
                                 .identity
-                                .top_up_identity(
+                                .top_up_identity_with_private_key(
                                     &sdk,
                                     chain_asset_lock_proof,
-                                    &asset_lock_proof_private_key,
-                                    None,
+                                    &private_key,
                                     None,
                                 )
                                 .await
@@ -177,41 +178,6 @@ impl AppContext {
                     } else {
                         return Err(TaskError::AssetLockInstantLockExpiredNotChainlocked);
                     }
-                } else if matches!(e, Error::Protocol(ProtocolError::UnknownVersionError(_))) {
-                    qualified_identity
-                        .identity
-                        .top_up_identity(
-                            &sdk,
-                            asset_lock_proof.clone(),
-                            &asset_lock_proof_private_key,
-                            None,
-                            None,
-                        )
-                        .await
-                        .map_err(|retry_err| {
-                            let logged = self.log_drive_proof_error(
-                                retry_err,
-                                RequestType::BroadcastStateTransition,
-                            );
-                            if matches!(logged, TaskError::ProofError { .. }) {
-                                return logged;
-                            }
-                            // Log the reconstructed transition for debugging before returning the error.
-                            if let Ok(transition) = IdentityTopUpTransition::try_from_identity(
-                                &qualified_identity.identity,
-                                asset_lock_proof,
-                                asset_lock_proof_private_key.inner.as_ref(),
-                                0,
-                                self.platform_version(),
-                                None,
-                            ) {
-                                tracing::debug!(
-                                    "Top-up retry failed; reconstructed transition: {:?}",
-                                    transition
-                                );
-                            }
-                            logged
-                        })?
                 } else {
                     return Err(
                         self.log_drive_proof_error(e, RequestType::BroadcastStateTransition)
@@ -224,42 +190,11 @@ impl AppContext {
             .identity
             .set_balance(updated_identity_balance);
 
-        // Calculate and log actual fee paid
-        // For top-ups, the "fee" is the difference between expected new balance and actual
-        let expected_credits_from_topup = if let Some((amount, _)) = top_up_index {
-            // amount is in duffs, 1 duff = 1000 credits
-            amount * 1000
-        } else {
-            // For asset lock method, calculate from the asset lock amount
-            0 // Can't easily determine without more info
-        };
-
-        if expected_credits_from_topup > 0 {
-            let balance_increase = updated_identity_balance.saturating_sub(balance_before);
-            let actual_fee = expected_credits_from_topup.saturating_sub(balance_increase);
-            tracing::info!(
-                "Identity top-up complete: topped up {} credits (from {} duffs), estimated fee {} credits, actual fee {} credits, balance increased by {} credits",
-                expected_credits_from_topup,
-                expected_credits_from_topup / 1000,
-                estimated_fee,
-                actual_fee,
-                balance_increase
-            );
-            if actual_fee != estimated_fee {
-                tracing::warn!(
-                    "Top-up fee mismatch: estimated {} vs actual {} (diff: {})",
-                    estimated_fee,
-                    actual_fee,
-                    actual_fee as i128 - estimated_fee as i128
-                );
-            }
-        } else {
-            tracing::info!(
-                "Identity top-up complete: balance before {} credits, balance after {} credits",
-                balance_before,
-                updated_identity_balance
-            );
-        }
+        tracing::info!(
+            "Identity top-up complete: balance before {} credits, balance after {} credits",
+            balance_before,
+            updated_identity_balance
+        );
 
         self.update_local_qualified_identity(&qualified_identity)?;
 
@@ -275,22 +210,7 @@ impl AppContext {
             qualified_identity.identity.id().as_bytes(),
         )?;
 
-        if let Some((amount, top_up_index)) = top_up_index {
-            self.db.insert_top_up(
-                qualified_identity.identity.id().as_bytes(),
-                top_up_index,
-                amount,
-            )?;
-        }
-
-        // Calculate actual fee for the FeeResult
-        let actual_fee = if expected_credits_from_topup > 0 {
-            let balance_increase = updated_identity_balance.saturating_sub(balance_before);
-            expected_credits_from_topup.saturating_sub(balance_increase)
-        } else {
-            estimated_fee // Fall back to estimated when we can't calculate actual
-        };
-        let fee_result = FeeResult::new(estimated_fee, actual_fee);
+        let fee_result = FeeResult::new(estimated_fee, estimated_fee);
 
         Ok(BackendTaskSuccessResult::ToppedUpIdentity(
             qualified_identity,

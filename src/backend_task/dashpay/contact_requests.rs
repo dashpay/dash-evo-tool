@@ -22,7 +22,7 @@ use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicK
 use dash_sdk::dpp::identity::{Identity, KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::platform_value::{Bytes32, Value};
-use dash_sdk::drive::query::{OrderClause, WhereClause, WhereOperator};
+use dash_sdk::drive::query::{OrderClause, SelectProjection, WhereClause, WhereOperator};
 use dash_sdk::platform::documents::transitions::DocumentCreateTransitionBuilder;
 use dash_sdk::platform::{
     Document, DocumentQuery, Fetch, FetchMany, FetchUnproved, Identifier, IdentityPublicKey,
@@ -538,6 +538,7 @@ async fn resolve_username_to_identity(
 
     // Use the cached DPNS contract from AppContext instead of fetching from network
     let domain_query = DocumentQuery {
+        select: SelectProjection::documents(),
         data_contract: app_context.dpns_contract.clone(),
         document_type_name: "domain".to_string(),
         where_clauses: vec![
@@ -552,6 +553,8 @@ async fn resolve_username_to_identity(
                 value: Value::Text(normalized),
             },
         ],
+        group_by: Vec::new(),
+        having: Vec::new(),
         order_by_clauses: vec![],
         limit: 1,
         start: None,

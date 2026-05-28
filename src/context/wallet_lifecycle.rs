@@ -18,6 +18,18 @@ impl AppContext {
     pub fn clear_network_database(&self) -> Result<(), TaskError> {
         self.db.clear_network_data(self.network)?;
 
+        // Drop the per-network shielded commitment-tree SQLite sidecar
+        // (replaces the legacy in-place table truncation on `data.db`).
+        // Missing file is the expected state on fresh installs and is
+        // tolerated. Backend-not-initialised is also fine — the file
+        // cannot exist without the backend having opened it.
+        if let Ok(tree_path) = self.shielded_commitment_tree_path()
+            && let Err(e) = std::fs::remove_file(&tree_path)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(TaskError::FileSystem { source: e });
+        }
+
         if let Ok(mut wallets) = self.wallets.write() {
             wallets.clear();
         }

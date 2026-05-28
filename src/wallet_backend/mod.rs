@@ -133,7 +133,7 @@ impl WalletBackend {
         loader: Arc<dyn PersistedWalletLoader>,
     ) -> Result<Self, TaskError> {
         let network = ctx.network;
-        let spv_storage_dir = Self::spv_storage_dir(ctx.data_dir(), network)?;
+        let spv_storage_dir = Self::resolve_spv_storage_dir(ctx.data_dir(), network)?;
 
         let persister_config =
             SqlitePersisterConfig::new(spv_storage_dir.join("platform-wallet.sqlite"));
@@ -317,6 +317,15 @@ impl WalletBackend {
     /// the schema-version envelope.
     pub fn kv(&self) -> DetKv {
         DetKv::new(Arc::clone(&self.inner.persister))
+    }
+
+    /// Per-network storage directory under `<data_dir>/spv/<network>/`.
+    ///
+    /// Hosts the upstream `platform-wallet.sqlite` persister file and any
+    /// other per-network sidecar databases DET maintains (e.g. the shielded
+    /// commitment tree at `shielded-commitment-tree.sqlite`).
+    pub fn spv_storage_dir(&self) -> &std::path::Path {
+        &self.inner.spv_storage_dir
     }
 
     /// Read the persisted [`SelectedWallet`] pointer for this network.
@@ -948,7 +957,7 @@ impl WalletBackend {
         format!("{host}:{port}").to_socket_addrs().ok()?.next()
     }
 
-    fn spv_storage_dir(
+    fn resolve_spv_storage_dir(
         app_data_dir: &Path,
         network: Network,
     ) -> Result<std::path::PathBuf, TaskError> {

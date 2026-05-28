@@ -559,7 +559,15 @@ impl ShieldedTabView {
                             .app_context
                             .db
                             .delete_shielded_notes(&self.seed_hash, &network_str);
-                        let _ = self.app_context.db.clear_commitment_tree_tables();
+                        if let Ok(tree_path) = self.app_context.shielded_commitment_tree_path()
+                            && let Err(e) = std::fs::remove_file(&tree_path)
+                            && e.kind() != std::io::ErrorKind::NotFound
+                        {
+                            tracing::warn!(
+                                error = ?e,
+                                "Failed to remove shielded commitment tree file during resync",
+                            );
+                        }
 
                         self.shielded_balance = 0;
                         self.tree_synced = false;

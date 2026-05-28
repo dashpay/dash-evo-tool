@@ -74,6 +74,7 @@ impl Database {
         self.path.clone()
     }
 
+    #[cfg(test)]
     pub(crate) fn shared_connection(&self) -> Arc<Mutex<Connection>> {
         self.conn.clone()
     }
@@ -87,8 +88,6 @@ impl Database {
     pub fn clear_network_data(&self, network: Network) -> rusqlite::Result<()> {
         let network_str = network.to_string();
 
-        // Scope the connection lock so it's released before
-        // clear_commitment_tree_tables acquires it again.
         {
             let mut conn = self.conn.lock().unwrap();
             let tx = conn.transaction()?;
@@ -171,12 +170,10 @@ impl Database {
             tx.commit()?;
         } // conn lock released here
 
-        // Commitment tree tables are optional (created lazily by grovedb).
-        // Log and continue if clearing them fails — the main network data
-        // has already been committed above.
-        if let Err(e) = self.clear_commitment_tree_tables() {
-            tracing::warn!("Failed to clear commitment tree tables: {e}");
-        }
+        // Shielded commitment-tree data now lives in a per-network sidecar
+        // SQLite file under `<spv_dir>/<network>/`, not in `data.db`. The
+        // `AppContext::clear_network_database` caller unlinks that file
+        // after this method returns successfully.
 
         Ok(())
     }

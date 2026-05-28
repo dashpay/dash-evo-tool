@@ -288,7 +288,6 @@ impl AppState {
         data_dir: PathBuf,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let settings = db.get_settings()?.map(Settings::from).unwrap_or_default();
-        let password_info = settings.password_info;
         let theme_preference = settings.theme_mode;
         let overwrite_dash_conf = settings.overwrite_dash_conf;
         let onboarding_completed = settings.onboarding_completed;
@@ -304,7 +303,6 @@ impl AppState {
                 data_dir.clone(),
                 network,
                 db.clone(),
-                password_info.clone(),
                 subtasks.clone(),
                 connection_status.clone(),
                 ctx.clone(),

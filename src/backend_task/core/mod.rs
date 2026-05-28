@@ -424,7 +424,6 @@ mod send_payment_unsupported_options {
             tmp.to_path_buf(),
             Network::Testnet,
             db,
-            None,
             Default::default(),
             Default::default(),
             egui::Context::default(),

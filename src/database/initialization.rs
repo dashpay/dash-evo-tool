@@ -511,9 +511,6 @@ impl Database {
         conn.execute(
             "CREATE TABLE IF NOT EXISTS settings (
             id INTEGER PRIMARY KEY CHECK (id = 1),
-            password_check BLOB,
-            main_password_salt BLOB,
-            main_password_nonce BLOB,
             network TEXT NOT NULL,
             start_root_screen INTEGER NOT NULL,
             custom_dash_qt_path TEXT,

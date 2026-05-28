@@ -11,7 +11,6 @@ use eframe::egui::Context;
 
 use crate::database::is_unique_constraint_violation;
 use crate::model::wallet::Wallet;
-use crate::model::wallet::encryption::{DASH_SECRET_MESSAGE, encrypt_message};
 use crate::ui::components::password_input::PasswordInput;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use bip39::Mnemonic;
@@ -37,7 +36,6 @@ pub struct ImportMnemonicScreen {
     estimated_time_to_crack: String,
     error: Option<String>,
     pub app_context: Arc<AppContext>,
-    use_password_for_app: bool,
     wallet_imported: bool,
     show_advanced_options: bool,
 
@@ -65,7 +63,6 @@ impl ImportMnemonicScreen {
             estimated_time_to_crack: String::new(),
             error: None,
             app_context: app_context.clone(),
-            use_password_for_app: true,
             wallet_imported: false,
             show_advanced_options: false,
 
@@ -168,15 +165,6 @@ impl ImportMnemonicScreen {
     fn save_wallet(&mut self) -> Result<AppAction, String> {
         if let Some(mnemonic) = &self.seed_phrase {
             let seed = mnemonic.to_seed("");
-
-            // Handle app-level password encryption (UI concern, separate from wallet)
-            if !self.password_input.is_empty() && self.use_password_for_app {
-                let (encrypted_message, salt, nonce) =
-                    encrypt_message(DASH_SECRET_MESSAGE, self.password_input.text())?;
-                self.app_context
-                    .update_main_password(&salt, &nonce, &encrypted_message)
-                    .map_err(|e| e.to_string())?;
-            }
 
             let password = if self.password_input.is_empty() {
                 None
@@ -642,11 +630,6 @@ impl ScreenLike for ImportMnemonicScreen {
                         "Estimated time to crack: {}",
                         self.estimated_time_to_crack
                     ));
-
-                    // if self.app_context.password_info.is_none() {
-                    //     ui.add_space(10.0);
-                    //     ui.checkbox(&mut self.use_password_for_app, "Use password for Dash Evo Tool loose keys (recommended)");
-                    // }
 
                     step += 1;
 

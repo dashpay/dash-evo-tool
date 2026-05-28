@@ -171,7 +171,6 @@ impl BackendTestContext {
             workdir.clone(),
             Network::Testnet,
             db,
-            None, // no password
             subtasks,
             connection_status,
             egui_ctx,

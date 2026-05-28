@@ -242,7 +242,6 @@ pub async fn init_app_context() -> Result<Arc<AppContext>, McpError> {
         data_dir,
         network,
         db,
-        None, // no wallet passwords in MCP server
         subtasks,
         connection_status,
         egui::Context::default(),

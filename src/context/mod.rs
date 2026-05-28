@@ -14,7 +14,6 @@ use crate::context_provider_spv::SpvProvider;
 use crate::database::Database;
 use crate::model::feature_gate::FeatureGate;
 use crate::model::fee_estimation::PlatformFeeEstimator;
-use crate::model::password_info::PasswordInfo;
 use crate::model::proof_log_item::RequestType;
 use crate::model::wallet::single_key::{SingleKeyHash, SingleKeyWallet};
 use crate::model::wallet::{Wallet, WalletSeedHash};
@@ -81,8 +80,6 @@ pub struct AppContext {
     pub(crate) has_wallet: AtomicBool,
     pub(crate) wallets: RwLock<BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>>,
     pub(crate) single_key_wallets: RwLock<BTreeMap<SingleKeyHash, Arc<RwLock<SingleKeyWallet>>>>,
-    #[allow(dead_code)] // May be used for password validation
-    pub(crate) password_info: Option<PasswordInfo>,
     pub(crate) transactions_waiting_for_finality: Mutex<BTreeMap<Txid, Option<AssetLockProof>>>,
     /// Whether to animate the UI elements.
     ///
@@ -133,7 +130,6 @@ impl AppContext {
         data_dir: PathBuf,
         network: Network,
         db: Arc<Database>,
-        password_info: Option<PasswordInfo>,
         subtasks: Arc<TaskManager>,
         connection_status: Arc<ConnectionStatus>,
         egui_ctx: egui::Context,
@@ -318,7 +314,6 @@ impl AppContext {
             has_wallet: (!wallets.is_empty() || !single_key_wallets.is_empty()).into(),
             wallets: RwLock::new(wallets),
             single_key_wallets: RwLock::new(single_key_wallets),
-            password_info,
             transactions_waiting_for_finality: Mutex::new(BTreeMap::new()),
             animate,
             cached_settings: RwLock::new(None),
@@ -771,6 +766,6 @@ mod tests {
             .expect("settings read")
             .expect("settings row present");
         // Settings tuple: index 7 is the legacy core_backend_mode column.
-        assert_eq!(settings.7, 1, "fresh DB should default to SPV (=1)");
+        assert_eq!(settings.6, 1, "fresh DB should default to SPV (=1)");
     }
 }

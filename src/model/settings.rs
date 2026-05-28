@@ -1,4 +1,3 @@
-use crate::model::password_info::PasswordInfo;
 use crate::ui::RootScreenType;
 use crate::ui::theme::ThemeMode;
 use dash_sdk::dpp::dashcore::Network;
@@ -26,7 +25,6 @@ impl UserMode {
 pub struct Settings {
     pub network: Network,
     pub root_screen_type: RootScreenType,
-    pub password_info: Option<PasswordInfo>,
     /// Path to the Dash-Qt binary, if set. None means autodetect.
     /// Empty value (`""`) means path deliberately not set, autodetect will not be performed.
     pub dash_qt_path: Option<PathBuf>,
@@ -50,7 +48,6 @@ impl
     From<(
         Network,
         RootScreenType,
-        Option<PasswordInfo>,
         Option<PathBuf>,
         bool,
         bool,
@@ -69,7 +66,6 @@ impl
         tuple: (
             Network,
             RootScreenType,
-            Option<PasswordInfo>,
             Option<PathBuf>,
             bool,
             bool,
@@ -83,7 +79,7 @@ impl
     ) -> Self {
         Self::new(
             tuple.0, tuple.1, tuple.2, tuple.3, tuple.4, tuple.5, tuple.6, tuple.7, tuple.8,
-            tuple.9, tuple.10, tuple.11,
+            tuple.9, tuple.10,
         )
     }
 }
@@ -94,7 +90,6 @@ impl Default for Settings {
         Self::new(
             Network::Mainnet,
             RootScreenType::RootScreenDashpay,
-            None,
             None, // autodetect
             true,
             false,
@@ -114,7 +109,6 @@ impl Settings {
     pub fn new(
         network: Network,
         root_screen_type: RootScreenType,
-        password_info: Option<PasswordInfo>,
         dash_qt_path: Option<PathBuf>,
         overwrite_dash_conf: bool,
         disable_zmq: bool,
@@ -128,7 +122,6 @@ impl Settings {
         Self {
             network,
             root_screen_type,
-            password_info,
             dash_qt_path: dash_qt_path.or_else(detect_dash_qt_path),
             overwrite_dash_conf,
             disable_zmq,

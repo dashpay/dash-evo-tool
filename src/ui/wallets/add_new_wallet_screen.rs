@@ -1,7 +1,6 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
-use crate::model::wallet::encryption::{DASH_SECRET_MESSAGE, encrypt_message};
 use crate::ui::components::entropy_grid::U256EntropyGrid;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::password_input::PasswordInput;
@@ -61,7 +60,6 @@ pub struct AddNewWalletScreen {
     estimated_time_to_crack: String,
     error: Option<String>,
     pub app_context: Arc<AppContext>,
-    use_password_for_app: bool,
     wallet_created: bool,
     // Success screen state
     created_wallet_seed_hash: Option<[u8; 32]>,
@@ -86,7 +84,6 @@ impl AddNewWalletScreen {
             estimated_time_to_crack: "".to_string(),
             error: None,
             app_context: app_context.clone(),
-            use_password_for_app: true,
             wallet_created: false,
             created_wallet_seed_hash: None,
             receive_address: None,
@@ -112,15 +109,6 @@ impl AddNewWalletScreen {
     fn save_wallet(&mut self) -> Result<AppAction, String> {
         if let Some(mnemonic) = &self.seed_phrase {
             let seed = mnemonic.to_seed("");
-
-            // Handle app-level password encryption (UI concern, separate from wallet)
-            if !self.password_input.is_empty() && self.use_password_for_app {
-                let (encrypted_message, salt, nonce) =
-                    encrypt_message(DASH_SECRET_MESSAGE, self.password_input.text())?;
-                self.app_context
-                    .update_main_password(&salt, &nonce, &encrypted_message)
-                    .map_err(|e| e.to_string())?;
-            }
 
             let password = if self.password_input.is_empty() {
                 None

@@ -1,6 +1,5 @@
 use crate::database::Database;
 use crate::database::initialization::DEFAULT_DB_VERSION;
-use crate::model::password_info::PasswordInfo;
 use crate::model::settings::UserMode;
 use crate::ui::RootScreenType;
 use crate::ui::theme::ThemeMode;
@@ -33,27 +32,6 @@ impl Database {
         Ok(())
     }
 
-    /// Updates the main password information in the settings table.
-    ///
-    /// Don't call this method directly, use `AppContext` methods instead to ensure proper caching behavior.
-    pub fn update_main_password(
-        &self,
-        salt: &[u8],
-        nonce: &[u8],
-        password_check: &[u8],
-    ) -> Result<()> {
-        // Update the settings table with the provided salt, nonce, and password_check
-        self.execute(
-            "UPDATE settings
-            SET main_password_salt = ?,
-                main_password_nonce = ?,
-                password_check = ?
-            WHERE id = 1",
-            rusqlite::params![salt, nonce, password_check],
-        )?;
-
-        Ok(())
-    }
     /// Updates the Dash Core execution settings in the settings table.
     ///
     /// Don't call this method directly, use `AppContext` methods instead to ensure proper caching behavior.
@@ -519,7 +497,6 @@ impl Database {
         Option<(
             Network,
             RootScreenType,
-            Option<PasswordInfo>,
             Option<PathBuf>,
             bool,
             bool,
@@ -534,34 +511,21 @@ impl Database {
         // Query the settings row
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT network, start_root_screen, password_check, main_password_salt, main_password_nonce, custom_dash_qt_path, overwrite_dash_conf, disable_zmq, theme_preference, core_backend_mode, onboarding_completed, show_evonode_tools, user_mode, close_dash_qt_on_exit FROM settings WHERE id = 1",
+            "SELECT network, start_root_screen, custom_dash_qt_path, overwrite_dash_conf, disable_zmq, theme_preference, core_backend_mode, onboarding_completed, show_evonode_tools, user_mode, close_dash_qt_on_exit FROM settings WHERE id = 1",
         )?;
 
         let result = stmt.query_row([], |row| {
             let network: String = row.get(0)?;
             let start_root_screen: u32 = row.get(1)?;
-            let password_check: Option<Vec<u8>> = row.get(2)?;
-            let main_password_salt: Option<Vec<u8>> = row.get(3)?;
-            let main_password_nonce: Option<Vec<u8>> = row.get(4)?;
-            let custom_dash_qt_path: Option<String> = row.get(5)?;
-            let overwrite_dash_conf: Option<bool> = row.get(6)?;
-            let disable_zmq: Option<bool> = row.get(7)?;
-            let theme_preference: Option<String> = row.get(8)?;
-            let core_backend_mode: Option<u8> = row.get(9)?;
-            let onboarding_completed: Option<bool> = row.get(10)?;
-            let show_evonode_tools: Option<bool> = row.get(11)?;
-            let user_mode: Option<String> = row.get(12)?;
-            let close_dash_qt_on_exit: Option<bool> = row.get(13)?;
-
-            // Combine the password-related fields if all are present, otherwise set to None
-            let password_data = match (password_check, main_password_salt, main_password_nonce) {
-                (Some(password_checker), Some(salt), Some(nonce)) => Some(PasswordInfo {
-                    password_checker,
-                    salt,
-                    nonce,
-                }),
-                _ => None,
-            };
+            let custom_dash_qt_path: Option<String> = row.get(2)?;
+            let overwrite_dash_conf: Option<bool> = row.get(3)?;
+            let disable_zmq: Option<bool> = row.get(4)?;
+            let theme_preference: Option<String> = row.get(5)?;
+            let core_backend_mode: Option<u8> = row.get(6)?;
+            let onboarding_completed: Option<bool> = row.get(7)?;
+            let show_evonode_tools: Option<bool> = row.get(8)?;
+            let user_mode: Option<String> = row.get(9)?;
+            let close_dash_qt_on_exit: Option<bool> = row.get(10)?;
 
             // Convert network from string to enum.
             // Handle legacy "dash" value from databases created before the
@@ -593,7 +557,6 @@ impl Database {
             Ok((
                 parsed_network,
                 root_screen_type,
-                password_data,
                 custom_dash_qt_path.map(PathBuf::from),
                 overwrite_dash_conf.unwrap_or(true),
                 disable_zmq.unwrap_or(false),
@@ -630,14 +593,11 @@ mod tests {
             "Database should have default settings after initialization"
         );
 
-        let (network, root_screen, password_info, _, _, _, theme, core_mode, _, _, _, _) =
-            settings.unwrap();
+        let (network, root_screen, _, _, _, theme, core_mode, _, _, _, _) = settings.unwrap();
         // Default network is mainnet
         assert_eq!(network, Network::Mainnet);
         // Default start screen is RootScreenDashPayProfile (20)
         assert_eq!(root_screen, RootScreenType::RootScreenDashPayProfile);
-        // No password set initially
-        assert!(password_info.is_none());
         // Default theme is System
         assert_eq!(theme, ThemeMode::System);
         // Default core mode is SPV (1)
@@ -666,21 +626,21 @@ mod tests {
             .expect("Failed to update theme");
 
         let settings = db.get_settings().expect("Failed to get settings").unwrap();
-        assert_eq!(settings.6, ThemeMode::Dark);
+        assert_eq!(settings.5, ThemeMode::Dark);
 
         // Test Light theme
         db.update_theme_preference(ThemeMode::Light)
             .expect("Failed to update theme");
 
         let settings = db.get_settings().expect("Failed to get settings").unwrap();
-        assert_eq!(settings.6, ThemeMode::Light);
+        assert_eq!(settings.5, ThemeMode::Light);
 
         // Test System theme
         db.update_theme_preference(ThemeMode::System)
             .expect("Failed to update theme");
 
         let settings = db.get_settings().expect("Failed to get settings").unwrap();
-        assert_eq!(settings.6, ThemeMode::System);
+        assert_eq!(settings.5, ThemeMode::System);
     }
 
     #[test]
@@ -689,21 +649,21 @@ mod tests {
 
         // Default should be SPV (1)
         let settings = db.get_settings().expect("Failed to get settings").unwrap();
-        assert_eq!(settings.7, 1);
+        assert_eq!(settings.6, 1);
 
         // Update to RPC mode (0)
         db.update_core_backend_mode(0)
             .expect("Failed to update core backend mode");
 
         let settings = db.get_settings().expect("Failed to get settings").unwrap();
-        assert_eq!(settings.7, 0);
+        assert_eq!(settings.6, 0);
 
         // Update back to SPV mode (1)
         db.update_core_backend_mode(1)
             .expect("Failed to update core backend mode");
 
         let settings = db.get_settings().expect("Failed to get settings").unwrap();
-        assert_eq!(settings.7, 1);
+        assert_eq!(settings.6, 1);
     }
 
     #[test]
@@ -753,29 +713,29 @@ mod tests {
 
         // Default onboarding is not completed
         let settings = db.get_settings().expect("Failed to get settings").unwrap();
-        assert!(!settings.8); // onboarding_completed
-        assert!(!settings.9); // show_evonode_tools
+        assert!(!settings.7); // onboarding_completed
+        assert!(!settings.8); // show_evonode_tools
 
         // Complete onboarding
         db.update_onboarding_completed(true)
             .expect("Failed to update onboarding");
 
         let settings = db.get_settings().expect("Failed to get settings").unwrap();
-        assert!(settings.8);
+        assert!(settings.7);
 
         // Enable evonode tools
         db.update_show_evonode_tools(true)
             .expect("Failed to update evonode tools");
 
         let settings = db.get_settings().expect("Failed to get settings").unwrap();
-        assert!(settings.9);
+        assert!(settings.8);
 
         // Update user mode to Beginner
         db.update_user_mode("Beginner")
             .expect("Failed to update user mode");
 
         let settings = db.get_settings().expect("Failed to get settings").unwrap();
-        assert_eq!(settings.10, UserMode::Beginner);
+        assert_eq!(settings.9, UserMode::Beginner);
     }
 
     #[test]

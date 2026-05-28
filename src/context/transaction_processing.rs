@@ -174,7 +174,6 @@ mod path3_asset_lock_finality_no_wallet_mutation {
             tmp.path().to_path_buf(),
             network,
             db.clone(),
-            None,
             Default::default(),
             Default::default(),
             egui::Context::default(),

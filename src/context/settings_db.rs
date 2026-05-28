@@ -12,18 +12,6 @@ impl AppContext {
             .insert_or_update_settings(self.network, root_screen_type)
     }
 
-    /// Updates the main password settings
-    pub fn update_main_password(
-        &self,
-        salt: &[u8],
-        nonce: &[u8],
-        password_check: &[u8],
-    ) -> Result<()> {
-        let _guard = self.invalidate_settings_cache();
-
-        self.db.update_main_password(salt, nonce, password_check)
-    }
-
     /// Updates the Dash Core execution settings
     pub fn update_dash_core_execution_settings(
         &self,

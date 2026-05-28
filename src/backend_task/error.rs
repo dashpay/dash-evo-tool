@@ -61,6 +61,40 @@ pub enum TaskError {
         source: Box<platform_wallet::error::PlatformWalletError>,
     },
 
+    /// The network rejected an identity-registration submission. Covers
+    /// upstream SDK rejections (consensus errors, invalid IS-lock, key
+    /// conflict, version mismatch, etc.) and asset-lock broadcast rejections
+    /// surfaced during `register_identity_with_funding`.
+    #[error(
+        "Identity registration was rejected by the network. Please try again — if this keeps happening, your funding may need to be confirmed first."
+    )]
+    IdentityCreateRejected {
+        #[source]
+        source: Box<platform_wallet::error::PlatformWalletError>,
+    },
+
+    /// The network rejected a top-up submission for a specific identity.
+    /// Covers upstream SDK rejections and asset-lock broadcast rejections
+    /// surfaced during `top_up_identity_with_funding`.
+    #[error(
+        "Top-up was rejected by the network for identity {identity_id}. Please try again in a moment."
+    )]
+    IdentityTopUpRejected {
+        identity_id: dash_sdk::platform::Identifier,
+        #[source]
+        source: Box<platform_wallet::error::PlatformWalletError>,
+    },
+
+    /// The asset-lock proof finalization (InstantSend → ChainLock fallback)
+    /// timed out without producing a usable proof for Platform.
+    #[error(
+        "The funding lock could not be confirmed in time. Please wait a minute and try again — the network may be syncing slowly."
+    )]
+    AssetLockFinalityTimeout {
+        #[source]
+        source: Box<platform_wallet::error::PlatformWalletError>,
+    },
+
     /// The wallet storage backend could not read or write wallet data.
     #[error(
         "Could not access wallet data. Check available disk space and restart the application."
@@ -2893,6 +2927,82 @@ mod tests {
         assert!(
             msg.contains("Unfreeze"),
             "Expected action in message, got: {msg}"
+        );
+    }
+
+    // ─── platform-wallet façade error variants ────────────────────────────────
+
+    #[test]
+    fn identity_create_rejected_display_is_user_friendly() {
+        let inner = platform_wallet::error::PlatformWalletError::TransactionBroadcast(
+            "asset-lock broadcast rejected".to_string(),
+        );
+        let err = TaskError::IdentityCreateRejected {
+            source: Box::new(inner),
+        };
+        let msg = err.to_string();
+        assert!(!msg.is_empty(), "Display should not be empty, got: {msg}");
+        assert!(
+            msg.contains("rejected by the network"),
+            "Expected rejection wording, got: {msg}"
+        );
+        assert!(
+            msg.contains("try again"),
+            "Expected actionable guidance, got: {msg}"
+        );
+        assert!(
+            std::error::Error::source(&err).is_some(),
+            "Expected source chain to be preserved"
+        );
+    }
+
+    #[test]
+    fn identity_top_up_rejected_display_includes_identity_id() {
+        let identity_id = Identifier::random();
+        let inner = platform_wallet::error::PlatformWalletError::TransactionBroadcast(
+            "top-up broadcast rejected".to_string(),
+        );
+        let err = TaskError::IdentityTopUpRejected {
+            identity_id,
+            source: Box::new(inner),
+        };
+        let msg = err.to_string();
+        assert!(!msg.is_empty(), "Display should not be empty, got: {msg}");
+        assert!(
+            msg.contains(&identity_id.to_string(Encoding::Base58)),
+            "Expected identity id in message, got: {msg}"
+        );
+        assert!(
+            msg.contains("try again"),
+            "Expected actionable guidance, got: {msg}"
+        );
+        assert!(
+            std::error::Error::source(&err).is_some(),
+            "Expected source chain to be preserved"
+        );
+    }
+
+    #[test]
+    fn asset_lock_finality_timeout_display_is_user_friendly() {
+        use dashcore::hashes::Hash;
+        let outpoint = dashcore::OutPoint::new(dashcore::Txid::from_byte_array([0u8; 32]), 0);
+        let inner = platform_wallet::error::PlatformWalletError::FinalityTimeout(outpoint);
+        let err = TaskError::AssetLockFinalityTimeout {
+            source: Box::new(inner),
+        };
+        let msg = err.to_string();
+        assert!(!msg.is_empty(), "Display should not be empty, got: {msg}");
+        assert!(
+            msg.contains("funding lock could not be confirmed"),
+            "Expected timeout wording, got: {msg}"
+        );
+        assert!(
+            msg.contains("wait") && msg.contains("try again"),
+            "Expected actionable guidance, got: {msg}"
+        );
+        assert!(
+            std::error::Error::source(&err).is_some(),
+            "Expected source chain to be preserved"
         );
     }
 }

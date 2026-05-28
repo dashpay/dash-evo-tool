@@ -688,9 +688,7 @@ impl WalletBackend {
                 settings,
             )
             .await
-            .map_err(|e| TaskError::WalletBackend {
-                source: Box::new(e),
-            })
+            .map_err(map_identity_register_error)
     }
 
     /// Top up an existing identity's credit balance from this wallet's
@@ -724,9 +722,7 @@ impl WalletBackend {
             .identity()
             .top_up_identity_with_funding(identity_id, funding, &asset_lock_signer, settings)
             .await
-            .map_err(|e| TaskError::WalletBackend {
-                source: Box::new(e),
-            })
+            .map_err(|e| map_identity_top_up_error(*identity_id, e))
     }
 
     // UPSTREAM GAP: rs-platform-wallet has no identity-funding-account
@@ -886,6 +882,118 @@ impl WalletBackend {
     }
 }
 
+/// Classify a `PlatformWalletError` returned from
+/// `register_identity_with_funding` into a typed `TaskError`. Network /
+/// broadcast rejections become `IdentityCreateRejected`; asset-lock
+/// finality failures become `AssetLockFinalityTimeout`; everything else
+/// falls through to the generic `WalletBackend` wrapper. Structural match
+/// — never parses error strings.
+fn map_identity_register_error(e: platform_wallet::error::PlatformWalletError) -> TaskError {
+    match identity_op_error_kind(&e) {
+        IdentityOpErrorKind::Rejected => TaskError::IdentityCreateRejected {
+            source: Box::new(e),
+        },
+        IdentityOpErrorKind::FinalityTimeout => TaskError::AssetLockFinalityTimeout {
+            source: Box::new(e),
+        },
+        IdentityOpErrorKind::Other => TaskError::WalletBackend {
+            source: Box::new(e),
+        },
+    }
+}
+
+/// Same as [`map_identity_register_error`] but for the top-up façade —
+/// the `identity_id` is carried into the rejection variant so the user-
+/// facing message can reference the affected identity.
+fn map_identity_top_up_error(
+    identity_id: dash_sdk::platform::Identifier,
+    e: platform_wallet::error::PlatformWalletError,
+) -> TaskError {
+    match identity_op_error_kind(&e) {
+        IdentityOpErrorKind::Rejected => TaskError::IdentityTopUpRejected {
+            identity_id,
+            source: Box::new(e),
+        },
+        IdentityOpErrorKind::FinalityTimeout => TaskError::AssetLockFinalityTimeout {
+            source: Box::new(e),
+        },
+        IdentityOpErrorKind::Other => TaskError::WalletBackend {
+            source: Box::new(e),
+        },
+    }
+}
+
+/// Bucket for `PlatformWalletError`s coming out of identity register / top-up.
+enum IdentityOpErrorKind {
+    /// Network or broadcast rejected the submission (SDK error or asset-lock
+    /// transaction broadcast failure).
+    Rejected,
+    /// Asset-lock proof finalization (IS → CL fallback) failed to produce a
+    /// usable proof — IS deadline elapsed, IS expired with no CL fallback, or
+    /// the wait helper itself failed.
+    FinalityTimeout,
+    /// Anything else — preconditions, wallet state, builder failures.
+    Other,
+}
+
+/// Map `PlatformWalletError` variants to coarse buckets. Exhaustive on the
+/// upstream enum — no `_` arm — so a future variant addition forces a
+/// review here instead of silently falling through.
+fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> IdentityOpErrorKind {
+    use platform_wallet::error::PlatformWalletError as P;
+    match e {
+        // Network / broadcast rejections.
+        P::Sdk(_) | P::TransactionBroadcast(_) => IdentityOpErrorKind::Rejected,
+
+        // Asset-lock finality failures (IS deadline / IS-expired / CL fallback).
+        P::FinalityTimeout(_)
+        | P::AssetLockProofWait(_)
+        | P::AssetLockExpired(_)
+        | P::AssetLockNotChainLocked(_) => IdentityOpErrorKind::FinalityTimeout,
+
+        // Everything else — preconditions, wallet state, builder errors.
+        P::WalletCreation(_)
+        | P::WalletNotFound(_)
+        | P::WalletAlreadyExists(_)
+        | P::IdentityAlreadyExists(_)
+        | P::IdentityNotFound(_)
+        | P::NoPrimaryIdentity
+        | P::InvalidIdentityData(_)
+        | P::ContactRequestNotFound(_)
+        | P::IdentityIndexNotSet(_)
+        | P::DashpayReceivingAccountAlreadyExists { .. }
+        | P::DashpayExternalAccountAlreadyExists { .. }
+        | P::AssetLockTransaction(_)
+        | P::TransactionBuild(_)
+        | P::NoSpendableInputs { .. }
+        | P::AddressSync(_)
+        | P::AddressOperation(_)
+        | P::OnlyOutputAddressesFunded { .. }
+        | P::OnlyDustInputs { .. }
+        | P::ChangeBelowMinimumOutput { .. }
+        | P::InputSumOverflow
+        | P::AddressNotFound(_)
+        | P::KeyDerivation(_)
+        | P::WalletLocked
+        | P::SpvAlreadyRunning
+        | P::NoWalletsConfigured
+        | P::SpvNotRunning
+        | P::SpvError(_)
+        | P::TokenError(_)
+        | P::ShieldedNoUnspentNotes
+        | P::ShieldedInsufficientBalance { .. }
+        | P::ShieldedBuildError(_)
+        | P::ShieldedBroadcastFailed(_)
+        | P::ShieldedSyncFailed(_)
+        | P::ShieldedTreeUpdateFailed(_)
+        | P::ShieldedStoreError(_)
+        | P::ShieldedNullifierSyncFailed(_)
+        | P::ShieldedMerkleWitnessUnavailable(_)
+        | P::ShieldedKeyDerivation(_)
+        | P::ShieldedNotBound => IdentityOpErrorKind::Other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -912,5 +1020,68 @@ mod tests {
             AssetLockKind::Shielded.funding_type(),
             AssetLockFundingType::AssetLockShieldedAddressTopUp
         );
+    }
+
+    /// I2: a network/broadcast rejection from `register_identity_with_funding`
+    /// maps to the dedicated `IdentityCreateRejected` envelope (not the generic
+    /// `WalletBackend` fallback). Structural — no string parsing.
+    #[test]
+    fn map_identity_register_error_classifies_rejection() {
+        let inner = platform_wallet::error::PlatformWalletError::TransactionBroadcast(
+            "rejected".to_string(),
+        );
+        let mapped = map_identity_register_error(inner);
+        assert!(
+            matches!(mapped, TaskError::IdentityCreateRejected { .. }),
+            "Expected IdentityCreateRejected, got: {mapped:?}"
+        );
+    }
+
+    /// I3: an asset-lock finality failure surfaced during identity register
+    /// maps to `AssetLockFinalityTimeout`, regardless of which finality
+    /// sub-variant fired upstream.
+    #[test]
+    fn map_identity_register_error_classifies_finality_timeout() {
+        use dash_sdk::dpp::dashcore::hashes::Hash;
+        let outpoint = dash_sdk::dpp::dashcore::OutPoint::new(
+            dash_sdk::dpp::dashcore::Txid::from_byte_array([0u8; 32]),
+            0,
+        );
+        let inner = platform_wallet::error::PlatformWalletError::FinalityTimeout(outpoint);
+        let mapped = map_identity_register_error(inner);
+        assert!(
+            matches!(mapped, TaskError::AssetLockFinalityTimeout { .. }),
+            "Expected AssetLockFinalityTimeout, got: {mapped:?}"
+        );
+    }
+
+    /// I4: precondition / wallet-state failures fall through to the generic
+    /// `WalletBackend` envelope — they are neither rejections nor finality
+    /// timeouts.
+    #[test]
+    fn map_identity_register_error_falls_through_for_other() {
+        let inner = platform_wallet::error::PlatformWalletError::WalletLocked;
+        let mapped = map_identity_register_error(inner);
+        assert!(
+            matches!(mapped, TaskError::WalletBackend { .. }),
+            "Expected WalletBackend fallthrough, got: {mapped:?}"
+        );
+    }
+
+    /// I5: the top-up façade carries the identity_id into the rejection
+    /// variant so the user-facing message references the affected identity.
+    #[test]
+    fn map_identity_top_up_error_carries_identity_id() {
+        let identity_id = dash_sdk::platform::Identifier::random();
+        let inner = platform_wallet::error::PlatformWalletError::TransactionBroadcast(
+            "rejected".to_string(),
+        );
+        let mapped = map_identity_top_up_error(identity_id, inner);
+        match mapped {
+            TaskError::IdentityTopUpRejected {
+                identity_id: got, ..
+            } => assert_eq!(got, identity_id, "identity_id must be preserved"),
+            other => panic!("Expected IdentityTopUpRejected, got: {other:?}"),
+        }
     }
 }

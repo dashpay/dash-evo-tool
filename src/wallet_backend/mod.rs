@@ -20,10 +20,13 @@
 //! `docs/ai-design/2026-05-18-platform-wallet-migration/backend-architecture.md`.
 
 mod asset_lock_signer;
+mod dashpay;
 mod event_bridge;
 mod kv;
 mod loader;
 mod snapshot;
+
+pub use dashpay::DashpayView;
 
 pub use asset_lock_signer::AssetLockSignerError;
 use asset_lock_signer::WalletAssetLockSigner;

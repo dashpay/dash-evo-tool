@@ -1,6 +1,6 @@
 mod asset_lock_transaction;
 pub(crate) mod contacts;
-mod dashpay;
+pub(crate) mod dashpay;
 mod initialization;
 mod settings;
 pub mod shielded;

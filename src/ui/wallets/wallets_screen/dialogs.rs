@@ -72,8 +72,10 @@ pub(super) struct ReceiveDialogState {
 #[derive(Default)]
 pub(super) struct FundPlatformAddressDialogState {
     pub is_open: bool,
-    /// Selected asset lock index
-    pub selected_asset_lock_index: Option<usize>,
+    /// Outpoint of the upstream-tracked asset lock chosen to fund a Platform
+    /// address. `None` until the user clicks "Fund" on a row in the asset-
+    /// locks table.
+    pub selected_asset_lock_out_point: Option<dash_sdk::dpp::dashcore::OutPoint>,
     /// Selected Platform address to fund
     pub selected_platform_address: Option<String>,
     /// List of Platform addresses available
@@ -794,7 +796,7 @@ impl WalletsBalancesScreen {
                     // Buttons
                     ui.horizontal(|ui| {
                         let can_fund = self.fund_platform_dialog.selected_platform_address.is_some()
-                            && self.fund_platform_dialog.selected_asset_lock_index.is_some()
+                            && self.fund_platform_dialog.selected_asset_lock_out_point.is_some()
                             && !self.fund_platform_dialog.is_processing;
 
                         // Cancel button
@@ -1003,85 +1005,64 @@ impl WalletsBalancesScreen {
             return AppAction::None;
         };
 
-        let Some(asset_lock_idx) = self.fund_platform_dialog.selected_asset_lock_index else {
+        let Some(out_point) = self.fund_platform_dialog.selected_asset_lock_out_point else {
             self.fund_platform_dialog.status = Some("No asset lock selected".to_string());
             self.fund_platform_dialog.status_is_error = true;
             return AppAction::None;
         };
 
-        // Get the asset lock proof and address from the wallet
-        let (seed_hash, asset_lock_proof, asset_lock_address, platform_addr) = {
-            let wallet = match wallet_arc.read() {
-                Ok(guard) => guard,
+        let seed_hash = match wallet_arc.read() {
+            Ok(guard) => guard.seed_hash(),
+            Err(e) => {
+                self.fund_platform_dialog.status = Some(e.to_string());
+                self.fund_platform_dialog.status_is_error = true;
+                return AppAction::None;
+            }
+        };
+
+        // Parse the Platform address (Bech32m format: dash1.../tdash1... per DIP-18)
+        let platform_addr = if crate::ui::helpers::is_platform_address_string(selected_addr) {
+            match PlatformAddress::from_bech32m_string(selected_addr) {
+                Ok((addr, network)) => {
+                    if !crate::model::wallet::networks_address_compatible(
+                        &network,
+                        &self.app_context.network,
+                    ) {
+                        self.fund_platform_dialog.status = Some(format!(
+                            "Address network mismatch: address is for {:?} but app is on {:?}",
+                            network, self.app_context.network
+                        ));
+                        self.fund_platform_dialog.status_is_error = true;
+                        return AppAction::None;
+                    }
+                    addr
+                }
                 Err(e) => {
-                    self.fund_platform_dialog.status = Some(e.to_string());
+                    self.fund_platform_dialog.status =
+                        Some(format!("Invalid Bech32m address: {}", e));
                     self.fund_platform_dialog.status_is_error = true;
                     return AppAction::None;
                 }
-            };
-
-            let asset_lock = wallet.unused_asset_locks.get(asset_lock_idx);
-            let Some((_, addr, _, _, Some(proof))) = asset_lock else {
-                self.fund_platform_dialog.status =
-                    Some("Asset lock not found or not ready".to_string());
-                self.fund_platform_dialog.status_is_error = true;
-                return AppAction::None;
-            };
-
-            // Parse the Platform address (Bech32m format: dash1.../tdash1... per DIP-18)
-            let platform_addr = if crate::ui::helpers::is_platform_address_string(selected_addr) {
-                match PlatformAddress::from_bech32m_string(selected_addr) {
-                    Ok((addr, network)) => {
-                        // Validate that address network matches app network
-                        if !crate::model::wallet::networks_address_compatible(
-                            &network,
-                            &self.app_context.network,
-                        ) {
-                            self.fund_platform_dialog.status = Some(format!(
-                                "Address network mismatch: address is for {:?} but app is on {:?}",
-                                network, self.app_context.network
-                            ));
-                            self.fund_platform_dialog.status_is_error = true;
-                            return AppAction::None;
-                        }
-                        addr
-                    }
-                    Err(e) => {
-                        self.fund_platform_dialog.status =
-                            Some(format!("Invalid Bech32m address: {}", e));
-                        self.fund_platform_dialog.status_is_error = true;
-                        return AppAction::None;
-                    }
+            }
+        } else {
+            match selected_addr
+                .parse::<Address<NetworkUnchecked>>()
+                .map_err(|e| e.to_string())
+                .and_then(|a: Address<NetworkUnchecked>| {
+                    PlatformAddress::try_from(a.assume_checked())
+                        .map_err(|e| format!("Invalid Platform address: {}", e))
+                }) {
+                Ok(addr) => addr,
+                Err(e) => {
+                    self.fund_platform_dialog.status = Some(e);
+                    self.fund_platform_dialog.status_is_error = true;
+                    return AppAction::None;
                 }
-            } else {
-                // Fall back to base58 parsing for backwards compatibility
-                match selected_addr
-                    .parse::<Address<NetworkUnchecked>>()
-                    .map_err(|e| e.to_string())
-                    .and_then(|a: Address<NetworkUnchecked>| {
-                        PlatformAddress::try_from(a.assume_checked())
-                            .map_err(|e| format!("Invalid Platform address: {}", e))
-                    }) {
-                    Ok(addr) => addr,
-                    Err(e) => {
-                        self.fund_platform_dialog.status = Some(e);
-                        self.fund_platform_dialog.status_is_error = true;
-                        return AppAction::None;
-                    }
-                }
-            };
-
-            (
-                wallet.seed_hash(),
-                Box::new(proof.clone()),
-                addr.clone(),
-                platform_addr,
-            )
+            }
         };
 
-        // Build outputs - fund the entire asset lock to the selected Platform address
         let mut outputs: BTreeMap<PlatformAddress, Option<u64>> = BTreeMap::new();
-        outputs.insert(platform_addr, None); // None = take the full amount
+        outputs.insert(platform_addr, None);
 
         self.fund_platform_dialog.is_processing = true;
         self.fund_platform_dialog.status = Some("Processing...".to_string());
@@ -1090,8 +1071,7 @@ impl WalletsBalancesScreen {
         AppAction::BackendTask(BackendTask::WalletTask(
             WalletTask::FundPlatformAddressFromAssetLock {
                 seed_hash,
-                asset_lock_proof,
-                asset_lock_address,
+                out_point,
                 outputs,
             },
         ))

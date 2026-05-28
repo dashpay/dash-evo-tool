@@ -2,11 +2,11 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::wallet::WalletSeedHash;
-use crate::wallet_backend::AssetLockKind;
 use dash_sdk::dpp::address_funds::AddressFundsFeeStrategyStep;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use dash_sdk::platform::transition::top_up_address::TopUpAddress;
+use platform_wallet::AssetLockFundingType;
 use std::sync::Arc;
 
 impl AppContext {
@@ -38,7 +38,7 @@ impl AppContext {
             .create_asset_lock_proof(
                 &seed_hash,
                 asset_lock_amount,
-                AssetLockKind::PlatformAddressTopUp,
+                AssetLockFundingType::AssetLockAddressTopUp,
                 0,
             )
             .await?;

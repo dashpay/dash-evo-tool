@@ -229,7 +229,7 @@ impl AppContext {
                     .create_asset_lock_proof(
                         &seed_hash,
                         amount_duffs,
-                        crate::wallet_backend::AssetLockKind::IdentityRegistration,
+                        platform_wallet::AssetLockFundingType::IdentityRegistration,
                         identity_index,
                     )
                     .await?;
@@ -245,7 +245,7 @@ impl AppContext {
                     .create_asset_lock_proof(
                         &seed_hash,
                         amount_duffs,
-                        crate::wallet_backend::AssetLockKind::IdentityTopUp,
+                        platform_wallet::AssetLockFundingType::IdentityTopUp,
                         identity_index,
                     )
                     .await?;

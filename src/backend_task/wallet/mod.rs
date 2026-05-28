@@ -8,9 +8,8 @@ mod withdraw_from_platform_address;
 use crate::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::Credits;
-use dash_sdk::dpp::dashcore::Address;
+use dash_sdk::dpp::dashcore::OutPoint;
 use dash_sdk::dpp::identity::core_script::CoreScript;
-use dash_sdk::dpp::prelude::AssetLockProof;
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -33,13 +32,14 @@ pub enum WalletTask {
         /// Should be the input with the highest balance to ensure sufficient funds for fees.
         fee_payer_index: u16,
     },
-    /// Fund Platform addresses from an asset lock
+    /// Fund Platform addresses from a tracked asset lock identified by its
+    /// credit-output outpoint. The proof and credit-output key are recovered
+    /// from the upstream `AssetLockManager` and the wallet's funding
+    /// account; DET no longer stages the asset lock itself.
     FundPlatformAddressFromAssetLock {
         seed_hash: WalletSeedHash,
-        /// Asset lock proof
-        asset_lock_proof: Box<AssetLockProof>,
-        /// Address to fund (the asset lock address is the source)
-        asset_lock_address: Address,
+        /// Credit-output outpoint of the tracked asset lock.
+        out_point: OutPoint,
         /// Platform addresses and optional amounts to fund (None = distribute evenly)
         outputs: BTreeMap<PlatformAddress, Option<Credits>>,
     },

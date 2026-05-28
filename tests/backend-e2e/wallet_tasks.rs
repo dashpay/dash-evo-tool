@@ -615,39 +615,42 @@ async fn tc_018_fund_platform_address_from_asset_lock() {
         create_result
     );
 
-    // Step 2: Wait for the asset lock proof to appear in unused_asset_locks.
-    // Filter by amount (>= 90M credits) to avoid picking up smaller asset
-    // locks created by other concurrent tests on the same wallet.
-    tracing::info!("TC-018: waiting for asset lock IS proof in unused_asset_locks...");
+    // Step 2: Wait for a tracked asset lock with the expected amount and a
+    // ready proof from the upstream `AssetLockManager`.
+    tracing::info!("TC-018: waiting for tracked asset lock IS proof...");
     let proof_timeout = harness::MAX_TEST_TIMEOUT;
     let min_credits: u64 = 90_000_000;
-    let (asset_lock_address, asset_lock_proof) = tokio::time::timeout(proof_timeout, async {
+    let backend = ctx
+        .app_context
+        .wallet_backend()
+        .expect("TC-018: wallet backend not ready");
+    let tracked_out_point = tokio::time::timeout(proof_timeout, async {
         loop {
-            let maybe_lock = {
-                let wallet = wallet_arc.read().expect("wallet read lock");
-                wallet
-                    .unused_asset_locks
-                    .iter()
-                    .find_map(|(_tx, addr, amount, _islock, proof)| {
-                        if *amount >= min_credits {
-                            proof.as_ref().map(|proof| (addr.clone(), proof.clone()))
+            let maybe = backend
+                .list_tracked_asset_locks(&seed_hash)
+                .await
+                .ok()
+                .and_then(|locks| {
+                    locks.into_iter().find_map(|l| {
+                        if l.amount >= min_credits && l.proof.is_some() {
+                            Some(l.out_point)
                         } else {
                             None
                         }
                     })
-            };
-            if let Some(found) = maybe_lock {
-                return found;
+                });
+            if let Some(op) = maybe {
+                return op;
             }
             tokio::time::sleep(Duration::from_secs(2)).await;
         }
     })
     .await
-    .expect("TC-018: timed out waiting for asset lock IS proof");
+    .expect("TC-018: timed out waiting for tracked asset lock IS proof");
 
     tracing::info!(
-        "TC-018: asset lock proof ready, address={:?}",
-        asset_lock_address
+        "TC-018: tracked asset lock ready, out_point={}",
+        tracked_out_point
     );
 
     // Step 3: Derive a fresh platform address for funding
@@ -673,8 +676,7 @@ async fn tc_018_fund_platform_address_from_asset_lock() {
     );
     let fund_task = BackendTask::WalletTask(WalletTask::FundPlatformAddressFromAssetLock {
         seed_hash,
-        asset_lock_proof: Box::new(asset_lock_proof),
-        asset_lock_address,
+        out_point: tracked_out_point,
         outputs,
     });
 

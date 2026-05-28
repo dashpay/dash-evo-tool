@@ -29,10 +29,9 @@ use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::{Credits, Duffs};
-use dash_sdk::dpp::dashcore::Transaction;
+use dash_sdk::dpp::dashcore::OutPoint;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::dpp::prelude::AssetLockProof;
 use eframe::egui::Context;
 use egui::{ComboBox, ScrollArea, Ui};
 use std::sync::atomic::Ordering;
@@ -44,7 +43,10 @@ and create the asset lock transaction to top up your identity.";
 pub struct TopUpIdentityScreen {
     pub identity: QualifiedIdentity,
     step: Arc<RwLock<WalletFundedScreenStep>>,
-    funding_asset_lock: Option<(Transaction, AssetLockProof, Address)>,
+    /// Outpoint of an asset lock tracked by the upstream `AssetLockManager`,
+    /// chosen by the user from the picker. Routed to the backend as
+    /// `TopUpIdentityFundingMethod::UseAssetLock`.
+    funding_asset_lock: Option<OutPoint>,
     wallet: Option<Arc<RwLock<Wallet>>>,
     funding_address: Option<Address>,
     funding_method: Arc<RwLock<FundingMethod>>,
@@ -123,9 +125,9 @@ impl TopUpIdentityScreen {
                                     FundingMethod::UseWalletBalance => self
                                         .app_context
                                         .snapshot_has_balance(&wallet_read.seed_hash()),
-                                    FundingMethod::UseUnusedAssetLock => {
-                                        wallet_read.has_unused_asset_lock()
-                                    }
+                                    FundingMethod::UseUnusedAssetLock => self
+                                        .app_context
+                                        .has_unused_asset_lock(&wallet_read.seed_hash()),
                                     _ => true,
                                 };
 
@@ -158,9 +160,9 @@ impl TopUpIdentityScreen {
                             FundingMethod::UseWalletBalance => self
                                 .app_context
                                 .snapshot_has_balance(&wallet_read.seed_hash()),
-                            FundingMethod::UseUnusedAssetLock => {
-                                wallet_read.has_unused_asset_lock()
-                            }
+                            FundingMethod::UseUnusedAssetLock => self
+                                .app_context
+                                .has_unused_asset_lock(&wallet_read.seed_hash()),
                             _ => true,
                         }
                     };
@@ -222,10 +224,11 @@ impl TopUpIdentityScreen {
 
             for wallet in wallets.values() {
                 let wallet = wallet.read().unwrap();
-                if wallet.has_unused_asset_lock() {
+                let seed_hash = wallet.seed_hash();
+                if self.app_context.has_unused_asset_lock(&seed_hash) {
                     has_unused_asset_lock = true;
                 }
-                if self.app_context.snapshot_has_balance(&wallet.seed_hash()) {
+                if self.app_context.snapshot_has_balance(&seed_hash) {
                     has_balance = true;
                 }
                 if wallet.total_platform_balance() > 0 {
@@ -299,15 +302,24 @@ impl TopUpIdentityScreen {
         };
         match funding_method {
             FundingMethod::UseUnusedAssetLock => {
-                if let Some((tx, funding_asset_lock, address)) = self.funding_asset_lock.clone() {
+                if let Some(out_point) = self.funding_asset_lock {
+                    let identity_index = self.identity.wallet_index.unwrap_or(u32::MAX >> 1);
+                    let top_up_index = self
+                        .identity
+                        .top_ups
+                        .keys()
+                        .max()
+                        .cloned()
+                        .map(|i| i + 1)
+                        .unwrap_or_default();
                     let identity_input = IdentityTopUpInfo {
                         qualified_identity: self.identity.clone(),
                         wallet: Arc::clone(selected_wallet),
-                        identity_funding_method: TopUpIdentityFundingMethod::UseAssetLock(
-                            address,
-                            Box::new(funding_asset_lock),
-                            Box::new(tx),
-                        ),
+                        identity_funding_method: TopUpIdentityFundingMethod::UseAssetLock {
+                            out_point,
+                            identity_index,
+                            top_up_index,
+                        },
                     };
 
                     let mut step = self.step.write().unwrap();

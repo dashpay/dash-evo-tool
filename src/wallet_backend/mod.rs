@@ -1,16 +1,22 @@
-//! The single wallet seam.
+//! The wallet orchestration seam.
 //!
-//! `WalletBackend` wraps the upstream `PlatformWalletManager` and is the only
-//! place `platform-wallet` types are allowed to live. Nothing upstream
-//! (`PlatformWalletManager`, `PlatformWallet`, `WalletId`, `SqlitePersister`,
-//! `WalletManager`) escapes this module — callers see DET-shaped methods and
-//! DET-shaped results only (rust-best-practices M-DONT-LEAK-TYPES,
-//! C-NEWTYPE-HIDE). `Clone` is `O(1)` via `Arc<Inner>` (M-SERVICES-CLONE);
-//! the type is `Send + Sync`.
+//! `WalletBackend` wraps the upstream `PlatformWalletManager` and is the
+//! orchestration layer for everything wallet-related — seed-snapshot
+//! ownership, the identity-funding-account chokepoint, and signer
+//! construction. It is NOT a type-translation layer: project invariant
+//! **M-PLATFORM-WALLET-FIRST-PARTY** allows `platform_wallet`,
+//! `key_wallet`, and `platform_wallet_storage` types to appear freely on
+//! its public surface. Callers route through `WalletBackend` for the
+//! orchestration value, not because the upstream types are hidden.
 //!
-//! P1 scope: skeleton + construction/event plumbing. It is NOT yet wired into
-//! `AppContext` and the `BackendTask` dispatch still runs the P0.5 stubs —
-//! P2 points the task arms here. See
+//! Boundaries that still hold (responsibility, not type leak):
+//! 1. No upstream types in DET's SQLite schema (`database/`).
+//! 2. No upstream types in MCP tool schemas (`src/mcp/tools/**`).
+//! 3. No raw upstream `Display` in user-facing strings — upstream errors
+//!    go to `BannerHandle::with_details(e)` only.
+//!
+//! `Clone` is `O(1)` via `Arc<Inner>` (M-SERVICES-CLONE); the type is
+//! `Send + Sync`. See
 //! `docs/ai-design/2026-05-18-platform-wallet-migration/backend-architecture.md`.
 
 mod asset_lock_signer;
@@ -54,47 +60,6 @@ type DetPersister = SqlitePersister;
 /// always operated account 0; multi-account support is out of P2 scope.
 const DEFAULT_BIP44_ACCOUNT: u32 = 0;
 
-/// DET-facing asset-lock funding selector. Hides the upstream
-/// `AssetLockFundingType` (M-DONT-LEAK-TYPES).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AssetLockKind {
-    /// Funds a new identity registration.
-    IdentityRegistration,
-    /// Tops up an existing identity.
-    IdentityTopUp,
-    /// Funds a Platform (DIP-17) address directly.
-    PlatformAddressTopUp,
-    /// Funds a shielded-pool deposit (ShieldFromAssetLock).
-    Shielded,
-}
-
-impl AssetLockKind {
-    /// Map to the upstream funding-account selector. All variants — including
-    /// `Shielded` — resolve to an upstream `AssetLockFundingType`, so coin
-    /// selection always runs against the upstream authoritative live UTXO set
-    /// (no DET-side selection from a snapshot or legacy `Wallet.utxos`).
-    fn funding_type(self) -> platform_wallet::AssetLockFundingType {
-        use platform_wallet::AssetLockFundingType;
-        match self {
-            AssetLockKind::IdentityRegistration => AssetLockFundingType::IdentityRegistration,
-            AssetLockKind::IdentityTopUp => AssetLockFundingType::IdentityTopUp,
-            AssetLockKind::PlatformAddressTopUp => AssetLockFundingType::AssetLockAddressTopUp,
-            AssetLockKind::Shielded => AssetLockFundingType::AssetLockShieldedAddressTopUp,
-        }
-    }
-}
-
-/// DET-facing selector for an identity funding HD account. Hides the upstream
-/// `key_wallet::AccountType` (M-DONT-LEAK-TYPES).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IdentityFundingAccount {
-    /// The wallet-wide identity-registration funding account (singular).
-    Registration,
-    /// The per-identity top-up funding account, keyed by the identity's
-    /// wallet HD registration index.
-    TopUp { registration_index: u32 },
-}
-
 /// Upstream `WalletId` = `SHA256(root_xpub || root_chain_code)`, distinct
 /// from DET's `WalletSeedHash` = `SHA256(seed_bytes)`. The map is the bridge:
 /// populated once per wallet at registration, read by every DET-keyed call.
@@ -109,6 +74,14 @@ struct Inner {
     snapshots: Arc<SnapshotStore>,
     /// `WalletSeedHash` → upstream `WalletId`. See [`WalletId`].
     id_map: std::sync::RwLock<std::collections::BTreeMap<WalletSeedHash, WalletId>>,
+    /// Sync-accessible cache of `Arc<PlatformWallet>` keyed by `WalletId`,
+    /// populated at registration. Lets synchronous UI code (egui frame)
+    /// reach the upstream wallet without an async hop or a tokio
+    /// `block_on`. Tracked-asset-lock pickers use this path —
+    /// see [`Self::list_tracked_asset_locks_blocking`].
+    wallets: std::sync::RwLock<
+        std::collections::BTreeMap<WalletId, Arc<platform_wallet::PlatformWallet>>,
+    >,
     /// `WalletSeedHash` → BIP-39 seed snapshot. Stored once at registration so
     /// the upstream signer-driven asset-lock / payment builders can derive
     /// secp256k1 keys without re-reading DET's wallet store on every call.
@@ -180,6 +153,7 @@ impl WalletBackend {
                 loader,
                 snapshots,
                 id_map: std::sync::RwLock::new(std::collections::BTreeMap::new()),
+                wallets: std::sync::RwLock::new(std::collections::BTreeMap::new()),
                 seeds: std::sync::RwLock::new(std::collections::BTreeMap::new()),
                 peer,
                 network,
@@ -228,6 +202,10 @@ impl WalletBackend {
                         let wallet_id = pw.wallet_id();
                         self.inner.id_map.write()?.insert(reg.seed_hash, wallet_id);
                         self.inner
+                            .wallets
+                            .write()?
+                            .insert(wallet_id, Arc::clone(&pw));
+                        self.inner
                             .snapshots
                             .register_wallet(reg.seed_hash, wallet_id, pw);
                         tracing::debug!(
@@ -247,6 +225,10 @@ impl WalletBackend {
                         {
                             self.inner.id_map.write()?.insert(reg.seed_hash, wallet_id);
                             if let Some(pw) = self.inner.pwm.get_wallet(&wallet_id).await {
+                                self.inner
+                                    .wallets
+                                    .write()?
+                                    .insert(wallet_id, Arc::clone(&pw));
                                 self.inner
                                     .snapshots
                                     .register_wallet(reg.seed_hash, wallet_id, pw);
@@ -509,6 +491,48 @@ impl WalletBackend {
             .unwrap_or(false)
     }
 
+    /// List the wallet's tracked asset locks (built, broadcast,
+    /// instant-locked, chain-locked, or consumed). The upstream
+    /// `AssetLockManager` is the single source of truth — the DET-side
+    /// `Wallet.unused_asset_locks` mirror was removed.
+    ///
+    /// Async variant: prefer this from backend tasks. For
+    /// synchronous UI code (egui frame loop), use
+    /// [`Self::list_tracked_asset_locks_blocking`].
+    pub async fn list_tracked_asset_locks(
+        &self,
+        seed_hash: &WalletSeedHash,
+    ) -> Result<Vec<platform_wallet::wallet::asset_lock::tracked::TrackedAssetLock>, TaskError>
+    {
+        let wallet = self.resolve_wallet(seed_hash).await?;
+        Ok(wallet.asset_locks().list_tracked_locks().await)
+    }
+
+    /// Blocking variant of [`Self::list_tracked_asset_locks`] for synchronous
+    /// UI contexts. Reads from WalletBackend's sync wallet cache so it
+    /// does not enter the upstream tokio-async lock — safe to call from
+    /// the egui frame loop.
+    pub fn list_tracked_asset_locks_blocking(
+        &self,
+        seed_hash: &WalletSeedHash,
+    ) -> Vec<platform_wallet::wallet::asset_lock::tracked::TrackedAssetLock> {
+        let wallet_id = match self.inner.id_map.read() {
+            Ok(map) => match map.get(seed_hash) {
+                Some(id) => *id,
+                None => return Vec::new(),
+            },
+            Err(_) => return Vec::new(),
+        };
+        let wallet = match self.inner.wallets.read() {
+            Ok(map) => match map.get(&wallet_id) {
+                Some(w) => Arc::clone(w),
+                None => return Vec::new(),
+            },
+            Err(_) => return Vec::new(),
+        };
+        wallet.asset_locks().list_tracked_locks_blocking()
+    }
+
     /// Deterministically derive the upstream `WalletId` from seed bytes
     /// without touching the manager. Used only to recover the id on the
     /// idempotent `WalletAlreadyExists` re-registration path (avoids
@@ -587,22 +611,25 @@ impl WalletBackend {
     }
 
     /// Build, track, and broadcast a **non-identity** asset lock via the
-    /// upstream `AssetLockManager`. `kind` selects the funding derivation;
-    /// `identity_index` is the funding-account derivation index (ignored for
-    /// non-identity kinds). Returns the finalized asset-lock proof, its
-    /// one-time credit-output private key (derived locally from the wallet
-    /// seed at the path upstream selected), and the txid.
+    /// upstream `AssetLockManager`. `funding_type` selects the funding
+    /// derivation; `identity_index` is the funding-account derivation index
+    /// (ignored for non-identity funding types). Returns the finalized
+    /// asset-lock proof, its one-time credit-output private key (derived
+    /// locally from the wallet seed at the path upstream selected), and the
+    /// txid.
     ///
-    /// For identity-funded asset locks (`IdentityRegistration` /
-    /// `IdentityTopUp`) the upstream `IdentityWallet::*_with_funding`
-    /// orchestrators submit the Platform-side state transition themselves
-    /// and never expose a credit-output `PrivateKey` — use
-    /// [`Self::register_identity`] / [`Self::top_up_identity`] instead.
+    /// For identity-funded asset locks
+    /// (`AssetLockFundingType::IdentityRegistration` /
+    /// `AssetLockFundingType::IdentityTopUp`) the upstream
+    /// `IdentityWallet::*_with_funding` orchestrators submit the
+    /// Platform-side state transition themselves and never expose a
+    /// credit-output `PrivateKey` — use [`Self::register_identity`] /
+    /// [`Self::top_up_identity`] instead.
     pub(crate) async fn create_asset_lock_proof(
         &self,
         seed_hash: &WalletSeedHash,
         amount_duffs: u64,
-        kind: AssetLockKind,
+        funding_type: platform_wallet::AssetLockFundingType,
         identity_index: u32,
     ) -> Result<
         (
@@ -612,22 +639,28 @@ impl WalletBackend {
         ),
         TaskError,
     > {
+        use platform_wallet::AssetLockFundingType;
+
         // Identity asset locks fund from the IdentityRegistration /
         // IdentityTopUp HD accounts, which the upstream persister never
         // reconstructs (a5538dc8). Provision them here — the single
         // chokepoint every asset-lock caller funnels through — so no call
-        // site can bypass it. Idempotent. Non-identity kinds are no-ops.
-        match kind {
-            AssetLockKind::IdentityRegistration | AssetLockKind::IdentityTopUp => {
+        // site can bypass it. Idempotent. Non-identity funding types are
+        // no-ops. Exhaustive — a new upstream variant must force a
+        // review here instead of silently falling through.
+        match funding_type {
+            AssetLockFundingType::IdentityRegistration | AssetLockFundingType::IdentityTopUp => {
                 self.ensure_identity_funding_accounts(seed_hash, identity_index)
                     .await?;
             }
-            AssetLockKind::PlatformAddressTopUp | AssetLockKind::Shielded => {}
+            AssetLockFundingType::IdentityTopUpNotBound
+            | AssetLockFundingType::IdentityInvitation
+            | AssetLockFundingType::AssetLockAddressTopUp
+            | AssetLockFundingType::AssetLockShieldedAddressTopUp => {}
         }
 
         let signer = self.signer_for(seed_hash)?;
         let wallet = self.resolve_wallet(seed_hash).await?;
-        let funding_type = kind.funding_type();
         let (proof, credit_output_path, out_point) = wallet
             .asset_locks()
             .create_funded_asset_lock_proof(
@@ -655,17 +688,20 @@ impl WalletBackend {
     /// asset-lock cleanup. The DET retry loop around `UnknownVersionError`
     /// and the manual IS-proof-invalid fallback are no longer needed at the
     /// caller — upstream owns both paths.
+    ///
+    /// `funding` is the upstream funding selector — `FromWalletBalance`
+    /// builds a fresh asset lock, `FromExistingAssetLock` resumes from a
+    /// tracked outpoint (the wallet-backend tracker is the single source of
+    /// asset-lock state).
     pub async fn register_identity(
         &self,
         seed_hash: &WalletSeedHash,
         identity_index: u32,
-        amount_duffs: u64,
+        funding: platform_wallet::wallet::asset_lock::AssetLockFunding,
         keys_map: std::collections::BTreeMap<u32, dash_sdk::dpp::identity::IdentityPublicKey>,
         identity_signer: &crate::model::qualified_identity::QualifiedIdentity,
         settings: Option<dash_sdk::platform::transition::put_settings::PutSettings>,
     ) -> Result<dash_sdk::platform::Identity, TaskError> {
-        use platform_wallet::wallet::asset_lock::AssetLockFunding;
-
         // Re-provisioning idempotent. Run here so the chokepoint protection
         // applies to upstream's signer-driven flow too.
         self.ensure_identity_funding_accounts(seed_hash, identity_index)
@@ -673,10 +709,6 @@ impl WalletBackend {
 
         let asset_lock_signer = self.signer_for(seed_hash)?;
         let wallet = self.resolve_wallet(seed_hash).await?;
-        let funding = AssetLockFunding::FromWalletBalance {
-            amount_duffs,
-            account_index: DEFAULT_BIP44_ACCOUNT,
-        };
         wallet
             .identity()
             .register_identity_with_funding(
@@ -699,25 +731,23 @@ impl WalletBackend {
     /// `TopUpIdentity` submission, and the asset-lock cleanup. The
     /// caller-side IS-proof-invalid fallback and `UnknownVersionError`
     /// retry are no longer needed.
+    ///
+    /// `funding` is the upstream funding selector — `FromWalletBalance`
+    /// builds a fresh asset lock, `FromExistingAssetLock` resumes from a
+    /// tracked outpoint.
     pub async fn top_up_identity(
         &self,
         seed_hash: &WalletSeedHash,
         identity_id: &dash_sdk::platform::Identifier,
-        amount_duffs: u64,
+        funding: platform_wallet::wallet::asset_lock::AssetLockFunding,
         identity_index: u32,
         settings: Option<dash_sdk::platform::transition::put_settings::PutSettings>,
     ) -> Result<u64, TaskError> {
-        use platform_wallet::wallet::asset_lock::AssetLockFunding;
-
         self.ensure_identity_funding_accounts(seed_hash, identity_index)
             .await?;
 
         let asset_lock_signer = self.signer_for(seed_hash)?;
         let wallet = self.resolve_wallet(seed_hash).await?;
-        let funding = AssetLockFunding::FromWalletBalance {
-            amount_duffs,
-            account_index: DEFAULT_BIP44_ACCOUNT,
-        };
         wallet
             .identity()
             .top_up_identity_with_funding(identity_id, funding, &asset_lock_signer, settings)
@@ -740,17 +770,18 @@ impl WalletBackend {
     async fn provision_identity_funding_account(
         &self,
         seed_hash: &WalletSeedHash,
-        account: IdentityFundingAccount,
+        account_type: dash_sdk::dpp::key_wallet::AccountType,
     ) -> Result<(), TaskError> {
         use dash_sdk::dpp::key_wallet::AccountType;
         use dash_sdk::dpp::key_wallet::managed_account::ManagedCoreKeysAccount;
 
-        let account_type = match account {
-            IdentityFundingAccount::Registration => AccountType::IdentityRegistration,
-            IdentityFundingAccount::TopUp { registration_index } => {
-                AccountType::IdentityTopUp { registration_index }
-            }
-        };
+        // Restrict to the two identity-funding flavours; everything else is a
+        // misuse — keeping the match exhaustive forces a review if a new
+        // upstream identity-funding variant appears.
+        match account_type {
+            AccountType::IdentityRegistration | AccountType::IdentityTopUp { .. } => {}
+            _ => return Err(TaskError::WalletBackendNotYetWired),
+        }
 
         let wallet = self.resolve_wallet(seed_hash).await?;
         let wallet_id = wallet.wallet_id();
@@ -759,21 +790,23 @@ impl WalletBackend {
             .get_wallet_mut_and_info_mut(&wallet_id)
             .ok_or(TaskError::WalletBackendNotYetWired)?;
 
-        let in_wallet = match account {
-            IdentityFundingAccount::Registration => kw.accounts.identity_registration.is_some(),
-            IdentityFundingAccount::TopUp { registration_index } => {
+        let in_wallet = match account_type {
+            AccountType::IdentityRegistration => kw.accounts.identity_registration.is_some(),
+            AccountType::IdentityTopUp { registration_index } => {
                 kw.accounts.identity_topup.contains_key(&registration_index)
             }
+            _ => unreachable!("checked above"),
         };
-        let in_managed = match account {
-            IdentityFundingAccount::Registration => {
+        let in_managed = match account_type {
+            AccountType::IdentityRegistration => {
                 info.core_wallet.accounts.identity_registration.is_some()
             }
-            IdentityFundingAccount::TopUp { registration_index } => info
+            AccountType::IdentityTopUp { registration_index } => info
                 .core_wallet
                 .accounts
                 .identity_topup
                 .contains_key(&registration_index),
+            _ => unreachable!("checked above"),
         };
         if in_wallet && in_managed {
             return Ok(());
@@ -790,11 +823,12 @@ impl WalletBackend {
                 })?;
         }
 
-        let derived = match account {
-            IdentityFundingAccount::Registration => kw.accounts.identity_registration.as_ref(),
-            IdentityFundingAccount::TopUp { registration_index } => {
+        let derived = match account_type {
+            AccountType::IdentityRegistration => kw.accounts.identity_registration.as_ref(),
+            AccountType::IdentityTopUp { registration_index } => {
                 kw.accounts.identity_topup.get(&registration_index)
             }
+            _ => unreachable!("checked above"),
         }
         .ok_or(TaskError::WalletBackendNotYetWired)?;
 
@@ -820,11 +854,12 @@ impl WalletBackend {
         seed_hash: &WalletSeedHash,
         registration_index: u32,
     ) -> Result<(), TaskError> {
-        self.provision_identity_funding_account(seed_hash, IdentityFundingAccount::Registration)
+        use dash_sdk::dpp::key_wallet::AccountType;
+        self.provision_identity_funding_account(seed_hash, AccountType::IdentityRegistration)
             .await?;
         self.provision_identity_funding_account(
             seed_hash,
-            IdentityFundingAccount::TopUp { registration_index },
+            AccountType::IdentityTopUp { registration_index },
         )
         .await
     }
@@ -997,30 +1032,6 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
 #[cfg(test)]
 mod tests {
     use super::*;
-    use platform_wallet::AssetLockFundingType;
-
-    /// I1: every asset-lock kind, including `Shielded`, resolves to an
-    /// upstream funding type — coin selection is therefore always upstream-
-    /// authoritative, never DET-side from a snapshot or legacy `Wallet.utxos`.
-    #[test]
-    fn asset_lock_kind_maps_to_upstream_funding_type() {
-        assert_eq!(
-            AssetLockKind::IdentityRegistration.funding_type(),
-            AssetLockFundingType::IdentityRegistration
-        );
-        assert_eq!(
-            AssetLockKind::IdentityTopUp.funding_type(),
-            AssetLockFundingType::IdentityTopUp
-        );
-        assert_eq!(
-            AssetLockKind::PlatformAddressTopUp.funding_type(),
-            AssetLockFundingType::AssetLockAddressTopUp
-        );
-        assert_eq!(
-            AssetLockKind::Shielded.funding_type(),
-            AssetLockFundingType::AssetLockShieldedAddressTopUp
-        );
-    }
 
     /// I2: a network/broadcast rejection from `register_identity_with_funding`
     /// maps to the dedicated `IdentityCreateRejected` envelope (not the generic

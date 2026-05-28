@@ -552,17 +552,11 @@ impl AppContext {
             }
             WalletTask::FundPlatformAddressFromAssetLock {
                 seed_hash,
-                asset_lock_proof,
-                asset_lock_address,
+                out_point,
                 outputs,
             } => {
-                self.fund_platform_address_from_asset_lock(
-                    seed_hash,
-                    *asset_lock_proof,
-                    asset_lock_address,
-                    outputs,
-                )
-                .await
+                self.fund_platform_address_from_asset_lock(seed_hash, out_point, outputs)
+                    .await
             }
             WalletTask::WithdrawFromPlatformAddress {
                 seed_hash,

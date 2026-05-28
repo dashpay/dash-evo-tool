@@ -303,7 +303,7 @@ pub enum ScreenType {
     SetTokenPriceScreen(IdentityTokenInfo),
 
     // Wallet screens
-    AssetLockDetail([u8; 32], usize),
+    AssetLockDetail([u8; 32], dash_sdk::dpp::dashcore::OutPoint),
     CreateAssetLock(Arc<RwLock<Wallet>>),
 
     // Shielded screens
@@ -628,9 +628,13 @@ impl ScreenType {
             ScreenType::SetTokenPriceScreen(identity_token_info) => Screen::SetTokenPriceScreen(
                 SetTokenPriceScreen::new(identity_token_info.clone(), app_context),
             ),
-            ScreenType::AssetLockDetail(wallet_seed_hash, index) => Screen::AssetLockDetailScreen(
-                AssetLockDetailScreen::new(*wallet_seed_hash, *index, app_context),
-            ),
+            ScreenType::AssetLockDetail(wallet_seed_hash, out_point) => {
+                Screen::AssetLockDetailScreen(AssetLockDetailScreen::new(
+                    *wallet_seed_hash,
+                    *out_point,
+                    app_context,
+                ))
+            }
             ScreenType::CreateAssetLock(wallet) => Screen::CreateAssetLockScreen(
                 CreateAssetLockScreen::new(wallet.clone(), app_context),
             ),
@@ -1127,7 +1131,7 @@ impl Screen {
                 ScreenType::SetTokenPriceScreen(screen.identity_token_info.clone())
             }
             Screen::AssetLockDetailScreen(screen) => {
-                ScreenType::AssetLockDetail(screen.wallet_seed_hash, screen.asset_lock_index)
+                ScreenType::AssetLockDetail(screen.wallet_seed_hash, screen.out_point)
             }
             Screen::CreateAssetLockScreen(screen) => {
                 ScreenType::CreateAssetLock(screen.wallet.clone())

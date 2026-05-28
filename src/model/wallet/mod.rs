@@ -18,7 +18,7 @@ use dash_sdk::platform::address_sync::{AddressFunds, AddressIndex, AddressProvid
 
 use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
 use dash_sdk::dpp::dashcore::{
-    Address, BlockHash, InstantLock, Network, PrivateKey, PublicKey, Transaction, Txid,
+    Address, BlockHash, Network, PrivateKey, PublicKey, Transaction, Txid,
 };
 use dash_sdk::dpp::platform_value::BinaryData;
 use std::cmp;
@@ -251,7 +251,6 @@ use crate::context::AppContext;
 use bitflags::bitflags;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::fee::Credits;
-use dash_sdk::dpp::prelude::AssetLockProof;
 use dash_sdk::platform::Identity;
 use zeroize::Zeroize;
 
@@ -339,14 +338,6 @@ pub struct Wallet {
     pub master_bip44_ecdsa_extended_public_key: ExtendedPubKey,
     pub known_addresses: BTreeMap<Address, DerivationPath>,
     pub watched_addresses: BTreeMap<DerivationPath, AddressInfo>,
-    #[allow(clippy::type_complexity)]
-    pub unused_asset_locks: Vec<(
-        Transaction,
-        Address,
-        Credits,
-        Option<InstantLock>,
-        Option<AssetLockProof>,
-    )>,
     pub alias: Option<String>,
     pub identities: HashMap<u32, Identity>,
     pub is_main: bool,
@@ -419,7 +410,6 @@ impl Wallet {
             master_bip44_ecdsa_extended_public_key,
             known_addresses,
             watched_addresses,
-            unused_asset_locks: Default::default(),
             alias,
             identities: Default::default(),
             is_main: true,
@@ -710,10 +700,6 @@ impl Wallet {
     pub fn is_open(&self) -> bool {
         matches!(self.wallet_seed, WalletSeed::Open(_))
     }
-    pub fn has_unused_asset_lock(&self) -> bool {
-        !self.unused_asset_locks.is_empty()
-    }
-
     pub fn bootstrap_known_addresses(&mut self, app_context: &AppContext) {
         if !self.is_open() {
             tracing::debug!("Skipping address bootstrap for locked wallet");
@@ -2310,7 +2296,6 @@ mod tests {
             master_bip44_ecdsa_extended_public_key,
             known_addresses: BTreeMap::new(),
             watched_addresses: BTreeMap::new(),
-            unused_asset_locks: Vec::new(),
             alias: Some("Test Wallet".to_string()),
             identities: HashMap::new(),
             is_main: true,
@@ -2511,28 +2496,6 @@ mod tests {
         let wallet = test_wallet();
         assert!(wallet.seed_bytes().is_ok());
         assert_eq!(wallet.seed_bytes().unwrap().len(), 64);
-    }
-
-    #[test]
-    fn test_wallet_has_unused_asset_lock() {
-        let mut wallet = test_wallet();
-        assert!(!wallet.has_unused_asset_lock());
-
-        // Add a dummy asset lock
-        wallet.unused_asset_locks.push((
-            Transaction {
-                version: 2,
-                lock_time: 0,
-                input: vec![],
-                output: vec![],
-                special_transaction_payload: None,
-            },
-            test_address(1),
-            100_000,
-            None,
-            None,
-        ));
-        assert!(wallet.has_unused_asset_lock());
     }
 
     // ========================================================================

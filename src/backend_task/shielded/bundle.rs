@@ -425,20 +425,22 @@ pub async fn unshield_credits(
 ///
 /// The asset lock is built, broadcast, and tracked to an InstantLock/ChainLock
 /// proof by the upstream wallet (`WalletBackend::create_asset_lock_proof` with
-/// [`AssetLockKind::Shielded`]) — coin selection runs against the upstream
-/// authoritative live UTXO set at construction time, with store-before-
-/// broadcast crash safety owned upstream. This function then builds and
-/// broadcasts the Type 18 ShieldFromAssetLock state transition that deposits
-/// credits directly into the shielded pool.
+/// [`AssetLockFundingType::AssetLockShieldedAddressTopUp`]) — coin selection
+/// runs against the upstream authoritative live UTXO set at construction time,
+/// with store-before-broadcast crash safety owned upstream. This function then
+/// builds and broadcasts the Type 18 ShieldFromAssetLock state transition that
+/// deposits credits directly into the shielded pool.
+///
+/// [`AssetLockFundingType::AssetLockShieldedAddressTopUp`]: platform_wallet::AssetLockFundingType::AssetLockShieldedAddressTopUp
 pub async fn shield_from_asset_lock(
     app_context: &Arc<AppContext>,
     seed_hash: &WalletSeedHash,
     shielded_state: &ShieldedWalletState,
     amount_duffs: u64,
 ) -> Result<u64, TaskError> {
-    use crate::wallet_backend::AssetLockKind;
     use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
     use dash_sdk::dpp::shielded::builder::build_shield_from_asset_lock_transition;
+    use platform_wallet::AssetLockFundingType;
 
     let proving_key = crate::context::shielded::get_proving_key();
 
@@ -452,7 +454,12 @@ pub async fn shield_from_asset_lock(
     // upstream-authoritative — DET performs no coin selection here.
     let (asset_lock_proof, asset_lock_private_key, _tx_id) = app_context
         .wallet_backend()?
-        .create_asset_lock_proof(seed_hash, asset_lock_duffs, AssetLockKind::Shielded, 0)
+        .create_asset_lock_proof(
+            seed_hash,
+            asset_lock_duffs,
+            AssetLockFundingType::AssetLockShieldedAddressTopUp,
+            0,
+        )
         .await?;
 
     // Build and broadcast the shield-from-asset-lock transition

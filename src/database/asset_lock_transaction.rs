@@ -106,31 +106,6 @@ impl Database {
         Ok(())
     }
 
-    /// Sets the identity ID for an asset lock transaction.
-    pub fn set_asset_lock_identity_id(
-        &self,
-        tx_id: &[u8; 32],
-        identity_id: &[u8; 32],
-    ) -> rusqlite::Result<()> {
-        let conn = self.conn.lock().unwrap();
-
-        let rows_updated = conn.execute(
-            "UPDATE asset_lock_transaction
-     SET identity_id = ?1, identity_id_potentially_in_creation = NULL
-     WHERE tx_id = ?2",
-            params![identity_id, tx_id],
-        )?;
-        if rows_updated == 0 {
-            tracing::warn!(
-                "No rows updated. Check if tx_id {} exists and identity_id {} is correct.",
-                hex::encode(tx_id),
-                hex::encode(identity_id)
-            );
-        }
-
-        Ok(())
-    }
-
     /// Deletes all asset lock transactions in Devnet variants and Regtest.
     pub fn remove_all_asset_locks_identity_id_for_all_devnets_and_regtest(
         &self,
@@ -163,22 +138,6 @@ impl Database {
              identity_id_potentially_in_creation = NULL
          WHERE network = ?",
             params![network],
-        )?;
-
-        Ok(())
-    }
-
-    /// Sets the identity ID for an asset lock transaction.
-    pub fn set_asset_lock_identity_id_before_confirmation_by_network(
-        &self,
-        txid: &[u8; 32],
-        identity_id: &[u8; 32],
-    ) -> rusqlite::Result<()> {
-        let conn = self.conn.lock().unwrap();
-
-        conn.execute(
-            "UPDATE asset_lock_transaction SET identity_id_potentially_in_creation = ?1 WHERE tx_id = ?2",
-            params![identity_id, txid],
         )?;
 
         Ok(())

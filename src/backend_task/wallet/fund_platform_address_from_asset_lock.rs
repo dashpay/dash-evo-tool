@@ -1,106 +1,83 @@
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::Credits;
-use dash_sdk::dpp::dashcore::Address;
-use dash_sdk::dpp::dashcore::hashes::Hash;
-use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
-use dash_sdk::dpp::prelude::AssetLockProof;
+use dash_sdk::dpp::dashcore::OutPoint;
+use dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayload;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 impl AppContext {
-    /// Fund Platform addresses from an asset lock
+    /// Fund Platform addresses from a tracked asset lock.
+    ///
+    /// The lock is identified by its credit-output [`OutPoint`]. We pull the
+    /// finalized proof, transaction, and credit-output address from the
+    /// upstream `AssetLockManager` (DET no longer mirrors that state). The
+    /// credit-output address is the BIP-32 address that originally received
+    /// the credit output at lock-build time; its private key lives in the
+    /// wallet's `known_addresses` map.
     pub(crate) async fn fund_platform_address_from_asset_lock(
         self: &Arc<Self>,
         seed_hash: WalletSeedHash,
-        asset_lock_proof: AssetLockProof,
-        asset_lock_address: Address,
+        out_point: OutPoint,
         outputs: BTreeMap<PlatformAddress, Option<Credits>>,
-    ) -> Result<BackendTaskSuccessResult, crate::backend_task::error::TaskError> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         use dash_sdk::dpp::address_funds::AddressFundsFeeStrategyStep;
-        use dash_sdk::dpp::dashcore::OutPoint;
+        use dash_sdk::dpp::dashcore::Address;
         use dash_sdk::platform::transition::top_up_address::TopUpAddress;
 
-        // Clone wallet and SDK before the async operation to avoid holding guards across await
+        let backend = self.wallet_backend()?;
+        let tracked = backend
+            .list_tracked_asset_locks(&seed_hash)
+            .await?
+            .into_iter()
+            .find(|t| t.out_point == out_point)
+            .ok_or(TaskError::AssetLockAddressNotFound)?;
+
+        let asset_lock_proof = tracked
+            .proof
+            .clone()
+            .ok_or(TaskError::AssetLockAddressNotFound)?;
+
+        // Recover the credit-output address from the asset-lock transaction
+        // payload — the first credit output is the funded address.
+        let payload = tracked
+            .transaction
+            .special_transaction_payload
+            .as_ref()
+            .ok_or(TaskError::AssetLockAddressNotFound)?;
+        let asset_lock_payload = match payload {
+            TransactionPayload::AssetLockPayloadType(p) => p,
+            _ => return Err(TaskError::AssetLockAddressNotFound),
+        };
+        let credit_output = asset_lock_payload
+            .credit_outputs
+            .first()
+            .ok_or(TaskError::AssetLockAddressNotFound)?;
+        let asset_lock_address = Address::from_script(&credit_output.script_pubkey, self.network)
+            .map_err(|_| TaskError::AssetLockAddressNotFound)?;
+
         let (wallet, sdk, asset_lock_private_key) = {
             let wallet_arc = {
                 let wallets = self.wallets.read()?;
                 wallets
                     .get(&seed_hash)
                     .cloned()
-                    .ok_or(crate::backend_task::error::TaskError::WalletNotFound)?
+                    .ok_or(TaskError::WalletNotFound)?
             };
             let wallet = wallet_arc.read()?.clone();
             let sdk = self.sdk.load().as_ref().clone();
-
-            // Get the private key for the asset lock address
             let private_key = wallet
                 .private_key_for_address(&asset_lock_address, self.network)
-                .map_err(
-                    |e| crate::backend_task::error::TaskError::WalletKeyLookupFailed { detail: e },
-                )?
-                .ok_or(crate::backend_task::error::TaskError::AssetLockAddressNotFound)?;
-
+                .map_err(|e| TaskError::WalletKeyLookupFailed { detail: e })?
+                .ok_or(TaskError::AssetLockAddressNotFound)?;
             (wallet, sdk, private_key)
         };
 
-        // Check if we need to convert an old instant lock proof to a chain lock proof
-        use crate::context::get_transaction_info;
-        use dash_sdk::dpp::block::extended_epoch_info::ExtendedEpochInfo;
-        use dash_sdk::platform::Fetch;
-
-        let asset_lock_proof =
-            if let AssetLockProof::Instant(instant_asset_lock_proof) = &asset_lock_proof {
-                // Get the transaction ID from the instant lock proof
-                let tx_id = instant_asset_lock_proof.transaction().txid();
-
-                // Query DAPI to check if the transaction has been chain-locked
-                let tx_info = get_transaction_info(&sdk, &tx_id).await?;
-
-                if tx_info.is_chain_locked && tx_info.height > 0 && tx_info.confirmations > 8 {
-                    // Transaction has been chain-locked with sufficient confirmations
-                    let tx_block_height = tx_info.height;
-
-                    // Check if the platform has caught up to this block height
-                    let (_, metadata) = ExtendedEpochInfo::fetch_with_metadata(&sdk, 0, None)
-                        .await
-                        .map_err(crate::backend_task::error::TaskError::from)?;
-
-                    if tx_block_height <= metadata.core_chain_locked_height {
-                        // Platform has synced past this block, use chain lock proof
-                        AssetLockProof::Chain(ChainAssetLockProof {
-                            core_chain_locked_height: tx_block_height,
-                            out_point: OutPoint::new(tx_id, 0),
-                        })
-                    } else {
-                        // Platform hasn't verified this Core block yet - can't use chain lock proof
-                        // and instant lock is stale. User needs to wait.
-                        return Err(crate::backend_task::error::TaskError::AssetLockExpired {
-                            tx_block_height,
-                            platform_height: metadata.core_chain_locked_height,
-                        });
-                    }
-                } else {
-                    // Use the instant lock proof as-is (transaction is recent)
-                    asset_lock_proof
-                }
-            } else {
-                // Already a chain lock proof, use as-is
-                asset_lock_proof
-            };
-
-        // Simple fee strategy: reduce from first output
         let fee_strategy = vec![AddressFundsFeeStrategyStep::ReduceOutput(0)];
 
-        // Get the transaction ID before consuming the asset lock proof
-        let tx_id = match &asset_lock_proof {
-            AssetLockProof::Instant(instant) => instant.transaction().txid(),
-            AssetLockProof::Chain(chain) => chain.out_point.txid,
-        };
-
-        // Use the SDK to top up Platform addresses from asset lock
         let _result = outputs
             .top_up(
                 &sdk,
@@ -111,32 +88,8 @@ impl AppContext {
                 None,
             )
             .await
-            .map_err(crate::backend_task::error::TaskError::from)?;
+            .map_err(TaskError::from)?;
 
-        // Remove the used asset lock from the wallet and database
-        {
-            let wallet_arc = {
-                self.wallets
-                    .read()
-                    .ok()
-                    .and_then(|w| w.get(&seed_hash).cloned())
-            };
-            if let Some(wallet_arc) = wallet_arc {
-                let mut wallet = wallet_arc.write()?;
-                wallet
-                    .unused_asset_locks
-                    .retain(|(tx, _, _, _, _)| tx.txid() != tx_id);
-            }
-            // Also remove from database
-            if let Err(e) = self
-                .db
-                .delete_asset_lock_transaction(&tx_id.to_byte_array())
-            {
-                tracing::warn!("Failed to delete asset lock from database: {}", e);
-            }
-        }
-
-        // Trigger a balance refresh
         self.fetch_platform_address_balances(seed_hash).await?;
 
         Ok(BackendTaskSuccessResult::PlatformAddressFunded { seed_hash })

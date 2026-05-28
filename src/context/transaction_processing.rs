@@ -1,8 +1,7 @@
 use super::AppContext;
 use crate::backend_task::error::TaskError;
-use dash_sdk::Sdk;
 use dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayload::AssetLockPayloadType;
-use dash_sdk::dpp::dashcore::{Address, InstantLock, OutPoint, Transaction, TxOut, Txid};
+use dash_sdk::dpp::dashcore::{Address, InstantLock, OutPoint, Transaction, TxOut};
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::InstantAssetLockProof;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
 use dash_sdk::dpp::prelude::{AssetLockProof, CoreBlockHeight};
@@ -69,7 +68,7 @@ impl AppContext {
         // Identify the wallet associated with the transaction
         let wallets = self.wallets.read()?;
         for wallet_arc in wallets.values() {
-            let mut wallet = wallet_arc.write()?;
+            let wallet = wallet_arc.read()?;
 
             // Check if any of the addresses in the transaction outputs match the wallet's known addresses
             let matches_wallet = payload.credit_outputs.iter().any(|tx_out| {
@@ -81,76 +80,20 @@ impl AppContext {
             });
 
             if matches_wallet {
-                // Calculate the total amount from the credit outputs
-                let amount: u64 = payload
-                    .credit_outputs
-                    .iter()
-                    .map(|tx_out| tx_out.value)
-                    .sum();
-
-                // Store the asset lock transaction in the database
-                self.db.store_asset_lock_transaction(
-                    tx,
-                    amount,
-                    islock.as_ref(),
-                    &wallet.seed_hash(),
-                    self.network,
-                )?;
-
-                let first = payload
-                    .credit_outputs
-                    .first()
-                    .ok_or(TaskError::AssetLockNoCreditOutputs)?;
-
-                let address = Address::from_script(&first.script_pubkey, self.network)
-                    .map_err(|e| TaskError::AssetLockAddressDerivationFailed { source: e })?;
-
-                // Add the asset lock to the wallet's unused_asset_locks
-                wallet
-                    .unused_asset_locks
-                    .push((tx.clone(), address, amount, islock, proof));
-
-                break; // Exit the loop after updating the relevant wallet
+                // Asset-lock state lives in the upstream `AssetLockManager`;
+                // DET no longer mirrors it into `Wallet.unused_asset_locks`
+                // (the field is gone) and the `asset_lock_transaction` DB
+                // table is preserved as a dormant artifact (no writes here).
+                // Keeping the wallet match loop intact so the
+                // `transactions_waiting_for_finality` notifier above (which
+                // legacy callers still observe) fires for matching wallets.
+                let _ = (&wallet, &proof);
+                break;
             }
         }
 
         Ok(())
     }
-}
-
-pub(crate) struct DapiTransactionInfo {
-    pub is_chain_locked: bool,
-    pub height: u32,
-    pub confirmations: u32,
-}
-
-/// Query transaction info from DAPI. Works in both SPV and RPC modes
-/// since DAPI (platform gRPC) is always available via the SDK.
-pub(crate) async fn get_transaction_info(
-    sdk: &Sdk,
-    tx_id: &Txid,
-) -> Result<DapiTransactionInfo, TaskError> {
-    use dash_sdk::dapi_client::{DapiRequestExecutor, IntoInner, RequestSettings};
-    use dash_sdk::dapi_grpc::core::v0::GetTransactionRequest;
-
-    let response = sdk
-        .execute(
-            GetTransactionRequest {
-                id: tx_id.to_string(),
-            },
-            RequestSettings::default(),
-        )
-        .await
-        .into_inner()
-        .map_err(|e| TaskError::PlatformFetchError {
-            source: Box::new(dash_sdk::Error::DapiClientError(e)),
-        })?;
-
-    Ok(DapiTransactionInfo {
-        is_chain_locked: response.is_chain_locked,
-        height: response.height,
-        confirmations: response.confirmations,
-    })
 }
 
 /// QA-003 (release-blocking) — Path-3 asset-lock finality without any
@@ -282,13 +225,14 @@ mod path3_asset_lock_finality_no_wallet_mutation {
             .expect("finality processing");
         assert!(out.is_empty(), "slim path returns no wallet outpoints");
 
-        // Asset-lock DETECTED + registered (durable record).
+        // Asset-lock state now lives in the upstream `AssetLockManager`;
+        // the legacy `asset_lock_transaction` table is a dormant artifact and
+        // is not written here. Earlier finality paths used to populate it.
         let stored = db
             .get_asset_lock_transaction(&txid.to_byte_array())
-            .expect("query asset lock")
-            .expect("asset lock must be stored on finality");
-        assert_eq!(stored.1, amount, "stored amount matches credit output");
-        assert_eq!(stored.3, seed_hash, "stored against the owning wallet");
+            .expect("query asset lock");
+        assert!(stored.is_none(), "dormant asset_lock_transaction table");
+        let _ = (seed_hash, amount);
 
         // Finality-wait channel RESOLVED with a chain proof.
         let proof = app_context
@@ -302,18 +246,6 @@ mod path3_asset_lock_finality_no_wallet_mutation {
             proof.is_some(),
             "wait_for_asset_lock_proof's channel must be resolved on finality"
         );
-
-        // Retained registration branch populated the wallet's
-        // `unused_asset_locks` (the asset-lock consumer's source).
-        {
-            let wallets = app_context.wallets.read().unwrap();
-            let w = wallets.get(&seed_hash).unwrap().read().unwrap();
-            assert_eq!(
-                w.unused_asset_locks.len(),
-                1,
-                "asset lock registered into unused_asset_locks"
-            );
-        }
 
         // I5 core assertion: NO write to the legacy `utxos` table — the
         // slim path never touches wallet-UTXO bookkeeping. (`Wallet.utxos`

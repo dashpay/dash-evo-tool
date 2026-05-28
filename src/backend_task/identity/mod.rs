@@ -24,7 +24,7 @@ use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dashcore_rpc::dashcore::{Address, PrivateKey};
 use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::balances::credits::Duffs;
-use dash_sdk::dpp::dashcore::Transaction;
+use dash_sdk::dpp::dashcore::OutPoint;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::fee::Credits;
@@ -34,7 +34,6 @@ use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBound
 use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
 use dash_sdk::dpp::identity::{KeyID, KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
-use dash_sdk::dpp::prelude::AssetLockProof;
 use dash_sdk::platform::{Identifier, Identity, IdentityPublicKey};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
@@ -289,7 +288,14 @@ pub type IdentityIndex = u32;
 pub type TopUpIndex = u32;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RegisterIdentityFundingMethod {
-    UseAssetLock(Address, Box<AssetLockProof>, Box<Transaction>),
+    /// Resume from an asset lock already tracked by the upstream
+    /// `AssetLockManager` (identified by its credit-output outpoint).
+    /// Upstream re-derives the credit-output key from the seed and
+    /// drives the IS→CL fallback + identity-create submission.
+    UseAssetLock {
+        out_point: OutPoint,
+        identity_index: IdentityIndex,
+    },
     FundWithWallet(Duffs, IdentityIndex),
     /// Fund identity creation from Platform addresses
     FundWithPlatformAddresses {
@@ -302,7 +308,13 @@ pub enum RegisterIdentityFundingMethod {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TopUpIdentityFundingMethod {
-    UseAssetLock(Address, Box<AssetLockProof>, Box<Transaction>),
+    /// Resume from an asset lock already tracked by the upstream
+    /// `AssetLockManager` (identified by its credit-output outpoint).
+    UseAssetLock {
+        out_point: OutPoint,
+        identity_index: IdentityIndex,
+        top_up_index: TopUpIndex,
+    },
     FundWithWallet(Duffs, IdentityIndex, TopUpIndex),
 }
 

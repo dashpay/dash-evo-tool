@@ -26,12 +26,11 @@ use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
-use dash_sdk::dpp::dashcore::Transaction;
+use dash_sdk::dpp::dashcore::OutPoint;
 use dash_sdk::dpp::dashcore::secp256k1::hashes::hex::DisplayHex;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
-use dash_sdk::dpp::prelude::AssetLockProof;
 use dash_sdk::platform::Identifier;
 use eframe::egui::Context;
 use egui::ahash::HashSet;
@@ -72,7 +71,11 @@ impl fmt::Display for FundingMethod {
 pub struct AddNewIdentityScreen {
     identity_id_number: u32,
     step: Arc<RwLock<WalletFundedScreenStep>>,
-    funding_asset_lock: Option<(Transaction, AssetLockProof, Address)>,
+    /// Outpoint of an asset lock tracked by the upstream `AssetLockManager`,
+    /// chosen by the user from the picker. Routed to the backend as
+    /// `RegisterIdentityFundingMethod::UseAssetLock`; the upstream signer
+    /// re-derives the credit-output key from the seed.
+    funding_asset_lock: Option<OutPoint>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     funding_address: Option<Address>,
     funding_method: Arc<RwLock<FundingMethod>>,
@@ -442,9 +445,10 @@ impl AddNewIdentityScreen {
 
                 let (has_unused_asset_lock, has_balance) = {
                     let wallet = selected_wallet.read().unwrap();
+                    let seed_hash = wallet.seed_hash();
                     (
-                        wallet.has_unused_asset_lock(),
-                        self.app_context.snapshot_has_balance(&wallet.seed_hash()),
+                        self.app_context.has_unused_asset_lock(&seed_hash),
+                        self.app_context.snapshot_has_balance(&seed_hash),
                     )
                 };
 
@@ -791,17 +795,16 @@ impl AddNewIdentityScreen {
         };
         match funding_method {
             FundingMethod::UseUnusedAssetLock => {
-                if let Some((tx, funding_asset_lock, address)) = self.funding_asset_lock.clone() {
+                if let Some(out_point) = self.funding_asset_lock {
                     let identity_input = IdentityRegistrationInfo {
                         alias_input: self.alias_input.clone(),
                         keys: self.identity_keys.clone(),
                         wallet: Arc::clone(selected_wallet), // Clone the Arc reference
                         wallet_identity_index: self.identity_id_number,
-                        identity_funding_method: RegisterIdentityFundingMethod::UseAssetLock(
-                            address,
-                            Box::new(funding_asset_lock),
-                            Box::new(tx),
-                        ),
+                        identity_funding_method: RegisterIdentityFundingMethod::UseAssetLock {
+                            out_point,
+                            identity_index: self.identity_id_number,
+                        },
                     };
 
                     let mut step = self.step.write().unwrap();

@@ -50,12 +50,7 @@ pub async fn start_http_server(
     let mcp_service = StreamableHttpService::new(
         move || Ok(DashMcpService::new_shared(ctx.clone())),
         LocalSessionManager::default().into(),
-        {
-            StreamableHttpServerConfig {
-                cancellation_token: cancel.clone(),
-                ..Default::default()
-            }
-        },
+        StreamableHttpServerConfig::default().with_cancellation_token(cancel.clone()),
     );
 
     let health = Router::new().route("/health", axum::routing::get(|| async { "OK" }));

@@ -64,11 +64,10 @@ pub(super) async fn connect_http(
         StreamableHttpClientTransport, StreamableHttpClientTransportConfig,
     };
 
-    let config = StreamableHttpClientTransportConfig {
-        uri: addr.into(),
-        auth_header: bearer.map(|token| format!("Bearer {token}")),
-        ..Default::default()
-    };
+    let mut config = StreamableHttpClientTransportConfig::with_uri(addr);
+    if let Some(token) = bearer {
+        config = config.auth_header(format!("Bearer {token}"));
+    }
     let transport = StreamableHttpClientTransport::from_config(config);
     let client = ().serve(transport).await?;
     Ok(client)

@@ -103,6 +103,13 @@ struct Inner {
     peer: Option<std::net::SocketAddr>,
     network: Network,
     spv_storage_dir: std::path::PathBuf,
+    /// Serializes DashPay address-index increments across the process. The
+    /// `DetKv` adapter has no atomic read-modify-write primitive, so the
+    /// `dashpay_increment_send_index` path takes this mutex around its
+    /// get-then-put cycle. Contention is negligible — outgoing-payment
+    /// dispatch is user-initiated and rare relative to lock acquisition
+    /// cost.
+    dashpay_address_index_lock: std::sync::Mutex<()>,
 }
 
 /// The single wallet entry point. See module docs.
@@ -169,6 +176,7 @@ impl WalletBackend {
                 peer,
                 network,
                 spv_storage_dir,
+                dashpay_address_index_lock: std::sync::Mutex::new(()),
             }),
         };
 

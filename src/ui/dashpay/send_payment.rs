@@ -759,22 +759,11 @@ impl PaymentHistory {
                             },
                         };
                         self.payments.push(payment);
-
-                        // Save to database
-                        let (from_id, to_id, payment_type) = if is_incoming {
-                            (contact_id, identity_id, "received")
-                        } else {
-                            (identity_id, contact_id, "sent")
-                        };
-
-                        let _ = self.app_context.db.save_payment(
-                            &tx_id,
-                            &from_id,
-                            &to_id,
-                            amount as i64,
-                            if memo.is_empty() { None } else { Some(&memo) },
-                            payment_type,
-                        );
+                        // Payment mirror dropped — `payments::send_payment_to_contact_impl`
+                        // already routes through `WalletBackend::dashpay_record_payment`
+                        // + the payment-timestamp sidecar, so the upstream wallet is
+                        // the single source of truth for outgoing payments.
+                        let _ = (contact_id, identity_id, tx_id, amount, memo, is_incoming);
                     }
                 } else {
                     // No selected identity, just populate in-memory

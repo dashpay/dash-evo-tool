@@ -222,27 +222,9 @@ impl ContactRequests {
             }
         }
 
-        // Save to local DB for future lookups
-        let network_str = self.app_context.network.to_string();
-        let bio = doc
-            .get("publicMessage")
-            .and_then(|v| v.as_text())
-            .filter(|s| !s.is_empty());
-        let avatar_url = doc
-            .get("avatarUrl")
-            .and_then(|v| v.as_text())
-            .filter(|s| !s.is_empty());
-
-        if let Err(e) = self.app_context.db.save_dashpay_profile(
-            &contact_id,
-            &network_str,
-            display_name.as_deref(),
-            bio,
-            avatar_url,
-            None,
-        ) {
-            tracing::warn!("Failed to cache profile for {}: {}", contact_id, e);
-        }
+        // Profile cache write dropped — `FetchContactProfile` re-queries
+        // Platform on each open, and contact identities outside our wallet
+        // are not mirrored through the WalletBackend seam.
     }
 
     pub fn trigger_fetch_requests(&mut self) -> AppAction {
@@ -918,26 +900,11 @@ impl ScreenLike for ContactRequests {
                     };
 
                     self.incoming_requests.insert(*id, request.clone());
-
-                    // Save to database as received request
-                    let network_str = self.app_context.network.to_string();
-                    tracing::debug!(
-                        "Saving incoming contact request to database: from={}, to={}, network={}",
-                        from_identity,
-                        current_identity_id,
-                        network_str
-                    );
-                    match self.app_context.db.save_contact_request(
-                        &from_identity,
-                        &current_identity_id,
-                        &network_str,
-                        None, // to_username
-                        request.account_label.as_deref(),
-                        "received",
-                    ) {
-                        Ok(id) => tracing::debug!("Saved incoming contact request with id {}", id),
-                        Err(e) => tracing::error!("Failed to save incoming contact request: {}", e),
-                    }
+                    // Contact-request mirror dropped — upstream
+                    // `incoming_contact_requests` already records this
+                    // request, and `DashpayView::contact_requests`
+                    // derives status from upstream presence + the
+                    // rejected/expiry sidecars.
                 }
 
                 // Process outgoing requests
@@ -971,26 +938,11 @@ impl ScreenLike for ContactRequests {
                     };
 
                     self.outgoing_requests.insert(*id, request.clone());
-
-                    // Save to database as sent request
-                    let network_str = self.app_context.network.to_string();
-                    tracing::debug!(
-                        "Saving outgoing contact request to database: from={}, to={}, network={}",
-                        current_identity_id,
-                        to_identity,
-                        network_str
-                    );
-                    match self.app_context.db.save_contact_request(
-                        &current_identity_id,
-                        &to_identity,
-                        &network_str,
-                        None, // to_username
-                        request.account_label.as_deref(),
-                        "sent",
-                    ) {
-                        Ok(id) => tracing::debug!("Saved outgoing contact request with id {}", id),
-                        Err(e) => tracing::error!("Failed to save outgoing contact request: {}", e),
-                    }
+                    // Contact-request mirror dropped — upstream
+                    // `sent_contact_requests` already records this
+                    // request, and `DashpayView::contact_requests`
+                    // derives status from upstream presence + the
+                    // rejected/expiry sidecars.
                 }
 
                 // Resolve names from local cache and trigger Platform fetches for unknowns

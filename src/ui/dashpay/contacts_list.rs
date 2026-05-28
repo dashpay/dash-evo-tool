@@ -877,13 +877,41 @@ impl ContactsList {
                                             let new_hidden = !contact.is_hidden;
                                             if let Some(identity) = &self.selected_identity {
                                                 let owner_id = identity.identity.id();
-                                                if let Err(e) =
+                                                let db_result =
                                                     self.app_context.db.set_contact_hidden(
                                                         &owner_id,
                                                         &contact.identity_id,
                                                         new_hidden,
-                                                    )
+                                                    );
+                                                // Mirror into the k/v sidecar so the post-D4d
+                                                // read path (after the DET table goes) sees
+                                                // the same toggle. Best-effort: a sidecar
+                                                // write failure does not block the DB write.
+                                                if let Ok(backend) =
+                                                    self.app_context.wallet_backend()
                                                 {
+                                                    let mut info = backend
+                                                        .dashpay_get_private_info(
+                                                            &owner_id,
+                                                            &contact.identity_id,
+                                                        )
+                                                        .ok()
+                                                        .flatten()
+                                                        .unwrap_or_default();
+                                                    info.is_hidden = new_hidden;
+                                                    if let Err(e) = backend
+                                                        .dashpay_set_private_info(
+                                                            &owner_id,
+                                                            &contact.identity_id,
+                                                            &info,
+                                                        )
+                                                    {
+                                                        tracing::warn!(
+                                                            "DashPay private-info sidecar mirror failed: {e:?}"
+                                                        );
+                                                    }
+                                                }
+                                                if let Err(e) = db_result {
                                                     self.message = Some((
                                                         format!("Failed to update contact: {}", e),
                                                         MessageType::Error,
@@ -1141,27 +1169,12 @@ impl ScreenLike for ContactsList {
                     if let Some(url) = &avatar_url {
                         contact.avatar_url = Some(url.clone());
                     }
-
-                    // Save updated profile to database if we have a selected identity
-                    if let Some(identity) = &self.selected_identity {
-                        let owner_id = identity.identity.id();
-                        let network_str = self.app_context.network.to_string();
-                        if let Err(e) = self.app_context.db.save_dashpay_contact(
-                            &owner_id,
-                            &contact_id,
-                            &network_str,
-                            contact.username.as_deref(),
-                            contact.display_name.as_deref(),
-                            contact.avatar_url.as_deref(),
-                            public_message.as_deref(),
-                            "accepted",
-                        ) {
-                            tracing::warn!(
-                                "Failed to save updated contact profile to database: {}",
-                                e
-                            );
-                        }
-                    }
+                    // Profile snapshot caching dropped — `DashpayView::contacts`
+                    // reads contact identities from the upstream wallet and
+                    // cross-references the public DashPayProfile via the
+                    // backend task on demand, so the local cache no longer
+                    // earns its keep.
+                    let _ = public_message;
                 }
             }
             _ => {

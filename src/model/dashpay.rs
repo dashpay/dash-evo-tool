@@ -83,3 +83,16 @@ pub struct ContactAddressIndex {
     /// Number of addresses registered in the bloom filter for this contact.
     pub bloom_registered_count: u32,
 }
+
+/// DET-local private contact memo (nickname / notes / hidden flag).
+///
+/// Mirrors the legacy `contact_private_info` SQLite row shape but lives
+/// entirely in the per-network k/v sidecar. No upstream counterpart —
+/// DashPay carries this state encrypted in `contactInfo` documents, and
+/// DET keeps a local plaintext snapshot for offline-friendly display.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContactPrivateInfo {
+    pub nickname: String,
+    pub notes: String,
+    pub is_hidden: bool,
+}

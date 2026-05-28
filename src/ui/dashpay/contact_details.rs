@@ -169,7 +169,8 @@ impl ContactDetailsScreen {
             info.is_hidden = self.edit_hidden;
         }
 
-        // Save to local database immediately
+        // Save to local database immediately so the UI has instant feedback
+        // while the (encrypted) Platform write below is in flight.
         let identity_id = self.identity.identity.id();
         if let Err(e) = self.app_context.db.save_contact_private_info(
             &identity_id,
@@ -179,6 +180,20 @@ impl ContactDetailsScreen {
             self.edit_hidden,
         ) {
             tracing::warn!("Failed to save contact private info to database: {}", e);
+        }
+        // Mirror the same memo into the k/v sidecar so the post-D4d
+        // read path (after the DET table goes) sees the same edit.
+        // Best-effort: a sidecar miss never blocks the user action.
+        if let Ok(backend) = self.app_context.wallet_backend() {
+            let info = crate::model::dashpay::ContactPrivateInfo {
+                nickname: self.edit_nickname.clone(),
+                notes: self.edit_note.clone(),
+                is_hidden: self.edit_hidden,
+            };
+            if let Err(e) = backend.dashpay_set_private_info(&identity_id, &self.contact_id, &info)
+            {
+                tracing::warn!("DashPay private-info sidecar mirror failed: {e:?}");
+            }
         }
 
         self.editing_info = false;
@@ -572,18 +587,10 @@ impl ScreenLike for ContactDetailsScreen {
                     .and_then(|v| v.as_text())
                     .map(|s| s.to_string());
 
-                // Save profile to local database for future offline access
-                let network_str = self.app_context.network.to_string();
-                if let Err(e) = self.app_context.db.save_dashpay_profile(
-                    &self.contact_id,
-                    &network_str,
-                    display_name.as_deref(),
-                    bio.as_deref(),
-                    avatar_url.as_deref(),
-                    None, // public_message
-                ) {
-                    tracing::warn!("Failed to save dashpay profile to database: {}", e);
-                }
+                // Public-profile caching dropped — `FetchContactProfile`
+                // re-queries Platform on each open, and the WalletBackend
+                // mirror covers identities we manage. Out-of-wallet contact
+                // profiles are not cacheable through the upstream seam.
 
                 // Update the in-memory contact info
                 if let Some(info) = &mut self.contact_info {

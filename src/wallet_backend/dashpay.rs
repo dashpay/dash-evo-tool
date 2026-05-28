@@ -46,7 +46,10 @@ use platform_wallet::wallet::identity::types::dashpay::payment::{
 use platform_wallet::wallet::identity::types::dashpay::profile::DashPayProfile;
 
 use crate::backend_task::error::TaskError;
-use crate::model::dashpay::{StoredContact, StoredContactRequest, StoredPayment, StoredProfile};
+use crate::model::dashpay::{
+    ContactAddressIndex, ContactPrivateInfo, StoredContact, StoredContactRequest, StoredPayment,
+    StoredProfile,
+};
 use crate::wallet_backend::WalletBackend;
 use crate::wallet_backend::kv::DetKv;
 
@@ -66,6 +69,19 @@ const KV_PREFIX_REJECTED: &str = "det:dashpay:rejected:";
 /// DET-local `(created_at, updated_at)` timestamps for an entity (contact, request).
 /// Value: `(i64, i64)` encoded by the [`DetKv`] schema.
 const KV_PREFIX_TIMESTAMPS: &str = "det:dashpay:timestamps:";
+/// DET-local private memo for a contact (nickname / notes / hidden).
+/// Value: bincode-encoded [`ContactPrivateInfo`].
+/// Key shape: `det:dashpay:private:<owner_b58>:<contact_b58>`.
+const KV_PREFIX_PRIVATE: &str = "det:dashpay:private:";
+/// Per-contact address index state (DIP-0015 send/receive cursors + bloom
+/// registered count). Value: bincode-encoded [`ContactAddressIndex`].
+/// Key shape: `det:dashpay:address_index:<owner_b58>:<contact_b58>`.
+const KV_PREFIX_ADDRESS_INDEX: &str = "det:dashpay:address_index:";
+/// Reverse lookup from a wallet address back to the `(owner, contact)`
+/// relationship that derived it. Value: bincode-encoded contact
+/// [`Identifier`] (the owner is already embedded in the key).
+/// Key shape: `det:dashpay:addr_map:<owner_b58>:<address>`.
+const KV_PREFIX_ADDR_MAP: &str = "det:dashpay:addr_map:";
 
 /// Contact-request expiry threshold. A pending outgoing request older
 /// than this is surfaced as `"expired"` rather than `"pending"`. DET
@@ -417,6 +433,28 @@ fn sidecar_key(prefix: &str, id: &Identifier) -> String {
     )
 }
 
+/// Sidecar key for a `(owner, contact)` overlay (private memo, address index).
+/// Format: `<prefix><owner_b58>:<contact_b58>`.
+fn pair_sidecar_key(prefix: &str, owner: &Identifier, contact: &Identifier) -> String {
+    use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+    format!(
+        "{prefix}{}:{}",
+        owner.to_string(Encoding::Base58),
+        contact.to_string(Encoding::Base58)
+    )
+}
+
+/// Sidecar key for a `(owner, address)` reverse lookup. `address` is the
+/// plain `Address::to_string()` form — the network's address-version byte
+/// is already encoded into the string so no extra prefix is needed.
+fn addr_map_sidecar_key(owner: &Identifier, address: &str) -> String {
+    use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+    format!(
+        "{KV_PREFIX_ADDR_MAP}{}:{address}",
+        owner.to_string(Encoding::Base58)
+    )
+}
+
 fn kv_contains(kv: &DetKv, prefix: &str, id: &Identifier) -> bool {
     // Presence-only entries: value is `()`. `Ok(Some(_))` ⇒ present.
     matches!(kv.get::<()>(None, &sidecar_key(prefix, id)), Ok(Some(())))
@@ -609,6 +647,141 @@ impl WalletBackend {
         let key = format!("{KV_PREFIX_TIMESTAMPS}tx:{tx_id}");
         self.kv()
             .put::<(i64, Option<i64>)>(None, &key, &(created_at, confirmed_at))
+            .map_err(|e| TaskError::DashpaySidecarStorage { source: e })
+    }
+
+    /// Read the DET-local private memo for `(owner, contact)`. Returns
+    /// `Ok(None)` when no memo has been written yet — callers should
+    /// treat that as an empty memo, not as an error.
+    pub fn dashpay_get_private_info(
+        &self,
+        owner: &Identifier,
+        contact: &Identifier,
+    ) -> Result<Option<ContactPrivateInfo>, TaskError> {
+        let key = pair_sidecar_key(KV_PREFIX_PRIVATE, owner, contact);
+        self.kv()
+            .get::<ContactPrivateInfo>(None, &key)
+            .map_err(|e| TaskError::DashpaySidecarStorage { source: e })
+    }
+
+    /// Upsert the DET-local private memo for `(owner, contact)`.
+    pub fn dashpay_set_private_info(
+        &self,
+        owner: &Identifier,
+        contact: &Identifier,
+        info: &ContactPrivateInfo,
+    ) -> Result<(), TaskError> {
+        let key = pair_sidecar_key(KV_PREFIX_PRIVATE, owner, contact);
+        self.kv()
+            .put::<ContactPrivateInfo>(None, &key, info)
+            .map_err(|e| TaskError::DashpaySidecarStorage { source: e })
+    }
+
+    /// Read the persisted address-index state for `(owner, contact)`.
+    /// Missing keys yield `Ok(None)` — callers treat that as "no payments
+    /// exchanged yet" and start from index 0.
+    pub fn dashpay_get_address_index(
+        &self,
+        owner: &Identifier,
+        contact: &Identifier,
+    ) -> Result<Option<ContactAddressIndex>, TaskError> {
+        let key = pair_sidecar_key(KV_PREFIX_ADDRESS_INDEX, owner, contact);
+        self.kv()
+            .get::<ContactAddressIndex>(None, &key)
+            .map_err(|e| TaskError::DashpaySidecarStorage { source: e })
+    }
+
+    /// Upsert the address-index state for `(owner, contact)`. This is the
+    /// non-incrementing setter — used by the receive-side path that knows
+    /// the new `highest_receive_index` or `bloom_registered_count`
+    /// outright. Concurrent writers race; callers that need atomic
+    /// read-modify-write (the send-side increment) must use
+    /// [`Self::dashpay_increment_send_index`] instead.
+    pub fn dashpay_set_address_index(
+        &self,
+        owner: &Identifier,
+        contact: &Identifier,
+        index: &ContactAddressIndex,
+    ) -> Result<(), TaskError> {
+        let key = pair_sidecar_key(KV_PREFIX_ADDRESS_INDEX, owner, contact);
+        self.kv()
+            .put::<ContactAddressIndex>(None, &key, index)
+            .map_err(|e| TaskError::DashpaySidecarStorage { source: e })
+    }
+
+    /// Atomically read-then-increment the `next_send_index` for
+    /// `(owner, contact)`. Returns the index value the caller should use
+    /// when deriving the next outgoing payment address; the persisted
+    /// counter is advanced to `returned_value + 1` before returning.
+    ///
+    /// Serializes across the process via a backend-internal mutex, so
+    /// concurrent send dispatches never hand out the same index.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal mutex is poisoned. The mutex protects a
+    /// `()` payload; poisoning implies a prior panic mid-increment, which
+    /// is a programming error worth surfacing rather than masking.
+    pub fn dashpay_increment_send_index(
+        &self,
+        owner: &Identifier,
+        contact: &Identifier,
+    ) -> Result<u32, TaskError> {
+        // The lock guards the read-modify-write window; the lifetime
+        // ends naturally at function exit, after the put has landed.
+        let _guard = self
+            .inner
+            .dashpay_address_index_lock
+            .lock()
+            .expect("dashpay address-index mutex poisoned");
+
+        let kv = self.kv();
+        let key = pair_sidecar_key(KV_PREFIX_ADDRESS_INDEX, owner, contact);
+        let mut state: ContactAddressIndex = kv
+            .get::<ContactAddressIndex>(None, &key)
+            .map_err(|e| TaskError::DashpaySidecarStorage { source: e })?
+            .unwrap_or_else(|| ContactAddressIndex {
+                owner_identity_id: owner.to_buffer().to_vec(),
+                contact_identity_id: contact.to_buffer().to_vec(),
+                next_send_index: 0,
+                highest_receive_index: 0,
+                bloom_registered_count: 0,
+            });
+        let value = state.next_send_index;
+        state.next_send_index = state.next_send_index.saturating_add(1);
+        kv.put::<ContactAddressIndex>(None, &key, &state)
+            .map_err(|e| TaskError::DashpaySidecarStorage { source: e })?;
+        Ok(value)
+    }
+
+    /// Resolve a wallet address back to the contact whose relationship
+    /// with `owner` derived it. `Ok(None)` means the address is unknown
+    /// to the DashPay overlay — e.g. a regular receiving address, or a
+    /// contact that pre-dates this sidecar.
+    pub fn dashpay_get_address_mapping(
+        &self,
+        owner: &Identifier,
+        address: &str,
+    ) -> Result<Option<Identifier>, TaskError> {
+        let key = addr_map_sidecar_key(owner, address);
+        let bytes: Option<[u8; 32]> = self
+            .kv()
+            .get::<[u8; 32]>(None, &key)
+            .map_err(|e| TaskError::DashpaySidecarStorage { source: e })?;
+        Ok(bytes.map(Identifier::from))
+    }
+
+    /// Persist the `(owner, address) → contact` reverse mapping used by
+    /// the incoming-payment detector.
+    pub fn dashpay_set_address_mapping(
+        &self,
+        owner: &Identifier,
+        address: &str,
+        contact: &Identifier,
+    ) -> Result<(), TaskError> {
+        let key = addr_map_sidecar_key(owner, address);
+        self.kv()
+            .put::<[u8; 32]>(None, &key, &contact.to_buffer())
             .map_err(|e| TaskError::DashpaySidecarStorage { source: e })
     }
 
@@ -1047,6 +1220,117 @@ mod tests {
         assert_eq!(
             derive_request_status(&counterparty, false, created_at_ms, now_ms, &kv),
             "expired"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // D4b: address-index + private-info k/v primitives (key shape +
+    // round-trip via the same `DetKv` adapter used in production). The
+    // wallet-resolving methods on `WalletBackend` itself need an
+    // upstream backend and are covered by the e2e suite.
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn d4b_pair_sidecar_key_uses_base58_colon_form() {
+        let owner = id_from_byte(1);
+        let contact = id_from_byte(2);
+        let key = pair_sidecar_key(KV_PREFIX_PRIVATE, &owner, &contact);
+        use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+        let expected = format!(
+            "det:dashpay:private:{}:{}",
+            owner.to_string(Encoding::Base58),
+            contact.to_string(Encoding::Base58)
+        );
+        assert_eq!(key, expected);
+    }
+
+    #[test]
+    fn d4b_addr_map_sidecar_key_carries_owner_and_address() {
+        let owner = id_from_byte(1);
+        let addr = "yXyqJv6gP2c8RXAhYQ7v6XwxSqUf7vXKfA";
+        let key = addr_map_sidecar_key(&owner, addr);
+        use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+        let expected = format!(
+            "det:dashpay:addr_map:{}:{}",
+            owner.to_string(Encoding::Base58),
+            addr
+        );
+        assert_eq!(key, expected);
+    }
+
+    #[test]
+    fn d4b_private_info_round_trips_through_sidecar_key() {
+        let kv = empty_kv();
+        let owner = id_from_byte(1);
+        let contact = id_from_byte(2);
+        let info = ContactPrivateInfo {
+            nickname: "Alice".into(),
+            notes: "met at conf".into(),
+            is_hidden: true,
+        };
+        let key = pair_sidecar_key(KV_PREFIX_PRIVATE, &owner, &contact);
+        kv.put::<ContactPrivateInfo>(None, &key, &info).unwrap();
+        let got: ContactPrivateInfo = kv
+            .get::<ContactPrivateInfo>(None, &key)
+            .unwrap()
+            .expect("written value should round-trip");
+        assert_eq!(got, info);
+    }
+
+    #[test]
+    fn d4b_private_info_missing_key_returns_none() {
+        let kv = empty_kv();
+        let owner = id_from_byte(1);
+        let contact = id_from_byte(2);
+        let key = pair_sidecar_key(KV_PREFIX_PRIVATE, &owner, &contact);
+        assert!(kv.get::<ContactPrivateInfo>(None, &key).unwrap().is_none());
+    }
+
+    #[test]
+    fn d4b_address_index_round_trips_through_sidecar_key() {
+        let kv = empty_kv();
+        let owner = id_from_byte(1);
+        let contact = id_from_byte(2);
+        let idx = ContactAddressIndex {
+            owner_identity_id: owner.to_buffer().to_vec(),
+            contact_identity_id: contact.to_buffer().to_vec(),
+            next_send_index: 7,
+            highest_receive_index: 3,
+            bloom_registered_count: 20,
+        };
+        let key = pair_sidecar_key(KV_PREFIX_ADDRESS_INDEX, &owner, &contact);
+        kv.put::<ContactAddressIndex>(None, &key, &idx).unwrap();
+        let got = kv
+            .get::<ContactAddressIndex>(None, &key)
+            .unwrap()
+            .expect("written value should round-trip");
+        assert_eq!(got.next_send_index, 7);
+        assert_eq!(got.highest_receive_index, 3);
+        assert_eq!(got.bloom_registered_count, 20);
+    }
+
+    #[test]
+    fn d4b_address_mapping_round_trips_through_sidecar_key() {
+        let kv = empty_kv();
+        let owner = id_from_byte(1);
+        let contact = id_from_byte(2);
+        let addr = "yXyqJv6gP2c8RXAhYQ7v6XwxSqUf7vXKfA";
+        let key = addr_map_sidecar_key(&owner, addr);
+        kv.put::<[u8; 32]>(None, &key, &contact.to_buffer())
+            .unwrap();
+        let got: Option<[u8; 32]> = kv.get::<[u8; 32]>(None, &key).unwrap();
+        assert_eq!(got, Some(contact.to_buffer()));
+    }
+
+    #[test]
+    fn d4b_pair_key_distinguishes_owner_from_contact() {
+        let a = id_from_byte(1);
+        let b = id_from_byte(2);
+        let key_a_b = pair_sidecar_key(KV_PREFIX_PRIVATE, &a, &b);
+        let key_b_a = pair_sidecar_key(KV_PREFIX_PRIVATE, &b, &a);
+        assert_ne!(
+            key_a_b, key_b_a,
+            "address-index/private overlays are not symmetric in (owner, contact)"
         );
     }
 

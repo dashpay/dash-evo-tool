@@ -21,6 +21,7 @@
 
 mod asset_lock_signer;
 mod event_bridge;
+mod kv;
 mod loader;
 mod snapshot;
 
@@ -28,6 +29,7 @@ pub use asset_lock_signer::AssetLockSignerError;
 use asset_lock_signer::WalletAssetLockSigner;
 
 pub use event_bridge::EventBridge;
+pub use kv::{DetKv, KvAdapterError, SCHEMA_VERSION as KV_SCHEMA_VERSION};
 pub use loader::{PersistedWalletLoader, SeedReregistrationLoader, WalletRegistration};
 use snapshot::SnapshotStore;
 pub use snapshot::{DetUtxo, DetWalletBalance, WalletSnapshot};
@@ -67,6 +69,10 @@ type WalletId = [u8; 32];
 
 struct Inner {
     pwm: PlatformWalletManager<DetPersister>,
+    /// Shared handle to the same persister `pwm` consumes. Kept so the
+    /// typed key/value adapter ([`DetKv`]) can read/write app data
+    /// alongside wallet state without opening a second connection.
+    persister: Arc<DetPersister>,
     loader: Arc<dyn PersistedWalletLoader>,
     /// Display-only snapshot store (balance/tx/utxo), pushed by the
     /// `EventBridge`. See [`snapshot`]. DISPLAY-ONLY — never feeds coin
@@ -143,13 +149,14 @@ impl WalletBackend {
             Arc::clone(&snapshots),
         ));
 
-        let pwm = PlatformWalletManager::new(sdk, persister, bridge);
+        let pwm = PlatformWalletManager::new(sdk, Arc::clone(&persister), bridge);
 
         let peer = Self::spv_primary_peer_socket(ctx, network);
 
         let backend = Self {
             inner: Arc::new(Inner {
                 pwm,
+                persister,
                 loader,
                 snapshots,
                 id_map: std::sync::RwLock::new(std::collections::BTreeMap::new()),
@@ -300,6 +307,15 @@ impl WalletBackend {
     /// Number of wallets currently registered with the backend.
     pub async fn wallet_count(&self) -> usize {
         self.inner.pwm.wallet_ids().await.len()
+    }
+
+    /// Typed key/value adapter backed by the same upstream persister as
+    /// wallet state. Used for DET-owned application data (settings,
+    /// scheduled votes, DashPay overlays, etc.) that has no upstream
+    /// schema of its own. See [`DetKv`] for namespacing conventions and
+    /// the schema-version envelope.
+    pub fn kv(&self) -> DetKv {
+        DetKv::new(Arc::clone(&self.inner.persister))
     }
 
     /// Broadcast a raw transaction over the network via the upstream

@@ -185,6 +185,16 @@ pub enum TaskError {
         source: bincode::error::DecodeError,
     },
 
+    /// A per-wallet platform-address-info or sync-cursor entry could not be
+    /// read or written in the per-wallet k/v store.
+    #[error(
+        "Could not access your saved Platform address details. Check available disk space and try again."
+    )]
+    PlatformAddressStorage {
+        #[source]
+        source: crate::wallet_backend::KvAdapterError,
+    },
+
     /// Chain sync could not be started.
     #[error(
         "Could not start wallet sync. Please check your connection and restart the application."

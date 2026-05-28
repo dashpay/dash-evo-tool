@@ -426,11 +426,7 @@ async fn step_withdraw(
     let start = std::time::Instant::now();
 
     // Reset again so the next sync picks up the new funding
-    if let Err(e) = ctx
-        .app_context
-        .db()
-        .set_platform_sync_info(&seed_hash, 0, 0)
-    {
+    if let Err(e) = ctx.app_context.set_platform_sync_info(&seed_hash, 0, 0) {
         tracing::warn!("Failed to reset platform sync info: {}", e);
     }
 

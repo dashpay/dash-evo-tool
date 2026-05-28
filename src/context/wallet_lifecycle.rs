@@ -299,15 +299,15 @@ impl AppContext {
                 // Update in-memory wallet state
                 wallet.set_platform_address_info(core_addr.clone(), info.balance, info.nonce);
 
-                // Update database
-                if let Err(e) = self.db.set_platform_address_info(
+                // Persist to per-wallet k/v
+                if let Err(e) = AppContext::set_platform_address_info(
+                    self,
                     &seed_hash,
                     &core_addr,
                     info.balance,
                     info.nonce,
-                    &self.network,
                 ) {
-                    tracing::warn!("Failed to store Platform address info in database: {}", e);
+                    tracing::warn!("Failed to store Platform address info in k/v: {}", e);
                 }
 
                 tracing::debug!(

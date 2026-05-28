@@ -132,15 +132,12 @@ impl AppContext {
         }
         drop(wallet);
 
-        // Persist updated nonce to DB
-        if let Some((core_addr, balance, new_nonce)) = found {
-            let _ = self.db.set_platform_address_info(
-                seed_hash,
-                &core_addr,
-                balance,
-                new_nonce,
-                &self.network,
-            );
+        // Persist updated nonce to k/v
+        if let Some((core_addr, balance, new_nonce)) = found
+            && let Err(e) =
+                self.set_platform_address_info(seed_hash, &core_addr, balance, new_nonce)
+        {
+            tracing::warn!(error = ?e, "failed to persist platform address nonce bump");
         }
     }
 
@@ -167,13 +164,11 @@ impl AppContext {
                 && &pa == from_address
             {
                 info.nonce = nonce;
-                let _ = self.db.set_platform_address_info(
-                    seed_hash,
-                    core_addr,
-                    info.balance,
-                    nonce,
-                    &self.network,
-                );
+                if let Err(e) =
+                    self.set_platform_address_info(seed_hash, core_addr, info.balance, nonce)
+                {
+                    tracing::warn!(error = ?e, "failed to persist platform address nonce override");
+                }
                 break;
             }
         }

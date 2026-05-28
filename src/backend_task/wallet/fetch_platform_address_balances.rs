@@ -28,9 +28,9 @@ impl AppContext {
                 .ok_or(crate::backend_task::error::TaskError::WalletNotFound)?
         };
 
-        // Get last sync timestamp from database
+        // Get last sync cursor from per-wallet k/v
         let (last_sync_timestamp, last_sync_height) =
-            self.db.get_platform_sync_info(&seed_hash).unwrap_or((0, 0));
+            self.get_platform_sync_info(&seed_hash).unwrap_or((0, 0));
 
         // Create provider (requires wallet to be open for address derivation)
         let mut provider = {
@@ -111,8 +111,8 @@ impl AppContext {
             );
         }
 
-        // Persist sync state
-        if let Err(e) = self.db.set_platform_sync_info(
+        // Persist sync cursor to per-wallet k/v
+        if let Err(e) = self.set_platform_sync_info(
             &seed_hash,
             result.new_sync_timestamp,
             result.new_sync_height,
@@ -148,14 +148,10 @@ impl AppContext {
                     tracing::warn!("Failed to persist Platform address: {}", e);
                 }
 
-                // Persist balance to platform_address_balances table
-                if let Err(e) = self.db.set_platform_address_info(
-                    &seed_hash,
-                    address,
-                    funds.balance,
-                    funds.nonce,
-                    &self.network,
-                ) {
+                // Persist balance to per-wallet k/v
+                if let Err(e) =
+                    self.set_platform_address_info(&seed_hash, address, funds.balance, funds.nonce)
+                {
                     tracing::warn!("Failed to persist Platform address info: {}", e);
                 }
             }

@@ -2,6 +2,7 @@ pub mod connection_status;
 mod contested_names_db;
 mod contract_token_db;
 mod identity_db;
+mod platform_address_db;
 mod settings_db;
 pub mod shielded;
 mod transaction_processing;
@@ -665,6 +666,7 @@ impl AppContext {
             self.wallet_backend.store(Some(Arc::new(backend)));
         }
         self.restore_selected_wallet_from_kv();
+        self.restore_platform_address_info_from_kv();
         Ok(())
     }
 

@@ -101,7 +101,6 @@ async fn step_top_up_from_platform_addresses(
     // funded address (the previous sync checkpoint may be past the funding tx).
     if let Err(e) = ctx
         .app_context
-        .db()
         .set_platform_sync_info(&si.wallet_seed_hash, 0, 0)
     {
         tracing::warn!("Failed to reset platform sync info: {}", e);
@@ -671,7 +670,6 @@ async fn tc_031_incremental_address_discovery() {
     tracing::info!("=== Step 4: full sync (reset checkpoint, discover funded address) ===");
     if let Err(e) = ctx
         .app_context
-        .db()
         .set_platform_sync_info(&si.wallet_seed_hash, 0, 0)
     {
         tracing::warn!("Failed to reset platform sync info: {}", e);
@@ -707,7 +705,6 @@ async fn tc_031_incremental_address_discovery() {
     // Verify checkpoint is now set
     let (ts, _) = ctx
         .app_context
-        .db()
         .get_platform_sync_info(&si.wallet_seed_hash)
         .unwrap_or((0, 0));
     assert!(ts > 0, "checkpoint should be set after full sync");

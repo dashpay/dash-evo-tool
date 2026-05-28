@@ -210,7 +210,7 @@ impl WalletsBalancesScreen {
         let platform_sync_info = selected_wallet
             .as_ref()
             .and_then(|w| w.read().ok().map(|g| g.seed_hash()))
-            .and_then(|hash| app_context.db.get_platform_sync_info(&hash).ok())
+            .and_then(|hash| app_context.get_platform_sync_info(&hash).ok())
             .filter(|(ts, _)| *ts > 0);
 
         let shielded_tab_view = selected_wallet
@@ -286,7 +286,6 @@ impl WalletsBalancesScreen {
     fn refresh_platform_sync_info_cache(&mut self, seed_hash: &WalletSeedHash) {
         self.platform_sync_info = self
             .app_context
-            .db
             .get_platform_sync_info(seed_hash)
             .ok()
             .filter(|(ts, _)| *ts > 0);

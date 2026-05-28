@@ -808,8 +808,37 @@ impl NetworkChooserScreen {
 
                     ui.horizontal(|ui| {
                         if ui.button("Clear Platform Addresses").clicked() {
-                            // Clear from database
+                            // TODO(C10): consolidate wallet_addresses + per-wallet k/v
+                            // clearing once the wallet table itself migrates out of data.db.
                             let current_context = self.current_app_context();
+                            // Wipe per-wallet platform address-info entries from k/v
+                            // before touching the in-memory wallets, so a refresh
+                            // race cannot repopulate from a stale read.
+                            let wallet_hashes: Vec<_> = current_context
+                                .wallets
+                                .read()
+                                .map(|guard| guard.keys().copied().collect())
+                                .unwrap_or_default();
+                            for hash in &wallet_hashes {
+                                if let Err(e) =
+                                    current_context.delete_platform_address_info(hash)
+                                {
+                                    tracing::warn!(
+                                        wallet = %hex::encode(hash),
+                                        error = ?e,
+                                        "failed to clear platform address info from k/v",
+                                    );
+                                }
+                                if let Err(e) =
+                                    current_context.set_platform_sync_info(hash, 0, 0)
+                                {
+                                    tracing::warn!(
+                                        wallet = %hex::encode(hash),
+                                        error = ?e,
+                                        "failed to reset platform sync cursor in k/v",
+                                    );
+                                }
+                            }
                             match current_context
                                 .db
                                 .clear_all_platform_addresses(&current_context.network)

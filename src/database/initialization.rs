@@ -794,20 +794,11 @@ impl Database {
         // installs keep the dormant rows; fresh installs never create the
         // tables.
 
-        // The user-contract registry was also moved to the per-network
-        // wallet k/v store in C6, but the `contract` table is still
-        // created (empty) so the `token` table's foreign key constraint
-        // resolves on fresh installs. The table is otherwise unused.
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS contract (
-                        contract_id BLOB,
-                        contract BLOB,
-                        alias TEXT,
-                        network TEXT NOT NULL,
-                        PRIMARY KEY (contract_id, network)
-                    )",
-            [],
-        )?;
+        // The user-contract registry moved to the per-network wallet k/v
+        // store in C6. The `token` table was removed in C7, so nothing
+        // references `contract` any more — the empty placeholder is no
+        // longer created on fresh installs. Legacy installs keep the
+        // dormant rows.
 
         // Token registry, per-identity token balances, identity ordering
         // and token ordering all moved to the per-network wallet k/v

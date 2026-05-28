@@ -92,12 +92,17 @@ pub async fn register_dashpay_addresses_for_identity(
             .to_vec()
     };
 
-    // Load all contacts for this identity from the database
+    // Load all contacts for this identity. Prefer the wallet-backend
+    // adapter (upstream-backed source of truth); fall back to the DET
+    // cache if the backend is not yet wired.
     let network_str = app_context.network.to_string();
-    let contacts = app_context
-        .db
-        .load_dashpay_contacts(&our_identity_id, &network_str)
-        .map_err(|e| format!("Failed to load contacts: {}", e))?;
+    let contacts = match app_context.wallet_backend() {
+        Ok(backend) => backend.dashpay_view().contacts(&our_identity_id).await,
+        Err(_) => app_context
+            .db
+            .load_dashpay_contacts(&our_identity_id, &network_str)
+            .map_err(|e| format!("Failed to load contacts: {}", e))?,
+    };
 
     if contacts.is_empty() {
         return Ok(result);

@@ -347,16 +347,21 @@ pub async fn send_payment_to_contact_impl(
     ))
 }
 
-/// Load payment history from local database
+/// Load payment history via the `WalletBackend` DashPay adapter when wired,
+/// falling back to the local DET cache when the backend has not yet been
+/// initialised (e.g. cold start before any wallet is registered).
 pub async fn load_payment_history(
     app_context: &Arc<AppContext>,
     identity_id: &Identifier,
     contact_id: Option<&Identifier>,
 ) -> Result<Vec<PaymentRecord>, String> {
-    let stored_payments = app_context
-        .db
-        .load_payment_history(identity_id, 100)
-        .map_err(|e| format!("Failed to load payment history: {}", e))?;
+    let stored_payments = match app_context.wallet_backend() {
+        Ok(backend) => backend.dashpay_view().payments(identity_id).await,
+        Err(_) => app_context
+            .db
+            .load_payment_history(identity_id, 100)
+            .map_err(|e| format!("Failed to load payment history: {}", e))?,
+    };
 
     let mut records = Vec::new();
     for sp in stored_payments {

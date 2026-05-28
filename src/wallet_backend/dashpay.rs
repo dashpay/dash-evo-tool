@@ -66,6 +66,12 @@ const KV_PREFIX_REJECTED: &str = "det:dashpay:rejected:";
 /// Value: `(i64, i64)` encoded by the [`DetKv`] schema.
 const KV_PREFIX_TIMESTAMPS: &str = "det:dashpay:timestamps:";
 
+/// Contact-request expiry threshold. A pending outgoing request older
+/// than this is surfaced as `"expired"` rather than `"pending"`. DET
+/// has no protocol-level expiry — this is purely a UX gate so the
+/// outbox doesn't accumulate stale requests forever.
+pub const DASHPAY_REQUEST_EXPIRY_DAYS: i64 = 7;
+
 // ---------------------------------------------------------------------------
 // Public view
 // ---------------------------------------------------------------------------
@@ -153,12 +159,16 @@ impl<'a> DashpayView<'a> {
 
         let mut out: Vec<StoredContactRequest> = Vec::new();
 
+        let now_ms = chrono::Utc::now().timestamp_millis().max(0) as u64;
+
         // Outgoing requests (`request_type = "sent"`).
         for (recipient_id, request) in managed.sent_contact_requests.iter() {
             let status = derive_request_status(
                 /* request_id_for_sidecar = */ recipient_id,
                 /* has_matching_established = */
                 managed.established_contacts.contains_key(recipient_id),
+                request.created_at,
+                now_ms,
                 &kv,
             );
             out.push(request_to_det_request(
@@ -175,6 +185,8 @@ impl<'a> DashpayView<'a> {
             let status = derive_request_status(
                 sender_id,
                 managed.established_contacts.contains_key(sender_id),
+                request.created_at,
+                now_ms,
                 &kv,
             );
             out.push(request_to_det_request(
@@ -368,9 +380,15 @@ fn profile_to_det(
 }
 
 /// Derive a contact-request status from upstream presence + sidecar.
+///
+/// Precedence: `accepted` > `rejected` > `expired` > `pending`. A
+/// pending request older than [`DASHPAY_REQUEST_EXPIRY_DAYS`] (per
+/// `created_at_ms` vs `now_ms`) reports as `"expired"`.
 fn derive_request_status(
     counterparty: &Identifier,
     has_matching_established: bool,
+    created_at_ms: u64,
+    now_ms: u64,
     kv: &DetKv,
 ) -> String {
     if has_matching_established {
@@ -379,8 +397,11 @@ fn derive_request_status(
     if kv_contains(kv, KV_PREFIX_REJECTED, counterparty) {
         return "rejected".to_string();
     }
-    // No expiry derivation in D1 — DET has no canonical threshold
-    // constant. D2 picks this up.
+    let age_ms = now_ms.saturating_sub(created_at_ms);
+    let threshold_ms = (DASHPAY_REQUEST_EXPIRY_DAYS as u64).saturating_mul(86_400_000);
+    if age_ms > threshold_ms {
+        return "expired".to_string();
+    }
     "pending".to_string()
 }
 
@@ -444,6 +465,32 @@ impl WalletBackend {
     /// Read-only DashPay accessor. Cheap to construct (borrow only).
     pub fn dashpay_view(&self) -> DashpayView<'_> {
         DashpayView::new(self)
+    }
+
+    /// Trigger an upstream DashPay refresh (contact requests + profiles)
+    /// for the wallet that owns `owner`. Callers invoke this BEFORE a
+    /// read on user-initiated refresh actions so the [`DashpayView`]
+    /// observes fresh state.
+    ///
+    /// Returns `Ok(())` if the owner is not known to any registered
+    /// wallet — passive screen loads that pre-empt sync would otherwise
+    /// fail noisily on cold start before any wallet is wired.
+    pub async fn dashpay_sync(
+        &self,
+        owner: &Identifier,
+    ) -> Result<(), crate::backend_task::error::TaskError> {
+        let Some(wallet) = self.find_wallet_for_identity(owner).await else {
+            tracing::debug!(
+                owner = %owner.to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58),
+                "WalletBackend::dashpay_sync: no managing wallet found; skipping"
+            );
+            return Ok(());
+        };
+        wallet.identity().dashpay_sync().await.map_err(|e| {
+            crate::backend_task::error::TaskError::WalletBackend {
+                source: Box::new(e),
+            }
+        })
     }
 
     /// Locate the `PlatformWallet` whose `IdentityManager` owns `identity_id`.
@@ -628,15 +675,18 @@ mod tests {
     fn request_status_derivation_uses_established_then_sidecar() {
         let kv = empty_kv();
         let counterparty = id_from_byte(2);
+        // Fresh request, no expiry yet.
+        let now_ms: u64 = 1_000_000_000_000;
+        let created_at_ms: u64 = now_ms - 60_000;
         assert_eq!(
-            derive_request_status(&counterparty, true, &kv),
+            derive_request_status(&counterparty, true, created_at_ms, now_ms, &kv),
             "accepted",
             "matching established contact wins"
         );
         assert_eq!(
-            derive_request_status(&counterparty, false, &kv),
+            derive_request_status(&counterparty, false, created_at_ms, now_ms, &kv),
             "pending",
-            "no established + no rejection sidecar = pending"
+            "no established + no rejection sidecar + fresh = pending"
         );
     }
 
@@ -646,7 +696,41 @@ mod tests {
         let counterparty = id_from_byte(2);
         kv.put::<()>(None, &sidecar_key(KV_PREFIX_REJECTED, &counterparty), &())
             .unwrap();
-        assert_eq!(derive_request_status(&counterparty, false, &kv), "rejected");
+        let now_ms: u64 = 1_000_000_000_000;
+        let created_at_ms: u64 = now_ms - 60_000;
+        assert_eq!(
+            derive_request_status(&counterparty, false, created_at_ms, now_ms, &kv),
+            "rejected"
+        );
+    }
+
+    #[test]
+    fn expired_request_status_when_older_than_threshold() {
+        let kv = empty_kv();
+        let counterparty = id_from_byte(2);
+        let now_ms: u64 = 10_000_000_000_000;
+        // Older than the 7-day threshold by one minute.
+        let threshold_ms = (DASHPAY_REQUEST_EXPIRY_DAYS as u64) * 86_400_000;
+        let created_at_ms: u64 = now_ms - threshold_ms - 60_000;
+        assert_eq!(
+            derive_request_status(&counterparty, false, created_at_ms, now_ms, &kv),
+            "expired",
+            "older-than-threshold pending request reports as expired"
+        );
+    }
+
+    #[test]
+    fn fresh_request_just_under_threshold_stays_pending() {
+        let kv = empty_kv();
+        let counterparty = id_from_byte(2);
+        let now_ms: u64 = 10_000_000_000_000;
+        let threshold_ms = (DASHPAY_REQUEST_EXPIRY_DAYS as u64) * 86_400_000;
+        // One minute younger than the threshold.
+        let created_at_ms: u64 = now_ms - threshold_ms + 60_000;
+        assert_eq!(
+            derive_request_status(&counterparty, false, created_at_ms, now_ms, &kv),
+            "pending"
+        );
     }
 
     #[test]

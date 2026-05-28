@@ -171,6 +171,18 @@ impl AppContext {
             ),
             DashPayTask::LoadPaymentHistory { identity } => {
                 let identity_id = identity.identity.id();
+                // Refresh-style action: kick upstream before reading so the
+                // view sees the latest contact / payment state.
+                if let Ok(backend) = self.wallet_backend()
+                    && let Err(e) = backend.dashpay_sync(&identity_id).await
+                {
+                    tracing::debug!(
+                        identity = %identity_id,
+                        error = ?e,
+                        "LoadPaymentHistory: dashpay_sync degraded; reading cached state"
+                    );
+                }
+
                 let records = payments::load_payment_history(self, &identity_id, None)
                     .await
                     .map_err(
@@ -180,10 +192,13 @@ impl AppContext {
                     )?;
 
                 let network_str = self.network.to_string();
-                let contacts = self
-                    .db
-                    .load_dashpay_contacts(&identity_id, &network_str)
-                    .unwrap_or_default();
+                let contacts = match self.wallet_backend() {
+                    Ok(backend) => backend.dashpay_view().contacts(&identity_id).await,
+                    Err(_) => self
+                        .db
+                        .load_dashpay_contacts(&identity_id, &network_str)
+                        .unwrap_or_default(),
+                };
 
                 let results: Vec<_> = records
                     .into_iter()

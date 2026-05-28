@@ -10,8 +10,8 @@ use tokio::time::sleep;
 use super::{BackendTaskSuccessResult, FeeResult};
 use crate::backend_task::error::TaskError;
 use crate::backend_task::update_data_contract::extract_contract_id_from_error;
-use crate::database::contracts::InsertTokensToo::AllTokensShouldBeAdded;
 use crate::model::fee_estimation::PlatformFeeEstimator;
+use crate::model::qualified_contract::InsertTokensToo::AllTokensShouldBeAdded;
 use crate::{
     app::TaskResult,
     context::AppContext,
@@ -40,11 +40,10 @@ impl AppContext {
                     true => None,
                     false => Some(alias),
                 };
-                self.db.insert_contract_if_not_exists(
+                self.insert_contract_if_not_exists(
                     &returned_contract,
                     optional_alias.as_deref(),
                     AllTokensShouldBeAdded,
-                    self,
                 )?;
                 let fee_result = FeeResult::new(estimated_fee, estimated_fee);
                 Ok(BackendTaskSuccessResult::RegisteredContract(fee_result))
@@ -87,14 +86,12 @@ impl AppContext {
                                 .flatten()
                                 .and_then(|c| c.alias);
 
-                            self.db
-                                .insert_contract_if_not_exists(
-                                    &contract,
-                                    optional_alias.as_deref(),
-                                    AllTokensShouldBeAdded,
-                                    self,
-                                )
-                                .ok();
+                            self.insert_contract_if_not_exists(
+                                &contract,
+                                optional_alias.as_deref(),
+                                AllTokensShouldBeAdded,
+                            )
+                            .ok();
 
                             return Ok(BackendTaskSuccessResult::ContractSavedAfterProofError);
                         }

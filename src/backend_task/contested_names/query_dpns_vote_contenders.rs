@@ -55,10 +55,7 @@ impl AppContext {
         loop {
             match ContenderWithSerializedDocument::fetch_many(sdk, contenders_query.clone()).await {
                 Ok(contenders) => {
-                    return self
-                        .db
-                        .insert_or_update_contenders(name, &contenders, document_type, self)
-                        .map_err(TaskError::from);
+                    return self.insert_or_update_contenders(name, &contenders, document_type);
                 }
                 Err(e) => {
                     tracing::error!("Error fetching vote contenders: {}", e);

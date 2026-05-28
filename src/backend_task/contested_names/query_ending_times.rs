@@ -113,7 +113,7 @@ impl AppContext {
             }
         }
 
-        self.db.update_ending_time(contests_end_times, self)?;
+        self.update_contested_name_ending_times(contests_end_times)?;
         Ok(())
     }
 }

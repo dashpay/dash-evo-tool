@@ -1,6 +1,5 @@
 use super::AppContext;
 use crate::backend_task::contested_names::ScheduledDPNSVote;
-use crate::model::contested_name::ContestedName;
 use crate::model::qualified_identity::{DPNSNameInfo, QualifiedIdentity};
 use crate::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -125,14 +124,6 @@ impl AppContext {
         new_alias: Option<&str>,
     ) -> Result<()> {
         self.db.set_identity_alias(identifier, new_alias)
-    }
-
-    pub fn set_contract_alias(
-        &self,
-        contract_id: &Identifier,
-        new_alias: Option<&str>,
-    ) -> Result<()> {
-        self.db.set_contract_alias(contract_id, new_alias)
     }
 
     /// Gets the alias for an identity
@@ -274,16 +265,6 @@ impl AppContext {
         }
 
         Ok(())
-    }
-
-    /// Fetches all contested names from the database including past and active ones
-    pub fn all_contested_names(&self) -> Result<Vec<ContestedName>> {
-        self.db.get_all_contested_names(self)
-    }
-
-    /// Fetches all ongoing contested names from the database
-    pub fn ongoing_contested_names(&self) -> Result<Vec<ContestedName>> {
-        self.db.get_ongoing_contested_names(self)
     }
 
     /// Persist a batch of scheduled votes in the per-network wallet

@@ -313,14 +313,43 @@ impl Database {
                         "asset_lock_transaction",
                         "clear devnet/regtest asset lock identity IDs",
                     )?;
-                self.remove_all_contracts_in_all_devnets_and_regtest(tx)
+                // The `contract` table was unwired in C6 — on fresh
+                // installs it does not exist, so we skip the devnet/regtest
+                // sweep when the table is absent. Legacy DBs still have it
+                // and pay the cost of the DELETE once.
+                if self
+                    .table_exists(tx, "contract")
+                    .migration_err("contract", "check table existence")?
+                {
+                    tx.execute(
+                        "DELETE FROM contract WHERE network LIKE 'devnet%' OR network = 'regtest'",
+                        [],
+                    )
                     .migration_err("contract", "delete devnet/regtest contracts")?;
+                }
                 self.fix_identity_devnet_network_name(tx)
                     .migration_err("identity", "fix devnet network name")?;
             }
             8 => {
-                self.change_contract_name_to_alias(tx)
-                    .migration_err("contract", "rename name to alias")?;
+                // The `contract` table was unwired in C6 — on fresh
+                // installs it does not exist, so we skip the column
+                // rename when the table is absent.
+                if self
+                    .table_exists(tx, "contract")
+                    .migration_err("contract", "check table existence")?
+                {
+                    let name_column_exists: bool = tx
+                        .query_row(
+                            "SELECT COUNT(*) FROM pragma_table_info('contract') WHERE name='name'",
+                            [],
+                            |row| Ok(row.get::<_, i64>(0)? > 0),
+                        )
+                        .migration_err("contract", "inspect table columns")?;
+                    if name_column_exists {
+                        tx.execute("ALTER TABLE contract RENAME COLUMN name TO alias", [])
+                            .migration_err("contract", "rename name to alias")?;
+                    }
+                }
             }
             7 => {
                 self.migrate_asset_lock_fk_to_set_null(tx)
@@ -680,41 +709,15 @@ impl Database {
             [],
         )?;
 
-        // Create the contested names table
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS contested_name (
-                        normalized_contested_name TEXT NOT NULL,
-                        locked_votes INTEGER,
-                        abstain_votes INTEGER,
-                        awarded_to BLOB,
-                        end_time INTEGER,
-                        locked INTEGER NOT NULL DEFAULT 0,
-                        last_updated INTEGER,
-                        network TEXT NOT NULL,
-                        PRIMARY KEY (normalized_contested_name, network)
-                    )",
-            [],
-        )?;
+        // contested_name / contestant tables removed in C6 — DPNS contest
+        // cache now lives in the per-network wallet k/v store. Legacy
+        // installs keep the dormant rows; fresh installs never create the
+        // tables.
 
-        // Create the contestants table
-        conn.execute(
-                    "CREATE TABLE IF NOT EXISTS contestant (
-                        normalized_contested_name TEXT NOT NULL,
-                        identity_id BLOB NOT NULL,
-                        name TEXT,
-                        votes INTEGER,
-                        created_at INTEGER,
-                        created_at_block_height INTEGER,
-                        created_at_core_block_height INTEGER,
-                        document_id BLOB,
-                        network TEXT NOT NULL,
-                        PRIMARY KEY (normalized_contested_name, identity_id, network),
-                        FOREIGN KEY (normalized_contested_name, network) REFERENCES contested_name(normalized_contested_name, network) ON DELETE CASCADE
-                    )",
-                    [],
-                )?;
-
-        // Create the contracts table
+        // The user-contract registry was also moved to the per-network
+        // wallet k/v store in C6, but the `contract` table is still
+        // created (empty) so the `token` table's foreign key constraint
+        // resolves on fresh installs. The table is otherwise unused.
         conn.execute(
             "CREATE TABLE IF NOT EXISTS contract (
                         contract_id BLOB,
@@ -723,12 +726,6 @@ impl Database {
                         network TEXT NOT NULL,
                         PRIMARY KEY (contract_id, network)
                     )",
-            [],
-        )?;
-
-        // Create indexes for the contracts table
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_alias_network ON contract (alias, network)",
             [],
         )?;
 

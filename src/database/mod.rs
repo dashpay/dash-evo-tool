@@ -1,7 +1,5 @@
 mod asset_lock_transaction;
 pub(crate) mod contacts;
-mod contested_names;
-pub(crate) mod contracts;
 mod dashpay;
 mod identities;
 mod initialization;
@@ -142,10 +140,9 @@ impl Database {
                 rusqlite::params![&network_str],
             )?;
 
-            tx.execute(
-                "DELETE FROM contract WHERE network = ?1",
-                rusqlite::params![&network_str],
-            )?;
+            // contract/contestant/contested_name tables are no longer
+            // managed (C6). Fresh installs do not have them; legacy
+            // installs keep the rows dormant.
 
             tx.execute(
                 "DELETE FROM wallet_transactions WHERE network = ?1",
@@ -159,16 +156,6 @@ impl Database {
 
             tx.execute(
                 "DELETE FROM asset_lock_transaction WHERE network = ?1",
-                rusqlite::params![&network_str],
-            )?;
-
-            tx.execute(
-                "DELETE FROM contestant WHERE network = ?1",
-                rusqlite::params![&network_str],
-            )?;
-
-            tx.execute(
-                "DELETE FROM contested_name WHERE network = ?1",
                 rusqlite::params![&network_str],
             )?;
 

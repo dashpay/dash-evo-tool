@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use super::BackendTaskSuccessResult;
 use crate::app::TaskResult;
 use crate::context::AppContext;
-use crate::database::contracts::InsertTokensToo;
-use crate::database::contracts::InsertTokensToo::NoTokensShouldBeAdded;
+use crate::model::qualified_contract::InsertTokensToo;
+use crate::model::qualified_contract::InsertTokensToo::NoTokensShouldBeAdded;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::tokens::tokens_screen::{ContractDescriptionInfo, TokenInfo};
@@ -52,11 +52,10 @@ impl AppContext {
                         let mut results = vec![];
                         for data_contract in data_contracts {
                             if let Some(contract) = &data_contract.1 {
-                                self.db.insert_contract_if_not_exists(
+                                self.insert_contract_if_not_exists(
                                     contract,
                                     None,
                                     NoTokensShouldBeAdded,
-                                    self,
                                 )?;
                                 results.push(Some(contract.clone()));
                             } else {
@@ -211,14 +210,12 @@ impl AppContext {
             }
             ContractTask::RemoveContract(identifier) => self
                 .remove_contract(&identifier)
-                .map(|_| BackendTaskSuccessResult::RemovedContract)
-                .map_err(crate::backend_task::error::TaskError::from),
+                .map(|_| BackendTaskSuccessResult::RemovedContract),
             ContractTask::SaveDataContract(data_contract, alias, insert_tokens_too) => {
-                self.db.insert_contract_if_not_exists(
+                self.insert_contract_if_not_exists(
                     &data_contract,
                     alias.as_deref(),
                     insert_tokens_too,
-                    self,
                 )?;
                 Ok(BackendTaskSuccessResult::SavedContract)
             }

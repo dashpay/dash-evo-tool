@@ -14,7 +14,7 @@ use crate::ui::theme::ComponentStyles;
 
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::contract::ContractTask;
-use crate::database::contracts::InsertTokensToo;
+use crate::model::qualified_contract::InsertTokensToo;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;

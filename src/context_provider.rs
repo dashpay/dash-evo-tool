@@ -25,7 +25,7 @@ pub(crate) const SYSTEM_CONTRACT_COUNT: usize = 5;
 /// completeness.
 pub(crate) fn resolve_data_contract(
     app_ctx: &AppContext,
-    db: &Database,
+    _db: &Database,
     data_contract_id: &Identifier,
 ) -> Result<Option<Arc<DataContract>>, ContextProviderError> {
     let cached: [&Arc<DataContract>; SYSTEM_CONTRACT_COUNT] = [
@@ -42,9 +42,9 @@ pub(crate) fn resolve_data_contract(
         }
     }
 
-    // DB fallback for user-added / non-system contracts
-    let dc = db
-        .get_contract_by_id(*data_contract_id, app_ctx)
+    // K/V fallback for user-added / non-system contracts
+    let dc = app_ctx
+        .get_contract_by_id(data_contract_id)
         .map_err(|e| ContextProviderError::Generic(e.to_string()))?;
 
     Ok(dc.map(|qc| Arc::new(qc.contract)))

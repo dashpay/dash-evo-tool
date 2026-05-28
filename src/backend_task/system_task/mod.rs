@@ -34,7 +34,7 @@ impl AppContext {
         self.db
             .remove_all_asset_locks_identity_id_for_devnet(self)?;
 
-        self.db.remove_all_contracts_in_devnet(self)?;
+        self.clear_user_contracts()?;
 
         Ok(BackendTaskSuccessResult::Refresh)
     }

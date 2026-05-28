@@ -114,9 +114,8 @@ impl AppContext {
                 break;
             };
 
-            let new_names_to_be_updated = self
-                .db
-                .insert_name_contests_as_normalized_names(contested_resources_as_strings, self)?;
+            let new_names_to_be_updated =
+                self.insert_name_contests_as_normalized_names(contested_resources_as_strings)?;
 
             names_to_be_updated.extend(new_names_to_be_updated);
 

@@ -129,6 +129,30 @@ pub enum TaskError {
         source: crate::wallet_backend::KvAdapterError,
     },
 
+    /// A user-registered contract entry could not be read or written in
+    /// the per-network wallet k/v store.
+    #[error("Could not access your saved contracts. Check available disk space and try again.")]
+    ContractStorage {
+        #[source]
+        source: crate::wallet_backend::KvAdapterError,
+    },
+
+    /// A serialized [`DataContract`](dash_sdk::platform::DataContract) blob
+    /// could not be round-tripped through the local cache.
+    #[error("Saved contract data is unreadable. Refresh the screen to fetch it again.")]
+    ContractEncoding {
+        #[source]
+        source: Box<dash_sdk::dpp::ProtocolError>,
+    },
+
+    /// A DPNS contest record could not be read or written in the
+    /// per-network wallet k/v store.
+    #[error("Could not access your DPNS contest data. Check available disk space and try again.")]
+    ContestStorage {
+        #[source]
+        source: crate::wallet_backend::KvAdapterError,
+    },
+
     /// Chain sync could not be started.
     #[error(
         "Could not start wallet sync. Please check your connection and restart the application."

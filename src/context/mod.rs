@@ -1,4 +1,5 @@
 pub mod connection_status;
+mod contested_names_db;
 mod contract_token_db;
 mod identity_db;
 mod settings_db;

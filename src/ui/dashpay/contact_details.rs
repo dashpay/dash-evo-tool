@@ -85,52 +85,13 @@ impl ContactDetailsScreen {
         screen
     }
 
-    /// Load contact data from local database for immediate display.
+    /// Initialise `contact_info` from local-only data (private notes / hidden flag).
+    /// Public profile fields (username, display_name, avatar, bio) are populated
+    /// asynchronously by `FetchContactProfile` — see `display_task_result`.
     fn load_from_database(&mut self) {
         let identity_id = self.identity.identity.id();
-        let network_str = self.app_context.network.to_string();
 
-        // Try to load the contact's public info from the dashpay_contacts table
-        let mut username = None;
-        let mut display_name = None;
-        let mut avatar_url = None;
-        let mut bio = None;
-
-        if let Ok(stored_contacts) = self
-            .app_context
-            .db
-            .load_dashpay_contacts(&identity_id, &network_str)
-        {
-            for stored_contact in stored_contacts {
-                if let Ok(contact_id) = Identifier::from_bytes(&stored_contact.contact_identity_id)
-                    && contact_id == self.contact_id
-                {
-                    username = stored_contact.username;
-                    display_name = stored_contact.display_name;
-                    avatar_url = stored_contact.avatar_url;
-                    // bio is stored in profiles, not contacts table
-                    break;
-                }
-            }
-        }
-
-        // Load the profile for bio if available
-        if let Ok(Some(profile)) = self
-            .app_context
-            .db
-            .load_dashpay_profile(&self.contact_id, &network_str)
-        {
-            bio = profile.bio;
-            // Also prefer profile display_name and avatar_url if not already set
-            if display_name.is_none() {
-                display_name = profile.display_name;
-            }
-            if avatar_url.is_none() {
-                avatar_url = profile.avatar_url;
-            }
-        }
-
-        // Load private contact info (nickname, notes, hidden)
+        // Load private contact info (nickname, notes, hidden) — DET-local memo.
         let (nickname, note, is_hidden) = self
             .app_context
             .db
@@ -143,6 +104,20 @@ impl ContactDetailsScreen {
             Some(nickname)
         };
         let note = if note.is_empty() { None } else { Some(note) };
+
+        // Preserve any public profile fields already in `contact_info`; otherwise
+        // start empty and let the async fetch fill them in.
+        let (username, display_name, avatar_url, bio) =
+            if let Some(existing) = self.contact_info.as_ref() {
+                (
+                    existing.username.clone(),
+                    existing.display_name.clone(),
+                    existing.avatar_url.clone(),
+                    existing.bio.clone(),
+                )
+            } else {
+                (None, None, None, None)
+            };
 
         self.contact_info = Some(ContactInfo {
             identity_id: self.contact_id,

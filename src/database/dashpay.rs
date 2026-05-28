@@ -1,80 +1,8 @@
+use crate::model::dashpay::{
+    ContactAddressIndex, StoredContact, StoredContactRequest, StoredPayment, StoredProfile,
+};
 use dash_sdk::platform::Identifier;
 use rusqlite::params;
-use serde::{Deserialize, Serialize};
-
-/// DashPay profile data stored locally
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StoredProfile {
-    pub identity_id: Vec<u8>,
-    pub display_name: Option<String>,
-    pub bio: Option<String>,
-    pub avatar_url: Option<String>,
-    pub avatar_hash: Option<Vec<u8>>,
-    pub avatar_fingerprint: Option<Vec<u8>>,
-    pub avatar_bytes: Option<Vec<u8>>,
-    pub public_message: Option<String>,
-    pub created_at: i64,
-    pub updated_at: i64,
-}
-
-/// DashPay contact information stored locally
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StoredContact {
-    pub owner_identity_id: Vec<u8>,
-    pub contact_identity_id: Vec<u8>,
-    pub username: Option<String>,
-    pub display_name: Option<String>,
-    pub avatar_url: Option<String>,
-    pub public_message: Option<String>,
-    pub contact_status: String, // "pending", "accepted", "blocked"
-    pub created_at: i64,
-    pub updated_at: i64,
-    pub last_seen: Option<i64>,
-}
-
-/// DashPay contact request stored locally
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StoredContactRequest {
-    pub id: i64,
-    pub from_identity_id: Vec<u8>,
-    pub to_identity_id: Vec<u8>,
-    pub to_username: Option<String>,
-    pub account_label: Option<String>,
-    pub request_type: String, // "sent", "received"
-    pub status: String,       // "pending", "accepted", "rejected", "expired"
-    pub created_at: i64,
-    pub responded_at: Option<i64>,
-    pub expires_at: Option<i64>,
-}
-
-/// DashPay payment/transaction record
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StoredPayment {
-    pub id: i64,
-    pub tx_id: String,
-    pub from_identity_id: Vec<u8>,
-    pub to_identity_id: Vec<u8>,
-    pub amount: i64, // in credits
-    pub memo: Option<String>,
-    pub payment_type: String, // "sent", "received"
-    pub status: String,       // "pending", "confirmed", "failed"
-    pub created_at: i64,
-    pub confirmed_at: Option<i64>,
-}
-
-/// DashPay contact address index tracking per DIP-0015
-/// Tracks address indices used for sending/receiving payments per contact relationship
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ContactAddressIndex {
-    pub owner_identity_id: Vec<u8>,
-    pub contact_identity_id: Vec<u8>,
-    /// Next address index to use when sending TO this contact
-    pub next_send_index: u32,
-    /// Highest address index seen when receiving FROM this contact (for bloom filter)
-    pub highest_receive_index: u32,
-    /// Number of addresses registered in bloom filter for this contact
-    pub bloom_registered_count: u32,
-}
 
 impl crate::database::Database {
     /// Initialize all DashPay-related database tables using a transaction

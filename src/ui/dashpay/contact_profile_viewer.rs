@@ -70,42 +70,15 @@ impl ContactProfileViewerScreen {
             .load_contact_private_info(&identity.identity.id(), &contact_id)
             .unwrap_or((String::new(), String::new(), false));
 
-        // Try to load cached contact profile from database
-        let network_str = app_context.network.to_string();
-        let profile = if let Ok(contacts) = app_context
-            .db
-            .load_dashpay_contacts(&identity.identity.id(), &network_str)
-        {
-            contacts
-                .iter()
-                .find(|c| {
-                    if let Ok(id) = Identifier::from_bytes(&c.contact_identity_id) {
-                        id == contact_id
-                    } else {
-                        false
-                    }
-                })
-                .map(|c| ContactPublicProfile {
-                    identity_id: contact_id,
-                    display_name: c.display_name.clone(),
-                    public_message: c.public_message.clone(),
-                    avatar_url: c.avatar_url.clone(),
-                    avatar_hash: None,        // Not stored in contacts table yet
-                    avatar_fingerprint: None, // Not stored in contacts table yet
-                })
-        } else {
-            None
-        };
-
-        let initial_fetch_done = profile.is_some(); // Check before moving
-
+        // Profile is populated by the async `FetchContactProfile` task on the
+        // first render. The local DET contact cache is gone after D3.
         Self {
             app_context,
             identity,
             contact_id,
-            profile,
+            profile: None,
             loading: false,
-            initial_fetch_done, // If we have cached data, don't auto-fetch
+            initial_fetch_done: false,
             nickname,
             notes,
             is_hidden,

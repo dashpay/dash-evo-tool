@@ -46,7 +46,7 @@ use platform_wallet::wallet::identity::types::dashpay::payment::{
 use platform_wallet::wallet::identity::types::dashpay::profile::DashPayProfile;
 
 use crate::backend_task::error::TaskError;
-use crate::database::dashpay::{StoredContact, StoredContactRequest, StoredPayment, StoredProfile};
+use crate::model::dashpay::{StoredContact, StoredContactRequest, StoredPayment, StoredProfile};
 use crate::wallet_backend::WalletBackend;
 use crate::wallet_backend::kv::DetKv;
 

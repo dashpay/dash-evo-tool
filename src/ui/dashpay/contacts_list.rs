@@ -103,76 +103,9 @@ impl ContactsList {
             new_self.selected_identity = Some(identities[0].clone());
             new_self.selected_identity_string =
                 identities[0].identity.id().to_string(Encoding::Base58);
-
-            // Load contacts from database for this identity
-            new_self.load_contacts_from_database();
         }
 
         new_self
-    }
-
-    fn load_contacts_from_database(&mut self) {
-        // Load saved contacts for the selected identity from database
-        if let Some(identity) = &self.selected_identity {
-            let identity_id = identity.identity.id();
-            let network_str = self.app_context.network.to_string();
-
-            // Load saved contacts from database
-            if let Ok(stored_contacts) = self
-                .app_context
-                .db
-                .load_dashpay_contacts(&identity_id, &network_str)
-            {
-                for stored_contact in stored_contacts {
-                    // Convert stored contact to Contact struct
-                    if let Ok(contact_id) =
-                        Identifier::from_bytes(&stored_contact.contact_identity_id)
-                    {
-                        let contact = Contact {
-                            identity_id: contact_id,
-                            username: stored_contact.username.clone(),
-                            display_name: stored_contact.display_name.clone().or_else(|| {
-                                Some(format!(
-                                    "Contact ({})",
-                                    &contact_id.to_string(Encoding::Base58)[0..8]
-                                ))
-                            }),
-                            avatar_url: stored_contact.avatar_url.clone(),
-                            bio: None,        // Bio could be loaded from profile if needed
-                            nickname: None,   // Will be loaded separately from contact_private_info
-                            is_hidden: false, // Will be loaded separately from contact_private_info
-                            account_reference: 0, // This would need to be loaded from contactInfo document
-                            created_at: Some(stored_contact.created_at),
-                        };
-
-                        // Only add if contact status is accepted
-                        if stored_contact.contact_status == "accepted" {
-                            self.contacts.insert(contact_id, contact);
-                        }
-                    }
-                }
-
-                // Also load private contact info to populate nickname and hidden status
-                if let Ok(private_infos) = self
-                    .app_context
-                    .db
-                    .load_all_contact_private_info(&identity_id)
-                {
-                    for info in private_infos {
-                        if let Ok(contact_id) = Identifier::from_bytes(&info.contact_identity_id)
-                            && let Some(contact) = self.contacts.get_mut(&contact_id)
-                        {
-                            contact.nickname = if info.nickname.is_empty() {
-                                None
-                            } else {
-                                Some(info.nickname)
-                            };
-                            contact.is_hidden = info.is_hidden;
-                        }
-                    }
-                }
-            }
-        }
     }
 
     pub fn trigger_fetch_contacts(&mut self) -> AppAction {
@@ -219,15 +152,18 @@ impl ContactsList {
             self.selected_identity_string = identities[0].identity.id().to_string(Encoding::Base58);
         }
 
-        // Load contacts from database if we have an identity selected and no contacts loaded
-        if self.selected_identity.is_some() && self.contacts.is_empty() {
-            self.load_contacts_from_database();
-        }
+        // Trigger backend fetch if we have an identity selected and no contacts loaded.
+        // The result populates `self.contacts` via `display_task_result`.
+        let action = if self.selected_identity.is_some() && self.contacts.is_empty() {
+            self.trigger_fetch_contacts()
+        } else {
+            AppAction::None
+        };
 
         // Also refresh contact requests
         let _ = self.contact_requests.refresh();
 
-        AppAction::None
+        action
     }
 
     /// Load an avatar image from a URL asynchronously
@@ -294,6 +230,11 @@ impl ContactsList {
         let mut action = AppAction::None;
         let dark_mode = ui.ctx().style().visuals.dark_mode;
 
+        // Auto-fetch contacts on first render or after identity change.
+        if !self.has_loaded && !self.loading && self.selected_identity.is_some() {
+            action = self.trigger_fetch_contacts();
+        }
+
         // Identity selector
         let identities = self
             .app_context
@@ -319,15 +260,14 @@ impl ContactsList {
                     );
 
                     if response.changed() {
-                        // Clear contacts and avatar caches when identity changes
+                        // Clear contacts and avatar caches when identity changes.
+                        // The next render dispatches `LoadContacts` via `has_loaded == false`.
                         self.contacts.clear();
                         self.avatar_textures.clear();
                         self.avatars_loading.clear();
                         self.message = None;
                         self.loading = false;
-
-                        // Load contacts from database for the newly selected identity
-                        self.load_contacts_from_database();
+                        self.has_loaded = false;
 
                         // Sync selected identity to contact_requests
                         self.contact_requests
@@ -1005,9 +945,9 @@ impl ContactsList {
 
 impl ScreenLike for ContactsList {
     fn refresh_on_arrival(&mut self) {
-        // Load contacts from database when screen is shown
+        // Trigger a fresh `LoadContacts` dispatch via the auto-fetch in `render()`.
         if self.selected_identity.is_some() && self.contacts.is_empty() {
-            self.load_contacts_from_database();
+            self.has_loaded = false;
         }
     }
 

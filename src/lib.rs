@@ -12,7 +12,6 @@ pub mod database;
 pub mod logging;
 #[cfg(any(feature = "mcp", feature = "cli"))]
 pub mod mcp;
-pub mod migration_notice;
 pub mod model;
 pub mod platform;
 pub mod sdk_wrapper;

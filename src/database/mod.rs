@@ -5,7 +5,6 @@ pub(crate) mod contracts;
 mod dashpay;
 mod identities;
 mod initialization;
-pub(crate) mod migration_pw;
 mod proof_log;
 mod scheduled_votes;
 mod settings;
@@ -60,8 +59,9 @@ impl From<CorruptedBlobError> for rusqlite::Error {
 #[derive(Debug)]
 pub struct Database {
     conn: Arc<Mutex<Connection>>,
-    /// The on-disk DB file path (`None` for in-memory test DBs). Used by the
-    /// one-time migration to locate the retained `<db>.premigration` floor.
+    /// The on-disk DB file path (`None` for in-memory test DBs). Currently
+    /// only used by test fixtures that re-open the same file after a drop.
+    #[allow(dead_code)]
     path: Option<std::path::PathBuf>,
 }
 
@@ -76,6 +76,7 @@ impl Database {
     }
 
     /// On-disk DB file path, if this is a file-backed database.
+    #[allow(dead_code)]
     pub(crate) fn db_file_path(&self) -> Option<std::path::PathBuf> {
         self.path.clone()
     }

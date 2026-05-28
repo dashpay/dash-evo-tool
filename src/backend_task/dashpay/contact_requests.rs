@@ -717,6 +717,24 @@ pub async fn reject_contact_request(
     )
     .await?;
 
+    // Mirror the rejection into the DET-local sidecar so `DashpayView`
+    // surfaces the request as "rejected" until a fresh outgoing/incoming
+    // pair establishes a contact. DashPay has no on-chain "rejected" flag,
+    // so the sidecar is the source of truth here.
+    //
+    // The reader keys on the counterparty's identity id (see
+    // `DashpayView::contact_requests`), so we use the original sender
+    // identity, not the request document id.
+    if let Ok(backend) = app_context.wallet_backend()
+        && let Err(e) = backend.dashpay_mark_rejected(&from_identity_id)
+    {
+        tracing::debug!(
+            from = %from_identity_id.to_string(Encoding::Base58),
+            error = ?e,
+            "DashPay rejection sidecar write failed; request will still display as pending"
+        );
+    }
+
     Ok(BackendTaskSuccessResult::DashPayContactRequestRejected(
         request_id,
     ))

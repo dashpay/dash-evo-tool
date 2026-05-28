@@ -316,18 +316,17 @@ pub async fn process_incoming_payment(
             .map_err(|e| format!("Failed to update receive index: {}", e))?;
     }
 
-    // Save the payment record
-    app_context
-        .db
-        .save_payment(
-            tx_id,
-            &contact_id, // from contact
-            &owner_id,   // to us
-            amount_duffs as i64,
-            None, // memo - not available for incoming
-            "received",
-        )
-        .map_err(|e| format!("Failed to save payment: {}", e))?;
+    // Mirror the incoming payment through the WalletBackend adapter so the
+    // upstream `ManagedIdentity` records it and the timestamp sidecar
+    // reflects when DET observed it.
+    super::payments::mirror_incoming_payment_to_backend(
+        app_context,
+        &owner_id,
+        tx_id,
+        contact_id,
+        amount_duffs,
+    )
+    .await;
 
     Ok(Some(IncomingPaymentInfo {
         tx_id: tx_id.to_string(),

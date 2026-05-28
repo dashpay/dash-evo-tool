@@ -45,6 +45,7 @@ use platform_wallet::wallet::identity::types::dashpay::payment::{
 };
 use platform_wallet::wallet::identity::types::dashpay::profile::DashPayProfile;
 
+use crate::backend_task::error::TaskError;
 use crate::database::dashpay::{StoredContact, StoredContactRequest, StoredPayment, StoredProfile};
 use crate::wallet_backend::WalletBackend;
 use crate::wallet_backend::kv::DetKv;
@@ -493,6 +494,124 @@ impl WalletBackend {
         })
     }
 
+    /// Persist a DashPay profile against the upstream `ManagedIdentity` for
+    /// `owner`, persisting the resulting changeset immediately. Pass `None`
+    /// to clear the profile.
+    ///
+    /// Returns `Ok(())` when no registered wallet manages `owner` — the
+    /// caller is operating on an out-of-wallet identity (e.g. observed
+    /// profile) and there is nothing to mirror locally.
+    pub async fn dashpay_set_profile(
+        &self,
+        owner: &Identifier,
+        profile: Option<DashPayProfile>,
+    ) -> Result<(), TaskError> {
+        let Some(wallet) = self.find_wallet_for_identity(owner).await else {
+            tracing::debug!(
+                owner = %owner.to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58),
+                "WalletBackend::dashpay_set_profile: no managing wallet found; skipping"
+            );
+            return Ok(());
+        };
+        let persister = wallet.persister().clone();
+        let mut state = wallet.state_mut().await;
+        let Some(managed) = state.identity_manager.managed_identity_mut(owner) else {
+            return Ok(());
+        };
+        managed.set_dashpay_profile(profile, &persister);
+        Ok(())
+    }
+
+    /// Record a DashPay payment entry against the upstream `ManagedIdentity`
+    /// for `owner`. Upstream stores payments keyed by `tx_id` with
+    /// last-write-wins semantics, so this method is also the correct way
+    /// to update a payment's status (e.g. `Pending` → `Confirmed`).
+    ///
+    /// Returns `Ok(())` when no registered wallet manages `owner`.
+    pub async fn dashpay_record_payment(
+        &self,
+        owner: &Identifier,
+        tx_id: String,
+        entry: PaymentEntry,
+    ) -> Result<(), TaskError> {
+        let Some(wallet) = self.find_wallet_for_identity(owner).await else {
+            tracing::debug!(
+                owner = %owner.to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58),
+                "WalletBackend::dashpay_record_payment: no managing wallet found; skipping"
+            );
+            return Ok(());
+        };
+        let persister = wallet.persister().clone();
+        let mut state = wallet.state_mut().await;
+        let Some(managed) = state.identity_manager.managed_identity_mut(owner) else {
+            return Ok(());
+        };
+        managed.record_dashpay_payment(tx_id, entry, &persister);
+        Ok(())
+    }
+
+    /// Toggle the DET-local "blocked" marker for a contact identity in the
+    /// k/v sidecar. The marker has no upstream counterpart — DashPay does
+    /// not block on-chain — so it lives entirely in the per-network
+    /// sidecar that [`DashpayView`] reads at view time.
+    pub fn dashpay_mark_blocked(&self, contact_id: &Identifier) -> Result<(), TaskError> {
+        let key = sidecar_key(KV_PREFIX_BLOCKED, contact_id);
+        self.kv()
+            .put::<()>(None, &key, &())
+            .map_err(|e| TaskError::DashpaySidecarStorage { source: e })
+    }
+
+    /// Clear the DET-local "blocked" marker for a contact identity.
+    /// Idempotent — clearing an absent marker is `Ok(())`.
+    pub fn dashpay_unmark_blocked(&self, contact_id: &Identifier) -> Result<(), TaskError> {
+        let key = sidecar_key(KV_PREFIX_BLOCKED, contact_id);
+        self.kv()
+            .delete(None, &key)
+            .map_err(|e| TaskError::DashpaySidecarStorage { source: e })
+    }
+
+    /// Record that the user has rejected an incoming contact request from
+    /// `counterparty_id` (or, equivalently, the sent request to them was
+    /// withdrawn from the user's point of view). The sidecar key matches
+    /// what [`DashpayView`] consults when deriving request status.
+    pub fn dashpay_mark_rejected(&self, counterparty_id: &Identifier) -> Result<(), TaskError> {
+        let key = sidecar_key(KV_PREFIX_REJECTED, counterparty_id);
+        self.kv()
+            .put::<()>(None, &key, &())
+            .map_err(|e| TaskError::DashpaySidecarStorage { source: e })
+    }
+
+    /// Write DET-local `(created_at_ms, updated_at_ms)` timestamps for an
+    /// entity (contact, request, profile owner) into the k/v sidecar. These
+    /// timestamps surface verbatim through the [`DashpayView`] adapter.
+    pub fn dashpay_set_timestamps(
+        &self,
+        entity_id: &Identifier,
+        created_at: i64,
+        updated_at: i64,
+    ) -> Result<(), TaskError> {
+        let key = sidecar_key(KV_PREFIX_TIMESTAMPS, entity_id);
+        self.kv()
+            .put::<(i64, i64)>(None, &key, &(created_at, updated_at))
+            .map_err(|e| TaskError::DashpaySidecarStorage { source: e })
+    }
+
+    /// Write DET-local `(created_at_ms, confirmed_at_ms)` timestamps for a
+    /// payment in the k/v sidecar, keyed by transaction id. Upstream
+    /// `PaymentEntry` carries no timestamps of its own, so this is the
+    /// authoritative source consulted by [`DashpayView::payments`].
+    pub fn dashpay_set_payment_timestamps(
+        &self,
+        tx_id: &str,
+        created_at: i64,
+        confirmed_at: Option<i64>,
+    ) -> Result<(), TaskError> {
+        let key = format!("{KV_PREFIX_TIMESTAMPS}tx:{tx_id}");
+        self.kv()
+            .put::<(i64, Option<i64>)>(None, &key, &(created_at, confirmed_at))
+            .map_err(|e| TaskError::DashpaySidecarStorage { source: e })
+    }
+
     /// Locate the `PlatformWallet` whose `IdentityManager` owns `identity_id`.
     ///
     /// Scans the sync wallet cache, then probes each wallet's
@@ -782,6 +901,153 @@ mod tests {
         )
         .unwrap();
         assert_eq!(kv_payment_timestamps(&kv, tx_id), (100, Some(200)));
+    }
+
+    /// D3 contract: the key encoding used by the write helpers
+    /// (`dashpay_mark_blocked`, `dashpay_mark_rejected`,
+    /// `dashpay_set_timestamps`, `dashpay_set_payment_timestamps`) must
+    /// match the encoding the read helpers (`kv_contains`,
+    /// `kv_timestamps`, `kv_payment_timestamps`) consult — otherwise
+    /// every write is invisible to the view.
+    ///
+    /// These tests use the same `sidecar_key` builder + the read helpers
+    /// directly, simulating a write-then-read round-trip without
+    /// constructing a full `WalletBackend`.
+    #[test]
+    fn d3_blocked_marker_round_trips_through_sidecar_key() {
+        let kv = empty_kv();
+        let contact = id_from_byte(7);
+        // What `dashpay_mark_blocked` writes:
+        kv.put::<()>(None, &sidecar_key(KV_PREFIX_BLOCKED, &contact), &())
+            .unwrap();
+        // What `DashpayView::contacts` reads:
+        assert!(kv_contains(&kv, KV_PREFIX_BLOCKED, &contact));
+
+        // And `dashpay_unmark_blocked` (delete) clears it.
+        kv.delete(None, &sidecar_key(KV_PREFIX_BLOCKED, &contact))
+            .unwrap();
+        assert!(!kv_contains(&kv, KV_PREFIX_BLOCKED, &contact));
+    }
+
+    #[test]
+    fn d3_rejected_marker_round_trips_through_sidecar_key() {
+        let kv = empty_kv();
+        let counterparty = id_from_byte(8);
+        // What `dashpay_mark_rejected` writes:
+        kv.put::<()>(None, &sidecar_key(KV_PREFIX_REJECTED, &counterparty), &())
+            .unwrap();
+        // What `derive_request_status` reads:
+        assert!(kv_contains(&kv, KV_PREFIX_REJECTED, &counterparty));
+
+        let now_ms: u64 = 1_000_000_000_000;
+        let created_at_ms: u64 = now_ms - 60_000;
+        assert_eq!(
+            derive_request_status(&counterparty, false, created_at_ms, now_ms, &kv),
+            "rejected"
+        );
+    }
+
+    #[test]
+    fn d3_timestamp_sidecar_round_trips() {
+        let kv = empty_kv();
+        let entity = id_from_byte(9);
+        // What `dashpay_set_timestamps` writes:
+        kv.put::<(i64, i64)>(
+            None,
+            &sidecar_key(KV_PREFIX_TIMESTAMPS, &entity),
+            &(123, 456),
+        )
+        .unwrap();
+        // What `DashpayView::contacts` reads:
+        assert_eq!(kv_timestamps(&kv, &entity), (123, 456));
+    }
+
+    #[test]
+    fn d3_payment_timestamp_sidecar_round_trips() {
+        let kv = empty_kv();
+        let tx_id = "abcd1234";
+        // What `dashpay_set_payment_timestamps` writes:
+        kv.put::<(i64, Option<i64>)>(
+            None,
+            &format!("{KV_PREFIX_TIMESTAMPS}tx:{tx_id}"),
+            &(789, Some(1000)),
+        )
+        .unwrap();
+        // What `DashpayView::payments` reads:
+        assert_eq!(kv_payment_timestamps(&kv, tx_id), (789, Some(1000)));
+    }
+
+    #[test]
+    fn d3_block_then_list_contacts_yields_blocked_status() {
+        // Simulates: send → block → list. After D3 wires
+        // `dashpay_mark_blocked`, the contact's status flips to
+        // "blocked" without touching the upstream `EstablishedContact`
+        // (DashPay has no on-chain block flag — DET sidecar is the
+        // source of truth).
+        let kv = empty_kv();
+        let owner = id_from_byte(1);
+        let contact_id = id_from_byte(2);
+
+        // Pre-state: a single established contact exists upstream.
+        let mut contact =
+            EstablishedContact::new(contact_id, mk_request(1, 2, 100), mk_request(2, 1, 200));
+        contact.set_alias("Pal".into());
+
+        // What `dashpay_mark_blocked(&contact_id)` writes:
+        kv.put::<()>(None, &sidecar_key(KV_PREFIX_BLOCKED, &contact_id), &())
+            .unwrap();
+
+        // What the view derivation produces — same precedence as
+        // `DashpayView::contacts`: blocked wins over accepted.
+        let status = if kv_contains(&kv, KV_PREFIX_BLOCKED, &contact_id) {
+            "blocked"
+        } else {
+            "accepted"
+        };
+        let det = established_to_det(&owner, &contact, status, 0, 0);
+        assert_eq!(det.contact_status, "blocked");
+        assert_eq!(det.display_name.as_deref(), Some("Pal"));
+    }
+
+    #[test]
+    fn d3_reject_then_list_contact_requests_yields_rejected_status() {
+        // Simulates: send → reject → list. After D3 wires
+        // `dashpay_mark_rejected`, the outgoing request's status flips
+        // to "rejected" without touching upstream presence (rejected
+        // requests are not removed from `sent_contact_requests`).
+        let kv = empty_kv();
+        let counterparty = id_from_byte(2);
+        kv.put::<()>(None, &sidecar_key(KV_PREFIX_REJECTED, &counterparty), &())
+            .unwrap();
+
+        let now_ms: u64 = 2_000_000_000_000;
+        let created_at_ms: u64 = now_ms - 1_000;
+        let derived = derive_request_status(&counterparty, false, created_at_ms, now_ms, &kv);
+        assert_eq!(derived, "rejected");
+
+        // And the threshold-expiry override does not fire for rejected
+        // requests — `rejected` precedence is higher than `expired`.
+        let threshold_ms = (DASHPAY_REQUEST_EXPIRY_DAYS as u64) * 86_400_000;
+        let old_created = now_ms - threshold_ms - 60_000;
+        let derived_old = derive_request_status(&counterparty, false, old_created, now_ms, &kv);
+        assert_eq!(derived_old, "rejected");
+    }
+
+    #[test]
+    fn d3_seven_day_old_pending_request_reports_expired() {
+        // Send → wait > 7 days → list → assert expired. The DET-side
+        // expiry threshold lives in `DASHPAY_REQUEST_EXPIRY_DAYS` and
+        // is a UX gate; upstream stores no protocol-level expiry.
+        let kv = empty_kv();
+        let counterparty = id_from_byte(2);
+        let now_ms: u64 = 50_000_000_000_000;
+        let threshold_ms = (DASHPAY_REQUEST_EXPIRY_DAYS as u64) * 86_400_000;
+        // 7 days + a margin of safety.
+        let created_at_ms: u64 = now_ms - threshold_ms - 86_400_000;
+        assert_eq!(
+            derive_request_status(&counterparty, false, created_at_ms, now_ms, &kv),
+            "expired"
+        );
     }
 
     // -------------------------------------------------------------------

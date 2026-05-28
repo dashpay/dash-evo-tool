@@ -327,8 +327,8 @@ impl Database {
                     .migration_err("asset_lock_transaction", "migrate FK to SET NULL")?;
             }
             6 => {
-                self.update_scheduled_votes_table(tx)
-                    .migration_err("scheduled_votes", "update table schema")?;
+                // Pre-C5: `scheduled_votes` schema upgrade. The table is no longer
+                // created/managed; pre-C5 installs keep the orphaned table dormant.
                 self.initialize_token_table(tx)
                     .migration_err("token", "create table")?;
                 self.drop_identity_token_balances_table(tx)
@@ -345,20 +345,19 @@ impl Database {
                     .migration_err("token_order", "create table")?;
             }
             5 => {
-                self.initialize_scheduled_votes_table(tx)
-                    .migration_err("scheduled_votes", "create table")?;
+                // Pre-C5: `scheduled_votes` create. Removed in C5; the table
+                // is no longer created on fresh installs.
             }
             4 => {
-                self.initialize_top_up_table(tx)
-                    .migration_err("top_up", "create table")?;
+                // Pre-C5: `top_up` create. Removed in C5.
             }
             3 => {
                 self.add_custom_dash_qt_columns(tx)
                     .migration_err("settings", "add custom dash_qt columns")?;
             }
             2 => {
-                self.initialize_proof_log_table(tx)
-                    .migration_err("proof_log", "create table")?;
+                // Pre-C5: `proof_log` create. Removed in C5; proof errors now
+                // surface via structured tracing only.
             }
             _ => {
                 tracing::warn!("No database changes for version {}", version);
@@ -733,9 +732,6 @@ impl Database {
             [],
         )?;
 
-        self.initialize_proof_log_table(&conn)?;
-        self.initialize_top_up_table(&conn)?;
-        self.initialize_scheduled_votes_table(&conn)?;
         self.initialize_token_table(&conn)?;
         self.initialize_identity_order_table(&conn)?;
         self.initialize_token_order_table(&conn)?;
@@ -1130,10 +1126,23 @@ impl Database {
             "CREATE INDEX IF NOT EXISTS idx_identity_token_balances_network ON identity_token_balances (network)",
             [],
         )?;
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_scheduled_votes_network ON scheduled_votes (network)",
-            [],
-        )?;
+        // The `scheduled_votes` table was unwired in C5; the index it carried
+        // is no longer maintained on fresh installs. Existing pre-C5 installs
+        // keep the orphaned table and its index dormant. Older pre-v6 shapes
+        // also lack the `network` column entirely — skip in that case.
+        if self.table_exists(conn, "scheduled_votes")? {
+            let has_network: bool = conn.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('scheduled_votes') WHERE name='network'",
+                [],
+                |row| row.get::<_, i32>(0).map(|c| c > 0),
+            )?;
+            if has_network {
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_scheduled_votes_network ON scheduled_votes (network)",
+                    [],
+                )?;
+            }
+        }
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_asset_lock_transaction_network ON asset_lock_transaction (network)",
             [],
@@ -1434,6 +1443,26 @@ impl Database {
         ];
         for table in tables {
             tracing::debug!("  rename_network: updating {table}");
+            // `scheduled_votes` was unwired in C5; on fresh installs the
+            // table is absent (skip) and on legacy v5-shaped installs the
+            // column may be missing (also skip). The table is orphaned
+            // either way once `scheduled_votes` lives in k/v.
+            let exists = self
+                .table_exists(conn, table)
+                .migration_err(table, "check table existence")?;
+            if !exists {
+                continue;
+            }
+            let has_network: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name='network'",
+                    [table],
+                    |row| row.get::<_, i32>(0).map(|c| c > 0),
+                )
+                .migration_err(table, "check for network column")?;
+            if !has_network {
+                continue;
+            }
             conn.execute(
                 &format!("UPDATE {table} SET network = 'mainnet' WHERE network = 'dash'"),
                 [],

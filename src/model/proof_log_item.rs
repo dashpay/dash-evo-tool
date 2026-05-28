@@ -83,14 +83,3 @@ impl TryFrom<u8> for RequestType {
         }
     }
 }
-
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct ProofLogItem {
-    pub request_type: RequestType,
-    pub request_bytes: Vec<u8>,
-    pub verification_path_query_bytes: Vec<u8>,
-    pub height: u64,
-    pub time_ms: u64,
-    pub proof_bytes: Vec<u8>,
-    pub error: Option<String>,
-}

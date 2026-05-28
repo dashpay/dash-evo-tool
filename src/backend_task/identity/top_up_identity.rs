@@ -75,14 +75,14 @@ impl AppContext {
             actual_fee,
         );
 
-        self.update_local_qualified_identity(&qualified_identity)?;
         if let Some(amount) = amount_duffs_for_fee {
-            self.db.insert_top_up(
-                qualified_identity.identity.id().as_bytes(),
-                top_up_index,
-                amount,
+            qualified_identity.top_ups.insert(top_up_index, amount);
+            self.save_top_ups(
+                &qualified_identity.identity.id(),
+                &qualified_identity.top_ups,
             )?;
         }
+        self.update_local_qualified_identity(&qualified_identity)?;
 
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
         Ok(BackendTaskSuccessResult::ToppedUpIdentity(

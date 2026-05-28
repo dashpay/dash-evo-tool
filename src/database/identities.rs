@@ -128,55 +128,34 @@ impl Database {
 
         let conn = self.conn.lock().unwrap();
 
-        // Use a LEFT JOIN to load identities and their top-ups in a single query,
-        // avoiding the N+1 query pattern of querying top_up per identity.
+        // Top-up history is loaded separately from the per-network k/v
+        // store by the [`AppContext`] wrappers (see `identity_db.rs`).
         let mut stmt = conn.prepare(
-            "SELECT i.data, i.alias, i.wallet_index, i.status, i.id, t.top_up_index, t.amount
-             FROM identity i
-             LEFT JOIN top_up t ON i.id = t.identity_id
-             WHERE i.is_local = 1 AND i.network = ? AND i.data IS NOT NULL
-             ORDER BY i.id",
+            "SELECT data, alias, wallet_index, status
+             FROM identity
+             WHERE is_local = 1 AND network = ? AND data IS NOT NULL
+             ORDER BY id",
         )?;
 
-        let mut rows = stmt.query(params![network])?;
+        let rows = stmt.query_map(params![network], |row| {
+            let data: Vec<u8> = row.get(0)?;
+            let alias: Option<String> = row.get(1)?;
+            let wallet_index: Option<u32> = row.get(2)?;
+            let status: Option<u8> = row.get(3)?;
 
-        let mut identities: Vec<QualifiedIdentity> = Vec::new();
-        let mut current_id: Option<Vec<u8>> = None;
+            let mut identity =
+                QualifiedIdentity::from_bytes(&data).map_err(super::CorruptedBlobError)?;
+            identity.alias = alias;
+            identity.wallet_index = wallet_index;
+            identity.status = IdentityStatus::from_u8(status.unwrap_or(2));
+            identity.network = app_context.network;
+            identity.associated_wallets = wallets.clone();
+            identity.top_ups = BTreeMap::new();
 
-        while let Some(row) = rows.next()? {
-            let id: Vec<u8> = row.get(4)?;
+            Ok(identity)
+        })?;
 
-            if current_id.as_ref() != Some(&id) {
-                // New identity row
-                let data: Vec<u8> = row.get(0)?;
-                let alias: Option<String> = row.get(1)?;
-                let wallet_index: Option<u32> = row.get(2)?;
-                let status: Option<u8> = row.get(3)?;
-
-                let mut identity =
-                    QualifiedIdentity::from_bytes(&data).map_err(super::CorruptedBlobError)?;
-                identity.alias = alias;
-                identity.wallet_index = wallet_index;
-                identity.status = IdentityStatus::from_u8(status.unwrap_or(2));
-                identity.network = app_context.network;
-                identity.associated_wallets = wallets.clone();
-                identity.top_ups = BTreeMap::new();
-
-                identities.push(identity);
-                current_id = Some(id);
-            }
-
-            // Add top-up entry if present (NULL when identity has no top-ups)
-            let top_up_index: Option<u32> = row.get(5)?;
-            let amount: Option<u64> = row.get(6)?;
-            if let (Some(idx), Some(amt)) = (top_up_index, amount)
-                && let Some(identity) = identities.last_mut()
-            {
-                identity.top_ups.insert(idx, amt);
-            }
-        }
-
-        Ok(identities)
+        rows.collect()
     }
 
     /// Stops on the first corrupted identity blob and returns an error.
@@ -192,54 +171,32 @@ impl Database {
 
         let conn = self.conn.lock().unwrap();
 
-        // Use a LEFT JOIN to load identities and their top-ups in a single query.
         let mut stmt = conn.prepare(
-            "SELECT i.data, i.alias, i.wallet_index, i.status, i.id, t.top_up_index, t.amount
-             FROM identity i
-             LEFT JOIN top_up t ON i.id = t.identity_id
-             WHERE i.is_local = 1 AND i.network = ? AND i.data IS NOT NULL AND i.wallet_index IS NOT NULL
-             ORDER BY i.id",
+            "SELECT data, alias, wallet_index, status
+             FROM identity
+             WHERE is_local = 1 AND network = ? AND data IS NOT NULL AND wallet_index IS NOT NULL
+             ORDER BY id",
         )?;
 
-        let mut rows = stmt.query(params![network])?;
+        let rows = stmt.query_map(params![network], |row| {
+            let data: Vec<u8> = row.get(0)?;
+            let alias: Option<String> = row.get(1)?;
+            let wallet_index: Option<u32> = row.get(2)?;
+            let status: Option<u8> = row.get(3)?;
 
-        let mut identities: Vec<QualifiedIdentity> = Vec::new();
-        let mut current_id: Option<Vec<u8>> = None;
+            let mut identity =
+                QualifiedIdentity::from_bytes(&data).map_err(super::CorruptedBlobError)?;
+            identity.alias = alias;
+            identity.wallet_index = wallet_index;
+            identity.status = IdentityStatus::from_u8(status.unwrap_or(2));
+            identity.network = app_context.network;
+            identity.associated_wallets = wallets.clone();
+            identity.top_ups = BTreeMap::new();
 
-        while let Some(row) = rows.next()? {
-            let id: Vec<u8> = row.get(4)?;
+            Ok(identity)
+        })?;
 
-            if current_id.as_ref() != Some(&id) {
-                // New identity row
-                let data: Vec<u8> = row.get(0)?;
-                let alias: Option<String> = row.get(1)?;
-                let wallet_index: Option<u32> = row.get(2)?;
-                let status: Option<u8> = row.get(3)?;
-
-                let mut identity =
-                    QualifiedIdentity::from_bytes(&data).map_err(super::CorruptedBlobError)?;
-                identity.alias = alias;
-                identity.wallet_index = wallet_index;
-                identity.status = IdentityStatus::from_u8(status.unwrap_or(2));
-                identity.network = app_context.network;
-                identity.associated_wallets = wallets.clone();
-                identity.top_ups = BTreeMap::new();
-
-                identities.push(identity);
-                current_id = Some(id);
-            }
-
-            // Add top-up entry if present
-            let top_up_index: Option<u32> = row.get(5)?;
-            let amount: Option<u64> = row.get(6)?;
-            if let (Some(idx), Some(amt)) = (top_up_index, amount)
-                && let Some(identity) = identities.last_mut()
-            {
-                identity.top_ups.insert(idx, amt);
-            }
-        }
-
-        Ok(identities)
+        rows.collect()
     }
 
     /// Returns an error if the stored identity blob is corrupted.
@@ -255,48 +212,32 @@ impl Database {
 
         let conn = self.conn.lock().unwrap();
 
-        // Use a LEFT JOIN to load identity and its top-ups in a single query.
         let mut stmt = conn.prepare(
-            "SELECT i.data, i.alias, i.wallet_index, i.status, t.top_up_index, t.amount
-             FROM identity i
-             LEFT JOIN top_up t ON i.id = t.identity_id
-             WHERE i.id = ? AND i.is_local = 1 AND i.network = ? AND i.data IS NOT NULL",
+            "SELECT data, alias, wallet_index, status
+             FROM identity
+             WHERE id = ? AND is_local = 1 AND network = ? AND data IS NOT NULL",
         )?;
 
         let mut rows = stmt.query(params![identifier.to_buffer(), network])?;
 
-        let mut identity: Option<QualifiedIdentity> = None;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
 
-        while let Some(row) = rows.next()? {
-            if identity.is_none() {
-                let data: Vec<u8> = row.get(0)?;
-                let alias: Option<String> = row.get(1)?;
-                let wallet_index: Option<u32> = row.get(2)?;
-                let status: Option<u8> = row.get(3)?;
+        let data: Vec<u8> = row.get(0)?;
+        let alias: Option<String> = row.get(1)?;
+        let wallet_index: Option<u32> = row.get(2)?;
+        let status: Option<u8> = row.get(3)?;
 
-                let mut qi =
-                    QualifiedIdentity::from_bytes(&data).map_err(super::CorruptedBlobError)?;
-                qi.alias = alias;
-                qi.wallet_index = wallet_index;
-                qi.status = IdentityStatus::from_u8(status.unwrap_or(2));
-                qi.network = app_context.network;
-                qi.associated_wallets = wallets.clone();
-                qi.top_ups = BTreeMap::new();
+        let mut qi = QualifiedIdentity::from_bytes(&data).map_err(super::CorruptedBlobError)?;
+        qi.alias = alias;
+        qi.wallet_index = wallet_index;
+        qi.status = IdentityStatus::from_u8(status.unwrap_or(2));
+        qi.network = app_context.network;
+        qi.associated_wallets = wallets.clone();
+        qi.top_ups = BTreeMap::new();
 
-                identity = Some(qi);
-            }
-
-            // Add top-up entry if present
-            let top_up_index: Option<u32> = row.get(4)?;
-            let amount: Option<u64> = row.get(5)?;
-            if let (Some(idx), Some(amt)) = (top_up_index, amount)
-                && let Some(ref mut qi) = identity
-            {
-                qi.top_ups.insert(idx, amt);
-            }
-        }
-
-        Ok(identity)
+        Ok(Some(qi))
     }
 
     /// Stops on the first corrupted identity blob and returns an error.
@@ -507,6 +448,9 @@ impl Database {
 
     /// Fixes bug in identity table where network name for devnet was stored as `devnet:` instead of `devnet`.
     pub fn fix_identity_devnet_network_name(&self, conn: &Connection) -> rusqlite::Result<()> {
+        // `scheduled_votes` lingers on pre-C5 installs but is no longer
+        // created on fresh installs; the per-table existence check below
+        // skips it transparently on the new schema.
         const TABLES: [&str; 11] = [
             "asset_lock_transaction",
             "contestant",
@@ -522,6 +466,27 @@ impl Database {
         ];
 
         for t in TABLES {
+            let exists: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                [t],
+                |row| row.get(0),
+            )?;
+            if !exists {
+                continue;
+            }
+            // Pre-C5 `scheduled_votes` (v5 schema) had no `network` column;
+            // the v6 schema upgrade that added it was unwired in C5, so
+            // legacy DBs that never ran a later migration still have the
+            // old shape. Skip the UPDATE on those — the table is orphaned
+            // either way.
+            let has_network: bool = conn.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name='network'",
+                [t],
+                |row| row.get::<_, i32>(0).map(|c| c > 0),
+            )?;
+            if !has_network {
+                continue;
+            }
             conn.execute(
                 &format!(
                     "UPDATE {} SET network = 'devnet' WHERE network = 'devnet:'",

@@ -1,6 +1,6 @@
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
-use crate::model::proof_log_item::{ProofLogItem, RequestType};
+use crate::model::proof_log_item::RequestType;
 use chrono::{DateTime, Duration, Utc};
 use dash_sdk::dpp::voting::vote_polls::VotePoll;
 use dash_sdk::dpp::voting::vote_polls::contested_document_resource_vote_poll::ContestedDocumentResourceVotePoll;
@@ -63,42 +63,21 @@ impl AppContext {
                     tracing::error!("Error fetching vote polls: {}", e);
                     if let dash_sdk::Error::Proof(dash_sdk::ProofVerifierError::GroveDBError {
                         proof_bytes,
-                        path_query,
                         height,
                         time_ms,
                         error,
+                        ..
                     }) = &e
                     {
-                        let encoded_query =
-                            bincode::encode_to_vec(&end_time_query, bincode::config::standard())
-                                .map_err(|encode_err| {
-                                    tracing::error!("Error encoding query: {}", encode_err);
-                                    TaskError::SerializationError {
-                                        detail: format!("Error encoding query: {}", encode_err),
-                                    }
-                                })?;
-
-                        let verification_path_query_bytes =
-                            bincode::encode_to_vec(path_query, bincode::config::standard())
-                                .map_err(|encode_err| {
-                                    tracing::error!("Error encoding path_query: {}", encode_err);
-                                    TaskError::SerializationError {
-                                        detail: format!(
-                                            "Error encoding path_query: {}",
-                                            encode_err
-                                        ),
-                                    }
-                                })?;
-
-                        self.db.insert_proof_log_item(ProofLogItem {
-                            request_type: RequestType::GetVotePollsByEndDate,
-                            request_bytes: encoded_query,
-                            verification_path_query_bytes,
-                            height: *height,
-                            time_ms: *time_ms,
-                            proof_bytes: proof_bytes.clone(),
-                            error: Some(error.clone()),
-                        })?
+                        tracing::error!(
+                            target: "proof_log",
+                            request_type = ?RequestType::GetVotePollsByEndDate,
+                            height = *height,
+                            time_ms = *time_ms,
+                            proof_bytes_len = proof_bytes.len(),
+                            error = %error,
+                            "drive proof verification failed while querying vote poll end times",
+                        );
                     }
                     // TODO: Replace the "contract not found" string match with a
                     // structural SDK variant when one is available.

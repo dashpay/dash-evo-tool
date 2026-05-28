@@ -4,8 +4,96 @@ use crate::model::contested_name::ContestedName;
 use crate::model::qualified_identity::{DPNSNameInfo, QualifiedIdentity};
 use crate::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::platform::Identifier;
 use rusqlite::Result;
+use serde::{Deserialize, Serialize};
+
+/// Key prefix for scheduled-vote entries in the per-network wallet k/v
+/// store. The full key is `det:scheduled_vote:<base58_voter>:<contested_name>`
+/// and lives in the global (`None`) scope — scheduling is a network-level
+/// queue, not per-wallet.
+const SCHEDULED_VOTE_KEY_PREFIX: &str = "det:scheduled_vote:";
+
+/// Key prefix for top-up history blobs. The full key is
+/// `det:top_ups:<base58_identity_id>` and lives in the global (`None`)
+/// scope — top-up history is keyed by identity, which is itself a
+/// network-scoped concept inside the per-network k/v store.
+const TOP_UPS_KEY_PREFIX: &str = "det:top_ups:";
+
+fn top_ups_key(identity_id: &Identifier) -> String {
+    format!(
+        "{}{}",
+        TOP_UPS_KEY_PREFIX,
+        identity_id.to_string(Encoding::Base58)
+    )
+}
+
+fn scheduled_vote_key(voter_id: &Identifier, contested_name: &str) -> String {
+    format!(
+        "{}{}:{}",
+        SCHEDULED_VOTE_KEY_PREFIX,
+        voter_id.to_string(Encoding::Base58),
+        contested_name
+    )
+}
+
+/// Persisted shape of a scheduled DPNS vote. Mirrors
+/// [`ScheduledDPNSVote`] but with a serde-friendly representation of
+/// the SDK's [`ResourceVoteChoice`] (which only derives bincode under
+/// this feature set).
+#[derive(Debug, Serialize, Deserialize)]
+struct StoredScheduledVote {
+    voter_id: [u8; 32],
+    contested_name: String,
+    choice: StoredVoteChoice,
+    unix_timestamp: u64,
+    executed_successfully: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+enum StoredVoteChoice {
+    TowardsIdentity([u8; 32]),
+    Abstain,
+    Lock,
+}
+
+impl From<&ScheduledDPNSVote> for StoredScheduledVote {
+    fn from(v: &ScheduledDPNSVote) -> Self {
+        Self {
+            voter_id: v.voter_id.to_buffer(),
+            contested_name: v.contested_name.clone(),
+            choice: match v.choice {
+                ResourceVoteChoice::TowardsIdentity(id) => {
+                    StoredVoteChoice::TowardsIdentity(id.to_buffer())
+                }
+                ResourceVoteChoice::Abstain => StoredVoteChoice::Abstain,
+                ResourceVoteChoice::Lock => StoredVoteChoice::Lock,
+            },
+            unix_timestamp: v.unix_timestamp,
+            executed_successfully: v.executed_successfully,
+        }
+    }
+}
+
+impl From<StoredScheduledVote> for ScheduledDPNSVote {
+    fn from(v: StoredScheduledVote) -> Self {
+        ScheduledDPNSVote {
+            voter_id: Identifier::from(v.voter_id),
+            contested_name: v.contested_name,
+            choice: match v.choice {
+                StoredVoteChoice::TowardsIdentity(id) => {
+                    ResourceVoteChoice::TowardsIdentity(Identifier::from(id))
+                }
+                StoredVoteChoice::Abstain => ResourceVoteChoice::Abstain,
+                StoredVoteChoice::Lock => ResourceVoteChoice::Lock,
+            },
+            unix_timestamp: v.unix_timestamp,
+            executed_successfully: v.executed_successfully,
+        }
+    }
+}
 
 impl AppContext {
     /// Inserts a local qualified identity into the database
@@ -52,18 +140,69 @@ impl AppContext {
         self.db.get_identity_alias(identifier)
     }
 
-    /// Fetches all local qualified identities from the database
+    /// Fetches all local qualified identities from the database, then
+    /// hydrates each identity's top-up history from the per-network
+    /// wallet k/v store.
     pub fn load_local_qualified_identities(&self) -> Result<Vec<QualifiedIdentity>> {
         let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
-        self.db.get_local_qualified_identities(self, &wallets)
+        let mut identities = self.db.get_local_qualified_identities(self, &wallets)?;
+        for identity in &mut identities {
+            self.hydrate_top_ups(identity);
+        }
+        Ok(identities)
     }
 
-    /// Fetches all local qualified identities from the database
+    /// Same as [`Self::load_local_qualified_identities`] but filters to
+    /// identities associated with a wallet.
     #[allow(dead_code)] // May be used for loading identities in wallets
     pub fn load_local_qualified_identities_in_wallets(&self) -> Result<Vec<QualifiedIdentity>> {
         let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
-        self.db
-            .get_local_qualified_identities_in_wallets(self, &wallets)
+        let mut identities = self
+            .db
+            .get_local_qualified_identities_in_wallets(self, &wallets)?;
+        for identity in &mut identities {
+            self.hydrate_top_ups(identity);
+        }
+        Ok(identities)
+    }
+
+    /// Populate `identity.top_ups` from the per-network wallet k/v
+    /// store. A missing or unreadable entry is logged and treated as an
+    /// empty map; pre-C5 SQLite data is intentionally not migrated and
+    /// surfaces as empty under the "empty start" policy.
+    fn hydrate_top_ups(&self, identity: &mut QualifiedIdentity) {
+        let Ok(backend) = self.wallet_backend() else {
+            return;
+        };
+        let key = top_ups_key(&identity.identity.id());
+        match backend
+            .kv()
+            .get::<std::collections::BTreeMap<u32, u64>>(None, &key)
+        {
+            Ok(Some(map)) => identity.top_ups = map,
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(
+                    identity = %identity.identity.id(),
+                    error = ?e,
+                    "Failed to load top-up history from wallet k/v"
+                );
+            }
+        }
+    }
+
+    /// Persist the running top-up history for an identity into the
+    /// per-network wallet k/v store.
+    pub fn save_top_ups(
+        &self,
+        identity_id: &Identifier,
+        top_ups: &std::collections::BTreeMap<u32, u64>,
+    ) -> std::result::Result<(), crate::backend_task::error::TaskError> {
+        let backend = self.wallet_backend()?;
+        backend
+            .kv()
+            .put(None, &top_ups_key(identity_id), top_ups)
+            .map_err(|source| crate::backend_task::error::TaskError::TopUpHistoryStorage { source })
     }
 
     pub fn get_identity_by_id(
@@ -71,9 +210,10 @@ impl AppContext {
         identity_id: &Identifier,
     ) -> Result<Option<QualifiedIdentity>> {
         let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
-        // Get the identity from the database
-        let result = self.db.get_identity_by_id(identity_id, self, &wallets)?;
-
+        let mut result = self.db.get_identity_by_id(identity_id, self, &wallets)?;
+        if let Some(ref mut identity) = result {
+            self.hydrate_top_ups(identity);
+        }
         Ok(result)
     }
 
@@ -146,37 +286,148 @@ impl AppContext {
         self.db.get_ongoing_contested_names(self)
     }
 
-    /// Inserts scheduled votes into the database
-    pub fn insert_scheduled_votes(&self, scheduled_votes: &Vec<ScheduledDPNSVote>) -> Result<()> {
-        self.db.insert_scheduled_votes(self, scheduled_votes)
+    /// Persist a batch of scheduled votes in the per-network wallet
+    /// k/v store. Existing entries with the same `(voter_id,
+    /// contested_name)` key are overwritten — matching the pre-C5
+    /// `INSERT OR REPLACE` semantics.
+    pub fn insert_scheduled_votes(
+        &self,
+        scheduled_votes: &Vec<ScheduledDPNSVote>,
+    ) -> std::result::Result<(), crate::backend_task::error::TaskError> {
+        let backend = self.wallet_backend()?;
+        let kv = backend.kv();
+        for vote in scheduled_votes {
+            let stored = StoredScheduledVote::from(vote);
+            kv.put(
+                None,
+                &scheduled_vote_key(&vote.voter_id, &vote.contested_name),
+                &stored,
+            )
+            .map_err(|source| {
+                crate::backend_task::error::TaskError::ScheduledVoteStorage { source }
+            })?;
+        }
+        Ok(())
     }
 
-    /// Fetches all scheduled votes from the database
-    pub fn get_scheduled_votes(&self) -> Result<Vec<ScheduledDPNSVote>> {
-        self.db.get_scheduled_votes(self)
+    /// Fetch every scheduled vote queued for this network from the
+    /// wallet k/v store.
+    pub fn get_scheduled_votes(
+        &self,
+    ) -> std::result::Result<Vec<ScheduledDPNSVote>, crate::backend_task::error::TaskError> {
+        let backend = self.wallet_backend()?;
+        let kv = backend.kv();
+        let keys = kv
+            .list(None, Some(SCHEDULED_VOTE_KEY_PREFIX))
+            .map_err(
+                |source| crate::backend_task::error::TaskError::ScheduledVoteStorage { source },
+            )?;
+        let mut out = Vec::with_capacity(keys.len());
+        for key in keys {
+            match kv.get::<StoredScheduledVote>(None, &key) {
+                Ok(Some(stored)) => out.push(stored.into()),
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!(
+                        key = %key,
+                        error = ?e,
+                        "Skipping unreadable scheduled vote entry"
+                    );
+                }
+            }
+        }
+        Ok(out)
     }
 
-    /// Clears all scheduled votes from the database
-    pub fn clear_all_scheduled_votes(&self) -> Result<()> {
-        self.db.clear_all_scheduled_votes(self)
+    /// Drop every scheduled vote queued for this network.
+    pub fn clear_all_scheduled_votes(
+        &self,
+    ) -> std::result::Result<(), crate::backend_task::error::TaskError> {
+        let backend = self.wallet_backend()?;
+        let kv = backend.kv();
+        let keys = kv
+            .list(None, Some(SCHEDULED_VOTE_KEY_PREFIX))
+            .map_err(
+                |source| crate::backend_task::error::TaskError::ScheduledVoteStorage { source },
+            )?;
+        for key in keys {
+            kv.delete(None, &key).map_err(|source| {
+                crate::backend_task::error::TaskError::ScheduledVoteStorage { source }
+            })?;
+        }
+        Ok(())
     }
 
-    /// Clears all executed scheduled votes from the database
-    pub fn clear_executed_scheduled_votes(&self) -> Result<()> {
-        self.db.clear_executed_scheduled_votes(self)
+    /// Drop every scheduled vote that has already been cast successfully.
+    pub fn clear_executed_scheduled_votes(
+        &self,
+    ) -> std::result::Result<(), crate::backend_task::error::TaskError> {
+        let backend = self.wallet_backend()?;
+        let kv = backend.kv();
+        let keys = kv
+            .list(None, Some(SCHEDULED_VOTE_KEY_PREFIX))
+            .map_err(
+                |source| crate::backend_task::error::TaskError::ScheduledVoteStorage { source },
+            )?;
+        for key in keys {
+            match kv.get::<StoredScheduledVote>(None, &key) {
+                Ok(Some(stored)) if stored.executed_successfully => {
+                    kv.delete(None, &key).map_err(|source| {
+                        crate::backend_task::error::TaskError::ScheduledVoteStorage { source }
+                    })?;
+                }
+                _ => {}
+            }
+        }
+        Ok(())
     }
 
-    /// Deletes a scheduled vote from the database
+    /// Drop a single scheduled vote keyed by `(voter_id, contested_name)`.
     #[allow(clippy::ptr_arg)]
-    pub fn delete_scheduled_vote(&self, identity_id: &[u8], contested_name: &String) -> Result<()> {
-        self.db
-            .delete_scheduled_vote(self, identity_id, contested_name)
+    pub fn delete_scheduled_vote(
+        &self,
+        identity_id: &[u8],
+        contested_name: &String,
+    ) -> std::result::Result<(), crate::backend_task::error::TaskError> {
+        let backend = self.wallet_backend()?;
+        let voter_id = Identifier::from_bytes(identity_id).map_err(|e| {
+            crate::backend_task::error::TaskError::SerializationError {
+                detail: format!("Invalid voter identifier in scheduled-vote operation: {e}"),
+            }
+        })?;
+        backend
+            .kv()
+            .delete(None, &scheduled_vote_key(&voter_id, contested_name))
+            .map_err(
+                |source| crate::backend_task::error::TaskError::ScheduledVoteStorage { source },
+            )
     }
 
-    /// Marks a scheduled vote as executed in the database
-    pub fn mark_vote_executed(&self, identity_id: &[u8], contested_name: String) -> Result<()> {
-        self.db
-            .mark_vote_executed(self, identity_id, contested_name)
+    /// Mark a single scheduled vote as executed so future cast loops skip it.
+    pub fn mark_vote_executed(
+        &self,
+        identity_id: &[u8],
+        contested_name: String,
+    ) -> std::result::Result<(), crate::backend_task::error::TaskError> {
+        let backend = self.wallet_backend()?;
+        let voter_id = Identifier::from_bytes(identity_id).map_err(|e| {
+            crate::backend_task::error::TaskError::SerializationError {
+                detail: format!("Invalid voter identifier in scheduled-vote operation: {e}"),
+            }
+        })?;
+        let key = scheduled_vote_key(&voter_id, &contested_name);
+        let kv = backend.kv();
+        let Some(mut stored): Option<StoredScheduledVote> =
+            kv.get(None, &key).map_err(|source| {
+                crate::backend_task::error::TaskError::ScheduledVoteStorage { source }
+            })?
+        else {
+            return Ok(());
+        };
+        stored.executed_successfully = true;
+        kv.put(None, &key, &stored).map_err(|source| {
+            crate::backend_task::error::TaskError::ScheduledVoteStorage { source }
+        })
     }
 
     /// Fetches the local identities from the database and then maps them to their DPNS names.

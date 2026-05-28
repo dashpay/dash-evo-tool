@@ -39,7 +39,6 @@ use crate::ui::tools::document_visualizer_screen::DocumentVisualizerScreen;
 use crate::ui::tools::grovestark_screen::GroveSTARKScreen;
 use crate::ui::tools::masternode_list_diff_screen::MasternodeListDiffScreen;
 use crate::ui::tools::platform_info_screen::PlatformInfoScreen;
-use crate::ui::tools::proof_log_screen::ProofLogScreen;
 use crate::ui::tools::proof_visualizer_screen::ProofVisualizerScreen;
 use crate::ui::wallets::asset_lock_detail_screen::AssetLockDetailScreen;
 use crate::ui::wallets::create_asset_lock_screen::CreateAssetLockScreen;
@@ -105,7 +104,6 @@ pub enum RootScreenType {
     RootScreenDPNSScheduledVotes,
     RootScreenDocumentQuery,
     RootScreenWalletsBalances,
-    RootScreenToolsProofLogScreen,
     RootScreenToolsTransitionVisualizerScreen,
     RootScreenToolsDocumentVisualizerScreen,
     RootScreenNetworkChooser,
@@ -138,7 +136,7 @@ impl RootScreenType {
             RootScreenType::RootScreenToolsTransitionVisualizerScreen => 6,
             RootScreenType::RootScreenNetworkChooser => 7,
             // 8 used to be the Withdrawals Statuses screen
-            RootScreenType::RootScreenToolsProofLogScreen => 9,
+            // 9 used to be the Proof Log screen
             RootScreenType::RootScreenDPNSScheduledVotes => 10,
             RootScreenType::RootScreenToolsProofVisualizerScreen => 11,
             RootScreenType::RootScreenMyTokenBalances => 12,
@@ -171,7 +169,7 @@ impl RootScreenType {
             6 => Some(RootScreenType::RootScreenToolsTransitionVisualizerScreen),
             7 => Some(RootScreenType::RootScreenNetworkChooser),
             // 8 used to be the Withdrawals Statuses screen
-            9 => Some(RootScreenType::RootScreenToolsProofLogScreen),
+            // 9 used to be the Proof Log screen
             10 => Some(RootScreenType::RootScreenDPNSScheduledVotes),
             11 => Some(RootScreenType::RootScreenToolsProofVisualizerScreen),
             12 => Some(RootScreenType::RootScreenMyTokenBalances),
@@ -207,7 +205,6 @@ impl From<RootScreenType> for ScreenType {
             RootScreenType::RootScreenDocumentQuery => ScreenType::DocumentQuery,
             RootScreenType::RootScreenNetworkChooser => ScreenType::NetworkChooser,
             RootScreenType::RootScreenWalletsBalances => ScreenType::WalletsBalances,
-            RootScreenType::RootScreenToolsProofLogScreen => ScreenType::ProofLog,
             RootScreenType::RootScreenDPNSScheduledVotes => ScreenType::ScheduledVotes,
             RootScreenType::RootScreenToolsProofVisualizerScreen => ScreenType::ProofVisualizer,
             RootScreenType::RootScreenMyTokenBalances => ScreenType::TokenBalances,
@@ -263,7 +260,6 @@ pub enum ScreenType {
     RegisterDpnsName(RegisterDpnsNameSource),
     RegisterContract,
     UpdateContract,
-    ProofLog,
     MasternodeListDiff,
     TopUpIdentity(QualifiedIdentity),
     ScheduledVotes,
@@ -360,7 +356,6 @@ impl PartialEq for ScreenType {
             (ScreenType::RegisterDpnsName(a), ScreenType::RegisterDpnsName(b)) => a == b,
             (ScreenType::RegisterContract, ScreenType::RegisterContract) => true,
             (ScreenType::UpdateContract, ScreenType::UpdateContract) => true,
-            (ScreenType::ProofLog, ScreenType::ProofLog) => true,
             (ScreenType::MasternodeListDiff, ScreenType::MasternodeListDiff) => true,
             (ScreenType::TopUpIdentity(a), ScreenType::TopUpIdentity(b)) => a == b,
             (ScreenType::ScheduledVotes, ScreenType::ScheduledVotes) => true,
@@ -510,7 +505,6 @@ impl ScreenType {
             ScreenType::SingleKeyWalletSendScreen(wallet) => Screen::SingleKeyWalletSendScreen(
                 SingleKeyWalletSendScreen::new(app_context, wallet.clone()),
             ),
-            ScreenType::ProofLog => Screen::ProofLogScreen(ProofLogScreen::new(app_context)),
             ScreenType::ScheduledVotes => {
                 Screen::DPNSScreen(DPNSScreen::new(app_context, DPNSSubscreen::ScheduledVotes))
             }
@@ -723,7 +717,6 @@ pub enum Screen {
     TopUpIdentityScreen(TopUpIdentityScreen),
     TransferScreen(TransferScreen),
     AddKeyScreen(AddKeyScreen),
-    ProofLogScreen(ProofLogScreen),
     TransitionVisualizerScreen(TransitionVisualizerScreen),
     DocumentVisualizerScreen(DocumentVisualizerScreen),
     ContractVisualizerScreen(ContractVisualizerScreen),
@@ -901,7 +894,6 @@ impl Screen {
             DocumentActionScreen,
             GroupActionsScreen,
             TopUpIdentityScreen,
-            ProofLogScreen,
             AddContractsScreen,
             ProofVisualizerScreen,
             DocumentVisualizerScreen,
@@ -1064,7 +1056,6 @@ impl Screen {
             Screen::SingleKeyWalletSendScreen(screen) => {
                 ScreenType::SingleKeyWalletSendScreen(screen.selected_wallet.clone().unwrap())
             }
-            Screen::ProofLogScreen(_) => ScreenType::ProofLog,
             Screen::AddContractsScreen(_) => ScreenType::AddContracts,
             Screen::ProofVisualizerScreen(_) => ScreenType::ProofVisualizer,
             Screen::MasternodeListDiffScreen(_) => ScreenType::MasternodeListDiff,
@@ -1197,7 +1188,6 @@ impl ScreenLike for Screen {
             Screen::WalletsBalancesScreen(screen) => screen.refresh(),
             Screen::WalletSendScreen(screen) => screen.refresh(),
             Screen::SingleKeyWalletSendScreen(screen) => screen.refresh(),
-            Screen::ProofLogScreen(screen) => screen.refresh(),
             Screen::AddContractsScreen(screen) => screen.refresh(),
             Screen::ProofVisualizerScreen(screen) => screen.refresh(),
             Screen::MasternodeListDiffScreen(screen) => screen.refresh(),
@@ -1267,7 +1257,6 @@ impl ScreenLike for Screen {
             Screen::WalletsBalancesScreen(screen) => screen.refresh_on_arrival(),
             Screen::WalletSendScreen(screen) => screen.refresh_on_arrival(),
             Screen::SingleKeyWalletSendScreen(screen) => screen.refresh_on_arrival(),
-            Screen::ProofLogScreen(screen) => screen.refresh_on_arrival(),
             Screen::AddContractsScreen(screen) => screen.refresh_on_arrival(),
             Screen::ProofVisualizerScreen(screen) => screen.refresh_on_arrival(),
             Screen::MasternodeListDiffScreen(screen) => screen.refresh_on_arrival(),
@@ -1337,7 +1326,6 @@ impl ScreenLike for Screen {
             Screen::WalletsBalancesScreen(screen) => screen.ui(ctx),
             Screen::WalletSendScreen(screen) => screen.ui(ctx),
             Screen::SingleKeyWalletSendScreen(screen) => screen.ui(ctx),
-            Screen::ProofLogScreen(screen) => screen.ui(ctx),
             Screen::AddContractsScreen(screen) => screen.ui(ctx),
             Screen::ProofVisualizerScreen(screen) => screen.ui(ctx),
             Screen::MasternodeListDiffScreen(screen) => screen.ui(ctx),
@@ -1417,7 +1405,6 @@ impl ScreenLike for Screen {
             Screen::SingleKeyWalletSendScreen(screen) => {
                 screen.display_message(message, message_type)
             }
-            Screen::ProofLogScreen(screen) => screen.display_message(message, message_type),
             Screen::AddContractsScreen(screen) => screen.display_message(message, message_type),
             Screen::ProofVisualizerScreen(screen) => screen.display_message(message, message_type),
             Screen::MasternodeListDiffScreen(screen) => {
@@ -1554,9 +1541,6 @@ impl ScreenLike for Screen {
             Screen::SingleKeyWalletSendScreen(screen) => {
                 screen.display_task_result(backend_task_success_result)
             }
-            Screen::ProofLogScreen(screen) => {
-                screen.display_task_result(backend_task_success_result)
-            }
             Screen::AddContractsScreen(screen) => {
                 screen.display_task_result(backend_task_success_result)
             }
@@ -1689,7 +1673,6 @@ impl ScreenLike for Screen {
             Screen::WalletsBalancesScreen(screen) => screen.display_task_error(error),
             Screen::WalletSendScreen(screen) => screen.display_task_error(error),
             Screen::SingleKeyWalletSendScreen(screen) => screen.display_task_error(error),
-            Screen::ProofLogScreen(screen) => screen.display_task_error(error),
             Screen::AddContractsScreen(screen) => screen.display_task_error(error),
             Screen::ProofVisualizerScreen(screen) => screen.display_task_error(error),
             Screen::MasternodeListDiffScreen(screen) => screen.display_task_error(error),
@@ -1760,7 +1743,6 @@ impl ScreenLike for Screen {
             Screen::WalletsBalancesScreen(screen) => screen.pop_on_success(),
             Screen::WalletSendScreen(screen) => screen.pop_on_success(),
             Screen::SingleKeyWalletSendScreen(screen) => screen.pop_on_success(),
-            Screen::ProofLogScreen(screen) => screen.pop_on_success(),
             Screen::AddContractsScreen(screen) => screen.pop_on_success(),
             Screen::ProofVisualizerScreen(screen) => screen.pop_on_success(),
             Screen::MasternodeListDiffScreen(screen) => screen.pop_on_success(),

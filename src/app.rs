@@ -29,7 +29,6 @@ use crate::ui::tools::document_visualizer_screen::DocumentVisualizerScreen;
 use crate::ui::tools::grovestark_screen::GroveSTARKScreen;
 use crate::ui::tools::masternode_list_diff_screen::MasternodeListDiffScreen;
 use crate::ui::tools::platform_info_screen::PlatformInfoScreen;
-use crate::ui::tools::proof_log_screen::ProofLogScreen;
 use crate::ui::tools::proof_visualizer_screen::ProofVisualizerScreen;
 use crate::ui::tools::transition_visualizer_screen::TransitionVisualizerScreen;
 use crate::ui::wallets::wallets_screen::WalletsBalancesScreen;
@@ -393,7 +392,6 @@ impl AppState {
         let proof_visualizer_screen = ProofVisualizerScreen::new(&active_context);
         let document_visualizer_screen = DocumentVisualizerScreen::new(&active_context);
         let contract_visualizer_screen = ContractVisualizerScreen::new(&active_context);
-        let proof_log_screen = ProofLogScreen::new(&active_context);
         let platform_info_screen = PlatformInfoScreen::new(&active_context);
         let address_balance_screen = AddressBalanceScreen::new(&active_context);
         let grovestark_screen = GroveSTARKScreen::new(&active_context);
@@ -521,10 +519,6 @@ impl AppState {
                 (
                     RootScreenType::RootScreenToolsContractVisualizerScreen,
                     Screen::ContractVisualizerScreen(contract_visualizer_screen),
-                ),
-                (
-                    RootScreenType::RootScreenToolsProofLogScreen,
-                    Screen::ProofLogScreen(proof_log_screen),
                 ),
                 (
                     RootScreenType::RootScreenToolsPlatformInfoScreen,

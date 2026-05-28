@@ -111,6 +111,24 @@ pub enum TaskError {
         source: crate::wallet_backend::KvAdapterError,
     },
 
+    /// A scheduled DPNS vote could not be read or written in the per-network
+    /// wallet k/v store.
+    #[error(
+        "Could not access your scheduled vote queue. Check available disk space and try again."
+    )]
+    ScheduledVoteStorage {
+        #[source]
+        source: crate::wallet_backend::KvAdapterError,
+    },
+
+    /// An identity top-up history record could not be persisted to the
+    /// per-network wallet k/v store.
+    #[error("Could not save your top-up history. Check available disk space and try again.")]
+    TopUpHistoryStorage {
+        #[source]
+        source: crate::wallet_backend::KvAdapterError,
+    },
+
     /// Chain sync could not be started.
     #[error(
         "Could not start wallet sync. Please check your connection and restart the application."

@@ -235,7 +235,6 @@ pub fn add_left_panel(
                                                     RootScreenType::RootScreenToolsPlatformInfoScreen => matches!(
                                                         selected_screen,
                                                         RootScreenType::RootScreenToolsPlatformInfoScreen
-                                                            | RootScreenType::RootScreenToolsProofLogScreen
                                                             | RootScreenType::RootScreenToolsTransitionVisualizerScreen
                                                             | RootScreenType::RootScreenToolsDocumentVisualizerScreen
                                                             | RootScreenType::RootScreenToolsProofVisualizerScreen

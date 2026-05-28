@@ -10,15 +10,12 @@ use tokio::time::sleep;
 use super::{BackendTaskSuccessResult, FeeResult};
 use crate::backend_task::error::TaskError;
 use crate::backend_task::update_data_contract::extract_contract_id_from_error;
+use crate::database::contracts::InsertTokensToo::AllTokensShouldBeAdded;
 use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::{
     app::TaskResult,
     context::AppContext,
     model::{proof_log_item::RequestType, qualified_identity::QualifiedIdentity},
-};
-use crate::{
-    database::contracts::InsertTokensToo::AllTokensShouldBeAdded,
-    model::proof_log_item::ProofLogItem,
 };
 
 impl AppContext {
@@ -55,18 +52,15 @@ impl AppContext {
             Err(e) => match e {
                 Error::DriveProofError(proof_error, proof_bytes, block_info) => {
                     let proof_error_str = proof_error.to_string();
-                    // Log the proof error first, before any other operations
-                    self.db
-                        .insert_proof_log_item(ProofLogItem {
-                            request_type: RequestType::BroadcastStateTransition,
-                            request_bytes: vec![],
-                            verification_path_query_bytes: vec![],
-                            height: block_info.height,
-                            time_ms: block_info.time_ms,
-                            proof_bytes: proof_bytes.clone(),
-                            error: Some(proof_error_str.clone()),
-                        })
-                        .ok();
+                    tracing::error!(
+                        target: "proof_log",
+                        request_type = ?RequestType::BroadcastStateTransition,
+                        height = block_info.height,
+                        time_ms = block_info.time_ms,
+                        proof_bytes_len = proof_bytes.len(),
+                        %proof_error,
+                        "drive proof verification failed while registering contract",
+                    );
 
                     // Reconstruct the SDK error to preserve as source
                     let source_error =

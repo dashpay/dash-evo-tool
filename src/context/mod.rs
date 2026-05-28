@@ -603,8 +603,9 @@ impl AppContext {
     }
 
     /// Convert an SDK error to a [`TaskError`], with special handling for
-    /// [`dash_sdk::Error::DriveProofError`]: logs the proof data to the database
-    /// and returns [`TaskError::ProofError`] with the SDK error preserved as the source.
+    /// [`dash_sdk::Error::DriveProofError`]: emits a structured tracing event
+    /// at target `proof_log` and returns [`TaskError::ProofError`] with the
+    /// SDK error preserved as the source.
     ///
     /// All other SDK errors are converted via [`TaskError::from`].
     pub(crate) fn log_drive_proof_error(
@@ -612,25 +613,17 @@ impl AppContext {
         e: dash_sdk::Error,
         request_type: RequestType,
     ) -> TaskError {
-        use crate::model::proof_log_item::ProofLogItem;
         match e {
             dash_sdk::Error::DriveProofError(proof_error, proof_bytes, block_info) => {
-                if let Err(db_err) = self.db.insert_proof_log_item(ProofLogItem {
-                    request_type,
-                    request_bytes: vec![],
-                    verification_path_query_bytes: vec![],
-                    height: block_info.height,
-                    time_ms: block_info.time_ms,
-                    proof_bytes: proof_bytes.clone(),
-                    error: Some(proof_error.to_string()),
-                }) {
-                    tracing::warn!(
-                        height = block_info.height,
-                        proof_error = %proof_error,
-                        "Failed to persist proof log entry for {request_type:?}: {}",
-                        db_err
-                    );
-                }
+                tracing::error!(
+                    target: "proof_log",
+                    request_type = ?request_type,
+                    height = block_info.height,
+                    time_ms = block_info.time_ms,
+                    proof_bytes_len = proof_bytes.len(),
+                    %proof_error,
+                    "drive proof verification failed",
+                );
                 TaskError::ProofError {
                     source_error: Box::new(dash_sdk::Error::DriveProofError(
                         proof_error,

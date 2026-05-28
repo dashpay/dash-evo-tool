@@ -2,7 +2,7 @@ use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
-use crate::model::proof_log_item::{ProofLogItem, RequestType};
+use crate::model::proof_log_item::RequestType;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
@@ -54,45 +54,21 @@ impl AppContext {
                     tracing::error!("Error fetching contested resources: {}", e);
                     if let dash_sdk::Error::Proof(dash_sdk::ProofVerifierError::GroveDBError {
                         proof_bytes,
-                        path_query,
                         height,
                         time_ms,
                         error,
+                        ..
                     }) = &e
                     {
-                        let encoded_query =
-                            bincode::encode_to_vec(&query, bincode::config::standard()).map_err(
-                                |encode_err| {
-                                    tracing::error!("Error encoding query: {}", encode_err);
-                                    TaskError::SerializationError {
-                                        detail: format!("Error encoding query: {}", encode_err),
-                                    }
-                                },
-                            )?;
-
-                        let verification_path_query_bytes =
-                            bincode::encode_to_vec(path_query, bincode::config::standard())
-                                .map_err(|encode_err| {
-                                    tracing::error!("Error encoding path_query: {}", encode_err);
-                                    TaskError::SerializationError {
-                                        detail: format!(
-                                            "Error encoding path_query: {}",
-                                            encode_err
-                                        ),
-                                    }
-                                })?;
-
-                        if let Err(e) = self.db.insert_proof_log_item(ProofLogItem {
-                            request_type: RequestType::GetContestedResources,
-                            request_bytes: encoded_query,
-                            verification_path_query_bytes,
-                            height: *height,
-                            time_ms: *time_ms,
-                            proof_bytes: proof_bytes.clone(),
-                            error: Some(error.clone()),
-                        }) {
-                            return Err(TaskError::from(e));
-                        }
+                        tracing::error!(
+                            target: "proof_log",
+                            request_type = ?RequestType::GetContestedResources,
+                            height = *height,
+                            time_ms = *time_ms,
+                            proof_bytes_len = proof_bytes.len(),
+                            error = %error,
+                            "drive proof verification failed while querying DPNS contested resources",
+                        );
                     }
                     // TODO: Replace the "contract not found" string match with a
                     // structural SDK variant when one is available.

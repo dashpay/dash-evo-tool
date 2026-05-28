@@ -8,7 +8,6 @@ use egui::{Context, Frame, Margin, RichText, ScrollArea, SidePanel};
 pub enum ToolsSubscreen {
     PlatformInfo,
     AddressBalance,
-    ProofLog,
     TransactionViewer,
     DocumentViewer,
     ProofViewer,
@@ -32,7 +31,6 @@ impl ToolsSubscreen {
         match self {
             Self::PlatformInfo => "Platform info",
             Self::AddressBalance => "Address balance",
-            Self::ProofLog => "Proof logs",
             Self::TransactionViewer => "Transaction deserializer",
             Self::ProofViewer => "Proof deserializer",
             Self::DocumentViewer => "Document deserializer",
@@ -53,7 +51,6 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
     let subscreens = vec![
         ToolsSubscreen::PlatformInfo,
         ToolsSubscreen::AddressBalance,
-        ToolsSubscreen::ProofLog,
         ToolsSubscreen::ProofViewer,
         ToolsSubscreen::TransactionViewer,
         ToolsSubscreen::DocumentViewer,
@@ -66,7 +63,6 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
     let active_screen = match app_context.get_app_settings().root_screen_type {
         ui::RootScreenType::RootScreenToolsPlatformInfoScreen => ToolsSubscreen::PlatformInfo,
         ui::RootScreenType::RootScreenToolsAddressBalanceScreen => ToolsSubscreen::AddressBalance,
-        ui::RootScreenType::RootScreenToolsProofLogScreen => ToolsSubscreen::ProofLog,
         ui::RootScreenType::RootScreenToolsTransitionVisualizerScreen => {
             ToolsSubscreen::TransactionViewer
         }
@@ -158,11 +154,6 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
                                             RootScreenType::RootScreenToolsAddressBalanceScreen,
                                         )
                                     }
-                                    ToolsSubscreen::ProofLog => {
-                                        action = AppAction::SetMainScreen(
-                                            RootScreenType::RootScreenToolsProofLogScreen,
-                                        )
-                                    }
                                     ToolsSubscreen::TransactionViewer => {
                                         action = AppAction::SetMainScreen(
                                             RootScreenType::RootScreenToolsTransitionVisualizerScreen,
@@ -220,7 +211,6 @@ mod tests {
         for tool in [
             ToolsSubscreen::PlatformInfo,
             ToolsSubscreen::AddressBalance,
-            ToolsSubscreen::ProofLog,
             ToolsSubscreen::TransactionViewer,
             ToolsSubscreen::DocumentViewer,
             ToolsSubscreen::ProofViewer,

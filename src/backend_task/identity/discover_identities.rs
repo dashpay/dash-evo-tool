@@ -91,11 +91,7 @@ impl AppContext {
                 );
 
                 // Check if we already have this identity stored
-                let already_exists = {
-                    let wallets = self.wallets.read().map_err(|e| e.to_string())?;
-                    let existing = self.db.get_identity_by_id(&identity_id, self, &wallets);
-                    existing.is_ok() && existing.unwrap().is_some()
-                };
+                let already_exists = matches!(self.get_identity_by_id(&identity_id), Ok(Some(_)));
 
                 if already_exists {
                     tracing::info!(

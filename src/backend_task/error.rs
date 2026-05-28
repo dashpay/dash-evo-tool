@@ -153,6 +153,38 @@ pub enum TaskError {
         source: crate::wallet_backend::KvAdapterError,
     },
 
+    /// A local identity record could not be read or written in the
+    /// per-network wallet k/v store.
+    #[error("Could not access your saved identities. Check available disk space and try again.")]
+    IdentityStorage {
+        #[source]
+        source: crate::wallet_backend::KvAdapterError,
+    },
+
+    /// A stored [`QualifiedIdentity`](crate::model::qualified_identity::QualifiedIdentity)
+    /// blob could not be decoded. Private keys and balance state are at stake,
+    /// so this is surfaced rather than silently skipped.
+    #[error("A saved identity is unreadable. Reload the identity to refresh its data.")]
+    IdentityEncoding {
+        #[source]
+        source: bincode::error::DecodeError,
+    },
+
+    /// A token registry or balance record could not be read or written in
+    /// the per-network wallet k/v store.
+    #[error("Could not access your saved tokens. Check available disk space and try again.")]
+    TokenStorage {
+        #[source]
+        source: crate::wallet_backend::KvAdapterError,
+    },
+
+    /// A serialized token configuration blob could not be decoded.
+    #[error("Saved token data is unreadable. Refresh the token list to fetch it again.")]
+    TokenConfigEncoding {
+        #[source]
+        source: bincode::error::DecodeError,
+    },
+
     /// Chain sync could not be started.
     #[error(
         "Could not start wallet sync. Please check your connection and restart the application."

@@ -1,13 +1,27 @@
 use super::AppContext;
 use crate::backend_task::contested_names::ScheduledDPNSVote;
-use crate::model::qualified_identity::{DPNSNameInfo, QualifiedIdentity};
-use crate::model::wallet::WalletSeedHash;
+use crate::backend_task::error::TaskError;
+use crate::model::qualified_identity::{DPNSNameInfo, IdentityStatus, QualifiedIdentity};
+use crate::model::wallet::{Wallet, WalletSeedHash};
+use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::platform::Identifier;
-use rusqlite::Result;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::sync::{Arc, RwLock};
+
+/// Key prefix for local identity entries in the per-network wallet k/v
+/// store. The full key is `det:identity:<base58_identity_id>` and lives
+/// in the global (`None`) scope — identities are a network-scoped concept
+/// inside the per-network k/v store.
+const IDENTITY_KEY_PREFIX: &str = "det:identity:";
+
+/// Versioned key for the user's custom identity ordering. Holds a single
+/// `Vec<[u8; 32]>` of identity IDs in display order; bumping the version
+/// suffix is a deliberate breaking change.
+const IDENTITY_ORDER_KEY: &str = "det:identity_order:v1";
 
 /// Key prefix for scheduled-vote entries in the per-network wallet k/v
 /// store. The full key is `det:scheduled_vote:<base58_voter>:<contested_name>`
@@ -27,6 +41,61 @@ fn top_ups_key(identity_id: &Identifier) -> String {
         TOP_UPS_KEY_PREFIX,
         identity_id.to_string(Encoding::Base58)
     )
+}
+
+fn identity_key(identity_id: &Identifier) -> String {
+    format!(
+        "{}{}",
+        IDENTITY_KEY_PREFIX,
+        identity_id.to_string(Encoding::Base58)
+    )
+}
+
+/// Decode a stored bincode'd [`QualifiedIdentity`] blob, attaching the
+/// active network. The encoder skips `status` / `network` (rehydrated by
+/// callers) and `associated_wallets` / `top_ups` (filled by callers from
+/// the wallet map and the top-up k/v entry).
+fn decode_stored_identity(
+    bytes: &[u8],
+    network: Network,
+) -> std::result::Result<QualifiedIdentity, TaskError> {
+    let mut qi = QualifiedIdentity::from_bytes(bytes).map_err(|detail| {
+        // `QualifiedIdentity::from_bytes` only fails when bincode decode
+        // fails. Re-derive a typed `DecodeError` so the wrapper carries a
+        // structured cause instead of a stringified one.
+        TaskError::IdentityEncoding {
+            source: bincode::error::DecodeError::OtherString(detail),
+        }
+    })?;
+    qi.network = network;
+    Ok(qi)
+}
+
+/// Persisted shape of a local identity entry. The [`QualifiedIdentity`]
+/// itself is stored as its own bincode encoding (`to_bytes()`), with the
+/// network-scoped metadata that the pre-C7 SQLite schema kept in dedicated
+/// columns alongside. Fields that the encoder skips (status, network) are
+/// rehydrated from the wrapper at read time.
+#[derive(Debug, Serialize, Deserialize)]
+struct StoredQualifiedIdentity {
+    /// `QualifiedIdentity::to_bytes()` — bincode of the inner struct.
+    /// Carries everything `Encode` writes: identity, alias, private keys,
+    /// DPNS names, voter/operator associations.
+    qi_bytes: Vec<u8>,
+    /// Identity status (created/active/etc.). Held outside `qi_bytes`
+    /// because the bincode shape deliberately omits status — matches the
+    /// pre-C7 column-vs-blob split.
+    status: u8,
+    /// Identity type label (`User` / `Masternode` / `Evonode`). Stored
+    /// alongside the blob so filter queries (voting, user-only) avoid a
+    /// full decode pass.
+    identity_type: String,
+    /// Wallet seed-hash this identity was loaded from, if any. Mirrors
+    /// the nullable `wallet` column the SQLite schema carried.
+    wallet_hash: Option<[u8; 32]>,
+    /// Account index within `wallet_hash`. `Some` iff `wallet_hash` is
+    /// also `Some` (mirrors the pre-C7 `CHECK` constraint).
+    wallet_index: Option<u32>,
 }
 
 fn scheduled_vote_key(voter_id: &Identifier, contested_name: &str) -> String {
@@ -95,48 +164,120 @@ impl From<StoredScheduledVote> for ScheduledDPNSVote {
 }
 
 impl AppContext {
-    /// Inserts a local qualified identity into the database
+    /// Insert (or replace) a local qualified identity in the per-network
+    /// wallet k/v store at `det:identity:<base58_id>`. Mirrors pre-C7
+    /// `INSERT OR REPLACE` semantics — wallet association is overwritten
+    /// from the passed-in hint.
     pub fn insert_local_qualified_identity(
         &self,
         qualified_identity: &QualifiedIdentity,
         wallet_and_identity_id_info: &Option<(WalletSeedHash, u32)>,
-    ) -> Result<()> {
-        self.db.insert_local_qualified_identity(
-            qualified_identity,
-            wallet_and_identity_id_info,
-            self,
+    ) -> std::result::Result<(), TaskError> {
+        let kv = self.identity_kv()?;
+        let (wallet_hash, wallet_index) = match wallet_and_identity_id_info {
+            Some((seed, idx)) => (Some(*seed), Some(*idx)),
+            None => {
+                tracing::warn!(
+                    identity_id = %qualified_identity.identity.id(),
+                    alias = ?qualified_identity.alias,
+                    "saving identity without wallet; this needs investigating",
+                );
+                (None, None)
+            }
+        };
+        let stored = StoredQualifiedIdentity {
+            qi_bytes: qualified_identity.to_bytes(),
+            status: qualified_identity.status.as_u8(),
+            identity_type: format!("{:?}", qualified_identity.identity_type),
+            wallet_hash,
+            wallet_index,
+        };
+        kv.put(
+            None,
+            &identity_key(&qualified_identity.identity.id()),
+            &stored,
         )
+        .map_err(|source| TaskError::IdentityStorage { source })
     }
 
-    /// Updates a local qualified identity in the database
+    /// Update a local qualified identity in place. Wallet association
+    /// (`wallet_hash` / `wallet_index`) is preserved from the existing
+    /// record — pre-C7 `update_local_qualified_identity` had the same
+    /// behaviour by virtue of omitting those columns from its `UPDATE`.
     pub fn update_local_qualified_identity(
         &self,
         qualified_identity: &QualifiedIdentity,
-    ) -> Result<()> {
-        self.db
-            .update_local_qualified_identity(qualified_identity, self)
+    ) -> std::result::Result<(), TaskError> {
+        let kv = self.identity_kv()?;
+        let key = identity_key(&qualified_identity.identity.id());
+        let existing: Option<StoredQualifiedIdentity> = kv
+            .get(None, &key)
+            .map_err(|source| TaskError::IdentityStorage { source })?;
+        let (wallet_hash, wallet_index) = existing
+            .as_ref()
+            .map(|s| (s.wallet_hash, s.wallet_index))
+            .unwrap_or((None, None));
+        let stored = StoredQualifiedIdentity {
+            qi_bytes: qualified_identity.to_bytes(),
+            status: qualified_identity.status.as_u8(),
+            identity_type: format!("{:?}", qualified_identity.identity_type),
+            wallet_hash,
+            wallet_index,
+        };
+        kv.put(None, &key, &stored)
+            .map_err(|source| TaskError::IdentityStorage { source })
     }
 
-    /// Sets the alias for an identity
+    /// Update only the user-facing alias on a stored identity. Returns
+    /// `Ok(())` when the identity is unknown — alias is metadata, not a
+    /// load-bearing identifier.
     pub fn set_identity_alias(
         &self,
         identifier: &Identifier,
         new_alias: Option<&str>,
-    ) -> Result<()> {
-        self.db.set_identity_alias(identifier, new_alias)
+    ) -> std::result::Result<(), TaskError> {
+        let kv = self.identity_kv()?;
+        let key = identity_key(identifier);
+        let Some(mut stored) = kv
+            .get::<StoredQualifiedIdentity>(None, &key)
+            .map_err(|source| TaskError::IdentityStorage { source })?
+        else {
+            return Ok(());
+        };
+        let mut qi = decode_stored_identity(&stored.qi_bytes, self.network)?;
+        qi.alias = new_alias.map(str::to_string);
+        stored.qi_bytes = qi.to_bytes();
+        kv.put(None, &key, &stored)
+            .map_err(|source| TaskError::IdentityStorage { source })
     }
 
-    /// Gets the alias for an identity
-    pub fn get_identity_alias(&self, identifier: &Identifier) -> Result<Option<String>> {
-        self.db.get_identity_alias(identifier)
+    /// Read the user-facing alias for a stored identity, if any.
+    pub fn get_identity_alias(
+        &self,
+        identifier: &Identifier,
+    ) -> std::result::Result<Option<String>, TaskError> {
+        let kv = self.identity_kv()?;
+        let Some(stored) = kv
+            .get::<StoredQualifiedIdentity>(None, &identity_key(identifier))
+            .map_err(|source| TaskError::IdentityStorage { source })?
+        else {
+            return Ok(None);
+        };
+        let qi = decode_stored_identity(&stored.qi_bytes, self.network)?;
+        Ok(qi.alias)
     }
 
-    /// Fetches all local qualified identities from the database, then
-    /// hydrates each identity's top-up history from the per-network
-    /// wallet k/v store.
-    pub fn load_local_qualified_identities(&self) -> Result<Vec<QualifiedIdentity>> {
+    /// Fetches all local qualified identities from the k/v store, then
+    /// hydrates each identity's top-up history.
+    ///
+    /// Stops on the first corrupted identity blob and returns an error.
+    /// This is intentional — identities hold private keys and balance data,
+    /// so skipping a corrupted entry could cause loss of funds.
+    pub fn load_local_qualified_identities(
+        &self,
+    ) -> std::result::Result<Vec<QualifiedIdentity>, TaskError> {
         let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
-        let mut identities = self.db.get_local_qualified_identities(self, &wallets)?;
+        let mut identities = self.load_identities_filtered(&wallets, |_| true)?;
         for identity in &mut identities {
             self.hydrate_top_ups(identity);
         }
@@ -146,15 +287,55 @@ impl AppContext {
     /// Same as [`Self::load_local_qualified_identities`] but filters to
     /// identities associated with a wallet.
     #[allow(dead_code)] // May be used for loading identities in wallets
-    pub fn load_local_qualified_identities_in_wallets(&self) -> Result<Vec<QualifiedIdentity>> {
+    pub fn load_local_qualified_identities_in_wallets(
+        &self,
+    ) -> std::result::Result<Vec<QualifiedIdentity>, TaskError> {
         let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
-        let mut identities = self
-            .db
-            .get_local_qualified_identities_in_wallets(self, &wallets)?;
+        let mut identities =
+            self.load_identities_filtered(&wallets, |s| s.wallet_index.is_some())?;
         for identity in &mut identities {
             self.hydrate_top_ups(identity);
         }
         Ok(identities)
+    }
+
+    /// Internal: list every stored identity, decode it, rehydrate the
+    /// metadata kept outside the bincode blob, and apply `keep` as a
+    /// pre-decode filter on the wrapper. Sorted by identity ID for
+    /// deterministic output — mirrors the pre-C7 `ORDER BY id`.
+    fn load_identities_filtered<F>(
+        &self,
+        wallets: &BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>,
+        keep: F,
+    ) -> std::result::Result<Vec<QualifiedIdentity>, TaskError>
+    where
+        F: Fn(&StoredQualifiedIdentity) -> bool,
+    {
+        let kv = self.identity_kv()?;
+        let mut keys = kv
+            .list(None, Some(IDENTITY_KEY_PREFIX))
+            .map_err(|source| TaskError::IdentityStorage { source })?;
+        keys.sort();
+        let mut out = Vec::with_capacity(keys.len());
+        for key in keys {
+            let Some(stored) = kv
+                .get::<StoredQualifiedIdentity>(None, &key)
+                .map_err(|source| TaskError::IdentityStorage { source })?
+            else {
+                continue;
+            };
+            if !keep(&stored) {
+                continue;
+            }
+            let mut qi = decode_stored_identity(&stored.qi_bytes, self.network)?;
+            qi.status = IdentityStatus::from_u8(stored.status);
+            qi.wallet_index = stored.wallet_index;
+            qi.network = self.network;
+            qi.associated_wallets = wallets.clone();
+            qi.top_ups = BTreeMap::new();
+            out.push(qi);
+        }
+        Ok(out)
     }
 
     /// Populate `identity.top_ups` from the per-network wallet k/v
@@ -188,83 +369,134 @@ impl AppContext {
         &self,
         identity_id: &Identifier,
         top_ups: &std::collections::BTreeMap<u32, u64>,
-    ) -> std::result::Result<(), crate::backend_task::error::TaskError> {
+    ) -> std::result::Result<(), TaskError> {
         let backend = self.wallet_backend()?;
         backend
             .kv()
             .put(None, &top_ups_key(identity_id), top_ups)
-            .map_err(|source| crate::backend_task::error::TaskError::TopUpHistoryStorage { source })
+            .map_err(|source| TaskError::TopUpHistoryStorage { source })
     }
 
     pub fn get_identity_by_id(
         &self,
         identity_id: &Identifier,
-    ) -> Result<Option<QualifiedIdentity>> {
+    ) -> std::result::Result<Option<QualifiedIdentity>, TaskError> {
+        let kv = self.identity_kv()?;
+        let Some(stored) = kv
+            .get::<StoredQualifiedIdentity>(None, &identity_key(identity_id))
+            .map_err(|source| TaskError::IdentityStorage { source })?
+        else {
+            return Ok(None);
+        };
         let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
-        let mut result = self.db.get_identity_by_id(identity_id, self, &wallets)?;
-        if let Some(ref mut identity) = result {
-            self.hydrate_top_ups(identity);
-        }
-        Ok(result)
+        let mut qi = decode_stored_identity(&stored.qi_bytes, self.network)?;
+        qi.status = IdentityStatus::from_u8(stored.status);
+        qi.wallet_index = stored.wallet_index;
+        qi.network = self.network;
+        qi.associated_wallets = wallets.clone();
+        qi.top_ups = BTreeMap::new();
+        self.hydrate_top_ups(&mut qi);
+        Ok(Some(qi))
     }
 
-    /// Fetches all voting identities from the database
-    pub fn load_local_voting_identities(&self) -> Result<Vec<QualifiedIdentity>> {
-        self.db.get_local_voting_identities(self)
-    }
-
-    /// Fetches all local user identities from the database
-    pub fn load_local_user_identities(&self) -> Result<Vec<QualifiedIdentity>> {
-        let identities = self.db.get_local_user_identities(self)?;
-
-        Ok(identities
-            .into_iter()
-            .map(|(mut identity, wallet_hash)| {
-                if let Some(wallet_id) = wallet_hash {
-                    // Load wallets for each identity
-                    self.load_wallet_for_identity(
-                        &mut identity,
-                        &[wallet_id],
-                    )
-                    .unwrap_or_else(|e| {
-                        tracing::warn!(
-                            identity = %identity.identity.id(),
-                            error = ?e,
-                            "cannot load wallet for identity when loading local user identities",
-                        )
-                    })
-                } else {
-                    tracing::debug!(
-                        identity = %identity.identity.id(),
-                        "no wallet hash found for identity when loading local user identities",
-                    );
-                }
-                identity
-            })
-            .collect())
-    }
-
-    fn load_wallet_for_identity(
+    /// Fetches every locally-stored identity whose `identity_type` is
+    /// not `User` — used by the DPNS contest voting flows.
+    pub fn load_local_voting_identities(
         &self,
-        identity: &mut QualifiedIdentity,
-        wallet_hashes: &[WalletSeedHash],
-    ) -> Result<()> {
+    ) -> std::result::Result<Vec<QualifiedIdentity>, TaskError> {
         let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
-        for wallet_hash in wallet_hashes {
-            if let Some(wallet) = wallets.get(wallet_hash) {
-                identity
-                    .associated_wallets
-                    .insert(*wallet_hash, wallet.clone());
+        self.load_identities_filtered(&wallets, |s| s.identity_type != "User")
+    }
+
+    /// Fetches every locally-stored identity whose `identity_type` is
+    /// `User`. Top-up history is *not* loaded here — matching the
+    /// pre-C7 query shape that the consumer screens depend on.
+    pub fn load_local_user_identities(
+        &self,
+    ) -> std::result::Result<Vec<QualifiedIdentity>, TaskError> {
+        let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
+        self.load_identities_filtered(&wallets, |s| s.identity_type == "User")
+    }
+
+    /// Remove a locally-stored identity. Returns `Ok(())` even when the
+    /// identity is unknown — mirrors the pre-C7 `DELETE` which silently
+    /// no-ops on missing rows.
+    pub fn delete_local_qualified_identity(
+        &self,
+        identifier: &Identifier,
+    ) -> std::result::Result<(), TaskError> {
+        let kv = self.identity_kv()?;
+        kv.delete(None, &identity_key(identifier))
+            .map_err(|source| TaskError::IdentityStorage { source })
+    }
+
+    /// Devnet-only sweep: drop every locally-stored identity for the
+    /// current network. Matches the pre-C7
+    /// `delete_all_local_qualified_identities_in_devnet` guard — no-op on
+    /// non-devnet networks.
+    pub fn delete_all_local_qualified_identities_in_devnet(
+        &self,
+    ) -> std::result::Result<(), TaskError> {
+        if self.network != Network::Devnet {
+            return Ok(());
+        }
+        let kv = self.identity_kv()?;
+        let keys = kv
+            .list(None, Some(IDENTITY_KEY_PREFIX))
+            .map_err(|source| TaskError::IdentityStorage { source })?;
+        for key in keys {
+            kv.delete(None, &key)
+                .map_err(|source| TaskError::IdentityStorage { source })?;
+        }
+        Ok(())
+    }
+
+    /// Persist the user-chosen identity ordering at `det:identity_order:v1`.
+    /// Overwrites the previous list — matches pre-C7 semantics.
+    pub fn save_identity_order(
+        &self,
+        all_ids: Vec<Identifier>,
+    ) -> std::result::Result<(), TaskError> {
+        let kv = self.identity_kv()?;
+        let payload: Vec<[u8; 32]> = all_ids.iter().map(Identifier::to_buffer).collect();
+        kv.put(None, IDENTITY_ORDER_KEY, &payload)
+            .map_err(|source| TaskError::IdentityStorage { source })
+    }
+
+    /// Load the user-chosen identity ordering, dropping any references
+    /// that no longer point at a stored identity.
+    pub fn load_identity_order(&self) -> std::result::Result<Vec<Identifier>, TaskError> {
+        let kv = self.identity_kv()?;
+        let Some(payload): Option<Vec<[u8; 32]>> = kv
+            .get(None, IDENTITY_ORDER_KEY)
+            .map_err(|source| TaskError::IdentityStorage { source })?
+        else {
+            return Ok(Vec::new());
+        };
+        let mut kept = Vec::with_capacity(payload.len());
+        let mut needs_rewrite = false;
+        for buf in payload {
+            let id = Identifier::from(buf);
+            let exists = kv
+                .get::<StoredQualifiedIdentity>(None, &identity_key(&id))
+                .map_err(|source| TaskError::IdentityStorage { source })?
+                .is_some();
+            if exists {
+                kept.push(id);
             } else {
-                tracing::warn!(
-                    wallet = %hex::encode(wallet_hash),
-                    identity = %identity.identity.id(),
-                    "wallet not found for identity when loading local user identities",
-                );
+                needs_rewrite = true;
             }
         }
+        if needs_rewrite {
+            let payload: Vec<[u8; 32]> = kept.iter().map(Identifier::to_buffer).collect();
+            kv.put(None, IDENTITY_ORDER_KEY, &payload)
+                .map_err(|source| TaskError::IdentityStorage { source })?;
+        }
+        Ok(kept)
+    }
 
-        Ok(())
+    fn identity_kv(&self) -> std::result::Result<crate::wallet_backend::DetKv, TaskError> {
+        Ok(self.wallet_backend()?.kv())
     }
 
     /// Persist a batch of scheduled votes in the per-network wallet
@@ -411,10 +643,12 @@ impl AppContext {
         })
     }
 
-    /// Fetches the local identities from the database and then maps them to their DPNS names.
-    pub fn local_dpns_names(&self) -> Result<Vec<(Identifier, DPNSNameInfo)>> {
+    /// Fetches the local identities from the k/v store and maps them to their DPNS names.
+    pub fn local_dpns_names(
+        &self,
+    ) -> std::result::Result<Vec<(Identifier, DPNSNameInfo)>, TaskError> {
         let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
-        let qualified_identities = self.db.get_local_qualified_identities(self, &wallets)?;
+        let qualified_identities = self.load_identities_filtered(&wallets, |_| true)?;
 
         // Map each identity's DPNS names to (Identifier, DPNSNameInfo) tuples
         let dpns_names = qualified_identities

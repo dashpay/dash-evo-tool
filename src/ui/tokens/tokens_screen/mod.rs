@@ -1515,8 +1515,7 @@ impl TokensScreen {
             .map(|qi| (qi.identity.id(), qi))
             .collect();
         let all_known_tokens = app_context
-            .db
-            .get_all_known_tokens_with_data_contract(app_context)
+            .get_all_known_tokens_with_data_contract()
             .unwrap_or_default();
 
         let my_tokens = my_tokens(
@@ -1774,7 +1773,7 @@ impl TokensScreen {
             document_schemas_error: None,
         };
 
-        if let Ok(saved_ids) = screen.app_context.db.load_token_order() {
+        if let Ok(saved_ids) = screen.app_context.load_token_order() {
             screen.reorder_vec_to(saved_ids);
             screen.use_custom_order = true;
         }
@@ -1822,7 +1821,6 @@ impl TokensScreen {
             .collect::<Vec<_>>();
 
         self.app_context
-            .db
             .save_token_order(all_ids)
             .map_err(|e| {
                 error!("Error saving token order: {}", e);
@@ -2677,11 +2675,7 @@ impl TokensScreen {
         if let Some(status) = response.dialog_response {
             match status {
                 ConfirmationStatus::Confirmed => {
-                    if let Err(e) = self
-                        .app_context
-                        .db
-                        .remove_token(&token_to_remove, &self.app_context)
-                    {
+                    if let Err(e) = self.app_context.remove_token(&token_to_remove) {
                         MessageBanner::set_global(
                             self.app_context.egui_ctx(),
                             format!("Error removing token balance: {}", e),
@@ -2751,8 +2745,7 @@ impl ScreenLike for TokensScreen {
     fn refresh(&mut self) {
         self.all_known_tokens = self
             .app_context
-            .db
-            .get_all_known_tokens_with_data_contract(&self.app_context)
+            .get_all_known_tokens_with_data_contract()
             .unwrap_or_default();
 
         self.identities = self
@@ -2775,7 +2768,7 @@ impl ScreenLike for TokensScreen {
             &self.token_pricing_data,
         );
 
-        match self.app_context.db.load_token_order() {
+        match self.app_context.load_token_order() {
             Ok(saved_ids) => {
                 self.reorder_vec_to(saved_ids);
 
@@ -2793,8 +2786,7 @@ impl ScreenLike for TokensScreen {
 
         self.all_known_tokens = self
             .app_context
-            .db
-            .get_all_known_tokens_with_data_contract(&self.app_context)
+            .get_all_known_tokens_with_data_contract()
             .unwrap_or_default();
         self.identities = self
             .app_context

@@ -50,12 +50,13 @@ pub(crate) fn resolve_data_contract(
     Ok(dc.map(|qc| Arc::new(qc.contract)))
 }
 
-/// Resolve a token configuration from the database.
+/// Resolve a token configuration from the per-network k/v store.
 pub(crate) fn resolve_token_configuration(
     app_ctx: &AppContext,
-    db: &Database,
+    _db: &Database,
     token_id: &Identifier,
 ) -> Result<Option<dash_sdk::dpp::data_contract::TokenConfiguration>, ContextProviderError> {
-    db.get_token_config_for_id(token_id, app_ctx)
+    app_ctx
+        .get_token_config_for_id(token_id)
         .map_err(|e| ContextProviderError::Generic(e.to_string()))
 }

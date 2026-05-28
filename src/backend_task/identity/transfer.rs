@@ -63,14 +63,12 @@ impl AppContext {
             .find(|qi| qi.identity.id() == to_identifier)
         {
             receiver.identity.set_balance(receiver_balance);
-            self.update_local_qualified_identity(receiver)
-                .map_err(|e| TaskError::Database { source: e })?;
+            self.update_local_qualified_identity(receiver)?;
         }
 
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
 
         self.update_local_qualified_identity(&qualified_identity)
             .map(|_| BackendTaskSuccessResult::TransferredCredits(fee_result))
-            .map_err(|e| TaskError::Database { source: e })
     }
 }

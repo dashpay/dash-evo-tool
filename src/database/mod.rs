@@ -1,14 +1,12 @@
 mod asset_lock_transaction;
 pub(crate) mod contacts;
 mod dashpay;
-mod identities;
 mod initialization;
 mod settings;
 pub mod shielded;
 mod single_key_wallet;
 #[cfg(any(test, feature = "testing"))]
 pub mod test_helpers;
-mod tokens;
 mod utxo;
 mod wallet;
 pub use wallet::WalletError;
@@ -130,17 +128,13 @@ impl Database {
                 rusqlite::params![&network_str],
             )?;
 
-            tx.execute(
-                "DELETE FROM identity_token_balances WHERE network = ?1",
-                rusqlite::params![&network_str],
-            )?;
-
-            tx.execute(
-                "DELETE FROM token WHERE network = ?1",
-                rusqlite::params![&network_str],
-            )?;
-
-            // contract/contestant/contested_name tables are no longer
+            // token / identity_token_balances / identity tables are no
+            // longer managed (C7) — token registry, per-identity balances
+            // and identity records all live in the per-network k/v store.
+            // Fresh installs do not create the tables; legacy installs
+            // keep the rows dormant.
+            //
+            // contract / contestant / contested_name tables are no longer
             // managed (C6). Fresh installs do not have them; legacy
             // installs keep the rows dormant.
 
@@ -156,11 +150,6 @@ impl Database {
 
             tx.execute(
                 "DELETE FROM asset_lock_transaction WHERE network = ?1",
-                rusqlite::params![&network_str],
-            )?;
-
-            tx.execute(
-                "DELETE FROM identity WHERE network = ?1",
                 rusqlite::params![&network_str],
             )?;
 

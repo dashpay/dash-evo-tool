@@ -552,21 +552,12 @@ impl AppContext {
                 }
             }
             TokenTask::SaveTokenLocally(token_info) => {
-                let token_config_bytes = bincode::encode_to_vec(
-                    &token_info.token_configuration,
-                    bincode::config::standard(),
-                )
-                .map_err(|e| TaskError::SerializationError {
-                    detail: e.to_string(),
-                })?;
-
-                self.db.insert_token(
+                self.insert_token(
                     &token_info.token_id,
                     &token_info.token_name,
-                    &token_config_bytes,
+                    token_info.token_configuration.clone(),
                     &token_info.data_contract_id,
                     token_info.token_position,
-                    self,
                 )?;
 
                 Ok(BackendTaskSuccessResult::SavedToken)

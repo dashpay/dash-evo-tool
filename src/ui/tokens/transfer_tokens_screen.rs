@@ -347,11 +347,7 @@ impl ScreenLike for TransferTokensScreen {
             }
         }
         if let Some(current_id) = self.identity.as_ref().map(|id| id.identity.id()) {
-            match self
-                .app_context
-                .db
-                .get_identity_token_balances(&self.app_context)
-            {
+            match self.app_context.identity_token_balances() {
                 Ok(token_balances) => {
                     self.max_amount = token_balances
                         .values()

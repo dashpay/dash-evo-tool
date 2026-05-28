@@ -173,8 +173,7 @@ impl DPNSScreen {
         ));
 
         let voting_identities = app_context
-            .db
-            .get_local_voting_identities(app_context)
+            .load_local_voting_identities()
             .unwrap_or_default();
         let user_identities = app_context.load_local_user_identities().unwrap_or_default();
 
@@ -958,7 +957,6 @@ impl DPNSScreen {
                                     };
                                     if let Err(e) = self
                                         .app_context
-                                        .db
                                         .set_identity_alias(&identifier, Some(&alias_with_suffix))
                                     {
                                         MessageBanner::set_global(
@@ -1448,8 +1446,7 @@ impl DPNSScreen {
                         if self.bulk_identity_options.len() <= i {
                             let voting_identities = self
                                 .app_context
-                                .db
-                                .get_local_voting_identities(&self.app_context)
+                                .load_local_voting_identities()
                                 .unwrap_or_default();
                             // Initialize ephemeral bulk-schedule state to hidden
                             let identity_count = voting_identities.len();
@@ -1819,8 +1816,7 @@ impl ScreenLike for DPNSScreen {
     fn refresh_on_arrival(&mut self) {
         self.voting_identities = self
             .app_context
-            .db
-            .get_local_voting_identities(&self.app_context)
+            .load_local_voting_identities()
             .unwrap_or_default();
         self.user_identities = self
             .app_context

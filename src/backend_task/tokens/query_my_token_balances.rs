@@ -58,12 +58,7 @@ impl AppContext {
                             Some(b) => *b,
                             None => 0,
                         };
-                        self.db.insert_identity_token_balance(
-                            token_id,
-                            &identity_id,
-                            balance,
-                            self,
-                        )?;
+                        self.insert_identity_token_balance(token_id, &identity_id, balance)?;
                         sender
                             .send(TaskResult::Refresh)
                             .await
@@ -104,8 +99,7 @@ impl AppContext {
                         Some(b) => *b,
                         None => 0,
                     };
-                    self.db
-                        .insert_identity_token_balance(token_id, &identity_id, balance, self)?;
+                    self.insert_identity_token_balance(token_id, &identity_id, balance)?;
                     sender
                         .send(TaskResult::Refresh)
                         .await

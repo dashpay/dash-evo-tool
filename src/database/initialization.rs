@@ -69,6 +69,68 @@ fn read_env_file_for_v34_migration(data_dir: &Path) -> std::io::Result<V34EnvSna
     })
 }
 
+/// Migration helper: replace the legacy `devnet:` / `local` network
+/// labels with the modern `devnet` / `regtest` spellings across every
+/// table that still carries a `network` column.
+///
+/// Pre-C7 this lived as `Database::fix_identity_devnet_network_name` in
+/// `database/identities.rs`. The file is gone — the helper is now a free
+/// function so it can be called from the migration ladder without
+/// reintroducing a domain-specific module.
+fn fix_devnet_network_name_in_legacy_tables(conn: &Connection) -> rusqlite::Result<()> {
+    // `scheduled_votes` lingers on pre-C5 installs but is no longer
+    // created on fresh installs; the per-table existence check below
+    // skips it transparently on the new schema.
+    const TABLES: [&str; 11] = [
+        "asset_lock_transaction",
+        "contestant",
+        "contested_name",
+        "contract",
+        "identity",
+        "identity_token_balances",
+        "scheduled_votes",
+        "settings",
+        "token",
+        "utxos",
+        "wallet",
+    ];
+
+    for t in TABLES {
+        let exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+            [t],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            continue;
+        }
+        // Pre-C5 `scheduled_votes` (v5 schema) had no `network` column;
+        // the v6 schema upgrade that added it was unwired in C5, so
+        // legacy DBs that never ran a later migration still have the
+        // old shape. Skip the UPDATE on those — the table is orphaned
+        // either way.
+        let has_network: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name='network'",
+            [t],
+            |row| row.get::<_, i32>(0).map(|c| c > 0),
+        )?;
+        if !has_network {
+            continue;
+        }
+        conn.execute(
+            &format!("UPDATE {t} SET network = 'devnet' WHERE network = 'devnet:'"),
+            [],
+        )?;
+        conn.execute(
+            &format!("UPDATE {t} SET network = 'regtest' WHERE network = 'local'"),
+            [],
+        )?;
+    }
+
+    tracing::debug!("Updated network names in database");
+    Ok(())
+}
+
 impl Database {
     pub fn initialize(&self, db_file_path: &Path) -> rusqlite::Result<()> {
         // First, ensure all required columns exist in tables that may have been
@@ -296,18 +358,44 @@ impl Database {
                     .migration_err("settings", "add disable_zmq column")?;
             }
             11 => {
-                self.rename_identity_column_is_in_creation_to_status(tx)
-                    .migration_err("identity", "rename is_in_creation to status")?;
+                // Rename `is_in_creation` to `status` on the legacy
+                // identity table. Pre-C7 this method lived on `Database`;
+                // it is inlined here now that `database/identities.rs`
+                // is gone.
+                tx.execute(
+                    "ALTER TABLE identity RENAME COLUMN is_in_creation TO status",
+                    [],
+                )
+                .migration_err("identity", "rename is_in_creation to status")?;
+                tx.execute("UPDATE identity SET status = 2 WHERE status = 0", [])
+                    .migration_err("identity", "remap is_in_creation values")?;
             }
             10 => {
                 self.add_theme_preference_column(tx)
                     .migration_err("settings", "add theme_preference column")?;
             }
             9 => {
-                self.delete_all_identities_in_all_devnets_and_regtest(tx)
-                    .migration_err("identity", "delete devnet/regtest identities")?;
-                self.delete_all_local_tokens_in_all_devnets_and_regtest(tx)
+                // The `identity` table is kept (empty CREATE) so legacy
+                // rows can still be cleaned up here. Fresh installs have
+                // an empty table — the DELETE is a no-op.
+                tx.execute(
+                    "DELETE FROM identity WHERE (network LIKE 'devnet%' OR network = 'regtest')",
+                    [],
+                )
+                .migration_err("identity", "delete devnet/regtest identities")?;
+                // The `token` table was unwired in C7 — fresh installs
+                // do not create it. Legacy DBs still have it and pay
+                // the cost of the DELETE once.
+                if self
+                    .table_exists(tx, "token")
+                    .migration_err("token", "check table existence")?
+                {
+                    tx.execute(
+                        "DELETE FROM token WHERE network LIKE 'devnet%' OR network = 'regtest'",
+                        [],
+                    )
                     .migration_err("token", "delete devnet/regtest tokens")?;
+                }
                 self.remove_all_asset_locks_identity_id_for_all_devnets_and_regtest(tx)
                     .migration_err(
                         "asset_lock_transaction",
@@ -327,7 +415,7 @@ impl Database {
                     )
                     .migration_err("contract", "delete devnet/regtest contracts")?;
                 }
-                self.fix_identity_devnet_network_name(tx)
+                fix_devnet_network_name_in_legacy_tables(tx)
                     .migration_err("identity", "fix devnet network name")?;
             }
             8 => {
@@ -358,20 +446,14 @@ impl Database {
             6 => {
                 // Pre-C5: `scheduled_votes` schema upgrade. The table is no longer
                 // created/managed; pre-C5 installs keep the orphaned table dormant.
-                self.initialize_token_table(tx)
-                    .migration_err("token", "create table")?;
-                self.drop_identity_token_balances_table(tx)
-                    .migration_err("identity_token_balances", "drop table")?;
-                self.initialize_identity_token_balances_table(tx)
-                    .migration_err("identity_token_balances", "create table")?;
-                tx.execute("DROP TABLE IF EXISTS identity_order", [])
-                    .migration_err("identity_order", "drop table")?;
-                self.initialize_identity_order_table(tx)
-                    .migration_err("identity_order", "create table")?;
-                tx.execute("DROP TABLE IF EXISTS token_order", [])
-                    .migration_err("token_order", "drop table")?;
-                self.initialize_token_order_table(tx)
-                    .migration_err("token_order", "create table")?;
+                //
+                // Pre-C7: this arm used to (re)create the `token`,
+                // `identity_token_balances`, `identity_order` and
+                // `token_order` tables. All four were unwired in C7
+                // (tokens + identity registry moved to the per-network
+                // k/v store). Fresh installs no longer create them and
+                // legacy installs keep the dormant rows.
+                let _ = tx;
             }
             5 => {
                 // Pre-C5: `scheduled_votes` create. Removed in C5; the table
@@ -683,7 +765,12 @@ impl Database {
             [],
         )?;
 
-        // Create the identities table
+        // The local identity registry was moved to the per-network wallet
+        // k/v store in C7. The `identity` table is still created (empty)
+        // because the `asset_lock_transaction` table carries foreign keys
+        // into it — keeping the table avoids surprising FK behaviour on
+        // legacy installs and matches the C6 pattern used for `contract`.
+        // The table is otherwise unused.
         conn.execute(
                     "CREATE TABLE IF NOT EXISTS identity (
                         id BLOB PRIMARY KEY,
@@ -701,13 +788,6 @@ impl Database {
                     )",
                     [],
                 )?;
-
-        // Create the composite index for faster querying
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_identity_local_network_type
-             ON identity (is_local, network, identity_type)",
-            [],
-        )?;
 
         // contested_name / contestant tables removed in C6 — DPNS contest
         // cache now lives in the per-network wallet k/v store. Legacy
@@ -729,10 +809,11 @@ impl Database {
             [],
         )?;
 
-        self.initialize_token_table(&conn)?;
-        self.initialize_identity_order_table(&conn)?;
-        self.initialize_token_order_table(&conn)?;
-        self.initialize_identity_token_balances_table(&conn)?;
+        // Token registry, per-identity token balances, identity ordering
+        // and token ordering all moved to the per-network wallet k/v
+        // store in C7. Nothing else references these tables, so they
+        // are no longer created on fresh installs. Legacy installs keep
+        // the dormant rows.
 
         // Initialize contacts and DashPay tables while holding the same connection lock
         self.init_contacts_tables(&conn)?;
@@ -1115,14 +1196,22 @@ impl Database {
             "CREATE INDEX IF NOT EXISTS idx_wallet_network ON wallet (network)",
             [],
         )?;
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_token_network ON token (network)",
-            [],
-        )?;
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_identity_token_balances_network ON identity_token_balances (network)",
-            [],
-        )?;
+        // The `token` and `identity_token_balances` tables were unwired
+        // in C7 — fresh installs do not create them, so we skip the
+        // index creation when the underlying table is absent. Legacy
+        // installs still have the tables and pick up the index.
+        if self.table_exists(conn, "token")? {
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_token_network ON token (network)",
+                [],
+            )?;
+        }
+        if self.table_exists(conn, "identity_token_balances")? {
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_identity_token_balances_network ON identity_token_balances (network)",
+                [],
+            )?;
+        }
         // The `scheduled_votes` table was unwired in C5; the index it carried
         // is no longer maintained on fresh installs. Existing pre-C5 installs
         // keep the orphaned table and its index dormant. Older pre-v6 shapes

@@ -26,10 +26,8 @@ impl AppContext {
     }
 
     pub fn wipe_devnet(self: &Arc<Self>) -> Result<BackendTaskSuccessResult, TaskError> {
-        self.db
-            .delete_all_local_qualified_identities_in_devnet(self)?;
-
-        self.db.delete_all_local_tokens_in_devnet(self)?;
+        self.delete_all_local_qualified_identities_in_devnet()?;
+        self.delete_all_local_tokens_in_devnet()?;
 
         self.db
             .remove_all_asset_locks_identity_id_for_devnet(self)?;

@@ -97,7 +97,7 @@ impl IdentitiesScreen {
             editing_alias_value: String::new(),
         };
 
-        if let Ok(saved_ids) = screen.app_context.db.load_identity_order() {
+        if let Ok(saved_ids) = screen.app_context.load_identity_order() {
             // reorder the IndexMap
             screen.reorder_map_to(saved_ids);
             screen.use_custom_order = true;
@@ -289,7 +289,7 @@ impl IdentitiesScreen {
         let lock = self.identities.lock().unwrap();
         let all_ids = lock.keys().cloned().collect::<Vec<_>>();
         drop(lock);
-        self.app_context.db.save_identity_order(all_ids).ok();
+        self.app_context.save_identity_order(all_ids).ok();
     }
 
     /// This method merges the ephemeral-sorted `Vec` back into the IndexMap
@@ -873,8 +873,7 @@ impl IdentitiesScreen {
 
                             match self
                                 .app_context
-                                .db
-                                .delete_local_qualified_identity(&identity_id, &self.app_context)
+                                .delete_local_qualified_identity(&identity_id)
                             {
                                 Ok(_) => {
                                     let mut lock = self.identities.lock().unwrap();
@@ -897,10 +896,10 @@ impl IdentitiesScreen {
                                 &identity_to_remove.associated_voter_identity
                             {
                                 let voter_identity_id = voter_identity.id();
-                                if let Err(e) = self.app_context.db.delete_local_qualified_identity(
-                                    &voter_identity_id,
-                                    &self.app_context,
-                                ) {
+                                if let Err(e) = self
+                                    .app_context
+                                    .delete_local_qualified_identity(&voter_identity_id)
+                                {
                                     tracing::warn!(
                                         "Failed to delete voter identity from database: {}",
                                         e
@@ -1040,7 +1039,7 @@ impl ScreenLike for IdentitiesScreen {
         drop(identities);
 
         // Keep order after refreshing
-        if let Ok(saved_ids) = self.app_context.db.load_identity_order() {
+        if let Ok(saved_ids) = self.app_context.load_identity_order() {
             self.reorder_map_to(saved_ids);
             self.use_custom_order = true;
         }

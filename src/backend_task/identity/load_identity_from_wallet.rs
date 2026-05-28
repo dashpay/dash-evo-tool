@@ -253,8 +253,7 @@ impl AppContext {
         self.insert_local_qualified_identity(
             &qualified_identity,
             &Some((wallet_seed_hash, identity_index)),
-        )
-        .map_err(|e| TaskError::Database { source: e })?;
+        )?;
 
         {
             let mut wallet = wallet_arc_ref.wallet.write()?;

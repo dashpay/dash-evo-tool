@@ -75,8 +75,7 @@ impl AppContext {
                 qualified_identity.alias = Some(format!("{}.dash", dpns_name));
             }
 
-            self.update_local_qualified_identity(&qualified_identity)
-                .map_err(|e| TaskError::Database { source: e })?;
+            self.update_local_qualified_identity(&qualified_identity)?;
         }
 
         sender

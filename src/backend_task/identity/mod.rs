@@ -834,8 +834,7 @@ impl AppContext {
         updated_identity.identity.set_balance(new_balance);
 
         // Store the updated identity (use update to preserve wallet association)
-        self.update_local_qualified_identity(&updated_identity)
-            .map_err(|e| TaskError::Database { source: e })?;
+        self.update_local_qualified_identity(&updated_identity)?;
 
         let fee_result = FeeResult::new(estimated_fee, estimated_fee);
         Ok(BackendTaskSuccessResult::ToppedUpIdentity(
@@ -917,8 +916,7 @@ impl AppContext {
         }
 
         // Store the updated identity (use update to preserve wallet association)
-        self.update_local_qualified_identity(&updated_identity)
-            .map_err(|e| TaskError::Database { source: e })?;
+        self.update_local_qualified_identity(&updated_identity)?;
 
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
         Ok(BackendTaskSuccessResult::TransferredCredits(fee_result))

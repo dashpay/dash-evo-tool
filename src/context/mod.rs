@@ -292,14 +292,13 @@ impl AppContext {
             false => AtomicBool::new(true), // Animations are enabled by default
         };
 
-        // Load saved wallet selection, validating that the wallets still exist
-        let (saved_wallet_hash, saved_single_key_hash) =
-            db.get_selected_wallet_hashes().unwrap_or((None, None));
-
-        // Only use the saved hash if the wallet still exists
-        let selected_wallet_hash = saved_wallet_hash.filter(|h| wallets.contains_key(h));
-        let selected_single_key_hash =
-            saved_single_key_hash.filter(|h| single_key_wallets.contains_key(h));
+        // Wallet selection is restored from the per-network wallet k/v
+        // store inside `ensure_wallet_backend` once the backend is
+        // wired. At `AppContext::new` time the backend does not exist
+        // yet, so both selections start as `None` and are populated
+        // lazily by the eager backend init in `AppState`.
+        let selected_wallet_hash: Option<WalletSeedHash> = None;
+        let selected_single_key_hash: Option<SingleKeyHash> = None;
 
         let app_context = AppContext {
             data_dir,
@@ -671,7 +670,36 @@ impl AppContext {
         if self.wallet_backend.load().is_none() {
             self.wallet_backend.store(Some(Arc::new(backend)));
         }
+        self.restore_selected_wallet_from_kv();
         Ok(())
+    }
+
+    /// Populate the in-memory selected-wallet pointers from the wallet
+    /// backend's k/v store. Called from [`Self::ensure_wallet_backend`]
+    /// once the backend exists; safe to call again later (idempotent
+    /// — re-reads kv and re-validates against currently loaded wallets).
+    /// Each pointer is kept only if the referenced wallet is still
+    /// loaded for this network, matching the pre-C4 validation step.
+    fn restore_selected_wallet_from_kv(&self) {
+        let Ok(backend) = self.wallet_backend() else {
+            return;
+        };
+        let selected = backend.get_selected_wallet();
+
+        if let Ok(mut guard) = self.selected_wallet_hash.lock() {
+            let candidate = selected
+                .hd_wallet_hash
+                .filter(|h| self.wallets.read().is_ok_and(|w| w.contains_key(h)));
+            *guard = candidate;
+        }
+        if let Ok(mut guard) = self.selected_single_key_hash.lock() {
+            let candidate = selected.single_key_hash.filter(|h| {
+                self.single_key_wallets
+                    .read()
+                    .is_ok_and(|w| w.contains_key(h))
+            });
+            *guard = candidate;
+        }
     }
 
     /// The wallet seam, or `WalletBackendNotYetWired` if not yet built.
@@ -679,6 +707,33 @@ impl AppContext {
         self.wallet_backend
             .load_full()
             .ok_or(TaskError::WalletBackendNotYetWired)
+    }
+
+    /// Persist the per-network selected-wallet pointer to the wallet
+    /// backend's k/v store. Logs and swallows the write if the backend
+    /// is not yet wired or the kv layer errors — wallet selection is
+    /// best-effort persistence (the in-memory mutex in `AppContext`
+    /// stays authoritative for the running process).
+    pub fn persist_selected_wallet_kv(
+        &self,
+        hd_wallet_hash: Option<WalletSeedHash>,
+        single_key_hash: Option<SingleKeyHash>,
+    ) {
+        let Ok(backend) = self.wallet_backend() else {
+            tracing::debug!("Skipping selected-wallet persist; wallet backend not yet wired");
+            return;
+        };
+        let blob = crate::model::selected_wallet::SelectedWallet {
+            hd_wallet_hash,
+            single_key_hash,
+        };
+        if let Err(e) = backend.set_selected_wallet(&blob) {
+            tracing::warn!(
+                network = ?self.network,
+                error = ?e,
+                "Failed to persist selected wallet to wallet k/v"
+            );
+        }
     }
 
     /// Does the wallet have at least one still-actionable tracked asset lock

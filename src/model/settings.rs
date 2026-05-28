@@ -9,8 +9,9 @@
 //! `network` field itself is the active-network pointer.
 //!
 //! Selected-wallet hashes (`selected_wallet_hash`,
-//! `selected_single_key_hash`) still live in `data.db` and move in a
-//! later unwire step.
+//! `selected_single_key_hash`) moved out in C4 and live as a
+//! [`SelectedWallet`](crate::model::selected_wallet::SelectedWallet)
+//! blob in the per-network wallet k/v store.
 
 use crate::ui::RootScreenType;
 use crate::ui::theme::ThemeMode;

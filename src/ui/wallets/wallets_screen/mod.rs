@@ -259,20 +259,27 @@ impl WalletsBalancesScreen {
         if let Ok(mut guard) = self.app_context.selected_wallet_hash.lock() {
             *guard = hash;
         }
-        let _ = self
+        let single_key_hash = self
             .app_context
-            .db
-            .update_selected_wallet_hash(hash.as_ref());
+            .selected_single_key_hash
+            .lock()
+            .ok()
+            .and_then(|g| *g);
+        self.app_context
+            .persist_selected_wallet_kv(hash, single_key_hash);
     }
 
     fn persist_selected_single_key_hash(&self, hash: Option<[u8; 32]>) {
         if let Ok(mut guard) = self.app_context.selected_single_key_hash.lock() {
             *guard = hash;
         }
-        let _ = self
+        let hd_hash = self
             .app_context
-            .db
-            .update_selected_single_key_hash(hash.as_ref());
+            .selected_wallet_hash
+            .lock()
+            .ok()
+            .and_then(|g| *g);
+        self.app_context.persist_selected_wallet_kv(hd_hash, hash);
     }
 
     /// Refresh the cached platform sync info from the database.

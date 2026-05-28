@@ -50,6 +50,7 @@ use crate::app::TaskResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::context::connection_status::ConnectionStatus;
+use crate::model::selected_wallet::SelectedWallet;
 use crate::model::wallet::WalletSeedHash;
 use crate::utils::egui_mpsc::SenderAsync;
 
@@ -316,6 +317,37 @@ impl WalletBackend {
     /// the schema-version envelope.
     pub fn kv(&self) -> DetKv {
         DetKv::new(Arc::clone(&self.inner.persister))
+    }
+
+    /// Read the persisted [`SelectedWallet`] pointer for this network.
+    ///
+    /// Returns [`SelectedWallet::default`] (both fields `None`) when the
+    /// blob is absent (fresh install, never selected) or the stored
+    /// value fails to decode (corrupt / future schema). Backed by the
+    /// same per-network [`SqlitePersister`] as wallet state — selection
+    /// is per-network by construction, no key prefix needed.
+    pub fn get_selected_wallet(&self) -> SelectedWallet {
+        match self
+            .kv()
+            .get::<SelectedWallet>(None, SelectedWallet::KV_KEY)
+        {
+            Ok(Some(s)) => s,
+            Ok(None) => SelectedWallet::default(),
+            Err(e) => {
+                tracing::warn!(
+                    network = ?self.inner.network,
+                    error = ?e,
+                    "Failed to load SelectedWallet from wallet k/v; using default"
+                );
+                SelectedWallet::default()
+            }
+        }
+    }
+
+    /// Persist the [`SelectedWallet`] pointer to this network's wallet
+    /// k/v store.
+    pub fn set_selected_wallet(&self, selected: &SelectedWallet) -> Result<(), KvAdapterError> {
+        self.kv().put(None, SelectedWallet::KV_KEY, selected)
     }
 
     /// Broadcast a raw transaction over the network via the upstream

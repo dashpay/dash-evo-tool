@@ -2,11 +2,13 @@
 //!
 //! User preferences (theme, network, ZMQ, evonode tools, …) moved to
 //! the upstream k/v store at [`AppSettings::KV_KEY`] in commit C3 of
-//! the data.db unwire. What remains here is the small surface that the
-//! later unwire steps still depend on:
+//! the data.db unwire. The selected-wallet pointer
+//! (`selected_wallet_hash` / `selected_single_key_hash`) moved to the
+//! per-network wallet k/v store at
+//! [`SelectedWallet::KV_KEY`](crate::model::selected_wallet::SelectedWallet::KV_KEY)
+//! in commit C4. What remains here is the small surface that the later
+//! unwire steps still depend on:
 //!
-//! * `selected_wallet_hash` / `selected_single_key_hash` getters and
-//!   setters (C4 moves these to a per-network blob).
 //! * `database_version` writer used by the migration runner (C10).
 //! * The column-addition helpers used by the migration ladder so old
 //!   `data.db` files keep upgrading cleanly. These never create the
@@ -18,9 +20,6 @@
 
 use crate::database::Database;
 use rusqlite::{Connection, Result, params};
-
-/// Selected wallet hash and single key hash tuple for database storage.
-pub type SelectedWalletHashes = (Option<[u8; 32]>, Option<[u8; 32]>);
 
 impl Database {
     /// Backfill `custom_dash_qt_path` / `overwrite_dash_conf` on an
@@ -227,14 +226,11 @@ impl Database {
     }
 
     /// Ensure the columns the residual settings layer still depends on
-    /// exist on an upgraded `data.db`. Only the selected-wallet hashes
-    /// and `database_version` are required here — the user-preference
-    /// columns were unwired in C3 and are no longer touched at read
-    /// time, so their backfill helpers are reserved for the migration
-    /// ladder only.
+    /// exist on an upgraded `data.db`. Only `database_version` is
+    /// required here — user-preference columns were unwired in C3 and
+    /// the selected-wallet pair was unwired in C4. Their backfill
+    /// helpers are reserved for the migration ladder only.
     pub fn ensure_settings_columns_exist(&self, conn: &Connection) -> Result<()> {
-        self.add_selected_wallet_columns_if_missing(conn)?;
-
         let version_column_exists: bool = conn.query_row(
             "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name='database_version'",
             [],
@@ -249,142 +245,5 @@ impl Database {
         }
 
         Ok(())
-    }
-
-    /// Adds selected wallet hash columns if they don't exist.
-    pub fn add_selected_wallet_columns_if_missing(&self, conn: &Connection) -> Result<()> {
-        let wallet_hash_exists: bool = conn.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name='selected_wallet_hash'",
-            [],
-            |row| row.get::<_, i32>(0).map(|count| count > 0),
-        )?;
-
-        if !wallet_hash_exists {
-            conn.execute(
-                "ALTER TABLE settings ADD COLUMN selected_wallet_hash BLOB DEFAULT NULL;",
-                (),
-            )?;
-        }
-
-        let single_key_hash_exists: bool = conn.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name='selected_single_key_hash'",
-            [],
-            |row| row.get::<_, i32>(0).map(|count| count > 0),
-        )?;
-
-        if !single_key_hash_exists {
-            conn.execute(
-                "ALTER TABLE settings ADD COLUMN selected_single_key_hash BLOB DEFAULT NULL;",
-                (),
-            )?;
-        }
-
-        Ok(())
-    }
-
-    /// Gets the selected wallet hashes from the settings table.
-    /// Returns (selected_wallet_hash, selected_single_key_hash).
-    pub fn get_selected_wallet_hashes(&self) -> Result<SelectedWalletHashes> {
-        let conn = self.conn.lock().unwrap();
-        let result = conn.query_row(
-            "SELECT selected_wallet_hash, selected_single_key_hash FROM settings WHERE id = 1",
-            [],
-            |row| {
-                let wallet_hash: Option<Vec<u8>> = row.get(0)?;
-                let single_key_hash: Option<Vec<u8>> = row.get(1)?;
-
-                let wallet_hash_arr = wallet_hash.and_then(|v| {
-                    if v.len() == 32 {
-                        let mut arr = [0u8; 32];
-                        arr.copy_from_slice(&v);
-                        Some(arr)
-                    } else {
-                        None
-                    }
-                });
-
-                let single_key_hash_arr = single_key_hash.and_then(|v| {
-                    if v.len() == 32 {
-                        let mut arr = [0u8; 32];
-                        arr.copy_from_slice(&v);
-                        Some(arr)
-                    } else {
-                        None
-                    }
-                });
-
-                Ok((wallet_hash_arr, single_key_hash_arr))
-            },
-        );
-
-        match result {
-            Ok(hashes) => Ok(hashes),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok((None, None)),
-            Err(e) => Err(e),
-        }
-    }
-
-    /// Updates the selected wallet hash in the settings table.
-    pub fn update_selected_wallet_hash(&self, hash: Option<&[u8; 32]>) -> Result<()> {
-        self.execute(
-            "UPDATE settings SET selected_wallet_hash = ? WHERE id = 1",
-            params![hash.map(|h| h.as_slice())],
-        )?;
-        Ok(())
-    }
-
-    /// Updates the selected single key hash in the settings table.
-    pub fn update_selected_single_key_hash(&self, hash: Option<&[u8; 32]>) -> Result<()> {
-        self.execute(
-            "UPDATE settings SET selected_single_key_hash = ? WHERE id = 1",
-            params![hash.map(|h| h.as_slice())],
-        )?;
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::database::test_helpers::create_test_database;
-
-    #[test]
-    fn test_selected_wallet_hash_operations() {
-        let db = create_test_database().expect("Failed to create test database");
-
-        // Initially no wallet selected
-        let (wallet_hash, single_key_hash) = db
-            .get_selected_wallet_hashes()
-            .expect("Failed to get wallet hashes");
-        assert!(wallet_hash.is_none());
-        assert!(single_key_hash.is_none());
-
-        // Set a wallet hash
-        let test_hash: [u8; 32] = [0x42; 32];
-        db.update_selected_wallet_hash(Some(&test_hash))
-            .expect("Failed to update wallet hash");
-
-        let (wallet_hash, _) = db
-            .get_selected_wallet_hashes()
-            .expect("Failed to get wallet hashes");
-        assert_eq!(wallet_hash, Some(test_hash));
-
-        // Set a single key hash
-        let single_key_test_hash: [u8; 32] = [0x24; 32];
-        db.update_selected_single_key_hash(Some(&single_key_test_hash))
-            .expect("Failed to update single key hash");
-
-        let (_, single_key_hash) = db
-            .get_selected_wallet_hashes()
-            .expect("Failed to get wallet hashes");
-        assert_eq!(single_key_hash, Some(single_key_test_hash));
-
-        // Clear wallet hash
-        db.update_selected_wallet_hash(None)
-            .expect("Failed to clear wallet hash");
-
-        let (wallet_hash, _) = db
-            .get_selected_wallet_hashes()
-            .expect("Failed to get wallet hashes");
-        assert!(wallet_hash.is_none());
     }
 }

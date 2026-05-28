@@ -527,15 +527,14 @@ impl Database {
         //
         // User-preference columns (network, theme, ZMQ, evonode tools, …)
         // were unwired in C3 of the data.db unwire and moved to the
-        // upstream k/v store. What survives here is the wallet-selection
-        // pair (C4 moves it next) and the migration runner's version
-        // counter.
+        // upstream k/v store. The selected-wallet pointer
+        // (`selected_wallet_hash`, `selected_single_key_hash`) was
+        // unwired in C4 and moved to the per-network wallet k/v store.
+        // What survives here is the migration runner's version counter.
         conn.execute(
             "CREATE TABLE IF NOT EXISTS settings (
             id INTEGER PRIMARY KEY CHECK (id = 1),
-            database_version INTEGER NOT NULL,
-            selected_wallet_hash BLOB,
-            selected_single_key_hash BLOB
+            database_version INTEGER NOT NULL
         )",
             [],
         )?;

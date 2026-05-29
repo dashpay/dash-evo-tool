@@ -708,11 +708,11 @@ impl AppContext {
         // change address (key-wallet 0.43 derives addresses directly rather than
         // exposing a bare next-change index).
         let account_xpub = {
-            let wallet = wm
-                .get_wallet(wallet_id)
-                .ok_or_else(|| TaskError::WalletPaymentFailed {
-                    detail: "Wallet object not found".to_string(),
-                })?;
+            let wallet =
+                wm.get_wallet(wallet_id)
+                    .ok_or_else(|| TaskError::WalletPaymentFailed {
+                        detail: "Wallet object not found".to_string(),
+                    })?;
             let wallet_account = wallet
                 .accounts
                 .standard_bip44_accounts
@@ -741,12 +741,11 @@ impl AppContext {
                 })?;
 
             let utxos: Vec<_> = account.utxos.values().cloned().collect();
-            let change_addr =
-                account
-                    .next_change_address(Some(&account_xpub), false)
-                    .map_err(|e| TaskError::WalletPaymentFailed {
-                        detail: format!("Failed to derive change address: {e}"),
-                    })?;
+            let change_addr = account
+                .next_change_address(Some(&account_xpub), false)
+                .map_err(|e| TaskError::WalletPaymentFailed {
+                    detail: format!("Failed to derive change address: {e}"),
+                })?;
             (utxos, change_addr)
         };
 
@@ -756,7 +755,7 @@ impl AppContext {
                 .map(|(addr, amt)| (addr.clone(), (*amt as f64 * scale_factor) as u64))
                 .collect();
 
-            let build_result = (|| -> Result<Transaction, BuilderError> {
+            let build_result: Result<Transaction, BuilderError> = {
                 let mut builder = TransactionBuilder::new()
                     .set_fee_rate(FeeRate::normal())
                     .set_change_address(change_addr.clone())
@@ -769,7 +768,7 @@ impl AppContext {
                 }
 
                 builder.build_unsigned().map(|(tx, _fee)| tx)
-            })();
+            };
 
             match build_result {
                 Ok(tx) => return Ok(tx),

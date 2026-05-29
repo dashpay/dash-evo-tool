@@ -1011,7 +1011,12 @@ impl SpvManager {
         let mut wm = self.wallet.write().await;
 
         let address = wm
-            .next_receive_address(&wallet_id, account_index, AccountTypePreference::BIP44, true)
+            .next_receive_address(
+                &wallet_id,
+                account_index,
+                AccountTypePreference::BIP44,
+                true,
+            )
             .ok_or_else(|| "Wallet manager did not return an address".to_string())?;
 
         let derivation_path = {

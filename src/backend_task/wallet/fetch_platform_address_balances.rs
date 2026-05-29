@@ -8,8 +8,8 @@ use dash_sdk::RequestSettings;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
-use dash_sdk::platform::address_sync::AddressSyncConfig;
 use dash_sdk::platform::address_sync::AddressIndex;
+use dash_sdk::platform::address_sync::AddressSyncConfig;
 use dash_sdk::platform::address_sync::AddressSyncResult;
 use std::sync::Arc;
 

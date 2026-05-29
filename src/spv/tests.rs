@@ -649,28 +649,39 @@ async fn test_live_testnet_sync_and_shutdown() {
 /// alone leaves filter_committed_height stale and causes the next SPV session to declare
 /// itself "already synced" and skip the rescan, producing zero balance after a Clear SPV Data.
 ///
-/// Given a manager with a non-zero filter_committed_height,
+/// key-wallet 0.43 replaced the single global `filter_committed_height` with a
+/// per-wallet `synced_height`, so this now seeds and asserts the per-wallet height.
+///
+/// Given a loaded wallet with a non-zero synced height,
 /// When clear_data_dir() is called,
-/// Then filter_committed_height is reset to 0.
+/// Then that wallet's synced height is reset to 0.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_clear_data_dir_resets_filter_committed_height() {
     let (manager, _tm, _tmp_dir) = create_test_manager();
 
-    // Pre-seed a non-zero filter_committed_height to simulate a previous session.
+    // Load a wallet so there is a per-wallet synced height to reset.
+    let seed_hash = [7u8; 32];
+    let seed_bytes = [9u8; 64];
+    let wallet_id = manager
+        .load_wallet_from_seed(seed_hash, seed_bytes)
+        .await
+        .expect("load_wallet_from_seed should succeed");
+
+    // Pre-seed a non-zero synced height to simulate a previous session.
     const PRESEED_HEIGHT: u32 = 5_000;
     let wallet_arc = manager.wallet();
     {
         let mut wm = wallet_arc.write().await;
-        wm.update_filter_committed_height(PRESEED_HEIGHT);
+        wm.update_wallet_synced_height(&wallet_id, PRESEED_HEIGHT);
     }
 
     // Verify pre-condition.
     {
         let wm = wallet_arc.read().await;
         assert_eq!(
-            wm.filter_committed_height(),
+            wm.wallet_synced_height(&wallet_id),
             PRESEED_HEIGHT,
-            "pre-condition: filter_committed_height should be PRESEED_HEIGHT"
+            "pre-condition: wallet synced height should be PRESEED_HEIGHT"
         );
     }
 
@@ -678,11 +689,11 @@ async fn test_clear_data_dir_resets_filter_committed_height() {
         .clear_data_dir()
         .expect("clear_data_dir should succeed");
 
-    // After clearing, filter_committed_height must be 0.
+    // After clearing, the wallet's synced height must be 0.
     let wm = wallet_arc.read().await;
     assert_eq!(
-        wm.filter_committed_height(),
+        wm.wallet_synced_height(&wallet_id),
         0,
-        "clear_data_dir must reset filter_committed_height to 0"
+        "clear_data_dir must reset the wallet synced height to 0"
     );
 }

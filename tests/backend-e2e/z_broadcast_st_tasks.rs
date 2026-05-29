@@ -111,6 +111,7 @@ async fn step_broadcast_valid(
         platform_version,
         None,
     )
+    .await
     .expect("failed to build IdentityUpdateTransition");
 
     tracing::info!("state transition built and signed, broadcasting...");
@@ -246,6 +247,7 @@ async fn step_broadcast_invalid(
         platform_version,
         None,
     )
+    .await
     .expect("failed to build (invalid-nonce) IdentityUpdateTransition");
 
     tracing::info!("broadcasting invalid state transition (nonce=u64::MAX)...");

@@ -6,6 +6,7 @@ use crate::model::qualified_identity::qualified_identity_public_key::QualifiedId
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use bincode::{Decode, Encode};
 use dash_sdk::dashcore_rpc::dashcore::{PubkeyHash, signer};
+use dash_sdk::dpp::async_trait::async_trait;
 use dash_sdk::dpp::bls_signatures::{Bls12381G2Impl, SignatureSchemes};
 use dash_sdk::dpp::dashcore::address::Payload;
 use dash_sdk::dpp::dashcore::hashes::Hash;
@@ -17,7 +18,6 @@ use dash_sdk::dpp::identity::KeyType::{BIP13_SCRIPT_HASH, ECDSA_HASH160};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use dash_sdk::dpp::async_trait::async_trait;
 use dash_sdk::dpp::identity::signer::Signer;
 use dash_sdk::dpp::identity::{Identity, KeyID, KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::key_wallet::bip32::ChildNumber;

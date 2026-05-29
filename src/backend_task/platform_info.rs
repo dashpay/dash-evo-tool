@@ -490,6 +490,9 @@ impl AppContext {
                 .map_err(|e| TaskError::from(SdkError::Protocol(e)))?;
 
                 let queued_document_query = DocumentQuery {
+                    select: Default::default(),
+                    group_by: vec![],
+                    having: vec![],
                     data_contract: Arc::new(withdrawal_contract),
                     document_type_name: "withdrawal".to_string(),
                     where_clauses: vec![],
@@ -535,6 +538,9 @@ impl AppContext {
                 .map_err(|e| TaskError::from(SdkError::Protocol(e)))?;
 
                 let completed_document_query = DocumentQuery {
+                    select: Default::default(),
+                    group_by: vec![],
+                    having: vec![],
                     data_contract: Arc::new(withdrawal_contract),
                     document_type_name: "withdrawal".to_string(),
                     where_clauses: vec![WhereClause {

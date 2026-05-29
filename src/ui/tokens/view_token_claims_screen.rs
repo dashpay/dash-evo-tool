@@ -41,6 +41,9 @@ impl ViewTokenClaimsScreen {
         Self {
             identity_token_basic_info: identity_token_basic_info.clone(),
             new_claims_query: DocumentQuery {
+                select: Default::default(),
+                group_by: vec![],
+                having: vec![],
                 data_contract: app_context.token_history_contract.clone(),
                 document_type_name: "claim".to_string(),
                 where_clauses: vec![

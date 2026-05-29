@@ -463,7 +463,7 @@ impl AppContext {
         qualified_identity: QualifiedIdentity,
     ) -> Result<Identity, TaskError> {
         match identity
-            .put_to_platform_and_wait_for_response(
+            .put_to_platform_and_wait_for_response_with_private_key(
                 sdk,
                 asset_lock_proof.clone(),
                 asset_lock_proof_private_key,
@@ -475,38 +475,46 @@ impl AppContext {
             Ok(updated_identity) => Ok(updated_identity),
             Err(e) => {
                 if matches!(e, Error::Protocol(ProtocolError::UnknownVersionError(_))) {
-                    identity
-                        .put_to_platform_and_wait_for_response(
+                    let retry_result = identity
+                        .put_to_platform_and_wait_for_response_with_private_key(
                             sdk,
                             asset_lock_proof.clone(),
                             asset_lock_proof_private_key,
                             &qualified_identity,
                             None,
                         )
-                        .await
-                        .map_err(|retry_err| {
-                            let logged = self.log_drive_proof_error(retry_err, RequestType::BroadcastStateTransition);
+                        .await;
+
+                    match retry_result {
+                        Ok(updated_identity) => Ok(updated_identity),
+                        Err(retry_err) => {
+                            let logged = self.log_drive_proof_error(
+                                retry_err,
+                                RequestType::BroadcastStateTransition,
+                            );
                             // If the logged variant is ProofError, return it directly;
                             // otherwise log the reconstructed transition for debugging.
-                            if matches!(logged, TaskError::ProofError { .. }) {
-                                return logged;
-                            }
-                            if let Ok(transition) = IdentityCreateTransition::try_from_identity_with_signer(
-                                identity,
-                                asset_lock_proof,
-                                asset_lock_proof_private_key.inner.as_ref(),
-                                &qualified_identity,
-                                &NativeBlsModule,
-                                0,
-                                self.platform_version(),
-                            ) {
+                            if !matches!(logged, TaskError::ProofError { .. })
+                                && let Ok(transition) =
+                                    IdentityCreateTransition::try_from_identity_with_signer_and_private_key(
+                                        identity,
+                                        asset_lock_proof,
+                                        asset_lock_proof_private_key.inner.as_ref(),
+                                        &qualified_identity,
+                                        &NativeBlsModule,
+                                        0,
+                                        self.platform_version(),
+                                    )
+                                    .await
+                            {
                                 tracing::debug!(
                                     "Register identity retry failed; reconstructed transition: {:?}",
                                     transition
                                 );
                             }
-                            logged
-                        })
+                            Err(logged)
+                        }
+                    }
                 } else {
                     Err(self.log_drive_proof_error(e, RequestType::BroadcastStateTransition))
                 }

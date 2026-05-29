@@ -25,7 +25,7 @@ use dash_sdk::dpp::dashcore::{
 };
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::key_wallet::Network as WalletNetwork;
-use dash_sdk::dpp::key_wallet::account::ECDSAAddressDerivation;
+use dash_sdk::dpp::key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::coin_selection::SelectionStrategy;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::fee::FeeRate;
@@ -704,43 +704,56 @@ impl AppContext {
         let mut scale_factor = 1.0f64;
         let mut attempted_fallback = false;
 
-        // Get UTXOs and change address from the wallet account
-        let (utxos, change_index) = {
-            let managed_info =
-                wm.get_wallet_info(wallet_id)
+        // The account xpub is needed by the managed account to derive the next
+        // change address (key-wallet 0.43 derives addresses directly rather than
+        // exposing a bare next-change index).
+        let account_xpub = {
+            let wallet =
+                wm.get_wallet(wallet_id)
                     .ok_or_else(|| TaskError::WalletPaymentFailed {
-                        detail: "Wallet info unavailable".to_string(),
+                        detail: "Wallet object not found".to_string(),
                     })?;
-            let account = managed_info
-                .accounts()
+            let wallet_account = wallet
+                .accounts
                 .standard_bip44_accounts
                 .get(&DEFAULT_BIP44_ACCOUNT_INDEX)
+                .ok_or_else(|| TaskError::WalletPaymentFailed {
+                    detail: "BIP44 wallet account missing".to_string(),
+                })?;
+            wallet_account.account_xpub
+        };
+
+        // Get UTXOs and the next (unused) change address from the managed account.
+        // `add_to_state = false` does not advance the address pool, but key-wallet
+        // 0.43's `next_change_address` still bumps the managed account's monitor
+        // revision unconditionally. There is no read-only "peek next change address"
+        // on ManagedCoreFundsAccount, so this fee-estimation peek takes a write lock
+        // and nudges the monitor revision. That only signals the mempool bloom filter
+        // it may be stale (a one-time rebuild), so it is acceptable here.
+        // TODO(v3.1-bump): switch to a non-mutating change-address peek if key-wallet
+        // exposes one upstream.
+        let (utxos, change_addr) = {
+            let managed_info = wm.get_wallet_info_mut(wallet_id).ok_or_else(|| {
+                TaskError::WalletPaymentFailed {
+                    detail: "Wallet info unavailable".to_string(),
+                }
+            })?;
+            let account = managed_info
+                .accounts_mut()
+                .standard_bip44_accounts
+                .get_mut(&DEFAULT_BIP44_ACCOUNT_INDEX)
                 .ok_or_else(|| TaskError::WalletPaymentFailed {
                     detail: "BIP44 account missing".to_string(),
                 })?;
 
             let utxos: Vec<_> = account.utxos.values().cloned().collect();
-            let change_index = account.get_next_change_address_index().unwrap_or(0);
-            (utxos, change_index)
+            let change_addr = account
+                .next_change_address(Some(&account_xpub), false)
+                .map_err(|e| TaskError::WalletPaymentFailed {
+                    detail: format!("Failed to derive change address: {e}"),
+                })?;
+            (utxos, change_addr)
         };
-
-        let wallet = wm
-            .get_wallet(wallet_id)
-            .ok_or_else(|| TaskError::WalletPaymentFailed {
-                detail: "Wallet object not found".to_string(),
-            })?;
-        let wallet_account = wallet
-            .accounts
-            .standard_bip44_accounts
-            .get(&DEFAULT_BIP44_ACCOUNT_INDEX)
-            .ok_or_else(|| TaskError::WalletPaymentFailed {
-                detail: "BIP44 wallet account missing".to_string(),
-            })?;
-        let change_addr = wallet_account
-            .derive_change_address(change_index)
-            .map_err(|e| TaskError::WalletPaymentFailed {
-                detail: format!("Failed to derive change address: {e}"),
-            })?;
 
         loop {
             let scaled_recipients: Vec<(Address, u64)> = recipients
@@ -748,24 +761,24 @@ impl AppContext {
                 .map(|(addr, amt)| (addr.clone(), (*amt as f64 * scale_factor) as u64))
                 .collect();
 
-            let build_result = (|| -> Result<Transaction, BuilderError> {
+            // build_unsigned requires input >= output + fee and returns
+            // InsufficientFunds otherwise; the old build() let change shrink and
+            // could return a tx that underpaid the fee. The fallback loop below
+            // now drives off that earlier (correct) InsufficientFunds.
+            let build_result: Result<Transaction, BuilderError> = {
                 let mut builder = TransactionBuilder::new()
                     .set_fee_rate(FeeRate::normal())
-                    .set_change_address(change_addr.clone());
+                    .set_change_address(change_addr.clone())
+                    .set_selection_strategy(SelectionStrategy::LargestFirst)
+                    .set_current_height(current_height)
+                    .add_inputs(utxos.iter().cloned());
 
                 for (addr, amt) in &scaled_recipients {
-                    builder = builder.add_output(addr, *amt)?;
+                    builder = builder.add_output(addr, *amt);
                 }
 
-                builder = builder.select_inputs(
-                    &utxos,
-                    SelectionStrategy::LargestFirst,
-                    current_height,
-                    |_| None, // No private keys for unsigned tx
-                )?;
-
-                builder.build()
-            })();
+                builder.build_unsigned().map(|(tx, _fee)| tx)
+            };
 
             match build_result {
                 Ok(tx) => return Ok(tx),
@@ -871,30 +884,22 @@ impl AppContext {
         // Build the transaction using TransactionBuilder
         let mut builder = TransactionBuilder::new()
             .set_fee_rate(FeeRate::normal())
-            .set_change_address(change_address.clone());
+            .set_change_address(change_address.clone())
+            .set_selection_strategy(SelectionStrategy::OptimalConsolidation)
+            .set_current_height(current_height)
+            .add_inputs(all_utxos);
 
         for (address, amount) in recipients {
-            builder = builder
-                .add_output(&address, amount)
-                .map_err(|e: BuilderError| WalletError::TransactionBuild(e.to_string()))?;
+            builder = builder.add_output(&address, amount);
         }
 
-        builder = builder
-            .select_inputs(
-                &all_utxos,
-                SelectionStrategy::OptimalConsolidation,
-                current_height,
-                |_| None, // No private keys for unsigned transaction
-            )
-            // TODO(RUST-002): String-based error classification — see #660
-            .map_err(|e: BuilderError| match e.to_string() {
-                msg if msg.contains("Insufficient") => WalletError::InsufficientFunds,
-                msg => WalletError::TransactionBuild(msg),
-            })?;
-
         builder
-            .build()
-            .map_err(|e: BuilderError| WalletError::TransactionBuild(e.to_string()))
+            .build_unsigned()
+            .map(|(tx, _fee)| tx)
+            .map_err(|e: BuilderError| match e {
+                BuilderError::InsufficientFunds { .. } => WalletError::InsufficientFunds,
+                other => WalletError::TransactionBuild(other.to_string()),
+            })
     }
 
     fn sign_spv_transaction(

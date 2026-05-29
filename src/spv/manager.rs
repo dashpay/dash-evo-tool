@@ -15,6 +15,7 @@ use dash_sdk::dash_spv::types::ValidationMode;
 use dash_sdk::dash_spv::{ClientConfig, DashSpvClient, Hash, LLMQType, QuorumHash};
 use dash_sdk::dpp::dashcore::{Address, InstantLock, Network, Transaction, Txid};
 use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, ExtendedPrivKey};
+use dash_sdk::dpp::key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
 use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::{
     ManagedWalletInfo, transaction_building::AccountTypePreference,
@@ -129,12 +130,8 @@ pub struct SpvStatusSnapshot {
 }
 
 /// Type alias for the SPV client with our specific configuration
-type SpvClient = DashSpvClient<
-    WalletManager<ManagedWalletInfo>,
-    PeerNetworkManager,
-    DiskStorageManager,
-    SpvEventHandler,
->;
+type SpvClient =
+    DashSpvClient<WalletManager<ManagedWalletInfo>, PeerNetworkManager, DiskStorageManager>;
 
 /// EventHandler implementation that bridges dash-spv push events into
 /// SpvManager's shared state (progress, status, peer count, errors).
@@ -819,22 +816,32 @@ impl SpvManager {
             wallet_map.clear();
         }
 
-        // Reset the in-memory WalletManager's filter_committed_height so the next
-        // SPV session scans filters from genesis instead of the stale height from the
-        // previous run. We reset filter_committed_height (not synced_height) because at
-        // rust-dashcore 309fac8 these became independent fields — FiltersManager::new()
-        // reads filter_committed_height() for its "already synced" guard.
+        // Rewind every wallet's sync checkpoint to genesis so the next SPV
+        // session re-fetches filter coverage from height 0 instead of trusting
+        // the now-deleted on-disk filters.
+        //
+        // key-wallet 0.43 replaced the single global `filter_committed_height`
+        // with a per-wallet `synced_height`, gated by `wallets_behind()` /
+        // `FiltersManager`. The trait setter `update_wallet_synced_height` is
+        // forward-only monotonic (a value below the current is silently ignored),
+        // so it cannot express a rewind. We therefore write the metadata fields
+        // directly — a deliberate downward reset, the per-wallet equivalent of
+        // the old unconditional `update_filter_committed_height(0)`.
         //
         // This must succeed before we wipe the on-disk data; otherwise the in-memory
         // height would stay stale while on-disk filters are gone, re-triggering the
         // skipped-rescan bug this clear is meant to prevent.
         {
             let mut wm = self.wallet.try_write().map_err(|e| {
-                format!(
-                    "Failed to reset WalletManager filter_committed_height during SPV data clear: {e}"
-                )
+                format!("Failed to reset wallet synced heights during SPV data clear: {e}")
             })?;
-            wm.update_filter_committed_height(0);
+            let wallet_ids: Vec<_> = wm.list_wallets().into_iter().copied().collect();
+            for wallet_id in wallet_ids {
+                if let Some(info) = wm.get_wallet_info_mut(&wallet_id) {
+                    info.metadata.synced_height = 0;
+                    info.metadata.last_processed_height = 0;
+                }
+            }
         }
 
         self.write_sync_progress(None).map_err(|e| e.to_string())?;
@@ -1007,17 +1014,13 @@ impl SpvManager {
 
         let mut wm = self.wallet.write().await;
 
-        let result = wm
-            .get_receive_address(
+        let address = wm
+            .next_receive_address(
                 &wallet_id,
                 account_index,
                 AccountTypePreference::BIP44,
                 true,
             )
-            .map_err(|e| format!("get_receive_address failed: {e}"))?;
-
-        let address = result
-            .address
             .ok_or_else(|| "Wallet manager did not return an address".to_string())?;
 
         let derivation_path = {
@@ -1177,8 +1180,11 @@ impl SpvManager {
         }
 
         let outcome = {
-            let run_cancel = CancellationToken::new();
-            let run_future = client.run(run_cancel.clone());
+            // key-wallet 0.43: `run()` no longer takes a cancellation token; it
+            // runs until `stop()` flips the client's internal running flag. Both
+            // `run` and `stop` take `&self`, so we can drive `stop()` concurrently
+            // while `run_future` borrows the same client.
+            let run_future = client.run();
             tokio::pin!(run_future);
 
             // stop_token is a child of global_cancel, so it fires on either
@@ -1186,7 +1192,18 @@ impl SpvManager {
             tokio::select! {
                 result = &mut run_future => Outcome::RunCompleted(result),
                 _ = stop_token.cancelled() => {
-                    run_cancel.cancel();
+                    match client.stop().await {
+                        Ok(()) => {
+                            // Let run() observe the stop flag and unwind its monitors.
+                            let _ = (&mut run_future).await;
+                        }
+                        Err(e) => {
+                            // stop() may not have flipped the run flag; do NOT await
+                            // run_future (it could block forever). Drop it and treat
+                            // as a hard cancellation.
+                            tracing::warn!("client.stop() during cancellation failed: {e}");
+                        }
+                    }
                     Outcome::Cancelled
                 },
             }
@@ -1434,7 +1451,7 @@ impl SpvManager {
             network_manager,
             storage_manager,
             Arc::clone(&self.wallet),
-            event_handler,
+            vec![event_handler as Arc<dyn EventHandler>],
         )
         .await
         .map_err(|e| format!("Failed to create SPV client: {e}"))

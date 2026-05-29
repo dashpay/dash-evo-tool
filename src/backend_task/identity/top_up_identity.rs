@@ -228,11 +228,10 @@ impl AppContext {
 
         let updated_identity_balance = match qualified_identity
             .identity
-            .top_up_identity(
+            .top_up_identity_with_private_key(
                 &sdk,
                 asset_lock_proof.clone(),
                 &asset_lock_proof_private_key,
-                None,
                 None,
             )
             .await
@@ -257,11 +256,10 @@ impl AppContext {
                             // Retry with chain asset lock proof
                             qualified_identity
                                 .identity
-                                .top_up_identity(
+                                .top_up_identity_with_private_key(
                                     &sdk,
                                     chain_asset_lock_proof,
                                     &asset_lock_proof_private_key,
-                                    None,
                                     None,
                                 )
                                 .await
@@ -283,11 +281,10 @@ impl AppContext {
                 } else if matches!(e, Error::Protocol(ProtocolError::UnknownVersionError(_))) {
                     qualified_identity
                         .identity
-                        .top_up_identity(
+                        .top_up_identity_with_private_key(
                             &sdk,
                             asset_lock_proof.clone(),
                             &asset_lock_proof_private_key,
-                            None,
                             None,
                         )
                         .await
@@ -300,14 +297,16 @@ impl AppContext {
                                 return logged;
                             }
                             // Log the reconstructed transition for debugging before returning the error.
-                            if let Ok(transition) = IdentityTopUpTransition::try_from_identity(
-                                &qualified_identity.identity,
-                                asset_lock_proof,
-                                asset_lock_proof_private_key.inner.as_ref(),
-                                0,
-                                self.platform_version(),
-                                None,
-                            ) {
+                            if let Ok(transition) =
+                                IdentityTopUpTransition::try_from_identity_with_private_key(
+                                    &qualified_identity.identity,
+                                    asset_lock_proof,
+                                    asset_lock_proof_private_key.inner.as_ref(),
+                                    0,
+                                    self.platform_version(),
+                                    None,
+                                )
+                            {
                                 tracing::debug!(
                                     "Top-up retry failed; reconstructed transition: {:?}",
                                     transition

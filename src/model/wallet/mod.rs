@@ -17,7 +17,11 @@ use dash_sdk::dpp::key_wallet::bip32::{
 };
 use dash_sdk::dpp::key_wallet::psbt::serialize::Serialize;
 use dash_sdk::dpp::prelude::AddressNonce;
-use dash_sdk::platform::address_sync::{AddressFunds, AddressIndex, AddressKey, AddressProvider};
+use dash_sdk::platform::address_sync::{AddressFunds, AddressIndex, AddressProvider};
+
+/// Raw GroveDB address-funds key bytes (1-byte variant tag + 20-byte hash),
+/// as produced by `PlatformAddress::to_bytes()`.
+type AddressKey = Vec<u8>;
 
 use dash_sdk::dpp::dashcore::secp256k1::{Message, Secp256k1};
 use dash_sdk::dpp::dashcore::sighash::SighashCache;
@@ -2295,8 +2299,9 @@ impl Wallet {
 
 /// Signer implementation for Platform addresses
 /// Allows the wallet to sign transactions that spend from Platform addresses
+#[async_trait]
 impl Signer<PlatformAddress> for Wallet {
-    fn sign(
+    async fn sign(
         &self,
         platform_address: &PlatformAddress,
         data: &[u8],
@@ -2329,7 +2334,7 @@ impl Signer<PlatformAddress> for Wallet {
         Ok(BinaryData::new(signature.to_vec()))
     }
 
-    fn sign_create_witness(
+    async fn sign_create_witness(
         &self,
         platform_address: &PlatformAddress,
         data: &[u8],
@@ -2647,19 +2652,31 @@ impl WalletAddressProvider {
 
 #[async_trait]
 impl AddressProvider for WalletAddressProvider {
+    type Tag = AddressIndex;
+    type Address = PlatformAddress;
+
     fn gap_limit(&self) -> AddressIndex {
         self.gap_limit
     }
 
-    fn pending_addresses(&self) -> Vec<(AddressIndex, AddressKey)> {
+    fn pending_addresses(&self) -> impl Iterator<Item = (Self::Tag, Self::Address)> + '_ {
         self.pending
             .iter()
             .filter(|(index, _)| !self.resolved.contains(index))
-            .map(|(index, (key, _))| (*index, key.clone()))
-            .collect()
+            .filter_map(|(index, (_, core_address))| {
+                PlatformAddress::try_from(core_address.clone())
+                    .ok()
+                    .map(|pa| (*index, pa))
+            })
     }
 
-    async fn on_address_found(&mut self, index: AddressIndex, _key: &[u8], funds: AddressFunds) {
+    async fn on_address_found(
+        &mut self,
+        tag: Self::Tag,
+        _address: &Self::Address,
+        funds: AddressFunds,
+    ) {
+        let index = tag;
         self.resolved.insert(index);
 
         // Log what the SDK is returning
@@ -2700,8 +2717,8 @@ impl AddressProvider for WalletAddressProvider {
         }
     }
 
-    async fn on_address_absent(&mut self, index: AddressIndex, _key: &[u8]) {
-        self.resolved.insert(index);
+    async fn on_address_absent(&mut self, tag: Self::Tag, _address: &Self::Address) {
+        self.resolved.insert(tag);
     }
 
     fn has_pending(&self) -> bool {
@@ -2710,12 +2727,22 @@ impl AddressProvider for WalletAddressProvider {
             .any(|index| !self.resolved.contains(index))
     }
 
-    fn highest_found_index(&self) -> Option<AddressIndex> {
-        self.highest_found
-    }
-
-    fn current_balances(&self) -> Vec<(AddressIndex, AddressKey, AddressFunds)> {
-        self.stored_balances.clone()
+    fn current_balances(
+        &self,
+    ) -> impl Iterator<Item = (Self::Tag, Self::Address, AddressFunds)> + '_ {
+        // Re-derive the PlatformAddress for each stored balance from the pending
+        // map by index; entries whose index is no longer pending or whose core
+        // address can't be re-encoded are skipped (they carry no usable key).
+        // Lossless for current usage: stored_balances is seeded from `pending`
+        // (with_stored_state) and `pending` is only ever inserted into, never
+        // pruned — so every stored index is present here.
+        self.stored_balances
+            .iter()
+            .filter_map(|(index, _key, funds)| {
+                let (_, core_address) = self.pending.get(index)?;
+                let pa = PlatformAddress::try_from(core_address.clone()).ok()?;
+                Some((*index, pa, *funds))
+            })
     }
 
     fn last_sync_height(&self) -> u64 {

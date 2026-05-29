@@ -6,6 +6,7 @@ use crate::model::qualified_identity::qualified_identity_public_key::QualifiedId
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use bincode::{Decode, Encode};
 use dash_sdk::dashcore_rpc::dashcore::{PubkeyHash, signer};
+use dash_sdk::dpp::async_trait::async_trait;
 use dash_sdk::dpp::bls_signatures::{Bls12381G2Impl, SignatureSchemes};
 use dash_sdk::dpp::dashcore::address::Payload;
 use dash_sdk::dpp::dashcore::hashes::Hash;
@@ -304,8 +305,9 @@ impl Display for QualifiedIdentity {
     }
 }
 
+#[async_trait]
 impl Signer<IdentityPublicKey> for QualifiedIdentity {
-    fn sign(
+    async fn sign(
         &self,
         identity_public_key: &IdentityPublicKey,
         data: &[u8],
@@ -481,7 +483,7 @@ impl Signer<IdentityPublicKey> for QualifiedIdentity {
         ))
     }
 
-    fn sign_create_witness(
+    async fn sign_create_witness(
         &self,
         identity_public_key: &IdentityPublicKey,
         data: &[u8],
@@ -490,7 +492,7 @@ impl Signer<IdentityPublicKey> for QualifiedIdentity {
 
         // First, sign the data to get the signature (compact recoverable signature)
         // The public key will be recovered from the signature during verification
-        let signature = self.sign(identity_public_key, data)?;
+        let signature = self.sign(identity_public_key, data).await?;
 
         // Create the appropriate AddressWitness based on the key type
         match identity_public_key.key_type() {

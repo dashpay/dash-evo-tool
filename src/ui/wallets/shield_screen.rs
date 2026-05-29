@@ -325,19 +325,20 @@ impl ShieldScreen {
                             *guard = ShieldStage::BuildingProof { nonce };
                         }
 
-                        let result = tokio::task::spawn_blocking(move || {
-                            bundle::build_shield_credit(
-                                &app_ctx,
-                                &seed_hash,
-                                &default_address,
-                                amount,
-                                addr,
-                                nonce,
-                            )
-                        })
+                        // build_shield_credit is async (the upstream shield builder
+                        // routes signing through an async Signer) but offloads its
+                        // Halo2 proving onto the blocking pool internally, so awaiting
+                        // it here does not block a tokio worker.
+                        let result = bundle::build_shield_credit(
+                            &app_ctx,
+                            &seed_hash,
+                            &default_address,
+                            amount,
+                            addr,
+                            nonce,
+                        )
                         .await
-                        .map_err(|e| e.to_string())
-                        .and_then(|r| r.map_err(|e| e.to_string()));
+                        .map_err(|e| e.to_string());
 
                         match &result {
                             Ok(_) => {

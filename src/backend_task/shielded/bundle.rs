@@ -21,7 +21,7 @@ use dash_sdk::grovedb_commitment_tree::{
 };
 use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
 /// Wrapper around a cached `ProvingKey` that implements `OrchardProver`.
 struct CachedProver {
@@ -85,7 +85,7 @@ impl ShieldStage {
 /// Build a Shield transition without broadcasting (for batch parallel mode).
 ///
 /// Returns the built `StateTransition` so the caller can broadcast in nonce order.
-pub fn build_shield_credit(
+pub async fn build_shield_credit(
     app_context: &Arc<AppContext>,
     seed_hash: &WalletSeedHash,
     recipient_payment_address: &PaymentAddress,
@@ -114,20 +114,68 @@ pub fn build_shield_credit(
     let fee_strategy: AddressFundsFeeStrategy =
         vec![AddressFundsFeeStrategyStep::DeductFromInput(0)];
 
-    let wallet = wallet_arc.read()?;
+    let platform_version = sdk.version();
     // memo: 36-byte structured memo (4-byte type tag + 32-byte payload); all zeros = empty memo
-    build_shield_transition(
-        &recipient_addr,
+    build_shield_transition_offloaded(
+        recipient_addr,
         amount,
         inputs,
         fee_strategy,
-        &*wallet,
-        0,
-        &prover,
-        [0u8; 36],
-        sdk.version(),
+        wallet_arc,
+        prover,
+        platform_version,
     )
-    .map_err(|e| shielded_build_error(e.to_string()))
+    .await
+}
+
+/// Run the (CPU-heavy, Halo2-proving) shield build on the blocking pool.
+///
+/// `build_shield_transition` is async but its proving step runs synchronously
+/// inline before the first await, so awaiting it directly would block a tokio
+/// worker for seconds. We drive the whole future on a `spawn_blocking` thread
+/// (where `block_on` is permitted) so the proof generation stays off the async
+/// worker pool. The wallet read guard is taken inside that dedicated thread and
+/// never crosses a thread boundary, so we pass the cheap `Arc` rather than
+/// deep-cloning the wallet (and its seed material).
+async fn build_shield_transition_offloaded(
+    recipient_addr: OrchardAddress,
+    amount: u64,
+    inputs: BTreeMap<PlatformAddress, (u32, u64)>,
+    fee_strategy: AddressFundsFeeStrategy,
+    wallet_arc: Arc<RwLock<crate::model::wallet::Wallet>>,
+    prover: CachedProver,
+    platform_version: &'static PlatformVersion,
+) -> Result<dash_sdk::dpp::state_transition::StateTransition, TaskError> {
+    let handle = tokio::runtime::Handle::current();
+    tokio::task::spawn_blocking(move || {
+        let wallet = wallet_arc
+            .read()
+            .map_err(|_| shielded_build_error("wallet lock poisoned".to_string()))?;
+        handle.block_on(async {
+            // memo: 36-byte structured memo (4-byte type tag + 32-byte payload); all zeros = empty memo
+            build_shield_transition(
+                &recipient_addr,
+                amount,
+                inputs,
+                fee_strategy,
+                &*wallet,
+                0,
+                &prover,
+                [0u8; 36],
+                platform_version,
+            )
+            .await
+            .map_err(|e| shielded_build_error(e.to_string()))
+        })
+    })
+    .await
+    .map_err(|e| {
+        if e.is_cancelled() {
+            shielded_build_error("shield proof task was cancelled".to_string())
+        } else {
+            shielded_build_error(format!("shield proof task panicked: {e}"))
+        }
+    })?
 }
 
 /// Build and broadcast a Shield transition (transparent -> shielded pool).
@@ -195,20 +243,17 @@ pub async fn shield_credits(
     }
 
     let state_transition = {
-        let wallet = wallet_arc.read()?;
-        // memo: 36-byte structured memo (4-byte type tag + 32-byte payload); all zeros = empty memo
-        build_shield_transition(
-            &recipient_addr,
+        let platform_version = sdk.version();
+        build_shield_transition_offloaded(
+            recipient_addr,
             amount,
             inputs,
             fee_strategy,
-            &*wallet,
-            0,
-            &prover,
-            [0u8; 36],
-            sdk.version(),
+            wallet_arc,
+            prover,
+            platform_version,
         )
-        .map_err(|e| shielded_build_error(e.to_string()))?
+        .await?
     };
 
     if let Some(s) = &stage {

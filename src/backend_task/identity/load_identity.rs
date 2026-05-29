@@ -316,6 +316,9 @@ impl AppContext {
 
         // Fetch DPNS names using SDK
         let dpns_names_document_query = DocumentQuery {
+            select: Default::default(),
+            group_by: vec![],
+            having: vec![],
             data_contract: self.dpns_contract.clone(),
             document_type_name: "domain".to_string(),
             where_clauses: vec![WhereClause {

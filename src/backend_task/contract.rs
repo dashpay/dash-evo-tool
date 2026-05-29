@@ -79,6 +79,9 @@ impl AppContext {
                                 // Fetch the contract description from the Search Contract
                                 let search_contract = &self.keyword_search_contract;
                                 let document_query = DocumentQuery {
+                                    select: Default::default(),
+                                    group_by: vec![],
+                                    having: vec![],
                                     data_contract: search_contract.clone(),
                                     document_type_name: "fullDescription".to_string(),
                                     limit: 1,

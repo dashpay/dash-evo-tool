@@ -2,6 +2,8 @@ use super::AppContext;
 use crate::backend_task::error::TaskError;
 use crate::database::is_unique_constraint_violation;
 use crate::model::feature_gate::FeatureGate;
+use crate::model::wallet::meta::WalletMeta;
+use crate::model::wallet::seed_envelope::StoredSeedEnvelope;
 use crate::model::wallet::{DerivationPathReference, DerivationPathType, Wallet, WalletSeedHash};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
@@ -89,7 +91,27 @@ impl AppContext {
         self: &Arc<Self>,
         wallet: Wallet,
     ) -> Result<(WalletSeedHash, Arc<RwLock<Wallet>>), TaskError> {
-        // 1. Persist wallet and known addresses atomically
+        let seed_hash = wallet.seed_hash();
+
+        // 1. Persist to sidecars (T-W-01). The wallet-meta sidecar
+        // carries alias/is_main/core_wallet_name plus the pre-computed
+        // master xpub the cold-boot picker reads without unlocking the
+        // vault; the seed-envelope sidecar carries the encrypted seed
+        // bytes plus the matching xpub copy.
+        //
+        // The legacy `data.db.wallet` row is still written so the
+        // in-process migration replay (T-DEV-02) has something to read
+        // when an older build is downgraded onto a freshly-imported
+        // wallet. The cold-boot READ path no longer touches that row —
+        // see the comment in `AppContext::new`.
+        if let Err(e) = self.write_wallet_sidecars(&wallet) {
+            tracing::warn!(
+                wallet = %hex::encode(seed_hash),
+                error = ?e,
+                "Failed to persist wallet sidecars; rolling forward with legacy DB write",
+            );
+        }
+
         let addresses: Vec<_> = wallet
             .known_addresses
             .iter()
@@ -113,8 +135,6 @@ impl AppContext {
                 }
             })?;
 
-        let seed_hash = wallet.seed_hash();
-
         // 2. Register in-memory
         let wallet_arc = Arc::new(RwLock::new(wallet));
         let mut wallets = self.wallets.write()?;
@@ -127,6 +147,40 @@ impl AppContext {
         self.handle_wallet_unlocked(&wallet_arc);
 
         Ok((seed_hash, wallet_arc))
+    }
+
+    /// Mirror a newly-registered wallet into the wallet-meta +
+    /// seed-envelope sidecars. Skipped (logged) when the wallet backend
+    /// has not been wired yet — the next `ensure_wallet_backend` boot
+    /// then rebuilds the same sidecar entries via T-W-00 / T-W-00.5-v2
+    /// migration replay against the legacy row that was written below.
+    fn write_wallet_sidecars(&self, wallet: &Wallet) -> Result<(), TaskError> {
+        let backend = self.wallet_backend()?;
+        let seed_hash = wallet.seed_hash();
+        let xpub_encoded = wallet
+            .master_bip44_ecdsa_extended_public_key
+            .encode()
+            .to_vec();
+
+        let envelope = StoredSeedEnvelope {
+            encrypted_seed: wallet.encrypted_seed_slice().to_vec(),
+            salt: wallet.salt().to_vec(),
+            nonce: wallet.nonce().to_vec(),
+            password_hint: wallet.password_hint().clone(),
+            uses_password: wallet.uses_password,
+            xpub_encoded: xpub_encoded.clone(),
+        };
+        backend.wallet_seeds().set(&seed_hash, &envelope)?;
+
+        let meta = WalletMeta {
+            alias: wallet.alias.clone().unwrap_or_default(),
+            is_main: wallet.is_main,
+            core_wallet_name: wallet.core_wallet_name.clone(),
+            xpub_encoded,
+        };
+        backend.wallet_meta().set(self.network, &seed_hash, &meta)?;
+
+        Ok(())
     }
 
     pub fn bootstrap_wallet_addresses(&self, wallet: &Arc<RwLock<Wallet>>) {

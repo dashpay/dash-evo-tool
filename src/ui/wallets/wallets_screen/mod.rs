@@ -2374,15 +2374,42 @@ impl ScreenLike for WalletsBalancesScreen {
                                     let mut wallet = selected_wallet.write().unwrap();
                                     wallet.alias = Some(self.rename_input.clone());
 
-                                    // Update the alias in the database
+                                    // T-W-01: alias persistence goes
+                                    // through the wallet-meta sidecar.
+                                    // The cold-boot picker reads from
+                                    // the same key shape, so the new
+                                    // name surfaces on the next launch
+                                    // without touching the legacy
+                                    // `wallet` table.
                                     let seed_hash = wallet.seed_hash();
-                                    self.app_context
-                                        .db
-                                        .set_wallet_alias(
+                                    if let Ok(backend) = self.app_context.wallet_backend() {
+                                        let meta_view = backend.wallet_meta();
+                                        let mut meta = meta_view
+                                            .get(self.app_context.network, &seed_hash)
+                                            .unwrap_or_default();
+                                        meta.alias = self.rename_input.clone();
+                                        // Backfill the xpub on first
+                                        // rename after migration so old
+                                        // entries written before T-W-00.5
+                                        // get a non-empty picker hint.
+                                        if meta.xpub_encoded.is_empty() {
+                                            meta.xpub_encoded = wallet
+                                                .master_bip44_ecdsa_extended_public_key
+                                                .encode()
+                                                .to_vec();
+                                        }
+                                        if let Err(e) = meta_view.set(
+                                            self.app_context.network,
                                             &seed_hash,
-                                            Some(self.rename_input.clone()),
-                                        )
-                                        .ok();
+                                            &meta,
+                                        ) {
+                                            tracing::warn!(
+                                                wallet = %hex::encode(seed_hash),
+                                                error = ?e,
+                                                "Failed to persist wallet alias to sidecar",
+                                            );
+                                        }
+                                    }
                                 }
                                 // Handle single key wallet rename
                                 else if let Some(selected_sk_wallet) =

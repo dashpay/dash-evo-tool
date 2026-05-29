@@ -1088,18 +1088,12 @@ impl Wallet {
             ));
         }
 
-        app_context
-            .db
-            .add_address_if_not_exists(
-                &self.seed_hash(),
-                &address,
-                &app_context.network,
-                derivation_path,
-                path_reference,
-                path_type,
-                None,
-            )
-            .map_err(|e| e.to_string())?;
+        // T-W-01: addresses are derived deterministically from the
+        // master xpub each time the wallet is loaded, so the legacy
+        // `wallet_addresses` write that used to live here is a dead
+        // write — no production read path consumes it. The in-memory
+        // `known_addresses` / `watched_addresses` maps below stay the
+        // single source of truth at runtime.
         self.known_addresses
             .insert(address.clone(), derivation_path.clone());
         self.watched_addresses.insert(
@@ -1440,21 +1434,11 @@ impl Wallet {
     ) -> Result<(), String> {
         let canonical_address = Wallet::canonical_address(&address, app_context.network);
 
-        // Store the address in known_addresses and watched_addresses
-        // Note: We don't import to Core wallet since Platform addresses are not valid there
-        app_context
-            .db
-            .add_address_if_not_exists(
-                &self.seed_hash(),
-                &canonical_address,
-                &app_context.network,
-                derivation_path,
-                path_reference,
-                path_type,
-                None,
-            )
-            .map_err(|e| e.to_string())?;
-
+        // T-W-01: dead legacy `wallet_addresses` write removed — the
+        // in-memory maps below are the single runtime source of truth
+        // and the picker rederives from the master xpub at cold boot.
+        // Platform payment addresses are still not imported to Core (the
+        // address format differs).
         self.known_addresses
             .insert(canonical_address.clone(), derivation_path.clone());
         self.watched_addresses.insert(

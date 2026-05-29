@@ -22,6 +22,7 @@
 mod asset_lock_signer;
 mod dashpay;
 mod event_bridge;
+mod hydration;
 mod kv;
 mod loader;
 mod shielded;
@@ -226,9 +227,42 @@ impl WalletBackend {
             }),
         };
 
+        // T-W-01 cold-boot: rebuild `ctx.wallets` from the wallet-meta +
+        // seed-envelope sidecars before the loader runs. The legacy
+        // `db.get_wallets` row → `Wallet` mapping moved here once the
+        // sidecars became the authoritative source. `register_persisted_wallets`
+        // expects `ctx.wallets` to be populated so it can re-provision
+        // identity funding accounts (a5538dc8) for every persisted
+        // identity, so hydration must precede registration.
+        backend.hydrate_context_wallets(ctx)?;
+
         backend.register_persisted_wallets(ctx).await?;
 
         Ok(backend)
+    }
+
+    /// Refill `ctx.wallets` from the sidecars for the active network.
+    /// Idempotent: a re-run on the same backend overwrites with the same
+    /// reconstructed wallets keyed by `seed_hash`. Wallets already
+    /// present in `ctx.wallets` (e.g. created during the current process
+    /// before the backend was wired) are preserved — sidecar entries
+    /// only fill gaps so freshly-created wallets are never clobbered.
+    fn hydrate_context_wallets(&self, ctx: &Arc<AppContext>) -> Result<(), TaskError> {
+        let reconstructed = self.hydrate_wallets_for_network(ctx.network)?;
+        if reconstructed.is_empty() {
+            return Ok(());
+        }
+        let mut wallets = ctx.wallets.write()?;
+        for (seed_hash, wallet) in reconstructed {
+            wallets
+                .entry(seed_hash)
+                .or_insert_with(|| Arc::new(std::sync::RwLock::new(wallet)));
+        }
+        if !wallets.is_empty() {
+            ctx.has_wallet
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        Ok(())
     }
 
     /// Run the loader and register each wallet with the upstream manager.

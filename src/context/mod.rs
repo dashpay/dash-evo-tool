@@ -265,17 +265,19 @@ impl AppContext {
             }
         };
 
-        let wallets: BTreeMap<_, _> = match db.get_wallets(&network) {
-            Ok(w) => w,
-            Err(e) => {
-                tracing::error!(?network, "Failed to load wallets from database: {e}");
-                return None;
-            }
-        }
-        .into_iter()
-        .map(|w| (w.seed_hash(), Arc::new(RwLock::new(w))))
-        .collect();
+        // T-W-01: HD wallets are now rehydrated from the wallet-meta +
+        // seed-envelope sidecars by `WalletBackend::new`, not from the
+        // legacy `wallet` SQLite table. The map starts empty here and
+        // is filled inside `ensure_wallet_backend` (see
+        // `WalletBackend::hydrate_context_wallets`).
+        let wallets: BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>> = BTreeMap::new();
 
+        // TODO(T-W-01b): single-key wallets still come from the legacy
+        // `single_key_wallet` SQLite table. `SingleKeyView::list()`
+        // returns `ImportedKey` (a flat address-only handle) which omits
+        // the encrypted-key fields DET needs (`SingleKeyWallet`); a
+        // follow-up migrates the consumers onto the slimmer model or
+        // grows `SingleKeyView` to cover the closed/open key state.
         let single_key_wallets: BTreeMap<_, _> = match db.get_single_key_wallets(network) {
             Ok(w) => w,
             Err(e) => {

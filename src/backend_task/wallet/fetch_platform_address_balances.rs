@@ -1,13 +1,9 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
-use crate::model::wallet::{
-    DerivationPathHelpers, DerivationPathReference, DerivationPathType, WalletAddressProvider,
-    WalletSeedHash,
-};
+use crate::model::wallet::{WalletAddressProvider, WalletSeedHash};
 use dash_sdk::RequestSettings;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::dashcore::Network;
-use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use dash_sdk::platform::address_sync::AddressSyncConfig;
 use dash_sdk::platform::address_sync::AddressSyncResult;
 use std::sync::Arc;
@@ -127,28 +123,12 @@ impl AppContext {
             // Update wallet with synced balances
             provider.apply_results_to_wallet(&mut wallet);
 
-            // Persist addresses and balances to database
-            for (index, (address, funds)) in provider.found_balances_with_indices() {
-                // Persist the address to wallet_addresses table if not already there
-                let derivation_path = DerivationPath::platform_payment_path(
-                    self.network,
-                    0, // account
-                    0, // key_class
-                    index,
-                );
-                if let Err(e) = self.db.add_address_if_not_exists(
-                    &seed_hash,
-                    address,
-                    &self.network,
-                    &derivation_path,
-                    DerivationPathReference::PlatformPayment,
-                    DerivationPathType::CLEAR_FUNDS,
-                    None,
-                ) {
-                    tracing::warn!("Failed to persist Platform address: {}", e);
-                }
-
-                // Persist balance to per-wallet k/v
+            // Persist platform-address balances to the per-wallet k/v.
+            // T-W-01: the legacy `wallet_addresses` write that used to
+            // sit alongside this loop is removed — no production read
+            // path consumes it; the in-memory wallet maps plus the
+            // platform-address-info k/v are the runtime source of truth.
+            for (_index, (address, funds)) in provider.found_balances_with_indices() {
                 if let Err(e) =
                     self.set_platform_address_info(&seed_hash, address, funds.balance, funds.nonce)
                 {

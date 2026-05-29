@@ -24,6 +24,7 @@ mod dashpay;
 mod event_bridge;
 mod kv;
 mod loader;
+mod single_key;
 mod snapshot;
 
 pub use dashpay::DashpayView;
@@ -34,6 +35,7 @@ use asset_lock_signer::WalletAssetLockSigner;
 pub use event_bridge::EventBridge;
 pub use kv::{DetKv, KvAdapterError, SCHEMA_VERSION as KV_SCHEMA_VERSION};
 pub use loader::{PersistedWalletLoader, SeedReregistrationLoader, WalletRegistration};
+pub use single_key::SingleKeyView;
 use snapshot::SnapshotStore;
 pub use snapshot::{DetUtxo, DetWalletBalance, WalletSnapshot};
 
@@ -47,6 +49,7 @@ use dash_sdk::dash_spv::types::ValidationMode;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
 use platform_wallet::manager::PlatformWalletManager;
+use platform_wallet_storage::secrets::SecretStore;
 use platform_wallet_storage::{SqlitePersister, SqlitePersisterConfig};
 
 use crate::app::TaskResult;
@@ -110,6 +113,18 @@ struct Inner {
     /// dispatch is user-initiated and rare relative to lock acquisition
     /// cost.
     dashpay_address_index_lock: std::sync::Mutex<()>,
+    /// Encrypted secret store for imported-key material (single-key
+    /// wallets). HD seeds never travel through this store — they live
+    /// in [`Self::seeds`] and the upstream wallet snapshot. See
+    /// [`single_key`] for the public view.
+    secret_store: Arc<SecretStore>,
+    /// In-memory index of imported single-key entries, keyed by their
+    /// P2PKH address. Drives `SingleKeyView::list` without enumerating
+    /// the (non-enumerable) secret store. T-SK-02 will seed this from
+    /// the legacy `single_key_wallet` rows at startup.
+    single_key_index: std::sync::RwLock<
+        std::collections::BTreeMap<String, crate::model::single_key::ImportedKey>,
+    >,
 }
 
 /// The single wallet entry point. See module docs.
@@ -152,6 +167,13 @@ impl WalletBackend {
                 .map_err(|source| TaskError::WalletStorage { source })?,
         );
 
+        let secret_store_path = Self::resolve_secret_store_path(ctx.data_dir());
+        let secret_store = Arc::new(single_key::open_secret_store(&secret_store_path).map_err(
+            |source| TaskError::SecretStore {
+                source: Box::new(source),
+            },
+        )?);
+
         let snapshots = Arc::new(SnapshotStore::new());
 
         let bridge = Arc::new(EventBridge::new(
@@ -177,6 +199,8 @@ impl WalletBackend {
                 network,
                 spv_storage_dir,
                 dashpay_address_index_lock: std::sync::Mutex::new(()),
+                secret_store,
+                single_key_index: std::sync::RwLock::new(std::collections::BTreeMap::new()),
             }),
         };
 
@@ -328,6 +352,25 @@ impl WalletBackend {
     /// the schema-version envelope.
     pub fn kv(&self) -> DetKv {
         DetKv::new(Arc::clone(&self.inner.persister))
+    }
+
+    /// Shared handle to the encrypted secret store backing imported-key
+    /// material. Most callers should reach for [`Self::single_key`]
+    /// instead — this accessor exists for the migration engine
+    /// (T-SK-02), which writes legacy WIFs back into the vault.
+    pub fn secret_store(&self) -> &Arc<SecretStore> {
+        &self.inner.secret_store
+    }
+
+    /// View over the single-key (imported WIF) operations. The view
+    /// borrows the secret store and the in-memory address index; both
+    /// are cheap to construct, so callers can create one per operation.
+    pub fn single_key(&self) -> SingleKeyView<'_> {
+        SingleKeyView {
+            secret_store: &self.inner.secret_store,
+            index: &self.inner.single_key_index,
+            network: self.inner.network,
+        }
     }
 
     /// Per-network storage directory under `<data_dir>/spv/<network>/`.
@@ -966,6 +1009,18 @@ impl WalletBackend {
             Network::Regtest => 19899,
         };
         format!("{host}:{port}").to_socket_addrs().ok()?.next()
+    }
+
+    /// Per-process file path of the encrypted secret store vault. Shared
+    /// across networks: the secret store is not per-network (a single
+    /// imported WIF is a P2PKH key whose network prefix lives in the
+    /// derived address). The parent directory is created lazily by
+    /// [`single_key::open_secret_store`].
+    fn resolve_secret_store_path(app_data_dir: &Path) -> std::path::PathBuf {
+        let mut path = app_data_dir.to_path_buf();
+        path.push("secrets");
+        path.push("det-secrets.pwsvault");
+        path
     }
 
     fn resolve_spv_storage_dir(

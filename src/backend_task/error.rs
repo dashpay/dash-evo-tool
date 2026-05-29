@@ -104,6 +104,34 @@ pub enum TaskError {
         source: platform_wallet_storage::WalletStorageError,
     },
 
+    /// The encrypted secret store could not be opened, read, or written.
+    /// Imported single-key material lives here; the HD-wallet seed and
+    /// upstream wallet state are unaffected.
+    #[error(
+        "Could not access your imported keys. Check available disk space and restart the application."
+    )]
+    SecretStore {
+        #[source]
+        source: Box<platform_wallet_storage::secrets::FileStoreError>,
+    },
+
+    /// A WIF-encoded private key supplied by the user could not be parsed.
+    /// Wrapped distinctly from [`Self::SecretStore`] so the user sees an
+    /// input-shape hint rather than a storage diagnostic.
+    #[error("This does not look like a valid private key. Check the characters and try again.")]
+    InvalidWif {
+        #[source]
+        source: Box<dash_sdk::dpp::dashcore::key::Error>,
+    },
+
+    /// The caller asked the single-key signer for an address that is not
+    /// in the secret store. Either it was never imported, or it was
+    /// forgotten between the lookup and the sign attempt.
+    #[error(
+        "This imported key is no longer available. Import the key again to keep using this address."
+    )]
+    ImportedKeyNotFound,
+
     /// Application settings could not be saved to the app k/v store.
     #[error("Could not save your preferences. Check available disk space and try again.")]
     AppSettingsWrite {

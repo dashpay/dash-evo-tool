@@ -12,5 +12,6 @@ pub mod qualified_identity;
 pub mod secret;
 pub mod selected_wallet;
 pub mod settings;
+pub mod single_key;
 pub mod spv_status;
 pub mod wallet;

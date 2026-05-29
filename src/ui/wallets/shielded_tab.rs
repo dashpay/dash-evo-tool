@@ -925,7 +925,9 @@ mod tests {
         assert_eq!(
             derive_shielded_indicator(
                 &MigrationState::Failed {
-                    reason: "test".into(),
+                    error: std::sync::Arc::new(
+                        crate::backend_task::migration::MigrationError::WalletBackendUnavailable,
+                    ),
                 },
                 false,
             ),
@@ -941,7 +943,9 @@ mod tests {
         assert_eq!(
             derive_shielded_indicator(
                 &MigrationState::Failed {
-                    reason: "test".into(),
+                    error: std::sync::Arc::new(
+                        crate::backend_task::migration::MigrationError::WalletBackendUnavailable,
+                    ),
                 },
                 true,
             ),

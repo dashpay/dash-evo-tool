@@ -1050,13 +1050,17 @@ impl AppState {
                 );
                 self.migration_banner_handle = Some(handle);
             }
-            MigrationState::Failed { reason } => {
+            MigrationState::Failed { error } => {
                 let handle = MessageBanner::set_global(
                     ctx,
                     "Storage update could not complete. Your data is safe.",
                     MessageType::Error,
                 );
-                handle.with_details(reason);
+                // `with_details` accepts anything `Debug`; the
+                // collapsed details panel + log line both get the full
+                // typed `MigrationError` chain rather than a lossy
+                // `to_string()` of it.
+                handle.with_details(error.as_ref());
                 handle.with_action("Retry now", MIGRATION_RETRY_ACTION_ID);
                 self.migration_banner_handle = Some(handle);
             }

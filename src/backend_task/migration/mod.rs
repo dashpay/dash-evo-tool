@@ -45,11 +45,21 @@ impl AppContext {
         match task {
             MigrationTask::FinishUnwire => match finish_unwire::run(self).await {
                 Ok(()) => Ok(BackendTaskSuccessResult::Refresh),
-                Err(e) => {
-                    self.migration_status().set_state(MigrationState::Failed {
-                        reason: e.to_string(),
-                    });
-                    Err(e)
+                Err(task_error) => {
+                    // Publish a `Failed` state carrying the typed
+                    // `MigrationError` chain so the UI banner can call
+                    // `Display::fmt` at render time and surface the
+                    // wrapped source via the details panel — no
+                    // stringification on the writer side.
+                    if let TaskError::MigrationFailed { source } = &task_error {
+                        // `Arc::clone` is a cheap refcount bump — both
+                        // the returned `Err` and the published `Failed`
+                        // state observe the same typed error chain.
+                        self.migration_status().set_state(MigrationState::Failed {
+                            error: Arc::clone(source),
+                        });
+                    }
+                    Err(task_error)
                 }
             },
         }

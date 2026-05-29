@@ -1303,10 +1303,14 @@ pub enum TaskError {
     /// The post-unwire data migration failed. The user is asked to
     /// restart so the migration can re-attempt cleanly — legacy
     /// `data.db` rows are left intact.
+    ///
+    /// Wrapped as `Arc<MigrationError>` so the typed error chain can be
+    /// shared with the `MigrationState::Failed` UI banner state without
+    /// re-cloning the (non-`Clone`) `MigrationError` source.
     #[error("Your data could not finish updating. Please restart the application to try again.")]
     MigrationFailed {
         #[source]
-        source: Box<crate::backend_task::migration::MigrationError>,
+        source: std::sync::Arc<crate::backend_task::migration::MigrationError>,
     },
 }
 
@@ -3225,7 +3229,7 @@ mod tests {
             source: rusqlite::Error::InvalidQuery,
         };
         let err = TaskError::MigrationFailed {
-            source: Box::new(inner),
+            source: std::sync::Arc::new(inner),
         };
         let msg = err.to_string();
         assert!(msg.contains("could not finish updating"));

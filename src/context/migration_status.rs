@@ -39,23 +39,16 @@ pub enum MigrationStep {
     Finalize,
 }
 
-impl MigrationStep {
-    /// Short user-facing label for the current step. Each variant is a
-    /// single complete sentence — safe for i18n extraction.
-    pub fn label(self) -> &'static str {
-        match self {
-            MigrationStep::Detecting => "Checking your existing data.",
-            MigrationStep::SingleKey => "Migrating your imported keys.",
-            MigrationStep::Shielded => "Migrating your shielded data.",
-            MigrationStep::WalletSeeds => "Moving your wallets into the new vault.",
-            MigrationStep::WalletMeta => "Updating wallet names.",
-            MigrationStep::Finalize => "Finishing up.",
-        }
-    }
-}
-
 /// High-level state of the legacy migration.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// The `Failed` variant carries an `Arc<MigrationError>` rather than a
+/// stringified copy: the UI banner formats the error via `Display` at
+/// render time, which keeps the typed error chain reachable for the
+/// log path and the details panel without a lossy `to_string()`
+/// round-trip. `MigrationError` is not `Clone`, but `Arc` cheaply
+/// satisfies the `Clone` bound `MigrationStatus` needs to publish a
+/// state across the per-frame `load_full()` boundary.
+#[derive(Debug, Clone)]
 pub enum MigrationState {
     /// No migration in progress and none required.
     Idle,
@@ -63,9 +56,36 @@ pub enum MigrationState {
     Running { step: MigrationStep },
     /// Migration completed successfully (or no legacy data was present).
     Success,
-    /// Migration failed. The displayed reason is kept short and actionable.
-    Failed { reason: String },
+    /// Migration failed. The wrapped error is rendered for the user via
+    /// its `Display` impl at banner-render time; the typed chain is
+    /// preserved for the details panel and logs.
+    Failed {
+        error: Arc<crate::backend_task::migration::MigrationError>,
+    },
 }
+
+impl PartialEq for MigrationState {
+    /// Compare states for the per-frame reconciler. Stateless variants
+    /// (`Idle`, `Success`, `Running { step }`) compare structurally;
+    /// `Failed` compares the wrapped error by `Arc::ptr_eq`. The
+    /// reconciler treats every newly-published `Failed` state as a
+    /// transition, so a retry that fails with a fresh error correctly
+    /// refreshes the banner even when the user-visible text is
+    /// identical.
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (MigrationState::Idle, MigrationState::Idle) => true,
+            (MigrationState::Success, MigrationState::Success) => true,
+            (MigrationState::Running { step: a }, MigrationState::Running { step: b }) => a == b,
+            (MigrationState::Failed { error: a }, MigrationState::Failed { error: b }) => {
+                Arc::ptr_eq(a, b)
+            }
+            _ => false,
+        }
+    }
+}
+
+impl Eq for MigrationState {}
 
 impl MigrationState {
     /// Returns `true` while the migration task is mid-flight.
@@ -155,34 +175,19 @@ mod tests {
         assert!(!status.state().is_running());
     }
 
-    /// Failure transitions carry a short reason and clear the running flag.
+    /// Failure transitions carry a typed error and clear the running
+    /// flag. The wrapped `MigrationError` reaches the UI banner via
+    /// `Display` at render time — `MigrationState` itself never owns a
+    /// stringified copy.
     #[test]
     fn failed_state_is_terminal() {
+        use crate::backend_task::migration::MigrationError;
+
         let status = MigrationStatus::new_idle();
         status.set_state(MigrationState::Failed {
-            reason: "test reason".into(),
+            error: Arc::new(MigrationError::WalletBackendUnavailable),
         });
         assert!(!status.state().is_running());
         assert!(matches!(*status.state(), MigrationState::Failed { .. }));
-    }
-
-    /// Each migration step exposes a non-empty, sentence-shaped label.
-    #[test]
-    fn step_labels_are_non_empty_sentences() {
-        for step in [
-            MigrationStep::Detecting,
-            MigrationStep::SingleKey,
-            MigrationStep::Shielded,
-            MigrationStep::WalletSeeds,
-            MigrationStep::WalletMeta,
-            MigrationStep::Finalize,
-        ] {
-            let label = step.label();
-            assert!(!label.is_empty(), "step {step:?} has empty label");
-            assert!(
-                label.ends_with('.'),
-                "step {step:?} label `{label}` is not a complete sentence"
-            );
-        }
     }
 }

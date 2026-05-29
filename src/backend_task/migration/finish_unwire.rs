@@ -1233,7 +1233,7 @@ fn now_epoch_seconds() -> i64 {
 impl From<MigrationError> for TaskError {
     fn from(source: MigrationError) -> Self {
         TaskError::MigrationFailed {
-            source: Box::new(source),
+            source: Arc::new(source),
         }
     }
 }

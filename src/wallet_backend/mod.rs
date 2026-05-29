@@ -25,7 +25,7 @@ mod event_bridge;
 mod kv;
 mod loader;
 mod shielded;
-mod single_key;
+pub(crate) mod single_key;
 mod snapshot;
 
 pub use dashpay::DashpayView;

@@ -81,6 +81,38 @@ pub enum MigrationError {
         #[source]
         source: KvAdapterError,
     },
+
+    /// At least one legacy `single_key_wallet` row could not be migrated
+    /// in this run. Captures the imported / skipped / errored counts so
+    /// the orchestrator can decide whether to write the sentinel —
+    /// password-protected rows count as `skipped_password_protected`
+    /// (T-SK-03 will surface a UX prompt to resolve them) while
+    /// genuinely unreadable rows count as `failed`. Fatal only when
+    /// `failed > 0`; pure password-protected runs leave the sentinel
+    /// in place so the next launch picks them up after the user has
+    /// supplied the password.
+    #[error("could not finish single-key migration: {failed} row(s) failed")]
+    SingleKeyPartialFailure {
+        /// Number of rows successfully imported (or already present
+        /// idempotent re-runs) in the secret store.
+        imported: u32,
+        /// Number of `uses_password=1` rows the migration skipped
+        /// because it has no password material here — T-SK-03's UX
+        /// prompt will resolve these.
+        skipped_password_protected: u32,
+        /// Number of rows that could not be decoded into a usable
+        /// private key (corrupt blob, wrong size). Triggers the error
+        /// path — sentinel is not written so a re-run can retry.
+        failed: u32,
+    },
+
+    /// The wallet backend was not yet wired when the migration ran.
+    /// This is a hard configuration bug: the orchestrator runs after
+    /// `ensure_wallet_backend`, so this should never fire in
+    /// production. Kept as a typed variant so a future regression is
+    /// caught immediately instead of silently no-oping.
+    #[error("wallet backend not available during migration")]
+    WalletBackendUnavailable,
 }
 
 /// Run the FinishUnwire migration. Idempotent — completes a no-op when
@@ -212,13 +244,208 @@ fn table_has_rows(conn: &Connection, table: &'static str) -> Result<bool, Migrat
     Ok(has_row)
 }
 
-/// Single-key row migration. **Skeleton** — T-SK-02 plugs in the
-/// `SecretStore` import here. Until then the call is a structured
-/// no-op so the orchestration shape can land first.
-async fn migrate_single_key_rows(_app_context: &Arc<AppContext>) -> Result<(), TaskError> {
-    // TODO(T-SK-02): copy legacy `single_key_wallet` rows into
-    // `SingleKeyView` / `SecretStore` here.
+/// Outcome counters from one [`migrate_single_key_rows`] pass. Public
+/// to the test module so partial-failure semantics can be asserted
+/// without invoking the AppContext-bound orchestrator.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct SingleKeyMigrationOutcome {
+    /// Rows whose raw private key was written to the secret store
+    /// (or were already present — idempotent re-runs land here too).
+    imported: u32,
+    /// Rows the migration skipped because they were encrypted with a
+    /// per-wallet password we do not have on this code path. T-SK-03's
+    /// UX prompt will resolve them later — they do not count as a
+    /// failure so a pure password-protected install still writes the
+    /// sentinel on the next launch.
+    skipped_password_protected: u32,
+    /// Rows that could not be decoded into 32 raw private-key bytes
+    /// (wrong blob length, sqlite read error, address-derivation
+    /// failure). Triggers the error path — sentinel stays unwritten.
+    failed: u32,
+}
+
+/// Single-key row migration. Walks the legacy `single_key_wallet`
+/// table for `network` and imports every `uses_password=0` row into
+/// the upstream secret store under the canonical
+/// `single_key_priv.<addr>` label. Idempotent: a re-run that sees the
+/// same address as an existing secret-store entry is a no-op success
+/// (covers TC-SK-002 — repeated launches must not duplicate).
+///
+/// Password-protected rows are deferred to T-SK-03's UX prompt —
+/// they cannot be resolved without the user's password and so are
+/// reported separately from genuine failures.
+async fn migrate_single_key_rows(app_context: &Arc<AppContext>) -> Result<(), TaskError> {
+    let backend = app_context
+        .wallet_backend()
+        .map_err(|_| MigrationError::WalletBackendUnavailable)?;
+
+    let Some(path) = app_context.db.db_file_path() else {
+        // In-memory / headless: nothing to migrate.
+        return Ok(());
+    };
+    if !path.exists() {
+        return Ok(());
+    }
+    let path_str = path.to_string_lossy().to_string();
+    let conn = Connection::open(&path).map_err(|e| MigrationError::LegacyDbOpen {
+        path: path_str,
+        source: e,
+    })?;
+
+    let view = backend.single_key();
+    let outcome = migrate_single_key_rows_from_conn(
+        &conn,
+        |wif, alias| view.import_wif(wif, alias).map(|_| ()),
+        app_context.network,
+    )?;
+    tracing::info!(
+        target = "migration::finish_unwire",
+        imported = outcome.imported,
+        skipped_password_protected = outcome.skipped_password_protected,
+        failed = outcome.failed,
+        network = ?app_context.network,
+        "Single-key migration pass complete",
+    );
+
+    if outcome.failed > 0 {
+        return Err(MigrationError::SingleKeyPartialFailure {
+            imported: outcome.imported,
+            skipped_password_protected: outcome.skipped_password_protected,
+            failed: outcome.failed,
+        }
+        .into());
+    }
     Ok(())
+}
+
+/// Pure migration body — readable without an `AppContext`. Walks the
+/// `single_key_wallet` table at `conn`, decodes every row whose
+/// `uses_password=0` blob is a 32-byte raw key, and imports the
+/// derived WIF through `import` (kept as a closure so the test path
+/// can drive a bare `SingleKeyView` without building a full
+/// `WalletBackend`). Returns counters; never errors on partial
+/// readability so the caller can decide the policy.
+///
+/// **Missing table is not an error** — a freshly-installed `data.db`
+/// (no legacy rows at all) returns the zero outcome.
+fn migrate_single_key_rows_from_conn<F>(
+    conn: &Connection,
+    mut import: F,
+    network: dash_sdk::dpp::dashcore::Network,
+) -> Result<SingleKeyMigrationOutcome, MigrationError>
+where
+    F: FnMut(&str, Option<String>) -> Result<(), TaskError>,
+{
+    use dash_sdk::dpp::dashcore::PrivateKey;
+
+    let sql = "SELECT encrypted_private_key, alias, uses_password \
+               FROM single_key_wallet WHERE network = ?1";
+    let mut stmt = match conn.prepare(sql) {
+        Ok(s) => s,
+        Err(rusqlite::Error::SqliteFailure(_, Some(msg))) if msg.contains("no such table") => {
+            return Ok(SingleKeyMigrationOutcome::default());
+        }
+        Err(rusqlite::Error::SqlInputError { msg, .. }) if msg.contains("no such table") => {
+            return Ok(SingleKeyMigrationOutcome::default());
+        }
+        Err(e) => {
+            return Err(MigrationError::LegacyDbRead {
+                table: "single_key_wallet",
+                source: e,
+            });
+        }
+    };
+
+    let rows = stmt
+        .query_map(rusqlite::params![network.to_string()], |row| {
+            let encrypted: Vec<u8> = row.get(0)?;
+            let alias: Option<String> = row.get(1)?;
+            let uses_password: i32 = row.get(2)?;
+            Ok((encrypted, alias, uses_password))
+        })
+        .map_err(|e| MigrationError::LegacyDbRead {
+            table: "single_key_wallet",
+            source: e,
+        })?;
+
+    let mut outcome = SingleKeyMigrationOutcome::default();
+    for row in rows {
+        let (encrypted, alias, uses_password) = match row {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::warn!(
+                    target = "migration::finish_unwire",
+                    error = ?e,
+                    "Skipping unreadable single_key_wallet row",
+                );
+                outcome.failed = outcome.failed.saturating_add(1);
+                continue;
+            }
+        };
+
+        if uses_password != 0 {
+            // Password-protected rows need the user's password. T-SK-03
+            // will surface a one-time UX prompt; until then count and
+            // skip — they do not block the rest of the migration.
+            tracing::warn!(
+                target = "migration::finish_unwire",
+                "Skipping password-protected single_key_wallet row (T-SK-03 UX prompt deferred)",
+            );
+            outcome.skipped_password_protected =
+                outcome.skipped_password_protected.saturating_add(1);
+            continue;
+        }
+
+        // Per legacy schema: `uses_password=0` rows store the raw
+        // 32-byte private key directly in `encrypted_private_key`
+        // (salt/nonce are empty). See `model/wallet/single_key.rs`
+        // `SingleKeyData::open_no_password`.
+        let key_bytes: [u8; 32] = match encrypted.as_slice().try_into() {
+            Ok(b) => b,
+            Err(_) => {
+                tracing::warn!(
+                    target = "migration::finish_unwire",
+                    blob_len = encrypted.len(),
+                    "Skipping single_key_wallet row with non-32-byte raw key blob",
+                );
+                outcome.failed = outcome.failed.saturating_add(1);
+                continue;
+            }
+        };
+
+        let priv_key = match PrivateKey::from_byte_array(&key_bytes, network) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(
+                    target = "migration::finish_unwire",
+                    error = %e,
+                    "Skipping single_key_wallet row — invalid private key bytes",
+                );
+                outcome.failed = outcome.failed.saturating_add(1);
+                continue;
+            }
+        };
+        let wif = priv_key.to_wif();
+
+        // `import` is `SingleKeyView::import_wif` in production; the
+        // view writes to the secret store under the canonical
+        // `single_key_priv.<addr>` label and seeds the in-memory
+        // index. Re-import on the same address overwrites the same
+        // bytes — idempotent (TC-SK-002).
+        match import(&wif, alias) {
+            Ok(_) => outcome.imported = outcome.imported.saturating_add(1),
+            Err(e) => {
+                tracing::warn!(
+                    target = "migration::finish_unwire",
+                    error = ?e,
+                    "Failed to import single_key_wallet row into secret store",
+                );
+                outcome.failed = outcome.failed.saturating_add(1);
+            }
+        }
+    }
+
+    Ok(outcome)
 }
 
 /// Shielded row migration. **Skeleton** — T-SH-02 plugs in the
@@ -398,6 +625,331 @@ mod tests {
         assert_eq!(completion.network_count, 7);
         assert!(completion.completed_at > 0);
         assert_eq!(completion.sha, env!("CARGO_PKG_VERSION"));
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // Helpers for the single-key migration tests below.
+    // Mirror the legacy schema shape from `database/single_key_wallet.rs`
+    // — the migration reads `encrypted_private_key`, `alias`,
+    // `uses_password`, and `network`. The other columns are seeded so
+    // the legacy table looks realistic, but the migration ignores them.
+    // ─────────────────────────────────────────────────────────────────
+
+    fn create_legacy_table(conn: &Connection) {
+        conn.execute(
+            "CREATE TABLE single_key_wallet (
+                key_hash BLOB NOT NULL PRIMARY KEY,
+                encrypted_private_key BLOB NOT NULL,
+                salt BLOB NOT NULL,
+                nonce BLOB NOT NULL,
+                public_key BLOB NOT NULL,
+                address TEXT NOT NULL,
+                alias TEXT,
+                uses_password INTEGER NOT NULL,
+                network TEXT NOT NULL,
+                confirmed_balance INTEGER DEFAULT 0,
+                unconfirmed_balance INTEGER DEFAULT 0,
+                total_balance INTEGER DEFAULT 0,
+                core_wallet_name TEXT DEFAULT NULL
+            )",
+            [],
+        )
+        .expect("create legacy table");
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn seed_legacy_row(
+        conn: &Connection,
+        key_hash: &[u8; 32],
+        encrypted_private_key: &[u8],
+        salt: &[u8],
+        nonce: &[u8],
+        address: &str,
+        alias: Option<&str>,
+        uses_password: bool,
+        network: dash_sdk::dpp::dashcore::Network,
+    ) {
+        conn.execute(
+            "INSERT INTO single_key_wallet (
+                key_hash, encrypted_private_key, salt, nonce, public_key,
+                address, alias, uses_password, network
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            rusqlite::params![
+                key_hash.as_slice(),
+                encrypted_private_key,
+                salt,
+                nonce,
+                // The migration does not consult `public_key`; seed an
+                // empty blob to keep the column NOT NULL constraint
+                // satisfied without dragging in PublicKey derivation.
+                Vec::<u8>::new(),
+                address,
+                alias,
+                uses_password as i32,
+                network.to_string(),
+            ],
+        )
+        .expect("insert legacy row");
+    }
+
+    /// Bare `SingleKeyView`-compatible fixture: no `WalletBackend`, just
+    /// a file-backed secret store and an in-memory address index. This
+    /// is what the migration body needs and lets the test assert on the
+    /// real `SecretStore` writes without standing up an SDK.
+    fn view_fixture(
+        dir: &std::path::Path,
+        network: dash_sdk::dpp::dashcore::Network,
+    ) -> (
+        Arc<platform_wallet_storage::secrets::SecretStore>,
+        std::sync::RwLock<
+            std::collections::BTreeMap<String, crate::model::single_key::ImportedKey>,
+        >,
+        dash_sdk::dpp::dashcore::Network,
+    ) {
+        let store = Arc::new(
+            crate::wallet_backend::single_key::open_secret_store(&dir.join("secrets.pwsvault"))
+                .expect("open vault"),
+        );
+        let index = std::sync::RwLock::new(std::collections::BTreeMap::new());
+        (store, index, network)
+    }
+
+    /// TC-SK-001 — a legacy `uses_password=0` row gets imported into the
+    /// secret store under the canonical `single_key_priv.<addr>` label.
+    /// This is the post-upgrade "previously imported key still visible"
+    /// regression guard: if this fails, the user sees nothing on the
+    /// imported-keys list after the migration.
+    #[test]
+    fn tc_sk_001_uses_password_zero_row_migrates_to_secret_store() {
+        use crate::wallet_backend::single_key::{
+            SingleKeyView, label_for_address, single_key_namespace_id,
+        };
+        use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
+        use dash_sdk::dpp::dashcore::{Address, Network, PrivateKey, PublicKey};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("data.db");
+        let conn = Connection::open(&db_path).expect("open legacy db");
+        create_legacy_table(&conn);
+
+        // Build a known private key + derived address so the test can
+        // assert on the canonical label.
+        let mut raw = [0u8; 32];
+        raw[31] = 7;
+        let priv_key = PrivateKey::from_byte_array(&raw, Network::Testnet).expect("priv");
+        let pub_key = PublicKey {
+            compressed: priv_key.compressed,
+            inner: priv_key.inner.public_key(&Secp256k1::new()),
+        };
+        let address = Address::p2pkh(&pub_key, Network::Testnet).to_string();
+        let key_hash = crate::model::wallet::single_key::ClosedSingleKey::compute_key_hash(&raw);
+        seed_legacy_row(
+            &conn,
+            &key_hash,
+            &raw,
+            &[],
+            &[],
+            &address,
+            Some("paycheque"),
+            false,
+            Network::Testnet,
+        );
+
+        let (store, index, network) = view_fixture(dir.path(), Network::Testnet);
+        let view = SingleKeyView {
+            secret_store: &store,
+            index: &index,
+            network,
+        };
+
+        let outcome = migrate_single_key_rows_from_conn(
+            &conn,
+            |wif, alias| view.import_wif(wif, alias).map(|_| ()),
+            Network::Testnet,
+        )
+        .expect("migrate");
+
+        assert_eq!(outcome.imported, 1);
+        assert_eq!(outcome.skipped_password_protected, 0);
+        assert_eq!(outcome.failed, 0);
+
+        // The canonical secret-store label is present and holds 32 bytes.
+        let label = label_for_address(&address);
+        let secret = store
+            .get(&single_key_namespace_id(), &label)
+            .expect("read secret")
+            .expect("secret present");
+        assert_eq!(secret.expose_secret().len(), 32);
+
+        // The view's index reflects the imported key (TC-SK-001's
+        // "Imported key — <X[0..6]…>" UI surface relies on this).
+        assert_eq!(view.list().len(), 1);
+        assert_eq!(view.list()[0].address, address);
+        assert_eq!(view.list()[0].alias.as_deref(), Some("paycheque"));
+    }
+
+    /// TC-SK-002 — running the migration twice is a no-op on the second
+    /// pass. The label collision overwrites the same bytes (cheap
+    /// idempotency) and the in-memory index entry count stays at 1.
+    #[test]
+    fn tc_sk_002_re_run_is_idempotent_and_does_not_duplicate() {
+        use crate::wallet_backend::single_key::SingleKeyView;
+        use dash_sdk::dpp::dashcore::Network;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("data.db");
+        let conn = Connection::open(&db_path).expect("open legacy db");
+        create_legacy_table(&conn);
+
+        let mut raw = [0u8; 32];
+        raw[31] = 9;
+        let key_hash = crate::model::wallet::single_key::ClosedSingleKey::compute_key_hash(&raw);
+        seed_legacy_row(
+            &conn,
+            &key_hash,
+            &raw,
+            &[],
+            &[],
+            // Address derivation in the migration body is what matters
+            // — the legacy column is informational. Pass a placeholder
+            // that the NOT NULL constraint accepts.
+            "placeholder",
+            None,
+            false,
+            Network::Testnet,
+        );
+
+        let (store, index, network) = view_fixture(dir.path(), Network::Testnet);
+        let view = SingleKeyView {
+            secret_store: &store,
+            index: &index,
+            network,
+        };
+
+        let first = migrate_single_key_rows_from_conn(
+            &conn,
+            |wif, alias| view.import_wif(wif, alias).map(|_| ()),
+            Network::Testnet,
+        )
+        .expect("first pass");
+        let second = migrate_single_key_rows_from_conn(
+            &conn,
+            |wif, alias| view.import_wif(wif, alias).map(|_| ()),
+            Network::Testnet,
+        )
+        .expect("second pass");
+
+        assert_eq!(first.imported, 1);
+        assert_eq!(second.imported, 1, "re-import is reported as success");
+        // The index does not duplicate — the address key is stable.
+        assert_eq!(view.list().len(), 1, "re-run must not duplicate index");
+    }
+
+    /// TC-SK-006 — partial failures (corrupt blob + password-protected
+    /// row) do not crash the migration. The good row still imports, the
+    /// password-protected row counts as deferred, and the corrupt row
+    /// is the sole `failed`. The fatal-vs-deferred split lets the
+    /// orchestrator skip the sentinel write when `failed > 0` while
+    /// pure password-protected runs still make forward progress.
+    #[test]
+    fn tc_sk_006_partial_failure_does_not_crash_run() {
+        use crate::wallet_backend::single_key::SingleKeyView;
+        use dash_sdk::dpp::dashcore::Network;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("data.db");
+        let conn = Connection::open(&db_path).expect("open legacy db");
+        create_legacy_table(&conn);
+
+        // Good row.
+        let mut good = [0u8; 32];
+        good[31] = 21;
+        let good_hash = crate::model::wallet::single_key::ClosedSingleKey::compute_key_hash(&good);
+        seed_legacy_row(
+            &conn,
+            &good_hash,
+            &good,
+            &[],
+            &[],
+            "good",
+            None,
+            false,
+            Network::Testnet,
+        );
+
+        // Corrupt row: 16-byte blob — wrong size, drops into the
+        // `failed` bucket without aborting the loop.
+        let mut bad_hash = [0u8; 32];
+        bad_hash[0] = 0xCC;
+        seed_legacy_row(
+            &conn,
+            &bad_hash,
+            &[0u8; 16],
+            &[],
+            &[],
+            "bad",
+            None,
+            false,
+            Network::Testnet,
+        );
+
+        // Password-protected row: `uses_password=1` — deferred to
+        // T-SK-03, does not count as a failure.
+        let mut pw_hash = [0u8; 32];
+        pw_hash[0] = 0xAA;
+        seed_legacy_row(
+            &conn,
+            &pw_hash,
+            &[0xDE; 48], // ciphertext shape — never decoded here
+            &[0x01; 16],
+            &[0x02; 12],
+            "pw",
+            Some("locked"),
+            true,
+            Network::Testnet,
+        );
+
+        let (store, index, network) = view_fixture(dir.path(), Network::Testnet);
+        let view = SingleKeyView {
+            secret_store: &store,
+            index: &index,
+            network,
+        };
+
+        let outcome = migrate_single_key_rows_from_conn(
+            &conn,
+            |wif, alias| view.import_wif(wif, alias).map(|_| ()),
+            Network::Testnet,
+        )
+        .expect("partial failure must not abort the loop");
+
+        assert_eq!(outcome.imported, 1, "the good row must still land");
+        assert_eq!(
+            outcome.skipped_password_protected, 1,
+            "password-protected rows are deferred, not failed",
+        );
+        assert_eq!(
+            outcome.failed, 1,
+            "the 16-byte blob is the only true failure"
+        );
+    }
+
+    /// Missing legacy table is not an error — a fresh install of the
+    /// app reaches the single-key step with no `single_key_wallet`
+    /// table at all and must report a clean zero outcome.
+    #[test]
+    fn missing_single_key_table_yields_zero_outcome() {
+        use dash_sdk::dpp::dashcore::Network;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("data.db");
+        let conn = Connection::open(&db_path).expect("open empty db");
+
+        let outcome =
+            migrate_single_key_rows_from_conn(&conn, |_wif, _alias| Ok(()), Network::Testnet)
+                .expect("missing table is benign");
+
+        assert_eq!(outcome, SingleKeyMigrationOutcome::default());
     }
 
     /// `table_has_rows` returns `false` for a missing table rather than

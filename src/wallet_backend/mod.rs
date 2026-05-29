@@ -413,11 +413,13 @@ impl WalletBackend {
         WalletMetaView::new(&self.inner.app_kv)
     }
 
-    /// View over the encrypted HD wallet seed vault (T-W-00.5). Each
-    /// wallet's BIP-39 seed lives behind one upstream `SecretStore`
-    /// entry keyed by `WalletId(seed_hash)`. Plaintext at rest is
-    /// protected by the vault's Argon2id + XChaCha20-Poly1305 layer;
-    /// DET no longer ships its own AES-GCM envelope.
+    /// View over the encrypted HD wallet seed vault (T-W-00.5-v2).
+    /// Each wallet's full seed envelope (ciphertext + salt + nonce +
+    /// `uses_password` + hint + master xpub) lives behind one upstream
+    /// `SecretStore` entry keyed by `WalletId(seed_hash)`. The vault's
+    /// Argon2id + XChaCha20-Poly1305 layer protects the envelope at
+    /// rest; DET's own AES-GCM envelope is preserved inside it so the
+    /// per-wallet password UX is unchanged.
     pub fn wallet_seeds(&self) -> WalletSeedView<'_> {
         WalletSeedView::new(&self.inner.secret_store)
     }

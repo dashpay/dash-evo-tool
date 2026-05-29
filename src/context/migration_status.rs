@@ -14,8 +14,6 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 
-use crate::model::wallet::WalletSeedHash;
-
 /// Which legacy domain the migration is currently working on.
 ///
 /// Drives banner text granularity ("Migrating your imported keys…" vs
@@ -29,9 +27,9 @@ pub enum MigrationStep {
     /// Mirroring legacy shielded rows + cursor into the per-wallet sidecar.
     Shielded,
     /// Copying HD wallet seed envelopes from the legacy `wallet` table
-    /// into the upstream `SecretStore` vault. Password-protected rows
-    /// are deferred — see
-    /// [`MigrationStatus::pending_seed_passwords`].
+    /// into the upstream `SecretStore` vault. The full envelope
+    /// (ciphertext + salt + nonce + flags) travels verbatim — the
+    /// migrator never decrypts.
     WalletSeeds,
     /// Copying legacy `wallet` rows (alias / `is_main` / `core_wallet_name`
     /// / master xpub) into the DET wallet-metadata sidecar in
@@ -82,17 +80,9 @@ impl MigrationState {
 /// migration task) call [`set_state`](Self::set_state) to publish a
 /// transition; readers call [`state`](Self::state) and dereference the
 /// returned `Arc`.
-///
-/// [`pending_seed_passwords`](Self::pending_seed_passwords) is an
-/// orthogonal channel: the `WalletSeeds` migration step records seed
-/// hashes whose seed envelope is password-protected and could not be
-/// migrated silently. T-W-00.6 will surface a per-wallet password
-/// prompt to drain this set; until then the migration still progresses
-/// to `Success` so password-free wallets are not held hostage.
 #[derive(Debug)]
 pub struct MigrationStatus {
     state: ArcSwap<MigrationState>,
-    pending_seed_passwords: ArcSwap<Vec<WalletSeedHash>>,
 }
 
 impl MigrationStatus {
@@ -100,7 +90,6 @@ impl MigrationStatus {
     pub fn new_idle() -> Self {
         Self {
             state: ArcSwap::from_pointee(MigrationState::Idle),
-            pending_seed_passwords: ArcSwap::from_pointee(Vec::new()),
         }
     }
 
@@ -113,21 +102,6 @@ impl MigrationStatus {
     /// allowed and cheap.
     pub fn set_state(&self, new_state: MigrationState) {
         self.state.store(Arc::new(new_state));
-    }
-
-    /// Snapshot of the seed hashes whose seed envelope still needs the
-    /// user's password before it can be moved into the vault. Empty
-    /// when there is no pending work; T-W-00.6 will own the UI that
-    /// drains this set.
-    pub fn pending_seed_passwords(&self) -> Arc<Vec<WalletSeedHash>> {
-        self.pending_seed_passwords.load_full()
-    }
-
-    /// Publish the seed-hash set the password-collection dialog needs
-    /// to drive. An empty vector clears the pending work; otherwise
-    /// last-write-wins, mirroring [`Self::set_state`].
-    pub fn set_pending_seed_passwords(&self, hashes: Vec<WalletSeedHash>) {
-        self.pending_seed_passwords.store(Arc::new(hashes));
     }
 }
 
@@ -207,22 +181,5 @@ mod tests {
                 "step {step:?} label `{label}` is not a complete sentence"
             );
         }
-    }
-
-    /// TC-W-002 storage half — pending seed passwords default to empty
-    /// and round-trip through the dedicated channel without touching
-    /// the main `state` field.
-    #[test]
-    fn pending_seed_passwords_round_trip() {
-        let status = MigrationStatus::new_idle();
-        assert!(status.pending_seed_passwords().is_empty());
-        let a: WalletSeedHash = [0xAA; 32];
-        let b: WalletSeedHash = [0xBB; 32];
-        status.set_pending_seed_passwords(vec![a, b]);
-        let snap = status.pending_seed_passwords();
-        assert_eq!(snap.as_slice(), &[a, b]);
-        assert_eq!(*status.state(), MigrationState::Idle);
-        status.set_pending_seed_passwords(Vec::new());
-        assert!(status.pending_seed_passwords().is_empty());
     }
 }

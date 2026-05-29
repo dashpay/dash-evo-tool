@@ -2733,6 +2733,9 @@ impl AddressProvider for WalletAddressProvider {
         // Re-derive the PlatformAddress for each stored balance from the pending
         // map by index; entries whose index is no longer pending or whose core
         // address can't be re-encoded are skipped (they carry no usable key).
+        // Lossless for current usage: stored_balances is seeded from `pending`
+        // (with_stored_state) and `pending` is only ever inserted into, never
+        // pruned — so every stored index is present here.
         self.stored_balances
             .iter()
             .filter_map(|(index, _key, funds)| {

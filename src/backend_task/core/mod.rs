@@ -724,8 +724,14 @@ impl AppContext {
         };
 
         // Get UTXOs and the next (unused) change address from the managed account.
-        // `add_to_state = false` peeks the next change address without advancing
-        // the pool, preserving the prior "derive at next change index" behaviour.
+        // `add_to_state = false` does not advance the address pool, but key-wallet
+        // 0.43's `next_change_address` still bumps the managed account's monitor
+        // revision unconditionally. There is no read-only "peek next change address"
+        // on ManagedCoreFundsAccount, so this fee-estimation peek takes a write lock
+        // and nudges the monitor revision. That only signals the mempool bloom filter
+        // it may be stale (a one-time rebuild), so it is acceptable here.
+        // TODO(v3.1-bump): switch to a non-mutating change-address peek if key-wallet
+        // exposes one upstream.
         let (utxos, change_addr) = {
             let managed_info = wm.get_wallet_info_mut(wallet_id).ok_or_else(|| {
                 TaskError::WalletPaymentFailed {
@@ -755,6 +761,10 @@ impl AppContext {
                 .map(|(addr, amt)| (addr.clone(), (*amt as f64 * scale_factor) as u64))
                 .collect();
 
+            // build_unsigned requires input >= output + fee and returns
+            // InsufficientFunds otherwise; the old build() let change shrink and
+            // could return a tx that underpaid the fee. The fallback loop below
+            // now drives off that earlier (correct) InsufficientFunds.
             let build_result: Result<Transaction, BuilderError> = {
                 let mut builder = TransactionBuilder::new()
                     .set_fee_rate(FeeRate::normal())

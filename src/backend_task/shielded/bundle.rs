@@ -114,23 +114,59 @@ pub async fn build_shield_credit(
     let fee_strategy: AddressFundsFeeStrategy =
         vec![AddressFundsFeeStrategyStep::DeductFromInput(0)];
 
-    // Clone the wallet so the signer is owned across the async build (the
-    // std RwLock guard is not held across an await point).
+    // Clone the wallet so the signer is owned by the offloaded build.
     let wallet = { wallet_arc.read()?.clone() };
+    let platform_version = sdk.version();
     // memo: 36-byte structured memo (4-byte type tag + 32-byte payload); all zeros = empty memo
-    build_shield_transition(
-        &recipient_addr,
+    build_shield_transition_offloaded(
+        recipient_addr,
         amount,
         inputs,
         fee_strategy,
-        &wallet,
-        0,
-        &prover,
-        [0u8; 36],
-        sdk.version(),
+        wallet,
+        prover,
+        platform_version,
     )
     .await
-    .map_err(|e| shielded_build_error(e.to_string()))
+}
+
+/// Run the (CPU-heavy, Halo2-proving) shield build on the blocking pool.
+///
+/// `build_shield_transition` is async but its proving step runs synchronously
+/// inline before the first await, so awaiting it directly would block a tokio
+/// worker for seconds. We drive the whole future on a `spawn_blocking` thread
+/// (where `block_on` is permitted) so the proof generation stays off the async
+/// worker pool.
+async fn build_shield_transition_offloaded(
+    recipient_addr: OrchardAddress,
+    amount: u64,
+    inputs: BTreeMap<PlatformAddress, (u32, u64)>,
+    fee_strategy: AddressFundsFeeStrategy,
+    wallet: crate::model::wallet::Wallet,
+    prover: CachedProver,
+    platform_version: &'static PlatformVersion,
+) -> Result<dash_sdk::dpp::state_transition::StateTransition, TaskError> {
+    let handle = tokio::runtime::Handle::current();
+    tokio::task::spawn_blocking(move || {
+        handle.block_on(async {
+            // memo: 36-byte structured memo (4-byte type tag + 32-byte payload); all zeros = empty memo
+            build_shield_transition(
+                &recipient_addr,
+                amount,
+                inputs,
+                fee_strategy,
+                &wallet,
+                0,
+                &prover,
+                [0u8; 36],
+                platform_version,
+            )
+            .await
+            .map_err(|e| shielded_build_error(e.to_string()))
+        })
+    })
+    .await
+    .map_err(|e| shielded_build_error(format!("shield proof task panicked: {e}")))?
 }
 
 /// Build and broadcast a Shield transition (transparent -> shielded pool).
@@ -198,23 +234,19 @@ pub async fn shield_credits(
     }
 
     let state_transition = {
-        // Clone the wallet so the signer is owned across the async build (the
-        // std RwLock guard is not held across an await point).
+        // Clone the wallet so the signer is owned by the offloaded build.
         let wallet = { wallet_arc.read()?.clone() };
-        // memo: 36-byte structured memo (4-byte type tag + 32-byte payload); all zeros = empty memo
-        build_shield_transition(
-            &recipient_addr,
+        let platform_version = sdk.version();
+        build_shield_transition_offloaded(
+            recipient_addr,
             amount,
             inputs,
             fee_strategy,
-            &wallet,
-            0,
-            &prover,
-            [0u8; 36],
-            sdk.version(),
+            wallet,
+            prover,
+            platform_version,
         )
-        .await
-        .map_err(|e| shielded_build_error(e.to_string()))?
+        .await?
     };
 
     if let Some(s) = &stage {

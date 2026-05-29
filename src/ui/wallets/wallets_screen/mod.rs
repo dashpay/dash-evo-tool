@@ -2177,10 +2177,14 @@ impl WalletsBalancesScreen {
         }
         if let Some(request) = response.confirmed {
             match self.app_context.wallet_backend() {
-                Ok(backend) => match backend
-                    .single_key()
-                    .import_wif(&request.wif, request.alias.clone())
-                {
+                Ok(backend) => match backend.single_key().import_wif_with_passphrase(
+                    &request.wif,
+                    request.alias.clone(),
+                    crate::wallet_backend::single_key::ImportPassphrase {
+                        passphrase: request.passphrase.clone(),
+                        hint: request.passphrase_hint.clone(),
+                    },
+                ) {
                     Ok(_) => {
                         MessageBanner::set_global(
                             ctx,

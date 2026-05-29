@@ -68,8 +68,10 @@ fn decode_with_version(bytes: &[u8]) -> Result<StoredSeedEnvelope, TaskError> {
     };
     if let Some((&tag, rest)) = bytes.split_first()
         && tag == STORED_SEED_ENVELOPE_VERSION
-        && let Ok((decoded, _)) =
-            bincode::serde::decode_from_slice::<StoredSeedEnvelope, _>(rest, bincode::config::standard())
+        && let Ok((decoded, _)) = bincode::serde::decode_from_slice::<StoredSeedEnvelope, _>(
+            rest,
+            bincode::config::standard(),
+        )
     {
         return Ok(decoded);
     }

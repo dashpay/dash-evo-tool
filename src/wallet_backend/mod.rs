@@ -33,6 +33,7 @@ mod shielded;
 pub mod single_key;
 #[cfg(not(any(test, feature = "bench")))]
 pub(crate) mod single_key;
+pub mod single_key_entry;
 mod snapshot;
 #[cfg(any(test, feature = "bench"))]
 pub mod wallet_meta;
@@ -157,6 +158,13 @@ struct Inner {
     single_key_index: std::sync::RwLock<
         std::collections::BTreeMap<String, crate::model::single_key::ImportedKey>,
     >,
+    /// In-memory cache of decrypted single-key bytes for the duration
+    /// of the process. Populated by
+    /// [`SingleKeyView::unlock_with_passphrase`] and consulted by
+    /// [`SingleKeyView::sign_with`] so a single passphrase prompt
+    /// unlocks every subsequent sign for the same key. Dropped on
+    /// shutdown — never persisted, never serialised.
+    single_key_unlocked: std::sync::RwLock<std::collections::BTreeMap<String, [u8; 32]>>,
 }
 
 /// The single wallet entry point. See module docs.
@@ -236,6 +244,7 @@ impl WalletBackend {
                 dashpay_address_index_lock: std::sync::Mutex::new(()),
                 secret_store,
                 single_key_index: std::sync::RwLock::new(std::collections::BTreeMap::new()),
+                single_key_unlocked: std::sync::RwLock::new(std::collections::BTreeMap::new()),
                 app_kv,
             }),
         };
@@ -468,6 +477,7 @@ impl WalletBackend {
             index: &self.inner.single_key_index,
             network: self.inner.network,
             app_kv: Some(&self.inner.app_kv),
+            unlocked: Some(&self.inner.single_key_unlocked),
         }
     }
 

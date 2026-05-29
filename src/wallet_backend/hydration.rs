@@ -271,7 +271,8 @@ mod tests {
         // Stand-in for `WalletSeedView::get` — direct decode of the
         // envelope, no upstream vault required.
         let master = ExtendedPubKey::decode(&envelope.xpub_encoded).expect("xpub decodes");
-        let wallet = wallet_from_envelope(seed_hash_for(seed), envelope, &meta, master).expect("wallet rebuilt");
+        let wallet = wallet_from_envelope(seed_hash_for(seed), envelope, &meta, master)
+            .expect("wallet rebuilt");
 
         assert_eq!(wallet.alias.as_deref(), Some("paycheque"));
         assert!(wallet.is_main);
@@ -308,7 +309,8 @@ mod tests {
         };
 
         let master = ExtendedPubKey::decode(&envelope.xpub_encoded).expect("xpub decodes");
-        let wallet = wallet_from_envelope(seed_hash_for(seed), envelope, &meta, master).expect("wallet rebuilt");
+        let wallet = wallet_from_envelope(seed_hash_for(seed), envelope, &meta, master)
+            .expect("wallet rebuilt");
 
         assert_eq!(wallet.alias.as_deref(), Some("savings"));
         assert!(!wallet.is_main);
@@ -340,7 +342,8 @@ mod tests {
             xpub_encoded: xpub,
         };
         let master = ExtendedPubKey::decode(&envelope.xpub_encoded).expect("xpub decodes");
-        let wallet = wallet_from_envelope(seed_hash_for(seed), envelope, &meta, master).expect("wallet rebuilt");
+        let wallet = wallet_from_envelope(seed_hash_for(seed), envelope, &meta, master)
+            .expect("wallet rebuilt");
         assert!(wallet.alias.is_none());
     }
 
@@ -501,7 +504,8 @@ mod tests {
             xpub_encoded: xpub.clone(),
         };
         let master = ExtendedPubKey::decode(&xpub).expect("xpub decodes");
-        let mut wallet = wallet_from_envelope(seed_hash_for(seed), envelope, &meta, master).expect("wallet rebuilt");
+        let mut wallet = wallet_from_envelope(seed_hash_for(seed), envelope, &meta, master)
+            .expect("wallet rebuilt");
         let original_hash = wallet.seed_hash();
         let original_xpub = wallet.master_bip44_ecdsa_extended_public_key.encode();
 

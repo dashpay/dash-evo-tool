@@ -47,6 +47,13 @@ pub struct ImportSingleKeyRequest {
     /// Address preview shown to the user — handed back so the parent can
     /// echo it in a success message without re-deriving.
     pub address_preview: String,
+    /// SEC-002 — optional per-key passphrase. `None` means store the
+    /// key without an additional encryption layer (still inside the
+    /// vault); `Some` means encrypt under the user's passphrase.
+    pub passphrase: Option<String>,
+    /// Optional hint shown next to the unlock prompt for protected
+    /// imports.
+    pub passphrase_hint: Option<String>,
 }
 
 /// Modal dialog state. Hold one per wallets screen; reset between
@@ -63,6 +70,14 @@ pub struct ImportSingleKeyDialog {
     /// Set when the latest WIF input fails to parse. `None` while the
     /// field is empty so we don't yell at the user on first focus.
     error_message: Option<String>,
+    /// SEC-002 Option C — "Protect with passphrase" toggle.
+    passphrase_enabled: bool,
+    passphrase_input: PasswordInput,
+    confirm_passphrase_input: PasswordInput,
+    hint_input: String,
+    /// Inline validation message for the passphrase fields. Reset on
+    /// every keystroke; populated on confirm click if validation fails.
+    passphrase_error: Option<String>,
 }
 
 impl ImportSingleKeyDialog {
@@ -79,6 +94,11 @@ impl ImportSingleKeyDialog {
             alias_input: String::new(),
             derived_address: None,
             error_message: None,
+            passphrase_enabled: false,
+            passphrase_input: PasswordInput::new().with_hint_text("Passphrase"),
+            confirm_passphrase_input: PasswordInput::new().with_hint_text("Confirm passphrase"),
+            hint_input: String::new(),
+            passphrase_error: None,
         }
     }
 
@@ -99,6 +119,11 @@ impl ImportSingleKeyDialog {
         self.alias_input.clear();
         self.derived_address = None;
         self.error_message = None;
+        self.passphrase_enabled = false;
+        self.passphrase_input.clear();
+        self.confirm_passphrase_input.clear();
+        self.hint_input.clear();
+        self.passphrase_error = None;
     }
 
     /// Render the dialog as an egui modal window. Returns the per-frame
@@ -183,6 +208,32 @@ impl ImportSingleKeyDialog {
         );
         ui.add_space(12.0);
 
+        // SEC-002 Option C — passphrase opt-in.
+        ui.checkbox(&mut self.passphrase_enabled, "Protect with passphrase");
+        if self.passphrase_enabled {
+            ui.add_space(4.0);
+            ui.label("Passphrase");
+            let pp = self.passphrase_input.show(ui);
+            if pp.changed {
+                self.passphrase_error = None;
+            }
+            ui.label("Confirm passphrase");
+            let cp = self.confirm_passphrase_input.show(ui);
+            if cp.changed {
+                self.passphrase_error = None;
+            }
+            ui.label("Hint (optional)");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.hint_input)
+                    .hint_text("Shown next to the unlock prompt")
+                    .char_limit(ALIAS_MAX_CHARS),
+            );
+            if let Some(err) = &self.passphrase_error {
+                ui.colored_label(DashColors::VALIDATION_WARNING, err);
+            }
+            ui.add_space(8.0);
+        }
+
         ui.horizontal(|ui| {
             if ui.button("Cancel").clicked() {
                 response.cancelled = true;
@@ -193,11 +244,26 @@ impl ImportSingleKeyDialog {
             if ui.add_enabled(can_confirm, confirm_btn).clicked()
                 && let Some(addr) = self.derived_address.clone()
             {
+                let (passphrase, hint) = if self.passphrase_enabled {
+                    let pp = self.passphrase_input.text().to_string();
+                    let cp = self.confirm_passphrase_input.text().to_string();
+                    if let Some(err) = validate_passphrase(&pp, &cp) {
+                        self.passphrase_error = Some(err);
+                        return;
+                    }
+                    let trimmed_hint = self.hint_input.trim().to_string();
+                    let hint = (!trimmed_hint.is_empty()).then_some(trimmed_hint);
+                    (Some(pp), hint)
+                } else {
+                    (None, None)
+                };
                 let alias = self.alias_input.trim().to_string();
                 response.confirmed = Some(ImportSingleKeyRequest {
                     wif: self.wif_input.text().to_string(),
                     alias: (!alias.is_empty()).then_some(alias),
                     address_preview: addr,
+                    passphrase,
+                    passphrase_hint: hint,
                 });
             }
         });
@@ -242,6 +308,27 @@ impl ImportSingleKeyDialog {
             }
         }
     }
+}
+
+/// Client-side passphrase validation mirroring the backend's typed
+/// rules. Returns the user-facing message (from the corresponding
+/// [`TaskError`] variant's `Display`) when the input is rejected,
+/// `None` otherwise. The backend re-checks both rules so a callsite
+/// that skips this still gets the typed error.
+fn validate_passphrase(passphrase: &str, confirm: &str) -> Option<String> {
+    if passphrase.chars().count() < crate::wallet_backend::single_key::MIN_SINGLE_KEY_PASSPHRASE_LEN
+    {
+        return Some(
+            TaskError::SingleKeyPassphraseTooShort {
+                min: crate::wallet_backend::single_key::MIN_SINGLE_KEY_PASSPHRASE_LEN as u32,
+            }
+            .to_string(),
+        );
+    }
+    if passphrase != confirm {
+        return Some(TaskError::SingleKeyPassphraseMismatch.to_string());
+    }
+    None
 }
 
 fn network_label(network: Network) -> &'static str {

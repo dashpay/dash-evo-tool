@@ -1331,6 +1331,48 @@ pub enum TaskError {
         expected: u32,
     },
 
+    /// An imported single-key entry is passphrase-protected and the
+    /// caller tried to sign before unlocking it. UI prompts the user
+    /// for the passphrase, calls `unlock_with_passphrase`, then
+    /// retries the operation.
+    #[error("Enter the passphrase you set for the imported key {addr} to continue.")]
+    SingleKeyPassphraseRequired {
+        /// Base58 P2PKH address of the imported key — allowed in
+        /// user-facing copy per CLAUDE.md rule 6 as an opaque-but-
+        /// copyable handle.
+        addr: String,
+    },
+
+    /// The passphrase the user supplied does not decrypt the stored
+    /// single-key entry. No upstream error is preserved — AES-GCM's
+    /// authentication failure carries no useful diagnostic.
+    #[error("That passphrase is not correct. Try again.")]
+    SingleKeyPassphraseIncorrect,
+
+    /// The passphrase the user supplied is shorter than the configured
+    /// minimum. Fail-fast at the import dialog so the user picks a
+    /// stronger value before the key is encrypted.
+    #[error("Passphrases must be at least {min} characters. Pick a longer one and try again.")]
+    SingleKeyPassphraseTooShort { min: u32 },
+
+    /// The "Passphrase" and "Confirm passphrase" fields in the import
+    /// dialog did not match. Caught client-side; this variant exists so
+    /// the validation message has a typed home rather than being a UI
+    /// string literal.
+    #[error("The two passphrases do not match. Type them again carefully.")]
+    SingleKeyPassphraseMismatch,
+
+    /// Encrypting or decrypting an imported-key entry with the
+    /// user-supplied passphrase failed for a reason other than a wrong
+    /// passphrase — typically an AES-GCM library error during key
+    /// derivation. Fieldless: the upstream `String` carries no useful
+    /// typed diagnostic, and storing the message would conflict with
+    /// the no-user-strings-in-variants rule (CLAUDE.md rule 7). The
+    /// callsite logs the detail before constructing this variant.
+    #[error(
+        "Could not protect this imported key with a passphrase. Try again, or import it without a passphrase for now."
+    )]
+    SingleKeyCryptoFailure,
 }
 
 /// Escapes control characters in a token name for safe display in error messages.

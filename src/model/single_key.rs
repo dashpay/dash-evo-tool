@@ -20,4 +20,14 @@ pub struct ImportedKey {
     /// `WalletBackend` network — single-key entries are per-network by
     /// the secret store's per-network scoping.
     pub network: Network,
+    /// `true` when the key bytes inside the upstream vault are wrapped
+    /// in DET's per-key AES-GCM envelope (SEC-002 Option C). The UI
+    /// keys the unlock prompt off this flag — when `false`, callers can
+    /// sign without prompting.
+    #[serde(default)]
+    pub has_passphrase: bool,
+    /// Optional user-supplied hint shown next to the passphrase prompt.
+    /// `None` for legacy entries that pre-date the per-key passphrase.
+    #[serde(default)]
+    pub passphrase_hint: Option<String>,
 }

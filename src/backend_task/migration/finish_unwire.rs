@@ -1622,6 +1622,7 @@ mod tests {
             index: &index,
             network,
             app_kv: None,
+            unlocked: None,
         };
 
         let outcome = migrate_single_key_rows_from_conn(
@@ -1635,13 +1636,21 @@ mod tests {
         assert_eq!(outcome.skipped_password_protected, 0);
         assert_eq!(outcome.failed, 0);
 
-        // The canonical secret-store label is present and holds 32 bytes.
+        // The canonical secret-store label is present and decodes as
+        // an unprotected SingleKeyEntry whose plaintext is 32 bytes
+        // (post-SEC-002 the in-vault payload is the versioned entry
+        // shape rather than the bare 32 raw bytes).
         let label = label_for_address(&address);
         let secret = store
             .get(&single_key_namespace_id(), &label)
             .expect("read secret")
             .expect("secret present");
-        assert_eq!(secret.expose_secret().len(), 32);
+        let entry =
+            crate::wallet_backend::single_key_entry::SingleKeyEntry::decode(secret.expose_secret())
+                .expect("decode entry");
+        assert!(!entry.has_passphrase);
+        let raw = entry.decrypt(None).expect("plaintext");
+        assert_eq!(raw.len(), 32);
 
         // The view's index reflects the imported key (TC-SK-001's
         // "Imported key — <X[0..6]…>" UI surface relies on this).
@@ -1687,6 +1696,7 @@ mod tests {
             index: &index,
             network,
             app_kv: None,
+            unlocked: None,
         };
 
         let first = migrate_single_key_rows_from_conn(
@@ -1778,6 +1788,7 @@ mod tests {
             index: &index,
             network,
             app_kv: None,
+            unlocked: None,
         };
 
         let outcome = migrate_single_key_rows_from_conn(

@@ -27,6 +27,12 @@ use crate::model::wallet::single_key::{
     ClosedSingleKey, OpenSingleKey, SingleKeyData, SingleKeyHash, SingleKeyWallet,
 };
 use crate::wallet_backend::DetKv;
+use crate::wallet_backend::single_key_entry::SingleKeyEntry;
+
+/// Minimum length (in characters) for a per-key passphrase. Mirrors
+/// NIST 800-63B / OWASP ASVS 6.2.1's minimum recommendation. The
+/// import dialog enforces this client-side and the backend re-checks.
+pub const MIN_SINGLE_KEY_PASSPHRASE_LEN: usize = 8;
 
 /// Fixed per-backend namespace id for single-key entries.
 ///
@@ -102,6 +108,23 @@ pub struct SingleKeyView<'a> {
     /// (used by `WalletBackend::new` before the app k/v is wired and by
     /// the unit tests below).
     pub(crate) app_kv: Option<&'a Arc<DetKv>>,
+    /// In-memory cache of decrypted private-key bytes keyed by address.
+    /// Wired in by [`super::WalletBackend::single_key`]; `None` for the
+    /// transient construction path used by the tests below and the
+    /// pre-context bootstrap.
+    pub(crate) unlocked:
+        Option<&'a std::sync::RwLock<std::collections::BTreeMap<String, [u8; 32]>>>,
+}
+
+/// Optional passphrase choice supplied by the import dialog. Kept as a
+/// small struct so the import API has one parameter for "no passphrase
+/// / passphrase + hint" rather than two parallel `Option`s.
+#[derive(Debug, Clone, Default)]
+pub struct ImportPassphrase {
+    /// User-supplied passphrase. Empty / `None` ⇒ no passphrase.
+    pub passphrase: Option<String>,
+    /// Optional hint shown next to the unlock prompt.
+    pub hint: Option<String>,
 }
 
 impl<'a> SingleKeyView<'a> {
@@ -119,6 +142,7 @@ impl<'a> SingleKeyView<'a> {
             index,
             network,
             app_kv,
+            unlocked: None,
         }
     }
 
@@ -127,7 +151,26 @@ impl<'a> SingleKeyView<'a> {
     /// derived [`ImportedKey`] metadata to the enumerable k/v sidecar,
     /// and refresh the in-memory index. Idempotent on the same WIF —
     /// re-import overwrites the alias and refreshes the stored bytes.
+    ///
+    /// Equivalent to
+    /// [`Self::import_wif_with_passphrase`] with `ImportPassphrase::default()`.
     pub fn import_wif(&self, wif: &str, alias: Option<String>) -> Result<ImportedKey, TaskError> {
+        self.import_wif_with_passphrase(wif, alias, ImportPassphrase::default())
+    }
+
+    /// SEC-002 Option C — same as [`Self::import_wif`], plus an optional
+    /// per-key passphrase. When `passphrase.passphrase` is `Some(p)` and
+    /// non-empty the raw key bytes are AES-GCM encrypted under `p`
+    /// before being written to the vault; the metadata sidecar records
+    /// `has_passphrase = true` so the unlock UI can prompt later. An
+    /// empty / `None` passphrase falls back to the legacy
+    /// unprotected-but-vault-encrypted shape.
+    pub fn import_wif_with_passphrase(
+        &self,
+        wif: &str,
+        alias: Option<String>,
+        passphrase: ImportPassphrase,
+    ) -> Result<ImportedKey, TaskError> {
         let priv_key = PrivateKey::from_wif(wif).map_err(|source| TaskError::InvalidWif {
             source: Box::new(source),
         })?;
@@ -139,8 +182,26 @@ impl<'a> SingleKeyView<'a> {
         let address = Address::p2pkh(&pub_key, self.network);
         let address_str = address.to_string();
 
+        let raw: [u8; 32] = priv_key.inner[..]
+            .try_into()
+            .map_err(|_| TaskError::SingleKeyCryptoFailure)?;
+
+        let entry = match passphrase.passphrase.as_deref() {
+            Some(p) if !p.is_empty() => {
+                if p.chars().count() < MIN_SINGLE_KEY_PASSPHRASE_LEN {
+                    return Err(TaskError::SingleKeyPassphraseTooShort {
+                        min: MIN_SINGLE_KEY_PASSPHRASE_LEN as u32,
+                    });
+                }
+                let pub_bytes = pub_key.inner.serialize().to_vec();
+                SingleKeyEntry::protected(&raw, p, passphrase.hint.clone(), pub_bytes)?
+            }
+            _ => SingleKeyEntry::unprotected(raw),
+        };
+        let payload = entry.encode()?;
+
         let label = label_for_address(&address_str);
-        let bytes = SecretBytes::from_slice(&priv_key.inner[..]);
+        let bytes = SecretBytes::from_slice(&payload);
         self.secret_store
             .set(&single_key_namespace_id(), &label, &bytes)
             .map_err(|source| TaskError::SecretStore {
@@ -151,6 +212,8 @@ impl<'a> SingleKeyView<'a> {
             address: address_str.clone(),
             alias,
             network: self.network,
+            has_passphrase: entry.has_passphrase,
+            passphrase_hint: entry.passphrase_hint.clone(),
         };
 
         if let Some(kv) = self.app_kv {
@@ -161,11 +224,94 @@ impl<'a> SingleKeyView<'a> {
                 })?;
         }
 
+        // Self-import always counts as unlocked for this process so the
+        // user doesn't immediately have to re-type the passphrase.
+        if let Some(cache) = self.unlocked
+            && let Ok(mut c) = cache.write()
+        {
+            c.insert(address_str.clone(), raw);
+        }
+
         self.index
             .write()
             .map_err(|_| TaskError::ImportedKeyNotFound)?
             .insert(address_str, imported.clone());
         Ok(imported)
+    }
+
+    /// Returns `true` when the imported key at `address` was stored
+    /// with a per-key passphrase. The UI uses this to decide whether to
+    /// prompt before signing.
+    pub fn has_passphrase(&self, address: &str) -> bool {
+        self.index
+            .read()
+            .map(|idx| idx.get(address).is_some_and(|k| k.has_passphrase))
+            .unwrap_or(false)
+    }
+
+    /// Unlock the imported key at `address` with `passphrase` and cache
+    /// the decrypted bytes for the rest of the process. Idempotent — a
+    /// second unlock with the same passphrase replaces the cached
+    /// bytes with the same value.
+    pub fn unlock_with_passphrase(&self, address: &str, passphrase: &str) -> Result<(), TaskError> {
+        let label = label_for_address(address);
+        let payload = self
+            .secret_store
+            .get(&single_key_namespace_id(), &label)
+            .map_err(|source| TaskError::SecretStore {
+                source: Box::new(source),
+            })?
+            .ok_or(TaskError::ImportedKeyNotFound)?;
+        let entry = SingleKeyEntry::decode(payload.expose_secret())?;
+        if !entry.has_passphrase {
+            // Nothing to do — the entry is not passphrase-protected.
+            return Ok(());
+        }
+        let raw = entry.decrypt(Some(passphrase))?;
+        if let Some(cache) = self.unlocked
+            && let Ok(mut c) = cache.write()
+        {
+            c.insert(address.to_string(), raw);
+        }
+        Ok(())
+    }
+
+    /// Forget any cached plaintext for `address`. Called by the UI on
+    /// explicit "lock" actions. Idempotent.
+    pub fn forget_unlocked(&self, address: &str) {
+        if let Some(cache) = self.unlocked
+            && let Ok(mut c) = cache.write()
+        {
+            c.remove(address);
+        }
+    }
+
+    /// Read the raw private-key bytes for `address`, consulting the
+    /// in-memory unlock cache first. Returns
+    /// [`TaskError::SingleKeyPassphraseRequired`] when the entry is
+    /// passphrase-protected and the cache has no entry for it.
+    fn raw_key_bytes(&self, address: &str) -> Result<[u8; 32], TaskError> {
+        if let Some(cache) = self.unlocked
+            && let Ok(c) = cache.read()
+            && let Some(bytes) = c.get(address)
+        {
+            return Ok(*bytes);
+        }
+        let label = label_for_address(address);
+        let payload = self
+            .secret_store
+            .get(&single_key_namespace_id(), &label)
+            .map_err(|source| TaskError::SecretStore {
+                source: Box::new(source),
+            })?
+            .ok_or(TaskError::ImportedKeyNotFound)?;
+        let entry = SingleKeyEntry::decode(payload.expose_secret())?;
+        if entry.has_passphrase {
+            return Err(TaskError::SingleKeyPassphraseRequired {
+                addr: address.to_string(),
+            });
+        }
+        entry.decrypt(None)
     }
 
     /// List every imported key tracked by this backend, sorted by
@@ -313,13 +459,37 @@ impl<'a> SingleKeyView<'a> {
                 return Ok(None);
             }
         };
-        let key_bytes: [u8; 32] = match secret.expose_secret().try_into() {
-            Ok(b) => b,
-            Err(_) => {
+
+        let entry = match SingleKeyEntry::decode(secret.expose_secret()) {
+            Ok(e) => e,
+            Err(e) => {
                 tracing::warn!(
                     target = "wallet_backend::single_key",
                     address = %meta.address,
-                    "Single-key vault entry is not 32 bytes; skipping",
+                    error = ?e,
+                    "Single-key vault entry could not be decoded; skipping",
+                );
+                return Ok(None);
+            }
+        };
+
+        // For passphrase-protected entries the rebuilt wallet is closed
+        // (no plaintext) — the picker still needs to render it so the
+        // user can unlock it on demand. Open entries get rebuilt with
+        // their raw bytes the way the legacy path did.
+        if entry.has_passphrase {
+            // Closed: derive identity from public material only.
+            return Ok(self.rebuild_closed_passphrase_wallet(meta, &entry));
+        }
+
+        let key_bytes = match entry.decrypt(None) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(
+                    target = "wallet_backend::single_key",
+                    address = %meta.address,
+                    error = ?e,
+                    "Single-key entry plaintext recovery failed; skipping",
                 );
                 return Ok(None);
             }
@@ -368,23 +538,115 @@ impl<'a> SingleKeyView<'a> {
         }))
     }
 
+    /// Build a [`SingleKeyWallet`] for a passphrase-protected entry
+    /// without touching the plaintext. The rebuilt wallet is closed
+    /// (`uses_password = true`); the picker can still render the alias,
+    /// address, and key_hash. Stores the ciphertext/salt/nonce on the
+    /// closed payload so downstream "is this the same key" checks
+    /// remain comparable. Returns `None` (skip and log) when the
+    /// entry's stored public-key bytes are missing or unparseable —
+    /// without them the rebuilt wallet would lack a usable
+    /// [`PublicKey`].
+    fn rebuild_closed_passphrase_wallet(
+        &self,
+        meta: &ImportedKey,
+        entry: &SingleKeyEntry,
+    ) -> Option<SingleKeyWallet> {
+        use std::str::FromStr;
+        let address = match Address::from_str(&meta.address) {
+            Ok(a) => match a.require_network(meta.network) {
+                Ok(a) => a,
+                Err(_) => {
+                    tracing::warn!(
+                        target = "wallet_backend::single_key",
+                        address = %meta.address,
+                        network = ?meta.network,
+                        "Locked single-key entry address does not match expected network; skipping",
+                    );
+                    return None;
+                }
+            },
+            Err(_) => {
+                tracing::warn!(
+                    target = "wallet_backend::single_key",
+                    address = %meta.address,
+                    "Locked single-key entry address is not parseable; skipping",
+                );
+                return None;
+            }
+        };
+
+        if entry.public_key_bytes.is_empty() {
+            tracing::warn!(
+                target = "wallet_backend::single_key",
+                address = %meta.address,
+                "Locked single-key entry has no stored public key; skipping (re-import to refresh)",
+            );
+            return None;
+        }
+        let inner = match dash_sdk::dpp::dashcore::secp256k1::PublicKey::from_slice(
+            &entry.public_key_bytes,
+        ) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(
+                    target = "wallet_backend::single_key",
+                    address = %meta.address,
+                    error = %e,
+                    "Locked single-key entry public-key bytes are unparseable; skipping",
+                );
+                return None;
+            }
+        };
+        let public_key = PublicKey {
+            compressed: true,
+            inner,
+        };
+
+        // `compute_key_hash` is defined over the plaintext private
+        // key; locked entries don't have access to that here, so we
+        // use SHA-256 of the ciphertext as a stable per-entry handle.
+        // Two locked entries with the same plaintext (but distinct
+        // salts) hash to different values — acceptable since the
+        // hash is only used as a map key inside the in-memory wallets
+        // BTreeMap.
+        let key_hash = {
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            hasher.update(&entry.ciphertext);
+            let out = hasher.finalize();
+            let mut h = [0u8; 32];
+            h.copy_from_slice(&out);
+            h
+        };
+        let closed = ClosedSingleKey {
+            key_hash,
+            encrypted_private_key: entry.ciphertext.clone(),
+            salt: entry.salt.clone(),
+            nonce: entry.nonce.clone(),
+        };
+        Some(SingleKeyWallet {
+            private_key_data: SingleKeyData::Closed(closed),
+            uses_password: true,
+            public_key,
+            address,
+            alias: meta.alias.clone(),
+            key_hash,
+            confirmed_balance: 0,
+            unconfirmed_balance: 0,
+            total_balance: 0,
+            utxos: std::collections::HashMap::new(),
+            core_wallet_name: None,
+        })
+    }
+
     /// Sign a 32-byte message hash with the imported key registered at
-    /// `address`. Reads the key bytes from the secret store on every
-    /// call — the secret never lives in DET memory between signs. Pure
-    /// ECDSA on secp256k1; no BIP-32 derivation is touched (TC-SK-008).
+    /// `address`. Consults the in-memory unlock cache when the entry
+    /// is passphrase-protected; otherwise reads the raw bytes straight
+    /// from the secret store. Pure ECDSA on secp256k1; no BIP-32
+    /// derivation is touched (TC-SK-008).
     pub fn sign_with(&self, address: &str, msg: &[u8; 32]) -> Result<Signature, TaskError> {
-        let label = label_for_address(address);
-        let secret = self
-            .secret_store
-            .get(&single_key_namespace_id(), &label)
-            .map_err(|source| TaskError::SecretStore {
-                source: Box::new(source),
-            })?
-            .ok_or(TaskError::ImportedKeyNotFound)?;
-        let bytes: [u8; 32] = secret
-            .expose_secret()
-            .try_into()
-            .map_err(|_| TaskError::ImportedKeyNotFound)?;
+        let bytes = self.raw_key_bytes(address)?;
         let sk = dash_sdk::dpp::dashcore::secp256k1::SecretKey::from_byte_array(&bytes)
             .map_err(|_| TaskError::ImportedKeyNotFound)?;
         let message = Message::from_digest(*msg);
@@ -450,6 +712,7 @@ mod tests {
             index: &index,
             network,
             app_kv: None,
+            unlocked: None,
         };
 
         let imported = view
@@ -508,6 +771,7 @@ mod tests {
             index: &index,
             network,
             app_kv: None,
+            unlocked: None,
         };
         let imported = view.import_wif(known_wif(), None).expect("import");
 
@@ -551,6 +815,7 @@ mod tests {
             index: &index,
             network,
             app_kv: None,
+            unlocked: None,
         };
         let err = view
             .import_wif("not-a-valid-wif", None)
@@ -657,6 +922,7 @@ mod tests {
             index: &index,
             network,
             app_kv: Some(&kv),
+            unlocked: None,
         };
 
         let imported = view
@@ -688,6 +954,7 @@ mod tests {
             index: &index,
             network,
             app_kv: Some(&kv),
+            unlocked: None,
         };
 
         let imported = view.import_wif(known_wif(), None).expect("import");
@@ -718,6 +985,7 @@ mod tests {
             index: &index,
             network,
             app_kv: Some(&kv),
+            unlocked: None,
         };
         let imported = view
             .import_wif(known_wif(), Some("savings".into()))
@@ -763,6 +1031,7 @@ mod tests {
             index: &index,
             network,
             app_kv: Some(&kv),
+            unlocked: None,
         };
 
         // Healthy entry.
@@ -773,6 +1042,8 @@ mod tests {
             address: "yNotARealAddress".into(),
             alias: Some("ghost".into()),
             network,
+            has_passphrase: false,
+            passphrase_hint: None,
         };
         kv.put(None, &meta_key_for(network, &orphan.address), &orphan)
             .expect("put orphan");
@@ -783,5 +1054,211 @@ mod tests {
             1,
             "orphan must be skipped, healthy entry preserved"
         );
+    }
+
+    /// SEC-002 — importing with a passphrase encrypts the in-vault
+    /// payload (so a vault dump does not yield the raw key) and the
+    /// sidecar records `has_passphrase = true` with the user's hint.
+    #[test]
+    fn sec_002_import_with_passphrase_encrypts_payload() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ViewFixture {
+            store,
+            index,
+            kv,
+            network,
+        } = fresh_view_with_kv(dir.path(), Network::Testnet);
+        let unlocked =
+            std::sync::RwLock::new(std::collections::BTreeMap::<String, [u8; 32]>::new());
+        let view = SingleKeyView {
+            secret_store: &store,
+            index: &index,
+            network,
+            app_kv: Some(&kv),
+            unlocked: Some(&unlocked),
+        };
+
+        let imported = view
+            .import_wif_with_passphrase(
+                known_wif(),
+                Some("secure".into()),
+                crate::wallet_backend::single_key::ImportPassphrase {
+                    passphrase: Some("correcthorsebattery".into()),
+                    hint: Some("xkcd 936".into()),
+                },
+            )
+            .expect("import");
+        assert!(imported.has_passphrase);
+        assert_eq!(imported.passphrase_hint.as_deref(), Some("xkcd 936"));
+
+        // Vault payload is not the raw 32 bytes — it's the versioned
+        // ciphertext envelope.
+        let label = label_for_address(&imported.address);
+        let raw = store
+            .get(&single_key_namespace_id(), &label)
+            .expect("get")
+            .expect("present");
+        assert_ne!(raw.expose_secret().len(), 32);
+        let priv_key = PrivateKey::from_wif(known_wif()).unwrap();
+        assert_ne!(
+            raw.expose_secret(),
+            &priv_key.inner[..],
+            "ciphertext must not be the plaintext key bytes",
+        );
+
+        // Sign immediately after import — the in-process unlock cache
+        // was primed, so no passphrase prompt is needed yet.
+        view.sign_with(&imported.address, &[0x42u8; 32])
+            .expect("sign right after import");
+    }
+
+    /// SEC-002 — after a cold restart (cache empty), signing without
+    /// first unlocking surfaces the typed
+    /// `SingleKeyPassphraseRequired` error. Unlocking with the right
+    /// passphrase lets the next sign through.
+    #[test]
+    fn sec_002_locked_entry_requires_unlock_before_sign() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ViewFixture {
+            store,
+            index,
+            kv,
+            network,
+        } = fresh_view_with_kv(dir.path(), Network::Testnet);
+        let unlocked =
+            std::sync::RwLock::new(std::collections::BTreeMap::<String, [u8; 32]>::new());
+        let view = SingleKeyView {
+            secret_store: &store,
+            index: &index,
+            network,
+            app_kv: Some(&kv),
+            unlocked: Some(&unlocked),
+        };
+        let imported = view
+            .import_wif_with_passphrase(
+                known_wif(),
+                None,
+                crate::wallet_backend::single_key::ImportPassphrase {
+                    passphrase: Some("opensesame".into()),
+                    hint: None,
+                },
+            )
+            .expect("import");
+
+        // Simulate a cold restart — drop everything except the vault
+        // contents on disk.
+        unlocked.write().unwrap().clear();
+
+        // Re-seed the index from the sidecar (cold-boot hydration
+        // analogue). After that, sign without unlocking → typed error.
+        view.rehydrate_index().expect("rehydrate");
+        let err = view
+            .sign_with(&imported.address, &[0u8; 32])
+            .expect_err("locked sign must surface PassphraseRequired");
+        match err {
+            TaskError::SingleKeyPassphraseRequired { addr } => {
+                assert_eq!(addr, imported.address);
+            }
+            other => panic!("expected SingleKeyPassphraseRequired, got {other:?}"),
+        }
+
+        // Wrong passphrase: SingleKeyPassphraseIncorrect.
+        let err = view
+            .unlock_with_passphrase(&imported.address, "wrong-one")
+            .expect_err("wrong passphrase");
+        assert!(matches!(err, TaskError::SingleKeyPassphraseIncorrect));
+
+        // Correct passphrase unlocks; subsequent sign succeeds.
+        view.unlock_with_passphrase(&imported.address, "opensesame")
+            .expect("unlock");
+        view.sign_with(&imported.address, &[0u8; 32])
+            .expect("sign after unlock");
+    }
+
+    /// SEC-002 — a passphrase shorter than the configured minimum is
+    /// rejected at import time with the typed
+    /// `SingleKeyPassphraseTooShort` variant; no vault write occurs.
+    #[test]
+    fn sec_002_short_passphrase_is_rejected() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ViewFixture {
+            store,
+            index,
+            kv,
+            network,
+        } = fresh_view_with_kv(dir.path(), Network::Testnet);
+        let view = SingleKeyView {
+            secret_store: &store,
+            index: &index,
+            network,
+            app_kv: Some(&kv),
+            unlocked: None,
+        };
+        let err = view
+            .import_wif_with_passphrase(
+                known_wif(),
+                None,
+                crate::wallet_backend::single_key::ImportPassphrase {
+                    passphrase: Some("short".into()),
+                    hint: None,
+                },
+            )
+            .expect_err("short passphrase rejected");
+        match err {
+            TaskError::SingleKeyPassphraseTooShort { min } => {
+                assert_eq!(min, super::MIN_SINGLE_KEY_PASSPHRASE_LEN as u32);
+            }
+            other => panic!("expected SingleKeyPassphraseTooShort, got {other:?}"),
+        }
+        assert!(view.list().is_empty(), "no entry should be created");
+    }
+
+    /// SEC-002 — legacy 32-byte raw vault payloads (pre-Option C)
+    /// still decode as `has_passphrase = false`, so a user who
+    /// upgrades from a previous tag never loses their imported keys.
+    #[test]
+    fn sec_002_legacy_raw_payload_still_signs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ViewFixture {
+            store,
+            index,
+            kv,
+            network,
+        } = fresh_view_with_kv(dir.path(), Network::Testnet);
+        let view = SingleKeyView {
+            secret_store: &store,
+            index: &index,
+            network,
+            app_kv: Some(&kv),
+            unlocked: None,
+        };
+
+        // Pretend a pre-SEC-002 install wrote a raw 32-byte payload
+        // under the canonical label, with a matching sidecar entry.
+        let priv_key = PrivateKey::from_wif(known_wif()).unwrap();
+        let pub_key = PublicKey {
+            compressed: priv_key.compressed,
+            inner: priv_key.inner.public_key(&Secp256k1::new()),
+        };
+        let address = Address::p2pkh(&pub_key, network).to_string();
+        let label = label_for_address(&address);
+        let raw = SecretBytes::from_slice(&priv_key.inner[..]);
+        store
+            .set(&single_key_namespace_id(), &label, &raw)
+            .expect("write legacy bytes");
+        let meta = ImportedKey {
+            address: address.clone(),
+            alias: None,
+            network,
+            has_passphrase: false,
+            passphrase_hint: None,
+        };
+        kv.put(None, &meta_key_for(network, &address), &meta)
+            .expect("seed sidecar");
+        view.rehydrate_index().expect("rehydrate");
+
+        // No passphrase needed, signing works.
+        view.sign_with(&address, &[0x11u8; 32])
+            .expect("legacy sign without passphrase");
     }
 }

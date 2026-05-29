@@ -55,10 +55,21 @@ Other shielded artefacts investigated and resolved:
   consistent.
 - **Sync cursor**: already migrated as part of the per-wallet k/v cursor commit (`ed6ea588`).
 
-### DashPay (deferred in C9)
+### DashPay (deferred in C9, completed in D1–D4d)
 
-DashPay was investigated during C9 and found to be a ~15K-LOC UI + backend re-platforming
-project, not a 1:1 unwire. The prerequisites identified during that investigation:
+**Status update (2026-05-29):** the DashPay deferral closed in commits S1 (shielded retire)
+and D1–D4d (DashPay unwire) on branch `feat/unwire-deferred-domains` stacked on PR #860.
+Upstream `ManagedIdentity` now owns contacts / requests / profiles / payments, and a
+per-network DET k/v sidecar owns DashPay overlays (private memo, blocked / rejected
+markers, timestamps, address index, address mapping). The DET tables
+(`dashpay_profiles`, `dashpay_contacts`, `dashpay_contact_requests`,
+`dashpay_payments`, `dashpay_contact_address_indices`, `dashpay_address_mappings`,
+`contact_private_info`) are no longer created on fresh installs and have no live readers
+or writers in DET code. Pre-D4d installs keep the dormant rows; the migration tool drains
+them at its leisure.
+
+The original C9 investigation notes (kept for the migration-tool author — DET DashPay state
+is still readable at SHA `35eb07bf67b48a74f14de2f1cd2a907412cc0b9a`):
 
 1. **SecretStore is not wired into AppContext.** DET does not currently consume `SecretStore`
    directly anywhere — Stage-B uses upstream `SqlitePersister`'s `secrets_backend` config, not
@@ -229,8 +240,17 @@ Tables: `dashpay_profiles`, `dashpay_contacts`, `dashpay_contact_requests`,
 - **Gotchas:** Some DET-only address-index tables (e.g., `dashpay_contact_address_indices`,
   `dashpay_address_mappings`) may have no upstream equivalent — confirm during audit. Do not
   assume 1:1 column parity; DET and upstream evolved independently.
-- **Status:** DEFERRED — see "Domains deferred" section above. DashPay is a full re-platform,
-  not a 1:1 unwire. Prerequisites listed above must land first.
+- **Status:** DONE (D1–D4d unwire on `feat/unwire-deferred-domains`, stacked on PR #860).
+  S1 retired the shielded data.db code path; D1 introduced the `DashpayView` adapter; D2
+  wired sidecar reads/writes for DET-only overlays; D3 added blocked/rejected/timestamp
+  markers; D4a–D4c migrated every DashPay read and write off the DET tables; D4d deletes
+  `src/database/dashpay.rs` (894 LOC) and `src/database/contacts.rs` (356 LOC), drops all
+  `CREATE TABLE` entries from `database/initialization.rs`, collapses 3 UI dual-writes to
+  sidecar-only writes, and extends `AppContext::clear_network_database` with a
+  `det:dashpay:` prefix sweep on the per-network k/v sidecar. The migration tool reads
+  DET DashPay rows at SHA `35eb07bf67b48a74f14de2f1cd2a907412cc0b9a` (pre-unwire) and
+  writes upstream-owned state into `ManagedIdentity` plus DET overlays into the
+  `det:dashpay:*` k/v namespace.
 
 ---
 

@@ -178,21 +178,11 @@ impl ContactDetailsScreen {
             info.is_hidden = self.edit_hidden;
         }
 
-        // Save to local database immediately so the UI has instant feedback
-        // while the (encrypted) Platform write below is in flight.
+        // Persist the memo to the per-network k/v sidecar so the UI has
+        // instant feedback while the (encrypted) Platform write below is
+        // in flight. Best-effort: a sidecar miss never blocks the user
+        // action.
         let identity_id = self.identity.identity.id();
-        if let Err(e) = self.app_context.db.save_contact_private_info(
-            &identity_id,
-            &self.contact_id,
-            &self.edit_nickname,
-            &self.edit_note,
-            self.edit_hidden,
-        ) {
-            tracing::warn!("Failed to save contact private info to database: {}", e);
-        }
-        // Mirror the same memo into the k/v sidecar so the post-D4d
-        // read path (after the DET table goes) sees the same edit.
-        // Best-effort: a sidecar miss never blocks the user action.
         if let Ok(backend) = self.app_context.wallet_backend() {
             let info = crate::model::dashpay::ContactPrivateInfo {
                 nickname: self.edit_nickname.clone(),
@@ -201,7 +191,7 @@ impl ContactDetailsScreen {
             };
             if let Err(e) = backend.dashpay_set_private_info(&identity_id, &self.contact_id, &info)
             {
-                tracing::warn!("DashPay private-info sidecar mirror failed: {e:?}");
+                tracing::warn!("DashPay private-info sidecar write failed: {e:?}");
             }
         }
 

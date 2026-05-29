@@ -1,6 +1,4 @@
 mod asset_lock_transaction;
-pub(crate) mod contacts;
-pub(crate) mod dashpay;
 mod initialization;
 mod settings;
 pub mod shielded;
@@ -92,41 +90,17 @@ impl Database {
             let mut conn = self.conn.lock().unwrap();
             let tx = conn.transaction()?;
 
-            // Remove DashPay/contact data referencing identities from this network.
-            tx.execute(
-                "DELETE FROM dashpay_payments
-                 WHERE from_identity_id IN (SELECT id FROM identity WHERE network = ?1)
-                    OR to_identity_id IN (SELECT id FROM identity WHERE network = ?1)",
-                rusqlite::params![&network_str],
-            )?;
-
-            tx.execute(
-                "DELETE FROM dashpay_contact_requests
-                 WHERE from_identity_id IN (SELECT id FROM identity WHERE network = ?1)
-                    OR to_identity_id IN (SELECT id FROM identity WHERE network = ?1)",
-                rusqlite::params![&network_str],
-            )?;
-
-            tx.execute(
-                "DELETE FROM dashpay_contacts
-                 WHERE owner_identity_id IN (SELECT id FROM identity WHERE network = ?1)
-                    OR contact_identity_id IN (SELECT id FROM identity WHERE network = ?1)",
-                rusqlite::params![&network_str],
-            )?;
-
-            tx.execute(
-                "DELETE FROM contact_private_info
-                 WHERE owner_identity_id IN (SELECT id FROM identity WHERE network = ?1)
-                    OR contact_identity_id IN (SELECT id FROM identity WHERE network = ?1)",
-                rusqlite::params![&network_str],
-            )?;
-
-            tx.execute(
-                "DELETE FROM dashpay_profiles
-                 WHERE identity_id IN (SELECT id FROM identity WHERE network = ?1)",
-                rusqlite::params![&network_str],
-            )?;
-
+            // DashPay tables (dashpay_profiles, dashpay_contacts,
+            // dashpay_contact_requests, dashpay_payments,
+            // dashpay_contact_address_indices, dashpay_address_mappings)
+            // and contact_private_info were retired in D4d — the upstream
+            // ManagedIdentity owns contact/profile/payment state and a
+            // per-network k/v sidecar owns DET-only overlays (private
+            // memo, blocked/rejected markers, timestamps, address index,
+            // address mapping). The sidecar sweep lives in
+            // `AppContext::clear_network_database` because the k/v
+            // adapter is not reachable from `Database`.
+            //
             // token / identity_token_balances / identity tables are no
             // longer managed (C7) — token registry, per-identity balances
             // and identity records all live in the per-network k/v store.

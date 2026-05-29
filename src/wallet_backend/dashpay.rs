@@ -1418,6 +1418,138 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
+    // D4d: the `det:dashpay:` prefix sweep used by
+    // `AppContext::clear_network_database` must hit every overlay the
+    // adapter writes — private memo, blocked / rejected markers,
+    // timestamps, address index, address mapping. A miss here would
+    // leak DET-only state across a "Clear network data" action.
+    // -------------------------------------------------------------------
+
+    /// D4d-Sweep1: every adapter-written sidecar key starts with the
+    /// shared `det:dashpay:` prefix, so a single `list_global` enumerates
+    /// all of them in one pass.
+    #[test]
+    fn d4d_all_dashpay_sidecar_keys_share_the_prefix() {
+        let kv = empty_kv();
+        let owner = id_from_byte(1);
+        let contact = id_from_byte(2);
+        let addr = "yXyqJv6gP2c8RXAhYQ7v6XwxSqUf7vXKfA";
+
+        // Plant one of every overlay shape DashPay writes.
+        kv.put::<()>(None, &sidecar_key(KV_PREFIX_BLOCKED, &contact), &())
+            .unwrap();
+        kv.put::<()>(None, &sidecar_key(KV_PREFIX_REJECTED, &contact), &())
+            .unwrap();
+        kv.put::<(i64, i64)>(
+            None,
+            &sidecar_key(KV_PREFIX_TIMESTAMPS, &contact),
+            &(111, 222),
+        )
+        .unwrap();
+        kv.put::<(i64, Option<i64>)>(
+            None,
+            &format!("{KV_PREFIX_TIMESTAMPS}tx:abc123"),
+            &(333, Some(444)),
+        )
+        .unwrap();
+        kv.put::<ContactPrivateInfo>(
+            None,
+            &pair_sidecar_key(KV_PREFIX_PRIVATE, &owner, &contact),
+            &ContactPrivateInfo::default(),
+        )
+        .unwrap();
+        kv.put::<ContactAddressIndex>(
+            None,
+            &pair_sidecar_key(KV_PREFIX_ADDRESS_INDEX, &owner, &contact),
+            &ContactAddressIndex {
+                owner_identity_id: owner.to_buffer().to_vec(),
+                contact_identity_id: contact.to_buffer().to_vec(),
+                next_send_index: 1,
+                highest_receive_index: 0,
+                bloom_registered_count: 0,
+            },
+        )
+        .unwrap();
+        kv.put::<([u8; 32], u32)>(
+            None,
+            &addr_map_sidecar_key(&owner, addr),
+            &(contact.to_buffer(), 1),
+        )
+        .unwrap();
+
+        let keys = kv
+            .list(None, Some("det:dashpay:"))
+            .expect("sidecar listing must succeed");
+        // 7 writes, each with a unique key.
+        assert_eq!(keys.len(), 7, "every overlay must be enumerated: {keys:?}");
+        for k in &keys {
+            assert!(
+                k.starts_with("det:dashpay:"),
+                "non-DashPay key surfaced: {k}"
+            );
+        }
+    }
+
+    /// D4d-Sweep2: iterating the prefix listing and deleting drains the
+    /// sidecar — mirrors what `AppContext::clear_network_database` does
+    /// post-D4d.
+    #[test]
+    fn d4d_prefix_sweep_drains_dashpay_sidecar() {
+        let kv = empty_kv();
+        let owner = id_from_byte(1);
+        let contact = id_from_byte(2);
+
+        kv.put::<()>(None, &sidecar_key(KV_PREFIX_BLOCKED, &contact), &())
+            .unwrap();
+        kv.put::<ContactPrivateInfo>(
+            None,
+            &pair_sidecar_key(KV_PREFIX_PRIVATE, &owner, &contact),
+            &ContactPrivateInfo {
+                nickname: "alice".into(),
+                notes: "n".into(),
+                is_hidden: false,
+            },
+        )
+        .unwrap();
+        // Drop one unrelated global key to confirm the sweep is scoped.
+        kv.put::<u32>(None, "mainnet:scheduled_votes:1", &7)
+            .unwrap();
+
+        let keys = kv.list(None, Some("det:dashpay:")).unwrap();
+        for k in &keys {
+            kv.delete(None, k).unwrap();
+        }
+
+        assert!(
+            kv.list(None, Some("det:dashpay:")).unwrap().is_empty(),
+            "DashPay sidecar must be empty after the sweep"
+        );
+        // Unrelated key survives.
+        assert_eq!(
+            kv.get::<u32>(None, "mainnet:scheduled_votes:1").unwrap(),
+            Some(7)
+        );
+    }
+
+    /// D4d-Sweep3: the prefix sweep is precision-scoped — keys for
+    /// unrelated overlays (settings, scheduled votes, shielded sidecar,
+    /// etc.) must not be caught by `det:dashpay:`.
+    #[test]
+    fn d4d_prefix_sweep_skips_non_dashpay_keys() {
+        let kv = empty_kv();
+        kv.put::<u32>(None, "mainnet:settings:v1", &1).unwrap();
+        kv.put::<u32>(None, "mainnet:shielded:sync_cursor", &2)
+            .unwrap();
+        kv.put::<u32>(None, "det:other_domain:x", &3).unwrap();
+
+        let keys = kv.list(None, Some("det:dashpay:")).unwrap();
+        assert!(
+            keys.is_empty(),
+            "prefix sweep must not see non-DashPay overlays: {keys:?}"
+        );
+    }
+
+    // -------------------------------------------------------------------
     // In-memory KvStore for the translator tests.
     // -------------------------------------------------------------------
 

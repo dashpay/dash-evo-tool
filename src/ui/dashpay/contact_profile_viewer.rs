@@ -141,25 +141,16 @@ impl ContactProfileViewerScreen {
 
     fn save_private_info(&mut self) -> Result<(), TaskError> {
         let owner_id = self.identity.identity.id();
-        self.app_context.db.save_contact_private_info(
-            &owner_id,
-            &self.contact_id,
-            &self.nickname,
-            &self.notes,
-            self.is_hidden,
-        )?;
-        // Mirror into the k/v sidecar so the post-D4d read path picks
-        // up the same memo after the DET table goes. Best-effort.
-        if let Ok(backend) = self.app_context.wallet_backend() {
-            let info = crate::model::dashpay::ContactPrivateInfo {
-                nickname: self.nickname.clone(),
-                notes: self.notes.clone(),
-                is_hidden: self.is_hidden,
-            };
-            if let Err(e) = backend.dashpay_set_private_info(&owner_id, &self.contact_id, &info) {
-                tracing::warn!("DashPay private-info sidecar mirror failed: {e:?}");
-            }
-        }
+        // Persist the memo to the per-network k/v sidecar. Upstream owns
+        // the encrypted on-Platform copy; this is the DET-local plaintext
+        // overlay that powers the contact list and profile viewer.
+        let backend = self.app_context.wallet_backend()?;
+        let info = crate::model::dashpay::ContactPrivateInfo {
+            nickname: self.nickname.clone(),
+            notes: self.notes.clone(),
+            is_hidden: self.is_hidden,
+        };
+        backend.dashpay_set_private_info(&owner_id, &self.contact_id, &info)?;
         Ok(())
     }
 

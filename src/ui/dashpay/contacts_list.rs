@@ -1,10 +1,10 @@
 use crate::app::AppAction;
 use crate::backend_task::dashpay::DashPayTask;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::ui::components::ResultBannerExt;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::wallet_unlock_popup::WalletUnlockResult;
 use crate::ui::dashpay::contact_requests::ContactRequests;
@@ -877,16 +877,8 @@ impl ContactsList {
                                             let new_hidden = !contact.is_hidden;
                                             if let Some(identity) = &self.selected_identity {
                                                 let owner_id = identity.identity.id();
-                                                let db_result =
-                                                    self.app_context.db.set_contact_hidden(
-                                                        &owner_id,
-                                                        &contact.identity_id,
-                                                        new_hidden,
-                                                    );
-                                                // Mirror into the k/v sidecar so the post-D4d
-                                                // read path (after the DET table goes) sees
-                                                // the same toggle. Best-effort: a sidecar
-                                                // write failure does not block the DB write.
+                                                let mut sidecar_result: Result<(), TaskError> =
+                                                    Ok(());
                                                 if let Ok(backend) =
                                                     self.app_context.wallet_backend()
                                                 {
@@ -899,19 +891,14 @@ impl ContactsList {
                                                         .flatten()
                                                         .unwrap_or_default();
                                                     info.is_hidden = new_hidden;
-                                                    if let Err(e) = backend
+                                                    sidecar_result = backend
                                                         .dashpay_set_private_info(
                                                             &owner_id,
                                                             &contact.identity_id,
                                                             &info,
-                                                        )
-                                                    {
-                                                        tracing::warn!(
-                                                            "DashPay private-info sidecar mirror failed: {e:?}"
                                                         );
-                                                    }
                                                 }
-                                                if let Err(e) = db_result {
+                                                if let Err(e) = sidecar_result {
                                                     self.message = Some((
                                                         format!("Failed to update contact: {}", e),
                                                         MessageType::Error,
@@ -1024,108 +1011,42 @@ impl ScreenLike for ContactsList {
                 self.message = None;
             }
             BackendTaskSuccessResult::DashPayContactsWithInfo(contacts_data) => {
-                // Clear existing contacts
+                // Clear existing contacts and repopulate the in-memory map
+                // from the adapter result. Upstream `ManagedIdentity` is
+                // now the authoritative source for contact rows (D4d), so
+                // the DET-local cache writes are gone.
                 self.contacts.clear();
-
-                // Save contacts to database if we have a selected identity
-                if let Some(identity) = &self.selected_identity {
-                    let owner_id = identity.identity.id();
-                    let network_str = self.app_context.network.to_string();
-
-                    // Clear all existing contacts for this identity from database first
-                    // This prevents stale contacts from persisting
-                    self.app_context
-                        .db
-                        .clear_dashpay_contacts(&owner_id, &network_str)
-                        .or_show_error(self.app_context.egui_ctx())
-                        .ok();
-
-                    // Convert ContactData to Contact structs and save to database
-                    for contact_data in contacts_data {
-                        // Skip self-contacts (where contact is the same as the owner)
-                        if contact_data.identity_id == owner_id {
-                            continue;
-                        }
-                        let contact = Contact {
-                            identity_id: contact_data.identity_id,
-                            username: contact_data.username.clone(),
-                            display_name: contact_data.display_name.clone().or_else(|| {
-                                Some(format!(
-                                    "Contact ({})",
-                                    &contact_data.identity_id.to_string(Encoding::Base58)[0..8]
-                                ))
-                            }),
-                            avatar_url: contact_data.avatar_url.clone(),
-                            bio: contact_data.bio.clone(),
-                            nickname: contact_data.nickname.clone(),
-                            is_hidden: contact_data.is_hidden,
-                            account_reference: contact_data.account_reference,
-                            created_at: Some(
-                                std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap_or_default()
-                                    .as_secs() as i64,
-                            ), // Fallback to current time for filter/sort
-                        };
-                        self.contacts.insert(contact_data.identity_id, contact);
-
-                        // Save to database
-                        self.app_context
-                            .db
-                            .save_dashpay_contact(
-                                &owner_id,
-                                &contact_data.identity_id,
-                                &network_str,
-                                contact_data.username.as_deref(),
-                                contact_data.display_name.as_deref(),
-                                contact_data.avatar_url.as_deref(),
-                                None,       // public_message - not yet fetched
-                                "accepted", // Only accepted contacts are returned from load_contacts
-                            )
-                            .or_show_error(self.app_context.egui_ctx())
-                            .ok();
-
-                        // Save private info if present
-                        if let Some(nickname) = &contact_data.nickname {
-                            self.app_context
-                                .db
-                                .save_contact_private_info(
-                                    &owner_id,
-                                    &contact_data.identity_id,
-                                    nickname,
-                                    &contact_data.note.unwrap_or_default(),
-                                    contact_data.is_hidden,
-                                )
-                                .or_show_error(self.app_context.egui_ctx())
-                                .ok();
-                        }
+                let owner_id_opt = self.selected_identity.as_ref().map(|i| i.identity.id());
+                for contact_data in contacts_data {
+                    // Skip self-contacts (where contact is the same as the owner)
+                    if owner_id_opt
+                        .as_ref()
+                        .is_some_and(|owner| *owner == contact_data.identity_id)
+                    {
+                        continue;
                     }
-                } else {
-                    // No selected identity, just populate in-memory
-                    for contact_data in contacts_data {
-                        let contact = Contact {
-                            identity_id: contact_data.identity_id,
-                            username: contact_data.username,
-                            display_name: contact_data.display_name.or_else(|| {
-                                Some(format!(
-                                    "Contact ({})",
-                                    &contact_data.identity_id.to_string(Encoding::Base58)[0..8]
-                                ))
-                            }),
-                            avatar_url: contact_data.avatar_url,
-                            bio: contact_data.bio,
-                            nickname: contact_data.nickname,
-                            is_hidden: contact_data.is_hidden,
-                            account_reference: contact_data.account_reference,
-                            created_at: Some(
-                                std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap_or_default()
-                                    .as_secs() as i64,
-                            ), // Fallback to current time for filter/sort
-                        };
-                        self.contacts.insert(contact_data.identity_id, contact);
-                    }
+                    let contact = Contact {
+                        identity_id: contact_data.identity_id,
+                        username: contact_data.username,
+                        display_name: contact_data.display_name.or_else(|| {
+                            Some(format!(
+                                "Contact ({})",
+                                &contact_data.identity_id.to_string(Encoding::Base58)[0..8]
+                            ))
+                        }),
+                        avatar_url: contact_data.avatar_url,
+                        bio: contact_data.bio,
+                        nickname: contact_data.nickname,
+                        is_hidden: contact_data.is_hidden,
+                        account_reference: contact_data.account_reference,
+                        created_at: Some(
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs() as i64,
+                        ), // Fallback to current time for filter/sort
+                    };
+                    self.contacts.insert(contact_data.identity_id, contact);
                 }
 
                 // Mark as loaded and clear message

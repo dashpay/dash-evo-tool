@@ -1,4 +1,3 @@
-mod asset_lock_transaction;
 mod initialization;
 mod settings;
 pub mod shielded;
@@ -121,10 +120,10 @@ impl Database {
                 rusqlite::params![&network_str],
             )?;
 
-            tx.execute(
-                "DELETE FROM asset_lock_transaction WHERE network = ?1",
-                rusqlite::params![&network_str],
-            )?;
+            // `asset_lock_transaction` was unwired (entire module deleted)
+            // — fresh installs do not create the table, legacy installs
+            // keep the rows dormant. The migration tool drains them via git
+            // history; no DELETE here would just error on fresh installs.
 
             tx.execute(
                 "DELETE FROM wallet WHERE network = ?1",

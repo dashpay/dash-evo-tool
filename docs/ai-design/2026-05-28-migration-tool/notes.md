@@ -105,12 +105,15 @@ Until these prerequisites land, every DashPay-related table on `data.db` stays l
 - `dashpay_payments`
 - `contact_private_info`
 
-### `asset_lock_transaction` (dormant)
+### `asset_lock_transaction` (code deleted)
 
-The `asset_lock_transaction` table has no live writers since commit `5cc6e893` (loose-seam
-refactor). The schema is preserved for legacy installs but no new rows are inserted. The
-migration tool will drain remaining rows by reading via git history at the pre-unwire SHA.
-The table itself is dropped only after the migration tool ships and idempotency is confirmed.
+The `asset_lock_transaction` table had no live writers since commit `5cc6e893` (loose-seam
+refactor). The entire `src/database/asset_lock_transaction.rs` module has now been deleted,
+including the `CREATE TABLE` on fresh installs. Existing `data.db` rows on legacy installs
+remain inert. The migration tool drains those rows by retrieving the deleted module via git
+history at SHA `35eb07bf` (the last commit where the module compiled). No DROP TABLE is
+emitted from DET — the legacy table is left in place until the migration tool ships and
+idempotency is confirmed.
 
 ---
 
@@ -170,17 +173,19 @@ The table itself is dropped only after the migration tool ships and idempotency 
 
 ---
 
-### `asset_lock_transaction` (DET source file: `src/database/asset_lock_transaction.rs`)
+### `asset_lock_transaction` (DET source file: deleted; retrieve via git history)
 
-- **Source:** `asset_lock_transaction` in `data.db`
+- **Source:** `asset_lock_transaction` in `data.db` on legacy installs
 - **Destination:** `asset_locks` in `platform-wallet-storage`
 - **Mapping:** Row-for-row transfer
 - **Per-network split:** Yes
-- **Gotchas:** Per user direction, the DET table is being left as a dormant artifact in
-  PR #860 (the unwire PR) — it is not being dropped there. This migration tool is what
-  eventually drains the table and drops it. Do not drop the source table until migration
-  is confirmed complete and idempotency guard is set.
-- **Status:** DEFERRED — see "Domains deferred" section above. Dormant since `5cc6e893`.
+- **Gotchas:** The DET module `src/database/asset_lock_transaction.rs` has been deleted as
+  part of the unwire cleanup. Fresh installs no longer have the table. To read schema
+  details and CRUD shape for the migration tool, retrieve the deleted module via git
+  history at SHA `35eb07bf` (last compiling revision). Do not emit DROP TABLE from DET
+  itself — the legacy table is left dormant until the migration tool ships and idempotency
+  is confirmed.
+- **Status:** DEFERRED — module deleted; rows inert on legacy installs.
 
 ---
 

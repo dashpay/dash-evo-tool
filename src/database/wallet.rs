@@ -626,8 +626,8 @@ impl Database {
 
         // Step 4: asset-lock state lives in the upstream `AssetLockManager`
         // (queried via `WalletBackend::list_tracked_asset_locks`). The
-        // `asset_lock_transaction` SQLite table is preserved as a dormant
-        // artifact for a future migration tool but is no longer read here.
+        // `asset_lock_transaction` DET module was deleted; existing rows
+        // on legacy installs are inert and migrated via git history.
 
         tracing::trace!(
             network = network_str,

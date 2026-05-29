@@ -82,9 +82,8 @@ impl AppContext {
             if matches_wallet {
                 // Asset-lock state lives in the upstream `AssetLockManager`;
                 // DET no longer mirrors it into `Wallet.unused_asset_locks`
-                // (the field is gone) and the `asset_lock_transaction` DB
-                // table is preserved as a dormant artifact (no writes here).
-                // Keeping the wallet match loop intact so the
+                // (the field is gone) and the legacy `asset_lock_transaction`
+                // DB module was deleted. The wallet match loop stays so the
                 // `transactions_waiting_for_finality` notifier above (which
                 // legacy callers still observe) fires for matching wallets.
                 let _ = (&wallet, &proof);
@@ -112,7 +111,6 @@ impl AppContext {
 mod path3_asset_lock_finality_no_wallet_mutation {
     use super::*;
     use crate::model::wallet::Wallet;
-    use dash_sdk::dpp::dashcore::hashes::Hash;
     use dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayload;
     use dash_sdk::dpp::dashcore::transaction::special_transaction::asset_lock::AssetLockPayload;
     use dash_sdk::dpp::dashcore::{Network, Transaction, TxOut};
@@ -227,12 +225,8 @@ mod path3_asset_lock_finality_no_wallet_mutation {
         assert!(out.is_empty(), "slim path returns no wallet outpoints");
 
         // Asset-lock state now lives in the upstream `AssetLockManager`;
-        // the legacy `asset_lock_transaction` table is a dormant artifact and
-        // is not written here. Earlier finality paths used to populate it.
-        let stored = db
-            .get_asset_lock_transaction(&txid.to_byte_array())
-            .expect("query asset lock");
-        assert!(stored.is_none(), "dormant asset_lock_transaction table");
+        // the legacy `asset_lock_transaction` DET table and its module
+        // were deleted, so there is nothing to assert here.
         let _ = (seed_hash, amount);
 
         // Finality-wait channel RESOLVED with a chain proof.

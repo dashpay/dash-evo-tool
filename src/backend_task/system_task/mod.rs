@@ -29,8 +29,9 @@ impl AppContext {
         self.delete_all_local_qualified_identities_in_devnet()?;
         self.delete_all_local_tokens_in_devnet()?;
 
-        self.db
-            .remove_all_asset_locks_identity_id_for_devnet(self)?;
+        // Asset-lock state lives in the upstream `AssetLockManager`; the
+        // legacy `asset_lock_transaction` DET table and its module were
+        // deleted, so there is no DET-side mirror to clear here.
 
         self.clear_user_contracts()?;
 

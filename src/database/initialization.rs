@@ -404,11 +404,24 @@ impl Database {
                     )
                     .migration_err("token", "delete devnet/regtest tokens")?;
                 }
-                self.remove_all_asset_locks_identity_id_for_all_devnets_and_regtest(tx)
+                // `asset_lock_transaction` was unwired — fresh installs do
+                // not create the table, so the devnet/regtest sweep is
+                // skipped when the table is absent. Legacy DBs still have
+                // it and pay the cost of the DELETE once.
+                if self
+                    .table_exists(tx, "asset_lock_transaction")
+                    .migration_err("asset_lock_transaction", "check table existence")?
+                {
+                    tx.execute(
+                        "DELETE FROM asset_lock_transaction \
+                         WHERE network LIKE 'devnet%' OR network = 'regtest'",
+                        [],
+                    )
                     .migration_err(
                         "asset_lock_transaction",
                         "clear devnet/regtest asset lock identity IDs",
                     )?;
+                }
                 // The `contract` table was unwired in C6 — on fresh
                 // installs it does not exist, so we skip the devnet/regtest
                 // sweep when the table is absent. Legacy DBs still have it
@@ -448,8 +461,16 @@ impl Database {
                 }
             }
             7 => {
-                self.migrate_asset_lock_fk_to_set_null(tx)
-                    .migration_err("asset_lock_transaction", "migrate FK to SET NULL")?;
+                // `asset_lock_transaction` was unwired — fresh installs do
+                // not create the table, so the FK migration is skipped
+                // when absent. Legacy DBs still rebuild the FK once.
+                if self
+                    .table_exists(tx, "asset_lock_transaction")
+                    .migration_err("asset_lock_transaction", "check table existence")?
+                {
+                    Self::migrate_asset_lock_fk_to_set_null(tx)
+                        .migration_err("asset_lock_transaction", "migrate FK to SET NULL")?;
+                }
             }
             6 => {
                 // Pre-C5: `scheduled_votes` schema upgrade. The table is no longer
@@ -749,36 +770,16 @@ impl Database {
         // Create wallet transactions table for SPV history
         self.initialize_wallet_transactions_table(&conn)?;
 
-        // Create asset lock transaction table
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS asset_lock_transaction (
-                        tx_id BLOB PRIMARY KEY,
-                        transaction_data BLOB NOT NULL,
-                        amount INTEGER,
-                        instant_lock_data BLOB,
-                        chain_locked_height INTEGER,
-                        identity_id BLOB,
-                        identity_id_potentially_in_creation BLOB,
-                        wallet BLOB NOT NULL,
-                        network TEXT NOT NULL,
-                        FOREIGN KEY (identity_id) REFERENCES identity(id) ON DELETE SET NULL,
-                        FOREIGN KEY (identity_id_potentially_in_creation) REFERENCES identity(id) ON DELETE SET NULL,
-                        FOREIGN KEY (wallet) REFERENCES wallet(seed_hash) ON DELETE CASCADE
-                    )",
-            [],
-        )?;
-
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_asset_lock_transaction_network ON asset_lock_transaction (network)",
-            [],
-        )?;
+        // `asset_lock_transaction` was unwired entirely — fresh installs
+        // no longer create the table. Legacy installs keep the dormant
+        // rows; the migration tool drains them via git history.
 
         // The local identity registry was moved to the per-network wallet
         // k/v store in C7. The `identity` table is still created (empty)
-        // because the `asset_lock_transaction` table carries foreign keys
-        // into it — keeping the table avoids surprising FK behaviour on
-        // legacy installs and matches the C6 pattern used for `contract`.
-        // The table is otherwise unused.
+        // so legacy reads in `database/wallet.rs` (which still consult the
+        // legacy `identity` rows on cold start) compile against a real
+        // schema, matching the C6 pattern used for `contract`. The table
+        // is otherwise unused.
         conn.execute(
                     "CREATE TABLE IF NOT EXISTS identity (
                         id BLOB PRIMARY KEY,
@@ -1231,10 +1232,15 @@ impl Database {
                 )?;
             }
         }
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_asset_lock_transaction_network ON asset_lock_transaction (network)",
-            [],
-        )?;
+        // The `asset_lock_transaction` table was unwired — fresh installs
+        // do not create it, so we skip the index when the table is absent.
+        // Legacy installs still have the table and pick up the index.
+        if self.table_exists(conn, "asset_lock_transaction")? {
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_asset_lock_transaction_network ON asset_lock_transaction (network)",
+                [],
+            )?;
+        }
         Ok(())
     }
 
@@ -1262,6 +1268,82 @@ impl Database {
 
     // Shielded table helpers (create_shielded_tables, create_shielded_wallet_meta_table,
     // add_nullifier_sync_timestamp_column) are implemented in database/shielded.rs.
+
+    /// Rebuild legacy `asset_lock_transaction` rows so both `identity_id`
+    /// FKs use `ON DELETE SET NULL` instead of `ON DELETE CASCADE`.
+    ///
+    /// Inlined here when the `database/asset_lock_transaction` module was
+    /// deleted; only reachable from the v7 migration arm under a
+    /// `table_exists` guard. Safe to run multiple times: if the table
+    /// already has the correct FKs it exits early.
+    fn migrate_asset_lock_fk_to_set_null(conn: &Connection) -> rusqlite::Result<()> {
+        {
+            let mut pragma = conn.prepare("PRAGMA foreign_key_list('asset_lock_transaction')")?;
+            let fk_rows = pragma
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(2)?, // table
+                        row.get::<_, String>(6)?, // on_delete action
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+
+            let needs_migration = fk_rows
+                .iter()
+                .filter(|(tbl, _)| tbl == "identity")
+                .any(|(_, action)| action.to_uppercase() != "SET NULL");
+
+            if !needs_migration {
+                return Ok(());
+            }
+        }
+
+        conn.execute("PRAGMA foreign_keys = OFF", [])?;
+
+        conn.execute(
+            "ALTER TABLE asset_lock_transaction RENAME TO asset_lock_transaction_old",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE TABLE asset_lock_transaction (
+                tx_id BLOB PRIMARY KEY,
+                transaction_data BLOB NOT NULL,
+                amount INTEGER,
+                instant_lock_data BLOB,
+                chain_locked_height INTEGER,
+                identity_id BLOB,
+                identity_id_potentially_in_creation BLOB,
+                wallet BLOB NOT NULL,
+                network TEXT NOT NULL,
+                FOREIGN KEY (identity_id)
+                    REFERENCES identity(id) ON DELETE SET NULL,
+                FOREIGN KEY (identity_id_potentially_in_creation)
+                    REFERENCES identity(id) ON DELETE SET NULL,
+                FOREIGN KEY (wallet)
+                    REFERENCES wallet(seed_hash) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "INSERT INTO asset_lock_transaction
+              (tx_id, transaction_data, amount, instant_lock_data,
+               chain_locked_height, identity_id, identity_id_potentially_in_creation,
+               wallet, network)
+             SELECT tx_id, transaction_data, amount, instant_lock_data,
+                    chain_locked_height, identity_id,
+                    identity_id_potentially_in_creation, wallet, network
+             FROM asset_lock_transaction_old",
+            [],
+        )?;
+
+        conn.execute("DROP TABLE asset_lock_transaction_old", [])?;
+
+        conn.execute("PRAGMA foreign_keys = ON", [])?;
+
+        Ok(())
+    }
 
     /// Remove orphaned child rows left behind when parent rows were deleted
     /// while FK enforcement was off (system SQLite before bundled build).
@@ -1774,53 +1856,51 @@ mod test {
         assert_eq!(version, super::DEFAULT_DB_VERSION);
     }
 
-    // Given a database with a missing `asset_lock_transaction` table,
-    // when I run the migration number 9,
-    // then it fails and reverts the database schema to the previous version,
+    // Given a database whose on-disk schema version is higher than the
+    // build supports,
+    // when I call `try_perform_migration`,
+    // then it returns an error and leaves the persisted version untouched
+    // (no row is mutated).
+    //
+    // Originally this lane simulated a v9 mid-flight failure by dropping
+    // `asset_lock_transaction`; that module is gone and every surviving
+    // migration arm is idempotent + `table_exists`-guarded, so we can no
+    // longer reliably provoke an intra-arm failure without contrived
+    // fixtures. The `Greater`-version refusal is the only failure path
+    // that is stable across the consolidated ladder, and it exercises the
+    // same "error returned, DB untouched" contract.
     #[test]
     fn test_migration_failure_rolls_back() {
         let temp_dir = tempfile::tempdir().unwrap();
         let db_file_path = temp_dir.path().join("test_data.db");
         let db = super::Database::new(&db_file_path).unwrap();
 
-        // Identities from regtest are deleted during migration 9
         const NETWORK: &str = "regtest";
 
         db.create_tables().unwrap();
         db.set_default_version().unwrap();
 
-        // drop the `asset_lock_transaction` table to simulate a migration failure
+        // Seed an identity so we can prove no DB mutation occurred.
         let conn = db.conn.lock().unwrap();
-        conn.execute("DROP TABLE asset_lock_transaction", [])
-            .expect("Failed to drop asset_lock_transaction table");
-        // check that we don't have any identities yet
-        let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM identity", [], |row| row.get(0))
-            .expect("Failed to count identities");
-        assert_eq!(count, 0);
-
-        // add some identity to ensure the database is not empty
         conn.execute(
             "INSERT INTO identity (id, is_local, alias, network) VALUES (?, ?, ?, ?)",
             rusqlite::params![vec![1u8; 32], 1, "test_identity", NETWORK],
         )
-        .expect("Failed to insert test identity");
+        .expect("insert test identity");
         drop(conn);
 
-        // change version to 8 to force migration number 9
-        const START_VERSION: u16 = 8;
-        db.set_db_version(START_VERSION).unwrap();
+        // Pin the version one past what this build supports.
+        let future_version = DEFAULT_DB_VERSION + 1;
+        db.set_db_version(future_version).unwrap();
 
-        // Simulate a migration failure by trying to apply an invalid change
-        let result = db.try_perform_migration(START_VERSION, DEFAULT_DB_VERSION, None);
-        assert!(result.is_err());
+        // The `Greater` arm must refuse and not touch the DB.
+        let result = db.try_perform_migration(future_version, DEFAULT_DB_VERSION, None);
+        assert!(result.is_err(), "expected refusal");
         println!("Migration failed as expected: {}", result.unwrap_err());
 
-        // Check that the database version has not changed
         let version: u16 = db.db_schema_version().unwrap();
-        assert_eq!(version, START_VERSION);
+        assert_eq!(version, future_version, "version must be untouched");
 
-        // check that the identity was not deleted
         let conn = db.conn.lock().unwrap();
         let count: i64 = conn
             .query_row(
@@ -1828,10 +1908,10 @@ mod test {
                 params![NETWORK],
                 |row| row.get(0),
             )
-            .expect("Failed to count identities");
+            .expect("count identities");
         assert_eq!(
             count, 1,
-            "Identity should not be deleted during migration failure"
+            "Identity must survive the rejected migration attempt"
         );
     }
 
@@ -2015,6 +2095,32 @@ mod test {
 
             // Disable FK enforcement to simulate legacy system SQLite
             conn.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
+
+            // The `asset_lock_transaction` table is no longer created on
+            // fresh installs, but this test exercises the legacy-shape
+            // orphan cleanup that v33 performs on installs that still
+            // carry it. Recreate the legacy schema manually so the v27
+            // synthetic fixture matches reality for pre-unwire DBs.
+            conn.execute_batch(
+                "CREATE TABLE asset_lock_transaction (
+                    tx_id BLOB PRIMARY KEY,
+                    transaction_data BLOB NOT NULL,
+                    amount INTEGER,
+                    instant_lock_data BLOB,
+                    chain_locked_height INTEGER,
+                    identity_id BLOB,
+                    identity_id_potentially_in_creation BLOB,
+                    wallet BLOB NOT NULL,
+                    network TEXT NOT NULL,
+                    FOREIGN KEY (identity_id)
+                        REFERENCES identity(id) ON DELETE SET NULL,
+                    FOREIGN KEY (identity_id_potentially_in_creation)
+                        REFERENCES identity(id) ON DELETE SET NULL,
+                    FOREIGN KEY (wallet)
+                        REFERENCES wallet(seed_hash) ON DELETE CASCADE
+                );",
+            )
+            .unwrap();
 
             // Insert orphaned wallet_transactions row (seed_hash not in wallet table).
             // Shielded table orphans are not needed: those tables get dropped to

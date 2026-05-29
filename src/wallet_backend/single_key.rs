@@ -398,10 +398,11 @@ impl<'a> SingleKeyView<'a> {
 /// refuses pre-existing modes looser than `0600`, so the secret-at-rest
 /// floor is enforced at open time — see `FileStoreError::InsecurePermissions`).
 ///
-/// The passphrase is a fixed, non-secret per-process constant: this PR
-/// relies on file permissions for at-rest protection. A user-supplied
-/// passphrase is a follow-up (T-SK-03 UX work). The choice is documented
-/// in the ADR.
+/// The passphrase is a fixed, non-secret per-process constant: at-rest
+/// protection relies on file permissions (enforced by the upstream backend).
+/// A user-supplied passphrase is a follow-up (T-SK-03 UX work). The design
+/// choice is documented in the ADR under
+/// `docs/ai-design/2026-05-18-platform-wallet-migration/`.
 pub fn open_secret_store(path: &std::path::Path) -> Result<SecretStore, FileStoreError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|_| FileStoreError::MalformedVault)?;

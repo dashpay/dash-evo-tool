@@ -183,7 +183,7 @@ pub struct AppState {
     connection_banner_handle: Option<BannerHandle>,
     /// Handle to the current data-migration banner, if one is displayed.
     /// Kept so per-frame reconciliation can update text in place
-    /// (Detecting → SingleKey → Shielded → Finalize → Success/Failed)
+    /// (Detecting → SingleKey → Shielded → WalletSeeds → WalletMeta → Finalize → Success/Failed)
     /// without stacking banners.
     migration_banner_handle: Option<BannerHandle>,
     /// Last-seen migration state so per-frame reconciliation only fires

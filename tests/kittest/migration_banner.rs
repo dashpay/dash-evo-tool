@@ -43,6 +43,8 @@ fn tc_mig_014_running_text_covers_every_step_with_sentence() {
         MigrationStep::Detecting,
         MigrationStep::SingleKey,
         MigrationStep::Shielded,
+        MigrationStep::WalletSeeds,
+        MigrationStep::WalletMeta,
         MigrationStep::Finalize,
     ] {
         let text = migration_running_text(step);

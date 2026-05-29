@@ -9,7 +9,6 @@ use crate::ui::identities::add_new_identity_screen::AddNewIdentityScreen;
 use crate::ui::{RootScreenType, Screen, ScreenLike};
 use eframe::egui::Context;
 
-use crate::database::is_unique_constraint_violation;
 use crate::model::wallet::Wallet;
 use crate::ui::components::password_input::PasswordInput;
 use crate::ui::theme::{ComponentStyles, DashColors};
@@ -107,19 +106,26 @@ impl ImportMnemonicScreen {
     }
 
     fn save_private_key_wallet(&mut self) -> Result<AppAction, String> {
+        use dash_sdk::dpp::dashcore::PrivateKey;
+
         let input = self.private_key_input.text().trim();
         if input.is_empty() {
             return Err("Please enter a private key".to_string());
         }
 
-        // Parse the key with password and alias
-        let password = if self.password_input.is_empty() {
-            None
-        } else {
-            Some(self.password_input.text())
-        };
+        // T-W-01b: imported keys live in the upstream `SecretStore` vault,
+        // which is scoped at the vault level — there is no per-key
+        // password layer here. The per-wallet password UX is deferred
+        // (T-MIG-03); until then, reject password-protected single-key
+        // imports rather than silently storing them in the clear.
+        if !self.password_input.is_empty() {
+            return Err(
+                "Per-key passwords are not supported in this version. Leave the password \
+                 field blank to import the key; your wallet vault protects all imported keys."
+                    .to_string(),
+            );
+        }
 
-        // Generate default wallet name if none provided
         let alias = if self.alias_input.trim().is_empty() {
             let existing_wallet_count = self
                 .app_context
@@ -132,26 +138,46 @@ impl ImportMnemonicScreen {
             Some(self.alias_input.clone())
         };
 
-        // Try WIF first, then hex
-        let wallet = SingleKeyWallet::from_wif(input, password, alias.clone()).or_else(|_| {
-            SingleKeyWallet::from_hex(input, self.app_context.network, password, alias)
-        })?;
+        // The view's `import_wif` takes WIF only — normalise hex input to
+        // WIF first so users can paste either shape and we keep the
+        // import path single-track.
+        let wif = match PrivateKey::from_wif(input) {
+            Ok(_) => input.to_string(),
+            Err(_) => {
+                let bytes = hex::decode(input).map_err(|_| {
+                    "This does not look like a valid WIF or hex private key. Check the input."
+                        .to_string()
+                })?;
+                if bytes.len() != 32 {
+                    return Err(format!(
+                        "Hex private keys must be exactly 32 bytes; got {} bytes.",
+                        bytes.len()
+                    ));
+                }
+                let mut buf = [0u8; 32];
+                buf.copy_from_slice(&bytes);
+                PrivateKey::from_byte_array(&buf, self.app_context.network)
+                    .map_err(|e| format!("Invalid private key: {e}"))?
+                    .to_wif()
+            }
+        };
 
+        let backend = self
+            .app_context
+            .wallet_backend()
+            .map_err(|e| e.to_string())?;
+        let view = backend.single_key();
+        let imported = view
+            .import_wif(&wif, alias.clone())
+            .map_err(|e| e.to_string())?;
+
+        // Rebuild the in-memory `SingleKeyWallet` from the same WIF so the
+        // map matches the shape `hydrate_context_wallets` produces on the
+        // next cold boot (alias preserved, no per-wallet password).
+        let wallet = SingleKeyWallet::from_wif(&wif, None, imported.alias.clone())
+            .map_err(|e| format!("Could not load imported key: {e}"))?;
         let key_hash = wallet.key_hash();
 
-        // Store in database
-        self.app_context
-            .db
-            .store_single_key_wallet(&wallet, self.app_context.network)
-            .map_err(|e| {
-                if is_unique_constraint_violation(&e) {
-                    "This key has already been imported.".to_string()
-                } else {
-                    e.to_string()
-                }
-            })?;
-
-        // Add to app context
         let wallet_arc = Arc::new(RwLock::new(wallet));
         if let Ok(mut single_key_wallets) = self.app_context.single_key_wallets.write() {
             single_key_wallets.insert(key_hash, wallet_arc);

@@ -23,6 +23,10 @@ use platform_wallet_storage::secrets::{
 
 use crate::backend_task::error::TaskError;
 use crate::model::single_key::ImportedKey;
+use crate::model::wallet::single_key::{
+    ClosedSingleKey, OpenSingleKey, SingleKeyData, SingleKeyHash, SingleKeyWallet,
+};
+use crate::wallet_backend::DetKv;
 
 /// Fixed per-backend namespace id for single-key entries.
 ///
@@ -42,6 +46,40 @@ const SINGLE_KEY_NAMESPACE_BYTES: [u8; 32] = [
 /// is rewritten to `single_key_priv.` here.
 pub const SINGLE_KEY_PRIV_LABEL_PREFIX: &str = "single_key_priv.";
 
+/// Colon-separated namespace shared across networks. The full key is
+/// `<network>:single_key_meta:<address>`. The DET-side k/v sidecar holds
+/// the enumerable list of imported-key metadata so the cold-boot path can
+/// reconstruct the in-memory index without enumerating the (non-enumerable)
+/// secret store. Mirrors the [`WalletMetaView`](super::WalletMetaView)
+/// shape (T-W-00) — same network-prefix convention.
+pub(crate) const SINGLE_KEY_META_INFIX: &str = ":single_key_meta:";
+
+/// Cross-network `<network>:` prefix matching the on-disk vocabulary in
+/// `resolve_spv_storage_dir` and the wallet-meta sidecar. Co-located with
+/// the secret-store helpers because every single-key key shape uses it.
+fn network_prefix(network: Network) -> &'static str {
+    match network {
+        Network::Mainnet => "mainnet",
+        Network::Testnet => "testnet",
+        Network::Devnet => "devnet",
+        Network::Regtest => "regtest",
+    }
+}
+
+/// Build the canonical sidecar key for `(network, address)`.
+pub(crate) fn meta_key_for(network: Network, address: &str) -> String {
+    format!(
+        "{}{SINGLE_KEY_META_INFIX}{address}",
+        network_prefix(network)
+    )
+}
+
+/// Build the cross-network prefix used to enumerate imported keys for
+/// `network`.
+fn meta_prefix_for(network: Network) -> String {
+    format!("{}{SINGLE_KEY_META_INFIX}", network_prefix(network))
+}
+
 /// Build the secret-store label for an imported key at `address`.
 pub(crate) fn label_for_address(address: &str) -> String {
     format!("{SINGLE_KEY_PRIV_LABEL_PREFIX}{address}")
@@ -59,14 +97,19 @@ pub struct SingleKeyView<'a> {
     pub(crate) secret_store: &'a Arc<SecretStore>,
     pub(crate) index: &'a std::sync::RwLock<std::collections::BTreeMap<String, ImportedKey>>,
     pub(crate) network: Network,
+    /// Enumerable cross-network sidecar holding the imported-key
+    /// metadata blobs. `None` ⇒ a transient view that does not persist
+    /// (used by `WalletBackend::new` before the app k/v is wired and by
+    /// the unit tests below).
+    pub(crate) app_kv: Option<&'a Arc<DetKv>>,
 }
 
 impl<'a> SingleKeyView<'a> {
     /// Parse a WIF-encoded private key, store its raw secret bytes in the
-    /// encrypted vault under `single_key_priv.<address>`, and remember the
-    /// derived `ImportedKey` metadata in the in-memory index. Idempotent
-    /// on the same WIF — re-import overwrites the existing entry's alias
-    /// and refreshes the stored bytes.
+    /// encrypted vault under `single_key_priv.<address>`, persist the
+    /// derived [`ImportedKey`] metadata to the enumerable k/v sidecar,
+    /// and refresh the in-memory index. Idempotent on the same WIF —
+    /// re-import overwrites the alias and refreshes the stored bytes.
     pub fn import_wif(&self, wif: &str, alias: Option<String>) -> Result<ImportedKey, TaskError> {
         let priv_key = PrivateKey::from_wif(wif).map_err(|source| TaskError::InvalidWif {
             source: Box::new(source),
@@ -92,6 +135,15 @@ impl<'a> SingleKeyView<'a> {
             alias,
             network: self.network,
         };
+
+        if let Some(kv) = self.app_kv {
+            let key = meta_key_for(self.network, &address_str);
+            kv.put(None, &key, &imported)
+                .map_err(|source| TaskError::SingleKeyMetaStorage {
+                    source: Box::new(source),
+                })?;
+        }
+
         self.index
             .write()
             .map_err(|_| TaskError::ImportedKeyNotFound)?
@@ -109,9 +161,9 @@ impl<'a> SingleKeyView<'a> {
         }
     }
 
-    /// Forget the imported key at `address`: remove its index entry and
-    /// delete its secret-store row. Idempotent — absent addresses are an
-    /// `Ok(())`.
+    /// Forget the imported key at `address`: drop its index entry, delete
+    /// its secret-store row, and remove the k/v sidecar entry. Idempotent
+    /// — absent addresses are an `Ok(())`.
     pub fn forget(&self, address: &str) -> Result<(), TaskError> {
         let label = label_for_address(address);
         self.secret_store
@@ -119,11 +171,184 @@ impl<'a> SingleKeyView<'a> {
             .map_err(|source| TaskError::SecretStore {
                 source: Box::new(source),
             })?;
+        if let Some(kv) = self.app_kv {
+            let key = meta_key_for(self.network, address);
+            kv.delete(None, &key)
+                .map_err(|source| TaskError::SingleKeyMetaStorage {
+                    source: Box::new(source),
+                })?;
+        }
         self.index
             .write()
             .map_err(|_| TaskError::ImportedKeyNotFound)?
             .remove(address);
         Ok(())
+    }
+
+    /// Enumerate every imported-key metadata blob persisted for the view's
+    /// network from the k/v sidecar. Returns an empty vector when the
+    /// view has no sidecar wired (transient construction path), when no
+    /// entries exist, or when listing fails (logged).
+    pub(crate) fn list_persisted(&self) -> Vec<ImportedKey> {
+        let Some(kv) = self.app_kv else {
+            return Vec::new();
+        };
+        let prefix = meta_prefix_for(self.network);
+        let keys = match kv.list(None, Some(&prefix)) {
+            Ok(k) => k,
+            Err(e) => {
+                tracing::warn!(
+                    target = "wallet_backend::single_key",
+                    network = ?self.network,
+                    error = ?e,
+                    "Failed to list single-key sidecar entries; treating as empty",
+                );
+                return Vec::new();
+            }
+        };
+        let mut out = Vec::with_capacity(keys.len());
+        for key in keys {
+            match kv.get::<ImportedKey>(None, &key) {
+                Ok(Some(meta)) => out.push(meta),
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!(
+                        target = "wallet_backend::single_key",
+                        key = %key,
+                        error = ?e,
+                        "Skipping unreadable single-key sidecar blob",
+                    );
+                }
+            }
+        }
+        out
+    }
+
+    /// Reconstruct DET-side [`SingleKeyWallet`] rows from the k/v sidecar
+    /// plus the encrypted secret vault. Used by the cold-boot hydration
+    /// path that replaces the legacy `db.get_single_key_wallets` read.
+    ///
+    /// Per-entry failures (missing vault row, malformed key bytes,
+    /// address parse error) are logged and skipped so a single corrupt
+    /// sidecar entry cannot prevent the wallet picker from listing the
+    /// survivors. Balances and UTXOs start at zero / empty — the
+    /// single-key SPV refresh path is stubbed
+    /// ([`TaskError::SingleKeyWalletsUnsupported`]), so this matches the
+    /// pre-refresh state the legacy reader produced on launch.
+    pub fn hydrate_wallets(&self) -> Vec<(SingleKeyHash, SingleKeyWallet)> {
+        let metas = self.list_persisted();
+        let mut out = Vec::with_capacity(metas.len());
+        for meta in metas {
+            match self.rebuild_wallet(&meta) {
+                Ok(Some(wallet)) => {
+                    out.push((wallet.key_hash, wallet));
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!(
+                        target = "wallet_backend::single_key",
+                        address = %meta.address,
+                        error = ?e,
+                        "Failed to rebuild single-key wallet from sidecar; skipping",
+                    );
+                }
+            }
+        }
+        out
+    }
+
+    /// Seed the in-memory index from the k/v sidecar. Idempotent: re-runs
+    /// overwrite existing in-memory entries with the persisted view, so a
+    /// cold-boot hydration cannot lose entries created in the same
+    /// process before the backend was wired (mirrors the HD-wallet
+    /// `entry().or_insert` pattern in
+    /// [`hydrate_context_wallets`](super::WalletBackend::hydrate_context_wallets)).
+    pub(crate) fn rehydrate_index(&self) -> Result<(), TaskError> {
+        let metas = self.list_persisted();
+        if metas.is_empty() {
+            return Ok(());
+        }
+        let mut idx = self
+            .index
+            .write()
+            .map_err(|_| TaskError::ImportedKeyNotFound)?;
+        for meta in metas {
+            idx.entry(meta.address.clone()).or_insert(meta);
+        }
+        Ok(())
+    }
+
+    fn rebuild_wallet(&self, meta: &ImportedKey) -> Result<Option<SingleKeyWallet>, TaskError> {
+        let label = label_for_address(&meta.address);
+        let secret = match self
+            .secret_store
+            .get(&single_key_namespace_id(), &label)
+            .map_err(|source| TaskError::SecretStore {
+                source: Box::new(source),
+            })? {
+            Some(s) => s,
+            None => {
+                tracing::warn!(
+                    target = "wallet_backend::single_key",
+                    address = %meta.address,
+                    "Single-key sidecar entry has no matching vault secret; skipping",
+                );
+                return Ok(None);
+            }
+        };
+        let key_bytes: [u8; 32] = match secret.expose_secret().try_into() {
+            Ok(b) => b,
+            Err(_) => {
+                tracing::warn!(
+                    target = "wallet_backend::single_key",
+                    address = %meta.address,
+                    "Single-key vault entry is not 32 bytes; skipping",
+                );
+                return Ok(None);
+            }
+        };
+
+        let priv_key = match PrivateKey::from_byte_array(&key_bytes, meta.network) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(
+                    target = "wallet_backend::single_key",
+                    address = %meta.address,
+                    error = %e,
+                    "Single-key vault bytes are not a valid private key; skipping",
+                );
+                return Ok(None);
+            }
+        };
+        let secp = Secp256k1::new();
+        let public_key = priv_key.public_key(&secp);
+        let address = Address::p2pkh(&public_key, meta.network);
+
+        let key_hash = ClosedSingleKey::compute_key_hash(&key_bytes);
+        let closed = ClosedSingleKey {
+            key_hash,
+            encrypted_private_key: key_bytes.to_vec(),
+            salt: Vec::new(),
+            nonce: Vec::new(),
+        };
+        let private_key_data = SingleKeyData::Open(OpenSingleKey {
+            private_key: key_bytes,
+            key_info: closed,
+        });
+
+        Ok(Some(SingleKeyWallet {
+            private_key_data,
+            uses_password: false,
+            public_key,
+            address,
+            alias: meta.alias.clone(),
+            key_hash,
+            confirmed_balance: 0,
+            unconfirmed_balance: 0,
+            total_balance: 0,
+            utxos: std::collections::HashMap::new(),
+            core_wallet_name: None,
+        }))
     }
 
     /// Sign a 32-byte message hash with the imported key registered at
@@ -206,6 +431,7 @@ mod tests {
             secret_store: &store,
             index: &index,
             network,
+            app_kv: None,
         };
 
         let imported = view
@@ -263,6 +489,7 @@ mod tests {
             secret_store: &store,
             index: &index,
             network,
+            app_kv: None,
         };
         let imported = view.import_wif(known_wif(), None).expect("import");
 
@@ -305,6 +532,7 @@ mod tests {
             secret_store: &store,
             index: &index,
             network,
+            app_kv: None,
         };
         let err = view
             .import_wif("not-a-valid-wif", None)
@@ -314,5 +542,228 @@ mod tests {
             "expected InvalidWif, got {err:?}"
         );
         assert!(view.list().is_empty());
+    }
+
+    /// In-memory `KvStore` adapter shared by the sidecar tests below.
+    /// Mirrors the upstream `SqlitePersister` semantics across the
+    /// `get`/`put`/`delete`/`list_keys` surface the [`DetKv`] adapter
+    /// exercises.
+    #[derive(Default)]
+    struct InMemoryKv {
+        global: std::sync::Mutex<std::collections::BTreeMap<String, Vec<u8>>>,
+    }
+
+    impl platform_wallet_storage::KvStore for InMemoryKv {
+        fn get(
+            &self,
+            wallet_id: Option<&platform_wallet::wallet::platform_wallet::WalletId>,
+            key: &str,
+        ) -> Result<Option<Vec<u8>>, platform_wallet_storage::KvError> {
+            assert!(wallet_id.is_none(), "single-key sidecar uses global scope");
+            Ok(self.global.lock().unwrap().get(key).cloned())
+        }
+        fn put(
+            &self,
+            wallet_id: Option<&platform_wallet::wallet::platform_wallet::WalletId>,
+            key: &str,
+            value: &[u8],
+        ) -> Result<(), platform_wallet_storage::KvError> {
+            assert!(wallet_id.is_none(), "single-key sidecar uses global scope");
+            self.global
+                .lock()
+                .unwrap()
+                .insert(key.to_string(), value.to_vec());
+            Ok(())
+        }
+        fn delete(
+            &self,
+            wallet_id: Option<&platform_wallet::wallet::platform_wallet::WalletId>,
+            key: &str,
+        ) -> Result<(), platform_wallet_storage::KvError> {
+            assert!(wallet_id.is_none(), "single-key sidecar uses global scope");
+            self.global.lock().unwrap().remove(key);
+            Ok(())
+        }
+        fn list_keys(
+            &self,
+            wallet_id: Option<&platform_wallet::wallet::platform_wallet::WalletId>,
+            prefix: Option<&str>,
+        ) -> Result<Vec<String>, platform_wallet_storage::KvError> {
+            assert!(wallet_id.is_none(), "single-key sidecar uses global scope");
+            let g = self.global.lock().unwrap();
+            let it = g
+                .keys()
+                .filter(|k| prefix.is_none_or(|p| k.starts_with(p)))
+                .cloned();
+            Ok(it.collect())
+        }
+    }
+
+    /// Test fixture bundling the moving parts a [`SingleKeyView`] needs
+    /// when wired against a fake `KvStore`. Returned as a struct to
+    /// keep the constructor tuple-light (clippy `type_complexity`).
+    struct ViewFixture {
+        store: Arc<SecretStore>,
+        index: std::sync::RwLock<std::collections::BTreeMap<String, ImportedKey>>,
+        kv: Arc<DetKv>,
+        network: Network,
+    }
+
+    fn fresh_view_with_kv(dir: &std::path::Path, network: Network) -> ViewFixture {
+        let path = dir.join("secrets.pwsvault");
+        let store = Arc::new(open_secret_store(&path).expect("open vault"));
+        let index = std::sync::RwLock::new(std::collections::BTreeMap::new());
+        let kv = Arc::new(DetKv::from_store(Arc::new(InMemoryKv::default())));
+        ViewFixture {
+            store,
+            index,
+            kv,
+            network,
+        }
+    }
+
+    /// TC-W-01b-A — `import_wif` writes a sidecar entry under the
+    /// canonical `<network>:single_key_meta:<addr>` key, listable by the
+    /// cross-network prefix.
+    #[test]
+    fn tc_w_01b_a_import_writes_sidecar_entry() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ViewFixture {
+            store,
+            index,
+            kv,
+            network,
+        } = fresh_view_with_kv(dir.path(), Network::Testnet);
+        let view = SingleKeyView {
+            secret_store: &store,
+            index: &index,
+            network,
+            app_kv: Some(&kv),
+        };
+
+        let imported = view
+            .import_wif(known_wif(), Some("primary".into()))
+            .expect("import");
+        let prefix = meta_prefix_for(network);
+        let keys = kv.list(None, Some(&prefix)).expect("list");
+        assert_eq!(keys.len(), 1, "exactly one sidecar entry");
+        assert_eq!(keys[0], meta_key_for(network, &imported.address));
+
+        let stored: ImportedKey = kv.get(None, &keys[0]).expect("get").expect("entry present");
+        assert_eq!(stored, imported);
+    }
+
+    /// TC-W-01b-B — `forget` deletes the sidecar entry idempotently. A
+    /// re-call on an already-forgotten address remains `Ok(())` and does
+    /// not resurrect anything in the listing.
+    #[test]
+    fn tc_w_01b_b_forget_drops_sidecar_entry_idempotent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ViewFixture {
+            store,
+            index,
+            kv,
+            network,
+        } = fresh_view_with_kv(dir.path(), Network::Testnet);
+        let view = SingleKeyView {
+            secret_store: &store,
+            index: &index,
+            network,
+            app_kv: Some(&kv),
+        };
+
+        let imported = view.import_wif(known_wif(), None).expect("import");
+        view.forget(&imported.address).expect("forget");
+        view.forget(&imported.address).expect("forget twice");
+
+        let prefix = meta_prefix_for(network);
+        let keys = kv.list(None, Some(&prefix)).expect("list");
+        assert!(keys.is_empty(), "sidecar must be empty after forget");
+        assert!(view.list().is_empty());
+    }
+
+    /// TC-W-01b-C — cold-boot hydration rebuilds a [`SingleKeyWallet`]
+    /// from `(sidecar, secret-store)` with the alias preserved, the
+    /// derived address matching the secret bytes, and the wallet opened
+    /// in-process (no per-wallet password — vault scope is the gate).
+    #[test]
+    fn tc_w_01b_c_hydrate_round_trip_rebuilds_wallet() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ViewFixture {
+            store,
+            index,
+            kv,
+            network,
+        } = fresh_view_with_kv(dir.path(), Network::Testnet);
+        let view = SingleKeyView {
+            secret_store: &store,
+            index: &index,
+            network,
+            app_kv: Some(&kv),
+        };
+        let imported = view
+            .import_wif(known_wif(), Some("savings".into()))
+            .expect("import");
+
+        // Drop the in-memory index to simulate a fresh process.
+        index.write().unwrap().clear();
+        let rebuilt = view.hydrate_wallets();
+        assert_eq!(rebuilt.len(), 1);
+        let (_, wallet) = &rebuilt[0];
+        assert_eq!(wallet.address.to_string(), imported.address);
+        assert_eq!(wallet.alias.as_deref(), Some("savings"));
+        assert!(wallet.is_open(), "rehydrated wallet must be open");
+        assert!(
+            !wallet.uses_password,
+            "vault-scoped (no per-wallet password)"
+        );
+        assert_eq!(wallet.confirmed_balance, 0);
+        assert!(wallet.utxos.is_empty());
+
+        // Re-seeding the index from the sidecar is idempotent — the
+        // entry appears once and matches the original.
+        view.rehydrate_index().expect("rehydrate");
+        let listed = view.list();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0], imported);
+    }
+
+    /// TC-W-01b-D — a sidecar entry whose vault row is missing is
+    /// skipped (logged) so a single corrupt pair cannot block the
+    /// picker. The hydration vector still yields healthy entries.
+    #[test]
+    fn tc_w_01b_d_orphan_sidecar_entry_skipped() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ViewFixture {
+            store,
+            index,
+            kv,
+            network,
+        } = fresh_view_with_kv(dir.path(), Network::Testnet);
+        let view = SingleKeyView {
+            secret_store: &store,
+            index: &index,
+            network,
+            app_kv: Some(&kv),
+        };
+
+        // Healthy entry.
+        view.import_wif(known_wif(), None).expect("import");
+
+        // Orphan sidecar entry — sidecar row written, no vault row.
+        let orphan = ImportedKey {
+            address: "yNotARealAddress".into(),
+            alias: Some("ghost".into()),
+            network,
+        };
+        kv.put(None, &meta_key_for(network, &orphan.address), &orphan)
+            .expect("put orphan");
+
+        let rebuilt = view.hydrate_wallets();
+        assert_eq!(
+            rebuilt.len(),
+            1,
+            "orphan must be skipped, healthy entry preserved"
+        );
     }
 }

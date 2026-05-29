@@ -139,8 +139,9 @@ struct Inner {
     app_kv: Arc<DetKv>,
     /// In-memory index of imported single-key entries, keyed by their
     /// P2PKH address. Drives `SingleKeyView::list` without enumerating
-    /// the (non-enumerable) secret store. T-SK-02 will seed this from
-    /// the legacy `single_key_wallet` rows at startup.
+    /// the (non-enumerable) secret store. Seeded on cold boot from the
+    /// k/v sidecar by `hydrate_context_wallets` (T-W-01b) and kept in
+    /// sync by `SingleKeyView::import_wif` / `forget`.
     single_key_index: std::sync::RwLock<
         std::collections::BTreeMap<String, crate::model::single_key::ImportedKey>,
     >,
@@ -241,26 +242,43 @@ impl WalletBackend {
         Ok(backend)
     }
 
-    /// Refill `ctx.wallets` from the sidecars for the active network.
-    /// Idempotent: a re-run on the same backend overwrites with the same
-    /// reconstructed wallets keyed by `seed_hash`. Wallets already
-    /// present in `ctx.wallets` (e.g. created during the current process
-    /// before the backend was wired) are preserved — sidecar entries
-    /// only fill gaps so freshly-created wallets are never clobbered.
+    /// Refill `ctx.wallets` and `ctx.single_key_wallets` from the
+    /// sidecars for the active network. Idempotent: a re-run overwrites
+    /// with the same reconstructed wallets keyed by `seed_hash` /
+    /// `key_hash`. Entries already present in the maps (e.g. created
+    /// during the current process before the backend was wired) are
+    /// preserved — sidecar entries only fill gaps so freshly-created
+    /// wallets are never clobbered.
     fn hydrate_context_wallets(&self, ctx: &Arc<AppContext>) -> Result<(), TaskError> {
+        let view = self.single_key();
+        view.rehydrate_index()?;
+        let single_key_wallets = view.hydrate_wallets();
         let reconstructed = self.hydrate_wallets_for_network(ctx.network)?;
-        if reconstructed.is_empty() {
+        if reconstructed.is_empty() && single_key_wallets.is_empty() {
             return Ok(());
         }
-        let mut wallets = ctx.wallets.write()?;
-        for (seed_hash, wallet) in reconstructed {
-            wallets
-                .entry(seed_hash)
-                .or_insert_with(|| Arc::new(std::sync::RwLock::new(wallet)));
+        {
+            let mut wallets = ctx.wallets.write()?;
+            for (seed_hash, wallet) in reconstructed {
+                wallets
+                    .entry(seed_hash)
+                    .or_insert_with(|| Arc::new(std::sync::RwLock::new(wallet)));
+            }
+            if !wallets.is_empty() {
+                ctx.has_wallet
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+            }
         }
-        if !wallets.is_empty() {
-            ctx.has_wallet
-                .store(true, std::sync::atomic::Ordering::Relaxed);
+        if !single_key_wallets.is_empty() {
+            let mut sk = ctx.single_key_wallets.write()?;
+            for (key_hash, wallet) in single_key_wallets {
+                sk.entry(key_hash)
+                    .or_insert_with(|| Arc::new(std::sync::RwLock::new(wallet)));
+            }
+            if !sk.is_empty() {
+                ctx.has_wallet
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+            }
         }
         Ok(())
     }
@@ -428,13 +446,16 @@ impl WalletBackend {
     }
 
     /// View over the single-key (imported WIF) operations. The view
-    /// borrows the secret store and the in-memory address index; both
-    /// are cheap to construct, so callers can create one per operation.
+    /// borrows the secret store, the in-memory address index, and the
+    /// cross-network app k/v sidecar that persists imported-key
+    /// metadata; all three are cheap to construct, so callers can build
+    /// one per operation.
     pub fn single_key(&self) -> SingleKeyView<'_> {
         SingleKeyView {
             secret_store: &self.inner.secret_store,
             index: &self.inner.single_key_index,
             network: self.inner.network,
+            app_kv: Some(&self.inner.app_kv),
         }
     }
 

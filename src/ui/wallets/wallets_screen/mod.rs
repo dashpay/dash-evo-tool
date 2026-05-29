@@ -637,23 +637,31 @@ impl WalletsBalancesScreen {
                         .corner_radius(4.0);
 
                         if ui.add(remove_button).clicked() {
-                            if let Err(e) = self
-                                .app_context
-                                .db
-                                .remove_single_key_wallet(&key_hash, self.app_context.network)
-                            {
+                            // T-W-01b: imported keys live in the upstream
+                            // `SecretStore` vault and the DET k/v sidecar.
+                            // Route through `SingleKeyView::forget` so
+                            // both stay consistent.
+                            let address = wallet_arc.read().ok().map(|w| w.address.to_string());
+                            let outcome = match self.app_context.wallet_backend() {
+                                Ok(backend) => match address {
+                                    Some(addr) => backend.single_key().forget(&addr).err(),
+                                    None => None,
+                                },
+                                Err(e) => Some(e),
+                            };
+                            if let Some(e) = outcome {
                                 MessageBanner::set_global(
                                     ui.ctx(),
-                                    format!("Failed to remove: {}", e),
+                                    "Failed to remove the imported key.",
                                     MessageType::Error,
-                                );
+                                )
+                                .with_details(e);
                             } else {
                                 if let Ok(mut wallets) = self.app_context.single_key_wallets.write()
                                 {
                                     wallets.remove(&key_hash);
                                 }
                                 self.selected_single_key_wallet = None;
-                                // Clear persisted selection in AppContext and database
                                 self.persist_selected_single_key_hash(None);
                                 MessageBanner::set_global(
                                     ui.ctx(),

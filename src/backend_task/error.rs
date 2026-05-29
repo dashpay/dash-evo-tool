@@ -150,6 +150,19 @@ pub enum TaskError {
         source: Box<dash_sdk::dpp::dashcore::key::Error>,
     },
 
+    /// The single-key metadata sidecar (alias / network / address index)
+    /// could not be read or written. Backed by the cross-network
+    /// `det-app.sqlite` k/v file the wallet-meta sidecar also uses;
+    /// distinct variant so the banner copy can speak about "imported
+    /// keys" rather than "wallet details".
+    #[error(
+        "Could not access your imported keys. Check available disk space and restart the application."
+    )]
+    SingleKeyMetaStorage {
+        #[source]
+        source: Box<crate::wallet_backend::KvAdapterError>,
+    },
+
     /// The caller asked the single-key signer for an address that is not
     /// in the secret store. Either it was never imported, or it was
     /// forgotten between the lookup and the sign attempt.

@@ -1463,6 +1463,7 @@ mod tests {
             secret_store: &store,
             index: &index,
             network,
+            app_kv: None,
         };
 
         let outcome = migrate_single_key_rows_from_conn(
@@ -1527,6 +1528,7 @@ mod tests {
             secret_store: &store,
             index: &index,
             network,
+            app_kv: None,
         };
 
         let first = migrate_single_key_rows_from_conn(
@@ -1617,6 +1619,7 @@ mod tests {
             secret_store: &store,
             index: &index,
             network,
+            app_kv: None,
         };
 
         let outcome = migrate_single_key_rows_from_conn(

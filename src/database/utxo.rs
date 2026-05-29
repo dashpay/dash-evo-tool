@@ -6,22 +6,10 @@ use dash_sdk::dpp::dashcore::{Address, Network};
 use rusqlite::params;
 
 impl Database {
-    /// Deletes a UTXO from the database given its OutPoint and network.
-    pub fn drop_utxo(&self, outpoint: &OutPoint, network: &str) -> rusqlite::Result<()> {
-        let txid_bytes = outpoint.txid.as_byte_array(); // &[u8; 32]
-        let vout = outpoint.vout as i64; // i64
-
-        self.execute(
-            "DELETE FROM utxos WHERE txid = ? AND vout = ? AND network = ?",
-            params![txid_bytes, vout, network],
-        )?;
-
-        Ok(())
-    }
-
-    /// Test-only fixture: seeds a UTXO row so the still-live `drop_utxo` /
-    /// `get_utxos_by_address` paths can be exercised. Production no longer
-    /// writes the legacy `utxos` table — upstream owns wallet-UTXO state.
+    /// Test-only fixture: seeds a UTXO row so the still-live
+    /// `get_utxos_by_address` read path can be exercised. Production no
+    /// longer writes the legacy `utxos` table — upstream owns wallet-UTXO
+    /// state.
     #[cfg(test)]
     pub(crate) fn insert_utxo(
         &self,
@@ -181,43 +169,6 @@ mod tests {
 
         assert_eq!(utxos.len(), 1);
         assert_eq!(utxos[0].1.value, 100_000_000); // Original value preserved
-    }
-
-    #[test]
-    fn test_drop_utxo() {
-        let db = create_test_database().expect("Failed to create test database");
-        let network = Network::Testnet;
-        let address = create_test_address(network);
-        let txid = create_test_txid();
-        let script_pubkey = address.script_pubkey();
-
-        // Insert a UTXO
-        db.insert_utxo(
-            txid.as_byte_array(),
-            0,
-            &address,
-            100_000_000,
-            script_pubkey.as_bytes(),
-            network,
-        )
-        .expect("Failed to insert UTXO");
-
-        // Verify it exists
-        let utxos = db
-            .get_utxos_by_address(&address.to_string(), &network.to_string())
-            .expect("Failed to get UTXOs");
-        assert_eq!(utxos.len(), 1);
-
-        // Drop the UTXO
-        let outpoint = OutPoint { txid, vout: 0 };
-        db.drop_utxo(&outpoint, &network.to_string())
-            .expect("Failed to drop UTXO");
-
-        // Verify it's gone
-        let utxos = db
-            .get_utxos_by_address(&address.to_string(), &network.to_string())
-            .expect("Failed to get UTXOs");
-        assert_eq!(utxos.len(), 0);
     }
 
     #[test]

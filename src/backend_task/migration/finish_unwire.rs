@@ -106,6 +106,20 @@ pub enum MigrationError {
         failed: u32,
     },
 
+    /// At least one legacy `wallet` row could not be migrated into the
+    /// DET wallet-metadata sidecar in this run. Captures the imported /
+    /// failed counters so the orchestrator can decide whether to write
+    /// the sentinel. Fatal only when `failed > 0`.
+    #[error("could not finish wallet-meta migration: {failed} row(s) failed")]
+    WalletMetaPartialFailure {
+        /// Rows whose meta blob was written to the sidecar (or
+        /// idempotently overwritten on a re-run).
+        imported: u32,
+        /// Rows that could not be decoded (seed_hash wrong size, etc.).
+        /// Triggers the error path — sentinel stays unwritten.
+        failed: u32,
+    },
+
     /// The wallet backend was not yet wired when the migration ran.
     /// This is a hard configuration bug: the orchestrator runs after
     /// `ensure_wallet_backend`, so this should never fire in
@@ -173,6 +187,14 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<(), TaskError> {
         step: MigrationStep::Shielded,
     });
     migrate_shielded_rows(app_context).await?;
+
+    // T-W-00 — mirror legacy `wallet` rows (alias / `is_main` /
+    // `core_wallet_name`) into the DET wallet-metadata sidecar so the
+    // wallet picker keeps the names a user already chose. Idempotent.
+    status.set_state(MigrationState::Running {
+        step: MigrationStep::WalletMeta,
+    });
+    migrate_wallet_meta_rows(app_context)?;
 
     status.set_state(MigrationState::Running {
         step: MigrationStep::Finalize,
@@ -679,6 +701,201 @@ fn legacy_table_exists_in(
         table: "shielded_notes",
         source: e,
     })
+}
+
+/// Outcome counters from one [`migrate_wallet_meta_rows`] pass.
+/// `imported` includes idempotent re-imports — re-running the migration
+/// after success is a per-row `set()` overwrite, not a no-op skip, so
+/// the counter is meaningful even when the sidecar already holds the
+/// same value.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct WalletMetaMigrationOutcome {
+    /// Rows for `app_context.network` written into the wallet-meta
+    /// sidecar. A re-run with the same legacy rows lands here again —
+    /// `set` upserts.
+    imported: u32,
+    /// Rows that could not be decoded (seed-hash wrong length).
+    /// Triggers the error path — sentinel stays unwritten.
+    failed: u32,
+}
+
+/// T-W-00 wallet-meta migration. Copies legacy `wallet` rows (alias /
+/// `is_main` / `core_wallet_name`) into the DET wallet-metadata sidecar
+/// for `app_context.network`. Idempotent (per-row `set` upserts).
+///
+/// `core_wallet_name` is treated as optional at the schema level — a
+/// recent legacy schema migration drops the column from the `wallet`
+/// table, so older installs may still have it while freshly-migrated
+/// ones will not. The probe at row-read time keeps the migrator
+/// compatible with both shapes.
+fn migrate_wallet_meta_rows(app_context: &Arc<AppContext>) -> Result<(), TaskError> {
+    let backend = app_context
+        .wallet_backend()
+        .map_err(|_| MigrationError::WalletBackendUnavailable)?;
+
+    let Some(path) = app_context.db.db_file_path() else {
+        return Ok(());
+    };
+    if !path.exists() {
+        return Ok(());
+    }
+    let path_str = path.to_string_lossy().to_string();
+    let conn = Connection::open(&path).map_err(|e| MigrationError::LegacyDbOpen {
+        path: path_str,
+        source: e,
+    })?;
+
+    let view = backend.wallet_meta();
+    let outcome = migrate_wallet_meta_rows_from_conn(
+        &conn,
+        |seed_hash, meta| view.set(app_context.network, &seed_hash, &meta),
+        app_context.network,
+    )?;
+    tracing::info!(
+        target = "migration::finish_unwire",
+        imported = outcome.imported,
+        failed = outcome.failed,
+        network = ?app_context.network,
+        "Wallet-meta migration pass complete",
+    );
+
+    if outcome.failed > 0 {
+        return Err(MigrationError::WalletMetaPartialFailure {
+            imported: outcome.imported,
+            failed: outcome.failed,
+        }
+        .into());
+    }
+    Ok(())
+}
+
+/// Pure wallet-meta migration body — readable without an `AppContext`.
+/// Walks the `wallet` table at `conn` filtered to `network` and forwards
+/// each `(seed_hash, meta)` pair to `set`. Returns counters; never
+/// errors on partial readability so the caller can decide the policy.
+///
+/// **Missing table is not an error** — a freshly-installed `data.db`
+/// (no legacy rows at all) returns the zero outcome.
+/// **Missing `core_wallet_name` column is not an error** — the
+/// recent legacy schema migration drops it; we fall back to `None`.
+fn migrate_wallet_meta_rows_from_conn<F>(
+    conn: &Connection,
+    mut set: F,
+    network: dash_sdk::dpp::dashcore::Network,
+) -> Result<WalletMetaMigrationOutcome, MigrationError>
+where
+    F: FnMut(
+        crate::model::wallet::WalletSeedHash,
+        crate::model::wallet::meta::WalletMeta,
+    ) -> Result<(), TaskError>,
+{
+    let core_wallet_name_present = wallet_table_has_core_wallet_name(conn)?;
+    let sql = if core_wallet_name_present {
+        "SELECT seed_hash, alias, is_main, core_wallet_name \
+         FROM wallet WHERE network = ?1"
+    } else {
+        "SELECT seed_hash, alias, is_main, NULL AS core_wallet_name \
+         FROM wallet WHERE network = ?1"
+    };
+
+    let mut stmt = match conn.prepare(sql) {
+        Ok(s) => s,
+        Err(rusqlite::Error::SqliteFailure(_, Some(msg))) if msg.contains("no such table") => {
+            return Ok(WalletMetaMigrationOutcome::default());
+        }
+        Err(rusqlite::Error::SqlInputError { msg, .. }) if msg.contains("no such table") => {
+            return Ok(WalletMetaMigrationOutcome::default());
+        }
+        Err(e) => {
+            return Err(MigrationError::LegacyDbRead {
+                table: "wallet",
+                source: e,
+            });
+        }
+    };
+
+    let rows = stmt
+        .query_map(rusqlite::params![network.to_string()], |row| {
+            let seed_hash: Vec<u8> = row.get(0)?;
+            let alias: Option<String> = row.get(1)?;
+            let is_main: Option<bool> = row.get(2)?;
+            let core_wallet_name: Option<String> = row.get(3)?;
+            Ok((seed_hash, alias, is_main, core_wallet_name))
+        })
+        .map_err(|e| MigrationError::LegacyDbRead {
+            table: "wallet",
+            source: e,
+        })?;
+
+    let mut outcome = WalletMetaMigrationOutcome::default();
+    for row in rows {
+        let (seed_hash_bytes, alias, is_main, core_wallet_name) = match row {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::warn!(
+                    target = "migration::finish_unwire",
+                    error = ?e,
+                    "Skipping unreadable wallet row",
+                );
+                outcome.failed = outcome.failed.saturating_add(1);
+                continue;
+            }
+        };
+
+        let seed_hash: crate::model::wallet::WalletSeedHash =
+            match seed_hash_bytes.as_slice().try_into() {
+                Ok(b) => b,
+                Err(_) => {
+                    tracing::warn!(
+                        target = "migration::finish_unwire",
+                        blob_len = seed_hash_bytes.len(),
+                        "Skipping wallet row with non-32-byte seed_hash",
+                    );
+                    outcome.failed = outcome.failed.saturating_add(1);
+                    continue;
+                }
+            };
+
+        let meta = crate::model::wallet::meta::WalletMeta {
+            alias: alias.unwrap_or_default(),
+            is_main: is_main.unwrap_or(false),
+            core_wallet_name,
+        };
+
+        match set(seed_hash, meta) {
+            Ok(()) => outcome.imported = outcome.imported.saturating_add(1),
+            Err(e) => {
+                tracing::warn!(
+                    target = "migration::finish_unwire",
+                    error = ?e,
+                    "Failed to write wallet-meta entry",
+                );
+                outcome.failed = outcome.failed.saturating_add(1);
+            }
+        }
+    }
+
+    Ok(outcome)
+}
+
+/// Probe whether the legacy `wallet` table still carries
+/// `core_wallet_name`. A recent legacy schema migration drops the
+/// column, so older installs may still have it while freshly-migrated
+/// ones will not. Missing table reads as "column absent" — the caller
+/// then short-circuits via the prepared-statement `no such table`
+/// branch.
+fn wallet_table_has_core_wallet_name(conn: &Connection) -> Result<bool, MigrationError> {
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('wallet') WHERE name = 'core_wallet_name'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| MigrationError::LegacyDbRead {
+            table: "wallet",
+            source: e,
+        })?;
+    Ok(count > 0)
 }
 
 /// NFR-4 pre-flight gate: returns `true` when the legacy `data.db`
@@ -1493,5 +1710,392 @@ mod tests {
         let sidecar = shielded_view(&dir.path().join("spv").join("testnet"));
         let outcome = migrate_shielded_step(&sidecar, &legacy_path, "testnet").expect("benign");
         assert_eq!(outcome, ShieldedMigrationOutcome::default());
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // T-W-00 wallet-meta migration fixtures + tests.
+    //
+    // Mirrors the legacy `wallet` schema from
+    // `src/database/initialization.rs` for the columns the migrator
+    // reads: `seed_hash`, `alias`, `is_main`, `network`,
+    // `core_wallet_name`. The migrator drives the schema variant via
+    // `wallet_table_has_core_wallet_name` so both the pre-drop and
+    // post-drop shapes are covered.
+    // ─────────────────────────────────────────────────────────────────
+
+    /// Legacy `wallet` schema including `core_wallet_name` (pre-drop).
+    /// Matches the columns DET writes in `database/wallet.rs`'s
+    /// `INSERT INTO wallet`.
+    fn create_legacy_wallet_table_with_core_name(conn: &Connection) {
+        conn.execute(
+            "CREATE TABLE wallet (
+                seed_hash BLOB NOT NULL PRIMARY KEY,
+                encrypted_seed BLOB NOT NULL,
+                salt BLOB NOT NULL,
+                nonce BLOB NOT NULL,
+                master_ecdsa_bip44_account_0_epk BLOB NOT NULL,
+                alias TEXT,
+                is_main INTEGER,
+                uses_password INTEGER NOT NULL,
+                password_hint TEXT,
+                network TEXT NOT NULL,
+                core_wallet_name TEXT DEFAULT NULL
+            )",
+            [],
+        )
+        .expect("create legacy wallet table");
+    }
+
+    /// Legacy `wallet` schema without `core_wallet_name` (post-drop —
+    /// after the recent legacy schema migration removed the column).
+    fn create_legacy_wallet_table_without_core_name(conn: &Connection) {
+        conn.execute(
+            "CREATE TABLE wallet (
+                seed_hash BLOB NOT NULL PRIMARY KEY,
+                encrypted_seed BLOB NOT NULL,
+                salt BLOB NOT NULL,
+                nonce BLOB NOT NULL,
+                master_ecdsa_bip44_account_0_epk BLOB NOT NULL,
+                alias TEXT,
+                is_main INTEGER,
+                uses_password INTEGER NOT NULL,
+                password_hint TEXT,
+                network TEXT NOT NULL
+            )",
+            [],
+        )
+        .expect("create legacy wallet table");
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn seed_legacy_wallet_row(
+        conn: &Connection,
+        seed_hash: &[u8; 32],
+        alias: Option<&str>,
+        is_main: bool,
+        network: dash_sdk::dpp::dashcore::Network,
+        core_wallet_name: Option<&str>,
+        has_core_name_col: bool,
+    ) {
+        if has_core_name_col {
+            conn.execute(
+                "INSERT INTO wallet (
+                    seed_hash, encrypted_seed, salt, nonce,
+                    master_ecdsa_bip44_account_0_epk, alias, is_main,
+                    uses_password, password_hint, network, core_wallet_name
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                rusqlite::params![
+                    seed_hash.as_slice(),
+                    Vec::<u8>::new(),
+                    Vec::<u8>::new(),
+                    Vec::<u8>::new(),
+                    Vec::<u8>::new(),
+                    alias,
+                    is_main as i32,
+                    0_i32,
+                    Option::<String>::None,
+                    network.to_string(),
+                    core_wallet_name,
+                ],
+            )
+            .expect("insert legacy wallet row");
+        } else {
+            conn.execute(
+                "INSERT INTO wallet (
+                    seed_hash, encrypted_seed, salt, nonce,
+                    master_ecdsa_bip44_account_0_epk, alias, is_main,
+                    uses_password, password_hint, network
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                rusqlite::params![
+                    seed_hash.as_slice(),
+                    Vec::<u8>::new(),
+                    Vec::<u8>::new(),
+                    Vec::<u8>::new(),
+                    Vec::<u8>::new(),
+                    alias,
+                    is_main as i32,
+                    0_i32,
+                    Option::<String>::None,
+                    network.to_string(),
+                ],
+            )
+            .expect("insert legacy wallet row");
+        }
+    }
+
+    /// In-memory wallet-meta view fixture using the same `InMemoryKv`
+    /// fixture the other migration tests reuse — the wallet-meta sidecar
+    /// writes through the global `det-app.sqlite` k/v, so a single shared
+    /// store backs both the migrator and the reader.
+    fn wallet_meta_view(kv: Arc<DetKv>) -> Arc<DetKv> {
+        kv
+    }
+
+    /// TC-W-009 — a legacy `wallet` row's alias / `is_main` /
+    /// `core_wallet_name` lands in the sidecar verbatim. This is the
+    /// "name preserved across migration" regression guard: if this
+    /// fails the wallet picker shows "Unnamed wallet" post-upgrade.
+    #[test]
+    fn tc_w_009_legacy_wallet_row_alias_preserved_in_meta() {
+        use crate::model::wallet::meta::WalletMeta;
+        use crate::wallet_backend::WalletMetaView;
+        use dash_sdk::dpp::dashcore::Network;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("data.db");
+        let conn = Connection::open(&db_path).expect("open legacy db");
+        create_legacy_wallet_table_with_core_name(&conn);
+
+        let seed: crate::model::wallet::WalletSeedHash = [0x11; 32];
+        seed_legacy_wallet_row(
+            &conn,
+            &seed,
+            Some("paycheque"),
+            true,
+            Network::Testnet,
+            Some("dev-dashd"),
+            true,
+        );
+        // Foreign-network row must not bleed into the testnet pass.
+        let other_seed: crate::model::wallet::WalletSeedHash = [0x22; 32];
+        seed_legacy_wallet_row(
+            &conn,
+            &other_seed,
+            Some("mainnet wallet"),
+            true,
+            Network::Mainnet,
+            None,
+            true,
+        );
+
+        let kv = wallet_meta_view(Arc::new(DetKv::from_store(Arc::new(InMemoryKv::default()))));
+        let view = WalletMetaView::new(&kv);
+
+        let outcome = migrate_wallet_meta_rows_from_conn(
+            &conn,
+            |seed_hash, meta| view.set(Network::Testnet, &seed_hash, &meta),
+            Network::Testnet,
+        )
+        .expect("migrate");
+
+        assert_eq!(outcome.imported, 1);
+        assert_eq!(outcome.failed, 0);
+        assert_eq!(
+            view.get(Network::Testnet, &seed),
+            Some(WalletMeta {
+                alias: "paycheque".into(),
+                is_main: true,
+                core_wallet_name: Some("dev-dashd".into()),
+            })
+        );
+        // Mainnet row must not be visible on testnet.
+        assert_eq!(view.get(Network::Testnet, &other_seed), None);
+    }
+
+    /// TC-W-001 (storage half) — the migrator writes a row that the
+    /// listing path then surfaces. End-to-end (HD-wallet-visible) is
+    /// verified after T-W-01 cuts the reader, but this guards the
+    /// storage half today.
+    #[test]
+    fn tc_w_001_storage_half_listing_sees_migrated_row() {
+        use crate::wallet_backend::WalletMetaView;
+        use dash_sdk::dpp::dashcore::Network;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("data.db");
+        let conn = Connection::open(&db_path).expect("open legacy db");
+        create_legacy_wallet_table_with_core_name(&conn);
+
+        let seed: crate::model::wallet::WalletSeedHash = [0x33; 32];
+        seed_legacy_wallet_row(
+            &conn,
+            &seed,
+            Some("savings"),
+            false,
+            Network::Testnet,
+            None,
+            true,
+        );
+
+        let kv = wallet_meta_view(Arc::new(DetKv::from_store(Arc::new(InMemoryKv::default()))));
+        let view = WalletMetaView::new(&kv);
+        let outcome = migrate_wallet_meta_rows_from_conn(
+            &conn,
+            |seed_hash, meta| view.set(Network::Testnet, &seed_hash, &meta),
+            Network::Testnet,
+        )
+        .expect("migrate");
+        assert_eq!(outcome.imported, 1);
+
+        let listed = view.list(Network::Testnet);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].0, seed);
+        assert_eq!(listed[0].1.alias, "savings");
+    }
+
+    /// TC-W-008-adjacent — running the migrator twice is a no-op on the
+    /// second pass; the alias is upserted with the same bytes (cheap
+    /// idempotency) and the listing still returns one entry.
+    #[test]
+    fn tc_w_008_re_run_is_idempotent_and_does_not_duplicate() {
+        use crate::wallet_backend::WalletMetaView;
+        use dash_sdk::dpp::dashcore::Network;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("data.db");
+        let conn = Connection::open(&db_path).expect("open legacy db");
+        create_legacy_wallet_table_with_core_name(&conn);
+
+        let seed: crate::model::wallet::WalletSeedHash = [0x44; 32];
+        seed_legacy_wallet_row(
+            &conn,
+            &seed,
+            Some("paycheque"),
+            true,
+            Network::Testnet,
+            None,
+            true,
+        );
+
+        let kv = wallet_meta_view(Arc::new(DetKv::from_store(Arc::new(InMemoryKv::default()))));
+        let view = WalletMetaView::new(&kv);
+        let first = migrate_wallet_meta_rows_from_conn(
+            &conn,
+            |seed_hash, meta| view.set(Network::Testnet, &seed_hash, &meta),
+            Network::Testnet,
+        )
+        .expect("first pass");
+        let second = migrate_wallet_meta_rows_from_conn(
+            &conn,
+            |seed_hash, meta| view.set(Network::Testnet, &seed_hash, &meta),
+            Network::Testnet,
+        )
+        .expect("second pass");
+
+        assert_eq!(first.imported, 1);
+        assert_eq!(second.imported, 1, "re-import is reported as success");
+        assert_eq!(view.list(Network::Testnet).len(), 1, "no duplicate entry");
+    }
+
+    /// Missing legacy `wallet` table is benign — fresh installs that
+    /// never wrote a wallet must reach the wallet-meta step with no
+    /// table at all and return the zero outcome.
+    #[test]
+    fn missing_legacy_wallet_table_yields_zero_outcome() {
+        use dash_sdk::dpp::dashcore::Network;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("data.db");
+        let conn = Connection::open(&db_path).expect("open empty db");
+        // No table created — the migrator must not error out.
+
+        let outcome =
+            migrate_wallet_meta_rows_from_conn(&conn, |_seed_hash, _meta| Ok(()), Network::Testnet)
+                .expect("missing table is benign");
+        assert_eq!(outcome, WalletMetaMigrationOutcome::default());
+    }
+
+    /// Post-drop schema: a legacy `wallet` table without
+    /// `core_wallet_name` is the runtime reality after the recent
+    /// schema migration. The migrator must keep working and store
+    /// `core_wallet_name = None` in the sidecar.
+    #[test]
+    fn post_drop_schema_without_core_wallet_name_falls_back_to_none() {
+        use crate::wallet_backend::WalletMetaView;
+        use dash_sdk::dpp::dashcore::Network;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("data.db");
+        let conn = Connection::open(&db_path).expect("open legacy db");
+        create_legacy_wallet_table_without_core_name(&conn);
+
+        let seed: crate::model::wallet::WalletSeedHash = [0x55; 32];
+        seed_legacy_wallet_row(
+            &conn,
+            &seed,
+            Some("paycheque"),
+            true,
+            Network::Testnet,
+            None,
+            false,
+        );
+
+        let kv = wallet_meta_view(Arc::new(DetKv::from_store(Arc::new(InMemoryKv::default()))));
+        let view = WalletMetaView::new(&kv);
+        let outcome = migrate_wallet_meta_rows_from_conn(
+            &conn,
+            |seed_hash, meta| view.set(Network::Testnet, &seed_hash, &meta),
+            Network::Testnet,
+        )
+        .expect("migrate");
+
+        assert_eq!(outcome.imported, 1);
+        assert_eq!(outcome.failed, 0);
+        let meta = view.get(Network::Testnet, &seed).expect("present");
+        assert_eq!(meta.alias, "paycheque");
+        assert!(meta.is_main);
+        assert!(meta.core_wallet_name.is_none());
+    }
+
+    /// A corrupt row (16-byte `seed_hash` instead of 32) lands in the
+    /// `failed` bucket without aborting the loop, so a sibling good
+    /// row still imports.
+    #[test]
+    fn partial_failure_does_not_crash_wallet_meta_run() {
+        use crate::wallet_backend::WalletMetaView;
+        use dash_sdk::dpp::dashcore::Network;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("data.db");
+        let conn = Connection::open(&db_path).expect("open legacy db");
+        create_legacy_wallet_table_with_core_name(&conn);
+
+        let good_seed: crate::model::wallet::WalletSeedHash = [0x77; 32];
+        seed_legacy_wallet_row(
+            &conn,
+            &good_seed,
+            Some("good"),
+            false,
+            Network::Testnet,
+            None,
+            true,
+        );
+        // Corrupt: insert directly with a 16-byte seed_hash. SQLite
+        // doesn't enforce blob length, so this is a legitimate way to
+        // simulate a wedged row.
+        conn.execute(
+            "INSERT INTO wallet (
+                seed_hash, encrypted_seed, salt, nonce,
+                master_ecdsa_bip44_account_0_epk, alias, is_main,
+                uses_password, password_hint, network, core_wallet_name
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            rusqlite::params![
+                vec![0xCC_u8; 16].as_slice(),
+                Vec::<u8>::new(),
+                Vec::<u8>::new(),
+                Vec::<u8>::new(),
+                Vec::<u8>::new(),
+                Option::<String>::None,
+                0_i32,
+                0_i32,
+                Option::<String>::None,
+                Network::Testnet.to_string(),
+                Option::<String>::None,
+            ],
+        )
+        .expect("insert corrupt row");
+
+        let kv = wallet_meta_view(Arc::new(DetKv::from_store(Arc::new(InMemoryKv::default()))));
+        let view = WalletMetaView::new(&kv);
+        let outcome = migrate_wallet_meta_rows_from_conn(
+            &conn,
+            |seed_hash, meta| view.set(Network::Testnet, &seed_hash, &meta),
+            Network::Testnet,
+        )
+        .expect("partial failure does not abort the loop");
+
+        assert_eq!(outcome.imported, 1);
+        assert_eq!(outcome.failed, 1);
+        assert!(view.get(Network::Testnet, &good_seed).is_some());
     }
 }

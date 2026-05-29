@@ -26,6 +26,9 @@ pub enum MigrationStep {
     SingleKey,
     /// Mirroring legacy shielded rows + cursor into the per-wallet sidecar.
     Shielded,
+    /// Copying legacy `wallet` rows (alias / `is_main` / `core_wallet_name`)
+    /// into the DET wallet-metadata sidecar in `det-app.sqlite`.
+    WalletMeta,
     /// Writing the completion sentinel and cleaning up.
     Finalize,
 }
@@ -38,6 +41,7 @@ impl MigrationStep {
             MigrationStep::Detecting => "Checking your existing data.",
             MigrationStep::SingleKey => "Migrating your imported keys.",
             MigrationStep::Shielded => "Migrating your shielded data.",
+            MigrationStep::WalletMeta => "Updating wallet names.",
             MigrationStep::Finalize => "Finishing up.",
         }
     }
@@ -127,6 +131,7 @@ mod tests {
         for step in [
             MigrationStep::SingleKey,
             MigrationStep::Shielded,
+            MigrationStep::WalletMeta,
             MigrationStep::Finalize,
         ] {
             status.set_state(MigrationState::Running { step });
@@ -157,6 +162,7 @@ mod tests {
             MigrationStep::Detecting,
             MigrationStep::SingleKey,
             MigrationStep::Shielded,
+            MigrationStep::WalletMeta,
             MigrationStep::Finalize,
         ] {
             let label = step.label();

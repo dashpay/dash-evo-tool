@@ -1,4 +1,5 @@
 pub mod encryption;
+pub mod meta;
 pub mod shielded;
 pub mod single_key;
 

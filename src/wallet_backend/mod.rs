@@ -27,6 +27,7 @@ mod loader;
 mod shielded;
 pub(crate) mod single_key;
 mod snapshot;
+pub mod wallet_meta;
 
 pub use dashpay::DashpayView;
 pub use shielded::{InsertShieldedNote, SHIELDED_SIDECAR_FILE, ShieldedNoteRow, ShieldedView};
@@ -40,6 +41,7 @@ pub use loader::{PersistedWalletLoader, SeedReregistrationLoader, WalletRegistra
 pub use single_key::SingleKeyView;
 use snapshot::SnapshotStore;
 pub use snapshot::{DetUtxo, DetWalletBalance, WalletSnapshot};
+pub use wallet_meta::WalletMetaView;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -124,6 +126,12 @@ struct Inner {
     /// write at `<spv_storage_dir>/det-shielded.sqlite`. See
     /// [`shielded`] (T-SH-01).
     shielded: ShieldedView,
+    /// Cross-network app-level k/v store at `<data_dir>/det-app.sqlite`.
+    /// Backs the DET-owned wallet-metadata sidecar (alias / `is_main` /
+    /// `core_wallet_name`) — see [`wallet_meta`] (T-W-00). Shared with
+    /// `AppContext::app_kv` so settings and wallet meta both write into
+    /// the same persister.
+    app_kv: Arc<DetKv>,
     /// In-memory index of imported single-key entries, keyed by their
     /// P2PKH address. Drives `SingleKeyView::list` without enumerating
     /// the (non-enumerable) secret store. T-SK-02 will seed this from
@@ -192,6 +200,8 @@ impl WalletBackend {
 
         let peer = Self::spv_primary_peer_socket(ctx, network);
 
+        let app_kv = ctx.app_kv();
+
         let backend = Self {
             inner: Arc::new(Inner {
                 pwm,
@@ -208,6 +218,7 @@ impl WalletBackend {
                 dashpay_address_index_lock: std::sync::Mutex::new(()),
                 secret_store,
                 single_key_index: std::sync::RwLock::new(std::collections::BTreeMap::new()),
+                app_kv,
             }),
         };
 
@@ -387,6 +398,15 @@ impl WalletBackend {
             index: &self.inner.single_key_index,
             network: self.inner.network,
         }
+    }
+
+    /// View over the DET-owned wallet-metadata sidecar (alias /
+    /// `is_main` / `core_wallet_name`). Backed by the cross-network
+    /// app-level k/v store; see [`WalletMetaView`] (T-W-00) for the
+    /// key schema. The view borrows a shared `Arc<DetKv>` handle, so
+    /// callers may build one per operation rather than threading it.
+    pub fn wallet_meta(&self) -> WalletMetaView<'_> {
+        WalletMetaView::new(&self.inner.app_kv)
     }
 
     /// Per-network storage directory under `<data_dir>/spv/<network>/`.

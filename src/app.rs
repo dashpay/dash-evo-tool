@@ -67,6 +67,7 @@ pub fn migration_running_text(step: MigrationStep) -> &'static str {
         MigrationStep::Detecting => "Checking your wallet data.",
         MigrationStep::SingleKey => "Updating imported keys.",
         MigrationStep::Shielded => "Verifying shielded balance.",
+        MigrationStep::WalletMeta => "Updating wallet names.",
         MigrationStep::Finalize => "Finishing storage update.",
     }
 }
@@ -1578,6 +1579,7 @@ mod migration_banner_tests {
             MigrationStep::Detecting,
             MigrationStep::SingleKey,
             MigrationStep::Shielded,
+            MigrationStep::WalletMeta,
             MigrationStep::Finalize,
         ] {
             let text = migration_running_text(step);
@@ -1598,6 +1600,7 @@ mod migration_banner_tests {
             migration_running_text(MigrationStep::Detecting),
             migration_running_text(MigrationStep::SingleKey),
             migration_running_text(MigrationStep::Shielded),
+            migration_running_text(MigrationStep::WalletMeta),
             migration_running_text(MigrationStep::Finalize),
         ];
         let unique: std::collections::HashSet<&str> = labels.iter().copied().collect();

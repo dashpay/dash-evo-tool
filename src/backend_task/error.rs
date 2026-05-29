@@ -115,6 +115,19 @@ pub enum TaskError {
         source: Box<platform_wallet_storage::secrets::FileStoreError>,
     },
 
+    /// The DET wallet-metadata sidecar (alias / `is_main` /
+    /// `core_wallet_name`) could not be read or written. Distinct from
+    /// [`Self::WalletStorage`] because the cause sits in the cross-
+    /// network `det-app.sqlite` k/v file rather than the per-network
+    /// upstream persister — the user-actionable hint is the same.
+    #[error(
+        "Could not access wallet details. Check available disk space and restart the application."
+    )]
+    WalletMetaStorage {
+        #[source]
+        source: Box<crate::wallet_backend::KvAdapterError>,
+    },
+
     /// A WIF-encoded private key supplied by the user could not be parsed.
     /// Wrapped distinctly from [`Self::SecretStore`] so the user sees an
     /// input-shape hint rather than a storage diagnostic.

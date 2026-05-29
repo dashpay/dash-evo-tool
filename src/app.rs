@@ -43,7 +43,7 @@ use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use derive_more::From;
 use eframe::{App, egui};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::BitOrAssign;
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
@@ -189,11 +189,15 @@ pub struct AppState {
     /// Last-seen migration state so per-frame reconciliation only fires
     /// when the state actually changes.
     last_migration_state: Option<MigrationState>,
-    /// Whether the cold-start `MigrationTask::FinishUnwire` has already
-    /// been dispatched on this launch. Idempotent — guarantees one
-    /// dispatch per process even if the per-frame hook is invoked
-    /// repeatedly.
-    cold_start_migration_dispatched: bool,
+    /// Networks for which the cold-start `MigrationTask::FinishUnwire`
+    /// has already been dispatched this process. The migration sentinel
+    /// (and every legacy table filter) is per-network — see SEC-001 in
+    /// the FinishUnwire orchestrator — so the dispatch guard must
+    /// follow the same scope, otherwise switching to an unseen network
+    /// would skip its drain. Idempotent: each network is dispatched
+    /// at most once per process; the orchestrator itself short-circuits
+    /// when its own sentinel is present.
+    cold_start_migration_dispatched: BTreeSet<Network>,
     /// Async shutdown receiver. `Some` while a graceful shutdown is in progress;
     /// the viewport is closed once the receiver resolves.
     shutdown_receiver: Option<tokio::sync::oneshot::Receiver<()>>,
@@ -638,7 +642,7 @@ impl AppState {
             connection_banner_handle: None,
             migration_banner_handle: None,
             last_migration_state: None,
-            cold_start_migration_dispatched: false,
+            cold_start_migration_dispatched: BTreeSet::new(),
             shutdown_receiver: None,
             shutdown_started: None,
             accessibility_enforced,
@@ -877,6 +881,16 @@ impl AppState {
         }
         self.previous_connection_state = None;
 
+        // Reset the migration banner reconciler too: the new network's
+        // `MigrationStatus` lives on the new `AppContext`, so the
+        // per-frame `update_migration_banner` must re-evaluate from
+        // scratch (otherwise a stale `Success` from the previous
+        // network would suppress the new network's `Running` banner).
+        if let Some(handle) = self.migration_banner_handle.take() {
+            handle.clear();
+        }
+        self.last_migration_state = None;
+
         // Spawn a ZMQ listener for the newly created network context.
         if !self.zmq_listeners.contains_key(&network)
             && let Some(listener) =
@@ -969,21 +983,29 @@ impl AppState {
         self.previous_connection_state = Some(current_state);
     }
 
-    /// Dispatch the cold-start data-migration task exactly once per
-    /// launch. The orchestrator
+    /// Dispatch the cold-start data-migration task once per
+    /// **network**. The orchestrator
     /// ([`crate::backend_task::migration::finish_unwire`]) is
-    /// idempotent — if the sentinel already exists it returns
-    /// `Success` without touching the legacy file. Calling it
-    /// unconditionally on first frame keeps the cold-start hook
-    /// simple and avoids a separate "detect legacy" probe on the UI
-    /// thread.
+    /// idempotent — if the per-network sentinel already exists it
+    /// returns `Success` without touching the legacy file. Calling it
+    /// unconditionally on first frame for each network keeps the
+    /// cold-start hook simple and avoids a separate "detect legacy"
+    /// probe on the UI thread.
+    ///
+    /// The dispatch guard is per-network because the migration body
+    /// itself is per-network: every legacy `SELECT` filters by
+    /// `WHERE network = ?1` and the sentinel mirrors that scope. A
+    /// global guard would let a network switch to an unseen network
+    /// skip the drain — see SEC-001 in
+    /// `backend_task::migration::finish_unwire`.
     fn dispatch_cold_start_migration(&mut self) {
-        if self.cold_start_migration_dispatched {
+        let network = self.chosen_network;
+        if !self.cold_start_migration_dispatched.insert(network) {
             return;
         }
-        self.cold_start_migration_dispatched = true;
         tracing::info!(
             target = "migration::cold_start",
+            network = ?network,
             "Dispatching FinishUnwire migration at cold start",
         );
         self.handle_backend_task(BackendTask::MigrationTask(MigrationTask::FinishUnwire));
@@ -1073,13 +1095,19 @@ impl AppState {
     fn drain_banner_actions(&mut self, ctx: &egui::Context) {
         while let Some(action_id) = MessageBanner::take_action(ctx) {
             if action_id == MIGRATION_RETRY_ACTION_ID {
+                let network = self.chosen_network;
                 tracing::info!(
                     target = "migration::cold_start",
+                    network = ?network,
                     "User clicked migration Retry — re-dispatching FinishUnwire",
                 );
                 // Reset the per-frame reconciler so the new run's
-                // Running banner overwrites the stale Failed one.
+                // Running banner overwrites the stale Failed one,
+                // and drop the per-network dispatch guard so a future
+                // `dispatch_cold_start_migration()` for the same
+                // network would also re-fire.
                 self.last_migration_state = None;
+                self.cold_start_migration_dispatched.remove(&network);
                 self.handle_backend_task(BackendTask::MigrationTask(MigrationTask::FinishUnwire));
             } else {
                 tracing::warn!(

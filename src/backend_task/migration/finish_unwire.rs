@@ -2,14 +2,16 @@
 //!
 //! Drains legacy `data.db` rows that the unwire left behind into the
 //! upstream `platform-wallet-storage` k/v store and `SecretStore`.
-//! Idempotent: a completion sentinel under
-//! [`SENTINEL_KEY`] in `det-app.sqlite` short-circuits subsequent
-//! launches. Per-domain row-copy bodies are filled in by T-SK-02
-//! (single-key wallets) and T-SH-02 (shielded rows); this scaffold
-//! wires the orchestration, status reporting, and sentinel I/O.
+//! Idempotent: a per-network completion sentinel under
+//! [`sentinel_key_for`] in `det-app.sqlite` short-circuits subsequent
+//! launches **on the same network**. Per-domain row-copy bodies are
+//! filled in by T-SK-02 (single-key wallets) and T-SH-02 (shielded
+//! rows); this scaffold wires the orchestration, status reporting,
+//! and sentinel I/O.
 
 use std::sync::Arc;
 
+use dash_sdk::dpp::dashcore::Network;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
@@ -18,20 +20,48 @@ use crate::context::AppContext;
 use crate::context::migration_status::{MigrationState, MigrationStep};
 use crate::wallet_backend::KvAdapterError;
 
-/// Key in the shared `det-app.sqlite` k/v store under which the
-/// completion sentinel is written. Versioned so a future format change
-/// (e.g. additional checksum fields) bumps the key rather than
-/// re-interpreting the existing payload.
-pub const SENTINEL_KEY: &str = "det:migration:finish_unwire:v1";
+/// Sentinel key format string. The migration body filters every
+/// legacy table by `WHERE network = ?1`, so the sentinel must mirror
+/// that scope — otherwise an upgrade on mainnet writes the sentinel
+/// and a later switch to testnet skips the migration even though
+/// testnet wallets are still in the legacy file. Versioned (`:v1`) so
+/// a future format change bumps the key rather than re-interpreting
+/// the existing payload.
+const SENTINEL_KEY_PREFIX: &str = "det:migration:finish_unwire";
+const SENTINEL_KEY_VERSION: &str = "v1";
+
+/// Per-network sentinel key. The migration filters legacy rows by
+/// `WHERE network = ?1`, so the sentinel scope must match. A previous
+/// global key let an upgrade on mainnet hide all testnet wallets after
+/// a network switch.
+pub fn sentinel_key_for(network: Network) -> String {
+    format!(
+        "{SENTINEL_KEY_PREFIX}:{}:{SENTINEL_KEY_VERSION}",
+        network_token(network)
+    )
+}
+
+/// Stable, lowercase ASCII network token used in sentinel keys. Kept
+/// distinct from `Network::to_string()` so a future upstream change to
+/// the `Display` impl cannot invalidate existing sentinels.
+fn network_token(network: Network) -> &'static str {
+    match network {
+        Network::Mainnet => "mainnet",
+        Network::Testnet => "testnet",
+        Network::Devnet => "devnet",
+        Network::Regtest => "regtest",
+    }
+}
 
 /// Tables sniffed during detection. Any non-empty row count flips the
 /// migration into the `Running` state. Ordered so the cheapest check
 /// (the single-row `wallet` table) runs first.
 const LEGACY_TABLES: &[&str] = &["wallet", "single_key_wallet", "shielded_notes", "utxos"];
 
-/// Persisted sentinel payload. Lives in `det-app.sqlite` under
-/// [`SENTINEL_KEY`]. `network_count` is informational — the migration
-/// is global, not per-network, so a single row is enough.
+/// Persisted sentinel payload. Lives in `det-app.sqlite` under the
+/// per-network sentinel key returned by [`sentinel_key_for`].
+/// `network_count` is informational — kept for diagnostics so older
+/// payloads still round-trip cleanly.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MigrationCompletion {
     /// Unix-epoch seconds at completion. Used for diagnostics — never
@@ -40,8 +70,10 @@ pub struct MigrationCompletion {
     /// Git SHA / version tag of the running build. Lets a future
     /// reader correlate the sentinel with the binary that produced it.
     pub sha: String,
-    /// How many network entries the migration walked. `0` means
-    /// detection found no legacy rows on first launch.
+    /// How many network entries the migration walked on this pass.
+    /// Always `0` or `1` now that the sentinel is per-network — kept
+    /// in the payload so a forward-compatible reader can re-aggregate
+    /// across networks without a schema bump.
     pub network_count: u32,
 }
 
@@ -156,17 +188,21 @@ pub enum MigrationError {
 pub async fn run(app_context: &Arc<AppContext>) -> Result<(), TaskError> {
     let status = app_context.migration_status();
     let app_kv = app_context.app_kv();
+    let network = app_context.network;
 
-    // Idempotency: if the sentinel already exists, this launch has
-    // nothing to do. Surface `Success` so the UI does not flash a
-    // stale "in progress" banner from a previous frame.
-    if let Some(completion) = read_sentinel(&app_kv)? {
+    // Idempotency: if the sentinel for *this network* already exists,
+    // this launch has nothing to do. The sentinel is per-network
+    // because every migration body filters legacy rows by `WHERE
+    // network = ?1` — a shared sentinel would let an upgrade on
+    // mainnet silently skip the testnet migration after a switch.
+    if let Some(completion) = read_sentinel(&app_kv, network)? {
         tracing::info!(
             target = "migration::finish_unwire",
+            network = ?network,
             completed_at = completion.completed_at,
             sha = %completion.sha,
             network_count = completion.network_count,
-            "FinishUnwire already completed — skipping",
+            "FinishUnwire already completed for this network — skipping",
         );
         status.set_state(MigrationState::Success);
         return Ok(());
@@ -180,9 +216,10 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<(), TaskError> {
     if !legacy_present {
         tracing::info!(
             target = "migration::finish_unwire",
+            network = ?network,
             "No legacy data.db rows detected — writing sentinel without migration",
         );
-        write_sentinel(&app_kv, 0)?;
+        write_sentinel(&app_kv, network, 0)?;
         status.set_state(MigrationState::Success);
         return Ok(());
     }
@@ -226,9 +263,10 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<(), TaskError> {
     status.set_state(MigrationState::Running {
         step: MigrationStep::Finalize,
     });
-    write_sentinel(&app_kv, 1)?;
+    write_sentinel(&app_kv, network, 1)?;
     tracing::info!(
         target = "migration::finish_unwire",
+        network = ?network,
         "FinishUnwire migration complete",
     );
     status.set_state(MigrationState::Success);
@@ -1158,19 +1196,21 @@ pub fn legacy_shielded_present_but_sidecar_empty(
     Ok(count > 0)
 }
 
-/// Read the completion sentinel from `det-app.sqlite`.
+/// Read the completion sentinel for `network` from `det-app.sqlite`.
 fn read_sentinel(
     app_kv: &crate::wallet_backend::DetKv,
+    network: Network,
 ) -> Result<Option<MigrationCompletion>, MigrationError> {
     app_kv
-        .get::<MigrationCompletion>(None, SENTINEL_KEY)
+        .get::<MigrationCompletion>(None, &sentinel_key_for(network))
         .map_err(|e| MigrationError::Sentinel { source: e })
 }
 
-/// Write the completion sentinel, marking the migration as finished
-/// for this install.
+/// Write the completion sentinel for `network`, marking the migration
+/// as finished for this network on this install.
 fn write_sentinel(
     app_kv: &crate::wallet_backend::DetKv,
+    network: Network,
     network_count: u32,
 ) -> Result<(), MigrationError> {
     let completion = MigrationCompletion {
@@ -1179,7 +1219,7 @@ fn write_sentinel(
         network_count,
     };
     app_kv
-        .put(None, SENTINEL_KEY, &completion)
+        .put(None, &sentinel_key_for(network), &completion)
         .map_err(|e| MigrationError::Sentinel { source: e })
 }
 
@@ -1296,25 +1336,28 @@ mod tests {
         DetKv::from_store(Arc::new(InMemoryKv::default()))
     }
 
-    /// TC-MIG-009 — calling the migration when the sentinel is already
-    /// present must be a no-op. The orchestrator must not consult
-    /// legacy `data.db`, must not move state into `Running`, and must
-    /// leave the sentinel untouched.
+    /// TC-MIG-009 — calling the migration when the sentinel for the
+    /// active network is already present must be a no-op. The
+    /// orchestrator must not consult legacy `data.db`, must not move
+    /// state into `Running`, and must leave the sentinel untouched.
     #[test]
     fn sentinel_short_circuits_run() {
+        use dash_sdk::dpp::dashcore::Network;
+
         let kv = kv();
         let original = MigrationCompletion {
             completed_at: 1234,
             sha: "test-sha".into(),
-            network_count: 3,
+            network_count: 1,
         };
-        kv.put(None, SENTINEL_KEY, &original)
+        kv.put(None, &sentinel_key_for(Network::Testnet), &original)
             .expect("seed sentinel");
 
         // Reading the sentinel back via the same path the orchestrator
         // uses is the contractual short-circuit hook. If this returns
         // `Some`, the orchestrator skips legacy detection entirely.
-        let observed: Option<MigrationCompletion> = read_sentinel(&kv).expect("read sentinel");
+        let observed: Option<MigrationCompletion> =
+            read_sentinel(&kv, Network::Testnet).expect("read sentinel");
         assert_eq!(observed, Some(original));
     }
 
@@ -1322,12 +1365,90 @@ mod tests {
     /// same payload. Guards the codec from accidental shape drift.
     #[test]
     fn sentinel_round_trip() {
+        use dash_sdk::dpp::dashcore::Network;
+
         let kv = kv();
-        write_sentinel(&kv, 7).expect("write sentinel");
-        let completion = read_sentinel(&kv).expect("read").expect("present");
-        assert_eq!(completion.network_count, 7);
+        write_sentinel(&kv, Network::Mainnet, 1).expect("write sentinel");
+        let completion = read_sentinel(&kv, Network::Mainnet)
+            .expect("read")
+            .expect("present");
+        assert_eq!(completion.network_count, 1);
         assert!(completion.completed_at > 0);
         assert_eq!(completion.sha, env!("CARGO_PKG_VERSION"));
+    }
+
+    /// SEC-001 regression — the sentinel is scoped per network. Writing
+    /// the mainnet sentinel must not satisfy a subsequent testnet read,
+    /// so a network switch correctly re-triggers the migration on the
+    /// previously-unseen network.
+    ///
+    /// **Bug this guards against:** the previous global sentinel key
+    /// (`det:migration:finish_unwire:v1`) let the following sequence
+    /// hide every testnet wallet for the lifetime of the install —
+    ///   1. user upgrades on mainnet → migration runs → sentinel set
+    ///   2. user switches to testnet → orchestrator sees the sentinel
+    ///      and short-circuits → testnet `wallet` / `single_key_wallet`
+    ///      rows never drain into the upstream vault → wallet picker
+    ///      shows nothing on testnet.
+    /// Only recoverable by digging into `data.db` by hand. The
+    /// per-network sentinel preserves the short-circuit's idempotency
+    /// while keeping each network's migration independent.
+    #[test]
+    fn sentinel_is_per_network_mainnet_then_testnet() {
+        use dash_sdk::dpp::dashcore::Network;
+
+        let kv = kv();
+        // Step 1: simulate a successful mainnet migration.
+        write_sentinel(&kv, Network::Mainnet, 1).expect("write mainnet sentinel");
+        assert!(
+            read_sentinel(&kv, Network::Mainnet)
+                .expect("read mainnet")
+                .is_some(),
+            "mainnet sentinel must be visible to a mainnet read",
+        );
+        // Step 2: switching to testnet must NOT short-circuit. The
+        // testnet read returns `None` so the orchestrator proceeds to
+        // detect-and-drain legacy testnet rows.
+        assert!(
+            read_sentinel(&kv, Network::Testnet)
+                .expect("read testnet")
+                .is_none(),
+            "mainnet sentinel must not satisfy a testnet read — \
+             SEC-001 regression",
+        );
+        // Step 3: a clean testnet migration writes its own sentinel
+        // without touching the mainnet one. Both then short-circuit
+        // their respective networks.
+        write_sentinel(&kv, Network::Testnet, 1).expect("write testnet sentinel");
+        assert!(read_sentinel(&kv, Network::Mainnet).unwrap().is_some());
+        assert!(read_sentinel(&kv, Network::Testnet).unwrap().is_some());
+        // And the devnet / regtest sentinels are still independent.
+        assert!(read_sentinel(&kv, Network::Devnet).unwrap().is_none());
+        assert!(read_sentinel(&kv, Network::Regtest).unwrap().is_none());
+    }
+
+    /// Per-network sentinel keys are stable, distinct, and prefixed —
+    /// guards against accidental key collisions or `Display` drift on
+    /// upstream `Network`.
+    #[test]
+    fn sentinel_key_format_is_per_network() {
+        use dash_sdk::dpp::dashcore::Network;
+
+        let mainnet = sentinel_key_for(Network::Mainnet);
+        let testnet = sentinel_key_for(Network::Testnet);
+        let devnet = sentinel_key_for(Network::Devnet);
+        let regtest = sentinel_key_for(Network::Regtest);
+
+        assert_eq!(mainnet, "det:migration:finish_unwire:mainnet:v1");
+        assert_eq!(testnet, "det:migration:finish_unwire:testnet:v1");
+        assert_eq!(devnet, "det:migration:finish_unwire:devnet:v1");
+        assert_eq!(regtest, "det:migration:finish_unwire:regtest:v1");
+        // All four are distinct — a misencoded network would collapse
+        // the sentinels and re-introduce SEC-001.
+        let set: std::collections::HashSet<_> = [&mainnet, &testnet, &devnet, &regtest]
+            .into_iter()
+            .collect();
+        assert_eq!(set.len(), 4, "every network must get a unique sentinel key");
     }
 
     // ─────────────────────────────────────────────────────────────────

@@ -141,59 +141,16 @@ impl ProfileScreen {
             confirmation_dialog: None,
         };
 
-        // Auto-select identity on creation - prefer one with a profile
+        // Auto-select the first identity. Profile is loaded asynchronously by
+        // the `LoadProfile` dispatch in `render()` once `profile_load_attempted`
+        // is false.
         if let Ok(identities) = app_context.load_local_qualified_identities()
             && !identities.is_empty()
         {
             use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 
-            // Try to find an identity with an actual profile (not just a "no profile" marker)
-            let network_str = app_context.network.to_string();
-            tracing::info!(
-                "ProfileScreen::new - checking {} identities on network {}",
-                identities.len(),
-                network_str
-            );
-
-            let mut selected_idx = 0;
-            for (idx, identity) in identities.iter().enumerate() {
-                let identity_id = identity.identity.id();
-                tracing::debug!("Checking identity {} for profile in DB", identity_id);
-                match app_context
-                    .db
-                    .load_dashpay_profile(&identity_id, &network_str)
-                {
-                    Ok(Some(profile)) => {
-                        tracing::debug!(
-                            "Found profile for identity {}: display_name={:?}",
-                            identity_id,
-                            profile.display_name
-                        );
-                        if profile.display_name.is_some()
-                            || profile.bio.is_some()
-                            || profile.avatar_url.is_some()
-                        {
-                            // Check if this is an actual profile with data (not a "no profile" marker)
-                            selected_idx = idx;
-                            tracing::info!("Selected identity {} with profile", identity_id);
-                            break;
-                        }
-                    }
-                    Ok(None) => {
-                        tracing::debug!("No profile in DB for identity {}", identity_id);
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            "Error loading profile for identity {}: {}",
-                            identity_id,
-                            e
-                        );
-                    }
-                }
-            }
-
-            new_self.selected_identity = Some(identities[selected_idx].clone());
-            new_self.selected_identity_string = identities[selected_idx]
+            new_self.selected_identity = Some(identities[0].clone());
+            new_self.selected_identity_string = identities[0]
                 .identity
                 .id()
                 .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
@@ -203,14 +160,10 @@ impl ProfileScreen {
                 new_self.selected_identity_string
             );
 
-            // Get wallet for the selected identity
             new_self.selected_wallet =
-                get_selected_wallet(&identities[selected_idx], Some(&app_context), None)
+                get_selected_wallet(&identities[0], Some(&app_context), None)
                     .or_show_error(app_context.egui_ctx())
                     .unwrap_or(None);
-
-            // Load profile from database for this identity
-            new_self.load_profile_from_database();
         }
 
         new_self
@@ -259,73 +212,11 @@ impl ProfileScreen {
         self.validation_errors.is_empty()
     }
 
+    /// Reset the load-attempted flag so the next `render()` re-dispatches
+    /// `LoadProfile`. The local DET profile cache is gone after D3 — the
+    /// async result populates `self.profile` via `display_task_result`.
     fn load_profile_from_database(&mut self) {
-        // Load saved profile for the selected identity from database
-        if let Some(identity) = &self.selected_identity {
-            use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-            let identity_id = identity.identity.id();
-            let network_str = self.app_context.network.to_string();
-
-            tracing::debug!(
-                "Loading profile from database for identity {} on network {}",
-                identity_id,
-                network_str
-            );
-
-            // Load profile from database
-            match self
-                .app_context
-                .db
-                .load_dashpay_profile(&identity_id, &network_str)
-            {
-                Ok(Some(stored_profile)) => {
-                    tracing::debug!(
-                        "Found profile in database: display_name={:?}, bio={:?}, avatar_url={:?}",
-                        stored_profile.display_name,
-                        stored_profile.bio,
-                        stored_profile.avatar_url
-                    );
-                    // Check if this is a "no profile exists" marker (all fields are None)
-                    if stored_profile.display_name.is_none()
-                        && stored_profile.bio.is_none()
-                        && stored_profile.avatar_url.is_none()
-                    {
-                        // This is a cached "no profile" state
-                        self.profile = None;
-                        self.profile_load_attempted = true;
-                    } else {
-                        // This is an actual profile with data
-                        self.profile = Some(DashPayProfile {
-                            display_name: stored_profile.display_name.unwrap_or_default(),
-                            bio: stored_profile.bio.unwrap_or_default(),
-                            avatar_url: stored_profile.avatar_url.unwrap_or_default(),
-                            avatar_bytes: stored_profile.avatar_bytes,
-                        });
-
-                        // Update edit fields with loaded profile
-                        if let Some(ref profile) = self.profile {
-                            self.edit_display_name = profile.display_name.clone();
-                            self.edit_bio = profile.bio.clone();
-                            self.edit_avatar_url = profile.avatar_url.clone();
-
-                            // Store original values for change detection
-                            self.original_display_name = profile.display_name.clone();
-                            self.original_bio = profile.bio.clone();
-                            self.original_avatar_url = profile.avatar_url.clone();
-                        }
-
-                        // Mark as loaded from cache
-                        self.profile_load_attempted = true;
-                    }
-                }
-                Ok(None) => {
-                    tracing::debug!("No profile found in database for identity {}", identity_id);
-                }
-                Err(e) => {
-                    tracing::error!("Error loading profile from database: {}", e);
-                }
-            }
-        }
+        self.profile_load_attempted = false;
     }
 
     pub fn trigger_load_profile(&mut self) -> AppAction {
@@ -589,6 +480,15 @@ impl ProfileScreen {
         // Check for pending action from previous frame
         if let Some(pending) = self.pending_action.take() {
             action = *pending;
+        }
+
+        // Auto-dispatch `LoadProfile` on first render or after identity change.
+        if !self.profile_load_attempted
+            && !self.loading
+            && self.selected_identity.is_some()
+            && matches!(action, AppAction::None)
+        {
+            action = self.trigger_load_profile();
         }
 
         // Show success screen if profile was just created/updated
@@ -1071,25 +971,13 @@ impl ProfileScreen {
                                                         .insert(texture_id, texture);
                                                     self.avatar_loading = false;
 
-                                                    // Save avatar bytes to database for caching
+                                                    // Avatar byte caching dropped — next open re-fetches
+                                                    // from the avatar URL. Keep the in-memory copy so
+                                                    // the current session shows it without a round-trip.
                                                     if let Some(bytes) = fetched_bytes
-                                                        && let Some(ref identity) = self.selected_identity
+                                                        && let Some(ref mut p) = self.profile
                                                     {
-                                                        let identity_id = identity.identity.id();
-                                                        let network_str = self.app_context.network.to_string();
-                                                        if let Err(e) = self.app_context.db.save_dashpay_profile_avatar_bytes(
-                                                            &identity_id,
-                                                            &network_str,
-                                                            Some(&bytes),
-                                                        ) {
-                                                            tracing::error!("Failed to save avatar bytes to database: {}", e);
-                                                        } else {
-                                                            tracing::debug!("Saved avatar bytes to database ({} bytes)", bytes.len());
-                                                        }
-                                                        // Update the profile's avatar_bytes in memory
-                                                        if let Some(ref mut p) = self.profile {
-                                                            p.avatar_bytes = Some(bytes);
-                                                        }
+                                                        p.avatar_bytes = Some(bytes);
                                                     }
 
                                                     // Clear the temporary data
@@ -1424,25 +1312,13 @@ impl ProfileScreen {
 
                     // Preserve cached avatar bytes if URL hasn't changed
                     let avatar_bytes = if avatar_url_changed {
-                        // URL changed, clear cached bytes and texture so new avatar is fetched
+                        // URL changed: drop the in-memory texture and force re-fetch.
                         self.avatar_textures
                             .remove(&format!("avatar_{}", old_avatar_url.unwrap_or_default()));
                         self.avatar_loading = false;
-
-                        // Clear old avatar bytes from database since URL changed
-                        if let Some(ref identity) = self.selected_identity {
-                            use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-                            let identity_id = identity.identity.id();
-                            let network_str = self.app_context.network.to_string();
-                            let _ = self.app_context.db.save_dashpay_profile_avatar_bytes(
-                                &identity_id,
-                                &network_str,
-                                None,
-                            );
-                        }
                         None
                     } else {
-                        // URL same, keep existing cached bytes
+                        // URL same, keep existing in-memory bytes
                         self.profile.as_ref().and_then(|p| p.avatar_bytes.clone())
                     };
 
@@ -1453,94 +1329,38 @@ impl ProfileScreen {
                         avatar_bytes,
                     });
 
-                    // Save profile to database for caching
-                    if let Some(ref identity) = self.selected_identity {
-                        use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-                        let identity_id = identity.identity.id();
-                        let network_str = self.app_context.network.to_string();
-
-                        if let Err(e) = self.app_context.db.save_dashpay_profile(
-                            &identity_id,
-                            &network_str,
-                            Some(&display_name),
-                            Some(&bio),
-                            Some(&avatar_url),
-                            None, // public_message not used in profile screen yet
-                        ) {
-                            tracing::error!("Failed to cache profile in database: {}", e);
-                        }
-                    }
+                    // Profile cache write dropped — `load_profile` /
+                    // `update_profile` already mirror through the D3 seam
+                    // (`WalletBackend::dashpay_set_profile`), so DashpayView
+                    // is the single source of truth.
                     // Profile loaded successfully - no need to show a message
                 } else {
                     // No profile found - clear any existing profile and show create button
                     self.profile = None;
-
-                    // Save "no profile" state to database to avoid repeated network queries
-                    if let Some(ref identity) = self.selected_identity {
-                        use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-                        let identity_id = identity.identity.id();
-                        let network_str = self.app_context.network.to_string();
-
-                        // Save with all fields as None to indicate "no profile exists"
-                        // This prevents unnecessary network queries on app restart
-                        if let Err(e) = self.app_context.db.save_dashpay_profile(
-                            &identity_id,
-                            &network_str,
-                            None, // display_name
-                            None, // bio
-                            None, // avatar_url
-                            None, // public_message
-                        ) {
-                            tracing::error!(
-                                "Failed to cache 'no profile' state in database: {}",
-                                e
-                            );
-                        }
-                    }
+                    // The "no profile" sentinel write dropped: the next fetch
+                    // re-resolves via Platform, and `DashpayView::profile`
+                    // already returns None when the upstream wallet has no
+                    // DashPayProfile bound to the owner.
                     // Don't show a message - let the UI show "Create Profile" button
                 }
             }
             BackendTaskSuccessResult::DashPayProfileUpdated(_identity_id) => {
-                // Profile was successfully created/updated
-                // Save the profile data to database BEFORE clearing edit fields
+                // Profile was successfully created/updated; the upstream
+                // mirror (`update_profile` → `dashpay_set_profile`) is the
+                // authoritative write, so we only refresh local in-memory
+                // state for instant UI feedback.
                 if let Some(ref identity) = self.selected_identity {
                     use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
                     let identity_id = identity.identity.id();
-                    let network_str = self.app_context.network.to_string();
 
                     let display_name = self.edit_display_name.trim();
                     let bio = self.edit_bio.trim();
                     let avatar_url = self.edit_avatar_url.trim();
 
-                    tracing::info!(
-                        "Saving profile to database: identity={}, network={}, display_name={:?}, bio={:?}, avatar_url={:?}",
-                        identity_id,
-                        network_str,
-                        display_name,
-                        bio,
-                        avatar_url
+                    tracing::debug!(
+                        identity = %identity_id,
+                        "DashPay profile updated; refreshing in-memory copy"
                     );
-
-                    // Save to database
-                    match self.app_context.db.save_dashpay_profile(
-                        &identity_id,
-                        &network_str,
-                        if display_name.is_empty() {
-                            None
-                        } else {
-                            Some(display_name)
-                        },
-                        if bio.is_empty() { None } else { Some(bio) },
-                        if avatar_url.is_empty() {
-                            None
-                        } else {
-                            Some(avatar_url)
-                        },
-                        None,
-                    ) {
-                        Ok(_) => tracing::info!("Profile saved to database successfully"),
-                        Err(e) => tracing::error!("Failed to save profile to database: {}", e),
-                    }
 
                     // Update in-memory profile (preserve existing avatar_bytes if URL didn't change)
                     let existing_avatar_bytes = self.profile.as_ref().and_then(|p| {

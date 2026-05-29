@@ -264,8 +264,10 @@ impl Database {
                 self.clean_orphaned_fk_rows(tx)?;
                 self.add_core_wallet_name_column(tx)
                     .migration_err("wallet", "add core_wallet_name column")?;
-                self.init_contacts_tables(tx)
-                    .migration_err("contact_private_info", "create contacts tables")?;
+                // Legacy v33 also created `contact_private_info` — the
+                // table was retired in D4d (private memos now live in the
+                // per-network k/v sidecar). Pre-D4d installs keep the
+                // dormant row set; fresh installs never create the table.
                 self.create_shielded_tables(tx)
                     .migration_err("shielded_notes", "create shielded tables")?;
                 self.create_shielded_wallet_meta_table(tx)
@@ -350,8 +352,14 @@ impl Database {
                     .migration_err("wallet_transactions", "create table")?;
             }
             13 => {
-                self.init_dashpay_tables_in_tx(tx)
-                    .migration_err("dashpay_profiles", "create DashPay tables")?;
+                // Legacy v13 created the DashPay tables (dashpay_profiles,
+                // dashpay_contacts, dashpay_contact_requests,
+                // dashpay_payments, dashpay_contact_address_indices,
+                // dashpay_address_mappings). All six were retired in D4d
+                // — upstream `ManagedIdentity` and the k/v sidecar now own
+                // the state. Pre-D4d installs keep the dormant rows; fresh
+                // installs never reach this arm because they jump to
+                // `DEFAULT_DB_VERSION` directly.
             }
             12 => {
                 self.add_disable_zmq_column(tx)
@@ -806,9 +814,12 @@ impl Database {
         // are no longer created on fresh installs. Legacy installs keep
         // the dormant rows.
 
-        // Initialize contacts and DashPay tables while holding the same connection lock
-        self.init_contacts_tables(&conn)?;
-        self.init_dashpay_tables_in_tx(&conn)?;
+        // DashPay tables and `contact_private_info` were retired in D4d.
+        // Upstream `ManagedIdentity` now owns contact / profile / payment
+        // state, and a per-network k/v sidecar owns DET-only overlays
+        // (private memo, blocked / rejected markers, timestamps, address
+        // index, address mapping). Fresh installs no longer create the
+        // tables; legacy installs keep the dormant rows.
 
         // Initialize single key wallet table
         self.initialize_single_key_wallet_table(&conn)?;
@@ -1735,11 +1746,10 @@ mod test {
         // wallet_transactions.status (v30)
         assert_column_exists(conn, "wallet_transactions", "status");
 
-        // contact_private_info table (v29)
-        assert_table_exists(conn, "contact_private_info");
-
-        // dashpay_contact_requests table (pre-existing, but checked for completeness)
-        assert_table_exists(conn, "dashpay_contact_requests");
+        // contact_private_info and dashpay_contact_requests were retired
+        // in D4d — fresh installs no longer create them. Pre-D4d installs
+        // keep the dormant rows, but the fresh-install path tested here
+        // intentionally skips them.
     }
 
     #[test]

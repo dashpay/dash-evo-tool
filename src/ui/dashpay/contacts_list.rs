@@ -1,10 +1,10 @@
 use crate::app::AppAction;
 use crate::backend_task::dashpay::DashPayTask;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::ui::components::ResultBannerExt;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::wallet_unlock_popup::WalletUnlockResult;
 use crate::ui::dashpay::contact_requests::ContactRequests;
@@ -103,76 +103,9 @@ impl ContactsList {
             new_self.selected_identity = Some(identities[0].clone());
             new_self.selected_identity_string =
                 identities[0].identity.id().to_string(Encoding::Base58);
-
-            // Load contacts from database for this identity
-            new_self.load_contacts_from_database();
         }
 
         new_self
-    }
-
-    fn load_contacts_from_database(&mut self) {
-        // Load saved contacts for the selected identity from database
-        if let Some(identity) = &self.selected_identity {
-            let identity_id = identity.identity.id();
-            let network_str = self.app_context.network.to_string();
-
-            // Load saved contacts from database
-            if let Ok(stored_contacts) = self
-                .app_context
-                .db
-                .load_dashpay_contacts(&identity_id, &network_str)
-            {
-                for stored_contact in stored_contacts {
-                    // Convert stored contact to Contact struct
-                    if let Ok(contact_id) =
-                        Identifier::from_bytes(&stored_contact.contact_identity_id)
-                    {
-                        let contact = Contact {
-                            identity_id: contact_id,
-                            username: stored_contact.username.clone(),
-                            display_name: stored_contact.display_name.clone().or_else(|| {
-                                Some(format!(
-                                    "Contact ({})",
-                                    &contact_id.to_string(Encoding::Base58)[0..8]
-                                ))
-                            }),
-                            avatar_url: stored_contact.avatar_url.clone(),
-                            bio: None,        // Bio could be loaded from profile if needed
-                            nickname: None,   // Will be loaded separately from contact_private_info
-                            is_hidden: false, // Will be loaded separately from contact_private_info
-                            account_reference: 0, // This would need to be loaded from contactInfo document
-                            created_at: Some(stored_contact.created_at),
-                        };
-
-                        // Only add if contact status is accepted
-                        if stored_contact.contact_status == "accepted" {
-                            self.contacts.insert(contact_id, contact);
-                        }
-                    }
-                }
-
-                // Also load private contact info to populate nickname and hidden status
-                if let Ok(private_infos) = self
-                    .app_context
-                    .db
-                    .load_all_contact_private_info(&identity_id)
-                {
-                    for info in private_infos {
-                        if let Ok(contact_id) = Identifier::from_bytes(&info.contact_identity_id)
-                            && let Some(contact) = self.contacts.get_mut(&contact_id)
-                        {
-                            contact.nickname = if info.nickname.is_empty() {
-                                None
-                            } else {
-                                Some(info.nickname)
-                            };
-                            contact.is_hidden = info.is_hidden;
-                        }
-                    }
-                }
-            }
-        }
     }
 
     pub fn trigger_fetch_contacts(&mut self) -> AppAction {
@@ -219,15 +152,18 @@ impl ContactsList {
             self.selected_identity_string = identities[0].identity.id().to_string(Encoding::Base58);
         }
 
-        // Load contacts from database if we have an identity selected and no contacts loaded
-        if self.selected_identity.is_some() && self.contacts.is_empty() {
-            self.load_contacts_from_database();
-        }
+        // Trigger backend fetch if we have an identity selected and no contacts loaded.
+        // The result populates `self.contacts` via `display_task_result`.
+        let action = if self.selected_identity.is_some() && self.contacts.is_empty() {
+            self.trigger_fetch_contacts()
+        } else {
+            AppAction::None
+        };
 
         // Also refresh contact requests
         let _ = self.contact_requests.refresh();
 
-        AppAction::None
+        action
     }
 
     /// Load an avatar image from a URL asynchronously
@@ -294,6 +230,11 @@ impl ContactsList {
         let mut action = AppAction::None;
         let dark_mode = ui.ctx().style().visuals.dark_mode;
 
+        // Auto-fetch contacts on first render or after identity change.
+        if !self.has_loaded && !self.loading && self.selected_identity.is_some() {
+            action = self.trigger_fetch_contacts();
+        }
+
         // Identity selector
         let identities = self
             .app_context
@@ -319,15 +260,14 @@ impl ContactsList {
                     );
 
                     if response.changed() {
-                        // Clear contacts and avatar caches when identity changes
+                        // Clear contacts and avatar caches when identity changes.
+                        // The next render dispatches `LoadContacts` via `has_loaded == false`.
                         self.contacts.clear();
                         self.avatar_textures.clear();
                         self.avatars_loading.clear();
                         self.message = None;
                         self.loading = false;
-
-                        // Load contacts from database for the newly selected identity
-                        self.load_contacts_from_database();
+                        self.has_loaded = false;
 
                         // Sync selected identity to contact_requests
                         self.contact_requests
@@ -937,13 +877,28 @@ impl ContactsList {
                                             let new_hidden = !contact.is_hidden;
                                             if let Some(identity) = &self.selected_identity {
                                                 let owner_id = identity.identity.id();
-                                                if let Err(e) =
-                                                    self.app_context.db.set_contact_hidden(
-                                                        &owner_id,
-                                                        &contact.identity_id,
-                                                        new_hidden,
-                                                    )
+                                                let mut sidecar_result: Result<(), TaskError> =
+                                                    Ok(());
+                                                if let Ok(backend) =
+                                                    self.app_context.wallet_backend()
                                                 {
+                                                    let mut info = backend
+                                                        .dashpay_get_private_info(
+                                                            &owner_id,
+                                                            &contact.identity_id,
+                                                        )
+                                                        .ok()
+                                                        .flatten()
+                                                        .unwrap_or_default();
+                                                    info.is_hidden = new_hidden;
+                                                    sidecar_result = backend
+                                                        .dashpay_set_private_info(
+                                                            &owner_id,
+                                                            &contact.identity_id,
+                                                            &info,
+                                                        );
+                                                }
+                                                if let Err(e) = sidecar_result {
                                                     self.message = Some((
                                                         format!("Failed to update contact: {}", e),
                                                         MessageType::Error,
@@ -1005,9 +960,9 @@ impl ContactsList {
 
 impl ScreenLike for ContactsList {
     fn refresh_on_arrival(&mut self) {
-        // Load contacts from database when screen is shown
+        // Trigger a fresh `LoadContacts` dispatch via the auto-fetch in `render()`.
         if self.selected_identity.is_some() && self.contacts.is_empty() {
-            self.load_contacts_from_database();
+            self.has_loaded = false;
         }
     }
 
@@ -1056,108 +1011,42 @@ impl ScreenLike for ContactsList {
                 self.message = None;
             }
             BackendTaskSuccessResult::DashPayContactsWithInfo(contacts_data) => {
-                // Clear existing contacts
+                // Clear existing contacts and repopulate the in-memory map
+                // from the adapter result. Upstream `ManagedIdentity` is
+                // now the authoritative source for contact rows (D4d), so
+                // the DET-local cache writes are gone.
                 self.contacts.clear();
-
-                // Save contacts to database if we have a selected identity
-                if let Some(identity) = &self.selected_identity {
-                    let owner_id = identity.identity.id();
-                    let network_str = self.app_context.network.to_string();
-
-                    // Clear all existing contacts for this identity from database first
-                    // This prevents stale contacts from persisting
-                    self.app_context
-                        .db
-                        .clear_dashpay_contacts(&owner_id, &network_str)
-                        .or_show_error(self.app_context.egui_ctx())
-                        .ok();
-
-                    // Convert ContactData to Contact structs and save to database
-                    for contact_data in contacts_data {
-                        // Skip self-contacts (where contact is the same as the owner)
-                        if contact_data.identity_id == owner_id {
-                            continue;
-                        }
-                        let contact = Contact {
-                            identity_id: contact_data.identity_id,
-                            username: contact_data.username.clone(),
-                            display_name: contact_data.display_name.clone().or_else(|| {
-                                Some(format!(
-                                    "Contact ({})",
-                                    &contact_data.identity_id.to_string(Encoding::Base58)[0..8]
-                                ))
-                            }),
-                            avatar_url: contact_data.avatar_url.clone(),
-                            bio: contact_data.bio.clone(),
-                            nickname: contact_data.nickname.clone(),
-                            is_hidden: contact_data.is_hidden,
-                            account_reference: contact_data.account_reference,
-                            created_at: Some(
-                                std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap_or_default()
-                                    .as_secs() as i64,
-                            ), // Fallback to current time for filter/sort
-                        };
-                        self.contacts.insert(contact_data.identity_id, contact);
-
-                        // Save to database
-                        self.app_context
-                            .db
-                            .save_dashpay_contact(
-                                &owner_id,
-                                &contact_data.identity_id,
-                                &network_str,
-                                contact_data.username.as_deref(),
-                                contact_data.display_name.as_deref(),
-                                contact_data.avatar_url.as_deref(),
-                                None,       // public_message - not yet fetched
-                                "accepted", // Only accepted contacts are returned from load_contacts
-                            )
-                            .or_show_error(self.app_context.egui_ctx())
-                            .ok();
-
-                        // Save private info if present
-                        if let Some(nickname) = &contact_data.nickname {
-                            self.app_context
-                                .db
-                                .save_contact_private_info(
-                                    &owner_id,
-                                    &contact_data.identity_id,
-                                    nickname,
-                                    &contact_data.note.unwrap_or_default(),
-                                    contact_data.is_hidden,
-                                )
-                                .or_show_error(self.app_context.egui_ctx())
-                                .ok();
-                        }
+                let owner_id_opt = self.selected_identity.as_ref().map(|i| i.identity.id());
+                for contact_data in contacts_data {
+                    // Skip self-contacts (where contact is the same as the owner)
+                    if owner_id_opt
+                        .as_ref()
+                        .is_some_and(|owner| *owner == contact_data.identity_id)
+                    {
+                        continue;
                     }
-                } else {
-                    // No selected identity, just populate in-memory
-                    for contact_data in contacts_data {
-                        let contact = Contact {
-                            identity_id: contact_data.identity_id,
-                            username: contact_data.username,
-                            display_name: contact_data.display_name.or_else(|| {
-                                Some(format!(
-                                    "Contact ({})",
-                                    &contact_data.identity_id.to_string(Encoding::Base58)[0..8]
-                                ))
-                            }),
-                            avatar_url: contact_data.avatar_url,
-                            bio: contact_data.bio,
-                            nickname: contact_data.nickname,
-                            is_hidden: contact_data.is_hidden,
-                            account_reference: contact_data.account_reference,
-                            created_at: Some(
-                                std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap_or_default()
-                                    .as_secs() as i64,
-                            ), // Fallback to current time for filter/sort
-                        };
-                        self.contacts.insert(contact_data.identity_id, contact);
-                    }
+                    let contact = Contact {
+                        identity_id: contact_data.identity_id,
+                        username: contact_data.username,
+                        display_name: contact_data.display_name.or_else(|| {
+                            Some(format!(
+                                "Contact ({})",
+                                &contact_data.identity_id.to_string(Encoding::Base58)[0..8]
+                            ))
+                        }),
+                        avatar_url: contact_data.avatar_url,
+                        bio: contact_data.bio,
+                        nickname: contact_data.nickname,
+                        is_hidden: contact_data.is_hidden,
+                        account_reference: contact_data.account_reference,
+                        created_at: Some(
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs() as i64,
+                        ), // Fallback to current time for filter/sort
+                    };
+                    self.contacts.insert(contact_data.identity_id, contact);
                 }
 
                 // Mark as loaded and clear message
@@ -1201,27 +1090,12 @@ impl ScreenLike for ContactsList {
                     if let Some(url) = &avatar_url {
                         contact.avatar_url = Some(url.clone());
                     }
-
-                    // Save updated profile to database if we have a selected identity
-                    if let Some(identity) = &self.selected_identity {
-                        let owner_id = identity.identity.id();
-                        let network_str = self.app_context.network.to_string();
-                        if let Err(e) = self.app_context.db.save_dashpay_contact(
-                            &owner_id,
-                            &contact_id,
-                            &network_str,
-                            contact.username.as_deref(),
-                            contact.display_name.as_deref(),
-                            contact.avatar_url.as_deref(),
-                            public_message.as_deref(),
-                            "accepted",
-                        ) {
-                            tracing::warn!(
-                                "Failed to save updated contact profile to database: {}",
-                                e
-                            );
-                        }
-                    }
+                    // Profile snapshot caching dropped — `DashpayView::contacts`
+                    // reads contact identities from the upstream wallet and
+                    // cross-references the public DashPayProfile via the
+                    // backend task on demand, so the local cache no longer
+                    // earns its keep.
+                    let _ = public_message;
                 }
             }
             _ => {

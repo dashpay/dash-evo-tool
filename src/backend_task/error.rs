@@ -195,6 +195,18 @@ pub enum TaskError {
         source: crate::wallet_backend::KvAdapterError,
     },
 
+    /// A DashPay sidecar overlay entry (blocked / rejected marker, DET-local
+    /// timestamps) could not be read or written in the per-network k/v store.
+    /// The platform-side document succeeded — only the local annotation that
+    /// keeps the UI honest about it failed.
+    #[error(
+        "Could not save your DashPay update locally. The change reached the network — try refreshing in a moment, or try again if it stays out of sync."
+    )]
+    DashpaySidecarStorage {
+        #[source]
+        source: crate::wallet_backend::KvAdapterError,
+    },
+
     /// Chain sync could not be started.
     #[error(
         "Could not start wallet sync. Please check your connection and restart the application."

@@ -85,57 +85,27 @@ impl ContactDetailsScreen {
         screen
     }
 
-    /// Load contact data from local database for immediate display.
+    /// Initialise `contact_info` from local-only data (private notes / hidden flag).
+    /// Public profile fields (username, display_name, avatar, bio) are populated
+    /// asynchronously by `FetchContactProfile` — see `display_task_result`.
     fn load_from_database(&mut self) {
         let identity_id = self.identity.identity.id();
-        let network_str = self.app_context.network.to_string();
 
-        // Try to load the contact's public info from the dashpay_contacts table
-        let mut username = None;
-        let mut display_name = None;
-        let mut avatar_url = None;
-        let mut bio = None;
-
-        if let Ok(stored_contacts) = self
-            .app_context
-            .db
-            .load_dashpay_contacts(&identity_id, &network_str)
-        {
-            for stored_contact in stored_contacts {
-                if let Ok(contact_id) = Identifier::from_bytes(&stored_contact.contact_identity_id)
-                    && contact_id == self.contact_id
-                {
-                    username = stored_contact.username;
-                    display_name = stored_contact.display_name;
-                    avatar_url = stored_contact.avatar_url;
-                    // bio is stored in profiles, not contacts table
-                    break;
+        // Load private contact info (nickname, notes, hidden) — DET-local memo,
+        // backed by the WalletBackend k/v sidecar post-D4c.
+        let (nickname, note, is_hidden) =
+            match self.app_context.wallet_backend().and_then(|backend| {
+                backend.dashpay_get_private_info(&identity_id, &self.contact_id)
+            }) {
+                Ok(Some(info)) => (info.nickname, info.notes, info.is_hidden),
+                Ok(None) => (String::new(), String::new(), false),
+                Err(e) => {
+                    tracing::warn!(
+                        "DashPay private-info sidecar read failed; defaulting to empty: {e:?}"
+                    );
+                    (String::new(), String::new(), false)
                 }
-            }
-        }
-
-        // Load the profile for bio if available
-        if let Ok(Some(profile)) = self
-            .app_context
-            .db
-            .load_dashpay_profile(&self.contact_id, &network_str)
-        {
-            bio = profile.bio;
-            // Also prefer profile display_name and avatar_url if not already set
-            if display_name.is_none() {
-                display_name = profile.display_name;
-            }
-            if avatar_url.is_none() {
-                avatar_url = profile.avatar_url;
-            }
-        }
-
-        // Load private contact info (nickname, notes, hidden)
-        let (nickname, note, is_hidden) = self
-            .app_context
-            .db
-            .load_contact_private_info(&identity_id, &self.contact_id)
-            .unwrap_or_default();
+            };
 
         let nickname = if nickname.is_empty() {
             None
@@ -143,6 +113,20 @@ impl ContactDetailsScreen {
             Some(nickname)
         };
         let note = if note.is_empty() { None } else { Some(note) };
+
+        // Preserve any public profile fields already in `contact_info`; otherwise
+        // start empty and let the async fetch fill them in.
+        let (username, display_name, avatar_url, bio) =
+            if let Some(existing) = self.contact_info.as_ref() {
+                (
+                    existing.username.clone(),
+                    existing.display_name.clone(),
+                    existing.avatar_url.clone(),
+                    existing.bio.clone(),
+                )
+            } else {
+                (None, None, None, None)
+            };
 
         self.contact_info = Some(ContactInfo {
             identity_id: self.contact_id,
@@ -194,16 +178,21 @@ impl ContactDetailsScreen {
             info.is_hidden = self.edit_hidden;
         }
 
-        // Save to local database immediately
+        // Persist the memo to the per-network k/v sidecar so the UI has
+        // instant feedback while the (encrypted) Platform write below is
+        // in flight. Best-effort: a sidecar miss never blocks the user
+        // action.
         let identity_id = self.identity.identity.id();
-        if let Err(e) = self.app_context.db.save_contact_private_info(
-            &identity_id,
-            &self.contact_id,
-            &self.edit_nickname,
-            &self.edit_note,
-            self.edit_hidden,
-        ) {
-            tracing::warn!("Failed to save contact private info to database: {}", e);
+        if let Ok(backend) = self.app_context.wallet_backend() {
+            let info = crate::model::dashpay::ContactPrivateInfo {
+                nickname: self.edit_nickname.clone(),
+                notes: self.edit_note.clone(),
+                is_hidden: self.edit_hidden,
+            };
+            if let Err(e) = backend.dashpay_set_private_info(&identity_id, &self.contact_id, &info)
+            {
+                tracing::warn!("DashPay private-info sidecar write failed: {e:?}");
+            }
         }
 
         self.editing_info = false;
@@ -597,18 +586,10 @@ impl ScreenLike for ContactDetailsScreen {
                     .and_then(|v| v.as_text())
                     .map(|s| s.to_string());
 
-                // Save profile to local database for future offline access
-                let network_str = self.app_context.network.to_string();
-                if let Err(e) = self.app_context.db.save_dashpay_profile(
-                    &self.contact_id,
-                    &network_str,
-                    display_name.as_deref(),
-                    bio.as_deref(),
-                    avatar_url.as_deref(),
-                    None, // public_message
-                ) {
-                    tracing::warn!("Failed to save dashpay profile to database: {}", e);
-                }
+                // Public-profile caching dropped — `FetchContactProfile`
+                // re-queries Platform on each open, and the WalletBackend
+                // mirror covers identities we manage. Out-of-wallet contact
+                // profiles are not cacheable through the upstream seam.
 
                 // Update the in-memory contact info
                 if let Some(info) = &mut self.contact_info {

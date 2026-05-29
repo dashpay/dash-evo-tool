@@ -37,18 +37,22 @@ pub enum PaymentStatus {
     Failed(String),
 }
 
-/// Get the next unused address index for a contact and increment it
-/// Uses the database to track address indices per contact relationship
+/// Get the next unused address index for a contact and increment it.
+///
+/// Delegates to `WalletBackend::dashpay_increment_send_index`, which
+/// serializes concurrent calls across the process via an internal mutex
+/// so two parallel sends never receive the same index.
 async fn get_next_address_index(
     app_context: &Arc<AppContext>,
     identity_id: &Identifier,
     contact_id: &Identifier,
 ) -> Result<u32, String> {
-    // Get and increment the send index from database
-    app_context
-        .db
-        .get_and_increment_send_index(identity_id, contact_id)
-        .map_err(|e| format!("Failed to get address index from database: {}", e))
+    let backend = app_context
+        .wallet_backend()
+        .map_err(|e| format!("Wallet backend not yet available: {}", e))?;
+    backend
+        .dashpay_increment_send_index(identity_id, contact_id)
+        .map_err(|e| format!("Failed to allocate next DashPay address index: {}", e))
 }
 
 /// Derive a payment address for a contact from their encrypted extended public key
@@ -327,15 +331,18 @@ pub async fn send_payment_to_contact_impl(
         payment.amount
     );
 
-    // Save to database using the db interface - propagate errors
-    app_context.db.save_payment(
-        &txid,
+    // Mirror the outgoing payment through the WalletBackend adapter so the
+    // upstream `ManagedIdentity` records it and the timestamp sidecar
+    // reflects when DET broadcast it.
+    mirror_sent_payment_to_backend(
+        app_context,
         &from_identity.identity.id(),
-        &to_contact_id,
-        amount_duffs as i64,
+        &txid,
+        to_contact_id,
+        amount_duffs,
         memo.as_deref(),
-        "sent",
-    )?;
+    )
+    .await;
 
     // Convert to Dash for display
     let amount_dash = amount_duffs as f64 / 100_000_000.0;
@@ -347,16 +354,18 @@ pub async fn send_payment_to_contact_impl(
     ))
 }
 
-/// Load payment history from local database
+/// Load payment history via the `WalletBackend` DashPay adapter — the
+/// upstream-backed source of truth post-D4c. The local DET cache is no
+/// longer consulted.
 pub async fn load_payment_history(
     app_context: &Arc<AppContext>,
     identity_id: &Identifier,
     contact_id: Option<&Identifier>,
 ) -> Result<Vec<PaymentRecord>, String> {
-    let stored_payments = app_context
-        .db
-        .load_payment_history(identity_id, 100)
-        .map_err(|e| format!("Failed to load payment history: {}", e))?;
+    let backend = app_context
+        .wallet_backend()
+        .map_err(|e| format!("Wallet backend not yet available: {}", e))?;
+    let stored_payments = backend.dashpay_view().payments(identity_id).await;
 
     let mut records = Vec::new();
     for sp in stored_payments {
@@ -435,6 +444,91 @@ pub async fn update_payment_status(
         tx_id
     );
     Ok(())
+}
+
+/// Mirror an outgoing payment into the upstream `ManagedIdentity` and the
+/// k/v timestamp sidecar so [`DashpayView::payments`] picks it up.
+///
+/// Best-effort: the platform-side write already succeeded by the time we
+/// get here, and a local mirror miss does not break correctness.
+pub(super) async fn mirror_sent_payment_to_backend(
+    app_context: &Arc<AppContext>,
+    owner: &Identifier,
+    tx_id: &str,
+    counterparty: Identifier,
+    amount_duffs: u64,
+    memo: Option<&str>,
+) {
+    use platform_wallet::wallet::identity::types::dashpay::payment::PaymentEntry;
+
+    let Ok(backend) = app_context.wallet_backend() else {
+        return;
+    };
+
+    let entry = PaymentEntry::new_sent(counterparty, amount_duffs, memo.map(str::to_string));
+    if let Err(e) = backend
+        .dashpay_record_payment(owner, tx_id.to_string(), entry)
+        .await
+    {
+        tracing::debug!(
+            tx_id = %tx_id,
+            owner = %owner.to_string(Encoding::Base58),
+            error = ?e,
+            "DashPay sent-payment mirror to WalletBackend failed"
+        );
+        return;
+    }
+
+    let now_ms = chrono::Utc::now().timestamp_millis().max(0);
+    if let Err(e) = backend.dashpay_set_payment_timestamps(tx_id, now_ms, None) {
+        tracing::debug!(
+            tx_id = %tx_id,
+            error = ?e,
+            "DashPay sent-payment timestamp sidecar write failed"
+        );
+    }
+}
+
+/// Mirror an incoming payment into the upstream `ManagedIdentity` and the
+/// k/v timestamp sidecar. Incoming payments are recorded as
+/// [`PaymentStatus::Confirmed`] because SPV only delivers them after
+/// the transaction is observed on-chain.
+pub(super) async fn mirror_incoming_payment_to_backend(
+    app_context: &Arc<AppContext>,
+    owner: &Identifier,
+    tx_id: &str,
+    counterparty: Identifier,
+    amount_duffs: u64,
+) {
+    use platform_wallet::wallet::identity::types::dashpay::payment::PaymentEntry;
+
+    let Ok(backend) = app_context.wallet_backend() else {
+        return;
+    };
+
+    let entry = PaymentEntry::new_received(counterparty, amount_duffs, None);
+    if let Err(e) = backend
+        .dashpay_record_payment(owner, tx_id.to_string(), entry)
+        .await
+    {
+        tracing::debug!(
+            tx_id = %tx_id,
+            owner = %owner.to_string(Encoding::Base58),
+            error = ?e,
+            "DashPay incoming-payment mirror to WalletBackend failed"
+        );
+        return;
+    }
+
+    let now_ms = chrono::Utc::now().timestamp_millis().max(0);
+    // Incoming arrives confirmed — same ts for `created_at` and `confirmed_at`.
+    if let Err(e) = backend.dashpay_set_payment_timestamps(tx_id, now_ms, Some(now_ms)) {
+        tracing::debug!(
+            tx_id = %tx_id,
+            error = ?e,
+            "DashPay incoming-payment timestamp sidecar write failed"
+        );
+    }
 }
 
 /// Check if addresses have been used (for gap limit calculation)

@@ -593,7 +593,14 @@ async fn tc_037_dashpay_contact_lifecycle() {
     step_update_contact_info(ctx, pair).await;
 }
 
-/// TC-041: LoadPaymentHistory — empty
+/// TC-041: LoadPaymentHistory smoke check.
+///
+/// Post-D4d the DET-side `dashpay_payments` table is gone — payments are
+/// read from the upstream `ManagedIdentity` via
+/// [`WalletBackend::dashpay_view`]. This test confirms the
+/// `LoadPaymentHistory` backend-task wiring still resolves end-to-end
+/// through the adapter; populated-state coverage lives in
+/// `tc_037_dashpay_contact_lifecycle` and `tc_044_pay_contact`.
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn tc_041_load_payment_history_empty() {
@@ -611,7 +618,7 @@ async fn tc_041_load_payment_history_empty() {
     match result {
         BackendTaskSuccessResult::DashPayPaymentHistory(history) => {
             tracing::info!(
-                "TC-041: LoadPaymentHistory returned {} entries",
+                "TC-041: LoadPaymentHistory returned {} entries via adapter",
                 history.len()
             );
         }

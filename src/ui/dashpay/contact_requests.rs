@@ -108,9 +108,6 @@ impl ContactRequests {
                 get_selected_wallet(&identities[0], Some(&app_context), None)
                     .or_show_error(app_context.egui_ctx())
                     .unwrap_or(None);
-
-            // Load requests from database for this identity
-            new_self.load_requests_from_database();
         }
 
         new_self
@@ -143,14 +140,12 @@ impl ContactRequests {
                 self.wallet_open_attempted = false;
             }
 
-            // Clear the requests when identity changes
+            // Clear the requests when identity changes. Next render dispatches
+            // `LoadContactRequests` via `has_fetched_requests == false`.
             self.incoming_requests.clear();
             self.outgoing_requests.clear();
             self.has_fetched_requests = false;
             self.pending_profile_fetches.clear();
-
-            // Load requests from database for the newly selected identity
-            self.load_requests_from_database();
         }
     }
 
@@ -159,211 +154,24 @@ impl ContactRequests {
         self.render_content(ui, false)
     }
 
-    fn load_requests_from_database(&mut self) {
-        // Load saved contact requests for the selected identity from database
-        if let Some(identity) = &self.selected_identity {
-            let identity_id = identity.identity.id();
-
-            // Clear existing requests before loading
-            self.incoming_requests.clear();
-            self.outgoing_requests.clear();
-
-            let network_str = self.app_context.network.to_string();
-            tracing::debug!(
-                "Loading contact requests from database for identity {} on network {}",
-                identity_id,
-                network_str
-            );
-
-            // Load pending incoming requests from database
-            match self.app_context.db.load_pending_contact_requests(
-                &identity_id,
-                &network_str,
-                "received",
-            ) {
-                Ok(incoming) => {
-                    tracing::debug!("Loaded {} incoming requests from database", incoming.len());
-                    for request in incoming {
-                        if let Ok(from_id) = Identifier::from_bytes(&request.from_identity_id) {
-                            let contact_request = ContactRequest {
-                                request_id: Identifier::new([0; 32]), // We'll need to store this in DB
-                                from_identity: from_id,
-                                to_identity: identity_id,
-                                from_username: request.to_username, // This field is misnamed in DB
-                                from_display_name: None,
-                                to_username: None,
-                                to_display_name: None,
-                                account_reference: 0,
-                                account_label: request.account_label,
-                                timestamp: request.created_at as u64,
-                                auto_accept_proof: None,
-                            };
-                            self.incoming_requests.insert(from_id, contact_request);
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::error!("Failed to load incoming contact requests: {}", e);
-                }
-            }
-
-            // Load pending outgoing requests from database
-            match self.app_context.db.load_pending_contact_requests(
-                &identity_id,
-                &network_str,
-                "sent",
-            ) {
-                Ok(outgoing) => {
-                    tracing::debug!("Loaded {} outgoing requests from database", outgoing.len());
-                    for request in outgoing {
-                        if let Ok(to_id) = Identifier::from_bytes(&request.to_identity_id) {
-                            let contact_request = ContactRequest {
-                                request_id: Identifier::new([0; 32]), // We'll need to store this in DB
-                                from_identity: identity_id,
-                                to_identity: to_id,
-                                from_username: None,
-                                from_display_name: None,
-                                to_username: None,
-                                to_display_name: None,
-                                account_reference: 0,
-                                account_label: request.account_label,
-                                timestamp: request.created_at as u64,
-                                auto_accept_proof: None,
-                            };
-                            self.outgoing_requests.insert(to_id, contact_request);
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::error!("Failed to load outgoing contact requests: {}", e);
-                }
-            }
-
-            // Resolve names from local cache and mark unresolved for Platform fetch
-            let unresolved = self.resolve_names_from_local_cache();
-            self.pending_profile_fetches.extend(unresolved);
-        }
-    }
-
-    /// Resolve usernames and display names for contact requests using local DB cache.
-    /// Returns a list of identity IDs that were not found locally and need Platform fetching.
+    /// Collect identities whose usernames/display names still need to be fetched
+    /// from Platform. After D3, DET no longer caches contacts/profiles, so every
+    /// request with missing names is treated as unresolved and dispatched through
+    /// `fetch_unresolved_profiles`.
     fn resolve_names_from_local_cache(&mut self) -> Vec<Identifier> {
-        use std::collections::HashMap;
+        let mut unresolved_ids: Vec<Identifier> = Vec::new();
 
-        let network_str = self.app_context.network.to_string();
-        let mut unresolved_ids = Vec::new();
-
-        // Pre-load contacts once to avoid N+1 queries inside the loop
-        let contacts_by_id: HashMap<Identifier, (Option<String>, Option<String>)> =
-            if let Some(selected_identity) = &self.selected_identity {
-                let owner_id = selected_identity.identity.id();
-                self.app_context
-                    .db
-                    .load_dashpay_contacts(&owner_id, &network_str)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter_map(|c| {
-                        Identifier::from_bytes(&c.contact_identity_id)
-                            .ok()
-                            .map(|id| (id, (c.username, c.display_name)))
-                    })
-                    .collect()
-            } else {
-                HashMap::new()
-            };
-
-        // Collect all identity IDs we need to look up profiles for
-        let incoming_ids: Vec<Identifier> = self
-            .incoming_requests
-            .values()
-            .filter(|r| r.from_username.is_none() && r.from_display_name.is_none())
-            .map(|r| r.from_identity)
-            .collect();
-        let outgoing_ids: Vec<Identifier> = self
-            .outgoing_requests
-            .values()
-            .filter(|r| r.to_username.is_none() && r.to_display_name.is_none())
-            .map(|r| r.to_identity)
-            .collect();
-
-        // Pre-load profiles for all needed IDs (one DB query each, but only for unresolved)
-        let mut profiles_cache: HashMap<Identifier, Option<String>> = HashMap::new();
-        for id in incoming_ids.iter().chain(outgoing_ids.iter()) {
-            if !profiles_cache.contains_key(id) {
-                let display_name = self
-                    .app_context
-                    .db
-                    .load_dashpay_profile(id, &network_str)
-                    .ok()
-                    .flatten()
-                    .and_then(|p| p.display_name);
-                profiles_cache.insert(*id, display_name);
+        for request in self.incoming_requests.values() {
+            if request.from_username.is_none() && request.from_display_name.is_none() {
+                unresolved_ids.push(request.from_identity);
+            }
+        }
+        for request in self.outgoing_requests.values() {
+            if request.to_username.is_none() && request.to_display_name.is_none() {
+                unresolved_ids.push(request.to_identity);
             }
         }
 
-        // Resolve names for incoming requests (need from_identity info)
-        for request in self.incoming_requests.values_mut() {
-            if request.from_username.is_some() || request.from_display_name.is_some() {
-                continue;
-            }
-
-            let identity_id = request.from_identity;
-            let mut found = false;
-
-            // Try profile cache first (has display_name)
-            if let Some(Some(display_name)) = profiles_cache.get(&identity_id) {
-                request.from_display_name = Some(display_name.clone());
-                found = true;
-            }
-
-            // Try contacts cache (has username and display_name)
-            if let Some((username, display_name)) = contacts_by_id.get(&identity_id) {
-                if request.from_username.is_none() {
-                    request.from_username = username.clone();
-                }
-                if request.from_display_name.is_none() {
-                    request.from_display_name = display_name.clone();
-                }
-                found = true;
-            }
-
-            if !found {
-                unresolved_ids.push(identity_id);
-            }
-        }
-
-        // Resolve names for outgoing requests (need to_identity info)
-        for request in self.outgoing_requests.values_mut() {
-            if request.to_username.is_some() || request.to_display_name.is_some() {
-                continue;
-            }
-
-            let identity_id = request.to_identity;
-            let mut found = false;
-
-            // Try profile cache first
-            if let Some(Some(display_name)) = profiles_cache.get(&identity_id) {
-                request.to_display_name = Some(display_name.clone());
-                found = true;
-            }
-
-            // Try contacts cache
-            if let Some((username, display_name)) = contacts_by_id.get(&identity_id) {
-                if request.to_username.is_none() {
-                    request.to_username = username.clone();
-                }
-                if request.to_display_name.is_none() {
-                    request.to_display_name = display_name.clone();
-                }
-                found = true;
-            }
-
-            if !found {
-                unresolved_ids.push(identity_id);
-            }
-        }
-
-        // Deduplicate
         unresolved_ids.sort();
         unresolved_ids.dedup();
         unresolved_ids
@@ -414,27 +222,9 @@ impl ContactRequests {
             }
         }
 
-        // Save to local DB for future lookups
-        let network_str = self.app_context.network.to_string();
-        let bio = doc
-            .get("publicMessage")
-            .and_then(|v| v.as_text())
-            .filter(|s| !s.is_empty());
-        let avatar_url = doc
-            .get("avatarUrl")
-            .and_then(|v| v.as_text())
-            .filter(|s| !s.is_empty());
-
-        if let Err(e) = self.app_context.db.save_dashpay_profile(
-            &contact_id,
-            &network_str,
-            display_name.as_deref(),
-            bio,
-            avatar_url,
-            None,
-        ) {
-            tracing::warn!("Failed to cache profile for {}: {}", contact_id, e);
-        }
+        // Profile cache write dropped — `FetchContactProfile` re-queries
+        // Platform on each open, and contact identities outside our wallet
+        // are not mirrored through the WalletBackend seam.
     }
 
     pub fn trigger_fetch_requests(&mut self) -> AppAction {
@@ -480,9 +270,9 @@ impl ContactRequests {
             self.selected_identity_string = identities[0].display_string();
         }
 
-        // Load requests from database if we have an identity selected
+        // Mark unfetched so the next render dispatches `LoadContactRequests`.
         if self.selected_identity.is_some() {
-            self.load_requests_from_database();
+            self.has_fetched_requests = false;
         }
 
         AppAction::None
@@ -494,6 +284,11 @@ impl ContactRequests {
 
     fn render_content(&mut self, ui: &mut Ui, show_header: bool) -> AppAction {
         let mut action = AppAction::None;
+
+        // Auto-fetch contact requests on first render or after identity change.
+        if !self.has_fetched_requests && !self.loading && self.selected_identity.is_some() {
+            action |= self.trigger_fetch_requests();
+        }
 
         // Trigger Platform fetches for unresolved profiles
         if !self.pending_profile_fetches.is_empty() {
@@ -588,9 +383,7 @@ impl ContactRequests {
                                 self.selected_wallet = None;
                             }
                             self.wallet_open_attempted = false;
-
-                            // Load requests from database for the newly selected identity
-                            self.load_requests_from_database();
+                            // Next render dispatches `LoadContactRequests` via `has_fetched_requests == false`.
                         }
                     });
                 }
@@ -1016,9 +809,9 @@ impl ContactRequests {
 
 impl ScreenLike for ContactRequests {
     fn refresh_on_arrival(&mut self) {
-        // Load requests from database when screen is shown
+        // Trigger a fresh `LoadContactRequests` dispatch via auto-fetch in `render_content`.
         if self.selected_identity.is_some() {
-            self.load_requests_from_database();
+            self.has_fetched_requests = false;
         }
     }
 
@@ -1107,26 +900,11 @@ impl ScreenLike for ContactRequests {
                     };
 
                     self.incoming_requests.insert(*id, request.clone());
-
-                    // Save to database as received request
-                    let network_str = self.app_context.network.to_string();
-                    tracing::debug!(
-                        "Saving incoming contact request to database: from={}, to={}, network={}",
-                        from_identity,
-                        current_identity_id,
-                        network_str
-                    );
-                    match self.app_context.db.save_contact_request(
-                        &from_identity,
-                        &current_identity_id,
-                        &network_str,
-                        None, // to_username
-                        request.account_label.as_deref(),
-                        "received",
-                    ) {
-                        Ok(id) => tracing::debug!("Saved incoming contact request with id {}", id),
-                        Err(e) => tracing::error!("Failed to save incoming contact request: {}", e),
-                    }
+                    // Contact-request mirror dropped — upstream
+                    // `incoming_contact_requests` already records this
+                    // request, and `DashpayView::contact_requests`
+                    // derives status from upstream presence + the
+                    // rejected/expiry sidecars.
                 }
 
                 // Process outgoing requests
@@ -1160,26 +938,11 @@ impl ScreenLike for ContactRequests {
                     };
 
                     self.outgoing_requests.insert(*id, request.clone());
-
-                    // Save to database as sent request
-                    let network_str = self.app_context.network.to_string();
-                    tracing::debug!(
-                        "Saving outgoing contact request to database: from={}, to={}, network={}",
-                        current_identity_id,
-                        to_identity,
-                        network_str
-                    );
-                    match self.app_context.db.save_contact_request(
-                        &current_identity_id,
-                        &to_identity,
-                        &network_str,
-                        None, // to_username
-                        request.account_label.as_deref(),
-                        "sent",
-                    ) {
-                        Ok(id) => tracing::debug!("Saved outgoing contact request with id {}", id),
-                        Err(e) => tracing::error!("Failed to save outgoing contact request: {}", e),
-                    }
+                    // Contact-request mirror dropped — upstream
+                    // `sent_contact_requests` already records this
+                    // request, and `DashpayView::contact_requests`
+                    // derives status from upstream presence + the
+                    // rejected/expiry sidecars.
                 }
 
                 // Resolve names from local cache and trigger Platform fetches for unknowns

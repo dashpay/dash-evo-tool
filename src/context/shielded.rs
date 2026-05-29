@@ -9,7 +9,153 @@ use crate::model::wallet::shielded::{ShieldedNote, ShieldedWalletState, derive_o
 use dash_sdk::grovedb_commitment_tree::{
     ClientPersistentCommitmentTree, Nullifier, Position, ProvingKey,
 };
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+/// File name (under `<spv_dir>/<network>/`) for the shielded commitment tree.
+///
+/// A dedicated SQLite file, sibling to upstream's `platform-wallet.sqlite`.
+/// The four `commitment_tree_*` tables grovedb creates live in this file
+/// and never in DET's shared `data.db`.
+pub(crate) const SHIELDED_COMMITMENT_TREE_FILE: &str = "shielded-commitment-tree.sqlite";
+
+/// Resolve the per-network shielded commitment tree path inside `spv_dir`.
+///
+/// `spv_dir` is expected to be the already-network-scoped directory returned
+/// by `WalletBackend::spv_storage_dir()` (i.e. it already includes the
+/// `mainnet` / `testnet` / `devnet` / `regtest` segment).
+pub(crate) fn shielded_commitment_tree_path(spv_dir: &Path) -> PathBuf {
+    spv_dir.join(SHIELDED_COMMITMENT_TREE_FILE)
+}
+
+/// The four commitment-tree table names grovedb materialises on first use.
+const COMMITMENT_TREE_TABLES: [&str; 4] = [
+    "commitment_tree_shards",
+    "commitment_tree_cap",
+    "commitment_tree_checkpoints",
+    "commitment_tree_checkpoint_marks_removed",
+];
+
+/// One-shot, silent migrator: copy legacy `commitment_tree_*` rows from the
+/// shared `data.db` into a newly-created per-network shielded SQLite file.
+///
+/// Runs at most once per install (the gate is "the new file did not exist
+/// before this `open_path` call"). Returns `Ok(())` when nothing needed to
+/// move; returns `Err(...)` and deletes the partially-written destination
+/// file on any failure, so the next launch can retry from scratch.
+///
+/// Legacy `data.db` rows are intentionally left in place; a future cleanup
+/// pass will drop them once every install has migrated.
+pub(crate) fn migrate_commitment_tree_if_needed(
+    data_db_path: &Path,
+    new_path: &Path,
+) -> rusqlite::Result<()> {
+    if !data_db_path.exists() {
+        return Ok(());
+    }
+
+    let src = rusqlite::Connection::open(data_db_path)?;
+    if !any_commitment_tree_rows(&src)? {
+        return Ok(());
+    }
+
+    let new_path_str = new_path
+        .to_str()
+        .ok_or_else(|| {
+            rusqlite::Error::InvalidParameterName(format!(
+                "shielded commitment tree path is not valid UTF-8: {}",
+                new_path.display()
+            ))
+        })?
+        .to_string();
+
+    let result: rusqlite::Result<()> = (|| {
+        src.execute_batch(&format!("ATTACH DATABASE '{new_path_str}' AS dest"))?;
+        let copy = |conn: &rusqlite::Connection| -> rusqlite::Result<()> {
+            for table in COMMITMENT_TREE_TABLES {
+                conn.execute(
+                    &format!("INSERT INTO dest.{table} SELECT * FROM main.{table}"),
+                    [],
+                )?;
+            }
+            Ok(())
+        };
+        let copy_result = copy(&src);
+        // DETACH unconditionally, even on copy failure, so the connection is
+        // left clean. Swallow detach errors — the copy error (if any) is the
+        // one we want to surface.
+        let _ = src.execute_batch("DETACH DATABASE dest");
+        copy_result
+    })();
+
+    if result.is_err() {
+        let _ = std::fs::remove_file(new_path);
+    }
+    result
+}
+
+/// True when at least one of the four commitment-tree tables exists in the
+/// given connection and contains at least one row.
+fn any_commitment_tree_rows(conn: &rusqlite::Connection) -> rusqlite::Result<bool> {
+    for table in COMMITMENT_TREE_TABLES {
+        let exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+            [table],
+            |row| row.get::<_, i32>(0).map(|c| c > 0),
+        )?;
+        if !exists {
+            continue;
+        }
+        let count: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+            row.get(0)
+        })?;
+        if count > 0 {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Open the per-network shielded commitment tree at `path`, running the
+/// one-shot legacy migration from `data.db` on the first cold start where
+/// the destination file does not yet exist.
+fn open_commitment_tree_with_migration(
+    path: &Path,
+    data_db_path: Option<&Path>,
+) -> Result<ClientPersistentCommitmentTree, TaskError> {
+    let needs_migration = !path.exists() && data_db_path.is_some();
+
+    if let Some(parent) = path.parent()
+        && !parent.exists()
+    {
+        std::fs::create_dir_all(parent).map_err(|source| TaskError::FileSystem { source })?;
+    }
+
+    let tree = ClientPersistentCommitmentTree::open_path(path, 100).map_err(|e| {
+        TaskError::ShieldedTreeUpdateFailed {
+            detail: e.to_string(),
+        }
+    })?;
+
+    if needs_migration && let Some(data_db) = data_db_path {
+        // Drop the freshly-opened tree handle so the destination file is
+        // not held open by another connection while the migrator runs its
+        // ATTACH/INSERT pass.
+        drop(tree);
+        migrate_commitment_tree_if_needed(data_db, path).map_err(|e| {
+            TaskError::ShieldedTreeUpdateFailed {
+                detail: format!("commitment-tree migration failed: {e}"),
+            }
+        })?;
+        return ClientPersistentCommitmentTree::open_path(path, 100).map_err(|e| {
+            TaskError::ShieldedTreeUpdateFailed {
+                detail: e.to_string(),
+            }
+        });
+    }
+
+    Ok(tree)
+}
 
 static PROVING_KEY: OnceLock<ProvingKey> = OnceLock::new();
 
@@ -28,6 +174,22 @@ pub fn is_proving_key_ready() -> bool {
 }
 
 impl AppContext {
+    /// Resolve the on-disk path of this network's shielded commitment-tree
+    /// SQLite file, materialising the parent directory if absent.
+    ///
+    /// The file is a sibling of the upstream platform-wallet persister at
+    /// `<data_dir>/spv/<network>/shielded-commitment-tree.sqlite`. Requires
+    /// the wallet backend to be initialised — callers reach this method on
+    /// the shielded path, which only runs after backend init.
+    pub(crate) fn shielded_commitment_tree_path(&self) -> Result<PathBuf, TaskError> {
+        let backend = self.wallet_backend()?;
+        let dir = backend.spv_storage_dir().to_path_buf();
+        if !dir.exists() {
+            std::fs::create_dir_all(&dir).map_err(|source| TaskError::FileSystem { source })?;
+        }
+        Ok(shielded_commitment_tree_path(&dir))
+    }
+
     /// Run a shielded pool task.
     pub async fn run_shielded_task(
         self: &Arc<Self>,
@@ -241,13 +403,10 @@ impl AppContext {
 
         let network_str = self.network.to_string();
 
-        let commitment_tree = ClientPersistentCommitmentTree::open_on_shared_connection(
-            self.db.shared_connection(),
-            100,
-        )
-        .map_err(|e| TaskError::ShieldedTreeUpdateFailed {
-            detail: e.to_string(),
-        })?;
+        let tree_path = self.shielded_commitment_tree_path()?;
+        let data_db_path = self.db.db_file_path();
+        let commitment_tree =
+            open_commitment_tree_with_migration(&tree_path, data_db_path.as_deref())?;
 
         let mut last_synced_index = 0u64;
 
@@ -308,18 +467,21 @@ impl AppContext {
                     hex::encode(seed_hash.as_slice()),
                     state.last_synced_index,
                 );
-                self.db.clear_commitment_tree_tables().map_err(|e| {
-                    TaskError::ShieldedTreeUpdateFailed {
+                // Unlink the per-network shielded SQLite file so the next
+                // `open_path` materialises a pristine commitment tree. This
+                // replaces the legacy in-place table truncation on `data.db`.
+                if let Err(e) = std::fs::remove_file(&tree_path)
+                    && e.kind() != std::io::ErrorKind::NotFound
+                {
+                    return Err(TaskError::FileSystem { source: e });
+                }
+                // No legacy `data.db` migration here: this branch is reached
+                // only after a prior successful sync, so the upstream rows
+                // (if any) are stale relative to the wallet.
+                let fresh_tree = ClientPersistentCommitmentTree::open_path(&tree_path, 100)
+                    .map_err(|e| TaskError::ShieldedTreeUpdateFailed {
                         detail: e.to_string(),
-                    }
-                })?;
-                let fresh_tree = ClientPersistentCommitmentTree::open_on_shared_connection(
-                    self.db.shared_connection(),
-                    100,
-                )
-                .map_err(|e| TaskError::ShieldedTreeUpdateFailed {
-                    detail: e.to_string(),
-                })?;
+                    })?;
                 state.commitment_tree = std::sync::Mutex::new(fresh_tree);
                 state.last_synced_index = 0;
             }
@@ -690,5 +852,127 @@ impl AppContext {
             }
         }
         state.recalculate_balance();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    /// Seed a `data.db`-style file with the four legacy `commitment_tree_*`
+    /// tables, each holding a single sentinel row. Returns the file path.
+    fn seed_legacy_data_db(dir: &Path) -> PathBuf {
+        let path = dir.join("data.db");
+        let conn = Connection::open(&path).expect("open seed data.db");
+        // Use the exact upstream schema for `commitment_tree_*` (see
+        // `grovedb-commitment-tree/.../sqlite_store/sql_helpers.rs`) so the
+        // INSERT...SELECT migration into the production schema succeeds.
+        conn.execute_batch(
+            "CREATE TABLE commitment_tree_shards (
+                shard_index INTEGER PRIMARY KEY,
+                shard_data  BLOB NOT NULL
+            );
+            CREATE TABLE commitment_tree_cap (
+                id       INTEGER PRIMARY KEY CHECK (id = 0),
+                cap_data BLOB NOT NULL
+            );
+            CREATE TABLE commitment_tree_checkpoints (
+                checkpoint_id INTEGER PRIMARY KEY,
+                position      INTEGER
+            );
+            CREATE TABLE commitment_tree_checkpoint_marks_removed (
+                checkpoint_id INTEGER NOT NULL,
+                position      INTEGER NOT NULL,
+                PRIMARY KEY (checkpoint_id, position),
+                FOREIGN KEY (checkpoint_id) REFERENCES commitment_tree_checkpoints(checkpoint_id)
+            );
+            INSERT INTO commitment_tree_shards (shard_index, shard_data)
+                VALUES (0, x'00');
+            INSERT INTO commitment_tree_cap (id, cap_data) VALUES (0, x'11');
+            INSERT INTO commitment_tree_checkpoints (checkpoint_id, position)
+                VALUES (1, 42);
+            INSERT INTO commitment_tree_checkpoint_marks_removed (checkpoint_id, position)
+                VALUES (1, 7);
+            ",
+        )
+        .expect("seed schema + rows");
+        drop(conn);
+        path
+    }
+
+    fn row_count(path: &Path, table: &str) -> i64 {
+        let conn = Connection::open(path).expect("open for count");
+        conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+            row.get(0)
+        })
+        .expect("count row")
+    }
+
+    #[test]
+    fn migrator_copies_all_four_tables_into_fresh_destination() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let data_db = seed_legacy_data_db(tmp.path());
+        let new_path = tmp
+            .path()
+            .join("spv/testnet/shielded-commitment-tree.sqlite");
+
+        // Materialise the destination schema the way production does — via
+        // `ClientPersistentCommitmentTree::open_path`. The migrator then
+        // copies the legacy rows into the new file.
+        std::fs::create_dir_all(new_path.parent().unwrap()).unwrap();
+        let _ = ClientPersistentCommitmentTree::open_path(&new_path, 100)
+            .expect("create fresh shielded sqlite");
+
+        migrate_commitment_tree_if_needed(&data_db, &new_path).expect("migrator runs cleanly");
+
+        for table in COMMITMENT_TREE_TABLES {
+            assert_eq!(
+                row_count(&new_path, table),
+                1,
+                "table {table} should hold the migrated row"
+            );
+        }
+    }
+
+    #[test]
+    fn migrator_is_a_noop_when_legacy_tables_are_empty() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let data_db = tmp.path().join("data.db");
+        // Empty file — no schema, no rows.
+        Connection::open(&data_db).expect("touch empty data.db");
+
+        let new_path = tmp.path().join("shielded-commitment-tree.sqlite");
+        std::fs::create_dir_all(new_path.parent().unwrap()).unwrap();
+        let _ = ClientPersistentCommitmentTree::open_path(&new_path, 100)
+            .expect("create fresh shielded sqlite");
+
+        migrate_commitment_tree_if_needed(&data_db, &new_path)
+            .expect("no-op migration must succeed");
+
+        for table in COMMITMENT_TREE_TABLES {
+            assert_eq!(row_count(&new_path, table), 0, "{table} should stay empty");
+        }
+    }
+
+    #[test]
+    fn migrator_is_a_noop_when_data_db_is_absent() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let new_path = tmp.path().join("shielded-commitment-tree.sqlite");
+        std::fs::create_dir_all(new_path.parent().unwrap()).unwrap();
+        let _ = ClientPersistentCommitmentTree::open_path(&new_path, 100)
+            .expect("create fresh shielded sqlite");
+
+        migrate_commitment_tree_if_needed(tmp.path().join("missing.db").as_path(), &new_path)
+            .expect("absent data.db => silent no-op");
+    }
+
+    #[test]
+    fn shielded_commitment_tree_path_is_sibling_of_platform_wallet_sqlite() {
+        let dir = std::path::Path::new("/tmp/spv/testnet");
+        assert_eq!(
+            shielded_commitment_tree_path(dir),
+            dir.join(SHIELDED_COMMITMENT_TREE_FILE),
+        );
     }
 }

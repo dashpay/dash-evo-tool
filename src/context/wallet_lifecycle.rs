@@ -18,6 +18,41 @@ impl AppContext {
     pub fn clear_network_database(&self) -> Result<(), TaskError> {
         self.db.clear_network_data(self.network)?;
 
+        // D4d: drain the DashPay k/v sidecar (private memo, blocked /
+        // rejected markers, timestamps, address index, address mapping).
+        // The sidecar lives on the per-network upstream persister, so
+        // wiping the active network is the right scope. Best-effort when
+        // the wallet backend has not been wired yet (clear at first run
+        // before any wallet exists) — there is nothing to drain in that
+        // case.
+        if let Ok(backend) = self.wallet_backend() {
+            let kv = backend.kv();
+            match kv.list(None, Some("det:dashpay:")) {
+                Ok(keys) => {
+                    for k in keys {
+                        if let Err(e) = kv.delete(None, &k) {
+                            tracing::warn!(key = %k, "DashPay sidecar delete failed: {e:?}");
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("DashPay sidecar listing failed: {e:?}");
+                }
+            }
+        }
+
+        // Drop the per-network shielded commitment-tree SQLite sidecar
+        // (replaces the legacy in-place table truncation on `data.db`).
+        // Missing file is the expected state on fresh installs and is
+        // tolerated. Backend-not-initialised is also fine — the file
+        // cannot exist without the backend having opened it.
+        if let Ok(tree_path) = self.shielded_commitment_tree_path()
+            && let Err(e) = std::fs::remove_file(&tree_path)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(TaskError::FileSystem { source: e });
+        }
+
         if let Ok(mut wallets) = self.wallets.write() {
             wallets.clear();
         }

@@ -20,10 +20,13 @@
 //! `docs/ai-design/2026-05-18-platform-wallet-migration/backend-architecture.md`.
 
 mod asset_lock_signer;
+mod dashpay;
 mod event_bridge;
 mod kv;
 mod loader;
 mod snapshot;
+
+pub use dashpay::DashpayView;
 
 pub use asset_lock_signer::AssetLockSignerError;
 use asset_lock_signer::WalletAssetLockSigner;
@@ -100,6 +103,13 @@ struct Inner {
     peer: Option<std::net::SocketAddr>,
     network: Network,
     spv_storage_dir: std::path::PathBuf,
+    /// Serializes DashPay address-index increments across the process. The
+    /// `DetKv` adapter has no atomic read-modify-write primitive, so the
+    /// `dashpay_increment_send_index` path takes this mutex around its
+    /// get-then-put cycle. Contention is negligible — outgoing-payment
+    /// dispatch is user-initiated and rare relative to lock acquisition
+    /// cost.
+    dashpay_address_index_lock: std::sync::Mutex<()>,
 }
 
 /// The single wallet entry point. See module docs.
@@ -133,7 +143,7 @@ impl WalletBackend {
         loader: Arc<dyn PersistedWalletLoader>,
     ) -> Result<Self, TaskError> {
         let network = ctx.network;
-        let spv_storage_dir = Self::spv_storage_dir(ctx.data_dir(), network)?;
+        let spv_storage_dir = Self::resolve_spv_storage_dir(ctx.data_dir(), network)?;
 
         let persister_config =
             SqlitePersisterConfig::new(spv_storage_dir.join("platform-wallet.sqlite"));
@@ -166,6 +176,7 @@ impl WalletBackend {
                 peer,
                 network,
                 spv_storage_dir,
+                dashpay_address_index_lock: std::sync::Mutex::new(()),
             }),
         };
 
@@ -317,6 +328,15 @@ impl WalletBackend {
     /// the schema-version envelope.
     pub fn kv(&self) -> DetKv {
         DetKv::new(Arc::clone(&self.inner.persister))
+    }
+
+    /// Per-network storage directory under `<data_dir>/spv/<network>/`.
+    ///
+    /// Hosts the upstream `platform-wallet.sqlite` persister file and any
+    /// other per-network sidecar databases DET maintains (e.g. the shielded
+    /// commitment tree at `shielded-commitment-tree.sqlite`).
+    pub fn spv_storage_dir(&self) -> &std::path::Path {
+        &self.inner.spv_storage_dir
     }
 
     /// Read the persisted [`SelectedWallet`] pointer for this network.
@@ -948,7 +968,7 @@ impl WalletBackend {
         format!("{host}:{port}").to_socket_addrs().ok()?.next()
     }
 
-    fn spv_storage_dir(
+    fn resolve_spv_storage_dir(
         app_data_dir: &Path,
         network: Network,
     ) -> Result<std::path::PathBuf, TaskError> {

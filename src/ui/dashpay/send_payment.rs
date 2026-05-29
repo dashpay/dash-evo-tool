@@ -81,24 +81,9 @@ impl SendPaymentScreen {
     }
 
     fn load_contact_info(&mut self) {
-        let owner_id = self.from_identity.identity.id();
-        let network_str = self.app_context.network.to_string();
-        if let Ok(contacts) = self
-            .app_context
-            .db
-            .load_dashpay_contacts(&owner_id, &network_str)
-        {
-            let contact_bytes = self.to_contact_id.to_buffer().to_vec();
-            if let Some(contact) = contacts
-                .iter()
-                .find(|c| c.contact_identity_id == contact_bytes)
-            {
-                self.to_contact_name = contact
-                    .username
-                    .clone()
-                    .or_else(|| contact.display_name.clone());
-            }
-        }
+        // The DET contacts cache is gone after D3; the recipient name is supplied
+        // via the routing screen (see ContactDetailsScreen / ContactsList) or
+        // remains None and the UI falls back to displaying the contact ID.
     }
 
     fn send_payment(&mut self) -> AppAction {
@@ -506,76 +491,9 @@ impl PaymentHistory {
             new_self.selected_identity = Some(identities[0].clone());
             new_self.selected_identity_string =
                 identities[0].identity.id().to_string(Encoding::Base58);
-
-            // Load payments from database for this identity
-            new_self.load_payments_from_database();
         }
 
         new_self
-    }
-
-    fn load_payments_from_database(&mut self) {
-        // Load saved payment history for the selected identity from database
-        if let Some(identity) = &self.selected_identity {
-            let identity_id = identity.identity.id();
-
-            // Clear existing payments before loading
-            self.payments.clear();
-
-            // Load payment history from database (limit 100)
-            if let Ok(stored_payments) = self.app_context.db.load_payment_history(&identity_id, 100)
-            {
-                for payment in stored_payments {
-                    // Determine if incoming or outgoing based on identity
-                    let is_incoming = payment.to_identity_id == identity_id.to_buffer().to_vec();
-                    let contact_id = if is_incoming {
-                        payment.from_identity_id
-                    } else {
-                        payment.to_identity_id
-                    };
-
-                    // Try to resolve contact name
-                    let contact_name = if let Ok(contact_id) = Identifier::from_bytes(&contact_id) {
-                        // First check if we have a saved contact with username
-                        let network_str = self.app_context.network.to_string();
-                        if let Ok(contacts) = self
-                            .app_context
-                            .db
-                            .load_dashpay_contacts(&identity_id, &network_str)
-                        {
-                            contacts
-                                .iter()
-                                .find(|c| c.contact_identity_id == contact_id.to_buffer().to_vec())
-                                .and_then(|c| c.username.clone().or(c.display_name.clone()))
-                                .unwrap_or_else(|| {
-                                    format!(
-                                        "Unknown ({})",
-                                        &contact_id.to_string(Encoding::Base58)[0..8]
-                                    )
-                                })
-                        } else {
-                            format!(
-                                "Unknown ({})",
-                                &contact_id.to_string(Encoding::Base58)[0..8]
-                            )
-                        }
-                    } else {
-                        "Unknown".to_string()
-                    };
-
-                    let payment_record = PaymentRecord {
-                        tx_id: payment.tx_id,
-                        contact_name,
-                        amount: Credits::from(payment.amount as u64),
-                        is_incoming,
-                        timestamp: payment.created_at as u64,
-                        memo: payment.memo,
-                    };
-
-                    self.payments.push(payment_record);
-                }
-            }
-        }
     }
 
     pub fn trigger_fetch_payment_history(&mut self) -> AppAction {
@@ -605,14 +523,20 @@ impl PaymentHistory {
             self.selected_identity_string = identities[0].display_string();
         }
 
-        // Load payments from database if we have an identity selected and no payments loaded
+        // Reset the fetched flag if we have no payments; next render dispatches
+        // `LoadPaymentHistory` via `has_searched == false`.
         if self.selected_identity.is_some() && self.payments.is_empty() {
-            self.load_payments_from_database();
+            self.has_searched = false;
         }
     }
 
     pub fn render(&mut self, ui: &mut Ui) -> AppAction {
-        let action = AppAction::None;
+        let mut action = AppAction::None;
+
+        // Auto-dispatch `LoadPaymentHistory` on first render or after identity change.
+        if !self.has_searched && !self.loading && self.selected_identity.is_some() {
+            action = self.trigger_fetch_payment_history();
+        }
 
         // Identity selector or no identities message
         let identities = self
@@ -640,9 +564,9 @@ impl PaymentHistory {
 
                     if response.changed() {
                         self.refresh();
-
-                        // Load payments from database for the newly selected identity
-                        self.load_payments_from_database();
+                        // The next render dispatches `LoadPaymentHistory`
+                        // via `has_searched == false`.
+                        self.has_searched = false;
                     }
                 });
             }
@@ -835,22 +759,11 @@ impl PaymentHistory {
                             },
                         };
                         self.payments.push(payment);
-
-                        // Save to database
-                        let (from_id, to_id, payment_type) = if is_incoming {
-                            (contact_id, identity_id, "received")
-                        } else {
-                            (identity_id, contact_id, "sent")
-                        };
-
-                        let _ = self.app_context.db.save_payment(
-                            &tx_id,
-                            &from_id,
-                            &to_id,
-                            amount as i64,
-                            if memo.is_empty() { None } else { Some(&memo) },
-                            payment_type,
-                        );
+                        // Payment mirror dropped — `payments::send_payment_to_contact_impl`
+                        // already routes through `WalletBackend::dashpay_record_payment`
+                        // + the payment-timestamp sidecar, so the upstream wallet is
+                        // the single source of truth for outgoing payments.
+                        let _ = (contact_id, identity_id, tx_id, amount, memo, is_incoming);
                     }
                 } else {
                     // No selected identity, just populate in-memory

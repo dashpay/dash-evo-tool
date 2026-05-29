@@ -679,6 +679,14 @@ mod tests {
         assert!(is_wallet_touching(&BackendTask::ShieldedTask(
             shielded::ShieldedTask::InitializeShieldedWallet { seed_hash },
         )));
+        assert!(is_wallet_touching(&BackendTask::IdentityTask(
+            identity::IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames,
+        )));
+        assert!(is_wallet_touching(&BackendTask::DashPayTask(Box::new(
+            dashpay::DashPayTask::SearchProfiles {
+                search_query: String::new(),
+            },
+        ))));
 
         // The migration task itself must NOT be gated — that is the
         // work that flips the gate back off.

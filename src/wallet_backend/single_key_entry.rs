@@ -31,7 +31,7 @@ pub const SINGLE_KEY_ENTRY_VERSION: u8 = 1;
 pub const LEGACY_RAW_KEY_LEN: usize = 32;
 
 /// On-disk shape of a single imported private key. See module docs.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SingleKeyEntry {
     /// `true` iff `ciphertext` is the AES-GCM encryption of the raw 32
     /// private-key bytes under a user-supplied passphrase. `false`
@@ -57,6 +57,19 @@ pub struct SingleKeyEntry {
     /// caller falls back to deriving from plaintext when unlocked.
     #[serde(default)]
     pub public_key_bytes: Vec<u8>,
+}
+
+impl std::fmt::Debug for SingleKeyEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SingleKeyEntry")
+            .field("has_passphrase", &self.has_passphrase)
+            .field("ciphertext", &"[redacted]")
+            .field("salt_len", &self.salt.len())
+            .field("nonce_len", &self.nonce.len())
+            .field("passphrase_hint", &self.passphrase_hint)
+            .field("public_key_bytes_len", &self.public_key_bytes.len())
+            .finish()
+    }
 }
 
 impl SingleKeyEntry {
@@ -258,6 +271,22 @@ mod tests {
         assert!(decoded.salt.is_empty());
         assert!(decoded.nonce.is_empty());
         assert_eq!(decoded.ciphertext, raw.to_vec());
+    }
+
+    #[test]
+    fn debug_output_does_not_expose_private_bytes() {
+        let raw = [0x42u8; 32];
+        let entry = SingleKeyEntry::unprotected(raw);
+        let dbg = format!("{entry:?}");
+        // The raw key byte 0x42 must not appear verbatim in the debug string.
+        assert!(
+            !dbg.contains("42, 42, 42"),
+            "debug output leaked private bytes: {dbg}"
+        );
+        assert!(
+            dbg.contains("[redacted]"),
+            "expected [redacted] in debug output: {dbg}"
+        );
     }
 
     #[test]

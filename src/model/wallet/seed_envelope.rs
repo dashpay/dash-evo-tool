@@ -29,7 +29,7 @@ pub const STORED_SEED_ENVELOPE_VERSION: u8 = 1;
 /// reads to reconstruct a `Wallet`: the AES-GCM ciphertext, the
 /// Argon2-derived salt, the GCM nonce, the optional user hint, and the
 /// `uses_password` flag the password-prompt UI keys off.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StoredSeedEnvelope {
     /// AES-GCM ciphertext of the BIP-39 seed bytes. When
     /// `uses_password` is `false`, contains the raw 64-byte seed
@@ -52,9 +52,44 @@ pub struct StoredSeedEnvelope {
     pub xpub_encoded: Vec<u8>,
 }
 
+impl std::fmt::Debug for StoredSeedEnvelope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StoredSeedEnvelope")
+            .field("uses_password", &self.uses_password)
+            .field("encrypted_seed", &"[redacted]")
+            .field("salt_len", &self.salt.len())
+            .field("nonce_len", &self.nonce.len())
+            .field("password_hint", &self.password_hint)
+            .field("xpub_encoded_len", &self.xpub_encoded.len())
+            .finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn debug_output_does_not_expose_seed_bytes() {
+        let seed_bytes = [0x42u8; 64];
+        let envelope = StoredSeedEnvelope {
+            encrypted_seed: seed_bytes.to_vec(),
+            salt: Vec::new(),
+            nonce: Vec::new(),
+            password_hint: None,
+            uses_password: false,
+            xpub_encoded: vec![0xCD; 78],
+        };
+        let dbg = format!("{envelope:?}");
+        assert!(
+            !dbg.contains("42, 42, 42"),
+            "debug output leaked seed bytes: {dbg}"
+        );
+        assert!(
+            dbg.contains("[redacted]"),
+            "expected [redacted] in debug output: {dbg}"
+        );
+    }
 
     /// Round-trip through bincode — the persisted shape must survive
     /// encode/decode without losing any field. Adding a non-defaulted

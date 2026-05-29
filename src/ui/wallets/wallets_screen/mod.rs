@@ -39,6 +39,7 @@ use egui_extras::{Column, TableBuilder};
 use std::sync::{Arc, RwLock};
 
 use crate::model::wallet::single_key::SingleKeyWallet;
+use crate::ui::wallets::import_single_key::ImportSingleKeyDialog;
 use crate::ui::wallets::shielded_tab::ShieldedTabView;
 use address_table::{SortColumn, SortOrder};
 use dialogs::{
@@ -150,6 +151,10 @@ pub struct WalletsBalancesScreen {
     /// (rather than constructed fresh each frame) so the underlying tracing
     /// log fires once on mode entry instead of every repaint.
     pub(crate) sk_spv_warning_banner: crate::ui::components::MessageBanner,
+    /// J-6 "Import private key (advanced)" modal dialog. Routes single-key
+    /// imports through [`crate::wallet_backend::SingleKeyView::import_wif`]
+    /// instead of the legacy `single_key_wallets` DB path.
+    import_single_key_dialog: ImportSingleKeyDialog,
 }
 
 impl WalletsBalancesScreen {
@@ -252,6 +257,7 @@ impl WalletsBalancesScreen {
             cached_tx_indices: None,
             cached_tx_source_len: None,
             sk_spv_warning_banner: crate::ui::components::MessageBanner::new(),
+            import_single_key_dialog: ImportSingleKeyDialog::new(app_context.network),
         }
     }
 
@@ -824,8 +830,7 @@ impl WalletsBalancesScreen {
         // tells the user what's happening, so the empty-state must not
         // race ahead with Create/Import CTAs that the rehydrated wallet
         // list might invalidate seconds later.
-        let migration_state =
-            (*self.app_context.migration_status().state()).clone();
+        let migration_state = (*self.app_context.migration_status().state()).clone();
         let migration_running = matches!(
             migration_state,
             crate::context::migration_status::MigrationState::Running { .. }
@@ -2150,6 +2155,45 @@ impl WalletsBalancesScreen {
             AppAction::BackendTask(core_task)
         }
     }
+
+    /// Render the J-6 "Import private key (advanced)" modal and route a
+    /// confirmed WIF through [`crate::wallet_backend::SingleKeyView::import_wif`].
+    /// Errors surface as a global banner with the typed `TaskError` details
+    /// attached; success emits a confirmation toast naming the derived
+    /// address so the user can match it against their records.
+    fn render_import_single_key_dialog(&mut self, ctx: &Context) {
+        let response = self.import_single_key_dialog.show(ctx);
+        if response.cancelled {
+            self.import_single_key_dialog.open = false;
+            self.import_single_key_dialog.reset();
+        }
+        if let Some(request) = response.confirmed {
+            match self.app_context.wallet_backend() {
+                Ok(backend) => match backend
+                    .single_key()
+                    .import_wif(&request.wif, request.alias.clone())
+                {
+                    Ok(_) => {
+                        MessageBanner::set_global(
+                            ctx,
+                            format!("Imported key added for {}.", request.address_preview),
+                            MessageType::Success,
+                        );
+                        self.import_single_key_dialog.open = false;
+                        self.import_single_key_dialog.reset();
+                    }
+                    Err(e) => {
+                        MessageBanner::set_global(ctx, e.to_string(), MessageType::Error)
+                            .with_details(&e);
+                    }
+                },
+                Err(e) => {
+                    MessageBanner::set_global(ctx, e.to_string(), MessageType::Error)
+                        .with_details(&e);
+                }
+            }
+        }
+    }
 }
 
 impl ScreenLike for WalletsBalancesScreen {
@@ -2201,6 +2245,10 @@ impl ScreenLike for WalletsBalancesScreen {
             (
                 "Import Wallet",
                 DesiredAppAction::AddScreenType(Box::new(ScreenType::ImportMnemonic)),
+            ),
+            (
+                "Import key (advanced)",
+                DesiredAppAction::Custom("OpenImportSingleKey".to_string()),
             ),
             (
                 "Create Wallet",
@@ -2284,6 +2332,7 @@ impl ScreenLike for WalletsBalancesScreen {
         action |= self.render_fund_platform_dialog(ctx);
         action |= self.render_mine_dialog(ctx);
         self.render_private_key_dialog(ctx);
+        self.render_import_single_key_dialog(ctx);
 
         // Rename dialog
         if self.show_rename_dialog {
@@ -2519,7 +2568,15 @@ impl ScreenLike for WalletsBalancesScreen {
 
         // Handle custom refresh actions - check wallet lock status
         if let AppAction::Custom(ref cmd) = action {
-            if cmd == "RefreshHDWallet" {
+            if cmd == "OpenImportSingleKey" {
+                // Sync the dialog's network with the active context every
+                // open so a quick network switch can't show a stale preview.
+                self.import_single_key_dialog
+                    .set_network(self.app_context.network);
+                self.import_single_key_dialog.reset();
+                self.import_single_key_dialog.open = true;
+                action = AppAction::None;
+            } else if cmd == "RefreshHDWallet" {
                 if let Some(wallet_arc) = &self.selected_wallet {
                     let is_locked = wallet_arc.read().map(|w| !w.is_open()).unwrap_or(true);
                     if is_locked {

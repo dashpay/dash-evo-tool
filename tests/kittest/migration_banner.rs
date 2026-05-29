@@ -101,17 +101,15 @@ fn tc_mig_005_retry_click_enqueues_action() {
         });
     harness.run();
     // Sanity: nothing pending before the click.
-    assert!(MessageBanner::take_action(harness.ctx()).is_none());
+    assert!(MessageBanner::take_action(&harness.ctx).is_none());
 
-    harness
-        .get_by_label("Retry now")
-        .click();
+    harness.get_by_label("Retry now").click();
     harness.run();
 
-    let action = MessageBanner::take_action(harness.ctx());
+    let action = MessageBanner::take_action(&harness.ctx);
     assert_eq!(action.as_deref(), Some(MIGRATION_RETRY_ACTION_ID));
     // Drained: subsequent calls return None.
-    assert!(MessageBanner::take_action(harness.ctx()).is_none());
+    assert!(MessageBanner::take_action(&harness.ctx).is_none());
 }
 
 /// TC-A11Y-004 — error banners ship an icon **and** a textual label

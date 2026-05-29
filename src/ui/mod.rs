@@ -91,7 +91,7 @@ pub mod network_chooser_screen;
 pub mod theme;
 pub mod tokens;
 pub mod tools;
-pub(crate) mod wallets;
+pub mod wallets;
 pub mod welcome_screen;
 
 #[derive(Debug, Clone, Copy, Ord, PartialOrd, Eq, PartialEq, Hash)]

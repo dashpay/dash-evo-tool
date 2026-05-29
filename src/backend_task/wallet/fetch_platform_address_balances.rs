@@ -9,6 +9,7 @@ use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use dash_sdk::platform::address_sync::AddressSyncConfig;
+use dash_sdk::platform::address_sync::AddressIndex;
 use dash_sdk::platform::address_sync::AddressSyncResult;
 use std::sync::Arc;
 
@@ -82,17 +83,18 @@ impl AppContext {
                 tracing::debug!(
                     "Platform address balance tree is empty. Returning empty sync result."
                 );
-                AddressSyncResult::default()
+                AddressSyncResult::<AddressIndex, PlatformAddress>::default()
             }
             Err(e) => return Err(crate::backend_task::error::TaskError::from(e)),
         };
 
+        let highest_found_index = result.found.keys().map(|(tag, _)| *tag).max();
         tracing::info!(
             "Sync complete: duration={:?}, found={}, absent={}, highest_index={:?}, checkpoint={}, new_sync_height={}, new_sync_timestamp={}",
             start_time.elapsed(),
             result.found.len(),
             result.absent.len(),
-            result.highest_found_index,
+            highest_found_index,
             result.checkpoint_height,
             result.new_sync_height,
             result.new_sync_timestamp,

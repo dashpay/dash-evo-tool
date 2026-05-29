@@ -17,6 +17,7 @@ use dash_sdk::dpp::identity::KeyType::{BIP13_SCRIPT_HASH, ECDSA_HASH160};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dash_sdk::dpp::async_trait::async_trait;
 use dash_sdk::dpp::identity::signer::Signer;
 use dash_sdk::dpp::identity::{Identity, KeyID, KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::key_wallet::bip32::ChildNumber;
@@ -304,8 +305,9 @@ impl Display for QualifiedIdentity {
     }
 }
 
+#[async_trait]
 impl Signer<IdentityPublicKey> for QualifiedIdentity {
-    fn sign(
+    async fn sign(
         &self,
         identity_public_key: &IdentityPublicKey,
         data: &[u8],
@@ -481,7 +483,7 @@ impl Signer<IdentityPublicKey> for QualifiedIdentity {
         ))
     }
 
-    fn sign_create_witness(
+    async fn sign_create_witness(
         &self,
         identity_public_key: &IdentityPublicKey,
         data: &[u8],
@@ -490,7 +492,7 @@ impl Signer<IdentityPublicKey> for QualifiedIdentity {
 
         // First, sign the data to get the signature (compact recoverable signature)
         // The public key will be recovered from the signature during verification
-        let signature = self.sign(identity_public_key, data)?;
+        let signature = self.sign(identity_public_key, data).await?;
 
         // Create the appropriate AddressWitness based on the key type
         match identity_public_key.key_type() {

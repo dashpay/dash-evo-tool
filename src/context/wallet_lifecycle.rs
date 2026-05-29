@@ -509,13 +509,13 @@ impl AppContext {
 
         let mut inserted = 0u32;
         for account in collection.all_accounts() {
-            let account_type = account.account_type.to_account_type();
+            let account_type = account.managed_account_type().to_account_type();
             let Some((path_reference, path_type)) = Self::spv_account_metadata(&account_type)
             else {
                 continue;
             };
 
-            for address in account.account_type.all_addresses() {
+            for address in account.all_addresses() {
                 if let Some(info) = account.get_address_info(&address)
                     && let Ok(true) = self.register_spv_address(
                         wallet_arc,
@@ -852,7 +852,7 @@ impl AppContext {
                     let mut registered = false;
                     for acc in collection.all_accounts() {
                         if let Some(ai) = acc.get_address_info(&address) {
-                            let account_type = acc.account_type.to_account_type();
+                            let account_type = acc.managed_account_type().to_account_type();
                             let (path_reference, path_type) =
                                 Self::spv_account_metadata(&account_type).unwrap_or_else(|| {
                                     let default_ref = if ai.path.is_bip44(self.network) {

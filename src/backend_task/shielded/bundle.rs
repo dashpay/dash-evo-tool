@@ -85,7 +85,7 @@ impl ShieldStage {
 /// Build a Shield transition without broadcasting (for batch parallel mode).
 ///
 /// Returns the built `StateTransition` so the caller can broadcast in nonce order.
-pub fn build_shield_credit(
+pub async fn build_shield_credit(
     app_context: &Arc<AppContext>,
     seed_hash: &WalletSeedHash,
     recipient_payment_address: &PaymentAddress,
@@ -114,19 +114,22 @@ pub fn build_shield_credit(
     let fee_strategy: AddressFundsFeeStrategy =
         vec![AddressFundsFeeStrategyStep::DeductFromInput(0)];
 
-    let wallet = wallet_arc.read()?;
+    // Clone the wallet so the signer is owned across the async build (the
+    // std RwLock guard is not held across an await point).
+    let wallet = { wallet_arc.read()?.clone() };
     // memo: 36-byte structured memo (4-byte type tag + 32-byte payload); all zeros = empty memo
     build_shield_transition(
         &recipient_addr,
         amount,
         inputs,
         fee_strategy,
-        &*wallet,
+        &wallet,
         0,
         &prover,
         [0u8; 36],
         sdk.version(),
     )
+    .await
     .map_err(|e| shielded_build_error(e.to_string()))
 }
 
@@ -195,19 +198,22 @@ pub async fn shield_credits(
     }
 
     let state_transition = {
-        let wallet = wallet_arc.read()?;
+        // Clone the wallet so the signer is owned across the async build (the
+        // std RwLock guard is not held across an await point).
+        let wallet = { wallet_arc.read()?.clone() };
         // memo: 36-byte structured memo (4-byte type tag + 32-byte payload); all zeros = empty memo
         build_shield_transition(
             &recipient_addr,
             amount,
             inputs,
             fee_strategy,
-            &*wallet,
+            &wallet,
             0,
             &prover,
             [0u8; 36],
             sdk.version(),
         )
+        .await
         .map_err(|e| shielded_build_error(e.to_string()))?
     };
 

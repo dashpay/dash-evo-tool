@@ -268,6 +268,9 @@ impl AppContext {
             ) => {
                 // First fetch the document to transfer
                 let document_query = DocumentQuery {
+                    select: Default::default(),
+                    group_by: vec![],
+                    having: vec![],
                     data_contract: data_contract.clone(),
                     document_type_name: document_type.name().to_string(),
                     where_clauses: vec![],
@@ -325,6 +328,9 @@ impl AppContext {
             ) => {
                 // First fetch the document to purchase
                 let document_query = DocumentQuery {
+                    select: Default::default(),
+                    group_by: vec![],
+                    having: vec![],
                     data_contract: data_contract.clone(),
                     document_type_name: document_type.name().to_string(),
                     where_clauses: vec![],
@@ -383,6 +389,9 @@ impl AppContext {
             ) => {
                 // First fetch the document to set price on
                 let document_query = DocumentQuery {
+                    select: Default::default(),
+                    group_by: vec![],
+                    having: vec![],
                     data_contract: data_contract.clone(),
                     document_type_name: document_type.name().to_string(),
                     where_clauses: vec![],

@@ -64,6 +64,7 @@ impl AppContext {
             sdk.version(),
             None,
         )
+        .await
         .map_err(|e| TaskError::IdentityUpdateTransitionError {
             source_error: Box::new(SdkError::Protocol(e)),
         })?;

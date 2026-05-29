@@ -83,6 +83,16 @@ fn tc_mig_003_failed_banner_shows_retry_button() {
         harness.query_by_label("Retry now").is_some(),
         "retry action must surface as a clickable button",
     );
+    // TC-MIG-003 (continued) — the spec forbids "contact support" copy on
+    // the failure banner; users must be able to self-resolve via Retry.
+    assert!(
+        harness.query_by_label("contact support").is_none(),
+        "failure banner must not redirect to 'contact support'",
+    );
+    assert!(
+        harness.query_by_label("Contact support").is_none(),
+        "failure banner must not redirect to 'Contact support'",
+    );
 }
 
 /// TC-MIG-005 / TC-A11Y-007 — clicking the Retry button enqueues the

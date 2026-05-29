@@ -857,6 +857,33 @@ mod tests {
         assert_ne!(SHIELDED_LOCK_ICON, SHIELDED_SPEND_LOCKED_LABEL);
     }
 
+    /// TC-SH-007 — when shielded balance is mid-verification (Verifying
+    /// state) the Send button copy must read "Spending paused until
+    /// shielded balance is verified." verbatim. We assert against the
+    /// public constant the UI binds the tooltip to so a wording drift
+    /// fails this test before reaching users.
+    #[test]
+    fn tc_sh_007_spending_paused_tooltip_matches_spec() {
+        // Spec text (TC-SH-007): "Spending paused until shielded balance is verified."
+        assert_eq!(
+            SHIELDED_SPEND_LOCKED_TOOLTIP, "Spending paused until shielded balance is verified.",
+            "tooltip must match the Diziet §2.3 wording verbatim",
+        );
+        // The Verifying indicator (mid-sync) is the gate for the lock.
+        // If the indicator ever stops mapping the Shielded migration step
+        // to Verifying, the lock would silently disappear.
+        assert_eq!(
+            derive_shielded_indicator(
+                &MigrationState::Running {
+                    step: MigrationStep::Shielded,
+                },
+                false,
+            ),
+            ShieldedIndicator::Verifying,
+            "Verifying gates the spending-paused lock — must stay wired",
+        );
+    }
+
     /// The Verified badge follows the same icon + text rule so
     /// greyscale viewers see the same affirmation as colour users.
     #[test]

@@ -303,24 +303,21 @@ fn detect_legacy_rows(app_context: &AppContext) -> Result<bool, MigrationError> 
 }
 
 /// `SELECT 1 FROM <table> LIMIT 1` — returns `false` for missing
-/// tables. Catches `no such table` explicitly so a fresh install does
-/// not trigger a migration loop.
+/// tables. Uses a typed `legacy_table_exists` pre-check so the missing
+/// table case never reaches `conn.prepare` — any `rusqlite` error from
+/// here on is a hard error, not a "table missing" string-parsed branch.
 fn table_has_rows(conn: &Connection, table: &'static str) -> Result<bool, MigrationError> {
+    if !legacy_table_exists_named(conn, table)? {
+        return Ok(false);
+    }
     // Caller passes a static identifier from `LEGACY_TABLES`, so the
     // `format!` here cannot interpolate user input. SQLite parameter
     // binding does not support table names, so this is the canonical
     // shape.
     let sql = format!("SELECT 1 FROM {table} LIMIT 1");
-    let mut stmt = match conn.prepare(&sql) {
-        Ok(s) => s,
-        Err(rusqlite::Error::SqliteFailure(_, Some(msg))) if msg.contains("no such table") => {
-            return Ok(false);
-        }
-        Err(rusqlite::Error::SqlInputError { msg, .. }) if msg.contains("no such table") => {
-            return Ok(false);
-        }
-        Err(e) => return Err(MigrationError::LegacyDbRead { table, source: e }),
-    };
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| MigrationError::LegacyDbRead { table, source: e })?;
     let mut rows = stmt
         .query([])
         .map_err(|e| MigrationError::LegacyDbRead { table, source: e })?;
@@ -425,23 +422,17 @@ where
 {
     use dash_sdk::dpp::dashcore::PrivateKey;
 
+    if !legacy_table_exists_named(conn, "single_key_wallet")? {
+        return Ok(SingleKeyMigrationOutcome::default());
+    }
     let sql = "SELECT encrypted_private_key, alias, uses_password \
                FROM single_key_wallet WHERE network = ?1";
-    let mut stmt = match conn.prepare(sql) {
-        Ok(s) => s,
-        Err(rusqlite::Error::SqliteFailure(_, Some(msg))) if msg.contains("no such table") => {
-            return Ok(SingleKeyMigrationOutcome::default());
-        }
-        Err(rusqlite::Error::SqlInputError { msg, .. }) if msg.contains("no such table") => {
-            return Ok(SingleKeyMigrationOutcome::default());
-        }
-        Err(e) => {
-            return Err(MigrationError::LegacyDbRead {
-                table: "single_key_wallet",
-                source: e,
-            });
-        }
-    };
+    let mut stmt = conn
+        .prepare(sql)
+        .map_err(|e| MigrationError::LegacyDbRead {
+            table: "single_key_wallet",
+            source: e,
+        })?;
 
     let rows = stmt
         .query_map(rusqlite::params![network.to_string()], |row| {
@@ -747,6 +738,23 @@ fn legacy_table_exists(conn: &Connection, name: &str) -> Result<bool, MigrationE
     })
 }
 
+/// Same as [`legacy_table_exists`] but propagates a caller-supplied
+/// static table name into the error variant so partial-failure paths
+/// stay attributable. Used by [`table_has_rows`] and the per-domain
+/// `migrate_*_rows_from_conn` bodies as a typed pre-check that
+/// replaces the previous `msg.contains("no such table")` arms.
+fn legacy_table_exists_named(
+    conn: &Connection,
+    table: &'static str,
+) -> Result<bool, MigrationError> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+        rusqlite::params![table],
+        |row| row.get::<_, i64>(0).map(|c| c > 0),
+    )
+    .map_err(|e| MigrationError::LegacyDbRead { table, source: e })
+}
+
 /// Same as [`legacy_table_exists`] but addresses a specific schema by
 /// name — used to probe the ATTACHed `legacy` database from the
 /// destination connection in the shielded migrator.
@@ -854,6 +862,9 @@ where
         crate::model::wallet::meta::WalletMeta,
     ) -> Result<(), TaskError>,
 {
+    if !legacy_table_exists_named(conn, "wallet")? {
+        return Ok(WalletMetaMigrationOutcome::default());
+    }
     let core_wallet_name_present = wallet_table_has_core_wallet_name(conn)?;
     let sql = if core_wallet_name_present {
         "SELECT seed_hash, alias, is_main, core_wallet_name, master_ecdsa_bip44_account_0_epk \
@@ -864,21 +875,12 @@ where
          FROM wallet WHERE network = ?1"
     };
 
-    let mut stmt = match conn.prepare(sql) {
-        Ok(s) => s,
-        Err(rusqlite::Error::SqliteFailure(_, Some(msg))) if msg.contains("no such table") => {
-            return Ok(WalletMetaMigrationOutcome::default());
-        }
-        Err(rusqlite::Error::SqlInputError { msg, .. }) if msg.contains("no such table") => {
-            return Ok(WalletMetaMigrationOutcome::default());
-        }
-        Err(e) => {
-            return Err(MigrationError::LegacyDbRead {
-                table: "wallet",
-                source: e,
-            });
-        }
-    };
+    let mut stmt = conn
+        .prepare(sql)
+        .map_err(|e| MigrationError::LegacyDbRead {
+            table: "wallet",
+            source: e,
+        })?;
 
     let rows = stmt
         .query_map(rusqlite::params![network.to_string()], |row| {
@@ -950,8 +952,8 @@ where
 /// `core_wallet_name`. A recent legacy schema migration drops the
 /// column, so older installs may still have it while freshly-migrated
 /// ones will not. Missing table reads as "column absent" — the caller
-/// then short-circuits via the prepared-statement `no such table`
-/// branch.
+/// short-circuits via the typed `legacy_table_exists_named` pre-check
+/// before this probe runs.
 fn wallet_table_has_core_wallet_name(conn: &Connection) -> Result<bool, MigrationError> {
     let count: i64 = conn
         .query_row(
@@ -1047,25 +1049,19 @@ where
         crate::model::wallet::seed_envelope::StoredSeedEnvelope,
     ) -> Result<(), TaskError>,
 {
+    if !legacy_table_exists_named(conn, "wallet")? {
+        return Ok(WalletSeedsMigrationOutcome::default());
+    }
     let sql = "SELECT seed_hash, encrypted_seed, salt, nonce, password_hint, \
                uses_password, master_ecdsa_bip44_account_0_epk \
                FROM wallet WHERE network = ?1";
 
-    let mut stmt = match conn.prepare(sql) {
-        Ok(s) => s,
-        Err(rusqlite::Error::SqliteFailure(_, Some(msg))) if msg.contains("no such table") => {
-            return Ok(WalletSeedsMigrationOutcome::default());
-        }
-        Err(rusqlite::Error::SqlInputError { msg, .. }) if msg.contains("no such table") => {
-            return Ok(WalletSeedsMigrationOutcome::default());
-        }
-        Err(e) => {
-            return Err(MigrationError::LegacyDbRead {
-                table: "wallet",
-                source: e,
-            });
-        }
-    };
+    let mut stmt = conn
+        .prepare(sql)
+        .map_err(|e| MigrationError::LegacyDbRead {
+            table: "wallet",
+            source: e,
+        })?;
 
     let rows = stmt
         .query_map(rusqlite::params![network.to_string()], |row| {

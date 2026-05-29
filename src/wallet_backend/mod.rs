@@ -24,10 +24,12 @@ mod dashpay;
 mod event_bridge;
 mod kv;
 mod loader;
+mod shielded;
 mod single_key;
 mod snapshot;
 
 pub use dashpay::DashpayView;
+pub use shielded::{InsertShieldedNote, SHIELDED_SIDECAR_FILE, ShieldedNoteRow, ShieldedView};
 
 pub use asset_lock_signer::AssetLockSignerError;
 use asset_lock_signer::WalletAssetLockSigner;
@@ -118,6 +120,10 @@ struct Inner {
     /// in [`Self::seeds`] and the upstream wallet snapshot. See
     /// [`single_key`] for the public view.
     secret_store: Arc<SecretStore>,
+    /// Per-network shielded-notes sidecar. Lazy-materialised on first
+    /// write at `<spv_storage_dir>/det-shielded.sqlite`. See
+    /// [`shielded`] (T-SH-01).
+    shielded: ShieldedView,
     /// In-memory index of imported single-key entries, keyed by their
     /// P2PKH address. Drives `SingleKeyView::list` without enumerating
     /// the (non-enumerable) secret store. T-SK-02 will seed this from
@@ -197,6 +203,7 @@ impl WalletBackend {
                 seeds: std::sync::RwLock::new(std::collections::BTreeMap::new()),
                 peer,
                 network,
+                shielded: ShieldedView::new(&spv_storage_dir),
                 spv_storage_dir,
                 dashpay_address_index_lock: std::sync::Mutex::new(()),
                 secret_store,
@@ -360,6 +367,15 @@ impl WalletBackend {
     /// (T-SK-02), which writes legacy WIFs back into the vault.
     pub fn secret_store(&self) -> &Arc<SecretStore> {
         &self.inner.secret_store
+    }
+
+    /// Per-network shielded sidecar (T-SH-01). The file at
+    /// `<spv_storage_dir>/det-shielded.sqlite` is created lazily on the
+    /// first write; a wallet with no shielded activity gets no sidecar
+    /// on disk (FR-3.3). T-SH-03 will rewire callers off the legacy
+    /// `database::shielded` API onto this view.
+    pub fn shielded(&self) -> &ShieldedView {
+        &self.inner.shielded
     }
 
     /// View over the single-key (imported WIF) operations. The view

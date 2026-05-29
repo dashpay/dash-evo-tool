@@ -38,6 +38,7 @@ use dash_sdk::query_types::{Documents, IndexMap};
 use futures::future::join_all;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use migration::MigrationTask;
 use shielded::ShieldedTask;
 use tokens::TokenTask;
 use grovestark::GroveSTARKTask;
@@ -52,6 +53,7 @@ pub mod document;
 pub mod error;
 pub mod grovestark;
 pub mod identity;
+pub mod migration;
 pub mod mnlist;
 pub mod platform_info;
 pub mod register_contract;
@@ -98,6 +100,9 @@ pub enum BackendTask {
     GroveSTARKTask(GroveSTARKTask),
     WalletTask(WalletTask),
     ShieldedTask(ShieldedTask),
+    /// Cold-start data-migration orchestrator. Drains legacy `data.db`
+    /// rows into the upstream wallet storage; idempotent across launches.
+    MigrationTask(MigrationTask),
     /// Rebuild the Core RPC client and SDK on the current network context.
     /// Dispatched when the user saves a new RPC password so the reinit
     /// (which includes DAPI discovery) runs off the UI thread.
@@ -457,6 +462,9 @@ impl AppContext {
             BackendTask::WalletTask(wallet_task) => Ok(self.run_wallet_task(wallet_task).await?),
             BackendTask::ShieldedTask(shielded_task) => {
                 Ok(self.run_shielded_task(shielded_task).await?)
+            }
+            BackendTask::MigrationTask(migration_task) => {
+                Ok(self.run_migration_task(migration_task).await?)
             }
             BackendTask::ReinitCoreClientAndSdk => {
                 Arc::clone(self).reinit_core_client_and_sdk()?;

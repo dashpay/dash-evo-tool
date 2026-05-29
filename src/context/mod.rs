@@ -2,6 +2,7 @@ pub mod connection_status;
 mod contested_names_db;
 mod contract_token_db;
 mod identity_db;
+pub mod migration_status;
 mod platform_address_db;
 mod settings_db;
 pub mod shielded;
@@ -41,6 +42,7 @@ use dash_sdk::platform::DataContract;
 #[cfg(any(test, feature = "testing"))]
 use dash_sdk::platform::Identifier;
 use egui::Context;
+use migration_status::MigrationStatus;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::str::FromStr as _;
@@ -100,6 +102,10 @@ pub struct AppContext {
     pub(crate) subtasks: Arc<TaskManager>,
     /// Tracks the connection status to currently active network
     pub(crate) connection_status: Arc<ConnectionStatus>,
+    /// Tracks the legacy-data migration progress. Cheap to read each
+    /// frame from the UI. Always present and idle on fresh installs;
+    /// driven by [`MigrationTask::FinishUnwire`](crate::backend_task::migration::MigrationTask).
+    pub(crate) migration_status: Arc<MigrationStatus>,
     /// Pending wallet selection - set after creating/importing a wallet
     /// so the wallet screen can auto-select the new wallet
     pub(crate) pending_wallet_selection: Mutex<Option<WalletSeedHash>>,
@@ -327,6 +333,7 @@ impl AppContext {
             app_kv,
             subtasks,
             connection_status,
+            migration_status: Arc::new(MigrationStatus::new_idle()),
             pending_wallet_selection: Mutex::new(None),
             selected_wallet_hash: Mutex::new(selected_wallet_hash),
             selected_single_key_hash: Mutex::new(selected_single_key_hash),
@@ -378,6 +385,14 @@ impl AppContext {
     /// Shared app-level k/v store. Cheap clone — `Arc<DetKv>` is `Arc`-backed.
     pub fn app_kv(&self) -> Arc<DetKv> {
         Arc::clone(&self.app_kv)
+    }
+
+    /// Shared migration-status handle. Cheap to clone — backed by `Arc`.
+    /// Readers (the UI hot path) call `.state()` each frame; writers
+    /// (the [`MigrationTask`](crate::backend_task::migration::MigrationTask)
+    /// orchestrator) call `.set_state()`.
+    pub fn migration_status(&self) -> Arc<MigrationStatus> {
+        Arc::clone(&self.migration_status)
     }
 
     /// Open (or create) the shared app k/v store at

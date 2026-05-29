@@ -1250,6 +1250,25 @@ pub enum TaskError {
     /// Creating a network context failed during a network switch.
     #[error("Could not connect to {network}. Check your network configuration and retry.")]
     NetworkContextCreationFailed { network: Network, detail: String },
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Migration errors
+    // ──────────────────────────────────────────────────────────────────────────
+    /// Surfaced when wallet/identity/DashPay storage is being upgraded
+    /// from the legacy `data.db` and a task tried to touch it before
+    /// the migration finished. The user can retry once the migration
+    /// banner clears.
+    #[error("Your data is still being updated. Please wait a moment and try again.")]
+    WalletStorageNotReady,
+
+    /// The post-unwire data migration failed. The user is asked to
+    /// restart so the migration can re-attempt cleanly — legacy
+    /// `data.db` rows are left intact.
+    #[error("Your data could not finish updating. Please restart the application to try again.")]
+    MigrationFailed {
+        #[source]
+        source: Box<crate::backend_task::migration::MigrationError>,
+    },
 }
 
 /// Escapes control characters in a token name for safe display in error messages.
@@ -3131,6 +3150,46 @@ mod tests {
             msg.contains("wait") && msg.contains("try again"),
             "Expected actionable guidance, got: {msg}"
         );
+        assert!(
+            std::error::Error::source(&err).is_some(),
+            "Expected source chain to be preserved"
+        );
+    }
+
+    /// TC-MIG-012 — `TaskError::WalletStorageNotReady` is present,
+    /// matchable, and renders as a user-friendly, actionable sentence.
+    #[test]
+    fn wallet_storage_not_ready_variant_is_matchable() {
+        let err = TaskError::WalletStorageNotReady;
+        assert!(matches!(err, TaskError::WalletStorageNotReady));
+        let msg = err.to_string();
+        assert!(!msg.is_empty(), "Display should not be empty");
+        assert!(
+            msg.contains("wait") || msg.contains("try again"),
+            "Expected actionable guidance, got: {msg}"
+        );
+        // Source chain: variant is fieldless, so no source.
+        assert!(
+            std::error::Error::source(&err).is_none(),
+            "Fieldless variant should have no source"
+        );
+    }
+
+    /// `TaskError::MigrationFailed` preserves the wrapped `MigrationError`
+    /// in its `#[source]` chain and renders a user-friendly message.
+    #[test]
+    fn migration_failed_preserves_source_chain() {
+        use crate::backend_task::migration::MigrationError;
+        let inner = MigrationError::LegacyDbOpen {
+            path: "/tmp/data.db".into(),
+            source: rusqlite::Error::InvalidQuery,
+        };
+        let err = TaskError::MigrationFailed {
+            source: Box::new(inner),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("could not finish updating"));
+        assert!(msg.contains("restart"));
         assert!(
             std::error::Error::source(&err).is_some(),
             "Expected source chain to be preserved"

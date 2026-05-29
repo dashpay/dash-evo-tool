@@ -16,6 +16,7 @@ use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
 use dash_sdk::dpp::dashcore::{Address, Network, PrivateKey, PublicKey};
 use eframe::egui::{self, Context, RichText, Ui};
 
+use crate::backend_task::error::TaskError;
 use crate::ui::components::password_input::PasswordInput;
 use crate::ui::theme::DashColors;
 
@@ -164,9 +165,12 @@ impl ImportSingleKeyDialog {
                 ui.label(RichText::new(addr).monospace().color(text_color));
             });
             ui.label(
-                RichText::new(format!("Network: {}", network_label(self.network)))
-                    .small()
-                    .color(DashColors::text_secondary(dark_mode)),
+                RichText::new(format!(
+                    "This is a {network} address.",
+                    network = network_label(self.network)
+                ))
+                .small()
+                .color(DashColors::text_secondary(dark_mode)),
             );
             ui.add_space(8.0);
         }
@@ -227,11 +231,13 @@ impl ImportSingleKeyDialog {
                 self.derived_address = Some(address.to_string());
                 self.error_message = None;
             }
-            Err(_) => {
+            Err(e) => {
                 self.derived_address = None;
                 self.error_message = Some(
-                    "This does not look like a valid private key. Check the characters and try again."
-                        .to_string(),
+                    TaskError::InvalidWif {
+                        source: Box::new(e),
+                    }
+                    .to_string(),
                 );
             }
         }

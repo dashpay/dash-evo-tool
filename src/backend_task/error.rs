@@ -3195,8 +3195,9 @@ mod tests {
         );
     }
 
-    /// TC-MIG-012 — `TaskError::WalletStorageNotReady` is present,
-    /// matchable, and renders as a user-friendly, actionable sentence.
+    /// TC-MIG-009 — `TaskError::WalletStorageNotReady` is present,
+    /// matchable, and renders as a user-friendly, actionable sentence
+    /// (US-J3: tools called mid-migration return a typed, actionable error).
     #[test]
     fn wallet_storage_not_ready_variant_is_matchable() {
         let err = TaskError::WalletStorageNotReady;

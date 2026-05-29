@@ -115,9 +115,12 @@ impl Default for MigrationStatus {
 mod tests {
     use super::*;
 
-    /// TC-MIG-011 — MigrationStatus state transitions on the success path.
-    /// Drives Idle → Running{Detecting} → Running{SingleKey} →
-    /// Running{Shielded} → Running{Finalize} → Success.
+    /// TC-MIG-001 (supporting) — MigrationStatus state transitions on the
+    /// success path. Drives Idle → Running{Detecting} → Running{SingleKey}
+    /// → Running{Shielded} → Running{Finalize} → Success. This is the
+    /// state machine the banner reads via `migration_running_text`; the
+    /// kittest in `tests/kittest/migration_banner.rs` verifies the banner
+    /// surface for each step.
     #[test]
     fn state_transitions_success_path() {
         let status = MigrationStatus::new_idle();

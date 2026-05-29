@@ -56,6 +56,14 @@ impl ShieldedView {
         &self.path
     }
 
+    /// Force the sidecar file (and its schema) into existence without
+    /// writing any business rows. Idempotent. Used by the T-SH-02
+    /// migrator so the legacy `data.db` can `ATTACH` the sidecar in a
+    /// known-good state before bulk-copying rows.
+    pub fn ensure_materialized(&self) -> rusqlite::Result<()> {
+        self.open_or_create()
+    }
+
     /// Open (creating if needed) and stash the connection. Idempotent.
     fn open_or_create(&self) -> rusqlite::Result<()> {
         let mut guard = self.conn.lock().expect("shielded sidecar mutex poisoned");

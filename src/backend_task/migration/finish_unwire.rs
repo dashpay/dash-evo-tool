@@ -448,12 +448,286 @@ where
     Ok(outcome)
 }
 
-/// Shielded row migration. **Skeleton** — T-SH-02 plugs in the
-/// `shielded_notes` / cursor mirror here.
-async fn migrate_shielded_rows(_app_context: &Arc<AppContext>) -> Result<(), TaskError> {
-    // TODO(T-SH-02): mirror `shielded_notes`, `shielded_wallet_meta`
-    // and the per-wallet sync cursor here.
+/// Counters from a single [`migrate_shielded_step`] pass. Internal so
+/// the orchestrator can assert row-count parity post-mirror without
+/// exposing the shape to other modules.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct ShieldedMigrationOutcome {
+    /// `shielded_notes` rows present in the sidecar for this network
+    /// **after** the mirror — equal to the number of distinct
+    /// `(wallet_seed_hash, nullifier)` legacy rows on the same network.
+    notes_in_sidecar: u32,
+    /// `shielded_wallet_meta` rows mirrored into the sidecar for this
+    /// network.
+    cursors_in_sidecar: u32,
+}
+
+/// Shielded row migration. Mirrors legacy `shielded_notes` +
+/// `shielded_wallet_meta` rows for `app_context.network` into the
+/// per-network sidecar exposed by [`WalletBackend::shielded`].
+/// Idempotent: re-running with the same legacy rows is a silent no-op
+/// (`INSERT OR IGNORE` on notes, `INSERT OR REPLACE` on cursors).
+async fn migrate_shielded_rows(app_context: &Arc<AppContext>) -> Result<(), TaskError> {
+    let backend = app_context
+        .wallet_backend()
+        .map_err(|_| MigrationError::WalletBackendUnavailable)?;
+    let Some(legacy_path) = app_context.db.db_file_path() else {
+        return Ok(());
+    };
+    if !legacy_path.exists() {
+        return Ok(());
+    }
+    let network_str = app_context.network.to_string();
+    let outcome = migrate_shielded_step(backend.shielded(), &legacy_path, &network_str)?;
+    tracing::info!(
+        target = "migration::finish_unwire",
+        notes = outcome.notes_in_sidecar,
+        cursors = outcome.cursors_in_sidecar,
+        network = %network_str,
+        "Shielded mirror pass complete",
+    );
     Ok(())
+}
+
+/// Pure shielded mirror — takes the sidecar view, the legacy `data.db`
+/// path, and the network filter. Materialises the sidecar (writes go
+/// through the view's open-or-create path), opens the legacy file
+/// read-only via URI, ATTACHes it, and copies the filtered rows.
+///
+/// Missing legacy tables are not an error — a freshly-installed
+/// install (or one that never created shielded rows) returns the zero
+/// outcome.
+fn migrate_shielded_step(
+    sidecar: &crate::wallet_backend::ShieldedView,
+    legacy_db_path: &std::path::Path,
+    network: &str,
+) -> Result<ShieldedMigrationOutcome, MigrationError> {
+    // Pre-flight on a throwaway read-only conn: if the legacy file has
+    // neither shielded table, bail out without touching the sidecar.
+    // T-SH-01's lazy provisioning then leaves the sidecar absent on
+    // disk for zero-shielded-activity users (FR-3.3 / TC-SH-003).
+    {
+        let probe = Connection::open(legacy_db_path).map_err(|e| MigrationError::LegacyDbOpen {
+            path: legacy_db_path.to_string_lossy().to_string(),
+            source: e,
+        })?;
+        let notes = legacy_table_exists(&probe, "shielded_notes")?;
+        let meta = legacy_table_exists(&probe, "shielded_wallet_meta")?;
+        if !notes && !meta {
+            return Ok(ShieldedMigrationOutcome::default());
+        }
+    }
+
+    // Force the sidecar file + schema into existence so we can open it
+    // as the writable destination connection below.
+    sidecar
+        .ensure_materialized()
+        .map_err(|e| MigrationError::LegacyDbRead {
+            table: "shielded_wallet_meta",
+            source: e,
+        })?;
+
+    // Open the sidecar as the *destination* (writable) main connection
+    // and ATTACH the legacy `data.db` read-only. SQLite makes the
+    // attached database inherit the main connection's write capability,
+    // so this orientation is required for `INSERT INTO main … SELECT
+    // FROM legacy.…`. Mirrors the pattern in
+    // `context/shielded.rs::migrate_commitment_tree_if_needed`.
+    let dest = Connection::open(sidecar.path()).map_err(|e| MigrationError::LegacyDbOpen {
+        path: sidecar.path().to_string_lossy().to_string(),
+        source: e,
+    })?;
+
+    let legacy_path_str = legacy_db_path
+        .to_str()
+        .ok_or_else(|| MigrationError::LegacyDbRead {
+            table: "shielded_notes",
+            source: rusqlite::Error::InvalidParameterName(
+                "legacy data.db path is not valid UTF-8".to_string(),
+            ),
+        })?;
+    // `?mode=ro` keeps the migrator from acquiring a write lock on the
+    // legacy file — a concurrent reader/writer in DET (shielded sync
+    // still on the legacy path until T-SH-03) is therefore unaffected.
+    let legacy_uri = format!("file:{legacy_path_str}?mode=ro");
+    dest.execute_batch("PRAGMA foreign_keys = OFF")
+        .map_err(|e| MigrationError::LegacyDbRead {
+            table: "shielded_notes",
+            source: e,
+        })?;
+    dest.execute(
+        "ATTACH DATABASE ?1 AS legacy",
+        rusqlite::params![&legacy_uri],
+    )
+    .map_err(|e| MigrationError::LegacyDbRead {
+        table: "shielded_notes",
+        source: e,
+    })?;
+
+    let result: Result<ShieldedMigrationOutcome, MigrationError> = (|| {
+        // Re-check existence against the *legacy* schema view now that
+        // it's attached — the `main` view is the sidecar (always has
+        // the tables).
+        let legacy_notes_present = legacy_table_exists_in(&dest, "legacy", "shielded_notes")?;
+        let legacy_meta_present = legacy_table_exists_in(&dest, "legacy", "shielded_wallet_meta")?;
+
+        let mut outcome = ShieldedMigrationOutcome::default();
+        if legacy_notes_present {
+            // `INSERT OR IGNORE` honours the sidecar's
+            // UNIQUE(wallet_seed_hash, nullifier, network) so a re-run
+            // is a silent no-op. `id` is omitted — the sidecar
+            // auto-increments fresh row ids on its own counter.
+            dest.execute(
+                "INSERT OR IGNORE INTO main.shielded_notes
+                     (wallet_seed_hash, note_data, position, cmx, nullifier,
+                      block_height, is_spent, value, network)
+                     SELECT wallet_seed_hash, note_data, position, cmx, nullifier,
+                            block_height, is_spent, value, network
+                     FROM legacy.shielded_notes
+                     WHERE network = ?1",
+                rusqlite::params![network],
+            )
+            .map_err(|e| MigrationError::LegacyDbRead {
+                table: "shielded_notes",
+                source: e,
+            })?;
+            outcome.notes_in_sidecar = dest
+                .query_row(
+                    "SELECT COUNT(*) FROM main.shielded_notes WHERE network = ?1",
+                    rusqlite::params![network],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(|e| MigrationError::LegacyDbRead {
+                    table: "shielded_notes",
+                    source: e,
+                })? as u32;
+        }
+        if legacy_meta_present {
+            // `INSERT OR REPLACE` upserts on the
+            // PRIMARY KEY(wallet_seed_hash, network) so re-runs with a
+            // newer sync cursor monotonically advance the sidecar.
+            dest.execute(
+                "INSERT OR REPLACE INTO main.shielded_wallet_meta
+                     (wallet_seed_hash, network,
+                      last_nullifier_sync_height, last_nullifier_sync_timestamp)
+                     SELECT wallet_seed_hash, network,
+                            last_nullifier_sync_height, last_nullifier_sync_timestamp
+                     FROM legacy.shielded_wallet_meta
+                     WHERE network = ?1",
+                rusqlite::params![network],
+            )
+            .map_err(|e| MigrationError::LegacyDbRead {
+                table: "shielded_wallet_meta",
+                source: e,
+            })?;
+            outcome.cursors_in_sidecar = dest
+                .query_row(
+                    "SELECT COUNT(*) FROM main.shielded_wallet_meta WHERE network = ?1",
+                    rusqlite::params![network],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(|e| MigrationError::LegacyDbRead {
+                    table: "shielded_wallet_meta",
+                    source: e,
+                })? as u32;
+        }
+        Ok(outcome)
+    })();
+
+    // DETACH unconditionally so the dest connection is left clean even
+    // on a partial-copy error. Swallow the detach error — the copy
+    // error (if any) is the one we want to surface.
+    let _ = dest.execute_batch("DETACH DATABASE legacy");
+    result
+}
+
+/// `SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1` —
+/// returns `false` for missing tables. Distinct from
+/// [`table_has_rows`] so the shielded migrator can skip ATTACH entirely
+/// when neither legacy table exists.
+fn legacy_table_exists(conn: &Connection, name: &str) -> Result<bool, MigrationError> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+        rusqlite::params![name],
+        |row| row.get::<_, i64>(0).map(|c| c > 0),
+    )
+    .map_err(|e| MigrationError::LegacyDbRead {
+        // `name` is a `&str`, but the variant wants `&'static str`. The
+        // probe always runs against one of the two known table names —
+        // surface the more user-meaningful "shielded_notes" here.
+        table: "shielded_notes",
+        source: e,
+    })
+}
+
+/// Same as [`legacy_table_exists`] but addresses a specific schema by
+/// name — used to probe the ATTACHed `legacy` database from the
+/// destination connection in the shielded migrator.
+fn legacy_table_exists_in(
+    conn: &Connection,
+    schema: &str,
+    name: &str,
+) -> Result<bool, MigrationError> {
+    // SQLite parameter binding does not support schema names, so the
+    // `format!` is the canonical shape. `schema` here is a static
+    // string from the migrator (`"legacy"`).
+    let sql = format!("SELECT COUNT(*) FROM {schema}.sqlite_master WHERE type='table' AND name=?1");
+    conn.query_row(&sql, rusqlite::params![name], |row| {
+        row.get::<_, i64>(0).map(|c| c > 0)
+    })
+    .map_err(|e| MigrationError::LegacyDbRead {
+        table: "shielded_notes",
+        source: e,
+    })
+}
+
+/// NFR-4 pre-flight gate: returns `true` when the legacy `data.db`
+/// holds at least one `shielded_notes` row for `network` **and** the
+/// per-network sidecar is still absent. T-W-01's future wallet-state
+/// cutover MUST consult this predicate and defer when it returns
+/// `true` — surfaces via the migration banner per Diziet J-3
+/// ("Verifying shielded balance…").
+///
+/// Returns `false` (proceed) when:
+///   * no legacy `data.db` exists,
+///   * the `shielded_notes` table is absent or empty for `network`,
+///   * the sidecar file already exists on disk (which post-T-SH-02
+///     means the mirror has run at least once).
+pub fn legacy_shielded_present_but_sidecar_empty(
+    app_context: &Arc<AppContext>,
+) -> Result<bool, TaskError> {
+    let backend = app_context
+        .wallet_backend()
+        .map_err(|_| MigrationError::WalletBackendUnavailable)?;
+    let Some(legacy_path) = app_context.db.db_file_path() else {
+        return Ok(false);
+    };
+    if !legacy_path.exists() {
+        return Ok(false);
+    }
+    // Sidecar already on disk → mirror has run; nothing to gate on.
+    if backend.shielded().path().exists() {
+        return Ok(false);
+    }
+    let network_str = app_context.network.to_string();
+    let conn = Connection::open(&legacy_path).map_err(|e| MigrationError::LegacyDbOpen {
+        path: legacy_path.to_string_lossy().to_string(),
+        source: e,
+    })?;
+    if !legacy_table_exists(&conn, "shielded_notes")? {
+        return Ok(false);
+    }
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM shielded_notes WHERE network = ?1",
+            rusqlite::params![network_str],
+            |row| row.get(0),
+        )
+        .map_err(|e| MigrationError::LegacyDbRead {
+            table: "shielded_notes",
+            source: e,
+        })?;
+    Ok(count > 0)
 }
 
 /// Read the completion sentinel from `det-app.sqlite`.
@@ -499,6 +773,7 @@ impl From<MigrationError> for TaskError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::wallet::WalletSeedHash;
     use crate::wallet_backend::DetKv;
     use platform_wallet::wallet::platform_wallet::WalletId;
     use platform_wallet_storage::{KvError, KvStore};
@@ -966,5 +1241,257 @@ mod tests {
                 "missing table `{table}` should report no rows",
             );
         }
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // T-SH-02 shielded mirror fixtures + tests.
+    // Mirrors the legacy schema from `src/database/shielded.rs` so the
+    // ATTACH+INSERT pass exercised below operates against the same
+    // shape a real legacy `data.db` would expose.
+    // ─────────────────────────────────────────────────────────────────
+
+    fn create_legacy_shielded_tables(conn: &Connection) {
+        conn.execute(
+            "CREATE TABLE shielded_notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                wallet_seed_hash BLOB NOT NULL,
+                note_data BLOB NOT NULL,
+                position INTEGER NOT NULL,
+                cmx BLOB NOT NULL,
+                nullifier BLOB NOT NULL,
+                block_height INTEGER NOT NULL,
+                is_spent INTEGER NOT NULL DEFAULT 0,
+                value INTEGER NOT NULL,
+                network TEXT NOT NULL,
+                UNIQUE(wallet_seed_hash, nullifier, network)
+            )",
+            [],
+        )
+        .expect("create legacy shielded_notes");
+        conn.execute(
+            "CREATE TABLE shielded_wallet_meta (
+                wallet_seed_hash BLOB NOT NULL,
+                network TEXT NOT NULL,
+                last_nullifier_sync_height INTEGER NOT NULL DEFAULT 0,
+                last_nullifier_sync_timestamp INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (wallet_seed_hash, network)
+            )",
+            [],
+        )
+        .expect("create legacy shielded_wallet_meta");
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn seed_legacy_note(
+        conn: &Connection,
+        seed: &[u8; 32],
+        position: u64,
+        nullifier_seed: u8,
+        value: u64,
+        is_spent: bool,
+        network: &str,
+    ) {
+        conn.execute(
+            "INSERT INTO shielded_notes
+             (wallet_seed_hash, note_data, position, cmx, nullifier,
+              block_height, is_spent, value, network)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            rusqlite::params![
+                seed.as_slice(),
+                vec![0xAA_u8; 16],
+                position as i64,
+                vec![position as u8; 32],
+                vec![nullifier_seed; 32],
+                100_i64 + position as i64,
+                is_spent as i32,
+                value as i64,
+                network,
+            ],
+        )
+        .expect("insert legacy note");
+    }
+
+    fn seed_legacy_meta(conn: &Connection, seed: &[u8; 32], network: &str, h: u64, ts: u64) {
+        conn.execute(
+            "INSERT INTO shielded_wallet_meta
+             (wallet_seed_hash, network,
+              last_nullifier_sync_height, last_nullifier_sync_timestamp)
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![seed.as_slice(), network, h as i64, ts as i64],
+        )
+        .expect("insert legacy meta");
+    }
+
+    fn shielded_view(spv_dir: &std::path::Path) -> crate::wallet_backend::ShieldedView {
+        std::fs::create_dir_all(spv_dir).expect("create spv dir");
+        crate::wallet_backend::ShieldedView::new(spv_dir)
+    }
+
+    /// TC-SH-001 — legacy `shielded_notes` rows for the active network
+    /// land in the sidecar with matching balances. Notes from a foreign
+    /// network MUST stay behind so per-network isolation (TC-SH-009) is
+    /// not regressed by the mirror.
+    #[test]
+    fn tc_sh_001_legacy_notes_mirror_into_sidecar_balances_match() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let legacy_path = dir.path().join("data.db");
+        let conn = Connection::open(&legacy_path).expect("open legacy db");
+        create_legacy_shielded_tables(&conn);
+
+        let seed: WalletSeedHash = [0x42; 32];
+        seed_legacy_note(&conn, &seed, 0, 0xA1, 10, false, "testnet");
+        seed_legacy_note(&conn, &seed, 1, 0xA2, 25, false, "testnet");
+        seed_legacy_note(&conn, &seed, 2, 0xA3, 7, true, "testnet");
+        // Foreign-network row must NOT be copied.
+        seed_legacy_note(&conn, &seed, 3, 0xB1, 99, false, "mainnet");
+        drop(conn);
+
+        let sidecar = shielded_view(&dir.path().join("spv").join("testnet"));
+        let outcome =
+            migrate_shielded_step(&sidecar, &legacy_path, "testnet").expect("mirror runs");
+
+        // 3 testnet rows mirrored — the mainnet row stays in the legacy
+        // file. `notes_in_sidecar` counts post-copy sidecar rows.
+        assert_eq!(outcome.notes_in_sidecar, 3);
+
+        let unspent = sidecar
+            .get_unspent_shielded_notes(&seed, "testnet")
+            .expect("read unspent");
+        assert_eq!(unspent.len(), 2, "spent note must not appear in unspent");
+
+        let balance = sidecar
+            .get_shielded_balance(&seed, "testnet")
+            .expect("balance");
+        assert_eq!(balance, 35, "balance equals sum of unspent values (10+25)");
+
+        let all = sidecar
+            .get_all_shielded_notes(&seed, "testnet")
+            .expect("read all");
+        assert_eq!(all.len(), 3, "all three testnet notes mirrored");
+        assert!(
+            sidecar
+                .get_all_shielded_notes(&seed, "mainnet")
+                .expect("read mainnet")
+                .is_empty(),
+            "mainnet row must not have leaked into the testnet sidecar",
+        );
+    }
+
+    /// TC-SH-002 — the legacy `shielded_wallet_meta` cursor (sync
+    /// height + timestamp) is preserved verbatim in the sidecar so the
+    /// rewired sync path (T-SH-03) does not re-scan from zero.
+    #[test]
+    fn tc_sh_002_sync_cursor_preserved() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let legacy_path = dir.path().join("data.db");
+        let conn = Connection::open(&legacy_path).expect("open legacy db");
+        create_legacy_shielded_tables(&conn);
+
+        let seed: WalletSeedHash = [0x55; 32];
+        seed_legacy_meta(&conn, &seed, "testnet", 1_234_567, 1_700_000_000);
+        // Foreign-network cursor — must not bleed into the testnet
+        // mirror.
+        seed_legacy_meta(&conn, &seed, "mainnet", 9_999_999, 1_800_000_000);
+        drop(conn);
+
+        let sidecar = shielded_view(&dir.path().join("spv").join("testnet"));
+        let outcome =
+            migrate_shielded_step(&sidecar, &legacy_path, "testnet").expect("mirror runs");
+        assert_eq!(outcome.cursors_in_sidecar, 1);
+
+        let (h, ts) = sidecar
+            .get_nullifier_sync_info(&seed, "testnet")
+            .expect("read cursor");
+        assert_eq!(h, 1_234_567);
+        assert_eq!(ts, 1_700_000_000);
+
+        // The mainnet cursor MUST be invisible from the testnet sidecar.
+        let (mh, mt) = sidecar
+            .get_nullifier_sync_info(&seed, "mainnet")
+            .expect("read mainnet cursor");
+        assert_eq!(
+            (mh, mt),
+            (0, 0),
+            "foreign-network cursor must not appear in the testnet sidecar",
+        );
+
+        // Re-running the mirror is a no-op (idempotency) — the cursor
+        // stays at the same value.
+        let again = migrate_shielded_step(&sidecar, &legacy_path, "testnet").expect("re-run");
+        assert_eq!(again.cursors_in_sidecar, 1);
+        let (h2, ts2) = sidecar
+            .get_nullifier_sync_info(&seed, "testnet")
+            .expect("read cursor post re-run");
+        assert_eq!((h2, ts2), (h, ts));
+    }
+
+    /// TC-SH-008 — NFR-4 pre-flight: when the legacy `data.db` holds
+    /// shielded rows but the sidecar is empty, the gate predicate
+    /// returns `true` so the future T-W-01 wallet-state cutover defers
+    /// until the mirror completes. After the mirror runs (sidecar
+    /// materialised), the gate flips to `false` — proceed.
+    #[test]
+    fn tc_sh_008_nfr4_preflight_gates_wallet_cutover() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let legacy_path = dir.path().join("data.db");
+        let conn = Connection::open(&legacy_path).expect("open legacy db");
+        create_legacy_shielded_tables(&conn);
+
+        let seed: WalletSeedHash = [0x66; 32];
+        seed_legacy_note(&conn, &seed, 0, 0xCC, 50, false, "testnet");
+        drop(conn);
+
+        let spv_dir = dir.path().join("spv").join("testnet");
+        let sidecar = shielded_view(&spv_dir);
+        // Sidecar file does not yet exist on disk (lazy provisioning).
+        assert!(!sidecar.path().exists(), "sidecar absent before mirror");
+
+        // Gate predicate (inlined to avoid building a full AppContext):
+        // legacy file present + shielded_notes row count > 0 + sidecar
+        // file absent ⇒ defer.
+        let legacy = Connection::open(&legacy_path).expect("open legacy ro");
+        let legacy_count: i64 = legacy
+            .query_row(
+                "SELECT COUNT(*) FROM shielded_notes WHERE network = ?1",
+                rusqlite::params!["testnet"],
+                |row| row.get(0),
+            )
+            .expect("count legacy");
+        drop(legacy);
+        let gate_before = legacy_count > 0 && !sidecar.path().exists() && legacy_path.exists();
+        assert!(
+            gate_before,
+            "pre-flight gate must defer the wallet cutover when shielded data is present",
+        );
+
+        // Run the mirror — sidecar is materialised and rows land.
+        let outcome =
+            migrate_shielded_step(&sidecar, &legacy_path, "testnet").expect("mirror runs");
+        assert_eq!(outcome.notes_in_sidecar, 1, "the one legacy note mirrors");
+        assert!(
+            sidecar.path().exists(),
+            "mirror materialises the sidecar file",
+        );
+
+        // Post-mirror: gate flips to false (sidecar now present).
+        let gate_after = legacy_count > 0 && !sidecar.path().exists() && legacy_path.exists();
+        assert!(
+            !gate_after,
+            "post-mirror the gate must release the wallet cutover",
+        );
+    }
+
+    /// Missing legacy shielded tables are not an error — a fresh
+    /// install (or a wallet with no shielded activity) returns the
+    /// zero outcome without touching the sidecar.
+    #[test]
+    fn missing_legacy_shielded_tables_yield_zero_outcome() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let legacy_path = dir.path().join("data.db");
+        Connection::open(&legacy_path).expect("create empty db");
+
+        let sidecar = shielded_view(&dir.path().join("spv").join("testnet"));
+        let outcome = migrate_shielded_step(&sidecar, &legacy_path, "testnet").expect("benign");
+        assert_eq!(outcome, ShieldedMigrationOutcome::default());
     }
 }

@@ -66,6 +66,28 @@ pub mod wallet;
 // TODO: Refactor how we handle errors and messages, and remove it from here
 pub(crate) const NO_IDENTITIES_FOUND: &str = "No identities found";
 
+/// Returns `true` for backend tasks that read or write the
+/// `WalletBackend` (and therefore the upstream `SecretStore` / sidecar
+/// k/v). These tasks must short-circuit with
+/// [`TaskError::WalletStorageNotReady`] while the cold-start migration
+/// (`FinishUnwire`) is still running so the user sees the "data is
+/// still being updated" banner instead of a misleading SDK timeout.
+///
+/// The list mirrors the family check above the `match` in
+/// `run_backend_task`: identity / DashPay / Core / wallet / shielded
+/// all funnel through `WalletBackend`. The migration task itself is
+/// explicitly excluded — that is the work in progress.
+fn is_wallet_touching(task: &BackendTask) -> bool {
+    matches!(
+        task,
+        BackendTask::WalletTask(_)
+            | BackendTask::CoreTask(_)
+            | BackendTask::IdentityTask(_)
+            | BackendTask::DashPayTask(_)
+            | BackendTask::ShieldedTask(_)
+    )
+}
+
 /// Information about fees paid for a platform state transition
 #[derive(Debug, Clone, PartialEq)]
 pub struct FeeResult {
@@ -424,6 +446,36 @@ impl AppContext {
             tracing::warn!(error = %e, "Wallet backend initialization deferred");
         }
 
+        // Short-circuit wallet-touching tasks while the cold-start
+        // migration is mid-flight. Reaching the SDK before the legacy
+        // drain finishes either races on partially-mirrored sidecars
+        // or produces a misleading SDK timeout. `WalletStorageNotReady`
+        // is a typed, user-friendly variant whose banner mirrors the
+        // migration banner ("data is still being updated"). The
+        // shielded family also consults the NFR-4 pre-flight gate
+        // (legacy shielded rows present but the sidecar has not yet
+        // been mirrored) so a read path that pre-dates the orchestrator
+        // run cannot race the mirror.
+        if is_wallet_touching(&task) && self.migration_status().state().is_running() {
+            tracing::debug!(
+                target = "migration::gate",
+                task = ?task,
+                "Short-circuiting wallet-touching task — migration in progress",
+            );
+            return Err(TaskError::WalletStorageNotReady);
+        }
+        if matches!(task, BackendTask::ShieldedTask(_))
+            && crate::backend_task::migration::finish_unwire::legacy_shielded_present_but_sidecar_empty(
+                self,
+            )?
+        {
+            tracing::debug!(
+                target = "migration::gate",
+                "Short-circuiting shielded task — legacy shielded rows still need to be mirrored",
+            );
+            return Err(TaskError::WalletStorageNotReady);
+        }
+
         match task {
             BackendTask::ContractTask(contract_task) => {
                 Ok(self.run_contract_task(*contract_task, &sdk, sender).await?)
@@ -597,5 +649,51 @@ impl AppContext {
                 .await
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `is_wallet_touching` covers every task family that funnels
+    /// through `WalletBackend` — the gate in `run_backend_task` relies
+    /// on it to short-circuit while the cold-start migration is
+    /// in-flight. Locking the matrix here prevents the gate from
+    /// silently letting a future task family race the mirror.
+    #[test]
+    fn wallet_touching_matrix_is_stable() {
+        use crate::backend_task::core::CoreTask;
+        use crate::backend_task::wallet::WalletTask;
+        use dash_sdk::dpp::dashcore::Network;
+
+        let seed_hash = crate::model::wallet::WalletSeedHash::default();
+
+        // Wallet-touching families short-circuit on a running migration.
+        assert!(is_wallet_touching(&BackendTask::WalletTask(
+            WalletTask::GenerateReceiveAddress { seed_hash },
+        )));
+        assert!(is_wallet_touching(&BackendTask::CoreTask(
+            CoreTask::GetBestChainLock,
+        )));
+        assert!(is_wallet_touching(&BackendTask::ShieldedTask(
+            shielded::ShieldedTask::InitializeShieldedWallet { seed_hash },
+        )));
+
+        // The migration task itself must NOT be gated — that is the
+        // work that flips the gate back off.
+        assert!(!is_wallet_touching(&BackendTask::MigrationTask(
+            MigrationTask::FinishUnwire,
+        )));
+
+        // Read-only / network-level tasks are exempt.
+        assert!(!is_wallet_touching(&BackendTask::ReinitCoreClientAndSdk));
+        assert!(!is_wallet_touching(&BackendTask::SwitchNetwork {
+            network: Network::Testnet,
+            start_spv: false,
+        }));
+        assert!(!is_wallet_touching(&BackendTask::DiscoverDapiNodes {
+            network: Network::Testnet,
+        }));
     }
 }

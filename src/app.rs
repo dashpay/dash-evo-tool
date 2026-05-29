@@ -1,13 +1,16 @@
+// EDIT-PROBE-MARKER
 #[cfg(not(feature = "testing"))]
 use crate::app_dir::data_file_path;
 use crate::app_dir::{app_user_data_dir_path, ensure_data_dir_exists, ensure_env_file};
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::core::CoreItem;
 use crate::backend_task::error::TaskError;
+use crate::backend_task::migration::MigrationTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::components::core_zmq_listener::{CoreZMQListener, ZMQMessage};
 use crate::context::AppContext;
 use crate::context::connection_status::{ConnectionStatus, OverallConnectionState};
+use crate::context::migration_status::{MigrationState, MigrationStep};
 use crate::database::Database;
 #[cfg(not(feature = "testing"))]
 use crate::logging::initialize_logger;
@@ -47,6 +50,26 @@ use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant, SystemTime};
 use std::vec;
 use tokio::sync::mpsc as tokiompsc;
+
+/// Banner action id pushed when the user clicks "Retry now" on the
+/// migration-failure banner. The app loop matches this id and
+/// re-dispatches the FinishUnwire backend task. Kept as a `const` so a
+/// future second migration variant can pick a distinct id without
+/// risking a typo collision. Exposed for kittest coverage.
+pub const MIGRATION_RETRY_ACTION_ID: &str = "migration:retry:finish_unwire";
+
+/// One-sentence user-facing label for an in-progress migration step.
+/// Mirrors Diziet §2.2 D-1 banner copy — single complete sentence per
+/// variant so i18n extraction is trivial. Exposed for kittest
+/// coverage so a regression in the label table fails the test suite.
+pub fn migration_running_text(step: MigrationStep) -> &'static str {
+    match step {
+        MigrationStep::Detecting => "Checking your wallet data.",
+        MigrationStep::SingleKey => "Updating imported keys.",
+        MigrationStep::Shielded => "Verifying shielded balance.",
+        MigrationStep::Finalize => "Finishing storage update.",
+    }
+}
 
 #[derive(Debug, From)]
 pub enum TaskResult {
@@ -156,6 +179,19 @@ pub struct AppState {
     previous_connection_state: Option<OverallConnectionState>,
     /// Handle to the current connection status banner, if one is displayed
     connection_banner_handle: Option<BannerHandle>,
+    /// Handle to the current data-migration banner, if one is displayed.
+    /// Kept so per-frame reconciliation can update text in place
+    /// (Detecting → SingleKey → Shielded → Finalize → Success/Failed)
+    /// without stacking banners.
+    migration_banner_handle: Option<BannerHandle>,
+    /// Last-seen migration state so per-frame reconciliation only fires
+    /// when the state actually changes.
+    last_migration_state: Option<MigrationState>,
+    /// Whether the cold-start `MigrationTask::FinishUnwire` has already
+    /// been dispatched on this launch. Idempotent — guarantees one
+    /// dispatch per process even if the per-frame hook is invoked
+    /// repeatedly.
+    cold_start_migration_dispatched: bool,
     /// Async shutdown receiver. `Some` while a graceful shutdown is in progress;
     /// the viewport is closed once the receiver resolves.
     shutdown_receiver: Option<tokio::sync::oneshot::Receiver<()>>,
@@ -598,6 +634,9 @@ impl AppState {
             welcome_screen: None,
             previous_connection_state: None,
             connection_banner_handle: None,
+            migration_banner_handle: None,
+            last_migration_state: None,
+            cold_start_migration_dispatched: false,
             shutdown_receiver: None,
             shutdown_started: None,
             accessibility_enforced,
@@ -926,6 +965,128 @@ impl AppState {
             }
         }
         self.previous_connection_state = Some(current_state);
+    }
+
+    /// Dispatch the cold-start data-migration task exactly once per
+    /// launch. The orchestrator
+    /// ([`crate::backend_task::migration::finish_unwire`]) is
+    /// idempotent — if the sentinel already exists it returns
+    /// `Success` without touching the legacy file. Calling it
+    /// unconditionally on first frame keeps the cold-start hook
+    /// simple and avoids a separate "detect legacy" probe on the UI
+    /// thread.
+    fn dispatch_cold_start_migration(&mut self) {
+        if self.cold_start_migration_dispatched {
+            return;
+        }
+        self.cold_start_migration_dispatched = true;
+        tracing::info!(
+            target = "migration::cold_start",
+            "Dispatching FinishUnwire migration at cold start",
+        );
+        self.handle_backend_task(BackendTask::MigrationTask(MigrationTask::FinishUnwire));
+    }
+
+    /// Update the migration banner to reflect the current
+    /// [`MigrationState`]. Each step / outcome surfaces a single
+    /// i18n-ready sentence per Diziet §2.2 D-1. On `Failed`, the
+    /// banner gets a "Retry now" action button that re-dispatches the
+    /// migration via the action queue (see
+    /// [`MessageBanner::take_action`]).
+    fn update_migration_banner(&mut self, ctx: &egui::Context, app_context: &Arc<AppContext>) {
+        let state = (*app_context.migration_status().state()).clone();
+        if self.last_migration_state.as_ref() == Some(&state) {
+            return;
+        }
+        self.last_migration_state = Some(state.clone());
+
+        // Clear the previous banner — text changes between steps must
+        // not stack.
+        if let Some(handle) = self.migration_banner_handle.take() {
+            handle.clear();
+        }
+
+        match state {
+            MigrationState::Idle => {
+                // Nothing to surface — the orchestrator has not started
+                // yet (typical on the first few frames before cold-start
+                // dispatch resolves).
+            }
+            MigrationState::Running { step } => {
+                let text = migration_running_text(step);
+                let handle = MessageBanner::set_global(ctx, text, MessageType::Info);
+                handle.with_elapsed();
+                self.migration_banner_handle = Some(handle);
+            }
+            MigrationState::Success => {
+                let handle = MessageBanner::set_global(
+                    ctx,
+                    "Storage update complete — your wallet is ready.",
+                    MessageType::Success,
+                );
+                self.migration_banner_handle = Some(handle);
+            }
+            MigrationState::Failed { reason } => {
+                let handle = MessageBanner::set_global(
+                    ctx,
+                    "Storage update could not complete. Your data is safe.",
+                    MessageType::Error,
+                );
+                handle.with_details(reason);
+                handle.with_action("Retry now", MIGRATION_RETRY_ACTION_ID);
+                self.migration_banner_handle = Some(handle);
+            }
+        }
+    }
+
+    /// Dismiss the migration banner (if any) on Escape. Per Diziet
+    /// §2.3 a11y the banner must be dismissible via Esc — falls back
+    /// to no-op when the banner has already been closed by the user
+    /// clicking the ✕ icon, when the migration is still running (we
+    /// keep the banner sticky to avoid losing progress), or when
+    /// nothing is shown.
+    fn handle_banner_esc(&mut self, ctx: &egui::Context) {
+        let esc_pressed = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+        if !esc_pressed {
+            return;
+        }
+        // Keep a `Running` banner on screen — dismissing it would
+        // hide ongoing progress with no visual confirmation.
+        let is_running = matches!(
+            self.last_migration_state.as_ref(),
+            Some(MigrationState::Running { .. })
+        );
+        if is_running {
+            return;
+        }
+        if let Some(handle) = self.migration_banner_handle.take() {
+            handle.clear();
+        }
+    }
+
+    /// Drain pending banner-action clicks (Diziet §2.3 a11y "Retry
+    /// reachable in ≤2 Tab stops"). Currently the only registered
+    /// action is `MIGRATION_RETRY_ACTION_ID`, which re-dispatches the
+    /// FinishUnwire migration after resetting the cold-start guard.
+    fn drain_banner_actions(&mut self, ctx: &egui::Context) {
+        while let Some(action_id) = MessageBanner::take_action(ctx) {
+            if action_id == MIGRATION_RETRY_ACTION_ID {
+                tracing::info!(
+                    target = "migration::cold_start",
+                    "User clicked migration Retry — re-dispatching FinishUnwire",
+                );
+                // Reset the per-frame reconciler so the new run's
+                // Running banner overwrites the stale Failed one.
+                self.last_migration_state = None;
+                self.handle_backend_task(BackendTask::MigrationTask(MigrationTask::FinishUnwire));
+            } else {
+                tracing::warn!(
+                    target = "ui::banner",
+                    action_id = %action_id,
+                    "Unknown banner action id — dropping",
+                );
+            }
+        }
     }
 
     pub fn visible_screen_mut(&mut self) -> &mut Screen {
@@ -1309,6 +1470,10 @@ impl App for AppState {
         );
 
         self.update_connection_banner(ctx, &active_context);
+        self.dispatch_cold_start_migration();
+        self.update_migration_banner(ctx, &active_context);
+        self.handle_banner_esc(ctx);
+        self.drain_banner_actions(ctx);
 
         for action in actions {
             match action {
@@ -1397,5 +1562,57 @@ impl App for AppState {
             tracing::error!("Error during task shutdown: {}", e);
         }
         tracing::debug!("App shutdown complete");
+    }
+}
+
+#[cfg(test)]
+mod migration_banner_tests {
+    use super::*;
+
+    /// TC-MIG-014 — every `MigrationStep` exposes a non-empty,
+    /// sentence-shaped label so i18n extraction picks it up as one
+    /// translation unit (no concatenation).
+    #[test]
+    fn migration_running_text_is_sentence_for_every_step() {
+        for step in [
+            MigrationStep::Detecting,
+            MigrationStep::SingleKey,
+            MigrationStep::Shielded,
+            MigrationStep::Finalize,
+        ] {
+            let text = migration_running_text(step);
+            assert!(!text.is_empty(), "{step:?} has empty banner text");
+            assert!(
+                text.ends_with('.'),
+                "{step:?} text `{text}` is not a complete sentence",
+            );
+        }
+    }
+
+    /// TC-MIG-001 / TC-MIG-013 — every step has a distinct sentence so
+    /// the per-frame reconciler can detect transitions by text equality
+    /// alone (`set_global` is idempotent for matching text).
+    #[test]
+    fn migration_running_text_distinct_per_step() {
+        let labels = [
+            migration_running_text(MigrationStep::Detecting),
+            migration_running_text(MigrationStep::SingleKey),
+            migration_running_text(MigrationStep::Shielded),
+            migration_running_text(MigrationStep::Finalize),
+        ];
+        let unique: std::collections::HashSet<&str> = labels.iter().copied().collect();
+        assert_eq!(
+            unique.len(),
+            labels.len(),
+            "duplicate banner text across MigrationStep variants",
+        );
+    }
+
+    /// Retry action id is stable — kittest + production both match on
+    /// this constant, so a typo would mean the click silently drops on
+    /// the floor.
+    #[test]
+    fn migration_retry_action_id_is_stable() {
+        assert_eq!(MIGRATION_RETRY_ACTION_ID, "migration:retry:finish_unwire");
     }
 }

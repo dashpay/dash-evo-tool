@@ -819,6 +819,18 @@ impl WalletsBalancesScreen {
     }
 
     fn render_no_wallets_view(&self, ui: &mut Ui) {
+        // While the cold-start data migration is mid-flight we hold a
+        // neutral placeholder — the global migration banner already
+        // tells the user what's happening, so the empty-state must not
+        // race ahead with Create/Import CTAs that the rehydrated wallet
+        // list might invalidate seconds later.
+        let migration_state =
+            (*self.app_context.migration_status().state()).clone();
+        let migration_running = matches!(
+            migration_state,
+            crate::context::migration_status::MigrationState::Running { .. }
+        );
+
         // Optionally put everything in a framed "card"-like container
         Frame::group(ui.style())
             .fill(ui.visuals().extreme_bg_color) // background color
@@ -827,54 +839,63 @@ impl WalletsBalancesScreen {
             .shadow(ui.visuals().window_shadow) // drop shadow
             .show(ui, |ui| {
                 ui.vertical_centered(|ui| {
-                    // Heading
-                    ui.add_space(5.0);
                     let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    ui.add_space(5.0);
+
+                    if migration_running {
+                        // Diziet J-4 + D-1: defer the empty-state CTAs
+                        // while the migration is still working — the
+                        // banner above is the source of truth.
+                        ui.label(
+                            RichText::new("Preparing your wallet…")
+                                .strong()
+                                .size(22.0)
+                                .color(DashColors::text_primary(dark_mode)),
+                        );
+                        ui.add_space(8.0);
+                        ui.label(
+                            "We are finishing the storage update. Your wallet will appear here in a moment.",
+                        );
+                        ui.add_space(5.0);
+                        return;
+                    }
+
+                    // Fresh-install empty state (Diziet J-4). Single
+                    // complete sentences per i18n-extraction rules; the
+                    // primary Create CTA is the first focusable element
+                    // so it lands as Tab-stop #1 from the wallet root
+                    // (TC-A11Y-007).
                     ui.label(
-                        RichText::new("No Wallets Loaded")
+                        RichText::new("No wallets yet")
                             .strong()
                             .size(25.0)
                             .color(DashColors::text_primary(dark_mode)),
                     );
 
-                    // A separator line for visual clarity
                     ui.add_space(5.0);
                     ui.separator();
                     ui.add_space(10.0);
 
-                    // Description
-                    ui.label("It looks like you are not tracking any wallets yet.");
-
-                    ui.add_space(10.0);
-
-                    // Subheading or emphasis
-                    ui.heading(
-                        RichText::new("Here’s what you can do:")
-                            .strong()
-                            .size(18.0)
-                            .color(DashColors::text_primary(dark_mode)),
-                    );
-                    ui.add_space(5.0);
-
-                    // Bullet points
                     ui.label(
-                        "• IMPORT a Dash wallet by clicking \
-                         on \"Import Wallet\" at the top right, or",
+                        "Create a wallet or import an existing one to get started.",
                     );
-                    ui.add_space(1.0);
+
+                    ui.add_space(12.0);
                     ui.label(
-                        "• CREATE a new Dash wallet by clicking \
-                         on \"Create Wallet\".",
+                        RichText::new(
+                            "Use the Create Wallet or Import Wallet buttons in the top-right corner.",
+                        )
+                        .color(DashColors::text_secondary(dark_mode)),
                     );
 
                     ui.add_space(10.0);
                     ui.separator();
                     ui.add_space(10.0);
 
-                    // Footnote or extra info
+                    // Footnote — keeps Dash Core wallet wiring guidance
+                    // discoverable for the Power-User persona.
                     ui.label(
-                        "(Make sure Dash Core is running. You can check in the \
-                         network tab on the left.)",
+                        "Looking for an older wallet? Make sure Dash Core is running and visit the Network tab on the left.",
                     );
 
                     ui.add_space(5.0);

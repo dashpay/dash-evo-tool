@@ -14,6 +14,7 @@ use std::sync::Arc;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use crate::context::migration_status::MigrationState;
 
 pub mod finish_unwire;
 
@@ -32,16 +33,25 @@ pub enum MigrationTask {
 impl AppContext {
     /// Dispatch a [`MigrationTask`]. Always returns
     /// [`BackendTaskSuccessResult::Refresh`] on success so the UI can
-    /// re-poll affected screens once the migration finishes.
+    /// re-poll affected screens once the migration finishes. On
+    /// failure, publishes [`MigrationState::Failed`] so the per-frame
+    /// banner reconciliation in `AppState` can surface the error
+    /// variant with a "Retry now" action — without it the banner
+    /// would be stuck in `Running` forever.
     pub async fn run_migration_task(
         self: &Arc<Self>,
         task: MigrationTask,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         match task {
-            MigrationTask::FinishUnwire => {
-                finish_unwire::run(self).await?;
-                Ok(BackendTaskSuccessResult::Refresh)
-            }
+            MigrationTask::FinishUnwire => match finish_unwire::run(self).await {
+                Ok(()) => Ok(BackendTaskSuccessResult::Refresh),
+                Err(e) => {
+                    self.migration_status().set_state(MigrationState::Failed {
+                        reason: e.to_string(),
+                    });
+                    Err(e)
+                }
+            },
         }
     }
 }

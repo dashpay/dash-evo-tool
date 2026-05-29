@@ -1386,6 +1386,7 @@ mod tests {
     ///      and short-circuits → testnet `wallet` / `single_key_wallet`
     ///      rows never drain into the upstream vault → wallet picker
     ///      shows nothing on testnet.
+    ///
     /// Only recoverable by digging into `data.db` by hand. The
     /// per-network sentinel preserves the short-circuit's idempotency
     /// while keeping each network's migration independent.

@@ -49,30 +49,39 @@ impl WalletBackend {
         &self,
         network: Network,
     ) -> Result<Vec<(WalletSeedHash, Wallet)>, TaskError> {
-        let meta_view = self.wallet_meta();
-        let seed_view = self.wallet_seeds();
+        hydrate_hd_wallets_from_views(&self.wallet_seeds(), &self.wallet_meta(), network)
+    }
+}
 
-        let entries = meta_view.list(network);
-        let mut out = Vec::with_capacity(entries.len());
-        for (seed_hash, meta) in entries {
-            match reconstruct_wallet(&seed_view, &seed_hash, &meta) {
-                Ok(Some(wallet)) => out.push((seed_hash, wallet)),
-                Ok(None) => {
-                    // Logged inside `reconstruct_wallet` — orphaned meta
-                    // or empty xpub is a "skip and continue" path.
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        target = "wallet_backend::hydration",
-                        seed_hash = %hex::encode(seed_hash),
-                        error = ?e,
-                        "Failed to reconstruct wallet from sidecars; skipping",
-                    );
-                }
+/// Free-function version of [`WalletBackend::hydrate_wallets_for_network`]
+/// driven by borrowed views. Exposed so benches and integration tests can
+/// time cold-start hydration without standing up a full backend (no SDK,
+/// no `PlatformWalletManager`, no per-network sync dir).
+pub fn hydrate_hd_wallets_from_views(
+    seed_view: &super::wallet_seed_store::WalletSeedView<'_>,
+    meta_view: &super::wallet_meta::WalletMetaView<'_>,
+    network: Network,
+) -> Result<Vec<(WalletSeedHash, Wallet)>, TaskError> {
+    let entries = meta_view.list(network);
+    let mut out = Vec::with_capacity(entries.len());
+    for (seed_hash, meta) in entries {
+        match reconstruct_wallet(seed_view, &seed_hash, &meta) {
+            Ok(Some(wallet)) => out.push((seed_hash, wallet)),
+            Ok(None) => {
+                // Logged inside `reconstruct_wallet` — orphaned meta
+                // or empty xpub is a "skip and continue" path.
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target = "wallet_backend::hydration",
+                    seed_hash = %hex::encode(seed_hash),
+                    error = ?e,
+                    "Failed to reconstruct wallet from sidecars; skipping",
+                );
             }
         }
-        Ok(out)
     }
+    Ok(out)
 }
 
 /// Reconstruct one `Wallet` from its `(WalletMeta, StoredSeedEnvelope)`

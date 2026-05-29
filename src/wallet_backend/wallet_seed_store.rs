@@ -46,7 +46,10 @@ pub struct WalletSeedView<'a> {
 }
 
 impl<'a> WalletSeedView<'a> {
-    pub(crate) fn new(secret_store: &'a Arc<SecretStore>) -> Self {
+    /// Borrow a [`SecretStore`] as a typed seed-envelope view. Kept
+    /// `pub` so benches and downstream tooling can build the view
+    /// without going through [`WalletBackend::wallet_seeds`].
+    pub fn new(secret_store: &'a Arc<SecretStore>) -> Self {
         Self { secret_store }
     }
 

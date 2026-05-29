@@ -117,6 +117,7 @@ headless = ["cli", "mcp"]
 [dev-dependencies]
 egui_kittest = { version = "0.33.3", features = ["eframe"] }
 tokio-shared-rt = "=0.1.0"
+criterion = "0.5.1"
 
 [[bin]]
 name = "det-cli"
@@ -127,6 +128,10 @@ required-features = ["cli"]
 name = "backend-e2e"
 path = "tests/backend-e2e/main.rs"
 required-features = ["testing"]
+
+[[bench]]
+name = "wallet_hydration"
+harness = false
 
 [build-dependencies]
 winres = "0.1"

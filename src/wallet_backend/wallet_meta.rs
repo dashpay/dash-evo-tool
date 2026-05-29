@@ -72,7 +72,10 @@ pub struct WalletMetaView<'a> {
 }
 
 impl<'a> WalletMetaView<'a> {
-    pub(crate) fn new(kv: &'a Arc<DetKv>) -> Self {
+    /// Borrow a [`DetKv`] handle as a typed wallet-metadata view. Kept
+    /// `pub` so benches and downstream tooling can build the view
+    /// without going through [`WalletBackend::wallet_meta`].
+    pub fn new(kv: &'a Arc<DetKv>) -> Self {
         Self { kv }
     }
 

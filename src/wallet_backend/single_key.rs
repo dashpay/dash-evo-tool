@@ -105,6 +105,23 @@ pub struct SingleKeyView<'a> {
 }
 
 impl<'a> SingleKeyView<'a> {
+    /// Borrow the moving parts of a [`SingleKeyView`] without going
+    /// through [`WalletBackend::single_key`]. Kept `pub` so benches and
+    /// downstream tooling can build the view from owned `Arc`s.
+    pub fn from_views(
+        secret_store: &'a Arc<SecretStore>,
+        index: &'a std::sync::RwLock<std::collections::BTreeMap<String, ImportedKey>>,
+        network: Network,
+        app_kv: Option<&'a Arc<DetKv>>,
+    ) -> Self {
+        Self {
+            secret_store,
+            index,
+            network,
+            app_kv,
+        }
+    }
+
     /// Parse a WIF-encoded private key, store its raw secret bytes in the
     /// encrypted vault under `single_key_priv.<address>`, persist the
     /// derived [`ImportedKey`] metadata to the enumerable k/v sidecar,
@@ -263,7 +280,7 @@ impl<'a> SingleKeyView<'a> {
     /// process before the backend was wired (mirrors the HD-wallet
     /// `entry().or_insert` pattern in
     /// [`hydrate_context_wallets`](super::WalletBackend::hydrate_context_wallets)).
-    pub(crate) fn rehydrate_index(&self) -> Result<(), TaskError> {
+    pub fn rehydrate_index(&self) -> Result<(), TaskError> {
         let metas = self.list_persisted();
         if metas.is_empty() {
             return Ok(());
@@ -385,7 +402,7 @@ impl<'a> SingleKeyView<'a> {
 /// relies on file permissions for at-rest protection. A user-supplied
 /// passphrase is a follow-up (T-SK-03 UX work). The choice is documented
 /// in the ADR.
-pub(crate) fn open_secret_store(path: &std::path::Path) -> Result<SecretStore, FileStoreError> {
+pub fn open_secret_store(path: &std::path::Path) -> Result<SecretStore, FileStoreError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|_| FileStoreError::MalformedVault)?;
     }

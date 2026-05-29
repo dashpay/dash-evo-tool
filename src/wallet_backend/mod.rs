@@ -22,11 +22,11 @@
 mod asset_lock_signer;
 mod dashpay;
 mod event_bridge;
-mod hydration;
+pub mod hydration;
 mod kv;
 mod loader;
 mod shielded;
-pub(crate) mod single_key;
+pub mod single_key;
 mod snapshot;
 pub mod wallet_meta;
 pub mod wallet_seed_store;

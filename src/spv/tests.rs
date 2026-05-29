@@ -641,25 +641,25 @@ async fn test_live_testnet_sync_and_shutdown() {
     let _ = task_manager.shutdown();
 }
 
-/// Regression test: clear_data_dir must reset filter_committed_height (not just synced_height).
+/// Regression test: clear_data_dir must rewind each wallet's sync checkpoint to genesis
+/// so the next SPV session re-fetches filter coverage from height 0.
 ///
-/// At rust-dashcore 309fac8, WalletManager gained an independent filter_committed_height
-/// field. FiltersManager::new() reads filter_committed_height() for its "already synced"
-/// guard — the field is no longer derived from synced_height. Calling update_synced_height(0)
-/// alone leaves filter_committed_height stale and causes the next SPV session to declare
-/// itself "already synced" and skip the rescan, producing zero balance after a Clear SPV Data.
+/// key-wallet 0.43 replaced the single global `filter_committed_height` with a per-wallet
+/// `synced_height`, gated by `wallets_behind()` / `FiltersManager`. The trait setter
+/// `update_wallet_synced_height` is forward-only monotonic, so it cannot express the
+/// downward reset a data-clear needs. If the rewind is a no-op, the next session sees the
+/// wallet as already synced, skips the genesis rescan, and the user gets a stale/zero
+/// balance after a Clear SPV Data.
 ///
-/// key-wallet 0.43 replaced the single global `filter_committed_height` with a
-/// per-wallet `synced_height`, so this now seeds and asserts the per-wallet height.
-///
-/// Given a loaded wallet with a non-zero synced height,
+/// Given a loaded wallet synced to a non-zero height,
 /// When clear_data_dir() is called,
-/// Then that wallet's synced height is reset to 0.
+/// Then the wallet's synced height is 0 AND `wallets_behind(tip)` reports it as needing
+/// filter coverage (i.e. a genesis rescan will actually run).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_clear_data_dir_resets_filter_committed_height() {
     let (manager, _tm, _tmp_dir) = create_test_manager();
 
-    // Load a wallet so there is a per-wallet synced height to reset.
+    // Load a wallet so there is a per-wallet synced height to rewind.
     let seed_hash = [7u8; 32];
     let seed_bytes = [9u8; 64];
     let wallet_id = manager
@@ -675,7 +675,8 @@ async fn test_clear_data_dir_resets_filter_committed_height() {
         wm.update_wallet_synced_height(&wallet_id, PRESEED_HEIGHT);
     }
 
-    // Verify pre-condition.
+    // Verify pre-condition. `wallets_behind` is strict-less-than, so a wallet synced
+    // exactly to PRESEED_HEIGHT is NOT reported behind PRESEED_HEIGHT.
     {
         let wm = wallet_arc.read().await;
         assert_eq!(
@@ -683,17 +684,25 @@ async fn test_clear_data_dir_resets_filter_committed_height() {
             PRESEED_HEIGHT,
             "pre-condition: wallet synced height should be PRESEED_HEIGHT"
         );
+        assert!(
+            !wm.wallets_behind(PRESEED_HEIGHT).contains(&wallet_id),
+            "pre-condition: a fully-synced wallet is not behind its own synced height"
+        );
     }
 
     manager
         .clear_data_dir()
         .expect("clear_data_dir should succeed");
 
-    // After clearing, the wallet's synced height must be 0.
+    // After clearing, the wallet must be rewound to genesis and flagged for rescan.
     let wm = wallet_arc.read().await;
     assert_eq!(
         wm.wallet_synced_height(&wallet_id),
         0,
-        "clear_data_dir must reset the wallet synced height to 0"
+        "clear_data_dir must rewind the wallet synced height to 0"
+    );
+    assert!(
+        wm.wallets_behind(PRESEED_HEIGHT).contains(&wallet_id),
+        "clear_data_dir must leave the wallet behind so a genesis rescan runs"
     );
 }

@@ -816,16 +816,17 @@ impl SpvManager {
             wallet_map.clear();
         }
 
-        // Reset every wallet's synced height so the next SPV session scans
-        // filters from genesis instead of the stale height from the previous run.
+        // Rewind every wallet's sync checkpoint to genesis so the next SPV
+        // session re-fetches filter coverage from height 0 instead of trusting
+        // the now-deleted on-disk filters.
         //
-        // TODO(v3.1-bump): key-wallet 0.43 replaced the single global
-        // `filter_committed_height` with a per-wallet `synced_height`
-        // (update_wallet_synced_height / wallets_behind). We reset each wallet to
-        // 0 to preserve the prior "rescan from genesis on data clear" behaviour.
-        // Verify against SPV that filter coverage actually restarts from genesis
-        // after a clear (the old global field and the new per-wallet heights may
-        // gate FiltersManager differently).
+        // key-wallet 0.43 replaced the single global `filter_committed_height`
+        // with a per-wallet `synced_height`, gated by `wallets_behind()` /
+        // `FiltersManager`. The trait setter `update_wallet_synced_height` is
+        // forward-only monotonic (a value below the current is silently ignored),
+        // so it cannot express a rewind. We therefore write the metadata fields
+        // directly — a deliberate downward reset, the per-wallet equivalent of
+        // the old unconditional `update_filter_committed_height(0)`.
         //
         // This must succeed before we wipe the on-disk data; otherwise the in-memory
         // height would stay stale while on-disk filters are gone, re-triggering the
@@ -836,7 +837,10 @@ impl SpvManager {
             })?;
             let wallet_ids: Vec<_> = wm.list_wallets().into_iter().copied().collect();
             for wallet_id in wallet_ids {
-                wm.update_wallet_synced_height(&wallet_id, 0);
+                if let Some(info) = wm.get_wallet_info_mut(&wallet_id) {
+                    info.metadata.synced_height = 0;
+                    info.metadata.last_processed_height = 0;
+                }
             }
         }
 

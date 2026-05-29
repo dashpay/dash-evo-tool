@@ -120,6 +120,27 @@ pub enum MigrationError {
         failed: u32,
     },
 
+    /// At least one legacy HD wallet seed row could not be migrated
+    /// into the upstream secret vault in this run. Password-protected
+    /// rows count as `deferred_password_protected` (T-W-00.6 picks
+    /// them up); rows that fail for any other reason count as
+    /// `failed`. Fatal only when `failed > 0` — pure deferral leaves
+    /// the sentinel unwritten so the next launch sees the same set
+    /// after T-W-00.6 resolves them.
+    #[error("could not finish wallet-seed migration: {failed} row(s) failed")]
+    WalletSeedsPartialFailure {
+        /// Rows whose seed bytes were written to the vault (or
+        /// idempotently overwritten on a re-run).
+        imported: u32,
+        /// Rows skipped because the seed envelope is password-protected
+        /// and the migration has no password material yet. Surfaced via
+        /// [`crate::context::migration_status::MigrationStatus::pending_seed_passwords`].
+        deferred_password_protected: u32,
+        /// Rows that could not be decoded (seed_hash wrong size,
+        /// corrupted blob, etc.). Triggers the error path.
+        failed: u32,
+    },
+
     /// The wallet backend was not yet wired when the migration ran.
     /// This is a hard configuration bug: the orchestrator runs after
     /// `ensure_wallet_backend`, so this should never fire in
@@ -188,9 +209,21 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<(), TaskError> {
     });
     migrate_shielded_rows(app_context).await?;
 
+    // T-W-00.5 — copy unprotected HD wallet seed envelopes into the
+    // upstream encrypted vault. Password-protected rows are recorded
+    // in `MigrationStatus::pending_seed_passwords` and resolved later
+    // by T-W-00.6's prompt; the migration still proceeds to Success so
+    // password-free wallets are not held hostage.
+    status.set_state(MigrationState::Running {
+        step: MigrationStep::WalletSeeds,
+    });
+    migrate_wallet_seeds_rows(app_context)?;
+
     // T-W-00 — mirror legacy `wallet` rows (alias / `is_main` /
-    // `core_wallet_name`) into the DET wallet-metadata sidecar so the
-    // wallet picker keeps the names a user already chose. Idempotent.
+    // `core_wallet_name` / master xpub) into the DET wallet-metadata
+    // sidecar so the wallet picker keeps the names a user already
+    // chose and can render at cold boot without unlocking seeds.
+    // Idempotent.
     status.set_state(MigrationState::Running {
         step: MigrationStep::WalletMeta,
     });
@@ -791,10 +824,11 @@ where
 {
     let core_wallet_name_present = wallet_table_has_core_wallet_name(conn)?;
     let sql = if core_wallet_name_present {
-        "SELECT seed_hash, alias, is_main, core_wallet_name \
+        "SELECT seed_hash, alias, is_main, core_wallet_name, master_ecdsa_bip44_account_0_epk \
          FROM wallet WHERE network = ?1"
     } else {
-        "SELECT seed_hash, alias, is_main, NULL AS core_wallet_name \
+        "SELECT seed_hash, alias, is_main, NULL AS core_wallet_name, \
+         master_ecdsa_bip44_account_0_epk \
          FROM wallet WHERE network = ?1"
     };
 
@@ -820,7 +854,8 @@ where
             let alias: Option<String> = row.get(1)?;
             let is_main: Option<bool> = row.get(2)?;
             let core_wallet_name: Option<String> = row.get(3)?;
-            Ok((seed_hash, alias, is_main, core_wallet_name))
+            let xpub_encoded: Vec<u8> = row.get(4).unwrap_or_default();
+            Ok((seed_hash, alias, is_main, core_wallet_name, xpub_encoded))
         })
         .map_err(|e| MigrationError::LegacyDbRead {
             table: "wallet",
@@ -829,7 +864,7 @@ where
 
     let mut outcome = WalletMetaMigrationOutcome::default();
     for row in rows {
-        let (seed_hash_bytes, alias, is_main, core_wallet_name) = match row {
+        let (seed_hash_bytes, alias, is_main, core_wallet_name, xpub_encoded) = match row {
             Ok(t) => t,
             Err(e) => {
                 tracing::warn!(
@@ -860,6 +895,7 @@ where
             alias: alias.unwrap_or_default(),
             is_main: is_main.unwrap_or(false),
             core_wallet_name,
+            xpub_encoded,
         };
 
         match set(seed_hash, meta) {
@@ -896,6 +932,201 @@ fn wallet_table_has_core_wallet_name(conn: &Connection) -> Result<bool, Migratio
             source: e,
         })?;
     Ok(count > 0)
+}
+
+/// Outcome counters from one [`migrate_wallet_seeds_rows`] pass.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct WalletSeedsMigrationOutcome {
+    /// Rows whose plaintext seed bytes were written to the upstream
+    /// vault.
+    imported: u32,
+    /// Rows skipped because the seed envelope is password-protected.
+    /// Carried verbatim so the orchestrator can publish the seed-hash
+    /// set to `MigrationStatus::pending_seed_passwords`.
+    deferred_password_protected: Vec<crate::model::wallet::WalletSeedHash>,
+    /// Rows that could not be decoded (seed_hash wrong size, blob
+    /// length wrong, etc.). Triggers the error path.
+    failed: u32,
+}
+
+/// T-W-00.5 wallet-seed migration. Copies the legacy `wallet` table's
+/// plaintext seed envelopes into the upstream encrypted vault via
+/// [`WalletSeedView`](crate::wallet_backend::WalletSeedView).
+/// Password-free rows are migrated silently; password-protected rows
+/// are deferred to T-W-00.6 and published via
+/// [`MigrationStatus::pending_seed_passwords`].
+///
+/// Idempotent — re-running the migrator overwrites the same seed bytes
+/// under the same `WalletId` scope, matching the upstream `set` upsert
+/// contract.
+fn migrate_wallet_seeds_rows(app_context: &Arc<AppContext>) -> Result<(), TaskError> {
+    let backend = app_context
+        .wallet_backend()
+        .map_err(|_| MigrationError::WalletBackendUnavailable)?;
+
+    let Some(path) = app_context.db.db_file_path() else {
+        return Ok(());
+    };
+    if !path.exists() {
+        return Ok(());
+    }
+    let path_str = path.to_string_lossy().to_string();
+    let conn = Connection::open(&path).map_err(|e| MigrationError::LegacyDbOpen {
+        path: path_str,
+        source: e,
+    })?;
+
+    let view = backend.wallet_seeds();
+    let outcome = migrate_wallet_seeds_rows_from_conn(
+        &conn,
+        |seed_hash, seed_bytes| view.set(&seed_hash, &seed_bytes),
+        app_context.network,
+    )?;
+
+    tracing::info!(
+        target = "migration::finish_unwire",
+        imported = outcome.imported,
+        deferred = outcome.deferred_password_protected.len(),
+        failed = outcome.failed,
+        network = ?app_context.network,
+        "Wallet-seed migration pass complete",
+    );
+
+    if !outcome.deferred_password_protected.is_empty() {
+        // T-W-00.6 will consume this set via the password-collection
+        // dialog and call `wallet_seeds().set()` once the user has
+        // typed the password. Recorded here so the UI can surface it.
+        app_context
+            .migration_status()
+            .set_pending_seed_passwords(outcome.deferred_password_protected.clone());
+    }
+
+    if outcome.failed > 0 {
+        return Err(MigrationError::WalletSeedsPartialFailure {
+            imported: outcome.imported,
+            deferred_password_protected: outcome.deferred_password_protected.len() as u32,
+            failed: outcome.failed,
+        }
+        .into());
+    }
+    Ok(())
+}
+
+/// Pure wallet-seed migration body — readable without an `AppContext`.
+/// Walks the `wallet` table at `conn` filtered to `network` and forwards
+/// each password-free `(seed_hash, seed_bytes)` pair to `set`. Returns
+/// counters plus the seed-hash set the orchestrator must defer; never
+/// errors on partial readability so the caller can decide the policy.
+///
+/// **Missing table is not an error** — a freshly-installed `data.db`
+/// (no legacy rows at all) returns the zero outcome.
+fn migrate_wallet_seeds_rows_from_conn<F>(
+    conn: &Connection,
+    mut set: F,
+    network: dash_sdk::dpp::dashcore::Network,
+) -> Result<WalletSeedsMigrationOutcome, MigrationError>
+where
+    F: FnMut(
+        crate::model::wallet::WalletSeedHash,
+        platform_wallet_storage::secrets::SecretBytes,
+    ) -> Result<(), TaskError>,
+{
+    let sql = "SELECT seed_hash, encrypted_seed, uses_password \
+               FROM wallet WHERE network = ?1";
+
+    let mut stmt = match conn.prepare(sql) {
+        Ok(s) => s,
+        Err(rusqlite::Error::SqliteFailure(_, Some(msg))) if msg.contains("no such table") => {
+            return Ok(WalletSeedsMigrationOutcome::default());
+        }
+        Err(rusqlite::Error::SqlInputError { msg, .. }) if msg.contains("no such table") => {
+            return Ok(WalletSeedsMigrationOutcome::default());
+        }
+        Err(e) => {
+            return Err(MigrationError::LegacyDbRead {
+                table: "wallet",
+                source: e,
+            });
+        }
+    };
+
+    let rows = stmt
+        .query_map(rusqlite::params![network.to_string()], |row| {
+            let seed_hash: Vec<u8> = row.get(0)?;
+            let encrypted_seed: Vec<u8> = row.get(1)?;
+            let uses_password: bool = row.get(2)?;
+            Ok((seed_hash, encrypted_seed, uses_password))
+        })
+        .map_err(|e| MigrationError::LegacyDbRead {
+            table: "wallet",
+            source: e,
+        })?;
+
+    let mut outcome = WalletSeedsMigrationOutcome::default();
+    for row in rows {
+        let (seed_hash_bytes, blob, uses_password) = match row {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::warn!(
+                    target = "migration::finish_unwire",
+                    error = ?e,
+                    "Skipping unreadable wallet row during seed migration",
+                );
+                outcome.failed = outcome.failed.saturating_add(1);
+                continue;
+            }
+        };
+
+        let seed_hash: crate::model::wallet::WalletSeedHash =
+            match seed_hash_bytes.as_slice().try_into() {
+                Ok(b) => b,
+                Err(_) => {
+                    tracing::warn!(
+                        target = "migration::finish_unwire",
+                        blob_len = seed_hash_bytes.len(),
+                        "Skipping wallet row with non-32-byte seed_hash during seed migration",
+                    );
+                    outcome.failed = outcome.failed.saturating_add(1);
+                    continue;
+                }
+            };
+
+        if uses_password {
+            outcome.deferred_password_protected.push(seed_hash);
+            continue;
+        }
+
+        // Legacy schema: when `uses_password = 0`, `encrypted_seed`
+        // holds the raw 64-byte BIP-39 seed (see `Wallet::new_from_seed`
+        // in `model/wallet/mod.rs`). The vault layer adds the at-rest
+        // crypto, so DET's own AES envelope is bypassed here.
+        if blob.len() != 64 {
+            tracing::warn!(
+                target = "migration::finish_unwire",
+                seed_hash = %hex::encode(seed_hash),
+                blob_len = blob.len(),
+                "Skipping wallet row with non-64-byte plaintext seed blob",
+            );
+            outcome.failed = outcome.failed.saturating_add(1);
+            continue;
+        }
+
+        let seed_bytes = platform_wallet_storage::secrets::SecretBytes::from_slice(&blob);
+        match set(seed_hash, seed_bytes) {
+            Ok(()) => outcome.imported = outcome.imported.saturating_add(1),
+            Err(e) => {
+                tracing::warn!(
+                    target = "migration::finish_unwire",
+                    seed_hash = %hex::encode(seed_hash),
+                    error = ?e,
+                    "Failed to write wallet-seed entry",
+                );
+                outcome.failed = outcome.failed.saturating_add(1);
+            }
+        }
+    }
+
+    Ok(outcome)
 }
 
 /// NFR-4 pre-flight gate: returns `true` when the legacy `data.db`
@@ -1886,6 +2117,7 @@ mod tests {
                 alias: "paycheque".into(),
                 is_main: true,
                 core_wallet_name: Some("dev-dashd".into()),
+                xpub_encoded: Vec::new(),
             })
         );
         // Mainnet row must not be visible on testnet.
@@ -2097,5 +2329,242 @@ mod tests {
         assert_eq!(outcome.imported, 1);
         assert_eq!(outcome.failed, 1);
         assert!(view.get(Network::Testnet, &good_seed).is_some());
+    }
+
+    /// Insert a wallet row with the caller's chosen `encrypted_seed`
+    /// blob and `uses_password` flag — the surface T-W-00.5's seed
+    /// migrator reads. Re-uses the `has_core_name_col = false` legacy
+    /// schema (the post-drop shape) because the seed migration ignores
+    /// `core_wallet_name`.
+    fn seed_legacy_wallet_seed_row(
+        conn: &Connection,
+        seed_hash: &[u8; 32],
+        seed_blob: &[u8],
+        uses_password: bool,
+        network: dash_sdk::dpp::dashcore::Network,
+    ) {
+        conn.execute(
+            "INSERT INTO wallet (
+                seed_hash, encrypted_seed, salt, nonce,
+                master_ecdsa_bip44_account_0_epk, alias, is_main,
+                uses_password, password_hint, network
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            rusqlite::params![
+                seed_hash.as_slice(),
+                seed_blob,
+                Vec::<u8>::new(),
+                Vec::<u8>::new(),
+                Vec::<u8>::new(),
+                Option::<String>::None,
+                0_i32,
+                uses_password as i32,
+                Option::<String>::None,
+                network.to_string(),
+            ],
+        )
+        .expect("insert legacy wallet row");
+    }
+
+    /// TC-W-001 storage half — a password-free legacy `wallet` row has
+    /// its plaintext seed copied into the vault under the `seed.v1`
+    /// label scoped by `WalletId(seed_hash)`. The vault layer adds the
+    /// at-rest crypto, so the migrator does not touch encryption
+    /// itself.
+    #[test]
+    fn tc_w_001_storage_password_free_seed_round_trips_through_view() {
+        use crate::wallet_backend::wallet_seed_store::WalletSeedView;
+        use dash_sdk::dpp::dashcore::Network;
+        use platform_wallet_storage::secrets::SecretBytes;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("data.db");
+        let conn = Connection::open(&db_path).expect("open legacy db");
+        create_legacy_wallet_table_without_core_name(&conn);
+
+        let seed_hash: crate::model::wallet::WalletSeedHash = [0xAA; 32];
+        let plaintext: [u8; 64] = [0x11; 64];
+        seed_legacy_wallet_seed_row(&conn, &seed_hash, &plaintext, false, Network::Testnet);
+
+        let store = Arc::new(
+            crate::wallet_backend::single_key::open_secret_store(
+                &dir.path().join("secrets.pwsvault"),
+            )
+            .expect("open vault"),
+        );
+        let view = WalletSeedView::new(&store);
+
+        let outcome = migrate_wallet_seeds_rows_from_conn(
+            &conn,
+            |seed_hash, seed| view.set(&seed_hash, &seed),
+            Network::Testnet,
+        )
+        .expect("migrate");
+
+        assert_eq!(outcome.imported, 1);
+        assert_eq!(outcome.failed, 0);
+        assert!(outcome.deferred_password_protected.is_empty());
+
+        let got = view.get(&seed_hash).expect("get").expect("entry present");
+        let expected = SecretBytes::from_slice(&plaintext);
+        assert_eq!(got.expose_secret(), expected.expose_secret());
+    }
+
+    /// TC-W-002 — running the seed migration twice is idempotent: the
+    /// second pass sees the same import count and the vault still
+    /// holds the original bytes (upstream `set` upserts).
+    #[test]
+    fn tc_w_002_seed_migration_is_idempotent() {
+        use crate::wallet_backend::wallet_seed_store::WalletSeedView;
+        use dash_sdk::dpp::dashcore::Network;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("data.db");
+        let conn = Connection::open(&db_path).expect("open legacy db");
+        create_legacy_wallet_table_without_core_name(&conn);
+
+        let seed_hash: crate::model::wallet::WalletSeedHash = [0xBB; 32];
+        let plaintext: [u8; 64] = [0x22; 64];
+        seed_legacy_wallet_seed_row(&conn, &seed_hash, &plaintext, false, Network::Testnet);
+
+        let store = Arc::new(
+            crate::wallet_backend::single_key::open_secret_store(
+                &dir.path().join("secrets.pwsvault"),
+            )
+            .expect("open vault"),
+        );
+        let view = WalletSeedView::new(&store);
+
+        let first = migrate_wallet_seeds_rows_from_conn(
+            &conn,
+            |seed_hash, seed| view.set(&seed_hash, &seed),
+            Network::Testnet,
+        )
+        .expect("first pass");
+        assert_eq!(first.imported, 1);
+
+        let second = migrate_wallet_seeds_rows_from_conn(
+            &conn,
+            |seed_hash, seed| view.set(&seed_hash, &seed),
+            Network::Testnet,
+        )
+        .expect("second pass");
+        assert_eq!(second.imported, 1);
+        assert_eq!(second.failed, 0);
+
+        let got = view.get(&seed_hash).unwrap().unwrap();
+        assert_eq!(got.expose_secret(), &plaintext);
+    }
+
+    /// Path B — a password-protected row never travels through the
+    /// vault. Its seed_hash is recorded on the deferred list so
+    /// T-W-00.6 can drive a per-wallet password prompt later.
+    #[test]
+    fn password_protected_seed_row_is_deferred_not_failed() {
+        use dash_sdk::dpp::dashcore::Network;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("data.db");
+        let conn = Connection::open(&db_path).expect("open legacy db");
+        create_legacy_wallet_table_without_core_name(&conn);
+
+        let seed_hash: crate::model::wallet::WalletSeedHash = [0xCC; 32];
+        seed_legacy_wallet_seed_row(
+            &conn,
+            &seed_hash,
+            // Ciphertext payload — the row is encrypted, so the body is
+            // opaque to the migrator and must NOT travel through the
+            // vault.
+            &[0xFF; 80],
+            true,
+            Network::Testnet,
+        );
+
+        let mut writes: u32 = 0;
+        let outcome = migrate_wallet_seeds_rows_from_conn(
+            &conn,
+            |_seed_hash, _seed| {
+                writes += 1;
+                Ok(())
+            },
+            Network::Testnet,
+        )
+        .expect("migrate");
+
+        assert_eq!(writes, 0, "password-protected rows must not write");
+        assert_eq!(outcome.imported, 0);
+        assert_eq!(outcome.failed, 0);
+        assert_eq!(outcome.deferred_password_protected, vec![seed_hash]);
+    }
+
+    /// A password-free row whose plaintext blob is not exactly 64 bytes
+    /// counts as a failure rather than a silent overwrite. Catches
+    /// schema drift / corrupt rows before they reach the vault.
+    #[test]
+    fn non_64_byte_plaintext_seed_blob_is_failed_not_imported() {
+        use dash_sdk::dpp::dashcore::Network;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("data.db");
+        let conn = Connection::open(&db_path).expect("open legacy db");
+        create_legacy_wallet_table_without_core_name(&conn);
+
+        let seed_hash: crate::model::wallet::WalletSeedHash = [0xDD; 32];
+        seed_legacy_wallet_seed_row(&conn, &seed_hash, &[0u8; 32], false, Network::Testnet);
+
+        let outcome = migrate_wallet_seeds_rows_from_conn(&conn, |_, _| Ok(()), Network::Testnet)
+            .expect("migrate");
+        assert_eq!(outcome.imported, 0);
+        assert_eq!(outcome.failed, 1);
+        assert!(outcome.deferred_password_protected.is_empty());
+    }
+
+    /// Foreign-network rows are partitioned by the `WHERE network = ?`
+    /// filter. A mainnet row must not leak into a testnet seed
+    /// migration pass.
+    #[test]
+    fn seed_migration_filters_by_network() {
+        use dash_sdk::dpp::dashcore::Network;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("data.db");
+        let conn = Connection::open(&db_path).expect("open legacy db");
+        create_legacy_wallet_table_without_core_name(&conn);
+
+        let testnet_seed: crate::model::wallet::WalletSeedHash = [0xEE; 32];
+        seed_legacy_wallet_seed_row(&conn, &testnet_seed, &[0x33; 64], false, Network::Testnet);
+        let mainnet_seed: crate::model::wallet::WalletSeedHash = [0xEF; 32];
+        seed_legacy_wallet_seed_row(&conn, &mainnet_seed, &[0x44; 64], false, Network::Mainnet);
+
+        let mut imported: Vec<crate::model::wallet::WalletSeedHash> = Vec::new();
+        let outcome = migrate_wallet_seeds_rows_from_conn(
+            &conn,
+            |seed_hash, _| {
+                imported.push(seed_hash);
+                Ok(())
+            },
+            Network::Testnet,
+        )
+        .expect("migrate");
+
+        assert_eq!(outcome.imported, 1);
+        assert_eq!(imported, vec![testnet_seed]);
+    }
+
+    /// Missing `wallet` table is the freshly-installed shape — the
+    /// migrator returns the zero outcome rather than erroring out.
+    #[test]
+    fn seed_migration_treats_missing_table_as_empty() {
+        use dash_sdk::dpp::dashcore::Network;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("data.db");
+        let conn = Connection::open(&db_path).expect("open legacy db");
+
+        let outcome = migrate_wallet_seeds_rows_from_conn(&conn, |_, _| Ok(()), Network::Testnet)
+            .expect("migrate");
+
+        assert_eq!(outcome.imported, 0);
+        assert_eq!(outcome.failed, 0);
+        assert!(outcome.deferred_password_protected.is_empty());
     }
 }

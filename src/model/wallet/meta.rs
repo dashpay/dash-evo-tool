@@ -22,8 +22,10 @@ use serde::{Deserialize, Serialize};
 /// DET-owned per-wallet metadata.
 ///
 /// Lives next to the upstream wallet state, not inside it: upstream
-/// owns balance / transactions / identities; DET owns these three
-/// display-and-pick-a-wallet fields.
+/// owns balance / transactions / identities; DET owns these display
+/// fields plus a pre-computed master BIP44 ECDSA xpub so the wallet
+/// picker can render at cold boot without touching the encrypted seed
+/// vault.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WalletMeta {
     /// User-visible label. Empty string when the user never named
@@ -39,6 +41,14 @@ pub struct WalletMeta {
     /// for Devnet / Regtest installs that drive a local `dashd` from
     /// DET; `None` for the default cloud / SPV install.
     pub core_wallet_name: Option<String>,
+    /// `ExtendedPubKey::encode()` bytes for `m/44'/coin'/0'`. Computed
+    /// once when the wallet is first persisted; the picker reads it on
+    /// every boot so locked seeds don't have to be unlocked to render
+    /// the list. Empty vector for entries written before T-W-00.5 — the
+    /// caller treats absent bytes as "xpub unknown" and skips the
+    /// affected operations (currently only the picker derives from it).
+    #[serde(default)]
+    pub xpub_encoded: Vec<u8>,
 }
 
 #[cfg(test)]
@@ -54,6 +64,7 @@ mod tests {
             alias: "paycheque".into(),
             is_main: true,
             core_wallet_name: Some("dev-wallet".into()),
+            xpub_encoded: vec![0xAB; 78],
         };
         let bytes =
             bincode::serde::encode_to_vec(&original, bincode::config::standard()).expect("encode");
@@ -63,12 +74,13 @@ mod tests {
     }
 
     /// W-META-002 — `Default` matches the "fresh install, never named"
-    /// shape: empty alias, not main, no Dash Core wallet link.
+    /// shape: empty alias, not main, no Dash Core wallet link, no xpub.
     #[test]
     fn default_is_empty_unnamed_wallet() {
         let m = WalletMeta::default();
         assert!(m.alias.is_empty());
         assert!(!m.is_main);
         assert!(m.core_wallet_name.is_none());
+        assert!(m.xpub_encoded.is_empty());
     }
 }

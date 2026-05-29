@@ -28,6 +28,7 @@ mod shielded;
 pub(crate) mod single_key;
 mod snapshot;
 pub mod wallet_meta;
+pub mod wallet_seed_store;
 
 pub use dashpay::DashpayView;
 pub use shielded::{InsertShieldedNote, SHIELDED_SIDECAR_FILE, ShieldedNoteRow, ShieldedView};
@@ -42,6 +43,7 @@ pub use single_key::SingleKeyView;
 use snapshot::SnapshotStore;
 pub use snapshot::{DetUtxo, DetWalletBalance, WalletSnapshot};
 pub use wallet_meta::WalletMetaView;
+pub use wallet_seed_store::WalletSeedView;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -117,10 +119,12 @@ struct Inner {
     /// dispatch is user-initiated and rare relative to lock acquisition
     /// cost.
     dashpay_address_index_lock: std::sync::Mutex<()>,
-    /// Encrypted secret store for imported-key material (single-key
-    /// wallets). HD seeds never travel through this store — they live
-    /// in [`Self::seeds`] and the upstream wallet snapshot. See
-    /// [`single_key`] for the public view.
+    /// Encrypted secret vault. Holds imported single-key WIFs
+    /// (`single_key_priv.*` labels, see [`single_key`]) and HD-wallet
+    /// BIP-39 seeds (`seed.v1` labels under `WalletId(seed_hash)`, see
+    /// [`wallet_seed_store`]). [`Self::seeds`] caches plaintext seeds
+    /// for the duration of the process so signers don't re-open the
+    /// vault on every call.
     secret_store: Arc<SecretStore>,
     /// Per-network shielded-notes sidecar. Lazy-materialised on first
     /// write at `<spv_storage_dir>/det-shielded.sqlite`. See
@@ -407,6 +411,15 @@ impl WalletBackend {
     /// callers may build one per operation rather than threading it.
     pub fn wallet_meta(&self) -> WalletMetaView<'_> {
         WalletMetaView::new(&self.inner.app_kv)
+    }
+
+    /// View over the encrypted HD wallet seed vault (T-W-00.5). Each
+    /// wallet's BIP-39 seed lives behind one upstream `SecretStore`
+    /// entry keyed by `WalletId(seed_hash)`. Plaintext at rest is
+    /// protected by the vault's Argon2id + XChaCha20-Poly1305 layer;
+    /// DET no longer ships its own AES-GCM envelope.
+    pub fn wallet_seeds(&self) -> WalletSeedView<'_> {
+        WalletSeedView::new(&self.inner.secret_store)
     }
 
     /// Per-network storage directory under `<data_dir>/spv/<network>/`.

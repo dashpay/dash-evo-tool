@@ -288,6 +288,7 @@ mod tests {
             alias: alias.into(),
             is_main,
             core_wallet_name: core.map(str::to_string),
+            xpub_encoded: Vec::new(),
         }
     }
 

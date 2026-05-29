@@ -105,12 +105,25 @@ pub enum TaskError {
     },
 
     /// The encrypted secret store could not be opened, read, or written.
-    /// Imported single-key material lives here; the HD-wallet seed and
-    /// upstream wallet state are unaffected.
+    /// Imported single-key material lives here; HD-wallet seeds are
+    /// surfaced through [`Self::WalletSeedStorage`] for a clearer
+    /// banner copy.
     #[error(
         "Could not access your imported keys. Check available disk space and restart the application."
     )]
     SecretStore {
+        #[source]
+        source: Box<platform_wallet_storage::secrets::FileStoreError>,
+    },
+
+    /// The encrypted seed vault could not be read or written. Distinct
+    /// from [`Self::SecretStore`] so the banner can speak about "your
+    /// wallet" rather than imported keys. Backed by the same upstream
+    /// `SecretStore` file vault.
+    #[error(
+        "Could not access your wallet. Check available disk space and restart the application."
+    )]
+    WalletSeedStorage {
         #[source]
         source: Box<platform_wallet_storage::secrets::FileStoreError>,
     },

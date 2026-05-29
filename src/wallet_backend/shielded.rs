@@ -653,6 +653,185 @@ mod tests {
         );
     }
 
+    /// TC-SH-004 — note insert via the adapter persists to the
+    /// per-network sidecar (and *only* the sidecar). Mirrors the path
+    /// T-SH-03 wires `backend_task::shielded::sync::sync_notes` onto.
+    #[test]
+    fn tc_sh_004_note_insert_via_adapter_persists_to_sidecar() {
+        let tmp = tempdir().expect("tempdir");
+        let view = make_view(tmp.path());
+        let seed: WalletSeedHash = [0x44; 32];
+
+        let n = sample_note(11, 0, 0xD1);
+        view.insert_shielded_note(&seed, &n.as_param("testnet"))
+            .expect("insert via adapter");
+
+        // The note must be readable via the same view.
+        let all = view
+            .get_all_shielded_notes(&seed, "testnet")
+            .expect("read after insert");
+        assert_eq!(all.len(), 1, "single note in sidecar");
+        assert_eq!(all[0].value, 11);
+        assert_eq!(all[0].position, 0);
+        assert_eq!(all[0].nullifier, n.nullifier);
+
+        // The on-disk file is the sidecar — confirm the row landed
+        // there rather than vanishing into a different writer.
+        let conn = Connection::open(view.path()).expect("open sidecar");
+        let cnt: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM shielded_notes WHERE network = ?1",
+                params!["testnet"],
+                |row| row.get(0),
+            )
+            .expect("count row");
+        assert_eq!(cnt, 1, "row landed in the sidecar file");
+    }
+
+    /// TC-SH-005 — balance read via the adapter returns the sidecar
+    /// sum. This is the read path `send_screen.rs` uses to surface a
+    /// last-known shielded balance when the in-memory state was
+    /// dropped.
+    #[test]
+    fn tc_sh_005_balance_read_returns_sidecar_sum() {
+        let tmp = tempdir().expect("tempdir");
+        let view = make_view(tmp.path());
+        let seed: WalletSeedHash = [0x55; 32];
+
+        // Virgin sidecar: zero balance + no file on disk.
+        assert_eq!(view.get_shielded_balance(&seed, "testnet").unwrap(), 0);
+        assert!(!view.path().exists(), "read must not materialise");
+
+        view.insert_shielded_note(&seed, &sample_note(10, 0, 0xE1).as_param("testnet"))
+            .expect("insert n1");
+        view.insert_shielded_note(&seed, &sample_note(25, 1, 0xE2).as_param("testnet"))
+            .expect("insert n2");
+        view.insert_shielded_note(&seed, &sample_note(7, 2, 0xE3).as_param("testnet"))
+            .expect("insert n3");
+
+        let bal = view
+            .get_shielded_balance(&seed, "testnet")
+            .expect("balance");
+        assert_eq!(
+            bal, 42,
+            "balance is the sum of all unspent values (10+25+7)"
+        );
+
+        // Marking one spent shrinks the balance accordingly — same path
+        // `nullifiers::check_nullifiers` rewires onto.
+        let marked = view
+            .mark_shielded_note_spent(&seed, &[0xE2; 32], "testnet")
+            .expect("mark spent");
+        assert_eq!(marked, 1);
+        assert_eq!(
+            view.get_shielded_balance(&seed, "testnet").unwrap(),
+            17,
+            "balance drops by the spent note's value (25)"
+        );
+
+        // Foreign network reads zero — covers the per-network isolation
+        // guarantee callers depend on.
+        assert_eq!(view.get_shielded_balance(&seed, "mainnet").unwrap(), 0);
+    }
+
+    /// TC-SH-006 — `mark_shielded_note_spent` via the adapter durably
+    /// flips the row's `is_spent` flag. Mirrors the path
+    /// `context::shielded::mark_notes_spent` rewires onto.
+    #[test]
+    fn tc_sh_006_mark_spent_via_adapter() {
+        let tmp = tempdir().expect("tempdir");
+        let view = make_view(tmp.path());
+        let seed: WalletSeedHash = [0x66; 32];
+
+        let n = sample_note(9, 0, 0xF1);
+        view.insert_shielded_note(&seed, &n.as_param("testnet"))
+            .expect("insert");
+
+        assert_eq!(
+            view.get_unspent_shielded_notes(&seed, "testnet")
+                .unwrap()
+                .len(),
+            1,
+            "note starts unspent"
+        );
+
+        let updated = view
+            .mark_shielded_note_spent(&seed, &n.nullifier, "testnet")
+            .expect("mark spent");
+        assert_eq!(updated, 1, "exactly one row updated");
+
+        // Unspent set is now empty…
+        assert!(
+            view.get_unspent_shielded_notes(&seed, "testnet")
+                .unwrap()
+                .is_empty(),
+            "no unspent notes after mark"
+        );
+        // …but the row itself is still present (it's flagged, not deleted).
+        assert_eq!(
+            view.get_all_shielded_notes(&seed, "testnet").unwrap().len(),
+            1,
+            "spent row remains, only flagged"
+        );
+
+        // Idempotent: marking again is a silent no-op success.
+        let again = view
+            .mark_shielded_note_spent(&seed, &n.nullifier, "testnet")
+            .expect("re-mark");
+        assert_eq!(again, 1, "UPDATE still matches the row by nullifier");
+
+        // Cross-network: marking on a foreign network must NOT touch
+        // this network's row.
+        let foreign = view
+            .mark_shielded_note_spent(&seed, &n.nullifier, "mainnet")
+            .expect("foreign-network mark");
+        assert_eq!(foreign, 0, "no testnet rows touched by mainnet update");
+    }
+
+    /// TC-SH-007 — sync cursor read/write round-trip via the adapter.
+    /// Mirrors the path `nullifiers::check_nullifiers` and
+    /// `context::shielded::initialize_shielded_wallet` use to persist
+    /// and resume the nullifier sync checkpoint.
+    #[test]
+    fn tc_sh_007_sync_cursor_read_write_via_adapter() {
+        let tmp = tempdir().expect("tempdir");
+        let view = make_view(tmp.path());
+        let seed: WalletSeedHash = [0x77; 32];
+
+        // Virgin read returns (0, 0) and does NOT materialise the file —
+        // the lazy-provisioning contract every reader depends on.
+        let pre = view
+            .get_nullifier_sync_info(&seed, "testnet")
+            .expect("virgin read");
+        assert_eq!(pre, (0, 0));
+        assert!(!view.path().exists(), "read must not materialise");
+
+        view.set_nullifier_sync_info(&seed, "testnet", 1_234_567, 1_700_000_000)
+            .expect("set cursor");
+        assert!(view.path().exists(), "write materialised the sidecar");
+
+        let (h, ts) = view
+            .get_nullifier_sync_info(&seed, "testnet")
+            .expect("read cursor");
+        assert_eq!((h, ts), (1_234_567, 1_700_000_000));
+
+        // Upsert semantics: re-writing replaces the value rather than
+        // accumulating rows. Callers rely on this so cold-start
+        // progress is monotonic, not history.
+        view.set_nullifier_sync_info(&seed, "testnet", 2_000_000, 1_800_000_000)
+            .expect("upsert cursor");
+        let (h2, ts2) = view
+            .get_nullifier_sync_info(&seed, "testnet")
+            .expect("read cursor v2");
+        assert_eq!((h2, ts2), (2_000_000, 1_800_000_000));
+
+        // Foreign network has its own cursor — must not leak.
+        assert_eq!(
+            view.get_nullifier_sync_info(&seed, "mainnet").unwrap(),
+            (0, 0),
+        );
+    }
+
     /// UNIQUE(wallet_seed_hash, nullifier, network) makes a duplicate
     /// insert a silent no-op (INSERT OR IGNORE) — mirrors legacy
     /// behaviour so the migration is idempotent.

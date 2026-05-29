@@ -415,8 +415,12 @@ impl AppContext {
             last_synced_index = u64::from(pos) + 1;
         }
 
-        let (last_nullifier_sync_height, last_nullifier_sync_timestamp) = self
-            .db
+        // T-SH-03: read sync cursor from the per-network shielded sidecar
+        // instead of `data.db`. Falls back to (0, 0) when the sidecar has
+        // not been materialised yet — the lazy-provisioning contract.
+        let backend = self.wallet_backend()?;
+        let (last_nullifier_sync_height, last_nullifier_sync_timestamp) = backend
+            .shielded()
             .get_nullifier_sync_info(&seed_hash, &network_str)
             .unwrap_or((0, 0));
 
@@ -432,9 +436,11 @@ impl AppContext {
             last_nullifiers_synced_at: None,
         };
 
-        // Load persisted notes from DB and reconstruct Note objects
-        let note_rows = self
-            .db
+        // T-SH-03: load persisted notes from the shielded sidecar
+        // (per-network, lazy-materialised) — the last reader of
+        // `database::shielded` lives here until T-DEV-02 deletes it.
+        let note_rows = backend
+            .shielded()
             .get_unspent_shielded_notes(&seed_hash, &network_str)?;
         for row in note_rows {
             if let Some(note) = crate::model::wallet::shielded::deserialize_note(&row.note_data)
@@ -460,7 +466,9 @@ impl AppContext {
         // We check ALL notes (including spent) to avoid a false positive when
         // the user legitimately spent everything.
         if state.last_synced_index > 0 && state.notes.is_empty() {
-            let all_notes = self.db.get_all_shielded_notes(&seed_hash, &network_str)?;
+            let all_notes = backend
+                .shielded()
+                .get_all_shielded_notes(&seed_hash, &network_str)?;
             if all_notes.is_empty() {
                 tracing::warn!(
                     "Shielded init: wallet {} tree synced to index {} but no notes in DB — forcing full resync",
@@ -832,7 +840,8 @@ impl AppContext {
         })
     }
 
-    /// Mark notes as spent in both memory and DB after a successful broadcast.
+    /// Mark notes as spent in both memory and the per-network shielded
+    /// sidecar after a successful broadcast (T-SH-03).
     fn mark_notes_spent(
         &self,
         seed_hash: &WalletSeedHash,
@@ -840,14 +849,23 @@ impl AppContext {
         spent_nullifiers: &[Nullifier],
     ) {
         let network_str = self.network.to_string();
+        // The shielded path runs after `ensure_wallet_backend`; this
+        // accessor is expected to be wired here. If it ever isn't, fall
+        // back to a no-op write so the in-memory mark still happens —
+        // the next sync will reconcile on disk.
+        let backend = self.wallet_backend().ok();
         for nf in spent_nullifiers {
             let nf_bytes = nf.to_bytes();
             for note in &mut state.notes {
                 if !note.is_spent && note.nullifier.to_bytes() == nf_bytes {
                     note.is_spent = true;
-                    let _ = self
-                        .db
-                        .mark_shielded_note_spent(seed_hash, &nf_bytes, &network_str);
+                    if let Some(backend) = backend.as_ref() {
+                        let _ = backend.shielded().mark_shielded_note_spent(
+                            seed_hash,
+                            &nf_bytes,
+                            &network_str,
+                        );
+                    }
                 }
             }
         }

@@ -146,18 +146,25 @@ pub async fn sync_notes(
         let note_data = crate::model::wallet::shielded::serialize_note(&dn.note);
         let nullifier_bytes = nullifier.to_bytes();
 
-        let _ = app_context.db.insert_shielded_note(
-            seed_hash,
-            &crate::database::shielded::InsertShieldedNote {
-                note_data: &note_data,
-                position: dn.position,
-                cmx: &dn.cmx,
-                nullifier: &nullifier_bytes,
-                block_height: 0,
-                value,
-                network: &network_str,
-            },
-        );
+        // T-SH-03: persist the new note into the per-network shielded
+        // sidecar rather than the shared `data.db`. Write errors are
+        // swallowed so a single insert failure does not abort the sync —
+        // the next sync re-emits the note (UNIQUE constraint makes the
+        // re-insert idempotent).
+        if let Ok(backend) = app_context.wallet_backend() {
+            let _ = backend.shielded().insert_shielded_note(
+                seed_hash,
+                &crate::wallet_backend::InsertShieldedNote {
+                    note_data: &note_data,
+                    position: dn.position,
+                    cmx: &dn.cmx,
+                    nullifier: &nullifier_bytes,
+                    block_height: 0,
+                    value,
+                    network: &network_str,
+                },
+            );
+        }
 
         shielded_state.notes.push(ShieldedNote {
             note: dn.note,

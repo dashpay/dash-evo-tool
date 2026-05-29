@@ -640,12 +640,14 @@ impl WalletSendScreen {
             };
         }
         drop(states);
-        // Fall back to database balance (works even if shielded state is temporarily
-        // removed during an async operation, or if the Shielded tab was never visited)
+        // Fall back to the per-network shielded sidecar balance (T-SH-03)
+        // — works even if the in-memory shielded state was temporarily
+        // removed during an async operation, or if the Shielded tab was
+        // never visited. The sidecar returns 0 when never materialised.
         let network_str = self.app_context.network.to_string();
-        let balance = self
-            .app_context
-            .db
+        let backend = self.app_context.wallet_backend().ok()?;
+        let balance = backend
+            .shielded()
             .get_shielded_balance(&seed_hash, &network_str)
             .ok()?;
         if balance > 0 {

@@ -52,29 +52,40 @@ pub async fn check_nullifiers(
             detail: e.to_string(),
         })?;
 
-    // Mark found (spent) nullifiers
+    // Mark found (spent) nullifiers in the per-network shielded sidecar.
+    // T-SH-03: route writes through `WalletBackend::shielded()`. The
+    // backend is wired before the shielded path can run, so a `None`
+    // here means a transient race during teardown — the in-memory mark
+    // still happens and the next sync re-converges.
+    let backend = app_context.wallet_backend().ok();
     let mut spent_count = 0u32;
     for nf_bytes in &result.found {
         for note in &mut shielded_state.notes {
             if !note.is_spent && note.nullifier.to_bytes() == *nf_bytes {
                 note.is_spent = true;
                 spent_count += 1;
-                let _ = app_context
-                    .db
-                    .mark_shielded_note_spent(seed_hash, nf_bytes, &network_str);
+                if let Some(backend) = backend.as_ref() {
+                    let _ = backend.shielded().mark_shielded_note_spent(
+                        seed_hash,
+                        nf_bytes,
+                        &network_str,
+                    );
+                }
             }
         }
     }
 
-    // Persist sync height and timestamp
+    // Persist sync height and timestamp in the shielded sidecar.
     shielded_state.last_nullifier_sync_height = result.new_sync_height;
     shielded_state.last_nullifier_sync_timestamp = result.new_sync_timestamp;
-    let _ = app_context.db.set_nullifier_sync_info(
-        seed_hash,
-        &network_str,
-        result.new_sync_height,
-        result.new_sync_timestamp,
-    );
+    if let Some(backend) = backend.as_ref() {
+        let _ = backend.shielded().set_nullifier_sync_info(
+            seed_hash,
+            &network_str,
+            result.new_sync_height,
+            result.new_sync_timestamp,
+        );
+    }
 
     if spent_count > 0 {
         shielded_state.recalculate_balance();

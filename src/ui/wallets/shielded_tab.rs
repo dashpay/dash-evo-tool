@@ -1,7 +1,9 @@
 use crate::app::AppAction;
 use crate::backend_task::BackendTask;
+use crate::backend_task::migration::MigrationTask;
 use crate::backend_task::shielded::ShieldedTask;
 use crate::context::AppContext;
+use crate::context::migration_status::{MigrationState, MigrationStep};
 use crate::model::wallet::WalletSeedHash;
 use crate::ui::ScreenType;
 use crate::ui::components::wallet_unlock_popup::wallet_needs_unlock;
@@ -11,6 +13,61 @@ use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use eframe::egui::{self, Ui};
 use egui::{Color32, Frame, Margin, RichText};
 use std::sync::Arc;
+
+/// J-3 indicator strings — single complete sentences so the i18n
+/// extraction pass picks each one up as a discrete translation unit.
+/// Exposed `pub` so kittest coverage (TC-A11Y-006) can assert against
+/// the exact label the UI renders.
+pub const SHIELDED_VERIFYING_LABEL: &str = "Verifying shielded balance.";
+pub const SHIELDED_VERIFIED_LABEL: &str = "Verified.";
+pub const SHIELDED_SPEND_LOCKED_LABEL: &str = "Spending paused.";
+pub const SHIELDED_SPEND_LOCKED_TOOLTIP: &str =
+    "Spending paused until shielded balance is verified.";
+pub const SHIELDED_LOCK_ICON: &str = "\u{1F512}"; // 🔒
+pub const SHIELDED_VERIFIED_ICON: &str = "\u{2714}"; // ✔
+pub const SHIELDED_RETRY_MIGRATION_LABEL: &str = "Retry shielded migration";
+pub const SHIELDED_SKIP_MIGRATION_LABEL: &str = "Skip for now";
+pub const SHIELDED_MIGRATION_ERROR_LABEL: &str =
+    "Shielded data could not be migrated. Try again, or skip and use the rest of your wallet.";
+pub const SHIELDED_TAB_SKIPPED_LABEL: &str =
+    "Shielded features are paused until the next launch. Restart the app to retry the migration.";
+
+/// J-3 indicator state. Derived purely from [`MigrationState`] and the
+/// session-local "skip" flag, so the same inputs always yield the same
+/// indicator — testable without a UI harness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShieldedIndicator {
+    /// Migration completed (or never required) — balance is authoritative.
+    Verified,
+    /// Migration is mid-flight on the shielded step. Spends paused.
+    Verifying,
+    /// Sidecar mirror failed. Spend locked with a retry / skip prompt.
+    Failed,
+    /// Migration not yet started or in a non-shielded step — no badge.
+    Hidden,
+}
+
+/// Derive the indicator state from the migration status. Pure function
+/// so tests can drive it without a UI harness (TC-A11Y-006 backstop).
+///
+/// `skipped` is the user-driven "skip for now" toggle held in
+/// [`ShieldedTabView::sidecar_skipped`]; when set, the indicator is
+/// hidden so the tab content can render the disabled-skip notice
+/// instead of the retry banner.
+pub fn derive_shielded_indicator(state: &MigrationState, skipped: bool) -> ShieldedIndicator {
+    if skipped {
+        return ShieldedIndicator::Hidden;
+    }
+    match state {
+        MigrationState::Running {
+            step: MigrationStep::Shielded,
+        } => ShieldedIndicator::Verifying,
+        MigrationState::Failed { .. } => ShieldedIndicator::Failed,
+        MigrationState::Success => ShieldedIndicator::Verified,
+        // Idle / non-shielded running step → no badge.
+        MigrationState::Idle | MigrationState::Running { .. } => ShieldedIndicator::Hidden,
+    }
+}
 
 /// View component for the Shielded tab within the Wallets screen.
 pub struct ShieldedTabView {
@@ -28,6 +85,10 @@ pub struct ShieldedTabView {
     pending_task: Option<BackendTask>,
     /// Number of diversified addresses generated (always >= 1).
     address_count: u32,
+    /// J-3: session-local flag set when the user clicks "Skip for now"
+    /// on the sidecar-failure banner. Suppresses the retry banner and
+    /// locks the tab until the app restarts.
+    sidecar_skipped: bool,
 }
 
 impl ShieldedTabView {
@@ -44,7 +105,15 @@ impl ShieldedTabView {
             tree_synced: false,
             pending_task: None,
             address_count: 1,
+            sidecar_skipped: false,
         }
+    }
+
+    /// Compute the J-3 indicator for the current frame. Reads the
+    /// migration status atomic; cheap.
+    fn current_indicator(&self) -> ShieldedIndicator {
+        let state = self.app_context.migration_status().state();
+        derive_shielded_indicator(&state, self.sidecar_skipped)
     }
 
     pub fn is_syncing(&self) -> bool {
@@ -63,6 +132,9 @@ impl ShieldedTabView {
             self.syncing = false;
             self.pending_task = None;
             self.address_count = 1;
+            // Skip-for-now is session-scoped to the wallet; a new
+            // wallet starts with the retry banner re-enabled.
+            self.sidecar_skipped = false;
         }
     }
 
@@ -319,6 +391,58 @@ impl ShieldedTabView {
     pub fn ui(&mut self, ui: &mut Ui) -> AppAction {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
         let mut action = self.tick();
+        let indicator = self.current_indicator();
+
+        // J-3 sidecar-failure banner — surfaces above everything else
+        // because spends are locked in this state. Both buttons emit
+        // either a retry task or set the session-skip flag.
+        if matches!(indicator, ShieldedIndicator::Failed) {
+            Frame::new()
+                .fill(Color32::from_rgb(255, 100, 100).gamma_multiply(0.1))
+                .inner_margin(Margin::symmetric(10, 8))
+                .corner_radius(5.0)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(SHIELDED_LOCK_ICON)
+                                .color(Color32::from_rgb(255, 100, 100)),
+                        );
+                        ui.label(
+                            RichText::new(SHIELDED_MIGRATION_ERROR_LABEL)
+                                .color(Color32::from_rgb(255, 100, 100)),
+                        );
+                        if ui.small_button(SHIELDED_RETRY_MIGRATION_LABEL).clicked() {
+                            action |= AppAction::BackendTask(BackendTask::MigrationTask(
+                                MigrationTask::FinishUnwire,
+                            ));
+                        }
+                        if ui.small_button(SHIELDED_SKIP_MIGRATION_LABEL).clicked() {
+                            self.sidecar_skipped = true;
+                        }
+                    });
+                });
+            ui.add_space(5.0);
+        }
+
+        // Tab-locked notice — the user has dismissed the retry banner.
+        // Spends stay disabled until the next launch.
+        if self.sidecar_skipped {
+            Frame::new()
+                .fill(DashColors::surface(dark_mode))
+                .inner_margin(Margin::symmetric(10, 8))
+                .corner_radius(5.0)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(SHIELDED_LOCK_ICON));
+                        ui.label(
+                            RichText::new(SHIELDED_TAB_SKIPPED_LABEL)
+                                .color(DashColors::text_secondary(dark_mode)),
+                        );
+                    });
+                });
+            ui.add_space(5.0);
+            return action;
+        }
 
         // Messages
         if let Some(err) = &self.error_message.clone() {
@@ -391,7 +515,7 @@ impl ShieldedTabView {
 
         // --- Initialized: show balance, address, actions ---
 
-        // Balance display
+        // Balance display + J-3 indicator badge.
         ui.add_space(10.0);
         Frame::new()
             .fill(DashColors::surface(dark_mode))
@@ -412,6 +536,37 @@ impl ShieldedTabView {
                             .color(DashColors::text_primary(dark_mode)),
                     );
                 });
+                // J-3: indicator badge. Verifying / Verified — both use
+                // icon + text per TC-A11Y-006 so screen readers and
+                // greyscale viewers get the same signal as sighted
+                // colour users.
+                match indicator {
+                    ShieldedIndicator::Verifying => {
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            ui.add(egui::Spinner::new().color(DashColors::DASH_BLUE));
+                            ui.label(
+                                RichText::new(SHIELDED_VERIFYING_LABEL)
+                                    .size(12.0)
+                                    .color(DashColors::DASH_BLUE),
+                            );
+                        });
+                    }
+                    ShieldedIndicator::Verified => {
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new(SHIELDED_VERIFIED_ICON).color(Color32::DARK_GREEN),
+                            );
+                            ui.label(
+                                RichText::new(SHIELDED_VERIFIED_LABEL)
+                                    .size(12.0)
+                                    .color(Color32::DARK_GREEN),
+                            );
+                        });
+                    }
+                    ShieldedIndicator::Failed | ShieldedIndicator::Hidden => {}
+                }
             });
 
         ui.add_space(10.0);
@@ -421,16 +576,26 @@ impl ShieldedTabView {
 
         ui.add_space(10.0);
 
+        // J-3 spend lock: any verifying / failed indicator pauses spends
+        // regardless of the local sync state. Computed once so the
+        // hover-text and the "Spending paused" notice agree.
+        let spend_locked = matches!(
+            indicator,
+            ShieldedIndicator::Verifying | ShieldedIndicator::Failed
+        );
+
         // Action buttons
         ui.horizontal(|ui| {
             let shield_btn =
                 egui::Button::new(RichText::new("Shield").color(Color32::WHITE).size(14.0))
                     .fill(DashColors::DASH_BLUE);
             if ui
-                .add_enabled(!self.syncing, shield_btn)
-                .on_hover_text(
-                    "Shield funds from a platform or core address into the shielded pool",
-                )
+                .add_enabled(!self.syncing && !spend_locked, shield_btn)
+                .on_hover_text(if spend_locked {
+                    SHIELDED_SPEND_LOCKED_TOOLTIP
+                } else {
+                    "Shield funds from a platform or core address into the shielded pool"
+                })
                 .clicked()
             {
                 action |= AppAction::AddScreen(
@@ -438,7 +603,8 @@ impl ShieldedTabView {
                 );
             }
 
-            let can_spend = !self.syncing && self.tree_synced && self.shielded_balance > 0;
+            let can_spend =
+                !self.syncing && self.tree_synced && self.shielded_balance > 0 && !spend_locked;
 
             let send_btn = egui::Button::new(
                 RichText::new("Send (Private)")
@@ -448,7 +614,9 @@ impl ShieldedTabView {
             .fill(DashColors::DASH_BLUE);
             if ui
                 .add_enabled(can_spend, send_btn)
-                .on_hover_text(if self.tree_synced {
+                .on_hover_text(if spend_locked {
+                    SHIELDED_SPEND_LOCKED_TOOLTIP
+                } else if self.tree_synced {
                     "Transfer privately within the shielded pool"
                 } else {
                     "Sync notes first to enable spending"
@@ -465,7 +633,9 @@ impl ShieldedTabView {
                     .fill(DashColors::DASH_BLUE);
             if ui
                 .add_enabled(can_spend, unshield_btn)
-                .on_hover_text(if self.tree_synced {
+                .on_hover_text(if spend_locked {
+                    SHIELDED_SPEND_LOCKED_TOOLTIP
+                } else if self.tree_synced {
                     "Unshield credits to a platform address"
                 } else {
                     "Sync notes first to enable spending"
@@ -478,6 +648,21 @@ impl ShieldedTabView {
                 );
             }
         });
+
+        // J-3 "Spending paused" row — icon + text per TC-A11Y-006 so
+        // colour-blind / greyscale users get the same signal as the
+        // disabled-button affordance.
+        if spend_locked {
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(SHIELDED_LOCK_ICON));
+                ui.label(
+                    RichText::new(SHIELDED_SPEND_LOCKED_LABEL)
+                        .size(12.0)
+                        .color(DashColors::text_secondary(dark_mode)),
+                );
+            });
+        }
 
         ui.add_space(15.0);
 
@@ -555,10 +740,14 @@ impl ShieldedTabView {
                             states.remove(&self.seed_hash);
                         }
                         let network_str = self.app_context.network.to_string();
-                        let _ = self
-                            .app_context
-                            .db
-                            .delete_shielded_notes(&self.seed_hash, &network_str);
+                        // T-SH-03: drop notes in the shielded sidecar
+                        // instead of `data.db`. No-op on a missing
+                        // sidecar.
+                        if let Ok(backend) = self.app_context.wallet_backend() {
+                            let _ = backend
+                                .shielded()
+                                .delete_shielded_notes(&self.seed_hash, &network_str);
+                        }
                         if let Ok(tree_path) = self.app_context.shielded_commitment_tree_path()
                             && let Err(e) = std::fs::remove_file(&tree_path)
                             && e.kind() != std::io::ErrorKind::NotFound
@@ -638,5 +827,98 @@ fn format_credits(credits: u64) -> String {
         format!("{:.4} DASH", dash)
     } else {
         format!("{} credits", credits)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// TC-A11Y-006 — the locked-spend state surfaces both an icon and a
+    /// "Spending paused." sentence, never colour alone. We assert on the
+    /// constants the UI binds to so a future refactor that drops either
+    /// half of the signal fails this guard before it reaches users.
+    #[test]
+    fn tc_a11y_006_locked_spend_state_uses_icon_and_text() {
+        // The lock icon and the text are distinct, non-empty constants.
+        assert!(!SHIELDED_LOCK_ICON.is_empty(), "lock icon present");
+        assert!(!SHIELDED_SPEND_LOCKED_LABEL.is_empty(), "lock text present",);
+        // i18n hygiene: complete sentence terminated with a period.
+        assert!(
+            SHIELDED_SPEND_LOCKED_LABEL.ends_with('.'),
+            "locked label is a complete sentence",
+        );
+        assert!(
+            SHIELDED_SPEND_LOCKED_TOOLTIP.ends_with('.'),
+            "locked tooltip is a complete sentence",
+        );
+        // Icon and text are distinct strings — the indicator never
+        // collapses into a single signal.
+        assert_ne!(SHIELDED_LOCK_ICON, SHIELDED_SPEND_LOCKED_LABEL);
+    }
+
+    /// The Verified badge follows the same icon + text rule so
+    /// greyscale viewers see the same affirmation as colour users.
+    #[test]
+    fn verified_indicator_uses_icon_and_text() {
+        assert!(!SHIELDED_VERIFIED_ICON.is_empty());
+        assert!(!SHIELDED_VERIFIED_LABEL.is_empty());
+        assert!(SHIELDED_VERIFIED_LABEL.ends_with('.'));
+        assert_ne!(SHIELDED_VERIFIED_ICON, SHIELDED_VERIFIED_LABEL);
+    }
+
+    /// `derive_shielded_indicator` maps every migration state onto the
+    /// expected J-3 badge. Pure inputs / pure output — testable without
+    /// a UI harness.
+    #[test]
+    fn indicator_mapping_covers_every_migration_state() {
+        assert_eq!(
+            derive_shielded_indicator(&MigrationState::Idle, false),
+            ShieldedIndicator::Hidden,
+        );
+        assert_eq!(
+            derive_shielded_indicator(
+                &MigrationState::Running {
+                    step: MigrationStep::Detecting,
+                },
+                false,
+            ),
+            ShieldedIndicator::Hidden,
+            "non-shielded steps don't hijack the shielded badge",
+        );
+        assert_eq!(
+            derive_shielded_indicator(
+                &MigrationState::Running {
+                    step: MigrationStep::Shielded,
+                },
+                false,
+            ),
+            ShieldedIndicator::Verifying,
+        );
+        assert_eq!(
+            derive_shielded_indicator(
+                &MigrationState::Failed {
+                    reason: "test".into(),
+                },
+                false,
+            ),
+            ShieldedIndicator::Failed,
+        );
+        assert_eq!(
+            derive_shielded_indicator(&MigrationState::Success, false),
+            ShieldedIndicator::Verified,
+        );
+        // Skip-for-now hides the indicator regardless of state — the
+        // session-local override the UI uses to dismiss the retry
+        // banner.
+        assert_eq!(
+            derive_shielded_indicator(
+                &MigrationState::Failed {
+                    reason: "test".into(),
+                },
+                true,
+            ),
+            ShieldedIndicator::Hidden,
+        );
     }
 }

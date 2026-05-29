@@ -656,7 +656,7 @@ async fn test_live_testnet_sync_and_shutdown() {
 /// Then the wallet's synced height is 0 AND `wallets_behind(tip)` reports it as needing
 /// filter coverage (i.e. a genesis rescan will actually run).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn test_clear_data_dir_resets_filter_committed_height() {
+async fn test_clear_data_dir_rewinds_wallet_synced_height() {
     let (manager, _tm, _tmp_dir) = create_test_manager();
 
     // Load a wallet so there is a per-wallet synced height to rewind.

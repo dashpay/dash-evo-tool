@@ -1192,11 +1192,18 @@ impl SpvManager {
             tokio::select! {
                 result = &mut run_future => Outcome::RunCompleted(result),
                 _ = stop_token.cancelled() => {
-                    if let Err(e) = client.stop().await {
-                        tracing::warn!("client.stop() during cancellation failed: {e}");
+                    match client.stop().await {
+                        Ok(()) => {
+                            // Let run() observe the stop flag and unwind its monitors.
+                            let _ = (&mut run_future).await;
+                        }
+                        Err(e) => {
+                            // stop() may not have flipped the run flag; do NOT await
+                            // run_future (it could block forever). Drop it and treat
+                            // as a hard cancellation.
+                            tracing::warn!("client.stop() during cancellation failed: {e}");
+                        }
                     }
-                    // Let run() observe the stop flag and unwind its monitors.
-                    let _ = (&mut run_future).await;
                     Outcome::Cancelled
                 },
             }

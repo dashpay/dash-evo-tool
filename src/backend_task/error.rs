@@ -1312,6 +1312,25 @@ pub enum TaskError {
         #[source]
         source: std::sync::Arc<crate::backend_task::migration::MigrationError>,
     },
+
+    /// An HD wallet seed envelope decoded cleanly but its plaintext
+    /// length is not the expected 64 bytes. Surfaced when the cold-boot
+    /// hydration path would otherwise have silently degraded the
+    /// wallet to a closed state — now the user sees which wallet is
+    /// affected and why.
+    #[error(
+        "The wallet \"{wallet_label}\" could not be opened because its saved seed is the wrong size. Restore it from your recovery words to keep using it."
+    )]
+    SeedLengthInvalid {
+        /// Display alias for the affected wallet, or a fallback hex
+        /// prefix of the seed hash when no alias has been set.
+        wallet_label: String,
+        /// Length of the decoded seed blob in bytes.
+        got: u32,
+        /// Length the loader expected.
+        expected: u32,
+    },
+
 }
 
 /// Escapes control characters in a token name for safe display in error messages.

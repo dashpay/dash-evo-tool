@@ -719,6 +719,28 @@ fn migrate_shielded_step(
     result
 }
 
+/// Salt expected by Argon2id during the legacy AES-GCM seed encryption
+/// (16 bytes, see `src/model/wallet/encryption.rs`).
+const LEGACY_SALT_LEN: usize = 16;
+
+/// GCM nonce expected by AES-256-GCM during the legacy seed encryption
+/// (12 bytes, see `src/model/wallet/encryption.rs`).
+const LEGACY_NONCE_LEN: usize = 12;
+
+/// SEC-007 — row-level length guard for the password-related crypto
+/// fields on a legacy `wallet` row. Password-protected rows must carry a
+/// 16-byte salt and a 12-byte nonce; unprotected rows must carry empty
+/// fields (the legacy DB writer bypasses encryption when
+/// `uses_password = false`). Anything else is corruption — the caller
+/// skips the row and logs.
+fn crypto_field_lengths_ok(salt: &[u8], nonce: &[u8], uses_password: bool) -> bool {
+    if uses_password {
+        salt.len() == LEGACY_SALT_LEN && nonce.len() == LEGACY_NONCE_LEN
+    } else {
+        salt.is_empty() && nonce.is_empty()
+    }
+}
+
 /// `SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1` —
 /// returns `false` for missing tables. Distinct from
 /// [`table_has_rows`] so the shielded migrator can skip ATTACH entirely
@@ -1116,6 +1138,24 @@ where
                     continue;
                 }
             };
+
+        // SEC-007: salt/nonce length sanity. AES-GCM requires a
+        // 16-byte Argon2 salt and a 12-byte GCM nonce when the row is
+        // password-protected; when it isn't, both fields must be
+        // empty. Anything else is row-level corruption — skip and
+        // log, do NOT abort the whole migration.
+        if !crypto_field_lengths_ok(&salt, &nonce, uses_password) {
+            tracing::warn!(
+                target = "migration::finish_unwire",
+                seed_hash = %hex::encode(seed_hash),
+                salt_len = salt.len(),
+                nonce_len = nonce.len(),
+                uses_password,
+                "Skipping wallet row with corrupted crypto field lengths during seed migration",
+            );
+            outcome.failed = outcome.failed.saturating_add(1);
+            continue;
+        }
 
         let envelope = crate::model::wallet::seed_envelope::StoredSeedEnvelope {
             encrypted_seed,

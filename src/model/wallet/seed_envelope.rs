@@ -17,6 +17,13 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Current on-disk version tag for the bincode-encoded
+/// [`StoredSeedEnvelope`] payload. The version byte is framed by the
+/// storage layer (see [`crate::wallet_backend::wallet_seed_store`]) so
+/// future shape changes can bump the tag without touching the struct
+/// shape that round-trips here.
+pub const STORED_SEED_ENVELOPE_VERSION: u8 = 1;
+
 /// Full encrypted seed envelope stored under one upstream `SecretStore`
 /// entry per HD wallet. Mirrors the legacy `wallet` table columns DET
 /// reads to reconstruct a `Wallet`: the AES-GCM ciphertext, the

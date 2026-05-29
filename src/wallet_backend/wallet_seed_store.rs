@@ -32,12 +32,56 @@ use platform_wallet_storage::secrets::{
 
 use crate::backend_task::error::TaskError;
 use crate::model::wallet::WalletSeedHash;
-use crate::model::wallet::seed_envelope::StoredSeedEnvelope;
+use crate::model::wallet::seed_envelope::{STORED_SEED_ENVELOPE_VERSION, StoredSeedEnvelope};
 
 /// Label under which the bincode-encoded envelope is stored. Versioned
 /// so a future shape change (e.g. an additional field that breaks
 /// decoding) bumps the label rather than reinterpreting existing rows.
 pub(crate) const ENVELOPE_LABEL: &str = "envelope.v1";
+
+/// Leading payload byte that tags the on-disk shape. Pre-v1 entries
+/// (written by the same `set` path before this tag was introduced) start
+/// with bincode's length prefix for `encrypted_seed` (a varint) and
+/// almost never collide with [`STORED_SEED_ENVELOPE_VERSION`] for any
+/// realistic envelope shape — the version-byte test below covers the
+/// boundary case and the reader falls back to legacy decoding when the
+/// tag prefix doesn't match.
+fn encode_with_version(envelope: &StoredSeedEnvelope) -> Result<Vec<u8>, TaskError> {
+    let body =
+        bincode::serde::encode_to_vec(envelope, bincode::config::standard()).map_err(|_| {
+            TaskError::WalletSeedStorage {
+                source: Box::new(FileStoreError::MalformedVault),
+            }
+        })?;
+    let mut out = Vec::with_capacity(body.len() + 1);
+    out.push(STORED_SEED_ENVELOPE_VERSION);
+    out.extend_from_slice(&body);
+    Ok(out)
+}
+
+/// Decode the on-disk shape, accepting both the leading-version-byte
+/// form (current) and a legacy bare-bincode form. A future schema bump
+/// matches on the leading byte to dispatch to the right decoder.
+fn decode_with_version(bytes: &[u8]) -> Result<StoredSeedEnvelope, TaskError> {
+    let malformed = || TaskError::WalletSeedStorage {
+        source: Box::new(FileStoreError::MalformedVault),
+    };
+    if let Some((&tag, rest)) = bytes.split_first()
+        && tag == STORED_SEED_ENVELOPE_VERSION
+        && let Ok((decoded, _)) =
+            bincode::serde::decode_from_slice::<StoredSeedEnvelope, _>(rest, bincode::config::standard())
+    {
+        return Ok(decoded);
+    }
+    // Legacy entry: bare bincode of the envelope with no leading
+    // version byte. Treated as v1.
+    let (decoded, _) = bincode::serde::decode_from_slice::<StoredSeedEnvelope, _>(
+        bytes,
+        bincode::config::standard(),
+    )
+    .map_err(|_| malformed())?;
+    Ok(decoded)
+}
 
 /// View borrowing the shared upstream [`SecretStore`] handle. Cheap to
 /// construct — callers may build one per operation.
@@ -66,12 +110,7 @@ impl<'a> WalletSeedView<'a> {
         else {
             return Ok(None);
         };
-        let (decoded, _): (StoredSeedEnvelope, _) =
-            bincode::serde::decode_from_slice(bytes.expose_secret(), bincode::config::standard())
-                .map_err(|_| TaskError::WalletSeedStorage {
-                source: Box::new(FileStoreError::MalformedVault),
-            })?;
-        Ok(Some(decoded))
+        Ok(Some(decode_with_version(bytes.expose_secret())?))
     }
 
     /// Store `envelope` under `seed_hash`, overwriting any prior value.
@@ -81,12 +120,7 @@ impl<'a> WalletSeedView<'a> {
         seed_hash: &WalletSeedHash,
         envelope: &StoredSeedEnvelope,
     ) -> Result<(), TaskError> {
-        let bytes =
-            bincode::serde::encode_to_vec(envelope, bincode::config::standard()).map_err(|_| {
-                TaskError::WalletSeedStorage {
-                    source: Box::new(FileStoreError::MalformedVault),
-                }
-            })?;
+        let bytes = encode_with_version(envelope)?;
         let value = SecretBytes::from_slice(&bytes);
         self.secret_store
             .set(&scope_for(seed_hash), ENVELOPE_LABEL, &value)
@@ -240,6 +274,52 @@ mod tests {
         view.delete(&seed_hash).expect("first delete");
         view.delete(&seed_hash).expect("second delete");
         assert!(view.get(&seed_hash).unwrap().is_none());
+    }
+
+    /// SEC-005 — a freshly-written envelope's on-disk payload starts
+    /// with [`STORED_SEED_ENVELOPE_VERSION`], and a legacy bare-bincode
+    /// payload (written without the leading version byte) still decodes
+    /// cleanly. Locks the framing the reader needs to keep accepting
+    /// pre-tag entries.
+    #[test]
+    fn sec_005_version_byte_round_trip_and_legacy_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let view = WalletSeedView::new(&store);
+        let seed_hash: WalletSeedHash = [0x99; 32];
+        let envelope = sample_password_envelope();
+        view.set(&seed_hash, &envelope).expect("set");
+
+        // The raw on-disk bytes start with the version tag — the
+        // storage layer prepends a byte that bincode did not produce.
+        let raw = store
+            .get(&scope_for(&seed_hash), ENVELOPE_LABEL)
+            .expect("get")
+            .expect("present");
+        assert_eq!(
+            raw.expose_secret()[0],
+            STORED_SEED_ENVELOPE_VERSION,
+            "stored payload must start with the current version tag",
+        );
+        // The trailing bytes round-trip through bincode unchanged.
+        let (re_decoded, _): (StoredSeedEnvelope, _) = bincode::serde::decode_from_slice(
+            &raw.expose_secret()[1..],
+            bincode::config::standard(),
+        )
+        .expect("trailing bytes decode as bincode envelope");
+        assert_eq!(re_decoded, envelope);
+
+        // Legacy fallback — a value written without the version byte
+        // (bare bincode) still decodes.
+        let legacy_bytes =
+            bincode::serde::encode_to_vec(&envelope, bincode::config::standard()).unwrap();
+        let legacy = SecretBytes::from_slice(&legacy_bytes);
+        let other_hash: WalletSeedHash = [0xAA; 32];
+        store
+            .set(&scope_for(&other_hash), ENVELOPE_LABEL, &legacy)
+            .unwrap();
+        let got = view.get(&other_hash).expect("get").expect("present");
+        assert_eq!(got, envelope, "legacy untagged payload still decodes");
     }
 
     /// Distinct seed hashes live in distinct scopes. The `WalletId`

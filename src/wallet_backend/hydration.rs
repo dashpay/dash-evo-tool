@@ -141,9 +141,14 @@ fn reconstruct_wallet(
         envelope,
         meta,
         master_bip44_ecdsa_extended_public_key,
-    );
+    )?;
     Ok(Some(wallet))
 }
+
+/// Expected plaintext length of a BIP-39 seed (BIP39 mnemonics produce a
+/// 64-byte seed via PBKDF2). Surfaced as a constant so error variants
+/// can speak in concrete numbers.
+const EXPECTED_SEED_LEN: u32 = 64;
 
 /// Assemble the final `Wallet` from its parts. Mirrors the legacy
 /// `db.get_wallets` row → `Wallet` mapping (`encrypted_seed` becomes the
@@ -154,7 +159,7 @@ fn wallet_from_envelope(
     envelope: StoredSeedEnvelope,
     meta: &WalletMeta,
     master_bip44_ecdsa_extended_public_key: ExtendedPubKey,
-) -> Wallet {
+) -> Result<Wallet, TaskError> {
     let StoredSeedEnvelope {
         encrypted_seed,
         salt,
@@ -176,27 +181,32 @@ fn wallet_from_envelope(
         WalletSeed::Closed(closed)
     } else {
         // Non-password envelopes store the raw 64-byte seed verbatim;
-        // mirror the legacy DB reader behaviour. A length mismatch
-        // collapses to `Closed` so the wallet still appears in the
-        // picker even if the seed bytes are unusable.
+        // mirror the legacy DB reader behaviour. A length mismatch is
+        // surfaced as a typed error so the picker can show WHICH wallet
+        // was skipped and WHY (SEC-008) — the silent "fall back to
+        // Closed" behaviour hid this case from the user.
         match encrypted_seed.clone().try_into() {
             Ok(seed) => WalletSeed::Open(OpenWalletSeed {
                 seed,
                 wallet_info: closed,
             }),
             Err(bytes) => {
-                tracing::warn!(
-                    target = "wallet_backend::hydration",
-                    seed_hash = %hex::encode(seed_hash),
-                    blob_len = bytes.len(),
-                    "Non-password seed envelope is not 64 bytes; falling back to closed wallet",
-                );
-                WalletSeed::Closed(closed)
+                let label = if meta.alias.is_empty() {
+                    let hex_hash = hex::encode(seed_hash);
+                    format!("{}…", &hex_hash[..hex_hash.len().min(12)])
+                } else {
+                    meta.alias.clone()
+                };
+                return Err(TaskError::SeedLengthInvalid {
+                    wallet_label: label,
+                    got: bytes.len() as u32,
+                    expected: EXPECTED_SEED_LEN,
+                });
             }
         }
     };
 
-    Wallet {
+    Ok(Wallet {
         wallet_seed,
         uses_password,
         master_bip44_ecdsa_extended_public_key,
@@ -211,7 +221,7 @@ fn wallet_from_envelope(
         is_main: meta.is_main,
         platform_address_info: BTreeMap::new(),
         core_wallet_name: meta.core_wallet_name.clone(),
-    }
+    })
 }
 
 #[cfg(test)]
@@ -261,7 +271,7 @@ mod tests {
         // Stand-in for `WalletSeedView::get` — direct decode of the
         // envelope, no upstream vault required.
         let master = ExtendedPubKey::decode(&envelope.xpub_encoded).expect("xpub decodes");
-        let wallet = wallet_from_envelope(seed_hash_for(seed), envelope, &meta, master);
+        let wallet = wallet_from_envelope(seed_hash_for(seed), envelope, &meta, master).expect("wallet rebuilt");
 
         assert_eq!(wallet.alias.as_deref(), Some("paycheque"));
         assert!(wallet.is_main);
@@ -298,7 +308,7 @@ mod tests {
         };
 
         let master = ExtendedPubKey::decode(&envelope.xpub_encoded).expect("xpub decodes");
-        let wallet = wallet_from_envelope(seed_hash_for(seed), envelope, &meta, master);
+        let wallet = wallet_from_envelope(seed_hash_for(seed), envelope, &meta, master).expect("wallet rebuilt");
 
         assert_eq!(wallet.alias.as_deref(), Some("savings"));
         assert!(!wallet.is_main);
@@ -330,7 +340,7 @@ mod tests {
             xpub_encoded: xpub,
         };
         let master = ExtendedPubKey::decode(&envelope.xpub_encoded).expect("xpub decodes");
-        let wallet = wallet_from_envelope(seed_hash_for(seed), envelope, &meta, master);
+        let wallet = wallet_from_envelope(seed_hash_for(seed), envelope, &meta, master).expect("wallet rebuilt");
         assert!(wallet.alias.is_none());
     }
 
@@ -429,6 +439,45 @@ mod tests {
         assert!(result.is_none(), "empty xpub must collapse to None");
     }
 
+    /// SEC-008 — a non-password envelope whose `encrypted_seed` is not
+    /// 64 bytes now surfaces [`TaskError::SeedLengthInvalid`] with the
+    /// alias-as-label and the observed length, instead of silently
+    /// degrading to a closed wallet.
+    #[test]
+    fn sec_008_non_64_byte_seed_surfaces_typed_error() {
+        let seed = [0xBEu8; 64];
+        let xpub = xpub_bytes_for(seed, Network::Testnet);
+        let envelope = StoredSeedEnvelope {
+            encrypted_seed: vec![0x33; 16], // wrong length on purpose
+            salt: Vec::new(),
+            nonce: Vec::new(),
+            password_hint: None,
+            uses_password: false,
+            xpub_encoded: xpub.clone(),
+        };
+        let meta = WalletMeta {
+            alias: "shorty".into(),
+            is_main: false,
+            core_wallet_name: None,
+            xpub_encoded: xpub.clone(),
+        };
+        let master = ExtendedPubKey::decode(&xpub).expect("xpub decodes");
+        let err = wallet_from_envelope(seed_hash_for(seed), envelope, &meta, master)
+            .expect_err("typed error");
+        match err {
+            TaskError::SeedLengthInvalid {
+                wallet_label,
+                got,
+                expected,
+            } => {
+                assert_eq!(wallet_label, "shorty");
+                assert_eq!(got, 16);
+                assert_eq!(expected, 64);
+            }
+            other => panic!("expected SeedLengthInvalid, got {other:?}"),
+        }
+    }
+
     /// TC-W-008 (rename-shape half) — assigning a new alias to a
     /// reconstructed wallet preserves seed-hash / xpub / is_main so the
     /// only observable diff after the rename is the alias itself.
@@ -452,7 +501,7 @@ mod tests {
             xpub_encoded: xpub.clone(),
         };
         let master = ExtendedPubKey::decode(&xpub).expect("xpub decodes");
-        let mut wallet = wallet_from_envelope(seed_hash_for(seed), envelope, &meta, master);
+        let mut wallet = wallet_from_envelope(seed_hash_for(seed), envelope, &meta, master).expect("wallet rebuilt");
         let original_hash = wallet.seed_hash();
         let original_xpub = wallet.master_bip44_ecdsa_extended_public_key.encode();
 

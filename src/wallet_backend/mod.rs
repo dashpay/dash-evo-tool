@@ -467,10 +467,17 @@ impl WalletBackend {
     }
 
     /// View over the single-key (imported WIF) operations. The view
-    /// borrows the secret store, the in-memory address index, and the
+    /// borrows the secret store, the in-memory address index, the
     /// cross-network app k/v sidecar that persists imported-key
-    /// metadata; all three are cheap to construct, so callers can build
-    /// one per operation.
+    /// metadata, and the in-process unlock cache; all four are cheap to
+    /// construct, so callers can build one per operation.
+    ///
+    /// TODO(SEC-002 follow-up): wire the sign-time passphrase prompt
+    /// flow across every backend task that ends up calling
+    /// `single_key().sign_with(...)` (identity register, send funds,
+    /// asset-lock signer, ...). The storage + unlock-cache API ships in
+    /// the same commit as this view; the per-task prompt UX is a
+    /// separate change.
     pub fn single_key(&self) -> SingleKeyView<'_> {
         SingleKeyView {
             secret_store: &self.inner.secret_store,

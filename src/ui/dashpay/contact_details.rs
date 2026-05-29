@@ -91,12 +91,21 @@ impl ContactDetailsScreen {
     fn load_from_database(&mut self) {
         let identity_id = self.identity.identity.id();
 
-        // Load private contact info (nickname, notes, hidden) — DET-local memo.
-        let (nickname, note, is_hidden) = self
-            .app_context
-            .db
-            .load_contact_private_info(&identity_id, &self.contact_id)
-            .unwrap_or_default();
+        // Load private contact info (nickname, notes, hidden) — DET-local memo,
+        // backed by the WalletBackend k/v sidecar post-D4c.
+        let (nickname, note, is_hidden) =
+            match self.app_context.wallet_backend().and_then(|backend| {
+                backend.dashpay_get_private_info(&identity_id, &self.contact_id)
+            }) {
+                Ok(Some(info)) => (info.nickname, info.notes, info.is_hidden),
+                Ok(None) => (String::new(), String::new(), false),
+                Err(e) => {
+                    tracing::warn!(
+                        "DashPay private-info sidecar read failed; defaulting to empty: {e:?}"
+                    );
+                    (String::new(), String::new(), false)
+                }
+            };
 
         let nickname = if nickname.is_empty() {
             None

@@ -37,18 +37,22 @@ pub enum PaymentStatus {
     Failed(String),
 }
 
-/// Get the next unused address index for a contact and increment it
-/// Uses the database to track address indices per contact relationship
+/// Get the next unused address index for a contact and increment it.
+///
+/// Delegates to `WalletBackend::dashpay_increment_send_index`, which
+/// serializes concurrent calls across the process via an internal mutex
+/// so two parallel sends never receive the same index.
 async fn get_next_address_index(
     app_context: &Arc<AppContext>,
     identity_id: &Identifier,
     contact_id: &Identifier,
 ) -> Result<u32, String> {
-    // Get and increment the send index from database
-    app_context
-        .db
-        .get_and_increment_send_index(identity_id, contact_id)
-        .map_err(|e| format!("Failed to get address index from database: {}", e))
+    let backend = app_context
+        .wallet_backend()
+        .map_err(|e| format!("Wallet backend not yet available: {}", e))?;
+    backend
+        .dashpay_increment_send_index(identity_id, contact_id)
+        .map_err(|e| format!("Failed to allocate next DashPay address index: {}", e))
 }
 
 /// Derive a payment address for a contact from their encrypted extended public key
@@ -350,21 +354,18 @@ pub async fn send_payment_to_contact_impl(
     ))
 }
 
-/// Load payment history via the `WalletBackend` DashPay adapter when wired,
-/// falling back to the local DET cache when the backend has not yet been
-/// initialised (e.g. cold start before any wallet is registered).
+/// Load payment history via the `WalletBackend` DashPay adapter — the
+/// upstream-backed source of truth post-D4c. The local DET cache is no
+/// longer consulted.
 pub async fn load_payment_history(
     app_context: &Arc<AppContext>,
     identity_id: &Identifier,
     contact_id: Option<&Identifier>,
 ) -> Result<Vec<PaymentRecord>, String> {
-    let stored_payments = match app_context.wallet_backend() {
-        Ok(backend) => backend.dashpay_view().payments(identity_id).await,
-        Err(_) => app_context
-            .db
-            .load_payment_history(identity_id, 100)
-            .map_err(|e| format!("Failed to load payment history: {}", e))?,
-    };
+    let backend = app_context
+        .wallet_backend()
+        .map_err(|e| format!("Wallet backend not yet available: {}", e))?;
+    let stored_payments = backend.dashpay_view().payments(identity_id).await;
 
     let mut records = Vec::new();
     for sp in stored_payments {

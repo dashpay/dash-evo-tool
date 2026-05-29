@@ -1,5 +1,7 @@
 use super::hd_derivation::{derive_dashpay_incoming_xpub, derive_payment_address};
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use crate::model::dashpay::ContactAddressIndex;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::dashcore::{Address, Network};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -92,33 +94,41 @@ pub async fn register_dashpay_addresses_for_identity(
             .to_vec()
     };
 
-    // Load all contacts for this identity. Prefer the wallet-backend
-    // adapter (upstream-backed source of truth); fall back to the DET
-    // cache if the backend is not yet wired.
-    let network_str = app_context.network.to_string();
-    let contacts = match app_context.wallet_backend() {
-        Ok(backend) => backend.dashpay_view().contacts(&our_identity_id).await,
-        Err(_) => app_context
-            .db
-            .load_dashpay_contacts(&our_identity_id, &network_str)
-            .map_err(|e| format!("Failed to load contacts: {}", e))?,
-    };
+    // Load all contacts for this identity from the WalletBackend DashPay
+    // adapter — the upstream-backed source of truth. After D4c there is no
+    // DB fallback: registration is meaningful only once the wallet is
+    // wired (it needs the wallet's seed and known-address map anyway).
+    let backend = app_context
+        .wallet_backend()
+        .map_err(|e| format!("Wallet backend not yet available: {}", e))?;
+    let contacts = backend.dashpay_view().contacts(&our_identity_id).await;
 
     if contacts.is_empty() {
         return Ok(result);
     }
 
-    // Load address indices for all contacts
-    let address_indices = app_context
-        .db
-        .get_all_contact_address_indices(&our_identity_id)
-        .map_err(|e| format!("Failed to load address indices: {}", e))?;
-
-    // Create a map for quick lookup
-    let indices_map: BTreeMap<Vec<u8>, _> = address_indices
-        .into_iter()
-        .map(|idx| (idx.contact_identity_id.clone(), idx))
-        .collect();
+    // Hydrate the per-contact address-index cache from the k/v sidecar so
+    // we don't pay a kv read per contact below.
+    let mut indices_map: BTreeMap<Vec<u8>, ContactAddressIndex> = BTreeMap::new();
+    for contact in &contacts {
+        let contact_id = match Identifier::from_bytes(&contact.contact_identity_id) {
+            Ok(id) => id,
+            Err(_) => continue,
+        };
+        match backend.dashpay_get_address_index(&our_identity_id, &contact_id) {
+            Ok(Some(idx)) => {
+                indices_map.insert(contact.contact_identity_id.clone(), idx);
+            }
+            Ok(None) => {}
+            Err(e) => {
+                result.errors.push(format!(
+                    "Failed to load address index for contact {}: {}",
+                    contact_id.to_string(Encoding::Base58),
+                    e
+                ));
+            }
+        }
+    }
 
     let network = app_context.network;
 
@@ -186,8 +196,11 @@ pub async fn register_dashpay_addresses_for_identity(
                     }
                 }
 
-                // Update the bloom_registered_count in database
-                if let Err(e) = app_context.db.update_bloom_registered_count(
+                // Update the bloom_registered_count in the sidecar (RMW the
+                // shared `ContactAddressIndex` record so we don't clobber a
+                // higher receive cursor written by a concurrent payment).
+                if let Err(e) = set_bloom_registered_count(
+                    &backend,
                     &our_identity_id,
                     &contact_id,
                     target_count,
@@ -212,6 +225,29 @@ pub async fn register_dashpay_addresses_for_identity(
     }
 
     Ok(result)
+}
+
+/// Helper: stamp `bloom_registered_count = count` onto the persisted
+/// `ContactAddressIndex` for `(owner, contact)` without clobbering other
+/// fields. Initialises a fresh record with the rest of the cursors at 0
+/// when no entry exists yet.
+fn set_bloom_registered_count(
+    backend: &crate::wallet_backend::WalletBackend,
+    owner: &Identifier,
+    contact: &Identifier,
+    count: u32,
+) -> Result<(), TaskError> {
+    let mut state = backend
+        .dashpay_get_address_index(owner, contact)?
+        .unwrap_or_else(|| ContactAddressIndex {
+            owner_identity_id: owner.to_buffer().to_vec(),
+            contact_identity_id: contact.to_buffer().to_vec(),
+            next_send_index: 0,
+            highest_receive_index: 0,
+            bloom_registered_count: 0,
+        });
+    state.bloom_registered_count = count;
+    backend.dashpay_set_address_index(owner, contact, &state)
 }
 
 /// Register a single DashPay address with the wallet
@@ -240,10 +276,13 @@ fn register_dashpay_address(
         ChildNumber::from_normal_idx(address_index).unwrap(),
     ]);
 
-    // Store the DashPay address mapping in the database
-    app_context
-        .db
-        .save_dashpay_address_mapping(owner_id, contact_id, address, address_index)
+    // Store the DashPay address mapping in the k/v sidecar so the
+    // incoming-payment detector can resolve `address → (contact, index)`.
+    let backend = app_context
+        .wallet_backend()
+        .map_err(|e| format!("Wallet backend not yet available: {}", e))?;
+    backend
+        .dashpay_set_address_mapping(owner_id, &address.to_string(), contact_id, address_index)
         .map_err(|e| format!("Failed to save address mapping: {}", e))?;
 
     // Register with the wallet's known addresses
@@ -274,16 +313,24 @@ fn hash_identifier_to_u32(id: &Identifier) -> u32 {
     u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) & 0x7FFFFFFF
 }
 
-/// Match a received transaction to a DashPay contact
-/// Returns the contact ID and payment details if the address belongs to a contact relationship
+/// Match a received transaction to a DashPay contact for `owner_id`.
+///
+/// Returns `(contact_id, address_index)` if the address is registered as
+/// a DashPay receiving address for `owner_id`; `None` otherwise.
+///
+/// The k/v sidecar partitions the address map by owner, so the caller is
+/// responsible for narrowing the search to the identity that observed the
+/// transaction (typically the identity whose SPV bloom filter matched).
 pub fn match_transaction_to_contact(
     app_context: &AppContext,
+    owner_id: &Identifier,
     address: &Address,
-) -> Result<Option<(Identifier, Identifier, u32)>, String> {
-    // Look up the address in the DashPay address mapping
-    app_context
-        .db
-        .get_dashpay_address_mapping(address)
+) -> Result<Option<(Identifier, u32)>, String> {
+    let backend = app_context
+        .wallet_backend()
+        .map_err(|e| format!("Wallet backend not yet available: {}", e))?;
+    backend
+        .dashpay_get_address_mapping(owner_id, &address.to_string())
         .map_err(|e| format!("Failed to lookup address: {}", e))
 }
 
@@ -291,28 +338,36 @@ pub fn match_transaction_to_contact(
 /// This should be called when WalletEvent::TransactionReceived is received
 pub async fn process_incoming_payment(
     app_context: &Arc<AppContext>,
+    owner_id: &Identifier,
     tx_id: &str,
     address: &Address,
     amount_duffs: u64,
 ) -> Result<Option<IncomingPaymentInfo>, String> {
-    // Check if this address belongs to a DashPay contact relationship
-    let mapping = match match_transaction_to_contact(app_context, address)? {
-        Some(m) => m,
-        None => return Ok(None), // Not a DashPay address
-    };
+    // Check if this address belongs to a DashPay contact relationship.
+    let (contact_id, address_index) =
+        match match_transaction_to_contact(app_context, owner_id, address)? {
+            Some(m) => m,
+            None => return Ok(None), // Not a DashPay address
+        };
 
-    let (owner_id, contact_id, address_index) = mapping;
-
-    // Update the highest receive index if needed
-    let current_indices = app_context
-        .db
-        .get_contact_address_indices(&owner_id, &contact_id)
-        .map_err(|e| format!("Failed to get address indices: {}", e))?;
-
-    if address_index >= current_indices.highest_receive_index {
-        app_context
-            .db
-            .update_highest_receive_index(&owner_id, &contact_id, address_index + 1)
+    // Bump the highest receive index if this address pushed past the cursor.
+    let backend = app_context
+        .wallet_backend()
+        .map_err(|e| format!("Wallet backend not yet available: {}", e))?;
+    let mut state = backend
+        .dashpay_get_address_index(owner_id, &contact_id)
+        .map_err(|e| format!("Failed to get address indices: {}", e))?
+        .unwrap_or_else(|| ContactAddressIndex {
+            owner_identity_id: owner_id.to_buffer().to_vec(),
+            contact_identity_id: contact_id.to_buffer().to_vec(),
+            next_send_index: 0,
+            highest_receive_index: 0,
+            bloom_registered_count: 0,
+        });
+    if address_index >= state.highest_receive_index {
+        state.highest_receive_index = address_index + 1;
+        backend
+            .dashpay_set_address_index(owner_id, &contact_id, &state)
             .map_err(|e| format!("Failed to update receive index: {}", e))?;
     }
 
@@ -321,7 +376,7 @@ pub async fn process_incoming_payment(
     // reflects when DET observed it.
     super::payments::mirror_incoming_payment_to_backend(
         app_context,
-        &owner_id,
+        owner_id,
         tx_id,
         contact_id,
         amount_duffs,
@@ -331,7 +386,7 @@ pub async fn process_incoming_payment(
     Ok(Some(IncomingPaymentInfo {
         tx_id: tx_id.to_string(),
         from_contact_id: contact_id,
-        to_identity_id: owner_id,
+        to_identity_id: *owner_id,
         address: address.clone(),
         amount_duffs,
         address_index,

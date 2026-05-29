@@ -191,13 +191,13 @@ impl AppContext {
                         },
                     )?;
 
-                let network_str = self.network.to_string();
+                // Post-D4c: the WalletBackend DashPay adapter is the sole
+                // source of truth for contacts. Pre-wire (e.g. cold start)
+                // we surface an empty list rather than reading from DET —
+                // a missing backend simply means "not loaded yet".
                 let contacts = match self.wallet_backend() {
                     Ok(backend) => backend.dashpay_view().contacts(&identity_id).await,
-                    Err(_) => self
-                        .db
-                        .load_dashpay_contacts(&identity_id, &network_str)
-                        .unwrap_or_default(),
+                    Err(_) => Vec::new(),
                 };
 
                 let results: Vec<_> = records

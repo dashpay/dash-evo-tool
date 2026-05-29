@@ -31,6 +31,28 @@ const PUBLIC_PROFILE_INFO_TEXT: &str = "About Public Profiles:\n\n\
 const PRIVATE_INFO_TEXT: &str =
     "This information is encrypted and stored on Platform. Only you can decrypt it.";
 
+/// Read the DET-local private memo for `(owner, contact)` from the
+/// WalletBackend k/v sidecar. Returns empty strings + `is_hidden=false`
+/// on a sidecar miss or read error — same defaults the screen previously
+/// got from the DB fallback.
+fn load_private_info_from_backend(
+    app_context: &AppContext,
+    owner: &Identifier,
+    contact: &Identifier,
+) -> (String, String, bool) {
+    let Ok(backend) = app_context.wallet_backend() else {
+        return (String::new(), String::new(), false);
+    };
+    match backend.dashpay_get_private_info(owner, contact) {
+        Ok(Some(info)) => (info.nickname, info.notes, info.is_hidden),
+        Ok(None) => (String::new(), String::new(), false),
+        Err(e) => {
+            tracing::warn!("DashPay private-info sidecar read failed; defaulting to empty: {e:?}");
+            (String::new(), String::new(), false)
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ContactPublicProfile {
     pub identity_id: Identifier,
@@ -64,11 +86,10 @@ impl ContactProfileViewerScreen {
         identity: QualifiedIdentity,
         contact_id: Identifier,
     ) -> Self {
-        // Load private contact info from database
-        let (nickname, notes, is_hidden) = app_context
-            .db
-            .load_contact_private_info(&identity.identity.id(), &contact_id)
-            .unwrap_or((String::new(), String::new(), false));
+        // Load private contact info from the WalletBackend k/v sidecar — the
+        // post-D4 source of truth for DET-local contact memos.
+        let (nickname, notes, is_hidden) =
+            load_private_info_from_backend(&app_context, &identity.identity.id(), &contact_id);
 
         // Profile is populated by the async `FetchContactProfile` task on the
         // first render. The local DET contact cache is gone after D3.
@@ -513,17 +534,16 @@ impl ContactProfileViewerScreen {
                                 }
                                 if ui.button("Cancel").clicked() {
                                     self.editing_private_info = false;
-                                    // Reload from database
-                                    if let Ok((nick, notes, hidden)) =
-                                        self.app_context.db.load_contact_private_info(
-                                            &self.identity.identity.id(),
-                                            &self.contact_id,
-                                        )
-                                    {
-                                        self.nickname = nick;
-                                        self.notes = notes;
-                                        self.is_hidden = hidden;
-                                    }
+                                    // Reload from the sidecar so a cancelled
+                                    // edit reverts to whatever was last saved.
+                                    let (nick, notes, hidden) = load_private_info_from_backend(
+                                        &self.app_context,
+                                        &self.identity.identity.id(),
+                                        &self.contact_id,
+                                    );
+                                    self.nickname = nick;
+                                    self.notes = notes;
+                                    self.is_hidden = hidden;
                                 }
                             } else if ui.button("Edit").clicked() {
                                 self.editing_private_info = true;

@@ -423,6 +423,49 @@ fn derive_request_status(
 }
 
 // ---------------------------------------------------------------------------
+// Internal: serialized send-index increment
+// ---------------------------------------------------------------------------
+
+/// Atomically read-then-increment the persisted `next_send_index` for
+/// `(owner, contact)` against `kv`. `lock` serializes the read-modify-write
+/// window across the process. Returns the index value the caller should use
+/// for the next outgoing payment; the persisted counter is advanced to
+/// `returned_value + 1` before returning.
+///
+/// Split out from [`WalletBackend::dashpay_increment_send_index`] so the
+/// concurrency test can exercise the locking discipline without standing up
+/// a full backend (which requires SDK + SQLite persister).
+///
+/// # Panics
+///
+/// Panics if `lock` is poisoned — same contract as the public wrapper.
+pub(super) fn increment_send_index_locked(
+    lock: &std::sync::Mutex<()>,
+    kv: &DetKv,
+    owner: &Identifier,
+    contact: &Identifier,
+) -> Result<u32, TaskError> {
+    let _guard = lock.lock().expect("dashpay address-index mutex poisoned");
+
+    let key = pair_sidecar_key(KV_PREFIX_ADDRESS_INDEX, owner, contact);
+    let mut state: ContactAddressIndex = kv
+        .get::<ContactAddressIndex>(None, &key)
+        .map_err(|e| TaskError::DashpaySidecarStorage { source: e })?
+        .unwrap_or_else(|| ContactAddressIndex {
+            owner_identity_id: owner.to_buffer().to_vec(),
+            contact_identity_id: contact.to_buffer().to_vec(),
+            next_send_index: 0,
+            highest_receive_index: 0,
+            bloom_registered_count: 0,
+        });
+    let value = state.next_send_index;
+    state.next_send_index = state.next_send_index.saturating_add(1);
+    kv.put::<ContactAddressIndex>(None, &key, &state)
+        .map_err(|e| TaskError::DashpaySidecarStorage { source: e })?;
+    Ok(value)
+}
+
+// ---------------------------------------------------------------------------
 // K/V sidecar helpers
 // ---------------------------------------------------------------------------
 
@@ -727,61 +770,46 @@ impl WalletBackend {
         owner: &Identifier,
         contact: &Identifier,
     ) -> Result<u32, TaskError> {
-        // The lock guards the read-modify-write window; the lifetime
-        // ends naturally at function exit, after the put has landed.
-        let _guard = self
-            .inner
-            .dashpay_address_index_lock
-            .lock()
-            .expect("dashpay address-index mutex poisoned");
-
-        let kv = self.kv();
-        let key = pair_sidecar_key(KV_PREFIX_ADDRESS_INDEX, owner, contact);
-        let mut state: ContactAddressIndex = kv
-            .get::<ContactAddressIndex>(None, &key)
-            .map_err(|e| TaskError::DashpaySidecarStorage { source: e })?
-            .unwrap_or_else(|| ContactAddressIndex {
-                owner_identity_id: owner.to_buffer().to_vec(),
-                contact_identity_id: contact.to_buffer().to_vec(),
-                next_send_index: 0,
-                highest_receive_index: 0,
-                bloom_registered_count: 0,
-            });
-        let value = state.next_send_index;
-        state.next_send_index = state.next_send_index.saturating_add(1);
-        kv.put::<ContactAddressIndex>(None, &key, &state)
-            .map_err(|e| TaskError::DashpaySidecarStorage { source: e })?;
-        Ok(value)
+        increment_send_index_locked(
+            &self.inner.dashpay_address_index_lock,
+            &self.kv(),
+            owner,
+            contact,
+        )
     }
 
-    /// Resolve a wallet address back to the contact whose relationship
-    /// with `owner` derived it. `Ok(None)` means the address is unknown
-    /// to the DashPay overlay — e.g. a regular receiving address, or a
-    /// contact that pre-dates this sidecar.
+    /// Resolve a wallet address back to `(contact, address_index)` — the
+    /// contact whose relationship with `owner` derived it and the index
+    /// at which the address was derived. `Ok(None)` means the address is
+    /// unknown to the DashPay overlay — e.g. a regular receiving address,
+    /// or a contact that pre-dates this sidecar.
     pub fn dashpay_get_address_mapping(
         &self,
         owner: &Identifier,
         address: &str,
-    ) -> Result<Option<Identifier>, TaskError> {
+    ) -> Result<Option<(Identifier, u32)>, TaskError> {
         let key = addr_map_sidecar_key(owner, address);
-        let bytes: Option<[u8; 32]> = self
+        let value: Option<([u8; 32], u32)> = self
             .kv()
-            .get::<[u8; 32]>(None, &key)
+            .get::<([u8; 32], u32)>(None, &key)
             .map_err(|e| TaskError::DashpaySidecarStorage { source: e })?;
-        Ok(bytes.map(Identifier::from))
+        Ok(value.map(|(bytes, idx)| (Identifier::from(bytes), idx)))
     }
 
-    /// Persist the `(owner, address) → contact` reverse mapping used by
-    /// the incoming-payment detector.
+    /// Persist the `(owner, address) → (contact, address_index)` reverse
+    /// mapping used by the incoming-payment detector. `address_index` is
+    /// the position the address was derived at within the contact-scoped
+    /// receive xpub.
     pub fn dashpay_set_address_mapping(
         &self,
         owner: &Identifier,
         address: &str,
         contact: &Identifier,
+        address_index: u32,
     ) -> Result<(), TaskError> {
         let key = addr_map_sidecar_key(owner, address);
         self.kv()
-            .put::<[u8; 32]>(None, &key, &contact.to_buffer())
+            .put::<([u8; 32], u32)>(None, &key, &(contact.to_buffer(), address_index))
             .map_err(|e| TaskError::DashpaySidecarStorage { source: e })
     }
 
@@ -1316,10 +1344,13 @@ mod tests {
         let contact = id_from_byte(2);
         let addr = "yXyqJv6gP2c8RXAhYQ7v6XwxSqUf7vXKfA";
         let key = addr_map_sidecar_key(&owner, addr);
-        kv.put::<[u8; 32]>(None, &key, &contact.to_buffer())
+        // D4c extended the value schema to carry the address_index alongside
+        // the contact id, so the incoming-payment detector can promote the
+        // receive cursor without a separate lookup.
+        kv.put::<([u8; 32], u32)>(None, &key, &(contact.to_buffer(), 7))
             .unwrap();
-        let got: Option<[u8; 32]> = kv.get::<[u8; 32]>(None, &key).unwrap();
-        assert_eq!(got, Some(contact.to_buffer()));
+        let got: Option<([u8; 32], u32)> = kv.get::<([u8; 32], u32)>(None, &key).unwrap();
+        assert_eq!(got, Some((contact.to_buffer(), 7)));
     }
 
     #[test]
@@ -1332,6 +1363,58 @@ mod tests {
             key_a_b, key_b_a,
             "address-index/private overlays are not symmetric in (owner, contact)"
         );
+    }
+
+    // -------------------------------------------------------------------
+    // D4c: concurrency contract for `dashpay_increment_send_index`.
+    // -------------------------------------------------------------------
+
+    /// 100 concurrent increment calls against the same `(owner, contact)`
+    /// must hand out exactly the values `0..=99`, no duplicates, and leave
+    /// the persisted counter at `100`. Exercises the same locking
+    /// discipline the public `WalletBackend::dashpay_increment_send_index`
+    /// relies on, via the extracted [`increment_send_index_locked`] helper —
+    /// constructing a real backend would pull in SDK + persister which the
+    /// unit-test target deliberately avoids.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn d4c_concurrent_send_index_increments_yield_unique_values() {
+        let kv = empty_kv();
+        let lock = Arc::new(std::sync::Mutex::new(()));
+        let owner = id_from_byte(1);
+        let contact = id_from_byte(2);
+
+        // Wrap kv in Arc so each task can move a clone of the handle.
+        let kv = Arc::new(kv);
+
+        let mut handles = Vec::with_capacity(100);
+        for _ in 0..100 {
+            let lock = Arc::clone(&lock);
+            let kv = Arc::clone(&kv);
+            handles.push(tokio::spawn(async move {
+                increment_send_index_locked(&lock, &kv, &owner, &contact)
+                    .expect("increment must succeed")
+            }));
+        }
+
+        let mut values: Vec<u32> = Vec::with_capacity(100);
+        for h in handles {
+            values.push(h.await.expect("task panicked"));
+        }
+        values.sort_unstable();
+
+        let expected: Vec<u32> = (0..100).collect();
+        assert_eq!(
+            values, expected,
+            "100 concurrent increments must return distinct values 0..=99"
+        );
+
+        // Final persisted counter advances to 100.
+        let key = pair_sidecar_key(KV_PREFIX_ADDRESS_INDEX, &owner, &contact);
+        let final_state: ContactAddressIndex = kv
+            .get::<ContactAddressIndex>(None, &key)
+            .expect("kv read")
+            .expect("counter must have been initialized");
+        assert_eq!(final_state.next_send_index, 100);
     }
 
     // -------------------------------------------------------------------

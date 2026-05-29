@@ -22,14 +22,26 @@
 mod asset_lock_signer;
 mod dashpay;
 mod event_bridge;
+#[cfg(any(test, feature = "bench"))]
 pub mod hydration;
+#[cfg(not(any(test, feature = "bench")))]
+pub(crate) mod hydration;
 mod kv;
 mod loader;
 mod shielded;
+#[cfg(any(test, feature = "bench"))]
 pub mod single_key;
+#[cfg(not(any(test, feature = "bench")))]
+pub(crate) mod single_key;
 mod snapshot;
+#[cfg(any(test, feature = "bench"))]
 pub mod wallet_meta;
+#[cfg(not(any(test, feature = "bench")))]
+pub(crate) mod wallet_meta;
+#[cfg(any(test, feature = "bench"))]
 pub mod wallet_seed_store;
+#[cfg(not(any(test, feature = "bench")))]
+pub(crate) mod wallet_seed_store;
 
 pub use dashpay::DashpayView;
 pub use shielded::{InsertShieldedNote, SHIELDED_SIDECAR_FILE, ShieldedNoteRow, ShieldedView};

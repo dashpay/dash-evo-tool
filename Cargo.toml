@@ -110,6 +110,7 @@ raw-cpuid = "11.5.0"
 
 [features]
 testing = []
+bench = []
 mcp = ["dep:rmcp", "rmcp/server", "rmcp/macros", "rmcp/transport-streamable-http-server", "dep:axum", "dep:subtle"]
 cli = ["dep:rmcp", "rmcp/server", "rmcp/macros", "rmcp/client", "rmcp/transport-io", "rmcp/transport-streamable-http-client-reqwest", "dep:clap", "dep:clap_complete"]
 headless = ["cli", "mcp"]
@@ -132,6 +133,7 @@ required-features = ["testing"]
 [[bench]]
 name = "wallet_hydration"
 harness = false
+required-features = ["bench"]
 
 [build-dependencies]
 winres = "0.1"
@@ -144,7 +146,7 @@ debug = "line-tables-only"
 
 [lints.rust.unexpected_cfgs]
 level = "warn"
-check-cfg = ["cfg(tokio_unstable)", "cfg(feature, values(\"testing\", \"mcp\", \"cli\", \"headless\"))"]
+check-cfg = ["cfg(tokio_unstable)", "cfg(feature, values(\"testing\", \"bench\", \"mcp\", \"cli\", \"headless\"))"]
 
 
 [lints.clippy]

@@ -355,13 +355,11 @@ Tables: `dashpay_profiles`, `dashpay_contacts`, `dashpay_contact_requests`,
 ### `single_key_wallet`
 
 - **Source:** `single_key_wallet` in `data.db`
-- **Destination:** No upstream concept
-- **Mapping:** Pending decision
-- **Per-network split:** Unknown
-- **Gotchas:** No upstream equivalent in `platform-wallet-storage`. Options: (a) keep as
-  DET-only feature in a DET sidecar, (b) scope out non-HD wallet support entirely. Decision
-  required before migration can be designed.
-- **Status:** BLOCKED — feature scope decision required.
+- **Destination:** Two stores — private bytes to `SecretStore` label `single_key_priv.<addr>` scoped to `SINGLE_KEY_NAMESPACE_ID` (a fixed constant, not a per-HD-wallet `WalletId`); enumerable metadata (`address`, `alias`, `network`) to `det-app.sqlite` under `<network>:single_key_meta:<addr>`.
+- **Mapping:** One row → one `SecretStore` entry + one `DetKv` entry. See `src/wallet_backend/single_key.rs`.
+- **Per-network split:** Yes — the metadata sidecar key carries the `<network>:` prefix; `SecretStore` uses the fixed `SINGLE_KEY_NAMESPACE_ID` scope for all networks.
+- **Gotchas:** `SINGLE_KEY_NAMESPACE_ID` is shared across all imported keys regardless of network — `<network>:` in the sidecar key is the partition. Do not confuse with per-HD-wallet `WalletId`. The `platform-wallet-storage` label allowlist rejects colons — the label uses a dot: `single_key_priv.<addr>`.
+- **Status:** DONE for new-install path — D-2 decision in `docs/ai-design/2026-05-29-finish-unwire/notes.md`. See `src/wallet_backend/single_key.rs` (T-SK-01 + T-SK-02). Migration tool still needs to import legacy `single_key_wallet` rows into the two-store layout.
 
 ---
 
@@ -400,7 +398,7 @@ networks (mainnet, testnet, devnet) before shipping.
   `identity_order`, `token_order`): confirm which keys are global vs per-network.
 - DET k/v sidecar location: `<app_data_dir>/det-kv.sqlite` (single global) or
   `<app_data_dir>/spv/<net>/det-kv.sqlite` (per-network)? Pending user decision.
-- `single_key_wallet` long-term plan: keep as DET sidecar, drop the feature, or push upstream?
+- `single_key_wallet` long-term plan: decided — keep via `SecretStore` + `det-app.sqlite` sidecar (D-2 in finish-unwire ADR). Drop-with-sunset is deferred pending user-population data.
 - `top_up` schema destination: `dashpay_payments_overlay` or new k/v entry?
 - `contested_name` / `contestant` permanent home: old `data.db` legacy section, DET k/v
   sidecar, or something else?

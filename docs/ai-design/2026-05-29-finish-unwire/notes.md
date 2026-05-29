@@ -174,7 +174,7 @@ schemas and ORM helpers are intact there.
 | `wallet_addresses` | upstream HD address cache | Re-derive from seed; verify before inserting |
 | `wallet_transactions` | upstream tx store | Carry `block_hash`, `block_height`, `is_coinbase` |
 | `utxos` | upstream `core_utxos` | Confirm against live SPV scan; stale rows must not override |
-| `single_key_wallet` | `SecretStore` label `single_key_priv.<addr>` per WalletId | See `src/wallet_backend/single_key.rs` |
+| `single_key_wallet` | `SecretStore` label `single_key_priv.<addr>` scoped to `SINGLE_KEY_NAMESPACE_ID` (fixed constant, shared across all imported keys) + `det-app.sqlite` sidecar `<network>:single_key_meta:<addr>` | See `src/wallet_backend/single_key.rs` |
 | `shielded_notes`, `shielded_wallet_meta` | `spv/<network>/det-shielded.sqlite` | Schema mirror 1:1; cursor row in same sidecar |
 | `asset_lock_transaction` | drop — rows are inert | Module deleted at `733f9e23` |
 | `contact_private_info`, `dashpay_*` | upstream `ManagedIdentity` / DET DashPay k/v | Closed in PR #861; see `notes.md` §DashPay |
@@ -187,7 +187,54 @@ schemas and ORM helpers are intact there.
 
 ---
 
-## 7. Change Log
+## 7. KV Keyspace Reference (canonical)
+
+All keyspaces active after this PR lands. For the complete reference with field-level detail see `docs/kv-keys.md`.
+
+### `det-app.sqlite` — cross-network store
+
+| Key pattern | Scope | Value type | Owner module |
+|-------------|-------|------------|--------------|
+| `det:settings:v1` | `None` | `AppSettings` | `src/context/settings_db.rs` |
+| `<network>:wallet_meta:<seed_hash_b58>` | `None` | `WalletMeta` | `src/wallet_backend/wallet_meta.rs` |
+| `<network>:single_key_meta:<addr>` | `None` | `ImportedKey` | `src/wallet_backend/single_key.rs` |
+| `det:migration:finish_unwire:v1` | `None` | `MigrationCompletion` | `src/backend_task/migration/finish_unwire.rs` |
+
+### `platform-wallet.sqlite` — per-network store (`<data_dir>/spv/<network>/`)
+
+| Key pattern | Scope | Value type | Owner module |
+|-------------|-------|------------|--------------|
+| `det:selected_wallet:v1` | `None` | `SelectedWallet` | `src/wallet_backend/mod.rs` |
+| `det:identity:<id_b58>` | `None` | `StoredQualifiedIdentity` | `src/context/identity_db.rs` |
+| `det:identity_order:v1` | `None` | `Vec<[u8;32]>` | `src/context/identity_db.rs` |
+| `det:top_ups:<id_b58>` | `None` | `BTreeMap<u32, u64>` | `src/context/identity_db.rs` |
+| `det:scheduled_vote:<voter_b58>:<contested_name>` | `None` | `StoredScheduledVote` | `src/context/identity_db.rs` |
+| `det:contested_name:<norm_name>` | `None` | `StoredContestedName` | `src/context/contested_names_db.rs` |
+| `det:contract:<contract_id_b58>` | `None` | `StoredContract` | `src/context/contract_token_db.rs` |
+| `det:token:<token_id_b58>` | `None` | `StoredToken` | `src/context/contract_token_db.rs` |
+| `det:token_balance:<id_b58>:<token_id_b58>` | `None` | `u64` | `src/context/contract_token_db.rs` |
+| `det:token_order:v1` | `None` | `Vec<([u8;32],[u8;32])>` | `src/context/contract_token_db.rs` |
+| `det:platform_addr:<addr>` | `Some(&wallet_seed_hash)` | `StoredPlatformAddressInfo` | `src/context/platform_address_db.rs` |
+| `det:platform_sync:v1` | `Some(&wallet_seed_hash)` | `StoredPlatformSyncInfo` | `src/context/platform_address_db.rs` |
+| `det:dashpay:blocked:<contact_b58>` | `None` | `()` | `src/wallet_backend/dashpay.rs` |
+| `det:dashpay:rejected:<counterparty_b58>` | `None` | `()` | `src/wallet_backend/dashpay.rs` |
+| `det:dashpay:timestamps:<entity_b58>` | `None` | `(i64, i64)` | `src/wallet_backend/dashpay.rs` |
+| `det:dashpay:private:<owner_b58>:<contact_b58>` | `None` | `ContactPrivateInfo` | `src/wallet_backend/dashpay.rs` |
+| `det:dashpay:address_index:<owner_b58>:<contact_b58>` | `None` | `ContactAddressIndex` | `src/wallet_backend/dashpay.rs` |
+| `det:dashpay:addr_map:<owner_b58>:<address>` | `None` | `([u8;32], u32)` | `src/wallet_backend/dashpay.rs` |
+
+### `SecretStore` — encrypted file vault (`<data_dir>/secrets/det-secrets.*`)
+
+Not a `KvStore`; values are raw encrypted bytes, not the `DetKv` version-byte envelope.
+
+| Scope (`WalletId`) | Label pattern | Value | Owner module |
+|--------------------|---------------|-------|--------------|
+| `WalletId(seed_hash)` | `envelope.v1` | bincode(`StoredSeedEnvelope`) | `src/wallet_backend/wallet_seed_store.rs` |
+| `SINGLE_KEY_NAMESPACE_ID` (fixed) | `single_key_priv.<base58_addr>` | 32 raw key bytes | `src/wallet_backend/single_key.rs` |
+
+---
+
+## 8. Change Log
 
 ```
 2026-05-29 — Initial ADR. Companion to T-* commits:

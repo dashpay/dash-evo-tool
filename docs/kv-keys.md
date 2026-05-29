@@ -2,12 +2,13 @@
 
 `DetKv` wraps the upstream `platform_wallet_storage::KvStore`. Values are encoded as `[ schema_version (1 byte) | bincode(payload) ]` using `bincode::config::standard()`. Keys are colon-separated namespaces. Every `DetKv` call takes an `Option<&WalletId>` scope: `None` = global slot, `Some(&id)` = per-wallet slot (cascades on wallet delete).
 
-Two backing stores exist:
+Three backing stores exist:
 
 | Store | Path | Contents |
 |-------|------|----------|
-| `det-app.sqlite` | `<data_dir>/det-app.sqlite` | Cross-network settings |
-| `platform-wallet.sqlite` | `<data_dir>/spv/<net>/platform-wallet.sqlite` | Everything else (per-network) |
+| `det-app.sqlite` | `<data_dir>/det-app.sqlite` | Cross-network settings, wallet metadata, migration sentinel, single-key metadata |
+| `platform-wallet.sqlite` | `<data_dir>/spv/<net>/platform-wallet.sqlite` | Per-network identities, tokens, contracts, DashPay overlays, platform addresses, selected wallet |
+| `SecretStore` | `<data_dir>/secrets/det-secrets.*` | Encrypted HD-wallet seed envelopes and imported single-key private bytes |
 
 ---
 
@@ -18,6 +19,46 @@ Two backing stores exist:
 | `det:settings:v1` | `None` | `det-app.sqlite` | `AppSettings` via `AppSettingsWire` | `network`, `root_screen_type`, `dash_qt_path`, `overwrite_dash_conf`, `disable_zmq`, `theme_mode`, `core_backend_mode`, `onboarding_completed`, `show_evonode_tools`, `user_mode`, `close_dash_qt_on_exit`, `auto_start_spv` |
 
 Source: `src/model/settings.rs`, `src/context/settings_db.rs`
+
+---
+
+## Wallet metadata sidecar
+
+DET-owned per-wallet display fields (alias, main flag, Dash Core wallet name link, pre-computed xpub). Stored in the cross-network `det-app.sqlite` so the wallet picker can enumerate every known wallet at cold boot without touching the per-network persister.
+
+| Key | Scope | Store | Value type | Fields |
+|-----|-------|-------|------------|--------|
+| `<network>:wallet_meta:<seed_hash_base58>` | `None` | `det-app.sqlite` | `WalletMeta` | `alias: String`, `is_main: bool`, `core_wallet_name: Option<String>`, `xpub_encoded: Vec<u8>` |
+
+`<network>` is one of `mainnet`, `testnet`, `devnet`, `regtest`. `<seed_hash_base58>` is the 32-byte `WalletSeedHash` base58-encoded. Global (`None`) scope is used instead of per-wallet scope because `WalletId` does not exist until a wallet is registered with `PlatformWalletManager`.
+
+Source: `src/wallet_backend/wallet_meta.rs`, `src/model/wallet/meta.rs`
+
+---
+
+## Single-key metadata sidecar
+
+Enumerable index of imported single-key wallets. The private bytes live in `SecretStore`; this sidecar holds only the display-facing metadata so cold-boot hydration can reconstruct the in-memory index without enumerating the (non-enumerable) vault.
+
+| Key | Scope | Store | Value type | Fields |
+|-----|-------|-------|------------|--------|
+| `<network>:single_key_meta:<base58_addr>` | `None` | `det-app.sqlite` | `ImportedKey` | `address: String`, `alias: Option<String>`, `network: Network` |
+
+`<network>` is the same vocabulary as wallet metadata. Global scope for the same reason: the sidecar must be listable independently of any per-wallet `WalletId`.
+
+Source: `src/wallet_backend/single_key.rs`, `src/model/single_key.rs`
+
+---
+
+## Migration sentinel
+
+Completion record written by the finish-unwire migration (`BackendTask::MigrationTask::FinishUnwire`). Read on every cold-start to short-circuit re-migration. Written once — idempotent.
+
+| Key | Scope | Store | Value type | Fields |
+|-----|-------|-------|------------|--------|
+| `det:migration:finish_unwire:v1` | `None` | `det-app.sqlite` | `MigrationCompletion` | `completed_at: i64` (Unix seconds), `sha: String` (build SHA), `network_count: u32` |
+
+Source: `src/backend_task/migration/finish_unwire.rs` (`SENTINEL_KEY`)
 
 ---
 
@@ -117,12 +158,39 @@ Source: `src/wallet_backend/dashpay.rs`, `src/model/dashpay.rs`
 
 ---
 
+## SecretStore entries
+
+The `SecretStore` file backend (`<data_dir>/secrets/det-secrets.*`) stores opaque encrypted blobs. It is **not** a `KvStore` and does not use the `DetKv` bincode-plus-version-byte envelope. Entries are addressed by `(WalletId scope, label)` pairs.
+
+### HD wallet seed envelopes
+
+| Service (scope) | Label | Value encoding | Struct | Fields |
+|-----------------|-------|----------------|--------|--------|
+| `WalletId(seed_hash)` | `envelope.v1` | `bincode::serde` (no DetKv wrapper) | `StoredSeedEnvelope` | `encrypted_seed: Vec<u8>`, `salt: Vec<u8>`, `nonce: Vec<u8>`, `password_hint: Option<String>`, `uses_password: bool`, `xpub_encoded: Vec<u8>` |
+
+One entry per HD wallet. `seed_hash` is the 32-byte `WalletSeedHash` reused as the upstream `SecretWalletId`. The outer vault adds Argon2id + XChaCha20-Poly1305 at-rest encryption on top of DET's own AES-GCM per-wallet password layer.
+
+Source: `src/wallet_backend/wallet_seed_store.rs` (`ENVELOPE_LABEL`), `src/model/wallet/seed_envelope.rs`
+
+### Imported single-key private bytes
+
+| Service (scope) | Label | Value encoding | Notes |
+|-----------------|-------|----------------|-------|
+| `SINGLE_KEY_NAMESPACE_ID` (fixed constant) | `single_key_priv.<base58_addr>` | 32 raw key bytes | One entry per imported WIF address |
+
+`SINGLE_KEY_NAMESPACE_ID` is a fixed `[u8; 32]` (SHA-256 of `"det-single-key-namespace"`) shared by all imported keys — single-key entries are not per-HD-wallet. The label uses a dot separator because the upstream label allowlist (`^[A-Za-z0-9._-]{1,64}$`) rejects colons.
+
+Source: `src/wallet_backend/single_key.rs` (`SINGLE_KEY_PRIV_LABEL_PREFIX`, `SINGLE_KEY_NAMESPACE_BYTES`)
+
+---
+
 ## Summary counts
 
 | Store | Key count |
 |-------|-----------|
-| `det-app.sqlite` | 1 |
+| `det-app.sqlite` | 4 (settings, wallet-meta sidecar, single-key-meta sidecar, migration sentinel) |
 | `platform-wallet.sqlite` | 17 (across 8 domains) |
-| **Total** | **18** |
+| `SecretStore` | 2 label patterns (seed envelopes, imported-key private bytes) |
+| **Total** | **23** |
 
-Prefixed/templated keys (e.g. `det:identity:<id>`) are counted once per prefix, not per instance.
+Prefixed/templated keys (e.g. `det:identity:<id>`) are counted once per prefix, not per instance. `SecretStore` entries are counted as label-pattern families, not per-wallet instances.

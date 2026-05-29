@@ -133,7 +133,10 @@ mod path3_asset_lock_finality_no_wallet_mutation {
         ensure_test_env(tmp.path());
         let db_file = tmp.path().join("data.db");
         let db = Arc::new(crate::database::Database::new(&db_file).expect("db"));
-        db.initialize(&db_file).expect("init");
+        // Force legacy wallet-family schema for tests — `initialize`
+        // gates these out for truly-fresh installs post-T-DEV-01.
+        db.create_tables(true).expect("create tables");
+        db.set_default_version().expect("set version");
 
         let network = Network::Testnet;
 

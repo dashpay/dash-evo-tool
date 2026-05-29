@@ -419,7 +419,10 @@ mod send_payment_unsupported_options {
         crate::app_dir::ensure_env_file(tmp);
         let db_file = tmp.join("data.db");
         let db = std::sync::Arc::new(crate::database::Database::new(&db_file).expect("db"));
-        db.initialize(&db_file).expect("init");
+        // Force legacy wallet-family schema for tests — `initialize`
+        // gates these out for truly-fresh installs post-T-DEV-01.
+        db.create_tables(true).expect("create tables");
+        db.set_default_version().expect("set version");
         let app_kv = AppContext::open_app_kv(tmp).expect("open app k/v");
         AppContext::new(
             tmp.to_path_buf(),

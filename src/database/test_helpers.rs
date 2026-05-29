@@ -4,7 +4,6 @@
 //! in unit and integration tests throughout the codebase.
 
 use crate::database::Database;
-use std::path::PathBuf;
 use tempfile::TempDir;
 
 /// Creates an in-memory SQLite database for testing.
@@ -21,10 +20,12 @@ use tempfile::TempDir;
 /// ```
 pub fn create_test_database() -> rusqlite::Result<Database> {
     let db = Database::new(":memory:")?;
-    // Initialize tables using the standard initialization path
-    // Note: We use a dummy path since :memory: doesn't use the file system
-    let dummy_path = PathBuf::from(":memory:");
-    db.initialize(&dummy_path)?;
+    // Force-create the legacy wallet-family schema so domain tests
+    // (`database::utxo`, `database::wallet`, …) keep working after
+    // T-DEV-01 gated those tables out of fresh installs. We bypass
+    // `initialize` because that path now skips them for truly-fresh DBs.
+    db.create_tables(true)?;
+    db.set_default_version()?;
     Ok(db)
 }
 
@@ -52,7 +53,10 @@ pub fn create_temp_database() -> rusqlite::Result<(Database, TempDir)> {
     })?;
     let db_path = temp_dir.path().join("test_data.db");
     let db = Database::new(&db_path)?;
-    db.initialize(&db_path)?;
+    // Same rationale as `create_test_database`: force the full legacy
+    // schema so file-backed tests still see wallet-family tables.
+    db.create_tables(true)?;
+    db.set_default_version()?;
     Ok((db, temp_dir))
 }
 
@@ -61,7 +65,8 @@ pub fn create_temp_database() -> rusqlite::Result<(Database, TempDir)> {
 /// Useful when you need to control the exact location of the database file.
 pub fn create_database_at_path(path: &std::path::Path) -> rusqlite::Result<Database> {
     let db = Database::new(path)?;
-    db.initialize(path)?;
+    db.create_tables(true)?;
+    db.set_default_version()?;
     Ok(db)
 }
 

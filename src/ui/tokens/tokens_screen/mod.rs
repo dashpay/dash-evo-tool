@@ -3150,7 +3150,6 @@ impl ScreenLike for TokensScreen {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
     use std::sync::Once;
 
     use crate::app_dir::copy_env_file_if_not_exists;
@@ -3216,7 +3215,10 @@ mod tests {
         let db_file_path = "test_db_token_creator";
         let _ = std::fs::remove_file(db_file_path); // Clean up from previous runs
         let db = Arc::new(Database::new(db_file_path).unwrap());
-        db.initialize(Path::new(&db_file_path)).unwrap();
+        // Force legacy wallet-family schema for tests — `initialize`
+        // gates these out for truly-fresh installs post-T-DEV-01.
+        db.create_tables(true).unwrap();
+        db.set_default_version().unwrap();
 
         ensure_test_env();
         // The upstream SQLite persister that backs `app_kv` is not safe
@@ -3537,7 +3539,10 @@ mod tests {
         let db_file_path = "test_db_distribution_random";
         let _ = std::fs::remove_file(db_file_path); // Clean up from previous runs
         let db = Arc::new(Database::new(db_file_path).unwrap());
-        db.initialize(Path::new(&db_file_path)).unwrap();
+        // Force legacy wallet-family schema for tests — `initialize`
+        // gates these out for truly-fresh installs post-T-DEV-01.
+        db.create_tables(true).unwrap();
+        db.set_default_version().unwrap();
 
         ensure_test_env();
         // The upstream SQLite persister that backs `app_kv` is not safe
@@ -3672,7 +3677,10 @@ mod tests {
         let db_file_path = "test_db_empty_token_name";
         let _ = std::fs::remove_file(db_file_path); // Clean up from previous runs
         let db = Arc::new(Database::new(db_file_path).unwrap());
-        db.initialize(Path::new(&db_file_path)).unwrap();
+        // Force legacy wallet-family schema for tests — `initialize`
+        // gates these out for truly-fresh installs post-T-DEV-01.
+        db.create_tables(true).unwrap();
+        db.set_default_version().unwrap();
 
         ensure_test_env();
         // The upstream SQLite persister that backs `app_kv` is not safe

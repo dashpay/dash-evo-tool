@@ -131,6 +131,49 @@ fn fix_devnet_network_name_in_legacy_tables(conn: &Connection) -> rusqlite::Resu
     Ok(())
 }
 
+/// Detect whether this on-disk DB carries any legacy DET wallet state.
+///
+/// Returns true when any of the canary legacy tables (`wallet`,
+/// `wallet_addresses`, `single_key_wallet`, `utxos`, `shielded_notes`)
+/// exists and contains at least one row. Truly-fresh installs — empty
+/// `data.db` or DB without those tables — return false, so the gated
+/// CREATE TABLE statements in [`Database::create_tables`] are skipped
+/// and the wallet state lives entirely in `platform-wallet.sqlite`.
+///
+/// The check is best-effort: any sqlite read error is treated as
+/// "no legacy detected" so a malformed/locked DB does not accidentally
+/// recreate the dormant schema on a fresh install.
+fn legacy_detected(conn: &Connection) -> bool {
+    const TARGETS: [&str; 5] = [
+        "wallet",
+        "wallet_addresses",
+        "single_key_wallet",
+        "utxos",
+        "shielded_notes",
+    ];
+    for table in TARGETS {
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                [table],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+        if !exists {
+            continue;
+        }
+        let count: i64 = conn
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap_or(0);
+        if count > 0 {
+            return true;
+        }
+    }
+    false
+}
+
 impl Database {
     pub fn initialize(&self, db_file_path: &Path) -> rusqlite::Result<()> {
         // First, ensure all required columns exist in tables that may have been
@@ -151,7 +194,18 @@ impl Database {
 
         // Check if this is the first time setup by looking for entries in the settings table.
         if self.is_first_time_setup()? {
-            self.create_tables()?;
+            // Detect legacy DET wallet state on the same DB file. Truly-fresh
+            // installs skip the wallet/utxos/single_key_wallet/wallet_transactions/
+            // shielded_notes/shielded_wallet_meta CREATE TABLE statements — that
+            // state now lives in `platform-wallet.sqlite`. Pre-existing installs
+            // (settings row missing but wallet rows present, an unusual but
+            // possible recovery shape) still get the legacy tables so the
+            // migration ladder has something to upgrade.
+            let include_legacy = {
+                let conn = self.conn.lock().unwrap();
+                legacy_detected(&conn)
+            };
+            self.create_tables(include_legacy)?;
             self.set_default_version()?;
         } else {
             self.run_consistency_checks();
@@ -660,7 +714,16 @@ impl Database {
     }
 
     /// Creates all required tables with indexes if they don't already exist.
-    fn create_tables(&self) -> rusqlite::Result<()> {
+    ///
+    /// `include_legacy` controls whether the wallet-family tables
+    /// (`wallet`, `wallet_addresses`, `utxos`, `single_key_wallet`,
+    /// `wallet_transactions`, `shielded_notes`, `shielded_wallet_meta`)
+    /// are created. Truly-fresh DET installs pass `false` so these dormant
+    /// schemas never appear in `data.db`; legacy installs and the migration
+    /// ladder still pass `true` so upgrade arms keep working. Always-present
+    /// tables (`settings`, `identity`, `platform_address_balances`) are
+    /// created regardless.
+    pub(crate) fn create_tables(&self, include_legacy: bool) -> rusqlite::Result<()> {
         let conn = self.conn.lock().unwrap();
         // Create the settings table.
         //
@@ -678,9 +741,10 @@ impl Database {
             [],
         )?;
 
-        // Create the wallet table
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS wallet (
+        if include_legacy {
+            // Create the wallet table
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS wallet (
                 seed_hash BLOB NOT NULL PRIMARY KEY,
                 encrypted_seed BLOB NOT NULL,
                 salt BLOB NOT NULL,
@@ -699,17 +763,17 @@ impl Database {
                 last_terminal_block INTEGER DEFAULT 0,
                 core_wallet_name TEXT DEFAULT NULL
             )",
-            [],
-        )?;
+                [],
+            )?;
 
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_wallet_network ON wallet (network)",
-            [],
-        )?;
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_wallet_network ON wallet (network)",
+                [],
+            )?;
 
-        // Create wallet addresses
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS wallet_addresses (
+            // Create wallet addresses
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS wallet_addresses (
                 seed_hash BLOB NOT NULL,
                 address TEXT NOT NULL,
                 derivation_path TEXT NOT NULL,
@@ -720,12 +784,13 @@ impl Database {
                 PRIMARY KEY (seed_hash, address),
                 FOREIGN KEY (seed_hash) REFERENCES wallet(seed_hash) ON DELETE CASCADE
             )",
-            [],
-        )?;
+                [],
+            )?;
 
-        // Create indexes for wallet addresses table
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_wallet_addresses_path_reference ON wallet_addresses (path_reference)", [])?;
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_wallet_addresses_path_type ON wallet_addresses (path_type)", [])?;
+            // Create indexes for wallet addresses table
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_wallet_addresses_path_reference ON wallet_addresses (path_reference)", [])?;
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_wallet_addresses_path_type ON wallet_addresses (path_type)", [])?;
+        }
 
         // Create Platform address balances table
         conn.execute(
@@ -743,9 +808,10 @@ impl Database {
             [],
         )?;
 
-        // Create the utxos table
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS utxos (
+        if include_legacy {
+            // Create the utxos table
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS utxos (
                         txid BLOB NOT NULL,
                         vout INTEGER NOT NULL,
                         address TEXT NOT NULL,
@@ -754,21 +820,22 @@ impl Database {
                         network TEXT NOT NULL,
                         PRIMARY KEY (txid, vout, network)
                     );",
-            [],
-        )?;
+                [],
+            )?;
 
-        // Create indexes for utxos table
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_utxos_address ON utxos (address)",
-            [],
-        )?;
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_utxos_network ON utxos (network)",
-            [],
-        )?;
+            // Create indexes for utxos table
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_utxos_address ON utxos (address)",
+                [],
+            )?;
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_utxos_network ON utxos (network)",
+                [],
+            )?;
 
-        // Create wallet transactions table for SPV history
-        self.initialize_wallet_transactions_table(&conn)?;
+            // Create wallet transactions table for SPV history
+            self.initialize_wallet_transactions_table(&conn)?;
+        }
 
         // `asset_lock_transaction` was unwired entirely — fresh installs
         // no longer create the table. Legacy installs keep the dormant
@@ -822,18 +889,20 @@ impl Database {
         // index, address mapping). Fresh installs no longer create the
         // tables; legacy installs keep the dormant rows.
 
-        // Initialize single key wallet table
-        self.initialize_single_key_wallet_table(&conn)?;
+        if include_legacy {
+            // Initialize single key wallet table
+            self.initialize_single_key_wallet_table(&conn)?;
 
-        // Initialize shielded pool tables
-        self.create_shielded_tables(&conn)?;
-        self.create_shielded_wallet_meta_table(&conn)?;
+            // Initialize shielded pool tables
+            self.create_shielded_tables(&conn)?;
+            self.create_shielded_wallet_meta_table(&conn)?;
+        }
 
         Ok(())
     }
 
     /// Ensures that the default database version is set in the settings table.
-    fn set_default_version(&self) -> rusqlite::Result<()> {
+    pub(crate) fn set_default_version(&self) -> rusqlite::Result<()> {
         // TODO: Discuss migration approach with the team.
         // Suggested approach:
         // we don't change `create_tables`, we just add migrations
@@ -1877,7 +1946,7 @@ mod test {
 
         const NETWORK: &str = "regtest";
 
-        db.create_tables().unwrap();
+        db.create_tables(true).unwrap();
         db.set_default_version().unwrap();
 
         // Seed an identity so we can prove no DB mutation occurred.
@@ -1933,11 +2002,11 @@ mod test {
             .unwrap();
         assert_eq!(version, DEFAULT_DB_VERSION);
 
-        // The legacy `settings.core_backend_mode` column was unwired in C3
-        // (user prefs moved to the upstream k/v store). The "fresh installs
-        // default to SPV" contract is now enforced by
-        // `AppSettings::default()` — see the model crate's S1 test.
-        assert_v33_schema(&conn);
+        // Post-T-DEV-01: truly-fresh installs no longer create the
+        // wallet-family tables — those live in `platform-wallet.sqlite`
+        // now. `assert_v33_schema` only applies to upgrade-replay DBs,
+        // so it has moved to `test_v33_migration_from_v27`. Here we
+        // only need to confirm the settings row is in place.
     }
 
     #[test]
@@ -1947,7 +2016,7 @@ mod test {
         let db = super::Database::new(&db_file_path).unwrap();
 
         // Build a full database then strip v28+ additions to simulate v27.
-        db.create_tables().unwrap();
+        db.create_tables(true).unwrap();
         db.set_default_version().unwrap();
 
         {
@@ -2066,7 +2135,7 @@ mod test {
         let db = super::Database::new(&db_file_path).unwrap();
 
         // Build full schema at current version
-        db.create_tables().unwrap();
+        db.create_tables(true).unwrap();
         db.set_default_version().unwrap();
 
         let valid_seed_hash = vec![0xAAu8; 32];
@@ -2757,7 +2826,7 @@ mod test {
         fn fresh_v33_db(dir: &std::path::Path) -> super::super::Database {
             let db_file = dir.join("test_data.db");
             let db = super::super::Database::new(&db_file).unwrap();
-            db.create_tables().unwrap();
+            db.create_tables(true).unwrap();
             {
                 let conn = db.conn.lock().unwrap();
                 conn.execute(
@@ -2890,5 +2959,164 @@ mod test {
             );
             assert_eq!(db.db_schema_version().unwrap(), 34);
         }
+    }
+
+    // ---------- T-DEV-01: legacy CREATE TABLE gating ----------
+
+    /// Helper: assert that a table does NOT exist in the database.
+    fn assert_table_absent(conn: &Connection, table: &str) {
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                params![table],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!exists, "table `{table}` must NOT exist on a fresh install");
+    }
+
+    /// TC-DEV-006 — Truly-fresh install creates no wallet-family tables.
+    ///
+    /// The gated targets (`wallet`, `wallet_addresses`, `utxos`,
+    /// `single_key_wallet`, `wallet_transactions`, `shielded_notes`,
+    /// `shielded_wallet_meta`) live in `platform-wallet.sqlite` now.
+    /// `settings` and `identity` are always created.
+    #[test]
+    fn tc_dev_006_fresh_install_omits_legacy_tables() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_file = tmp.path().join("fresh.db");
+        let db = super::Database::new(&db_file).unwrap();
+        db.initialize(&db_file).unwrap();
+
+        let conn = db.conn.lock().unwrap();
+
+        // Always-present
+        assert_table_exists(&conn, "settings");
+        assert_table_exists(&conn, "identity");
+
+        // Gated targets must be absent
+        for t in [
+            "wallet",
+            "wallet_addresses",
+            "utxos",
+            "single_key_wallet",
+            "wallet_transactions",
+            "shielded_notes",
+            "shielded_wallet_meta",
+        ] {
+            assert_table_absent(&conn, t);
+        }
+    }
+
+    /// TC-MIG-006 — Existing install with legacy rows triggers full schema
+    /// creation so the migration ladder has tables to upgrade.
+    ///
+    /// Simulates an unusual recovery shape: a DB where the `settings` row
+    /// was wiped (so `is_first_time_setup` reports true) but the
+    /// `wallet` table still carries rows. `legacy_detected` returns true,
+    /// so `initialize` re-creates the wallet-family schema.
+    #[test]
+    fn tc_mig_006_legacy_rows_trigger_full_schema() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_file = tmp.path().join("legacy.db");
+        let db = super::Database::new(&db_file).unwrap();
+
+        // Pre-seed a legacy `wallet` row before `initialize` runs.
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "CREATE TABLE wallet (
+                    seed_hash BLOB NOT NULL PRIMARY KEY,
+                    encrypted_seed BLOB NOT NULL,
+                    salt BLOB NOT NULL,
+                    nonce BLOB NOT NULL,
+                    master_ecdsa_bip44_account_0_epk BLOB NOT NULL,
+                    uses_password INTEGER NOT NULL,
+                    network TEXT NOT NULL
+                )",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO wallet (
+                    seed_hash, encrypted_seed, salt, nonce,
+                    master_ecdsa_bip44_account_0_epk, uses_password, network
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    vec![1u8; 32],
+                    vec![2u8; 16],
+                    vec![3u8; 16],
+                    vec![4u8; 12],
+                    vec![5u8; 33],
+                    0i32,
+                    "mainnet",
+                ],
+            )
+            .unwrap();
+            assert!(super::legacy_detected(&conn));
+        }
+
+        db.initialize(&db_file).unwrap();
+
+        let conn = db.conn.lock().unwrap();
+        // Upgrade-replay path: wallet-family tables present.
+        assert_table_exists(&conn, "wallet");
+        assert_table_exists(&conn, "wallet_addresses");
+        assert_table_exists(&conn, "utxos");
+        assert_table_exists(&conn, "single_key_wallet");
+        assert_table_exists(&conn, "wallet_transactions");
+        assert_table_exists(&conn, "shielded_notes");
+        assert_table_exists(&conn, "shielded_wallet_meta");
+    }
+
+    /// TC-MIG-008 (partial) — Fresh install and the `data.db` file.
+    ///
+    /// Truly-fresh installs land at version `DEFAULT_DB_VERSION` with no
+    /// wallet-family tables. The file itself still appears on disk
+    /// because `Database::new` opens the SQLite connection eagerly; fully
+    /// suppressing the file is T-DEV-02 territory.
+    // TODO(T-DEV-02): suppress `data.db` file creation when no DET state
+    // needs to be persisted to it.
+    #[test]
+    fn tc_mig_008_fresh_install_file_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_file = tmp.path().join("fresh.db");
+        assert!(!db_file.exists(), "precondition: file absent");
+
+        let db = super::Database::new(&db_file).unwrap();
+        db.initialize(&db_file).unwrap();
+
+        // Partial pass: file exists (Database::new opens an empty SQLite
+        // connection) but carries no wallet-family schema.
+        assert!(db_file.exists(), "Database::new opens the file eagerly");
+        let conn = db.conn.lock().unwrap();
+        assert_table_exists(&conn, "settings");
+        for t in [
+            "wallet",
+            "wallet_addresses",
+            "utxos",
+            "single_key_wallet",
+            "wallet_transactions",
+            "shielded_notes",
+            "shielded_wallet_meta",
+        ] {
+            assert_table_absent(&conn, t);
+        }
+    }
+
+    /// `legacy_detected` returns false on an empty DB.
+    #[test]
+    fn legacy_detected_false_on_empty_db() {
+        let conn = Connection::open_in_memory().unwrap();
+        assert!(!super::legacy_detected(&conn));
+    }
+
+    /// `legacy_detected` returns false when a target table exists but is empty.
+    #[test]
+    fn legacy_detected_false_on_empty_tables() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute("CREATE TABLE wallet (seed_hash BLOB PRIMARY KEY)", [])
+            .unwrap();
+        assert!(!super::legacy_detected(&conn));
     }
 }

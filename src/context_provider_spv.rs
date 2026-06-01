@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 pub(crate) struct SpvProvider {
     db: Arc<Database>,
     app_context: Mutex<Option<Arc<AppContext>>>,
-    _network: Network,
+    network: Network,
 }
 
 impl SpvProvider {
@@ -24,7 +24,7 @@ impl SpvProvider {
         Ok(Self {
             db,
             app_context: Default::default(),
-            _network: network,
+            network,
         })
     }
 
@@ -128,8 +128,14 @@ impl ContextProvider for SpvProvider {
     fn get_platform_activation_height(
         &self,
     ) -> Result<dash_sdk::dpp::prelude::CoreBlockHeight, ContextProviderError> {
-        // TODO: wire actual activation height if needed
-        Ok(1)
+        // Core block height at which Platform activated (the `mn_rr` L1
+        // locked height) per network. Mirrors the SDK's own trusted
+        // context provider; these are fixed once activation has happened.
+        Ok(match self.network {
+            Network::Mainnet => 2_132_092,
+            Network::Testnet => 1_090_319,
+            Network::Devnet | Network::Regtest => 1,
+        })
     }
 }
 
@@ -148,7 +154,7 @@ impl Clone for SpvProvider {
         Self {
             db: self.db.clone(),
             app_context: Mutex::new(app_context_clone),
-            _network: self._network,
+            network: self.network,
         }
     }
 }

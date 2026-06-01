@@ -104,6 +104,19 @@ pub enum TaskError {
         source: platform_wallet_storage::WalletStorageError,
     },
 
+    /// The on-disk wallet database was written by a newer build of the app
+    /// than the one running, so this build cannot open it. Distinct from
+    /// [`Self::WalletStorage`] because restarting or freeing disk space never
+    /// resolves a forward-version database — only updating the app does.
+    ///
+    /// `found` / `max_supported` are numeric diagnostics for logs and the
+    /// `Debug` view only; they are deliberately kept out of the user-facing
+    /// `Display` copy (no version-number jargon for the Everyday User).
+    #[error(
+        "Your wallet data was created by a newer version of this app. Update to the latest version to open it."
+    )]
+    WalletDataTooNew { found: i64, max_supported: i64 },
+
     /// The encrypted secret store could not be opened, read, or written.
     /// Imported single-key material lives here; HD-wallet seeds are
     /// surfaced through [`Self::WalletSeedStorage`] for a clearer
@@ -1373,6 +1386,34 @@ pub enum TaskError {
         "Could not protect this imported key with a passphrase. Try again, or import it without a passphrase for now."
     )]
     SingleKeyCryptoFailure,
+}
+
+impl TaskError {
+    /// Map a wallet-storage open failure to the right user-facing variant.
+    ///
+    /// A forward-version database (written by a newer build, schema beyond
+    /// what this binary applies) is surfaced as [`Self::WalletDataTooNew`] so
+    /// the banner tells the user to update the app — the only thing that fixes
+    /// it. Every other storage failure keeps the generic disk/IO copy via
+    /// [`Self::WalletStorage`].
+    ///
+    /// Discrimination is on the typed upstream variant
+    /// (`WalletStorageError::SchemaVersionUnsupported`), never on its
+    /// `Display` text.
+    pub fn from_wallet_storage_open_error(
+        source: platform_wallet_storage::WalletStorageError,
+    ) -> Self {
+        match source {
+            platform_wallet_storage::WalletStorageError::SchemaVersionUnsupported {
+                found,
+                max_supported,
+            } => Self::WalletDataTooNew {
+                found,
+                max_supported,
+            },
+            other => Self::WalletStorage { source: other },
+        }
+    }
 }
 
 /// Escapes control characters in a token name for safe display in error messages.
@@ -3295,6 +3336,72 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("could not finish updating"));
         assert!(msg.contains("restart"));
+        assert!(
+            std::error::Error::source(&err).is_some(),
+            "Expected source chain to be preserved"
+        );
+    }
+
+    /// WB-001 — a forward-version wallet database (schema written by a newer
+    /// build) maps to the dedicated `WalletDataTooNew` variant whose `Display`
+    /// tells the user to update the app, NOT to free disk space or restart.
+    #[test]
+    fn schema_version_unsupported_maps_to_wallet_data_too_new() {
+        let upstream = platform_wallet_storage::WalletStorageError::SchemaVersionUnsupported {
+            found: 2,
+            max_supported: 1,
+        };
+        let err = TaskError::from_wallet_storage_open_error(upstream);
+        assert!(
+            matches!(
+                err,
+                TaskError::WalletDataTooNew {
+                    found: 2,
+                    max_supported: 1
+                }
+            ),
+            "Expected WalletDataTooNew, got: {err:?}"
+        );
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("newer version") && msg.contains("Update"),
+            "Expected update guidance, got: {msg}"
+        );
+        assert!(
+            !msg.contains("disk space"),
+            "Forward-version message must not mention disk space, got: {msg}"
+        );
+        assert!(
+            !msg.contains("restart"),
+            "Forward-version message must not tell the user to restart, got: {msg}"
+        );
+        // Numeric diagnostics stay out of the user-facing copy (no jargon).
+        assert!(
+            !msg.contains('2') && !msg.contains('1'),
+            "Version numbers must not leak into the user message, got: {msg}"
+        );
+    }
+
+    /// WB-001 — a genuine I/O storage failure still maps to `WalletStorage`
+    /// with the original disk/IO copy and preserves the source chain.
+    #[test]
+    fn io_storage_error_maps_to_wallet_storage() {
+        let upstream = platform_wallet_storage::WalletStorageError::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "denied",
+        ));
+        let err = TaskError::from_wallet_storage_open_error(upstream);
+        assert!(
+            matches!(err, TaskError::WalletStorage { .. }),
+            "Expected WalletStorage, got: {err:?}"
+        );
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("disk space"),
+            "Expected disk/IO copy, got: {msg}"
+        );
         assert!(
             std::error::Error::source(&err).is_some(),
             "Expected source chain to be preserved"

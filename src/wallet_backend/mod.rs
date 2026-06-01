@@ -230,7 +230,7 @@ impl WalletBackend {
             SqlitePersisterConfig::new(spv_storage_dir.join("platform-wallet.sqlite"));
         let persister = Arc::new(
             SqlitePersister::open(persister_config)
-                .map_err(|source| TaskError::WalletStorage { source })?,
+                .map_err(TaskError::from_wallet_storage_open_error)?,
         );
 
         let secret_store_path = Self::resolve_secret_store_path(ctx.data_dir());

@@ -1,6 +1,6 @@
 # DET k/v key reference
 
-`DetKv` wraps the upstream `platform_wallet_storage::KvStore`. Values are encoded as `[ schema_version (1 byte) | bincode(payload) ]` using `bincode::config::standard()`. Keys are colon-separated namespaces. Every `DetKv` call takes an `Option<&WalletId>` scope: `None` = global slot, `Some(&id)` = per-wallet slot (cascades on wallet delete).
+`DetKv` wraps the upstream `platform_wallet_storage::KvStore`. Values are encoded as `[ schema_version (1 byte) | bincode(payload) ]` using `bincode::config::standard()`. Keys are colon-separated namespaces. Every `DetKv` call takes a `DetScope` argument: `DetScope::Global` = global slot, `DetScope::Wallet(&seed_hash)` = per-wallet slot (cascades on wallet delete). `DetScope::Identity` / `DetScope::Token` are reserved for the Wave 2 scope promotions and not yet written. `DetScope` is the DET-side seam over the upstream `ObjectId` enum — the upstream scope type never crosses the wallet-backend boundary.
 
 Three backing stores exist:
 
@@ -9,6 +9,8 @@ Three backing stores exist:
 | `det-app.sqlite` | `<data_dir>/det-app.sqlite` | Cross-network settings, wallet metadata, migration sentinel, single-key metadata |
 | `platform-wallet.sqlite` | `<data_dir>/spv/<net>/platform-wallet.sqlite` | Per-network identities, tokens, contracts, DashPay overlays, platform addresses, selected wallet |
 | `SecretStore` | `<data_dir>/secrets/det-secrets.*` | Encrypted HD-wallet seed envelopes and imported single-key private bytes |
+
+In the per-domain tables below, a `Scope` of `None` denotes `DetScope::Global` and `Some(&seed_hash)` denotes `DetScope::Wallet(&seed_hash)`.
 
 ---
 
@@ -30,7 +32,7 @@ DET-owned per-wallet display fields (alias, main flag, Dash Core wallet name lin
 |-----|-------|-------|------------|--------|
 | `<network>:wallet_meta:<seed_hash_base58>` | `None` | `det-app.sqlite` | `WalletMeta` | `alias: String`, `is_main: bool`, `core_wallet_name: Option<String>`, `xpub_encoded: Vec<u8>` |
 
-`<network>` is one of `mainnet`, `testnet`, `devnet`, `regtest`. `<seed_hash_base58>` is the 32-byte `WalletSeedHash` base58-encoded. Global (`None`) scope is used instead of per-wallet scope because `WalletId` does not exist until a wallet is registered with `PlatformWalletManager`.
+`<network>` is one of `mainnet`, `testnet`, `devnet`, `regtest`. `<seed_hash_base58>` is the 32-byte `WalletSeedHash` base58-encoded. Global (`DetScope::Global`) scope is used instead of per-wallet scope because the upstream `WalletId` does not exist until a wallet is registered with `PlatformWalletManager`.
 
 Source: `src/wallet_backend/wallet_meta.rs`, `src/model/wallet/meta.rs`
 
@@ -134,20 +136,20 @@ Source: `src/context/contract_token_db.rs`
 
 ## Platform addresses
 
-Both keys use **per-wallet scope** (`Some(&seed_hash)`) so entries cascade on wallet removal.
+Both keys use **per-wallet scope** (`DetScope::Wallet(&seed_hash)`) so entries cascade on wallet removal. Reads/writes route through the `PlatformAddressView` seam (`src/wallet_backend/platform_address.rs`); the cache stays active because upstream's public per-address reader exposes balance but not the DET-tracked nonce.
 
 | Key | Scope | Store | Value type | Notes |
 |-----|-------|-------|------------|-------|
-| `det:platform_addr:<canonical_address>` | `Some(&wallet_seed_hash)` | `platform-wallet.sqlite` | `StoredPlatformAddressInfo` | Fields: `balance: u64`, `nonce: u32` |
-| `det:platform_sync:v1` | `Some(&wallet_seed_hash)` | `platform-wallet.sqlite` | `StoredPlatformSyncInfo` | Fields: `last_sync_timestamp: u64`, `sync_height: u64` |
+| `det:platform_addr:<canonical_address>` | `DetScope::Wallet(&seed_hash)` | `platform-wallet.sqlite` | `StoredPlatformAddressInfo` | Fields: `balance: u64`, `nonce: u32` |
+| `det:platform_sync:v1` | `DetScope::Wallet(&seed_hash)` | `platform-wallet.sqlite` | `StoredPlatformSyncInfo` | Fields: `last_sync_timestamp: u64`, `sync_height: u64` |
 
-Source: `src/context/platform_address_db.rs`
+Source: `src/context/platform_address_db.rs`, `src/wallet_backend/platform_address.rs`
 
 ---
 
 ## DashPay sidecar
 
-All sidecar keys use **global scope** (`None`). The per-network `platform-wallet.sqlite` already partitions by network, so no `<network>:` prefix is needed within the key.
+All sidecar keys use **global scope** (`DetScope::Global`). The per-network `platform-wallet.sqlite` already partitions by network, so no `<network>:` prefix is needed within the key.
 
 | Key | Scope | Store | Value type | Notes |
 |-----|-------|-------|------------|-------|

@@ -39,6 +39,7 @@ use crate::ui::welcome_screen::WelcomeScreen;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
 use crate::utils::egui_mpsc::{self, EguiMpscAsync, EguiMpscSync};
 use crate::utils::tasks::TaskManager;
+use crate::wallet_backend::DetScope;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use derive_more::From;
@@ -338,7 +339,7 @@ impl AppState {
         // (`<data_dir>/det-app.sqlite`). The store is opened once here and
         // handed to every per-network `AppContext`.
         let app_kv = AppContext::open_app_kv(&data_dir)?;
-        let settings = match app_kv.get::<AppSettings>(None, AppSettings::KV_KEY) {
+        let settings = match app_kv.get::<AppSettings>(DetScope::Global, AppSettings::KV_KEY) {
             Ok(Some(s)) => s,
             Ok(None) => AppSettings::default(),
             Err(e) => {

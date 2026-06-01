@@ -26,8 +26,8 @@ use crate::model::single_key::ImportedKey;
 use crate::model::wallet::single_key::{
     ClosedSingleKey, OpenSingleKey, SingleKeyData, SingleKeyHash, SingleKeyWallet,
 };
-use crate::wallet_backend::DetKv;
 use crate::wallet_backend::single_key_entry::SingleKeyEntry;
+use crate::wallet_backend::{DetKv, DetScope};
 
 /// Minimum length (in characters) for a per-key passphrase. Mirrors
 /// NIST 800-63B / OWASP ASVS 6.2.1's minimum recommendation. The
@@ -218,7 +218,7 @@ impl<'a> SingleKeyView<'a> {
 
         if let Some(kv) = self.app_kv {
             let key = meta_key_for(self.network, &address_str);
-            kv.put(None, &key, &imported)
+            kv.put(DetScope::Global, &key, &imported)
                 .map_err(|source| TaskError::SingleKeyMetaStorage {
                     source: Box::new(source),
                 })?;
@@ -336,10 +336,11 @@ impl<'a> SingleKeyView<'a> {
             })?;
         if let Some(kv) = self.app_kv {
             let key = meta_key_for(self.network, address);
-            kv.delete(None, &key)
-                .map_err(|source| TaskError::SingleKeyMetaStorage {
+            kv.delete(DetScope::Global, &key).map_err(|source| {
+                TaskError::SingleKeyMetaStorage {
                     source: Box::new(source),
-                })?;
+                }
+            })?;
         }
         self.index
             .write()
@@ -357,7 +358,7 @@ impl<'a> SingleKeyView<'a> {
             return Vec::new();
         };
         let prefix = meta_prefix_for(self.network);
-        let keys = match kv.list(None, Some(&prefix)) {
+        let keys = match kv.list(DetScope::Global, Some(&prefix)) {
             Ok(k) => k,
             Err(e) => {
                 tracing::warn!(
@@ -371,7 +372,7 @@ impl<'a> SingleKeyView<'a> {
         };
         let mut out = Vec::with_capacity(keys.len());
         for key in keys {
-            match kv.get::<ImportedKey>(None, &key) {
+            match kv.get::<ImportedKey>(DetScope::Global, &key) {
                 Ok(Some(meta)) => out.push(meta),
                 Ok(None) => {}
                 Err(e) => {
@@ -828,9 +829,8 @@ mod tests {
     }
 
     /// In-memory `KvStore` adapter shared by the sidecar tests below.
-    /// Mirrors the upstream `SqlitePersister` semantics across the
-    /// `get`/`put`/`delete`/`list_keys` surface the [`DetKv`] adapter
-    /// exercises.
+    /// The single-key sidecar is global-only, so the fake asserts every
+    /// call lands in [`ObjectId::Global`] and stores under a flat map.
     #[derive(Default)]
     struct InMemoryKv {
         global: std::sync::Mutex<std::collections::BTreeMap<String, Vec<u8>>>,
@@ -839,19 +839,27 @@ mod tests {
     impl platform_wallet_storage::KvStore for InMemoryKv {
         fn get(
             &self,
-            wallet_id: Option<&platform_wallet::wallet::platform_wallet::WalletId>,
+            scope: &platform_wallet_storage::ObjectId,
             key: &str,
         ) -> Result<Option<Vec<u8>>, platform_wallet_storage::KvError> {
-            assert!(wallet_id.is_none(), "single-key sidecar uses global scope");
+            assert_eq!(
+                scope,
+                &platform_wallet_storage::ObjectId::Global,
+                "single-key sidecar uses global scope"
+            );
             Ok(self.global.lock().unwrap().get(key).cloned())
         }
         fn put(
             &self,
-            wallet_id: Option<&platform_wallet::wallet::platform_wallet::WalletId>,
+            scope: &platform_wallet_storage::ObjectId,
             key: &str,
             value: &[u8],
         ) -> Result<(), platform_wallet_storage::KvError> {
-            assert!(wallet_id.is_none(), "single-key sidecar uses global scope");
+            assert_eq!(
+                scope,
+                &platform_wallet_storage::ObjectId::Global,
+                "single-key sidecar uses global scope"
+            );
             self.global
                 .lock()
                 .unwrap()
@@ -860,19 +868,27 @@ mod tests {
         }
         fn delete(
             &self,
-            wallet_id: Option<&platform_wallet::wallet::platform_wallet::WalletId>,
+            scope: &platform_wallet_storage::ObjectId,
             key: &str,
         ) -> Result<(), platform_wallet_storage::KvError> {
-            assert!(wallet_id.is_none(), "single-key sidecar uses global scope");
+            assert_eq!(
+                scope,
+                &platform_wallet_storage::ObjectId::Global,
+                "single-key sidecar uses global scope"
+            );
             self.global.lock().unwrap().remove(key);
             Ok(())
         }
         fn list_keys(
             &self,
-            wallet_id: Option<&platform_wallet::wallet::platform_wallet::WalletId>,
+            scope: &platform_wallet_storage::ObjectId,
             prefix: Option<&str>,
         ) -> Result<Vec<String>, platform_wallet_storage::KvError> {
-            assert!(wallet_id.is_none(), "single-key sidecar uses global scope");
+            assert_eq!(
+                scope,
+                &platform_wallet_storage::ObjectId::Global,
+                "single-key sidecar uses global scope"
+            );
             let g = self.global.lock().unwrap();
             let it = g
                 .keys()
@@ -929,11 +945,14 @@ mod tests {
             .import_wif(known_wif(), Some("primary".into()))
             .expect("import");
         let prefix = meta_prefix_for(network);
-        let keys = kv.list(None, Some(&prefix)).expect("list");
+        let keys = kv.list(DetScope::Global, Some(&prefix)).expect("list");
         assert_eq!(keys.len(), 1, "exactly one sidecar entry");
         assert_eq!(keys[0], meta_key_for(network, &imported.address));
 
-        let stored: ImportedKey = kv.get(None, &keys[0]).expect("get").expect("entry present");
+        let stored: ImportedKey = kv
+            .get(DetScope::Global, &keys[0])
+            .expect("get")
+            .expect("entry present");
         assert_eq!(stored, imported);
     }
 
@@ -962,7 +981,7 @@ mod tests {
         view.forget(&imported.address).expect("forget twice");
 
         let prefix = meta_prefix_for(network);
-        let keys = kv.list(None, Some(&prefix)).expect("list");
+        let keys = kv.list(DetScope::Global, Some(&prefix)).expect("list");
         assert!(keys.is_empty(), "sidecar must be empty after forget");
         assert!(view.list().is_empty());
     }
@@ -1045,8 +1064,12 @@ mod tests {
             has_passphrase: false,
             passphrase_hint: None,
         };
-        kv.put(None, &meta_key_for(network, &orphan.address), &orphan)
-            .expect("put orphan");
+        kv.put(
+            DetScope::Global,
+            &meta_key_for(network, &orphan.address),
+            &orphan,
+        )
+        .expect("put orphan");
 
         let rebuilt = view.hydrate_wallets();
         assert_eq!(
@@ -1253,7 +1276,7 @@ mod tests {
             has_passphrase: false,
             passphrase_hint: None,
         };
-        kv.put(None, &meta_key_for(network, &address), &meta)
+        kv.put(DetScope::Global, &meta_key_for(network, &address), &meta)
             .expect("seed sidecar");
         view.rehydrate_index().expect("rehydrate");
 

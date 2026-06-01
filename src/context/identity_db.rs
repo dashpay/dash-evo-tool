@@ -3,6 +3,7 @@ use crate::backend_task::contested_names::ScheduledDPNSVote;
 use crate::backend_task::error::TaskError;
 use crate::model::qualified_identity::{DPNSNameInfo, IdentityStatus, QualifiedIdentity};
 use crate::model::wallet::{Wallet, WalletSeedHash};
+use crate::wallet_backend::DetScope;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
@@ -193,7 +194,7 @@ impl AppContext {
             wallet_index,
         };
         kv.put(
-            None,
+            DetScope::Global,
             &identity_key(&qualified_identity.identity.id()),
             &stored,
         )
@@ -211,7 +212,7 @@ impl AppContext {
         let kv = self.identity_kv()?;
         let key = identity_key(&qualified_identity.identity.id());
         let existing: Option<StoredQualifiedIdentity> = kv
-            .get(None, &key)
+            .get(DetScope::Global, &key)
             .map_err(|source| TaskError::IdentityStorage { source })?;
         let (wallet_hash, wallet_index) = existing
             .as_ref()
@@ -224,7 +225,7 @@ impl AppContext {
             wallet_hash,
             wallet_index,
         };
-        kv.put(None, &key, &stored)
+        kv.put(DetScope::Global, &key, &stored)
             .map_err(|source| TaskError::IdentityStorage { source })
     }
 
@@ -239,7 +240,7 @@ impl AppContext {
         let kv = self.identity_kv()?;
         let key = identity_key(identifier);
         let Some(mut stored) = kv
-            .get::<StoredQualifiedIdentity>(None, &key)
+            .get::<StoredQualifiedIdentity>(DetScope::Global, &key)
             .map_err(|source| TaskError::IdentityStorage { source })?
         else {
             return Ok(());
@@ -247,7 +248,7 @@ impl AppContext {
         let mut qi = decode_stored_identity(&stored.qi_bytes, self.network)?;
         qi.alias = new_alias.map(str::to_string);
         stored.qi_bytes = qi.to_bytes();
-        kv.put(None, &key, &stored)
+        kv.put(DetScope::Global, &key, &stored)
             .map_err(|source| TaskError::IdentityStorage { source })
     }
 
@@ -258,7 +259,7 @@ impl AppContext {
     ) -> std::result::Result<Option<String>, TaskError> {
         let kv = self.identity_kv()?;
         let Some(stored) = kv
-            .get::<StoredQualifiedIdentity>(None, &identity_key(identifier))
+            .get::<StoredQualifiedIdentity>(DetScope::Global, &identity_key(identifier))
             .map_err(|source| TaskError::IdentityStorage { source })?
         else {
             return Ok(None);
@@ -313,13 +314,13 @@ impl AppContext {
     {
         let kv = self.identity_kv()?;
         let mut keys = kv
-            .list(None, Some(IDENTITY_KEY_PREFIX))
+            .list(DetScope::Global, Some(IDENTITY_KEY_PREFIX))
             .map_err(|source| TaskError::IdentityStorage { source })?;
         keys.sort();
         let mut out = Vec::with_capacity(keys.len());
         for key in keys {
             let Some(stored) = kv
-                .get::<StoredQualifiedIdentity>(None, &key)
+                .get::<StoredQualifiedIdentity>(DetScope::Global, &key)
                 .map_err(|source| TaskError::IdentityStorage { source })?
             else {
                 continue;
@@ -349,7 +350,7 @@ impl AppContext {
         let key = top_ups_key(&identity.identity.id());
         match backend
             .kv()
-            .get::<std::collections::BTreeMap<u32, u64>>(None, &key)
+            .get::<std::collections::BTreeMap<u32, u64>>(DetScope::Global, &key)
         {
             Ok(Some(map)) => identity.top_ups = map,
             Ok(None) => {}
@@ -373,7 +374,7 @@ impl AppContext {
         let backend = self.wallet_backend()?;
         backend
             .kv()
-            .put(None, &top_ups_key(identity_id), top_ups)
+            .put(DetScope::Global, &top_ups_key(identity_id), top_ups)
             .map_err(|source| TaskError::TopUpHistoryStorage { source })
     }
 
@@ -383,7 +384,7 @@ impl AppContext {
     ) -> std::result::Result<Option<QualifiedIdentity>, TaskError> {
         let kv = self.identity_kv()?;
         let Some(stored) = kv
-            .get::<StoredQualifiedIdentity>(None, &identity_key(identity_id))
+            .get::<StoredQualifiedIdentity>(DetScope::Global, &identity_key(identity_id))
             .map_err(|source| TaskError::IdentityStorage { source })?
         else {
             return Ok(None);
@@ -426,7 +427,7 @@ impl AppContext {
         identifier: &Identifier,
     ) -> std::result::Result<(), TaskError> {
         let kv = self.identity_kv()?;
-        kv.delete(None, &identity_key(identifier))
+        kv.delete(DetScope::Global, &identity_key(identifier))
             .map_err(|source| TaskError::IdentityStorage { source })
     }
 
@@ -442,10 +443,10 @@ impl AppContext {
         }
         let kv = self.identity_kv()?;
         let keys = kv
-            .list(None, Some(IDENTITY_KEY_PREFIX))
+            .list(DetScope::Global, Some(IDENTITY_KEY_PREFIX))
             .map_err(|source| TaskError::IdentityStorage { source })?;
         for key in keys {
-            kv.delete(None, &key)
+            kv.delete(DetScope::Global, &key)
                 .map_err(|source| TaskError::IdentityStorage { source })?;
         }
         Ok(())
@@ -459,7 +460,7 @@ impl AppContext {
     ) -> std::result::Result<(), TaskError> {
         let kv = self.identity_kv()?;
         let payload: Vec<[u8; 32]> = all_ids.iter().map(Identifier::to_buffer).collect();
-        kv.put(None, IDENTITY_ORDER_KEY, &payload)
+        kv.put(DetScope::Global, IDENTITY_ORDER_KEY, &payload)
             .map_err(|source| TaskError::IdentityStorage { source })
     }
 
@@ -468,7 +469,7 @@ impl AppContext {
     pub fn load_identity_order(&self) -> std::result::Result<Vec<Identifier>, TaskError> {
         let kv = self.identity_kv()?;
         let Some(payload): Option<Vec<[u8; 32]>> = kv
-            .get(None, IDENTITY_ORDER_KEY)
+            .get(DetScope::Global, IDENTITY_ORDER_KEY)
             .map_err(|source| TaskError::IdentityStorage { source })?
         else {
             return Ok(Vec::new());
@@ -478,7 +479,7 @@ impl AppContext {
         for buf in payload {
             let id = Identifier::from(buf);
             let exists = kv
-                .get::<StoredQualifiedIdentity>(None, &identity_key(&id))
+                .get::<StoredQualifiedIdentity>(DetScope::Global, &identity_key(&id))
                 .map_err(|source| TaskError::IdentityStorage { source })?
                 .is_some();
             if exists {
@@ -489,7 +490,7 @@ impl AppContext {
         }
         if needs_rewrite {
             let payload: Vec<[u8; 32]> = kept.iter().map(Identifier::to_buffer).collect();
-            kv.put(None, IDENTITY_ORDER_KEY, &payload)
+            kv.put(DetScope::Global, IDENTITY_ORDER_KEY, &payload)
                 .map_err(|source| TaskError::IdentityStorage { source })?;
         }
         Ok(kept)
@@ -512,7 +513,7 @@ impl AppContext {
         for vote in scheduled_votes {
             let stored = StoredScheduledVote::from(vote);
             kv.put(
-                None,
+                DetScope::Global,
                 &scheduled_vote_key(&vote.voter_id, &vote.contested_name),
                 &stored,
             )
@@ -531,13 +532,13 @@ impl AppContext {
         let backend = self.wallet_backend()?;
         let kv = backend.kv();
         let keys = kv
-            .list(None, Some(SCHEDULED_VOTE_KEY_PREFIX))
+            .list(DetScope::Global, Some(SCHEDULED_VOTE_KEY_PREFIX))
             .map_err(
                 |source| crate::backend_task::error::TaskError::ScheduledVoteStorage { source },
             )?;
         let mut out = Vec::with_capacity(keys.len());
         for key in keys {
-            match kv.get::<StoredScheduledVote>(None, &key) {
+            match kv.get::<StoredScheduledVote>(DetScope::Global, &key) {
                 Ok(Some(stored)) => out.push(stored.into()),
                 Ok(None) => {}
                 Err(e) => {
@@ -559,12 +560,12 @@ impl AppContext {
         let backend = self.wallet_backend()?;
         let kv = backend.kv();
         let keys = kv
-            .list(None, Some(SCHEDULED_VOTE_KEY_PREFIX))
+            .list(DetScope::Global, Some(SCHEDULED_VOTE_KEY_PREFIX))
             .map_err(
                 |source| crate::backend_task::error::TaskError::ScheduledVoteStorage { source },
             )?;
         for key in keys {
-            kv.delete(None, &key).map_err(|source| {
+            kv.delete(DetScope::Global, &key).map_err(|source| {
                 crate::backend_task::error::TaskError::ScheduledVoteStorage { source }
             })?;
         }
@@ -578,14 +579,14 @@ impl AppContext {
         let backend = self.wallet_backend()?;
         let kv = backend.kv();
         let keys = kv
-            .list(None, Some(SCHEDULED_VOTE_KEY_PREFIX))
+            .list(DetScope::Global, Some(SCHEDULED_VOTE_KEY_PREFIX))
             .map_err(
                 |source| crate::backend_task::error::TaskError::ScheduledVoteStorage { source },
             )?;
         for key in keys {
-            match kv.get::<StoredScheduledVote>(None, &key) {
+            match kv.get::<StoredScheduledVote>(DetScope::Global, &key) {
                 Ok(Some(stored)) if stored.executed_successfully => {
-                    kv.delete(None, &key).map_err(|source| {
+                    kv.delete(DetScope::Global, &key).map_err(|source| {
                         crate::backend_task::error::TaskError::ScheduledVoteStorage { source }
                     })?;
                 }
@@ -610,7 +611,10 @@ impl AppContext {
         })?;
         backend
             .kv()
-            .delete(None, &scheduled_vote_key(&voter_id, contested_name))
+            .delete(
+                DetScope::Global,
+                &scheduled_vote_key(&voter_id, contested_name),
+            )
             .map_err(
                 |source| crate::backend_task::error::TaskError::ScheduledVoteStorage { source },
             )
@@ -631,14 +635,14 @@ impl AppContext {
         let key = scheduled_vote_key(&voter_id, &contested_name);
         let kv = backend.kv();
         let Some(mut stored): Option<StoredScheduledVote> =
-            kv.get(None, &key).map_err(|source| {
+            kv.get(DetScope::Global, &key).map_err(|source| {
                 crate::backend_task::error::TaskError::ScheduledVoteStorage { source }
             })?
         else {
             return Ok(());
         };
         stored.executed_successfully = true;
-        kv.put(None, &key, &stored).map_err(|source| {
+        kv.put(DetScope::Global, &key, &stored).map_err(|source| {
             crate::backend_task::error::TaskError::ScheduledVoteStorage { source }
         })
     }

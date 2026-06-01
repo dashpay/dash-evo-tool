@@ -6,7 +6,7 @@ use crate::model::spv_status::SpvStatus;
 use crate::model::wallet::meta::WalletMeta;
 use crate::model::wallet::seed_envelope::StoredSeedEnvelope;
 use crate::model::wallet::{DerivationPathReference, DerivationPathType, Wallet, WalletSeedHash};
-use crate::wallet_backend::WalletBackend;
+use crate::wallet_backend::{DetScope, WalletBackend};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 
@@ -31,10 +31,10 @@ impl AppContext {
         // case.
         if let Ok(backend) = self.wallet_backend() {
             let kv = backend.kv();
-            match kv.list(None, Some("det:dashpay:")) {
+            match kv.list(DetScope::Global, Some("det:dashpay:")) {
                 Ok(keys) => {
                     for k in keys {
-                        if let Err(e) = kv.delete(None, &k) {
+                        if let Err(e) = kv.delete(DetScope::Global, &k) {
                             tracing::warn!(key = %k, "DashPay sidecar delete failed: {e:?}");
                         }
                     }

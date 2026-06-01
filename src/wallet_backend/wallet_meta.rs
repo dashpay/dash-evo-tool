@@ -31,8 +31,8 @@ use dash_sdk::dpp::dashcore::base58;
 use crate::backend_task::error::TaskError;
 use crate::model::wallet::WalletSeedHash;
 use crate::model::wallet::meta::WalletMeta;
-use crate::wallet_backend::DetKv;
 use crate::wallet_backend::kv::KvAdapterError;
+use crate::wallet_backend::{DetKv, DetScope};
 
 /// Colon-separated namespace shared across networks. The full key is
 /// `<network>:wallet_meta:<seed_hash_base58>` — the prefix below is
@@ -89,7 +89,7 @@ impl<'a> WalletMetaView<'a> {
     /// shape change forces a review here.
     pub fn list(&self, network: Network) -> Vec<(WalletSeedHash, WalletMeta)> {
         let prefix = prefix_for(network);
-        let keys = match self.kv.list(None, Some(&prefix)) {
+        let keys = match self.kv.list(DetScope::Global, Some(&prefix)) {
             Ok(k) => k,
             Err(e) => {
                 tracing::warn!(
@@ -111,7 +111,7 @@ impl<'a> WalletMetaView<'a> {
                 );
                 continue;
             };
-            match self.kv.get::<WalletMeta>(None, &key) {
+            match self.kv.get::<WalletMeta>(DetScope::Global, &key) {
                 Ok(Some(meta)) => out.push((hash, meta)),
                 Ok(None) => {}
                 Err(e) => {
@@ -131,7 +131,7 @@ impl<'a> WalletMetaView<'a> {
     /// absent or the blob fails to decode (logged).
     pub fn get(&self, network: Network, seed_hash: &WalletSeedHash) -> Option<WalletMeta> {
         let key = key_for(network, seed_hash);
-        match self.kv.get::<WalletMeta>(None, &key) {
+        match self.kv.get::<WalletMeta>(DetScope::Global, &key) {
             Ok(v) => v,
             Err(e) => {
                 tracing::warn!(
@@ -155,7 +155,7 @@ impl<'a> WalletMetaView<'a> {
     ) -> Result<(), TaskError> {
         let key = key_for(network, seed_hash);
         self.kv
-            .put(None, &key, meta)
+            .put(DetScope::Global, &key, meta)
             .map_err(map_kv_error_to_task_error)
     }
 
@@ -164,7 +164,7 @@ impl<'a> WalletMetaView<'a> {
     pub fn delete(&self, network: Network, seed_hash: &WalletSeedHash) -> Result<(), TaskError> {
         let key = key_for(network, seed_hash);
         self.kv
-            .delete(None, &key)
+            .delete(DetScope::Global, &key)
             .map_err(map_kv_error_to_task_error)
     }
 }
@@ -191,94 +191,60 @@ fn parse_seed_hash(key: &str, prefix: &str) -> Option<WalletSeedHash> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
     use std::sync::Mutex;
 
-    use platform_wallet::wallet::platform_wallet::WalletId;
-    use platform_wallet_storage::{KvError, KvStore};
+    use platform_wallet_storage::{KvError, KvStore, ObjectId};
 
     /// Minimal in-memory `KvStore` — mirrors `kv.rs`'s test fixture so
-    /// the view tests can exercise list/get/set/delete without
-    /// touching the file system or building a `WalletBackend`.
+    /// the view tests can exercise list/get/set/delete without touching
+    /// the file system or building a `WalletBackend`. Models every
+    /// `ObjectId` scope FK-free via a flat `Vec` (upstream `ObjectId` is
+    /// not `Ord`, so it cannot key a map).
     #[derive(Default)]
     struct InMemoryKv {
-        global: Mutex<BTreeMap<String, Vec<u8>>>,
-        per_wallet: Mutex<BTreeMap<(WalletId, String), Vec<u8>>>,
+        slots: Mutex<Vec<(ObjectId, String, Vec<u8>)>>,
     }
 
     impl KvStore for InMemoryKv {
-        fn get(&self, wallet_id: Option<&WalletId>, key: &str) -> Result<Option<Vec<u8>>, KvError> {
-            match wallet_id {
-                None => Ok(self.global.lock().unwrap().get(key).cloned()),
-                Some(id) => Ok(self
-                    .per_wallet
-                    .lock()
-                    .unwrap()
-                    .get(&(*id, key.to_string()))
-                    .cloned()),
-            }
+        fn get(&self, scope: &ObjectId, key: &str) -> Result<Option<Vec<u8>>, KvError> {
+            Ok(self
+                .slots
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|(s, k, _)| s == scope && k == key)
+                .map(|(_, _, v)| v.clone()))
         }
-        fn put(
-            &self,
-            wallet_id: Option<&WalletId>,
-            key: &str,
-            value: &[u8],
-        ) -> Result<(), KvError> {
-            match wallet_id {
-                None => {
-                    self.global
-                        .lock()
-                        .unwrap()
-                        .insert(key.to_string(), value.to_vec());
-                }
-                Some(id) => {
-                    self.per_wallet
-                        .lock()
-                        .unwrap()
-                        .insert((*id, key.to_string()), value.to_vec());
-                }
+        fn put(&self, scope: &ObjectId, key: &str, value: &[u8]) -> Result<(), KvError> {
+            let mut slots = self.slots.lock().unwrap();
+            if let Some(slot) = slots.iter_mut().find(|(s, k, _)| s == scope && k == key) {
+                slot.2 = value.to_vec();
+            } else {
+                slots.push((scope.clone(), key.to_string(), value.to_vec()));
             }
             Ok(())
         }
-        fn delete(&self, wallet_id: Option<&WalletId>, key: &str) -> Result<(), KvError> {
-            match wallet_id {
-                None => {
-                    self.global.lock().unwrap().remove(key);
-                }
-                Some(id) => {
-                    self.per_wallet
-                        .lock()
-                        .unwrap()
-                        .remove(&(*id, key.to_string()));
-                }
-            }
+        fn delete(&self, scope: &ObjectId, key: &str) -> Result<(), KvError> {
+            self.slots
+                .lock()
+                .unwrap()
+                .retain(|(s, k, _)| !(s == scope && k == key));
             Ok(())
         }
         fn list_keys(
             &self,
-            wallet_id: Option<&WalletId>,
+            scope: &ObjectId,
             prefix: Option<&str>,
         ) -> Result<Vec<String>, KvError> {
-            let pred = |k: &String| -> bool { prefix.is_none_or(|p| k.starts_with(p)) };
-            match wallet_id {
-                None => Ok(self
-                    .global
-                    .lock()
-                    .unwrap()
-                    .keys()
-                    .filter(|k| pred(k))
-                    .cloned()
-                    .collect()),
-                Some(id) => Ok(self
-                    .per_wallet
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .filter(|((wid, _), _)| wid == id)
-                    .map(|((_, k), _)| k.clone())
-                    .filter(|k| pred(k))
-                    .collect()),
-            }
+            let pred = |k: &str| -> bool { prefix.is_none_or(|p| k.starts_with(p)) };
+            Ok(self
+                .slots
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(s, k, _)| s == scope && pred(k))
+                .map(|(_, k, _)| k.clone())
+                .collect())
         }
     }
 
@@ -387,7 +353,7 @@ mod tests {
             .unwrap();
         store
             .put(
-                None,
+                DetScope::Global,
                 &format!("testnet{KEY_INFIX}!!!not-base58!!!"),
                 &meta("garbage", false, None),
             )

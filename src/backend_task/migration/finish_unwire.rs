@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::context::migration_status::{MigrationState, MigrationStep};
-use crate::wallet_backend::KvAdapterError;
+use crate::wallet_backend::{DetScope, KvAdapterError};
 
 /// Sentinel key format string. The migration body filters every
 /// legacy table by `WHERE network = ?1`, so the sentinel must mirror
@@ -1238,7 +1238,7 @@ fn read_sentinel(
     network: Network,
 ) -> Result<Option<MigrationCompletion>, MigrationError> {
     app_kv
-        .get::<MigrationCompletion>(None, &sentinel_key_for(network))
+        .get::<MigrationCompletion>(DetScope::Global, &sentinel_key_for(network))
         .map_err(|e| MigrationError::Sentinel { source: e })
 }
 
@@ -1255,7 +1255,7 @@ fn write_sentinel(
         network_count,
     };
     app_kv
-        .put(None, &sentinel_key_for(network), &completion)
+        .put(DetScope::Global, &sentinel_key_for(network), &completion)
         .map_err(|e| MigrationError::Sentinel { source: e })
 }
 
@@ -1279,92 +1279,58 @@ mod tests {
     use super::*;
     use crate::model::wallet::WalletSeedHash;
     use crate::wallet_backend::DetKv;
-    use platform_wallet::wallet::platform_wallet::WalletId;
-    use platform_wallet_storage::{KvError, KvStore};
-    use std::collections::BTreeMap;
+    use platform_wallet_storage::{KvError, KvStore, ObjectId};
     use std::sync::Mutex;
 
     /// Minimal in-memory `KvStore` that mirrors the shape used by the
-    /// real `SqlitePersister` for adapter tests.
+    /// real `SqlitePersister` for adapter tests. Models every `ObjectId`
+    /// scope FK-free via a flat `Vec` (upstream `ObjectId` is not `Ord`,
+    /// so it cannot key a map).
     #[derive(Default)]
     struct InMemoryKv {
-        global: Mutex<BTreeMap<String, Vec<u8>>>,
-        per_wallet: Mutex<BTreeMap<(WalletId, String), Vec<u8>>>,
+        slots: Mutex<Vec<(ObjectId, String, Vec<u8>)>>,
     }
 
     impl KvStore for InMemoryKv {
-        fn get(&self, wallet_id: Option<&WalletId>, key: &str) -> Result<Option<Vec<u8>>, KvError> {
-            match wallet_id {
-                None => Ok(self.global.lock().unwrap().get(key).cloned()),
-                Some(id) => Ok(self
-                    .per_wallet
-                    .lock()
-                    .unwrap()
-                    .get(&(*id, key.to_string()))
-                    .cloned()),
-            }
+        fn get(&self, scope: &ObjectId, key: &str) -> Result<Option<Vec<u8>>, KvError> {
+            Ok(self
+                .slots
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|(s, k, _)| s == scope && k == key)
+                .map(|(_, _, v)| v.clone()))
         }
-        fn put(
-            &self,
-            wallet_id: Option<&WalletId>,
-            key: &str,
-            value: &[u8],
-        ) -> Result<(), KvError> {
-            match wallet_id {
-                None => {
-                    self.global
-                        .lock()
-                        .unwrap()
-                        .insert(key.to_string(), value.to_vec());
-                }
-                Some(id) => {
-                    self.per_wallet
-                        .lock()
-                        .unwrap()
-                        .insert((*id, key.to_string()), value.to_vec());
-                }
+        fn put(&self, scope: &ObjectId, key: &str, value: &[u8]) -> Result<(), KvError> {
+            let mut slots = self.slots.lock().unwrap();
+            if let Some(slot) = slots.iter_mut().find(|(s, k, _)| s == scope && k == key) {
+                slot.2 = value.to_vec();
+            } else {
+                slots.push((scope.clone(), key.to_string(), value.to_vec()));
             }
             Ok(())
         }
-        fn delete(&self, wallet_id: Option<&WalletId>, key: &str) -> Result<(), KvError> {
-            match wallet_id {
-                None => {
-                    self.global.lock().unwrap().remove(key);
-                }
-                Some(id) => {
-                    self.per_wallet
-                        .lock()
-                        .unwrap()
-                        .remove(&(*id, key.to_string()));
-                }
-            }
+        fn delete(&self, scope: &ObjectId, key: &str) -> Result<(), KvError> {
+            self.slots
+                .lock()
+                .unwrap()
+                .retain(|(s, k, _)| !(s == scope && k == key));
             Ok(())
         }
         fn list_keys(
             &self,
-            wallet_id: Option<&WalletId>,
+            scope: &ObjectId,
             prefix: Option<&str>,
         ) -> Result<Vec<String>, KvError> {
-            let take_prefixed = |keys: Vec<String>| -> Vec<String> {
-                match prefix {
-                    Some(p) => keys.into_iter().filter(|k| k.starts_with(p)).collect(),
-                    None => keys,
-                }
-            };
-            match wallet_id {
-                None => Ok(take_prefixed(
-                    self.global.lock().unwrap().keys().cloned().collect(),
-                )),
-                Some(id) => Ok(take_prefixed(
-                    self.per_wallet
-                        .lock()
-                        .unwrap()
-                        .keys()
-                        .filter(|(wid, _)| wid == id)
-                        .map(|(_, k)| k.clone())
-                        .collect(),
-                )),
-            }
+            let pred = |k: &str| -> bool { prefix.is_none_or(|p| k.starts_with(p)) };
+            Ok(self
+                .slots
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(s, k, _)| s == scope && pred(k))
+                .map(|(_, k, _)| k.clone())
+                .collect())
         }
     }
 
@@ -1386,8 +1352,12 @@ mod tests {
             sha: "test-sha".into(),
             network_count: 1,
         };
-        kv.put(None, &sentinel_key_for(Network::Testnet), &original)
-            .expect("seed sentinel");
+        kv.put(
+            DetScope::Global,
+            &sentinel_key_for(Network::Testnet),
+            &original,
+        )
+        .expect("seed sentinel");
 
         // Reading the sentinel back via the same path the orchestrator
         // uses is the contractual short-circuit hook. If this returns

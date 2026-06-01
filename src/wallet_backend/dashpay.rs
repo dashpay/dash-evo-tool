@@ -50,8 +50,8 @@ use crate::model::dashpay::{
     ContactAddressIndex, ContactPrivateInfo, StoredContact, StoredContactRequest, StoredPayment,
     StoredProfile,
 };
-use crate::wallet_backend::WalletBackend;
 use crate::wallet_backend::kv::DetKv;
+use crate::wallet_backend::{DetScope, WalletBackend};
 
 // ---------------------------------------------------------------------------
 // K/V sidecar key prefixes
@@ -449,7 +449,7 @@ pub(super) fn increment_send_index_locked(
 
     let key = pair_sidecar_key(KV_PREFIX_ADDRESS_INDEX, owner, contact);
     let mut state: ContactAddressIndex = kv
-        .get::<ContactAddressIndex>(None, &key)
+        .get::<ContactAddressIndex>(DetScope::Global, &key)
         .map_err(|e| TaskError::DashpaySidecarStorage { source: e })?
         .unwrap_or_else(|| ContactAddressIndex {
             owner_identity_id: owner.to_buffer().to_vec(),
@@ -460,7 +460,7 @@ pub(super) fn increment_send_index_locked(
         });
     let value = state.next_send_index;
     state.next_send_index = state.next_send_index.saturating_add(1);
-    kv.put::<ContactAddressIndex>(None, &key, &state)
+    kv.put::<ContactAddressIndex>(DetScope::Global, &key, &state)
         .map_err(|e| TaskError::DashpaySidecarStorage { source: e })?;
     Ok(value)
 }
@@ -500,12 +500,15 @@ fn addr_map_sidecar_key(owner: &Identifier, address: &str) -> String {
 
 fn kv_contains(kv: &DetKv, prefix: &str, id: &Identifier) -> bool {
     // Presence-only entries: value is `()`. `Ok(Some(_))` ⇒ present.
-    matches!(kv.get::<()>(None, &sidecar_key(prefix, id)), Ok(Some(())))
+    matches!(
+        kv.get::<()>(DetScope::Global, &sidecar_key(prefix, id)),
+        Ok(Some(()))
+    )
 }
 
 fn kv_timestamps(kv: &DetKv, id: &Identifier) -> (i64, i64) {
     let key = sidecar_key(KV_PREFIX_TIMESTAMPS, id);
-    match kv.get::<(i64, i64)>(None, &key) {
+    match kv.get::<(i64, i64)>(DetScope::Global, &key) {
         Ok(Some(ts)) => ts,
         // Missing or decode error → safe default. Fresh users on a
         // pre-D3 build will hit this; an explicit log is intentional
@@ -525,7 +528,7 @@ fn kv_timestamps(kv: &DetKv, id: &Identifier) -> (i64, i64) {
 
 fn kv_payment_timestamps(kv: &DetKv, tx_id: &str) -> (i64, Option<i64>) {
     let key = format!("{KV_PREFIX_TIMESTAMPS}tx:{tx_id}");
-    match kv.get::<(i64, Option<i64>)>(None, &key) {
+    match kv.get::<(i64, Option<i64>)>(DetScope::Global, &key) {
         Ok(Some(ts)) => ts,
         Ok(None) => (0, None),
         Err(e) => {
@@ -638,7 +641,7 @@ impl WalletBackend {
     pub fn dashpay_mark_blocked(&self, contact_id: &Identifier) -> Result<(), TaskError> {
         let key = sidecar_key(KV_PREFIX_BLOCKED, contact_id);
         self.kv()
-            .put::<()>(None, &key, &())
+            .put::<()>(DetScope::Global, &key, &())
             .map_err(|e| TaskError::DashpaySidecarStorage { source: e })
     }
 
@@ -647,7 +650,7 @@ impl WalletBackend {
     pub fn dashpay_unmark_blocked(&self, contact_id: &Identifier) -> Result<(), TaskError> {
         let key = sidecar_key(KV_PREFIX_BLOCKED, contact_id);
         self.kv()
-            .delete(None, &key)
+            .delete(DetScope::Global, &key)
             .map_err(|e| TaskError::DashpaySidecarStorage { source: e })
     }
 
@@ -658,7 +661,7 @@ impl WalletBackend {
     pub fn dashpay_mark_rejected(&self, counterparty_id: &Identifier) -> Result<(), TaskError> {
         let key = sidecar_key(KV_PREFIX_REJECTED, counterparty_id);
         self.kv()
-            .put::<()>(None, &key, &())
+            .put::<()>(DetScope::Global, &key, &())
             .map_err(|e| TaskError::DashpaySidecarStorage { source: e })
     }
 
@@ -673,7 +676,7 @@ impl WalletBackend {
     ) -> Result<(), TaskError> {
         let key = sidecar_key(KV_PREFIX_TIMESTAMPS, entity_id);
         self.kv()
-            .put::<(i64, i64)>(None, &key, &(created_at, updated_at))
+            .put::<(i64, i64)>(DetScope::Global, &key, &(created_at, updated_at))
             .map_err(|e| TaskError::DashpaySidecarStorage { source: e })
     }
 
@@ -689,7 +692,7 @@ impl WalletBackend {
     ) -> Result<(), TaskError> {
         let key = format!("{KV_PREFIX_TIMESTAMPS}tx:{tx_id}");
         self.kv()
-            .put::<(i64, Option<i64>)>(None, &key, &(created_at, confirmed_at))
+            .put::<(i64, Option<i64>)>(DetScope::Global, &key, &(created_at, confirmed_at))
             .map_err(|e| TaskError::DashpaySidecarStorage { source: e })
     }
 
@@ -703,7 +706,7 @@ impl WalletBackend {
     ) -> Result<Option<ContactPrivateInfo>, TaskError> {
         let key = pair_sidecar_key(KV_PREFIX_PRIVATE, owner, contact);
         self.kv()
-            .get::<ContactPrivateInfo>(None, &key)
+            .get::<ContactPrivateInfo>(DetScope::Global, &key)
             .map_err(|e| TaskError::DashpaySidecarStorage { source: e })
     }
 
@@ -716,7 +719,7 @@ impl WalletBackend {
     ) -> Result<(), TaskError> {
         let key = pair_sidecar_key(KV_PREFIX_PRIVATE, owner, contact);
         self.kv()
-            .put::<ContactPrivateInfo>(None, &key, info)
+            .put::<ContactPrivateInfo>(DetScope::Global, &key, info)
             .map_err(|e| TaskError::DashpaySidecarStorage { source: e })
     }
 
@@ -730,7 +733,7 @@ impl WalletBackend {
     ) -> Result<Option<ContactAddressIndex>, TaskError> {
         let key = pair_sidecar_key(KV_PREFIX_ADDRESS_INDEX, owner, contact);
         self.kv()
-            .get::<ContactAddressIndex>(None, &key)
+            .get::<ContactAddressIndex>(DetScope::Global, &key)
             .map_err(|e| TaskError::DashpaySidecarStorage { source: e })
     }
 
@@ -748,7 +751,7 @@ impl WalletBackend {
     ) -> Result<(), TaskError> {
         let key = pair_sidecar_key(KV_PREFIX_ADDRESS_INDEX, owner, contact);
         self.kv()
-            .put::<ContactAddressIndex>(None, &key, index)
+            .put::<ContactAddressIndex>(DetScope::Global, &key, index)
             .map_err(|e| TaskError::DashpaySidecarStorage { source: e })
     }
 
@@ -791,7 +794,7 @@ impl WalletBackend {
         let key = addr_map_sidecar_key(owner, address);
         let value: Option<([u8; 32], u32)> = self
             .kv()
-            .get::<([u8; 32], u32)>(None, &key)
+            .get::<([u8; 32], u32)>(DetScope::Global, &key)
             .map_err(|e| TaskError::DashpaySidecarStorage { source: e })?;
         Ok(value.map(|(bytes, idx)| (Identifier::from(bytes), idx)))
     }
@@ -809,7 +812,11 @@ impl WalletBackend {
     ) -> Result<(), TaskError> {
         let key = addr_map_sidecar_key(owner, address);
         self.kv()
-            .put::<([u8; 32], u32)>(None, &key, &(contact.to_buffer(), address_index))
+            .put::<([u8; 32], u32)>(
+                DetScope::Global,
+                &key,
+                &(contact.to_buffer(), address_index),
+            )
             .map_err(|e| TaskError::DashpaySidecarStorage { source: e })
     }
 
@@ -1014,8 +1021,12 @@ mod tests {
     fn rejected_request_status_reads_sidecar_when_present() {
         let kv = empty_kv();
         let counterparty = id_from_byte(2);
-        kv.put::<()>(None, &sidecar_key(KV_PREFIX_REJECTED, &counterparty), &())
-            .unwrap();
+        kv.put::<()>(
+            DetScope::Global,
+            &sidecar_key(KV_PREFIX_REJECTED, &counterparty),
+            &(),
+        )
+        .unwrap();
         let now_ms: u64 = 1_000_000_000_000;
         let created_at_ms: u64 = now_ms - 60_000;
         assert_eq!(
@@ -1058,8 +1069,12 @@ mod tests {
         let kv = empty_kv();
         let owner = id_from_byte(1);
         let contact_id = id_from_byte(2);
-        kv.put::<()>(None, &sidecar_key(KV_PREFIX_BLOCKED, &contact_id), &())
-            .unwrap();
+        kv.put::<()>(
+            DetScope::Global,
+            &sidecar_key(KV_PREFIX_BLOCKED, &contact_id),
+            &(),
+        )
+        .unwrap();
 
         let mut contact =
             EstablishedContact::new(contact_id, mk_request(1, 2, 100), mk_request(2, 1, 200));
@@ -1086,8 +1101,12 @@ mod tests {
     fn timestamps_round_trip_through_sidecar() {
         let kv = empty_kv();
         let id = id_from_byte(2);
-        kv.put::<(i64, i64)>(None, &sidecar_key(KV_PREFIX_TIMESTAMPS, &id), &(111, 222))
-            .unwrap();
+        kv.put::<(i64, i64)>(
+            DetScope::Global,
+            &sidecar_key(KV_PREFIX_TIMESTAMPS, &id),
+            &(111, 222),
+        )
+        .unwrap();
         assert_eq!(kv_timestamps(&kv, &id), (111, 222));
     }
 
@@ -1096,7 +1115,7 @@ mod tests {
         let kv = empty_kv();
         let tx_id = "tx-xyz";
         kv.put::<(i64, Option<i64>)>(
-            None,
+            DetScope::Global,
             &format!("{KV_PREFIX_TIMESTAMPS}tx:{tx_id}"),
             &(100, Some(200)),
         )
@@ -1119,13 +1138,17 @@ mod tests {
         let kv = empty_kv();
         let contact = id_from_byte(7);
         // What `dashpay_mark_blocked` writes:
-        kv.put::<()>(None, &sidecar_key(KV_PREFIX_BLOCKED, &contact), &())
-            .unwrap();
+        kv.put::<()>(
+            DetScope::Global,
+            &sidecar_key(KV_PREFIX_BLOCKED, &contact),
+            &(),
+        )
+        .unwrap();
         // What `DashpayView::contacts` reads:
         assert!(kv_contains(&kv, KV_PREFIX_BLOCKED, &contact));
 
         // And `dashpay_unmark_blocked` (delete) clears it.
-        kv.delete(None, &sidecar_key(KV_PREFIX_BLOCKED, &contact))
+        kv.delete(DetScope::Global, &sidecar_key(KV_PREFIX_BLOCKED, &contact))
             .unwrap();
         assert!(!kv_contains(&kv, KV_PREFIX_BLOCKED, &contact));
     }
@@ -1135,8 +1158,12 @@ mod tests {
         let kv = empty_kv();
         let counterparty = id_from_byte(8);
         // What `dashpay_mark_rejected` writes:
-        kv.put::<()>(None, &sidecar_key(KV_PREFIX_REJECTED, &counterparty), &())
-            .unwrap();
+        kv.put::<()>(
+            DetScope::Global,
+            &sidecar_key(KV_PREFIX_REJECTED, &counterparty),
+            &(),
+        )
+        .unwrap();
         // What `derive_request_status` reads:
         assert!(kv_contains(&kv, KV_PREFIX_REJECTED, &counterparty));
 
@@ -1154,7 +1181,7 @@ mod tests {
         let entity = id_from_byte(9);
         // What `dashpay_set_timestamps` writes:
         kv.put::<(i64, i64)>(
-            None,
+            DetScope::Global,
             &sidecar_key(KV_PREFIX_TIMESTAMPS, &entity),
             &(123, 456),
         )
@@ -1169,7 +1196,7 @@ mod tests {
         let tx_id = "abcd1234";
         // What `dashpay_set_payment_timestamps` writes:
         kv.put::<(i64, Option<i64>)>(
-            None,
+            DetScope::Global,
             &format!("{KV_PREFIX_TIMESTAMPS}tx:{tx_id}"),
             &(789, Some(1000)),
         )
@@ -1195,8 +1222,12 @@ mod tests {
         contact.set_alias("Pal".into());
 
         // What `dashpay_mark_blocked(&contact_id)` writes:
-        kv.put::<()>(None, &sidecar_key(KV_PREFIX_BLOCKED, &contact_id), &())
-            .unwrap();
+        kv.put::<()>(
+            DetScope::Global,
+            &sidecar_key(KV_PREFIX_BLOCKED, &contact_id),
+            &(),
+        )
+        .unwrap();
 
         // What the view derivation produces — same precedence as
         // `DashpayView::contacts`: blocked wins over accepted.
@@ -1218,8 +1249,12 @@ mod tests {
         // requests are not removed from `sent_contact_requests`).
         let kv = empty_kv();
         let counterparty = id_from_byte(2);
-        kv.put::<()>(None, &sidecar_key(KV_PREFIX_REJECTED, &counterparty), &())
-            .unwrap();
+        kv.put::<()>(
+            DetScope::Global,
+            &sidecar_key(KV_PREFIX_REJECTED, &counterparty),
+            &(),
+        )
+        .unwrap();
 
         let now_ms: u64 = 2_000_000_000_000;
         let created_at_ms: u64 = now_ms - 1_000;
@@ -1297,9 +1332,10 @@ mod tests {
             is_hidden: true,
         };
         let key = pair_sidecar_key(KV_PREFIX_PRIVATE, &owner, &contact);
-        kv.put::<ContactPrivateInfo>(None, &key, &info).unwrap();
+        kv.put::<ContactPrivateInfo>(DetScope::Global, &key, &info)
+            .unwrap();
         let got: ContactPrivateInfo = kv
-            .get::<ContactPrivateInfo>(None, &key)
+            .get::<ContactPrivateInfo>(DetScope::Global, &key)
             .unwrap()
             .expect("written value should round-trip");
         assert_eq!(got, info);
@@ -1311,7 +1347,11 @@ mod tests {
         let owner = id_from_byte(1);
         let contact = id_from_byte(2);
         let key = pair_sidecar_key(KV_PREFIX_PRIVATE, &owner, &contact);
-        assert!(kv.get::<ContactPrivateInfo>(None, &key).unwrap().is_none());
+        assert!(
+            kv.get::<ContactPrivateInfo>(DetScope::Global, &key)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -1327,9 +1367,10 @@ mod tests {
             bloom_registered_count: 20,
         };
         let key = pair_sidecar_key(KV_PREFIX_ADDRESS_INDEX, &owner, &contact);
-        kv.put::<ContactAddressIndex>(None, &key, &idx).unwrap();
+        kv.put::<ContactAddressIndex>(DetScope::Global, &key, &idx)
+            .unwrap();
         let got = kv
-            .get::<ContactAddressIndex>(None, &key)
+            .get::<ContactAddressIndex>(DetScope::Global, &key)
             .unwrap()
             .expect("written value should round-trip");
         assert_eq!(got.next_send_index, 7);
@@ -1347,9 +1388,10 @@ mod tests {
         // D4c extended the value schema to carry the address_index alongside
         // the contact id, so the incoming-payment detector can promote the
         // receive cursor without a separate lookup.
-        kv.put::<([u8; 32], u32)>(None, &key, &(contact.to_buffer(), 7))
+        kv.put::<([u8; 32], u32)>(DetScope::Global, &key, &(contact.to_buffer(), 7))
             .unwrap();
-        let got: Option<([u8; 32], u32)> = kv.get::<([u8; 32], u32)>(None, &key).unwrap();
+        let got: Option<([u8; 32], u32)> =
+            kv.get::<([u8; 32], u32)>(DetScope::Global, &key).unwrap();
         assert_eq!(got, Some((contact.to_buffer(), 7)));
     }
 
@@ -1411,7 +1453,7 @@ mod tests {
         // Final persisted counter advances to 100.
         let key = pair_sidecar_key(KV_PREFIX_ADDRESS_INDEX, &owner, &contact);
         let final_state: ContactAddressIndex = kv
-            .get::<ContactAddressIndex>(None, &key)
+            .get::<ContactAddressIndex>(DetScope::Global, &key)
             .expect("kv read")
             .expect("counter must have been initialized");
         assert_eq!(final_state.next_send_index, 100);
@@ -1436,30 +1478,38 @@ mod tests {
         let addr = "yXyqJv6gP2c8RXAhYQ7v6XwxSqUf7vXKfA";
 
         // Plant one of every overlay shape DashPay writes.
-        kv.put::<()>(None, &sidecar_key(KV_PREFIX_BLOCKED, &contact), &())
-            .unwrap();
-        kv.put::<()>(None, &sidecar_key(KV_PREFIX_REJECTED, &contact), &())
-            .unwrap();
+        kv.put::<()>(
+            DetScope::Global,
+            &sidecar_key(KV_PREFIX_BLOCKED, &contact),
+            &(),
+        )
+        .unwrap();
+        kv.put::<()>(
+            DetScope::Global,
+            &sidecar_key(KV_PREFIX_REJECTED, &contact),
+            &(),
+        )
+        .unwrap();
         kv.put::<(i64, i64)>(
-            None,
+            DetScope::Global,
             &sidecar_key(KV_PREFIX_TIMESTAMPS, &contact),
             &(111, 222),
         )
         .unwrap();
         kv.put::<(i64, Option<i64>)>(
-            None,
+            DetScope::Global,
             &format!("{KV_PREFIX_TIMESTAMPS}tx:abc123"),
             &(333, Some(444)),
         )
         .unwrap();
         kv.put::<ContactPrivateInfo>(
-            None,
+            DetScope::Global,
             &pair_sidecar_key(KV_PREFIX_PRIVATE, &owner, &contact),
             &ContactPrivateInfo::default(),
         )
         .unwrap();
         kv.put::<ContactAddressIndex>(
-            None,
+            DetScope::Global,
             &pair_sidecar_key(KV_PREFIX_ADDRESS_INDEX, &owner, &contact),
             &ContactAddressIndex {
                 owner_identity_id: owner.to_buffer().to_vec(),
@@ -1471,14 +1521,14 @@ mod tests {
         )
         .unwrap();
         kv.put::<([u8; 32], u32)>(
-            None,
+            DetScope::Global,
             &addr_map_sidecar_key(&owner, addr),
             &(contact.to_buffer(), 1),
         )
         .unwrap();
 
         let keys = kv
-            .list(None, Some("det:dashpay:"))
+            .list(DetScope::Global, Some("det:dashpay:"))
             .expect("sidecar listing must succeed");
         // 7 writes, each with a unique key.
         assert_eq!(keys.len(), 7, "every overlay must be enumerated: {keys:?}");
@@ -1499,10 +1549,14 @@ mod tests {
         let owner = id_from_byte(1);
         let contact = id_from_byte(2);
 
-        kv.put::<()>(None, &sidecar_key(KV_PREFIX_BLOCKED, &contact), &())
-            .unwrap();
+        kv.put::<()>(
+            DetScope::Global,
+            &sidecar_key(KV_PREFIX_BLOCKED, &contact),
+            &(),
+        )
+        .unwrap();
         kv.put::<ContactPrivateInfo>(
-            None,
+            DetScope::Global,
             &pair_sidecar_key(KV_PREFIX_PRIVATE, &owner, &contact),
             &ContactPrivateInfo {
                 nickname: "alice".into(),
@@ -1512,21 +1566,24 @@ mod tests {
         )
         .unwrap();
         // Drop one unrelated global key to confirm the sweep is scoped.
-        kv.put::<u32>(None, "mainnet:scheduled_votes:1", &7)
+        kv.put::<u32>(DetScope::Global, "mainnet:scheduled_votes:1", &7)
             .unwrap();
 
-        let keys = kv.list(None, Some("det:dashpay:")).unwrap();
+        let keys = kv.list(DetScope::Global, Some("det:dashpay:")).unwrap();
         for k in &keys {
-            kv.delete(None, k).unwrap();
+            kv.delete(DetScope::Global, k).unwrap();
         }
 
         assert!(
-            kv.list(None, Some("det:dashpay:")).unwrap().is_empty(),
+            kv.list(DetScope::Global, Some("det:dashpay:"))
+                .unwrap()
+                .is_empty(),
             "DashPay sidecar must be empty after the sweep"
         );
         // Unrelated key survives.
         assert_eq!(
-            kv.get::<u32>(None, "mainnet:scheduled_votes:1").unwrap(),
+            kv.get::<u32>(DetScope::Global, "mainnet:scheduled_votes:1")
+                .unwrap(),
             Some(7)
         );
     }
@@ -1537,12 +1594,14 @@ mod tests {
     #[test]
     fn d4d_prefix_sweep_skips_non_dashpay_keys() {
         let kv = empty_kv();
-        kv.put::<u32>(None, "mainnet:settings:v1", &1).unwrap();
-        kv.put::<u32>(None, "mainnet:shielded:sync_cursor", &2)
+        kv.put::<u32>(DetScope::Global, "mainnet:settings:v1", &1)
             .unwrap();
-        kv.put::<u32>(None, "det:other_domain:x", &3).unwrap();
+        kv.put::<u32>(DetScope::Global, "mainnet:shielded:sync_cursor", &2)
+            .unwrap();
+        kv.put::<u32>(DetScope::Global, "det:other_domain:x", &3)
+            .unwrap();
 
-        let keys = kv.list(None, Some("det:dashpay:")).unwrap();
+        let keys = kv.list(DetScope::Global, Some("det:dashpay:")).unwrap();
         assert!(
             keys.is_empty(),
             "prefix sweep must not see non-DashPay overlays: {keys:?}"
@@ -1554,93 +1613,57 @@ mod tests {
     // -------------------------------------------------------------------
 
     fn empty_kv() -> DetKv {
-        use platform_wallet::wallet::platform_wallet::WalletId;
-        use platform_wallet_storage::{KvError, KvStore};
-        use std::collections::BTreeMap;
+        use platform_wallet_storage::{KvError, KvStore, ObjectId};
         use std::sync::Mutex;
 
+        /// FK-free in-memory store modelling every `ObjectId` scope via a
+        /// flat `Vec` (upstream `ObjectId` is not `Ord`, so it cannot key
+        /// a map).
         #[derive(Default)]
         struct InMemoryKv {
-            global: Mutex<BTreeMap<String, Vec<u8>>>,
-            per_wallet: Mutex<BTreeMap<(WalletId, String), Vec<u8>>>,
+            slots: Mutex<Vec<(ObjectId, String, Vec<u8>)>>,
         }
 
         impl KvStore for InMemoryKv {
-            fn get(
-                &self,
-                wallet_id: Option<&WalletId>,
-                key: &str,
-            ) -> Result<Option<Vec<u8>>, KvError> {
-                match wallet_id {
-                    None => Ok(self.global.lock().unwrap().get(key).cloned()),
-                    Some(id) => Ok(self
-                        .per_wallet
-                        .lock()
-                        .unwrap()
-                        .get(&(*id, key.to_string()))
-                        .cloned()),
-                }
+            fn get(&self, scope: &ObjectId, key: &str) -> Result<Option<Vec<u8>>, KvError> {
+                Ok(self
+                    .slots
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .find(|(s, k, _)| s == scope && k == key)
+                    .map(|(_, _, v)| v.clone()))
             }
-            fn put(
-                &self,
-                wallet_id: Option<&WalletId>,
-                key: &str,
-                value: &[u8],
-            ) -> Result<(), KvError> {
-                match wallet_id {
-                    None => {
-                        self.global
-                            .lock()
-                            .unwrap()
-                            .insert(key.to_string(), value.to_vec());
-                    }
-                    Some(id) => {
-                        self.per_wallet
-                            .lock()
-                            .unwrap()
-                            .insert((*id, key.to_string()), value.to_vec());
-                    }
+            fn put(&self, scope: &ObjectId, key: &str, value: &[u8]) -> Result<(), KvError> {
+                let mut slots = self.slots.lock().unwrap();
+                if let Some(slot) = slots.iter_mut().find(|(s, k, _)| s == scope && k == key) {
+                    slot.2 = value.to_vec();
+                } else {
+                    slots.push((scope.clone(), key.to_string(), value.to_vec()));
                 }
                 Ok(())
             }
-            fn delete(&self, wallet_id: Option<&WalletId>, key: &str) -> Result<(), KvError> {
-                match wallet_id {
-                    None => {
-                        self.global.lock().unwrap().remove(key);
-                    }
-                    Some(id) => {
-                        self.per_wallet
-                            .lock()
-                            .unwrap()
-                            .remove(&(*id, key.to_string()));
-                    }
-                }
+            fn delete(&self, scope: &ObjectId, key: &str) -> Result<(), KvError> {
+                self.slots
+                    .lock()
+                    .unwrap()
+                    .retain(|(s, k, _)| !(s == scope && k == key));
                 Ok(())
             }
             fn list_keys(
                 &self,
-                wallet_id: Option<&WalletId>,
+                scope: &ObjectId,
                 prefix: Option<&str>,
             ) -> Result<Vec<String>, KvError> {
-                let prefix = prefix.unwrap_or("");
-                let mut keys: Vec<String> = match wallet_id {
-                    None => self
-                        .global
-                        .lock()
-                        .unwrap()
-                        .keys()
-                        .filter(|k| k.starts_with(prefix))
-                        .cloned()
-                        .collect(),
-                    Some(id) => self
-                        .per_wallet
-                        .lock()
-                        .unwrap()
-                        .iter()
-                        .filter(|((w, k), _)| w == id && k.starts_with(prefix))
-                        .map(|((_, k), _)| k.clone())
-                        .collect(),
-                };
+                let pred = |k: &str| -> bool { prefix.is_none_or(|p| k.starts_with(p)) };
+                let mut keys: Vec<String> = self
+                    .slots
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|(s, k, _)| s == scope && pred(k))
+                    .map(|(_, k, _)| k.clone())
+                    .collect();
                 keys.sort();
                 Ok(keys)
             }

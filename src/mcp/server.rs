@@ -219,7 +219,7 @@ pub async fn init_app_context() -> Result<Arc<AppContext>, McpError> {
         .map_err(|e| McpError::internal_error(format!("app k/v open: {e}"), None))?;
     let network = app_kv
         .get::<crate::model::settings::AppSettings>(
-            None,
+            crate::wallet_backend::DetScope::Global,
             crate::model::settings::AppSettings::KV_KEY,
         )
         .ok()

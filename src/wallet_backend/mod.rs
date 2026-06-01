@@ -28,6 +28,7 @@ pub mod hydration;
 pub(crate) mod hydration;
 mod kv;
 mod loader;
+mod platform_address;
 mod shielded;
 #[cfg(any(test, feature = "bench"))]
 pub mod single_key;
@@ -35,6 +36,7 @@ pub mod single_key;
 pub(crate) mod single_key;
 pub mod single_key_entry;
 mod snapshot;
+mod token_balance;
 #[cfg(any(test, feature = "bench"))]
 pub mod wallet_meta;
 #[cfg(not(any(test, feature = "bench")))]
@@ -51,11 +53,17 @@ pub use asset_lock_signer::AssetLockSignerError;
 use asset_lock_signer::WalletAssetLockSigner;
 
 pub use event_bridge::EventBridge;
-pub use kv::{DetKv, KvAdapterError, SCHEMA_VERSION as KV_SCHEMA_VERSION};
+pub use kv::{
+    DetKv, DetScope, KvAdapterError, ObjectKindLite, SCHEMA_VERSION as KV_SCHEMA_VERSION,
+};
 pub use loader::{PersistedWalletLoader, SeedReregistrationLoader, WalletRegistration};
+pub use platform_address::{
+    KvCachedPlatformAddresses, PlatformAddressView, UpstreamPlatformAddresses,
+};
 pub use single_key::SingleKeyView;
 use snapshot::SnapshotStore;
 pub use snapshot::{DetUtxo, DetWalletBalance, WalletSnapshot};
+pub use token_balance::{KvCachedTokenBalances, TokenBalanceView, UpstreamTokenBalances};
 pub use wallet_meta::WalletMetaView;
 pub use wallet_seed_store::WalletSeedView;
 
@@ -492,6 +500,22 @@ impl WalletBackend {
         DetKv::new(Arc::clone(&self.inner.persister))
     }
 
+    /// Per-address Platform funds + sync-cursor view (T5 seam). Returns
+    /// the ACTIVE k/v-cached impl; [`UpstreamPlatformAddresses`] is the
+    /// reserved swap target. See [`platform_address`] for why the cache
+    /// stays active on 08b0ed9 (upstream lacks a public nonce reader).
+    pub fn platform_addresses(&self) -> KvCachedPlatformAddresses {
+        KvCachedPlatformAddresses::new(self.kv())
+    }
+
+    /// Per-`(identity, token)` balance view (T6 seam). Returns the ACTIVE
+    /// k/v-cached impl; [`UpstreamTokenBalances`] is the reserved swap
+    /// target. See [`token_balance`] for why the cache stays active on
+    /// 08b0ed9 (no public per-token balance reader).
+    pub fn token_balances(&self) -> KvCachedTokenBalances {
+        KvCachedTokenBalances::new(self.kv())
+    }
+
     /// Shared handle to the encrypted secret store backing imported-key
     /// material. Most callers should reach for [`Self::single_key`]
     /// instead — this accessor exists for the migration engine
@@ -570,7 +594,7 @@ impl WalletBackend {
     pub fn get_selected_wallet(&self) -> SelectedWallet {
         match self
             .kv()
-            .get::<SelectedWallet>(None, SelectedWallet::KV_KEY)
+            .get::<SelectedWallet>(DetScope::Global, SelectedWallet::KV_KEY)
         {
             Ok(Some(s)) => s,
             Ok(None) => SelectedWallet::default(),
@@ -588,7 +612,8 @@ impl WalletBackend {
     /// Persist the [`SelectedWallet`] pointer to this network's wallet
     /// k/v store.
     pub fn set_selected_wallet(&self, selected: &SelectedWallet) -> Result<(), KvAdapterError> {
-        self.kv().put(None, SelectedWallet::KV_KEY, selected)
+        self.kv()
+            .put(DetScope::Global, SelectedWallet::KV_KEY, selected)
     }
 
     /// Broadcast a raw transaction over the network via the upstream

@@ -9,7 +9,7 @@
 use super::AppContext;
 use crate::backend_task::error::TaskError;
 use crate::model::contested_name::{ContestState, Contestant, ContestedName};
-use crate::wallet_backend::DetKv;
+use crate::wallet_backend::{DetKv, DetScope};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::data_contract::document_type::DocumentTypeRef;
 use dash_sdk::dpp::document::DocumentV0Getters;
@@ -132,11 +132,11 @@ impl AppContext {
     pub fn all_contested_names(&self) -> std::result::Result<Vec<ContestedName>, TaskError> {
         let kv = self.contest_kv()?;
         let keys = kv
-            .list(None, Some(CONTESTED_NAME_KEY_PREFIX))
+            .list(DetScope::Global, Some(CONTESTED_NAME_KEY_PREFIX))
             .map_err(|source| TaskError::ContestStorage { source })?;
         let mut out = Vec::with_capacity(keys.len());
         for key in keys {
-            match kv.get::<StoredContestedName>(None, &key) {
+            match kv.get::<StoredContestedName>(DetScope::Global, &key) {
                 Ok(Some(stored)) => out.push(stored.to_contested_name(self.network)),
                 Ok(None) => {}
                 Err(e) => tracing::warn!(
@@ -158,11 +158,11 @@ impl AppContext {
             .as_millis() as u64;
         let kv = self.contest_kv()?;
         let keys = kv
-            .list(None, Some(CONTESTED_NAME_KEY_PREFIX))
+            .list(DetScope::Global, Some(CONTESTED_NAME_KEY_PREFIX))
             .map_err(|source| TaskError::ContestStorage { source })?;
         let mut out = Vec::new();
         for key in keys {
-            match kv.get::<StoredContestedName>(None, &key) {
+            match kv.get::<StoredContestedName>(DetScope::Global, &key) {
                 Ok(Some(stored)) => match stored.end_time {
                     Some(t) if t <= current_timestamp => {}
                     _ => out.push(stored.to_contested_name(self.network)),
@@ -194,7 +194,7 @@ impl AppContext {
         for name in name_contests {
             let key = contested_name_key(&name);
             match kv
-                .get::<StoredContestedName>(None, &key)
+                .get::<StoredContestedName>(DetScope::Global, &key)
                 .map_err(|source| TaskError::ContestStorage { source })?
             {
                 None => {
@@ -202,7 +202,7 @@ impl AppContext {
                         normalized_contested_name: name.clone(),
                         ..Default::default()
                     };
-                    kv.put(None, &key, &stored)
+                    kv.put(DetScope::Global, &key, &stored)
                         .map_err(|source| TaskError::ContestStorage { source })?;
                     new_names.push(name);
                 }
@@ -237,7 +237,7 @@ impl AppContext {
         let last_updated = chrono::Utc::now().timestamp() as u64;
 
         let mut stored = kv
-            .get::<StoredContestedName>(None, &key)
+            .get::<StoredContestedName>(DetScope::Global, &key)
             .map_err(|source| TaskError::ContestStorage { source })?
             .unwrap_or_else(|| StoredContestedName {
                 normalized_contested_name: normalized_contested_name.to_string(),
@@ -251,14 +251,14 @@ impl AppContext {
                     stored.awarded_to = Some(won_by.to_buffer());
                     stored.last_updated = Some(last_updated);
                     stored.end_time = Some(block_info.time_ms);
-                    kv.put(None, &key, &stored)
+                    kv.put(DetScope::Global, &key, &stored)
                         .map_err(|source| TaskError::ContestStorage { source })?;
                 }
                 ContestedDocumentVotePollWinnerInfo::Locked => {
                     stored.locked = true;
                     stored.last_updated = Some(last_updated);
                     stored.end_time = Some(block_info.time_ms);
-                    kv.put(None, &key, &stored)
+                    kv.put(DetScope::Global, &key, &stored)
                         .map_err(|source| TaskError::ContestStorage { source })?;
                 }
             }
@@ -317,7 +317,7 @@ impl AppContext {
             }
         }
 
-        kv.put(None, &key, &stored)
+        kv.put(DetScope::Global, &key, &stored)
             .map_err(|source| TaskError::ContestStorage { source })?;
         Ok(())
     }
@@ -336,7 +336,7 @@ impl AppContext {
         for (name, new_end_time) in name_contests {
             let key = contested_name_key(&name);
             let Some(mut stored) = kv
-                .get::<StoredContestedName>(None, &key)
+                .get::<StoredContestedName>(DetScope::Global, &key)
                 .map_err(|source| TaskError::ContestStorage { source })?
             else {
                 continue;
@@ -345,7 +345,7 @@ impl AppContext {
                 Some(t) if t >= new_end_time => continue,
                 _ => {
                     stored.end_time = Some(new_end_time);
-                    kv.put(None, &key, &stored)
+                    kv.put(DetScope::Global, &key, &stored)
                         .map_err(|source| TaskError::ContestStorage { source })?;
                 }
             }

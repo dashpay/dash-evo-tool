@@ -10,7 +10,7 @@ use super::{AppContext, SettingsCacheGuard};
 use crate::model::settings::AppSettings;
 use crate::ui::RootScreenType;
 use crate::ui::theme::ThemeMode;
-use crate::wallet_backend::KvAdapterError;
+use crate::wallet_backend::{DetScope, KvAdapterError};
 
 impl AppContext {
     /// Persist the chosen root screen and pin the active-network field
@@ -107,7 +107,10 @@ impl AppContext {
             return cached;
         }
 
-        let loaded = match self.app_kv.get::<AppSettings>(None, AppSettings::KV_KEY) {
+        let loaded = match self
+            .app_kv
+            .get::<AppSettings>(DetScope::Global, AppSettings::KV_KEY)
+        {
             Ok(Some(s)) => s,
             Ok(None) => AppSettings::default(),
             Err(e) => {
@@ -126,7 +129,8 @@ impl AppContext {
     /// Write the [`AppSettings`] blob to the shared app k/v store.
     pub fn set_app_settings(&self, settings: &AppSettings) -> Result<(), KvAdapterError> {
         let mut guard = self.invalidate_settings_cache();
-        self.app_kv.put(None, AppSettings::KV_KEY, settings)?;
+        self.app_kv
+            .put(DetScope::Global, AppSettings::KV_KEY, settings)?;
         *guard = Some(settings.clone());
         Ok(())
     }

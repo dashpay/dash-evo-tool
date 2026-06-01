@@ -5,7 +5,7 @@ use crate::model::wallet::WalletSeedHash;
 use crate::ui::tokens::tokens_screen::{
     IdentityTokenBalance, IdentityTokenIdentifier, TokenInfo, TokenInfoWithDataContract,
 };
-use crate::wallet_backend::DetKv;
+use crate::wallet_backend::{DetKv, DetScope, KvCachedTokenBalances, TokenBalanceView};
 use bincode::config;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::data_contract::TokenConfiguration;
@@ -58,15 +58,6 @@ fn token_key(token_id: &Identifier) -> String {
         "{}{}",
         TOKEN_KEY_PREFIX,
         token_id.to_string(Encoding::Base58)
-    )
-}
-
-fn token_balance_key(identity_id: &Identifier, token_id: &Identifier) -> String {
-    format!(
-        "{}{}:{}",
-        TOKEN_BALANCE_KEY_PREFIX,
-        identity_id.to_string(Encoding::Base58),
-        token_id.to_string(Encoding::Base58),
     )
 }
 
@@ -162,11 +153,11 @@ impl AppContext {
         let backend = self.wallet_backend()?;
         let kv = backend.kv();
         let keys = kv
-            .list(None, Some(CONTRACT_KEY_PREFIX))
+            .list(DetScope::Global, Some(CONTRACT_KEY_PREFIX))
             .map_err(|source| TaskError::ContractStorage { source })?;
         let mut out = Vec::with_capacity(keys.len());
         for key in keys {
-            match kv.get::<StoredContract>(None, &key) {
+            match kv.get::<StoredContract>(DetScope::Global, &key) {
                 Ok(Some(stored)) => match self.decode_stored_contract(stored) {
                     Ok(qc) => out.push(qc),
                     Err(e) => tracing::warn!(
@@ -212,7 +203,7 @@ impl AppContext {
         let key = contract_key(contract_id);
         let stored: Option<StoredContract> = backend
             .kv()
-            .get(None, &key)
+            .get(DetScope::Global, &key)
             .map_err(|source| TaskError::ContractStorage { source })?;
         match stored {
             Some(stored) => Ok(Some(self.decode_stored_contract(stored)?)),
@@ -242,7 +233,7 @@ impl AppContext {
 
         // Only write the contract entry if none exists yet (INSERT OR IGNORE).
         let existing: Option<StoredContract> = kv
-            .get(None, &key)
+            .get(DetScope::Global, &key)
             .map_err(|source| TaskError::ContractStorage { source })?;
         if existing.is_none() {
             let contract_bytes = data_contract
@@ -254,7 +245,7 @@ impl AppContext {
                 contract_bytes,
                 alias: contract_alias.map(str::to_string),
             };
-            kv.put(None, &key, &stored)
+            kv.put(DetScope::Global, &key, &stored)
                 .map_err(|source| TaskError::ContractStorage { source })?;
         }
 
@@ -295,7 +286,7 @@ impl AppContext {
         let backend = self.wallet_backend()?;
         backend
             .kv()
-            .delete(None, &contract_key(contract_id))
+            .delete(DetScope::Global, &contract_key(contract_id))
             .map_err(|source| TaskError::ContractStorage { source })
     }
 
@@ -310,7 +301,7 @@ impl AppContext {
         let key = contract_key(&contract_id);
 
         let existing_alias = kv
-            .get::<StoredContract>(None, &key)
+            .get::<StoredContract>(DetScope::Global, &key)
             .map_err(|source| TaskError::ContractStorage { source })?
             .and_then(|s| s.alias);
 
@@ -324,7 +315,7 @@ impl AppContext {
             contract_bytes,
             alias: existing_alias,
         };
-        kv.put(None, &key, &stored)
+        kv.put(DetScope::Global, &key, &stored)
             .map_err(|source| TaskError::ContractStorage { source })
     }
 
@@ -340,14 +331,14 @@ impl AppContext {
         let kv = backend.kv();
         let key = contract_key(contract_id);
         let Some(mut stored) = kv
-            .get::<StoredContract>(None, &key)
+            .get::<StoredContract>(DetScope::Global, &key)
             .map_err(|source| TaskError::ContractStorage { source })?
         else {
             // No entry — nothing to rename. UI handles "missing" elsewhere.
             return Ok(());
         };
         stored.alias = new_alias.map(str::to_string);
-        kv.put(None, &key, &stored)
+        kv.put(DetScope::Global, &key, &stored)
             .map_err(|source| TaskError::ContractStorage { source })
     }
 
@@ -359,6 +350,10 @@ impl AppContext {
     ) -> std::result::Result<IndexMap<IdentityTokenIdentifier, IdentityTokenBalance>, TaskError>
     {
         let kv = self.token_kv()?;
+        let balances = self
+            .token_balances_view()?
+            .list()
+            .map_err(|source| TaskError::TokenStorage { source })?;
         // Cache decoded token registry entries so repeated balances under
         // the same token only decode the configuration once.
         let mut token_cache: std::collections::HashMap<
@@ -366,30 +361,14 @@ impl AppContext {
             (StoredToken, TokenConfiguration),
         > = std::collections::HashMap::new();
 
-        let keys = kv
-            .list(None, Some(TOKEN_BALANCE_KEY_PREFIX))
-            .map_err(|source| TaskError::TokenStorage { source })?;
         let mut result = IndexMap::new();
-        for key in keys {
-            let Some((identity_id, token_id)) = parse_token_balance_key(&key) else {
-                tracing::warn!(key = %key, "Skipping malformed token-balance key");
-                continue;
-            };
-            let balance: u64 = match kv.get(None, &key) {
-                Ok(Some(v)) => v,
-                Ok(None) => continue,
-                Err(e) => {
-                    tracing::warn!(key = %key, error = ?e, "Skipping unreadable token balance");
-                    continue;
-                }
-            };
-
+        for (identity_id, token_id, balance) in balances {
             let entry = match token_cache.get(&token_id) {
                 Some(cached) => cached.clone(),
                 None => {
                     let token_key_s = token_key(&token_id);
                     let Some(stored) = kv
-                        .get::<StoredToken>(None, &token_key_s)
+                        .get::<StoredToken>(DetScope::Global, &token_key_s)
                         .map_err(|source| TaskError::TokenStorage { source })?
                     else {
                         tracing::debug!(
@@ -436,7 +415,8 @@ impl AppContext {
         identity_id: Identifier,
     ) -> std::result::Result<(), TaskError> {
         let kv = self.token_kv()?;
-        kv.delete(None, &token_balance_key(&identity_id, &token_id))
+        self.token_balances_view()?
+            .delete(&identity_id, &token_id)
             .map_err(|source| TaskError::TokenStorage { source })?;
         prune_token_order(&kv, |(t, i)| !(*t == token_id && *i == identity_id))?;
         Ok(())
@@ -467,24 +447,25 @@ impl AppContext {
             position: token_position,
         };
         let kv = self.token_kv()?;
-        kv.put(None, &token_key(token_id), &stored)
+        kv.put(DetScope::Global, &token_key(token_id), &stored)
             .map_err(|source| TaskError::TokenStorage { source })?;
 
         // Seed a zero balance for every locally-known identity (matches
         // the pre-C7 `INSERT OR IGNORE` over `identity_token_balances`).
         use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+        let balances = self.token_balances_view()?;
         let identity_ids: Vec<Identifier> = self
             .load_local_qualified_identities()?
             .into_iter()
             .map(|qi| qi.identity.id())
             .collect();
         for identity_id in identity_ids {
-            let bal_key = token_balance_key(&identity_id, token_id);
-            let existing: Option<u64> = kv
-                .get(None, &bal_key)
+            let existing = balances
+                .get(&identity_id, token_id)
                 .map_err(|source| TaskError::TokenStorage { source })?;
             if existing.is_none() {
-                kv.put(None, &bal_key, &0u64)
+                balances
+                    .set(&identity_id, token_id, 0)
                     .map_err(|source| TaskError::TokenStorage { source })?;
             }
         }
@@ -500,8 +481,8 @@ impl AppContext {
         identity_id: &Identifier,
         balance: u64,
     ) -> std::result::Result<(), TaskError> {
-        let kv = self.token_kv()?;
-        kv.put(None, &token_balance_key(identity_id, token_id), &balance)
+        self.token_balances_view()?
+            .set(identity_id, token_id, balance)
             .map_err(|source| TaskError::TokenStorage { source })
     }
 
@@ -510,17 +491,16 @@ impl AppContext {
     /// Mirrors the pre-C7 cascade from `token(id)` to balances and order.
     pub fn remove_token(&self, token_id: &Identifier) -> std::result::Result<(), TaskError> {
         let kv = self.token_kv()?;
-        kv.delete(None, &token_key(token_id))
+        kv.delete(DetScope::Global, &token_key(token_id))
             .map_err(|source| TaskError::TokenStorage { source })?;
-        let balance_keys = kv
-            .list(None, Some(TOKEN_BALANCE_KEY_PREFIX))
+        let balances = self.token_balances_view()?;
+        let stored = balances
+            .list()
             .map_err(|source| TaskError::TokenStorage { source })?;
-        for key in balance_keys {
-            let Some((_, tid)) = parse_token_balance_key(&key) else {
-                continue;
-            };
+        for (identity_id, tid, _) in stored {
             if tid == *token_id {
-                kv.delete(None, &key)
+                balances
+                    .delete(&identity_id, &tid)
                     .map_err(|source| TaskError::TokenStorage { source })?;
             }
         }
@@ -536,7 +516,7 @@ impl AppContext {
     ) -> std::result::Result<Option<TokenConfiguration>, TaskError> {
         let kv = self.token_kv()?;
         let Some(stored) = kv
-            .get::<StoredToken>(None, &token_key(token_id))
+            .get::<StoredToken>(DetScope::Global, &token_key(token_id))
             .map_err(|source| TaskError::TokenStorage { source })?
         else {
             return Ok(None);
@@ -551,7 +531,7 @@ impl AppContext {
     ) -> std::result::Result<Option<Identifier>, TaskError> {
         let kv = self.token_kv()?;
         let Some(stored) = kv
-            .get::<StoredToken>(None, &token_key(token_id))
+            .get::<StoredToken>(DetScope::Global, &token_key(token_id))
             .map_err(|source| TaskError::TokenStorage { source })?
         else {
             return Ok(None);
@@ -567,12 +547,12 @@ impl AppContext {
     ) -> std::result::Result<IndexMap<Identifier, TokenInfoWithDataContract>, TaskError> {
         let kv = self.token_kv()?;
         let keys = kv
-            .list(None, Some(TOKEN_KEY_PREFIX))
+            .list(DetScope::Global, Some(TOKEN_KEY_PREFIX))
             .map_err(|source| TaskError::TokenStorage { source })?;
         let mut sorted: Vec<(Identifier, StoredToken, TokenConfiguration)> = Vec::new();
         for key in keys {
             let Some(stored) = kv
-                .get::<StoredToken>(None, &key)
+                .get::<StoredToken>(DetScope::Global, &key)
                 .map_err(|source| TaskError::TokenStorage { source })?
             else {
                 continue;
@@ -628,12 +608,12 @@ impl AppContext {
     ) -> std::result::Result<IndexMap<Identifier, TokenInfo>, TaskError> {
         let kv = self.token_kv()?;
         let keys = kv
-            .list(None, Some(TOKEN_KEY_PREFIX))
+            .list(DetScope::Global, Some(TOKEN_KEY_PREFIX))
             .map_err(|source| TaskError::TokenStorage { source })?;
         let mut sorted: Vec<(Identifier, StoredToken, TokenConfiguration)> = Vec::new();
         for key in keys {
             let Some(stored) = kv
-                .get::<StoredToken>(None, &key)
+                .get::<StoredToken>(DetScope::Global, &key)
                 .map_err(|source| TaskError::TokenStorage { source })?
             else {
                 continue;
@@ -679,7 +659,7 @@ impl AppContext {
             .iter()
             .map(|(t, i)| (t.to_buffer(), i.to_buffer()))
             .collect();
-        kv.put(None, TOKEN_ORDER_KEY, &payload)
+        kv.put(DetScope::Global, TOKEN_ORDER_KEY, &payload)
             .map_err(|source| TaskError::TokenStorage { source })
     }
 
@@ -690,7 +670,7 @@ impl AppContext {
     ) -> std::result::Result<Vec<(Identifier, Identifier)>, TaskError> {
         let kv = self.token_kv()?;
         let Some(payload): Option<Vec<([u8; 32], [u8; 32])>> = kv
-            .get(None, TOKEN_ORDER_KEY)
+            .get(DetScope::Global, TOKEN_ORDER_KEY)
             .map_err(|source| TaskError::TokenStorage { source })?
         else {
             return Ok(Vec::new());
@@ -710,20 +690,27 @@ impl AppContext {
         let kv = self.token_kv()?;
         for prefix in [TOKEN_KEY_PREFIX, TOKEN_BALANCE_KEY_PREFIX] {
             let keys = kv
-                .list(None, Some(prefix))
+                .list(DetScope::Global, Some(prefix))
                 .map_err(|source| TaskError::TokenStorage { source })?;
             for key in keys {
-                kv.delete(None, &key)
+                kv.delete(DetScope::Global, &key)
                     .map_err(|source| TaskError::TokenStorage { source })?;
             }
         }
-        kv.delete(None, TOKEN_ORDER_KEY)
+        kv.delete(DetScope::Global, TOKEN_ORDER_KEY)
             .map_err(|source| TaskError::TokenStorage { source })?;
         Ok(())
     }
 
     fn token_kv(&self) -> std::result::Result<DetKv, TaskError> {
         Ok(self.wallet_backend()?.kv())
+    }
+
+    /// ACTIVE token-balance cache view (T6 seam). All `det:token_balance`
+    /// touches go through this so the cache deletion is a one-line swap to
+    /// `UpstreamTokenBalances` once a public per-token reader lands.
+    fn token_balances_view(&self) -> std::result::Result<KvCachedTokenBalances, TaskError> {
+        Ok(self.wallet_backend()?.token_balances())
     }
 
     pub fn remove_wallet(&self, seed_hash: &WalletSeedHash) -> Result<(), TaskError> {
@@ -765,10 +752,10 @@ impl AppContext {
         let backend = self.wallet_backend()?;
         let kv = backend.kv();
         let keys = kv
-            .list(None, Some(CONTRACT_KEY_PREFIX))
+            .list(DetScope::Global, Some(CONTRACT_KEY_PREFIX))
             .map_err(|source| TaskError::ContractStorage { source })?;
         for key in keys {
-            kv.delete(None, &key)
+            kv.delete(DetScope::Global, &key)
                 .map_err(|source| TaskError::ContractStorage { source })?;
         }
         Ok(())
@@ -793,16 +780,6 @@ fn decode_token_config(bytes: &[u8]) -> std::result::Result<TokenConfiguration, 
         .map_err(|source| TaskError::TokenConfigEncoding { source })
 }
 
-/// Parse a `det:token_balance:<identity>:<token>` key back into its
-/// `(identity, token)` pair. Returns `None` for malformed keys.
-fn parse_token_balance_key(key: &str) -> Option<(Identifier, Identifier)> {
-    let suffix = key.strip_prefix(TOKEN_BALANCE_KEY_PREFIX)?;
-    let (identity_b58, token_b58) = suffix.split_once(':')?;
-    let identity = Identifier::from_string(identity_b58, Encoding::Base58).ok()?;
-    let token = Identifier::from_string(token_b58, Encoding::Base58).ok()?;
-    Some((identity, token))
-}
-
 /// Filter the stored token-order list and write it back when the filter
 /// drops any entries. No-op when no order list exists yet.
 fn prune_token_order<F>(kv: &DetKv, keep: F) -> std::result::Result<(), TaskError>
@@ -810,7 +787,7 @@ where
     F: Fn(&(Identifier, Identifier)) -> bool,
 {
     let Some(payload): Option<Vec<([u8; 32], [u8; 32])>> = kv
-        .get(None, TOKEN_ORDER_KEY)
+        .get(DetScope::Global, TOKEN_ORDER_KEY)
         .map_err(|source| TaskError::TokenStorage { source })?
     else {
         return Ok(());
@@ -828,6 +805,6 @@ where
         .iter()
         .map(|(t, i)| (t.to_buffer(), i.to_buffer()))
         .collect();
-    kv.put(None, TOKEN_ORDER_KEY, &serialized)
+    kv.put(DetScope::Global, TOKEN_ORDER_KEY, &serialized)
         .map_err(|source| TaskError::TokenStorage { source })
 }

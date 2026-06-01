@@ -1,46 +1,17 @@
 //! Per-wallet Platform address-info + sync-cursor persistence.
 //!
-//! Two slots in the per-network wallet k/v store, both scoped to
-//! `Some(&WalletId)` so entries cascade when a wallet is removed:
-//!
-//! - `det:platform_addr:<canonical_address>` — `StoredPlatformAddressInfo`
-//!   (balance + nonce), one per Platform address held by the wallet.
-//! - `det:platform_sync:v1` — `StoredPlatformSyncInfo`
-//!   (last sync timestamp + sync-height cursor), one per wallet.
+//! Thin `AppContext` façade over the [`PlatformAddressView`] seam
+//! (`src/wallet_backend/platform_address.rs`). The view owns the storage
+//! strategy — today the active impl caches `(balance, nonce)` and the
+//! `(timestamp, height)` cursor in the per-network wallet k/v store; once
+//! upstream exposes a public balance+nonce reader the cache is swapped out
+//! behind the same view with no caller change.
 
 use super::AppContext;
 use crate::backend_task::error::TaskError;
-use crate::model::wallet::{Wallet, WalletSeedHash};
-use dash_sdk::dpp::dashcore::Network;
-use dash_sdk::dpp::dashcore::address::{Address, NetworkUnchecked};
-use platform_wallet::wallet::platform_wallet::WalletId;
-use serde::{Deserialize, Serialize};
-use std::str::FromStr;
-
-const PLATFORM_ADDR_KEY_PREFIX: &str = "det:platform_addr:";
-const PLATFORM_SYNC_KEY: &str = "det:platform_sync:v1";
-
-fn platform_addr_key(address: &Address) -> String {
-    format!("{PLATFORM_ADDR_KEY_PREFIX}{address}")
-}
-
-/// `WalletSeedHash` and the upstream `WalletId` are both `[u8; 32]`. The
-/// k/v adapter wants the upstream type — borrow through.
-fn wallet_id(seed_hash: &WalletSeedHash) -> &WalletId {
-    seed_hash
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-struct StoredPlatformAddressInfo {
-    balance: u64,
-    nonce: u32,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-struct StoredPlatformSyncInfo {
-    last_sync_timestamp: u64,
-    sync_height: u64,
-}
+use crate::model::wallet::WalletSeedHash;
+use crate::wallet_backend::PlatformAddressView;
+use dash_sdk::dpp::dashcore::address::Address;
 
 impl AppContext {
     /// Upsert the persisted Platform balance + nonce for one address
@@ -52,14 +23,10 @@ impl AppContext {
         balance: u64,
         nonce: u32,
     ) -> Result<(), TaskError> {
-        let canonical = Wallet::canonical_address(address, self.network);
-        let kv = self.wallet_backend()?.kv();
-        kv.put(
-            Some(wallet_id(seed_hash)),
-            &platform_addr_key(&canonical),
-            &StoredPlatformAddressInfo { balance, nonce },
-        )
-        .map_err(|source| TaskError::PlatformAddressStorage { source })
+        self.wallet_backend()?
+            .platform_addresses()
+            .set_address_info(seed_hash, address, self.network, balance, nonce)
+            .map_err(|source| TaskError::PlatformAddressStorage { source })
     }
 
     /// Read the stored `(balance, nonce)` for a single Platform address,
@@ -69,12 +36,10 @@ impl AppContext {
         seed_hash: &WalletSeedHash,
         address: &Address,
     ) -> Result<Option<(u64, u32)>, TaskError> {
-        let canonical = Wallet::canonical_address(address, self.network);
-        let kv = self.wallet_backend()?.kv();
-        let stored: Option<StoredPlatformAddressInfo> = kv
-            .get(Some(wallet_id(seed_hash)), &platform_addr_key(&canonical))
-            .map_err(|source| TaskError::PlatformAddressStorage { source })?;
-        Ok(stored.map(|s| (s.balance, s.nonce)))
+        self.wallet_backend()?
+            .platform_addresses()
+            .get_address_info(seed_hash, address, self.network)
+            .map_err(|source| TaskError::PlatformAddressStorage { source })
     }
 
     /// Return every stored `(address, balance, nonce)` triple for the
@@ -85,34 +50,10 @@ impl AppContext {
         &self,
         seed_hash: &WalletSeedHash,
     ) -> Result<Vec<(Address, u64, u32)>, TaskError> {
-        let kv = self.wallet_backend()?.kv();
-        let keys = kv
-            .list(Some(wallet_id(seed_hash)), Some(PLATFORM_ADDR_KEY_PREFIX))
-            .map_err(|source| TaskError::PlatformAddressStorage { source })?;
-        let mut out = Vec::with_capacity(keys.len());
-        for key in keys {
-            let Some(addr_str) = key.strip_prefix(PLATFORM_ADDR_KEY_PREFIX) else {
-                continue;
-            };
-            let Some(stored) = kv
-                .get::<StoredPlatformAddressInfo>(Some(wallet_id(seed_hash)), &key)
-                .map_err(|source| TaskError::PlatformAddressStorage { source })?
-            else {
-                continue;
-            };
-            let address = match parse_canonical_address(addr_str, self.network) {
-                Some(a) => a,
-                None => {
-                    tracing::warn!(
-                        address = addr_str,
-                        "skipping unparseable platform address entry"
-                    );
-                    continue;
-                }
-            };
-            out.push((address, stored.balance, stored.nonce));
-        }
-        Ok(out)
+        self.wallet_backend()?
+            .platform_addresses()
+            .all_address_info(seed_hash, self.network)
+            .map_err(|source| TaskError::PlatformAddressStorage { source })
     }
 
     /// Delete every stored Platform address-info entry for `seed_hash`.
@@ -121,15 +62,10 @@ impl AppContext {
         &self,
         seed_hash: &WalletSeedHash,
     ) -> Result<(), TaskError> {
-        let kv = self.wallet_backend()?.kv();
-        let keys = kv
-            .list(Some(wallet_id(seed_hash)), Some(PLATFORM_ADDR_KEY_PREFIX))
-            .map_err(|source| TaskError::PlatformAddressStorage { source })?;
-        for key in keys {
-            kv.delete(Some(wallet_id(seed_hash)), &key)
-                .map_err(|source| TaskError::PlatformAddressStorage { source })?;
-        }
-        Ok(())
+        self.wallet_backend()?
+            .platform_addresses()
+            .delete_address_info(seed_hash)
+            .map_err(|source| TaskError::PlatformAddressStorage { source })
     }
 
     /// Read the persisted `(last_sync_timestamp, sync_height)` cursor for
@@ -139,13 +75,10 @@ impl AppContext {
         &self,
         seed_hash: &WalletSeedHash,
     ) -> Result<(u64, u64), TaskError> {
-        let kv = self.wallet_backend()?.kv();
-        let stored: Option<StoredPlatformSyncInfo> = kv
-            .get(Some(wallet_id(seed_hash)), PLATFORM_SYNC_KEY)
-            .map_err(|source| TaskError::PlatformAddressStorage { source })?;
-        Ok(stored
-            .map(|s| (s.last_sync_timestamp, s.sync_height))
-            .unwrap_or((0, 0)))
+        self.wallet_backend()?
+            .platform_addresses()
+            .get_sync_info(seed_hash)
+            .map_err(|source| TaskError::PlatformAddressStorage { source })
     }
 
     /// Upsert the `(last_sync_timestamp, sync_height)` cursor for
@@ -156,16 +89,10 @@ impl AppContext {
         last_sync_timestamp: u64,
         sync_height: u64,
     ) -> Result<(), TaskError> {
-        let kv = self.wallet_backend()?.kv();
-        kv.put(
-            Some(wallet_id(seed_hash)),
-            PLATFORM_SYNC_KEY,
-            &StoredPlatformSyncInfo {
-                last_sync_timestamp,
-                sync_height,
-            },
-        )
-        .map_err(|source| TaskError::PlatformAddressStorage { source })
+        self.wallet_backend()?
+            .platform_addresses()
+            .set_sync_info(seed_hash, last_sync_timestamp, sync_height)
+            .map_err(|source| TaskError::PlatformAddressStorage { source })
     }
 
     /// Populate the in-memory `Wallet.platform_address_info` maps from
@@ -206,64 +133,5 @@ impl AppContext {
                 );
             }
         }
-    }
-}
-
-fn parse_canonical_address(s: &str, network: Network) -> Option<Address> {
-    let unchecked = Address::<NetworkUnchecked>::from_str(s).ok()?;
-    let checked = unchecked.require_network(network).ok()?;
-    Some(Wallet::canonical_address(&checked, network))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Encoding sanity: the stored payload round-trips through bincode
-    /// plus the k/v schema-version envelope without drift. Guards against
-    /// silent struct evolution that would corrupt persisted balances or
-    /// nonces.
-    #[test]
-    fn stored_platform_address_info_round_trips() {
-        let original = StoredPlatformAddressInfo {
-            balance: 1_234_567,
-            nonce: 42,
-        };
-        let bytes = bincode::serde::encode_to_vec(original, bincode::config::standard()).unwrap();
-        let (decoded, _): (StoredPlatformAddressInfo, _) =
-            bincode::serde::decode_from_slice(&bytes, bincode::config::standard()).unwrap();
-        assert_eq!(decoded, original);
-    }
-
-    /// Sync-cursor payload round-trips.
-    #[test]
-    fn stored_platform_sync_info_round_trips() {
-        let original = StoredPlatformSyncInfo {
-            last_sync_timestamp: 1_700_000_000,
-            sync_height: 987_654,
-        };
-        let bytes = bincode::serde::encode_to_vec(original, bincode::config::standard()).unwrap();
-        let (decoded, _): (StoredPlatformSyncInfo, _) =
-            bincode::serde::decode_from_slice(&bytes, bincode::config::standard()).unwrap();
-        assert_eq!(decoded, original);
-    }
-
-    /// Key format is the contract everything else relies on. Pin the
-    /// prefix so changes are deliberate, not accidental.
-    #[test]
-    fn platform_addr_key_uses_canonical_prefix() {
-        let pubkey_bytes = [0x02; 33];
-        let pubkey = dash_sdk::dpp::dashcore::PublicKey::from_slice(&pubkey_bytes).unwrap();
-        let address = Address::p2pkh(&pubkey, Network::Testnet);
-        let key = platform_addr_key(&address);
-        assert!(key.starts_with(PLATFORM_ADDR_KEY_PREFIX));
-        assert!(key.ends_with(&address.to_string()));
-    }
-
-    /// Sync-cursor key is a versioned single-slot constant — protect it
-    /// from drift.
-    #[test]
-    fn platform_sync_key_is_versioned() {
-        assert_eq!(PLATFORM_SYNC_KEY, "det:platform_sync:v1");
     }
 }

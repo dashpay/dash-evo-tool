@@ -101,6 +101,10 @@ pub enum TokenTask {
     },
     QueryMyTokenBalances,
     QueryIdentityTokenBalance(IdentityTokenIdentifier),
+    /// Stop tracking one `(identity, token)` balance: un-watch it upstream so
+    /// the background sync stops fetching it, then drop it from the My Tokens
+    /// ordering so the row disappears.
+    StopTrackingTokenBalance(IdentityTokenIdentifier),
     QueryDescriptionsByKeyword(String, Option<Start>),
     FetchTokenByContractId(Identifier),
     FetchTokenByTokenId(Identifier),
@@ -506,6 +510,14 @@ impl AppContext {
             TokenTask::QueryIdentityTokenBalance(identity_token_pair) => {
                 self.query_token_balance(
                     sdk,
+                    identity_token_pair.identity_id,
+                    identity_token_pair.token_id,
+                    sender,
+                )
+                .await
+            }
+            TokenTask::StopTrackingTokenBalance(identity_token_pair) => {
+                self.stop_tracking_token_balance(
                     identity_token_pair.identity_id,
                     identity_token_pair.token_id,
                     sender,

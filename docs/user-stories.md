@@ -776,6 +776,15 @@ As a developer, I want to pay for document operations (create, replace, delete, 
 - Optional `TokenPaymentInfo` parameter on all document actions.
 - Token-based payment as alternative to credit-based payment.
 
+### TOK-018: Stop tracking a token balance [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want to stop tracking a token balance for one of my identities so that the "My Tokens" screen stays focused on the tokens I care about.
+
+- "Stop Tracking Balance" removes the chosen identity-token pair from the list.
+- The balance is un-watched so the background sync stops fetching it and the row does not reappear.
+- An explicit "Refresh all my tokens" re-tracks every known token, restoring the row.
+
 ---
 
 ## Contracts and Documents (DOC)

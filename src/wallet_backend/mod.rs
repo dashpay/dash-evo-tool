@@ -896,6 +896,39 @@ impl WalletBackend {
         }
     }
 
+    /// Stop the upstream `IdentitySyncManager` from watching a single
+    /// `(identity, token)` pair so its background loop no longer fetches that
+    /// token's balance and the pair drops out of the next published snapshot.
+    ///
+    /// Reads the identity's current watched-token set, removes `token_id`, and
+    /// replaces the set via `update_watched_tokens` — which preserves the
+    /// remaining tokens' cached balances. A no-op if the identity isn't
+    /// registered or wasn't watching the token. Upstream `Identifier` types
+    /// stay inside this seam; callers pass and receive DET-side identifiers.
+    pub async fn unwatch_identity_token(
+        &self,
+        identity_id: dash_sdk::platform::Identifier,
+        token_id: dash_sdk::platform::Identifier,
+    ) {
+        let identity_sync = self.inner.pwm.identity_sync();
+        let Some(state) = identity_sync.state_for_identity(&identity_id).await else {
+            return;
+        };
+        let remaining: Vec<dash_sdk::platform::Identifier> = state
+            .tokens
+            .iter()
+            .map(|info| info.token_id)
+            .filter(|t| *t != token_id)
+            .collect();
+        if remaining.len() == state.tokens.len() {
+            return;
+        }
+        identity_sync
+            .update_watched_tokens(identity_id, remaining)
+            .await;
+        self.refresh_token_balances().await;
+    }
+
     /// Force one immediate upstream token-balance sync pass, then republish
     /// DET's snapshot. Use after registering watched tokens so a user-initiated
     /// "Refresh" reflects the latest balances without waiting for the

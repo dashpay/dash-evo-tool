@@ -52,6 +52,30 @@ impl AppContext {
         Ok(BackendTaskSuccessResult::FetchedTokenBalances)
     }
 
+    /// Stop tracking one `(identity, token)` balance. Un-watches the pair in
+    /// the upstream sync loop so its background pass stops fetching the balance
+    /// and the pair leaves the published snapshot, then drops it from the saved
+    /// My Tokens ordering and nudges the UI to re-read the snapshot. The row
+    /// disappears immediately and stays gone for the background loop; the token
+    /// remains in DET's registry, so an explicit "Refresh all my tokens" still
+    /// re-watches it (that action deliberately re-tracks everything known).
+    pub async fn stop_tracking_token_balance(
+        &self,
+        identity_id: Identifier,
+        token_id: Identifier,
+        sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
+        self.wallet_backend()?
+            .unwatch_identity_token(identity_id, token_id)
+            .await;
+        self.remove_token_balance(token_id, identity_id)?;
+        sender
+            .send(TaskResult::Refresh)
+            .await
+            .map_err(|_| TaskError::InternalSendError)?;
+        Ok(BackendTaskSuccessResult::FetchedTokenBalances)
+    }
+
     /// Token ids in DET's local registry — the watch set every local identity
     /// tracks upstream.
     fn known_token_ids(&self) -> Result<Vec<Identifier>, TaskError> {

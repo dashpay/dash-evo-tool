@@ -2582,13 +2582,13 @@ impl TokensScreen {
         AppAction::None
     }
 
-    fn show_remove_identity_token_balance_popup(&mut self, ui: &mut Ui) {
+    fn show_remove_identity_token_balance_popup(&mut self, ui: &mut Ui) -> AppAction {
         // If no token is set, nothing to confirm
         let token_to_remove = match &self.identity_token_balance_to_remove {
             Some(token) => token.clone(),
             None => {
                 self.confirm_remove_identity_token_balance_popup = false;
-                return;
+                return AppAction::None;
             }
         };
 
@@ -2611,32 +2611,21 @@ impl TokensScreen {
         // Show the dialog and handle the response
         let response = confirmation_dialog.show(ui).inner;
 
+        let mut action = AppAction::None;
         if let Some(status) = response.dialog_response {
-            match status {
-                ConfirmationStatus::Confirmed => {
-                    if let Err(e) = self
-                        .app_context
-                        .remove_token_balance(token_to_remove.token_id, token_to_remove.identity_id)
-                    {
-                        MessageBanner::set_global(
-                            self.app_context.egui_ctx(),
-                            format!("Error removing token balance: {}", e),
-                            MessageType::Error,
-                        );
-                    } else {
-                        self.refresh();
-                    }
-                    self.confirm_remove_identity_token_balance_popup = false;
-                    self.identity_token_balance_to_remove = None;
-                    self.remove_identity_token_balance_confirmation_dialog = None;
-                }
-                ConfirmationStatus::Canceled => {
-                    self.confirm_remove_identity_token_balance_popup = false;
-                    self.identity_token_balance_to_remove = None;
-                    self.remove_identity_token_balance_confirmation_dialog = None;
-                }
+            if let ConfirmationStatus::Confirmed = status {
+                action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(
+                    TokenTask::StopTrackingTokenBalance(IdentityTokenIdentifier {
+                        identity_id: token_to_remove.identity_id,
+                        token_id: token_to_remove.token_id,
+                    }),
+                )));
             }
+            self.confirm_remove_identity_token_balance_popup = false;
+            self.identity_token_balance_to_remove = None;
+            self.remove_identity_token_balance_confirmation_dialog = None;
         }
+        action
     }
 
     fn show_remove_token_popup(&mut self, ui: &mut Ui) {
@@ -2938,7 +2927,7 @@ impl ScreenLike for TokensScreen {
                     // Elapsed display for refreshing is handled by the global MessageBanner
 
                     if self.confirm_remove_identity_token_balance_popup {
-                        self.show_remove_identity_token_balance_popup(ui);
+                        inner_action |= self.show_remove_identity_token_balance_popup(ui);
                     }
                     if self.confirm_remove_token_popup {
                         self.show_remove_token_popup(ui);

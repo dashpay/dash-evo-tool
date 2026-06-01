@@ -429,20 +429,121 @@ pub async fn load_payment_history(
     Ok(records)
 }
 
-/// Update payment status after broadcast or confirmation
+/// Map a DET-local [`PaymentStatus`] onto the upstream
+/// `platform_wallet` payment status the `PaymentEntry` carries.
+///
+/// `Broadcast` collapses to upstream `Pending`: from Core's point of
+/// view a broadcast-but-unconfirmed transaction is still pending. The
+/// confirmation count in `Confirmed(_)` is not represented upstream —
+/// any positive count means the transaction is on-chain.
+fn det_status_to_upstream(
+    status: &PaymentStatus,
+) -> platform_wallet::wallet::identity::types::dashpay::payment::PaymentStatus {
+    use platform_wallet::wallet::identity::types::dashpay::payment::PaymentStatus as Upstream;
+    match status {
+        PaymentStatus::Pending | PaymentStatus::Broadcast => Upstream::Pending,
+        PaymentStatus::Confirmed(_) => Upstream::Confirmed,
+        PaymentStatus::Failed(_) => Upstream::Failed,
+    }
+}
+
+/// Mirror a payment status transition into the upstream `ManagedIdentity`
+/// and the k/v timestamp sidecar for `owner`.
+///
+/// The authoritative on-chain state lives with Core/SPV; this is a local
+/// mirror so [`load_payment_history`] reflects the new status without a
+/// refetch. Upstream stores payments keyed by `tx_id` with last-write-wins
+/// semantics, so the existing entry is read, its status field updated, and
+/// the whole entry written back — preserving counterparty, amount, and memo.
+///
+/// Best-effort: a missing wallet, an unknown payment, or a sidecar miss
+/// is logged at `debug` and yields `Ok(())`. The caller has already
+/// completed the authoritative action by the time this runs.
 pub async fn update_payment_status(
-    _app_context: &Arc<AppContext>,
-    payment_id: &str,
+    app_context: &Arc<AppContext>,
+    owner: &Identifier,
+    tx_id: &str,
     status: PaymentStatus,
-    tx_id: Option<String>,
 ) -> Result<(), String> {
-    // TODO: Update payment record in database
-    tracing::debug!(
-        "Would update payment {} status to {:?} with tx_id {:?}",
-        payment_id,
-        status,
-        tx_id
-    );
+    use platform_wallet::wallet::identity::types::dashpay::payment::{
+        PaymentDirection, PaymentEntry,
+    };
+
+    let backend = app_context
+        .wallet_backend()
+        .map_err(|e| format!("Wallet backend not yet available: {}", e))?;
+
+    // Read the existing entry so the rewrite preserves counterparty,
+    // amount, and memo — upstream replaces the whole entry on record.
+    let existing = backend
+        .dashpay_view()
+        .payments(owner)
+        .await
+        .into_iter()
+        .find(|p| p.tx_id == tx_id);
+
+    let Some(existing) = existing else {
+        tracing::debug!(
+            tx_id = %tx_id,
+            owner = %owner.to_string(Encoding::Base58),
+            "DashPay update_payment_status: no matching payment to update; skipping"
+        );
+        return Ok(());
+    };
+
+    let counterparty_bytes = if existing.payment_type == "sent" {
+        existing.to_identity_id
+    } else {
+        existing.from_identity_id
+    };
+    let counterparty = Identifier::from_bytes(&counterparty_bytes)
+        .map_err(|e| format!("Invalid counterparty identity in payment record: {}", e))?;
+
+    let direction = if existing.payment_type == "sent" {
+        PaymentDirection::Sent
+    } else {
+        PaymentDirection::Received
+    };
+
+    let entry = PaymentEntry {
+        counterparty_id: counterparty,
+        amount_duffs: existing.amount.max(0) as u64,
+        memo: existing.memo,
+        direction,
+        status: det_status_to_upstream(&status),
+    };
+
+    if let Err(e) = backend
+        .dashpay_record_payment(owner, tx_id.to_string(), entry)
+        .await
+    {
+        tracing::debug!(
+            tx_id = %tx_id,
+            owner = %owner.to_string(Encoding::Base58),
+            error = ?e,
+            "DashPay update_payment_status mirror to WalletBackend failed"
+        );
+        return Ok(());
+    }
+
+    // A confirmation stamps `confirmed_at`; other transitions preserve the
+    // existing creation stamp without touching confirmation.
+    if matches!(status, PaymentStatus::Confirmed(_)) {
+        let now_ms = chrono::Utc::now().timestamp_millis().max(0);
+        let created_at = if existing.created_at > 0 {
+            existing.created_at
+        } else {
+            now_ms
+        };
+        if let Err(e) = backend.dashpay_set_payment_timestamps(tx_id, created_at, Some(now_ms)) {
+            tracing::debug!(
+                tx_id = %tx_id,
+                error = ?e,
+                "DashPay update_payment_status confirmation timestamp write failed"
+            );
+        }
+    }
+
     Ok(())
 }
 
@@ -532,12 +633,27 @@ pub(super) async fn mirror_incoming_payment_to_backend(
 }
 
 /// Check if addresses have been used (for gap limit calculation)
+///
+/// BLOCKED: returns all-unused. An upstream usage reader exists at
+/// platform rev `35e4a2f`
+/// (`PlatformWalletManager::account_address_pools_blocking` →
+/// `AccountAddressInfoSnapshot::is_used`, sourced from the SPV-tracked
+/// `AddressInfo.used`), but it is keyed by `(wallet_id, AccountType)`,
+/// not by an arbitrary address. This function receives a context-free
+/// address list, so it cannot route a lookup. More fundamentally, the
+/// only DashPay addresses with derivation context are the contact-SEND
+/// addresses derived from the contact's xpub in
+/// [`derive_contact_payment_address`]; those never live in any of our
+/// managed address pools (we only register `DashpayReceivingFunds`
+/// accounts for incoming payments), so even a full per-account scan
+/// would correctly report them absent and yield all-unused. Returning a
+/// fabricated usage flag would corrupt gap-limit math, which is
+/// address-derivation-adjacent and risky — hence the honest all-unused
+/// stub pending a properly-scoped reader.
 pub async fn check_address_usage(
     _app_context: &Arc<AppContext>,
     addresses: Vec<Address>,
 ) -> Result<Vec<bool>, String> {
-    // TODO: This would need to query Core or check transaction history
-    // For now, return all as unused
     Ok(vec![false; addresses.len()])
 }
 
@@ -689,6 +805,34 @@ mod tests {
         assert_eq!(payment.status, cloned.status);
         assert_eq!(payment.memo, cloned.memo);
         assert_eq!(payment.tx_id, cloned.tx_id);
+    }
+
+    #[test]
+    fn test_det_status_maps_to_upstream() {
+        use platform_wallet::wallet::identity::types::dashpay::payment::PaymentStatus as Upstream;
+
+        assert_eq!(
+            det_status_to_upstream(&PaymentStatus::Pending),
+            Upstream::Pending
+        );
+        // Broadcast-but-unconfirmed is still pending from Core's view.
+        assert_eq!(
+            det_status_to_upstream(&PaymentStatus::Broadcast),
+            Upstream::Pending
+        );
+        // Any positive confirmation count means on-chain.
+        assert_eq!(
+            det_status_to_upstream(&PaymentStatus::Confirmed(1)),
+            Upstream::Confirmed
+        );
+        assert_eq!(
+            det_status_to_upstream(&PaymentStatus::Confirmed(99)),
+            Upstream::Confirmed
+        );
+        assert_eq!(
+            det_status_to_upstream(&PaymentStatus::Failed("dropped".into())),
+            Upstream::Failed
+        );
     }
 
     #[test]

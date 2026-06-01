@@ -57,25 +57,30 @@ use crate::wallet_backend::{DetScope, WalletBackend};
 // K/V sidecar key prefixes
 // ---------------------------------------------------------------------------
 //
-// All sidecar keys are scoped to the global slot of the per-network
-// upstream persister. The network already partitions the database
-// file, so no additional `<network>:` prefix is needed inside the
-// key itself.
+// Four sidecar families (`blocked`, `rejected`, `timestamps`, `addr_map`)
+// use `DetScope::Global` against the per-network upstream persister. The
+// network already partitions the database file, so no `<network>:` prefix
+// is needed inside the key. Two families (`private`, `address_index`) use
+// `DetScope::Identity(&owner)` — the owner is carried by the scope, so the
+// key contains only the contact id; the upstream soft-cascade reaps them
+// when the owner identity row is deleted.
 
 /// Mark a contact as blocked. Value: empty (`()`). Presence is the signal.
+/// Scope: [`DetScope::Global`].
 const KV_PREFIX_BLOCKED: &str = "det:dashpay:blocked:";
 /// Mark a contact request as rejected. Value: empty (`()`). Presence is the signal.
+/// Scope: [`DetScope::Global`].
 const KV_PREFIX_REJECTED: &str = "det:dashpay:rejected:";
 /// DET-local `(created_at, updated_at)` timestamps for an entity (contact, request).
-/// Value: `(i64, i64)` encoded by the [`DetKv`] schema.
+/// Value: `(i64, i64)` encoded by the [`DetKv`] schema. Scope: [`DetScope::Global`].
 const KV_PREFIX_TIMESTAMPS: &str = "det:dashpay:timestamps:";
 /// DET-local private memo for a contact (nickname / notes / hidden).
 /// Value: bincode-encoded [`ContactPrivateInfo`].
-/// Key shape: `det:dashpay:private:<owner_b58>:<contact_b58>`.
+/// Scope: [`DetScope::Identity(&owner)`]. Key shape: `det:dashpay:private:<contact_b58>`.
 const KV_PREFIX_PRIVATE: &str = "det:dashpay:private:";
 /// Per-contact address index state (DIP-0015 send/receive cursors + bloom
 /// registered count). Value: bincode-encoded [`ContactAddressIndex`].
-/// Key shape: `det:dashpay:address_index:<owner_b58>:<contact_b58>`.
+/// Scope: [`DetScope::Identity(&owner)`]. Key shape: `det:dashpay:address_index:<contact_b58>`.
 const KV_PREFIX_ADDRESS_INDEX: &str = "det:dashpay:address_index:";
 /// Reverse lookup from a wallet address back to the `(owner, contact)`
 /// relationship that derived it. Value: bincode-encoded contact

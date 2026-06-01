@@ -1,6 +1,6 @@
 # DET k/v key reference
 
-`DetKv` wraps the upstream `platform_wallet_storage::KvStore`. Values are encoded as `[ schema_version (1 byte) | bincode(payload) ]` using `bincode::config::standard()`. Keys are colon-separated namespaces. Every `DetKv` call takes a `DetScope` argument: `DetScope::Global` = global slot, `DetScope::Wallet(&seed_hash)` = per-wallet slot (cascades on wallet delete). `DetScope::Identity(&id)` and `DetScope::Token { identity_id, token_id }` map to the upstream `meta_identity` / `meta_token` tables; their metadata is reaped by an upstream `AFTER DELETE` soft-cascade when the parent object row is removed. `DetScope` is the DET-side seam over the upstream `ObjectId` enum — the upstream scope type never crosses the wallet-backend boundary.
+`DetKv` wraps the upstream `platform_wallet_storage::KvStore`. Values are encoded as `[ schema_version (1 byte) | bincode(payload) ]` using `bincode::config::standard()`. Keys are colon-separated namespaces. Every `DetKv` call takes a `DetScope` argument: `DetScope::Global` = global slot, `DetScope::Wallet(&seed_hash)` = per-wallet slot (cascades on wallet delete), `DetScope::Identity(&id)` = per-identity slot (active — used for identities, top-ups, scheduled votes, and DashPay `private`/`address_index` overlays), `DetScope::Token { identity_id, token_id }` = per-token slot (defined and mapped, currently unused — token balances are read live from upstream). `DetScope::Identity` and `DetScope::Token` map to the upstream `meta_identity` / `meta_token` tables; their metadata is reaped by an upstream `AFTER DELETE` soft-cascade when the parent object row is removed. `DetScope` is the DET-side seam over the upstream `ObjectId` enum — the upstream scope type never crosses the wallet-backend boundary.
 
 Three backing stores exist:
 
@@ -10,7 +10,7 @@ Three backing stores exist:
 | `platform-wallet.sqlite` | `<data_dir>/spv/<net>/platform-wallet.sqlite` | Per-network identities, tokens, contracts, DashPay overlays, platform addresses, selected wallet |
 | `SecretStore` | `<data_dir>/secrets/det-secrets.*` | Encrypted HD-wallet seed envelopes and imported single-key private bytes |
 
-In the per-domain tables below, a `Scope` of `None` denotes `DetScope::Global` and `Some(&seed_hash)` denotes `DetScope::Wallet(&seed_hash)`.
+In the per-domain tables below, a `Scope` of `None` denotes `DetScope::Global`.
 
 ---
 
@@ -217,8 +217,8 @@ Source: `src/wallet_backend/single_key.rs` (`SINGLE_KEY_PRIV_LABEL_PREFIX`, `SIN
 | Store | Key count |
 |-------|-----------|
 | `det-app.sqlite` | 4 (settings, wallet-meta sidecar, single-key-meta sidecar, migration sentinel) |
-| `platform-wallet.sqlite` | 17 (across 8 domains) |
+| `platform-wallet.sqlite` | 19 (across 8 domains) |
 | `SecretStore` | 2 label patterns (seed envelopes, imported-key private bytes) |
-| **Total** | **23** |
+| **Total** | **25** |
 
 Prefixed/templated keys (e.g. `det:identity:<id>`) are counted once per prefix, not per instance. `SecretStore` entries are counted as label-pattern families, not per-wallet instances.

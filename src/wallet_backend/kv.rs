@@ -12,11 +12,12 @@
 //! never exposes the upstream `ObjectId` / `WalletId` types. The mapping
 //! to upstream [`platform_wallet_storage::ObjectId`] happens in exactly
 //! one place ([`to_object_id`]) so the wallet-backend seam stays clean.
-//! [`DetScope::Global`] and [`DetScope::Wallet`] are the only scopes used
-//! today; [`DetScope::Identity`] and [`DetScope::Token`] are defined now
-//! and wired through the mapping, reserved for the Wave 2 scope
-//! promotions (they need an upstream FK relaxation before they can be
-//! written to safely).
+//! [`DetScope::Global`] and [`DetScope::Wallet`] are used for cross-network
+//! settings and per-wallet data respectively. [`DetScope::Identity`] is
+//! active: identities, top-up history, scheduled votes, and the DashPay
+//! `private` / `address_index` overlays are all identity-scoped.
+//! [`DetScope::Token`] is defined and mapped but currently unused — the
+//! token-balance cache was removed; balances are read live from upstream.
 //!
 //! All keys carried by this adapter follow a colon-separated namespace
 //! convention, with a mandatory `<network>:` prefix for global slots so
@@ -56,8 +57,11 @@ pub const SCHEMA_VERSION: u8 = 1;
 /// `Global` survives wallet deletion; every other variant anchors its
 /// metadata to a parent object that cascades on removal. `Wallet` borrows
 /// a [`WalletSeedHash`] (transparently the same `[u8; 32]` the upstream
-/// store uses as its `WalletId`). `Identity` and `Token` are reserved for
-/// the Wave 2 scope promotions — defined and mapped now, not yet written.
+/// store uses as its `WalletId`). `Identity` is active — identities,
+/// top-up history, scheduled votes, and the DashPay `private` /
+/// `address_index` overlays are all identity-scoped. `Token` is defined
+/// and mapped but currently unused (token balances are read live from
+/// upstream, not cached in DET).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DetScope<'a> {
     /// Global app metadata; no parent, survives wallet deletion.

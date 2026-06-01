@@ -1612,14 +1612,23 @@ impl App for AppState {
                 AppAction::StartSpv => {
                     let app_ctx = self.current_app_context().clone();
                     let sender = self.task_result_sender.clone();
-                    MessageBanner::set_global(
-                        ctx,
-                        "Connecting to the network. This may take a moment.",
-                        MessageType::Info,
-                    );
+                    let egui_ctx = ctx.clone();
+                    const CONNECTING_MSG: &str =
+                        "Connecting to the network. This may take a moment.";
+                    MessageBanner::set_global(ctx, CONNECTING_MSG, MessageType::Info);
                     self.subtasks.spawn_sync("spv_manual_start", async move {
+                        // The chokepoint already flips the SPV indicator to Error
+                        // on failure; here we additionally swap the "Connecting…"
+                        // banner for an actionable one, since the user pressed
+                        // Connect and is waiting for explicit feedback.
                         if let Err(e) = app_ctx.ensure_wallet_backend_and_start_spv(sender).await {
-                            tracing::warn!(error = %e, "Manual SPV start failed");
+                            MessageBanner::replace_global(
+                                &egui_ctx,
+                                CONNECTING_MSG,
+                                "Could not start network sync. Check your connection and try again.",
+                                MessageType::Error,
+                            )
+                            .with_details(&e);
                         }
                     });
                 }

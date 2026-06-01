@@ -102,14 +102,36 @@ impl AppContext {
     /// writer wins) and the upstream run loop is spawned at most once (guarded
     /// by the backend's start latch). Chain sync runs asynchronously — progress
     /// and success arrive via the `EventBridge`.
+    ///
+    /// On failure the SPV connection indicator is flipped to
+    /// [`SpvStatus::Error`] before the error is returned, so every caller — GUI
+    /// boot auto-start, the manual Connect button, the network-switch restart,
+    /// and the MCP/headless path — gets a consistent error state on the
+    /// indicator without each having to remember to set it. GUI callers may
+    /// additionally show a banner; headless callers need no egui context for
+    /// the indicator flip, which is what this method owns.
     pub async fn ensure_wallet_backend_and_start_spv(
         self: &Arc<Self>,
         sender: crate::utils::egui_mpsc::SenderAsync<crate::app::TaskResult>,
     ) -> Result<(), TaskError> {
-        self.ensure_wallet_backend(sender).await?;
+        if let Err(e) = self.ensure_wallet_backend(sender).await {
+            self.mark_spv_error(&e);
+            return Err(e);
+        }
         let backend = self.wallet_backend()?;
         self.run_backend_start(backend).await;
         Ok(())
+    }
+
+    /// Flip the SPV connection indicator to [`SpvStatus::Error`] and record the
+    /// failure detail. Safe in every context (GUI and headless) — it touches
+    /// only `ConnectionStatus` atomics, never an egui context.
+    fn mark_spv_error(&self, error: &TaskError) {
+        tracing::error!(error = %error, "Failed to start chain sync");
+        self.connection_status
+            .set_spv_last_error(Some(format!("{error}")));
+        self.connection_status.set_spv_status(SpvStatus::Error);
+        self.connection_status.refresh_state();
     }
 
     /// Spawn [`WalletBackend::start`] on the subtask runtime, surfacing a
@@ -126,12 +148,12 @@ impl AppContext {
     /// to `Error` if the start fails. Awaited directly by the async chokepoint
     /// and indirectly (via a subtask) by the synchronous one.
     async fn run_backend_start(&self, backend: Arc<WalletBackend>) {
+        // Forward-compat: `start()`'s signature is fallible though the current
+        // impl is infallible. The reachable start-time failure today is the
+        // wiring step, which the chokepoint surfaces via `mark_spv_error`; this
+        // branch keeps the start step covered should `start()` begin to fail.
         if let Err(e) = backend.start().await {
-            tracing::error!(error = %e, "Failed to start chain sync");
-            self.connection_status
-                .set_spv_last_error(Some(format!("{e}")));
-            self.connection_status.set_spv_status(SpvStatus::Error);
-            self.connection_status.refresh_state();
+            self.mark_spv_error(&e);
         }
     }
 
@@ -596,5 +618,45 @@ mod tests {
         );
 
         backend.shutdown().await;
+    }
+
+    /// QA-007: a failure at the (fallible) wiring step must surface — the
+    /// chokepoint returns `Err` AND flips the SPV indicator to `Error`, so the
+    /// user does not silently fall back to `Disconnected` with no feedback.
+    ///
+    /// Induces the wiring failure offline by planting a regular file where the
+    /// per-network SPV storage directory would be created: `WalletBackend::new`
+    /// calls `create_dir_all(data_dir/spv/testnet)`, which cannot succeed when a
+    /// path component (`spv`) is a file rather than a directory.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn chokepoint_wiring_failure_flips_indicator_to_error() {
+        let (ctx, sender, _tmp) = offline_testnet_context();
+
+        // Block the SPV storage dir creation: a file at `data_dir/spv` makes
+        // `create_dir_all(.../spv/testnet)` fail deterministically (no reliance
+        // on filesystem permissions, which root can bypass in CI).
+        std::fs::write(ctx.data_dir().join("spv"), b"not a directory")
+            .expect("plant blocking file at the spv path");
+
+        assert_ne!(
+            ctx.connection_status.spv_status(),
+            SpvStatus::Error,
+            "precondition: indicator must not already be in the Error state"
+        );
+
+        let err = ctx
+            .ensure_wallet_backend_and_start_spv(sender)
+            .await
+            .expect_err("wiring must fail when the spv path is blocked by a file");
+        assert!(
+            matches!(err, TaskError::FileSystem { .. }),
+            "expected a FileSystem wiring error, got: {err:?}"
+        );
+
+        assert_eq!(
+            ctx.connection_status.spv_status(),
+            SpvStatus::Error,
+            "wiring failure must flip the SPV indicator to Error"
+        );
     }
 }

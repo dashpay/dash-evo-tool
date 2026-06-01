@@ -36,7 +36,6 @@
 
 use std::sync::Arc;
 
-use platform_wallet_storage::kv::ObjectKind;
 use platform_wallet_storage::{KvError, KvStore, ObjectId, SqlitePersister};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -92,46 +91,12 @@ fn to_object_id(scope: DetScope<'_>) -> ObjectId {
     }
 }
 
-/// Object kind a scoped write referenced — DET mirror of the upstream
-/// `ObjectKind`, kept so [`KvAdapterError`] carries no upstream type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ObjectKindLite {
-    /// A wallet.
-    Wallet,
-    /// An identity.
-    Identity,
-    /// A token balance.
-    Token,
-    /// An established contact.
-    Contact,
-    /// A platform address.
-    PlatformAddress,
-}
-
-impl From<ObjectKind> for ObjectKindLite {
-    fn from(kind: ObjectKind) -> Self {
-        match kind {
-            ObjectKind::Wallet => ObjectKindLite::Wallet,
-            ObjectKind::Identity => ObjectKindLite::Identity,
-            ObjectKind::Token => ObjectKindLite::Token,
-            ObjectKind::Contact => ObjectKindLite::Contact,
-            ObjectKind::PlatformAddress => ObjectKindLite::PlatformAddress,
-        }
-    }
-}
-
 /// Errors returned by the [`DetKv`] adapter.
 #[derive(Debug, thiserror::Error)]
 pub enum KvAdapterError {
     /// The underlying key/value store rejected an operation.
     #[error("kv store error")]
     Store(#[source] KvError),
-
-    /// A scoped write referenced a parent object that does not exist in
-    /// the store. Carries the DET-side [`ObjectKindLite`] so callers can
-    /// branch on the missing parent's kind without an upstream type.
-    #[error("kv parent object not found: {kind:?}")]
-    ObjectNotFound { kind: ObjectKindLite },
 
     /// A stored value's schema version byte did not match
     /// [`SCHEMA_VERSION`]. Treated as a hard error rather than a silent
@@ -152,14 +117,12 @@ pub enum KvAdapterError {
     Decode(#[from] bincode::error::DecodeError),
 }
 
-/// Convert an upstream [`KvError`] into a [`KvAdapterError`], promoting the
-/// FK-violation variant to the typed [`KvAdapterError::ObjectNotFound`]
-/// instead of letting it ride the generic [`KvAdapterError::Store`] arm.
+/// Wrap an upstream [`KvError`] as a [`KvAdapterError::Store`]. The store
+/// accepts scoped writes whose parent object does not exist yet (an
+/// `AFTER DELETE` trigger reaps the metadata if the object is later
+/// removed), so there is no FK-violation variant to promote.
 fn map_kv_error(err: KvError) -> KvAdapterError {
-    match err {
-        KvError::ObjectNotFound { kind } => KvAdapterError::ObjectNotFound { kind: kind.into() },
-        other => KvAdapterError::Store(other),
-    }
+    KvAdapterError::Store(err)
 }
 
 /// Typed key/value adapter. Cheap to clone (`Arc<dyn KvStore>` inside).
@@ -504,20 +467,18 @@ mod tests {
         assert!(no_match.is_empty());
     }
 
-    /// K9: the upstream FK-violation variant is promoted to the typed
-    /// `ObjectNotFound` with the kind mapped to the DET mirror — it does
-    /// NOT ride the generic `Store` arm.
+    /// K9: an upstream store failure surfaces on the generic `Store` arm.
+    /// The store now accepts writes whose parent object is absent, so there
+    /// is no FK-violation variant to special-case.
     #[test]
-    fn object_not_found_is_promoted() {
-        struct FkRejectingKv;
-        impl KvStore for FkRejectingKv {
+    fn store_error_rides_store_arm() {
+        struct FailingKv;
+        impl KvStore for FailingKv {
             fn get(&self, _scope: &ObjectId, _key: &str) -> Result<Option<Vec<u8>>, KvError> {
                 Ok(None)
             }
             fn put(&self, _scope: &ObjectId, _key: &str, _value: &[u8]) -> Result<(), KvError> {
-                Err(KvError::ObjectNotFound {
-                    kind: ObjectKind::Wallet,
-                })
+                Err(KvError::LockPoisoned)
             }
             fn delete(&self, _scope: &ObjectId, _key: &str) -> Result<(), KvError> {
                 Ok(())
@@ -530,7 +491,7 @@ mod tests {
                 Ok(Vec::new())
             }
         }
-        let kv = DetKv::from_store(Arc::new(FkRejectingKv));
+        let kv = DetKv::from_store(Arc::new(FailingKv));
         let wallet: WalletSeedHash = [9u8; 32];
         match kv.put(
             DetScope::Wallet(&wallet),
@@ -540,10 +501,8 @@ mod tests {
                 value: 0,
             },
         ) {
-            Err(KvAdapterError::ObjectNotFound {
-                kind: ObjectKindLite::Wallet,
-            }) => {}
-            other => panic!("expected ObjectNotFound(Wallet), got {other:?}"),
+            Err(KvAdapterError::Store(KvError::LockPoisoned)) => {}
+            other => panic!("expected Store(LockPoisoned), got {other:?}"),
         }
     }
 }

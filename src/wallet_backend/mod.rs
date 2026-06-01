@@ -53,9 +53,7 @@ pub use asset_lock_signer::AssetLockSignerError;
 use asset_lock_signer::WalletAssetLockSigner;
 
 pub use event_bridge::EventBridge;
-pub use kv::{
-    DetKv, DetScope, KvAdapterError, ObjectKindLite, SCHEMA_VERSION as KV_SCHEMA_VERSION,
-};
+pub use kv::{DetKv, DetScope, KvAdapterError, SCHEMA_VERSION as KV_SCHEMA_VERSION};
 pub use loader::{PersistedWalletLoader, SeedReregistrationLoader, WalletRegistration};
 pub use platform_address::{
     KvCachedPlatformAddresses, PlatformAddressView, UpstreamPlatformAddresses,

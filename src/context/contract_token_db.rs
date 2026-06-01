@@ -5,7 +5,7 @@ use crate::model::wallet::WalletSeedHash;
 use crate::ui::tokens::tokens_screen::{
     IdentityTokenBalance, IdentityTokenIdentifier, TokenInfo, TokenInfoWithDataContract,
 };
-use crate::wallet_backend::{DetKv, DetScope, KvCachedTokenBalances, TokenBalanceView};
+use crate::wallet_backend::{DetKv, DetScope, TokenBalanceView, UpstreamTokenBalances};
 use bincode::config;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::data_contract::TokenConfiguration;
@@ -337,18 +337,16 @@ impl AppContext {
             .map_err(|source| TaskError::ContractStorage { source })
     }
 
-    /// List every `(identity, token)` balance pair stored in the k/v
-    /// registry, decorated with the token alias / config / data-contract
-    /// fields the My Tokens screen expects.
+    /// List every synced `(identity, token)` balance pair from upstream,
+    /// decorated with the token alias / config / data-contract fields the My
+    /// Tokens screen expects. Identities that have not yet completed a sync
+    /// pass are omitted (the UI renders them as "balance unknown").
     pub fn identity_token_balances(
         &self,
     ) -> std::result::Result<IndexMap<IdentityTokenIdentifier, IdentityTokenBalance>, TaskError>
     {
         let kv = self.token_kv()?;
-        let balances = self
-            .token_balances_view()?
-            .list()
-            .map_err(|source| TaskError::TokenStorage { source })?;
+        let balances = self.token_balances_view()?.list();
         // Cache decoded token registry entries so repeated balances under
         // the same token only decode the configuration once.
         let mut token_cache: std::collections::HashMap<
@@ -401,25 +399,23 @@ impl AppContext {
         Ok(result)
     }
 
-    /// Drop a single `(identity, token)` balance entry. The order list is
-    /// rewritten to drop any reference to the removed pair — mirrors the
-    /// pre-C7 cascade from `identity_token_balances` to `token_order`.
+    /// Stop tracking a single `(identity, token)` pair in the My Tokens
+    /// ordering. Balances are owned upstream now, so this only prunes DET's
+    /// saved order list; the upstream sync loop still watches the token, so
+    /// the row reappears on the next balance refresh.
     pub fn remove_token_balance(
         &self,
         token_id: Identifier,
         identity_id: Identifier,
     ) -> std::result::Result<(), TaskError> {
         let kv = self.token_kv()?;
-        self.token_balances_view()?
-            .delete(&identity_id, &token_id)
-            .map_err(|source| TaskError::TokenStorage { source })?;
         prune_token_order(&kv, |(t, i)| !(*t == token_id && *i == identity_id))?;
         Ok(())
     }
 
-    /// Insert (or refresh) a token entry in the local registry and
-    /// seed a zero-balance row for every locally-known identity — mirrors
-    /// the pre-C7 transaction that primed `identity_token_balances`.
+    /// Insert (or refresh) a token entry in the local registry. Balances are
+    /// owned upstream now; the upstream sync loop fetches them once the
+    /// identity's watch list is registered, so no balance row is seeded here.
     pub fn insert_token(
         &self,
         token_id: &Identifier,
@@ -443,62 +439,32 @@ impl AppContext {
         };
         let kv = self.token_kv()?;
         kv.put(DetScope::Global, &token_key(token_id), &stored)
-            .map_err(|source| TaskError::TokenStorage { source })?;
-
-        // Seed a zero balance for every locally-known identity (matches
-        // the pre-C7 `INSERT OR IGNORE` over `identity_token_balances`).
-        use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-        let balances = self.token_balances_view()?;
-        let identity_ids: Vec<Identifier> = self
-            .load_local_qualified_identities()?
-            .into_iter()
-            .map(|qi| qi.identity.id())
-            .collect();
-        for identity_id in identity_ids {
-            let existing = balances
-                .get(&identity_id, token_id)
-                .map_err(|source| TaskError::TokenStorage { source })?;
-            if existing.is_none() {
-                balances
-                    .set(&identity_id, token_id, 0)
-                    .map_err(|source| TaskError::TokenStorage { source })?;
-            }
-        }
-        Ok(())
+            .map_err(|source| TaskError::TokenStorage { source })
     }
 
-    /// Insert (or overwrite) a balance for a single `(identity, token)`
-    /// pair. Equivalent to the pre-C7
-    /// `INSERT ... ON CONFLICT DO UPDATE SET balance = excluded.balance`.
-    pub fn insert_identity_token_balance(
+    /// Reflect a proof-derived post-transaction balance for one
+    /// `(identity, token)` pair in the upstream-fed snapshot immediately.
+    /// Token mutation tasks (mint / transfer / burn / purchase / claim) call
+    /// this with the authoritative balance from the state-transition result so
+    /// the My Tokens screen updates before the next upstream sync pass.
+    pub fn insert_token_identity_balance(
         &self,
         token_id: &Identifier,
         identity_id: &Identifier,
         balance: u64,
     ) -> std::result::Result<(), TaskError> {
-        self.token_balances_view()?
-            .set(identity_id, token_id, balance)
-            .map_err(|source| TaskError::TokenStorage { source })
+        self.wallet_backend()?
+            .apply_known_token_balance(*identity_id, *token_id, balance);
+        Ok(())
     }
 
-    /// Remove a token from the registry along with every per-identity
-    /// balance referencing it, and drop the token from the saved order.
-    /// Mirrors the pre-C7 cascade from `token(id)` to balances and order.
+    /// Remove a token from the registry and drop it from the saved order.
+    /// Per-identity balances are owned upstream, so there is nothing local to
+    /// cascade-delete.
     pub fn remove_token(&self, token_id: &Identifier) -> std::result::Result<(), TaskError> {
         let kv = self.token_kv()?;
         kv.delete(DetScope::Global, &token_key(token_id))
             .map_err(|source| TaskError::TokenStorage { source })?;
-        let balances = self.token_balances_view()?;
-        let stored = balances
-            .list()
-            .map_err(|source| TaskError::TokenStorage { source })?;
-        for (identity_id, tid, _) in stored {
-            if tid == *token_id {
-                balances
-                    .delete(&identity_id, &tid)
-                    .map_err(|source| TaskError::TokenStorage { source })?;
-            }
-        }
         prune_token_order(&kv, |(t, _)| t != token_id)?;
         Ok(())
     }
@@ -597,7 +563,6 @@ impl AppContext {
     /// Lightweight variant of
     /// [`Self::get_all_known_tokens_with_data_contract`] that does not
     /// resolve the owning contract.
-    #[allow(dead_code)] // May be used for token overview displays without contract data
     pub fn get_all_known_tokens(
         &self,
     ) -> std::result::Result<IndexMap<Identifier, TokenInfo>, TaskError> {
@@ -690,11 +655,7 @@ impl AppContext {
             kv.delete(DetScope::Global, &key)
                 .map_err(|source| TaskError::TokenStorage { source })?;
         }
-        // Balances are owned by the cache view — wipe them through the seam
-        // rather than reaching into `det:token_balance:*` directly.
-        self.token_balances_view()?
-            .clear_all()
-            .map_err(|source| TaskError::TokenStorage { source })?;
+        // Balances are owned upstream now — nothing local to wipe.
         kv.delete(DetScope::Global, TOKEN_ORDER_KEY)
             .map_err(|source| TaskError::TokenStorage { source })?;
         Ok(())
@@ -704,10 +665,10 @@ impl AppContext {
         Ok(self.wallet_backend()?.kv())
     }
 
-    /// ACTIVE token-balance cache view (T6 seam). All `det:token_balance`
-    /// touches go through this so the cache deletion is a one-line swap to
-    /// `UpstreamTokenBalances` once a public per-token reader lands.
-    fn token_balances_view(&self) -> std::result::Result<KvCachedTokenBalances, TaskError> {
+    /// Upstream-fed token-balance view (T6 seam). Reads the lock-free
+    /// snapshot the wallet backend refreshes from the upstream identity-sync
+    /// loop.
+    fn token_balances_view(&self) -> std::result::Result<UpstreamTokenBalances, TaskError> {
         Ok(self.wallet_backend()?.token_balances())
     }
 
@@ -728,16 +689,6 @@ impl AppContext {
         self.has_wallet.store(has_wallet, Ordering::Relaxed);
 
         Ok(())
-    }
-
-    #[allow(dead_code)] // May be used for storing token balances
-    pub fn insert_token_identity_balance(
-        &self,
-        token_id: &Identifier,
-        identity_id: &Identifier,
-        balance: u64,
-    ) -> std::result::Result<(), TaskError> {
-        self.insert_identity_token_balance(token_id, identity_id, balance)
     }
 
     /// Drop every user-registered contract entry for this network. Only

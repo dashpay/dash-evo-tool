@@ -61,7 +61,8 @@ pub use platform_address::{
 pub use single_key::SingleKeyView;
 use snapshot::SnapshotStore;
 pub use snapshot::{DetUtxo, DetWalletBalance, WalletSnapshot};
-pub use token_balance::{KvCachedTokenBalances, TokenBalanceView, UpstreamTokenBalances};
+use token_balance::TokenBalanceStore;
+pub use token_balance::{TokenBalanceSnapshot, TokenBalanceView, UpstreamTokenBalances};
 pub use wallet_meta::WalletMetaView;
 pub use wallet_seed_store::WalletSeedView;
 
@@ -134,6 +135,10 @@ struct Inner {
     /// `EventBridge`. See [`snapshot`]. DISPLAY-ONLY — never feeds coin
     /// selection (A04 fund-safety gate).
     snapshots: Arc<SnapshotStore>,
+    /// Lock-free per-`(identity, token)` balance snapshot, refreshed off the
+    /// UI thread from the upstream `IdentitySyncManager` and read on the
+    /// frame thread via [`Self::token_balances`]. See [`token_balance`].
+    token_balances: Arc<TokenBalanceStore>,
     /// `WalletSeedHash` → upstream `WalletId`. See [`WalletId`].
     id_map: std::sync::RwLock<std::collections::BTreeMap<WalletSeedHash, WalletId>>,
     /// Sync-accessible cache of `Arc<PlatformWallet>` keyed by `WalletId`,
@@ -266,6 +271,7 @@ impl WalletBackend {
                 persister,
                 loader,
                 snapshots,
+                token_balances: Arc::new(TokenBalanceStore::new()),
                 id_map: std::sync::RwLock::new(std::collections::BTreeMap::new()),
                 wallets: std::sync::RwLock::new(std::collections::BTreeMap::new()),
                 seeds: std::sync::RwLock::new(std::collections::BTreeMap::new()),
@@ -506,12 +512,27 @@ impl WalletBackend {
         KvCachedPlatformAddresses::new(self.kv())
     }
 
-    /// Per-`(identity, token)` balance view (T6 seam). Returns the ACTIVE
-    /// k/v-cached impl; [`UpstreamTokenBalances`] is the reserved swap
-    /// target. See [`token_balance`] for why the cache stays active on
-    /// 08b0ed9 (no public per-token balance reader).
-    pub fn token_balances(&self) -> KvCachedTokenBalances {
-        KvCachedTokenBalances::new(self.kv())
+    /// Per-`(identity, token)` balance view (T6 seam). Reads the lock-free
+    /// snapshot last published by [`Self::refresh_token_balances`] off the
+    /// upstream `IdentitySyncManager`. Infallible, frame-safe. See
+    /// [`token_balance`] for the syncing-vs-zero contract.
+    pub fn token_balances(&self) -> UpstreamTokenBalances {
+        UpstreamTokenBalances::new(&self.inner.token_balances)
+    }
+
+    /// Reflect a proof-derived post-transaction balance in the token-balance
+    /// snapshot immediately, before the next upstream sync pass confirms it.
+    /// Synchronous and lock-free. Used by token mutation tasks (mint /
+    /// transfer / burn / purchase / claim) for instant UI feedback.
+    pub fn apply_known_token_balance(
+        &self,
+        identity_id: dash_sdk::platform::Identifier,
+        token_id: dash_sdk::platform::Identifier,
+        balance: u64,
+    ) {
+        self.inner
+            .token_balances
+            .apply(identity_id, token_id, balance);
     }
 
     /// Shared handle to the encrypted secret store backing imported-key
@@ -843,6 +864,74 @@ impl WalletBackend {
             Err(_) => return Vec::new(),
         };
         wallet.asset_locks().list_tracked_locks_blocking()
+    }
+
+    /// Register (or update) an identity's watched-token list with the upstream
+    /// `IdentitySyncManager` so its background loop fetches their balances.
+    ///
+    /// Idempotent and ordering-stable: a not-yet-registered identity is added
+    /// fresh; an already-registered one has its watch list replaced via
+    /// `update_watched_tokens`, which preserves the identity's
+    /// `last_sync_unix` and per-token balances rather than resetting them to
+    /// "syncing". Pass the full set of tokens DET tracks for the identity;
+    /// passing an empty set clears the watch list.
+    pub async fn register_identity_tokens(
+        &self,
+        identity_id: dash_sdk::platform::Identifier,
+        token_ids: Vec<dash_sdk::platform::Identifier>,
+    ) {
+        let identity_sync = self.inner.pwm.identity_sync();
+        if identity_sync
+            .state_for_identity(&identity_id)
+            .await
+            .is_some()
+        {
+            identity_sync
+                .update_watched_tokens(identity_id, token_ids)
+                .await;
+        } else {
+            identity_sync
+                .register_identity(identity_id, token_ids)
+                .await;
+        }
+    }
+
+    /// Force one immediate upstream token-balance sync pass, then republish
+    /// DET's snapshot. Use after registering watched tokens so a user-initiated
+    /// "Refresh" reflects the latest balances without waiting for the
+    /// background loop's next tick. A no-op pass (already syncing) still
+    /// refreshes the snapshot from whatever state is current.
+    pub async fn sync_token_balances_now(&self) {
+        self.inner.pwm.identity_sync().sync_now().await;
+        self.refresh_token_balances().await;
+    }
+
+    /// Republish the lock-free token-balance snapshot from the upstream
+    /// `IdentitySyncManager`'s current state. Async — call from a backend
+    /// task, never the egui frame; the frame reads the published snapshot via
+    /// [`Self::token_balances`].
+    ///
+    /// Only identities that have completed at least one sync pass
+    /// (`last_sync_unix != 0`) contribute rows; an unsynced identity is
+    /// omitted so the UI renders it as "syncing", not a zero balance. Upstream
+    /// `IdentityTokenSyncState` / `IdentityTokenSyncInfo` / `TokenAmount` are
+    /// converted to DET types here so they never cross the seam.
+    pub async fn refresh_token_balances(&self) {
+        let all_state = self.inner.pwm.identity_sync().all_state().await;
+        let synced = all_state.into_values().filter_map(|state| {
+            if state.last_sync_unix == 0 {
+                return None;
+            }
+            let balances = state
+                .tokens
+                .into_iter()
+                .map(|info| (info.token_id, info.balance))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            Some((state.identity_id, balances))
+        });
+        self.inner
+            .token_balances
+            .publish(TokenBalanceStore::snapshot_from(synced));
     }
 
     /// Deterministically derive the upstream `WalletId` from seed bytes

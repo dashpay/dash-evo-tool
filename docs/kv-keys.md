@@ -142,8 +142,9 @@ Source: `src/context/contract_token_db.rs`
 | Key | Scope | Store | Value type | Notes |
 |-----|-------|-------|------------|-------|
 | `det:token:<base58_token_id>` | `None` | `platform-wallet.sqlite` | `StoredToken` | Fields: `config_bytes: Vec<u8>` (bincode `TokenConfiguration`), `alias: String`, `data_contract_id: [u8;32]`, `position: u16` |
-| `det:token_balance:<base58_identity_id>:<base58_token_id>` | `None` | `platform-wallet.sqlite` | `u64` | Raw balance in token base units |
 | `det:token_order:v1` | `None` | `platform-wallet.sqlite` | `Vec<([u8;32],[u8;32])>` | Ordered `(token_id, identity_id)` pairs for My Tokens screen |
+
+Per-`(identity, token)` balances are no longer cached by DET. They are read live from the upstream `IdentitySyncManager` through the `TokenBalanceView` seam (`src/wallet_backend/token_balance.rs`), which is fed a lock-free snapshot refreshed off the UI thread.
 
 Source: `src/context/contract_token_db.rs`
 

@@ -341,9 +341,10 @@ fn request_to_det_request(
         // Upstream provides `created_at` directly — no sidecar read needed.
         created_at: request.created_at as i64,
         responded_at: None,
-        // Threshold-based expiry derivation is not yet wired (no DET-side
-        // threshold constant). D2 picks this up.
-        expires_at: None,
+        // DET-side UX expiry: `created_at` plus the threshold the status
+        // derivation uses (both in milliseconds). `None` only if the sum
+        // would overflow `i64`, which a real timestamp never reaches.
+        expires_at: request_expires_at_ms(request.created_at),
     }
 }
 
@@ -420,11 +421,24 @@ fn derive_request_status(
         return "rejected".to_string();
     }
     let age_ms = now_ms.saturating_sub(created_at_ms);
-    let threshold_ms = (DASHPAY_REQUEST_EXPIRY_DAYS as u64).saturating_mul(86_400_000);
-    if age_ms > threshold_ms {
+    if age_ms > request_expiry_threshold_ms() {
         return "expired".to_string();
     }
     "pending".to_string()
+}
+
+/// The [`DASHPAY_REQUEST_EXPIRY_DAYS`] window expressed in milliseconds, the
+/// unit upstream `created_at` timestamps use.
+fn request_expiry_threshold_ms() -> u64 {
+    (DASHPAY_REQUEST_EXPIRY_DAYS as u64).saturating_mul(86_400_000)
+}
+
+/// Wall-clock expiry for a contact request: `created_at` plus the UX expiry
+/// window, both in milliseconds. `None` only if the sum overflows `i64`.
+fn request_expires_at_ms(created_at_ms: u64) -> Option<i64> {
+    created_at_ms
+        .checked_add(request_expiry_threshold_ms())
+        .and_then(|ms| i64::try_from(ms).ok())
 }
 
 // ---------------------------------------------------------------------------
@@ -1094,6 +1108,26 @@ mod tests {
         assert_eq!(
             derive_request_status(&counterparty, false, created_at_ms, now_ms, &kv),
             "pending"
+        );
+    }
+
+    #[test]
+    fn expires_at_is_created_at_plus_threshold() {
+        let created_at_ms: u64 = 1_700_000_000_000;
+        let threshold_ms = (DASHPAY_REQUEST_EXPIRY_DAYS as u64) * 86_400_000;
+        assert_eq!(
+            request_expires_at_ms(created_at_ms),
+            Some((created_at_ms + threshold_ms) as i64),
+            "expiry is created_at plus the 7-day threshold, in ms"
+        );
+    }
+
+    #[test]
+    fn expires_at_none_on_overflow() {
+        assert_eq!(
+            request_expires_at_ms(u64::MAX),
+            None,
+            "an overflowing timestamp yields no expiry rather than wrapping"
         );
     }
 

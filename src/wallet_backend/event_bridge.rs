@@ -70,6 +70,10 @@ impl EventHandler for EventBridge {
         } else {
             SpvStatus::Syncing
         };
+        // Publish the per-phase heights/targets so the UI can render a
+        // determinate progress bar, not just a coarse status label.
+        self.connection_status
+            .set_spv_sync_progress(Some(progress.clone()));
         self.apply_status(status);
         self.nudge_refresh();
     }
@@ -242,6 +246,28 @@ mod tests {
         bridge.on_progress(&SyncProgress::default());
         // A default (no-manager) progress is neither synced nor errored.
         assert_eq!(cs.spv_status(), SpvStatus::Syncing);
+        assert!(drained_refresh(&mut rx));
+    }
+
+    #[test]
+    fn progress_publishes_per_phase_heights() {
+        use dash_sdk::dash_spv::sync::{BlockHeadersProgress, ProgressPercentage};
+
+        let (bridge, cs, mut rx) = make_bridge();
+        let mut headers = BlockHeadersProgress::default();
+        headers.set_state(SyncState::Syncing);
+        headers.update_target_height(10_000);
+        headers.update_tip_height(4_200);
+        let mut progress = SyncProgress::default();
+        progress.update_headers(headers);
+
+        bridge.on_progress(&progress);
+
+        assert_eq!(cs.spv_status(), SpvStatus::Syncing);
+        let stored = cs.spv_sync_progress().expect("progress published");
+        let stored_headers = stored.headers().expect("headers phase present");
+        assert_eq!(stored_headers.target_height(), 10_000);
+        assert_eq!(stored_headers.current_height(), 4_200);
         assert!(drained_refresh(&mut rx));
     }
 

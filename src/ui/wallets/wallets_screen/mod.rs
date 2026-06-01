@@ -1733,9 +1733,10 @@ impl WalletsBalancesScreen {
                             .color(DashColors::text_primary(dark_mode)),
                     );
                     {
-                        // Chain sync is owned by upstream platform-wallet;
-                        // P1's EventBridge feeds live status. Inert at the floor.
-                        let snapshot = crate::model::spv_status::SpvStatusSnapshot::default();
+                        // Chain sync is owned by upstream platform-wallet; the
+                        // EventBridge pushes live status + per-phase progress
+                        // into ConnectionStatus, the single source of truth.
+                        let snapshot = self.app_context.connection_status().spv_status_snapshot();
                         match snapshot.status {
                             SpvStatus::Idle | SpvStatus::Stopped => {
                                 ui.label(RichText::new("Disconnected").size(sz).color(secondary));

@@ -208,9 +208,15 @@ impl NetworkChooserScreen {
                         egui::RichText::new("Network:").color(DashColors::text_primary(dark_mode)),
                     );
 
-                    // Chain sync is owned by upstream platform-wallet; P1's
-                    // EventBridge feeds live SPV status. Inert at the floor.
-                    let is_spv_connected = SpvStatusSnapshot::default().status.is_active();
+                    // Chain sync is owned by upstream platform-wallet; the
+                    // EventBridge feeds live SPV status into ConnectionStatus.
+                    // While active, the network selector stays disabled so the
+                    // user can't switch networks mid-sync.
+                    let is_spv_connected = self
+                        .current_app_context()
+                        .connection_status()
+                        .spv_status()
+                        .is_active();
 
                     let network_text = match self.current_network {
                         Network::Mainnet => "Mainnet",
@@ -307,9 +313,9 @@ impl NetworkChooserScreen {
             let spv_status = status.spv_status();
             let spv_connected = ConnectionStatus::spv_connected(spv_status);
             let spv_error_detail = status.spv_last_error();
-            // Chain sync is owned by upstream platform-wallet; P1's
-            // EventBridge feeds live status. Inert snapshot at the floor.
-            let snapshot: Option<SpvStatusSnapshot> = Some(SpvStatusSnapshot::default());
+            // Chain sync is owned by upstream platform-wallet; the EventBridge
+            // pushes live status + per-phase progress into ConnectionStatus.
+            let snapshot: Option<SpvStatusSnapshot> = Some(status.spv_status_snapshot());
             let overall_state = status.overall_state();
             let dapi_total = status.dapi_total_endpoints();
             let dapi_available = status.dapi_available();
@@ -1039,9 +1045,12 @@ impl NetworkChooserScreen {
                 // diagnostic tools that can destroy wallet sync state and should not
                 // be exposed to fresh-install users.
                 if self.developer_mode {
-                    // Chain sync is owned by upstream platform-wallet; P1's
-                    // EventBridge feeds live status. Inert snapshot at the floor.
-                    let snapshot = SpvStatusSnapshot::default();
+                    // Chain sync is owned by upstream platform-wallet; the
+                    // EventBridge feeds live status into ConnectionStatus.
+                    let snapshot = self
+                        .current_app_context()
+                        .connection_status()
+                        .spv_status_snapshot();
                     ui.add_space(12.0);
                     ui.separator();
                     ui.add_space(12.0);

@@ -3,7 +3,7 @@ use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::core::CoreItem;
 use crate::components::core_zmq_listener::ZMQConnectionEvent;
-use crate::model::spv_status::SpvStatus;
+use crate::model::spv_status::{SpvStatus, SpvStatusSnapshot};
 use dash_sdk::dash_spv::sync::{ProgressPercentage, SyncProgress as SpvSyncProgress, SyncState};
 use dash_sdk::dpp::dashcore::{ChainLock, Network};
 use std::sync::Mutex;
@@ -57,6 +57,10 @@ pub struct ConnectionStatus {
     // NOTE: Mutex (not RwLock) is intentional — single reader (tooltip hover),
     // single writer (poll cycle), minimal contention. RwLock overhead not justified.
     spv_last_error: Mutex<Option<String>>,
+    /// Latest per-phase chain-sync progress pushed by the wallet-backend
+    /// `EventBridge` `on_progress` callback. Drives the determinate progress
+    /// bars in the network and wallet screens.
+    spv_sync_progress: Mutex<Option<SpvSyncProgress>>,
     rpc_last_error: Mutex<Option<String>>,
     last_update: Mutex<Instant>,
     spv_connected_peers: AtomicU16,
@@ -76,6 +80,7 @@ impl ConnectionStatus {
             disable_zmq: AtomicBool::new(false),
             overall_state: AtomicU8::new(OverallConnectionState::Disconnected as u8),
             spv_last_error: Mutex::new(None),
+            spv_sync_progress: Mutex::new(None),
             rpc_last_error: Mutex::new(None),
             last_update: Mutex::new(Instant::now()),
             spv_connected_peers: AtomicU16::new(0),
@@ -107,6 +112,10 @@ impl ConnectionStatus {
         if let Ok(mut err) = self.spv_last_error.lock() {
             *err = None;
         }
+        *self
+            .spv_sync_progress
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
         if let Ok(mut err) = self.rpc_last_error.lock() {
             *err = None;
         }
@@ -182,6 +191,37 @@ impl ConnectionStatus {
     /// Get the last SPV error message, if any.
     pub fn spv_last_error(&self) -> Option<String> {
         self.spv_last_error.lock().ok().and_then(|g| g.clone())
+    }
+
+    /// Store the latest chain-sync progress (push-based from the wallet-backend
+    /// `EventBridge` `on_progress` callback). `None` clears it (e.g. on stop).
+    pub fn set_spv_sync_progress(&self, progress: Option<SpvSyncProgress>) {
+        *self
+            .spv_sync_progress
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = progress;
+    }
+
+    /// Latest chain-sync progress, if any has been reported.
+    pub fn spv_sync_progress(&self) -> Option<SpvSyncProgress> {
+        self.spv_sync_progress
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Build a [`SpvStatusSnapshot`] for UI rendering from the live
+    /// push-based state. This is the single source of truth the network and
+    /// wallet screens read instead of an inert default snapshot.
+    pub fn spv_status_snapshot(&self) -> SpvStatusSnapshot {
+        SpvStatusSnapshot {
+            status: self.spv_status(),
+            sync_progress: self.spv_sync_progress(),
+            last_error: self.spv_last_error(),
+            started_at: None,
+            last_updated: None,
+            connected_peers: self.spv_connected_peers() as usize,
+        }
     }
 
     /// Update SPV connected peer count and maintain `spv_no_peers_since` tracking.
@@ -506,7 +546,58 @@ impl Default for ConnectionStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dash_sdk::dash_spv::sync::BlockHeadersProgress;
     use std::time::Duration;
+
+    /// A `SyncProgress` mid-headers-download: 5000 / 10000 (50%).
+    fn syncing_progress() -> SpvSyncProgress {
+        let mut headers = BlockHeadersProgress::default();
+        headers.set_state(SyncState::Syncing);
+        headers.update_target_height(10_000);
+        headers.update_tip_height(5_000);
+        let mut progress = SpvSyncProgress::default();
+        progress.update_headers(headers);
+        progress
+    }
+
+    #[test]
+    fn spv_sync_progress_round_trips() {
+        let status = ConnectionStatus::new();
+        assert!(status.spv_sync_progress().is_none());
+
+        status.set_spv_sync_progress(Some(syncing_progress()));
+        let got = status.spv_sync_progress().expect("progress stored");
+        let headers = got.headers().expect("headers phase present");
+        assert_eq!(headers.target_height(), 10_000);
+        assert_eq!(headers.current_height(), 5_000);
+
+        status.set_spv_sync_progress(None);
+        assert!(status.spv_sync_progress().is_none());
+    }
+
+    #[test]
+    fn spv_status_snapshot_reflects_live_state() {
+        let status = ConnectionStatus::new();
+        status.set_spv_status(SpvStatus::Syncing);
+        status.set_spv_connected_peers(3);
+        status.set_spv_sync_progress(Some(syncing_progress()));
+
+        let snap = status.spv_status_snapshot();
+        assert_eq!(snap.status, SpvStatus::Syncing);
+        assert_eq!(snap.connected_peers, 3);
+        let progress = snap.sync_progress.expect("snapshot carries live progress");
+        assert_eq!(progress.headers().unwrap().target_height(), 10_000);
+    }
+
+    #[test]
+    fn reset_clears_sync_progress() {
+        let status = ConnectionStatus::new();
+        status.set_spv_sync_progress(Some(syncing_progress()));
+        assert!(status.spv_sync_progress().is_some());
+
+        status.reset();
+        assert!(status.spv_sync_progress().is_none());
+    }
 
     #[test]
     fn spv_peer_degraded_returns_false_when_none() {

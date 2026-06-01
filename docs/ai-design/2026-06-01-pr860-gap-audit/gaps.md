@@ -4,6 +4,7 @@
 **Head SHA:** `686430a4d2b83596fbbe716acc183a424859e11d`
 **PR #860 base:** `v1.0-dev` @ `87ba5b711839219f5e1c7aee8f9de36d038866e3`
 **Auditor:** project-reviewer-adams (READ-ONLY; no source touched)
+**Resolution update:** 2026-06-01 — PROJ-001 fixed on-branch at `36f5a982` (see commits `42388c4b`, `3165f98c`, `36f5a982`); see Resolution log.
 
 PR #860 rips out DET's home-grown SPV stack (`src/spv/**` deleted) and `data.db` wallet
 schema and re-seats wallet/identity/DashPay/shielded state on the upstream
@@ -31,24 +32,22 @@ several items did not survive contact with the source.
 | INFO     | 3 |
 | **Total confirmed gaps** | **21** |
 
+> **Note:** 1 CRITICAL (PROJ-001) resolved on-branch 2026-06-01; counts above are the original audit snapshot.
+
 By category: functional/unwired = 5; deferred-by-design = 6; test = 4; upstream = 2;
 doc = 3; already-resolved (recorded, not counted as open) = 4.
 
 ### Merge-blockers (called out up top)
 
-1. **PROJ-001 (CRITICAL)** — SPV / platform-address / identity sync is **never started in
-   any code path**. `WalletBackend::start()` (the only caller of
-   `spv_arc().spawn_in_background(...)`) has **zero callers**, and `AppContext::start_spv()`
-   — which the Connect button, auto-start, MCP, and SwitchNetwork all call — is an inert
-   `Ok(())` stub. A wallet rewrite whose chain sync never runs is not merge-ready. *Fix
-   in-progress in a separate worktree per audit brief.*
+1. **PROJ-001 (CRITICAL)** — **Resolved on-branch (`36f5a982`).** SPV / platform-address /
+   identity sync was never started in any code path. This is now fixed; see the PROJ-001
+   section and Resolution log below for the full fix shape.
 2. **PROJ-005 (HIGH)** — release gate G1: the `dash-sdk` / `platform-wallet` pin
    (`Cargo.toml`) points at an unreleased platform rev tracking PR #3625 (draft persister).
    Project policy (Decision #1) classifies this as a release-hardening blocker, not a start
-   blocker — but it gates *merge-to-ship*.
+   blocker — but it gates *merge-to-ship*. **This is the sole remaining open merge-blocker.**
 
-Everything else is fixable post-merge or is a disclosed scope cut. PROJ-001 is the one that
-must not ship.
+Everything else is fixable post-merge or is a disclosed scope cut.
 
 ---
 
@@ -56,7 +55,7 @@ must not ship.
 
 | ID | Title | Location | Sev | Status | What's missing | Owner / follow-up |
 |----|-------|----------|-----|--------|----------------|-------------------|
-| PROJ-001 | SPV sync never driven — dead `start()`, inert `start_spv()` | `src/wallet_backend/mod.rs:419-431`; `src/context/wallet_lifecycle.rs:76-78` | CRITICAL | **In-progress** | `start_spv()` returns `Ok(())`; `WalletBackend::start()` (only spawner of `spv_arc().spawn_in_background`) has 0 callers | start_spv fix worktree |
+| PROJ-001 | SPV sync never driven — dead `start()`, inert `start_spv()` | `src/wallet_backend/mod.rs:419-431`; `src/context/wallet_lifecycle.rs:76-78` | CRITICAL | **Resolved (`36f5a982`)** | `start_spv()` returns `Ok(())`; `WalletBackend::start()` (only spawner of `spv_arc().spawn_in_background`) has 0 callers | start_spv fix worktree |
 | PROJ-005 | Pin tracks unreleased platform rev (G1) | `Cargo.toml:21,32,35` (`rev = 17653ba8…`) | HIGH | Open | Pin must move to a released platform rev once #3625 lands before shipping | Release captain |
 
 ---
@@ -83,6 +82,15 @@ Evidence chain (all verified at head):
 
 Net effect: chain sync, platform-address sync, and identity sync are dead in every path.
 Balances/UTXOs/identities never refresh from the network. This is the SgtMaj-grade hole.
+
+**Resolved 2026-06-01** (`42388c4b`, `3165f98c`, `36f5a982`). The fix wires `start_spv()` to
+`WalletBackend::start()` (guarded by a `StartLatch` for idempotency), then introduces a
+single async chokepoint `AppContext::ensure_wallet_backend_and_start_spv()` that all four
+caller paths — GUI boot auto-start, manual Connect button (new typed `AppAction::StartSpv`),
+MCP `ensure_spv_synced`, and network switch — now funnel through. Wiring and start failures
+are surfaced to the user via the connection-status indicator (flipped to Error) and an
+actionable banner at the Connect handler. QA round-tripped twice; 571 lib tests pass,
+clippy/fmt clean; five offline tests exercise the start-path gating.
 
 ### PROJ-002 — DashPay `add_contact` / `remove_contact` are `NotSupported` stubs *(MEDIUM)*
 
@@ -165,7 +173,7 @@ Notes:
 | ID | Title | Location | Sev | Status | What's missing |
 |----|-------|----------|-----|--------|----------------|
 | PROJ-013 | `RUST_MIN_STACK=16777216` not enforced by harness or CI | `tests/backend-e2e/main.rs:7,10`; `.github/workflows/tests.yml` (no ref) | MEDIUM | Open | Only a `//!` doc instruction. No thread `stack_size` builder in harness; backend-e2e is `#[ignore]` and not run with the env var in any workflow. SDK deep-stack tests segfault at default 8 MB without it. |
-| PROJ-014 | `WalletBackend::start()` has no test exercising the start path | `src/wallet_backend/mod.rs:419-431` | HIGH | Open | No unit/integration/e2e test invokes `start()` — directly enabling PROJ-001 to ship unnoticed. A test asserting sync coordinators spawn would have caught the dead caller. |
+| PROJ-014 | `WalletBackend::start()` has no test exercising the start path | `src/wallet_backend/mod.rs:419-431` | HIGH | **Largely resolved (`3165f98c`, `36f5a982`)** | No unit/integration/e2e test invokes `start()` — directly enabling PROJ-001 to ship unnoticed. A test asserting sync coordinators spawn would have caught the dead caller. Offline tests now cover the start-path gating (`start_spv_errors_when_backend_not_wired`, `start_spv_starts_after_backend_wired`, `ensure_wallet_backend_and_start_spv_wires_then_starts`, `chokepoint_wiring_failure_flips_indicator_to_error`); full live-SPV success path remains an e2e/network gap. |
 | PROJ-015 | TC-012 receive-address reuse — unverified from DET source | `src/wallet_backend/mod.rs:614-627` (`next_receive_address` → upstream `next_receive_address_for_account`) | LOW | Unverified — needs follow-up | Whether consecutive calls return the same address depends on upstream issue/used-marking, which cannot run while PROJ-001 keeps sync dead. Re-test after PROJ-001 fix. |
 | PROJ-016 | TC-066 key-not-visible-after-broadcast (flake-vs-bug) | (tracked-only, no isolated code surface) | LOW | Unverified — needs follow-up | Catalogued in seed list; no deterministic repro in tree. Re-classify after live run with PROJ-001 fixed. |
 
@@ -238,6 +246,19 @@ byte-compat never runtime-verified — no `DiskStorageManager` symbol in DET sou
 upstream `platform-wallet-storage`, so DET cannot verify it here);
 `/tmp/marvin-finish-unwire-exceptions.md` (seed #20) — **file absent**, ~14 missing TCs could
 not be folded in.
+
+---
+
+## Resolution log
+
+- **2026-06-01 — PROJ-001 resolved** (`42388c4b`, `3165f98c`, `36f5a982`): `start_spv()` wired to
+  `WalletBackend::start()` with `StartLatch` idempotency guard; single async chokepoint
+  `AppContext::ensure_wallet_backend_and_start_spv()` covers all four caller paths (GUI boot,
+  Connect, MCP, network switch); wiring and start failures now surface via indicator + banner.
+  QA residuals also closed by `36f5a982`: QA-007 (user-facing wiring-failure feedback) and
+  QA-008 (dead-branch in error precedence logic) both resolved in the same commit.
+- **2026-06-01 — PROJ-014 largely resolved** (`3165f98c`, `36f5a982`): four offline tests now
+  gate the start path; live-SPV success path remains an e2e/network gap.
 
 ---
 

@@ -81,13 +81,6 @@ pub struct ContactXpubMaterial {
     pub account_reference: u32,
 }
 
-// TODO(PROJ-004): the receive side (`backend_task::dashpay::incoming_payments`
-// via `hd_derivation::derive_dashpay_incoming_xpub`) still uses DET's local
-// DIP-14 path, which hardcodes coin-type 5' and so diverges from this upstream
-// derivation on testnet (coin-type 1'). Route the receive side through this
-// same seam so send/receive agree on every network. Until then, end-to-end
-// fund delivery is only correct on mainnet — see the seam tests.
-//
 /// Derive the contact-relationship xpub material from the wallet's real HD
 /// seed, using upstream `platform_wallet::derive_contact_xpub` as the single
 /// source of truth for the `m/9'/coin'/15'/account'/(sender)/(recipient)`
@@ -101,7 +94,10 @@ pub struct ContactXpubMaterial {
 ///
 /// * `seed_bytes`        - The wallet's 64-byte BIP-39 HD seed.
 /// * `network`           - Network for coin-type selection in the path.
-/// * `account_index`     - DIP-15 account index (hardened path segment).
+/// * `account_index`     - DIP-15 account index (hardened path segment). Both
+///   callers pass `0`, so the path segment (`account 0'`) and the
+///   `account_reference` HMAC below agree; a non-zero value here must be
+///   threaded to the receive side too or the two would desync.
 /// * `sender_id`         - The sender (our) identity.
 /// * `recipient_id`      - The recipient (contact) identity.
 /// * `sender_secret_key` - The sender's 32-byte ECDH secret, keying the
@@ -2011,19 +2007,20 @@ mod tests {
             local.chain_code.to_bytes(),
             "published chain code must match the receive-side xpub on mainnet"
         );
+        assert_eq!(
+            seam.parent_fingerprint,
+            local.parent_fingerprint.to_bytes(),
+            "published parent fingerprint must match the receive-side xpub on mainnet"
+        );
     }
 
-    /// KNOWN DIVERGENCE (PROJ-004 follow-up, out of scope for this change):
-    /// on **testnet** the upstream spec-compliant path uses coin-type `1'`
-    /// (`m/9'/1'/15'/0'/…`) while DET's local `dip14_derivation` hardcodes
-    /// `5'` (`m/9'/5'/15'/0'/…`). The send side now derives the correct
-    /// (upstream) xpub, but the receive side (`incoming_payments`) still uses
-    /// the hardcoded local path, so on testnet they DISAGREE. Funds will only
-    /// land correctly once the receive side also routes through upstream.
-    /// This test documents the gap so the divergence is visible and tracked,
-    /// not silently green.
+    /// Fund-routing invariant for SEC-001 on **testnet**: the xpub the seam
+    /// publishes in the contact request equals the xpub DET's receive-side
+    /// derivation (`derive_dashpay_incoming_xpub`) produces from the same seed
+    /// and path. Both now select coin-type `1'` on testnet, so the contact
+    /// pays into addresses the user's wallet actually scans.
     #[test]
-    fn seam_and_local_diverge_on_testnet_until_receive_side_migrates() {
+    fn seam_xpub_matches_receive_side_on_testnet() {
         use crate::backend_task::dashpay::hd_derivation::derive_dashpay_incoming_xpub;
 
         let (sender, recipient) = contact_ids();
@@ -2041,12 +2038,64 @@ mod tests {
             derive_dashpay_incoming_xpub(&TEST_SEED, Network::Testnet, 0, &sender, &recipient)
                 .expect("local derive");
 
-        assert_ne!(
+        assert_eq!(
             seam.public_key,
             local.public_key.serialize(),
-            "documents the testnet coin-type divergence; flip to assert_eq once \
-             the receive side routes through upstream derive_contact_xpub"
+            "published public key must match the receive-side xpub on testnet"
         );
+        assert_eq!(
+            seam.chain_code,
+            local.chain_code.to_bytes(),
+            "published chain code must match the receive-side xpub on testnet"
+        );
+        assert_eq!(
+            seam.parent_fingerprint,
+            local.parent_fingerprint.to_bytes(),
+            "published parent fingerprint must match the receive-side xpub on testnet"
+        );
+    }
+
+    /// SEC-001 fund-routing invariant, both networks, all published fields.
+    /// The send-side seam (`derive_contact_xpub_material`) and the receive-side
+    /// scanning derivation (`derive_dashpay_incoming_xpub`) must agree on the
+    /// full triple (public_key, chain_code, parent_fingerprint) for the same
+    /// `(sender, recipient)` on Mainnet AND Testnet. Any disagreement means a
+    /// contact pays into addresses the recipient never scans.
+    #[test]
+    fn seam_matches_receive_side_full_fields_on_both_networks() {
+        use crate::backend_task::dashpay::hd_derivation::derive_dashpay_incoming_xpub;
+
+        let (sender, recipient) = contact_ids();
+        for network in [Network::Mainnet, Network::Testnet] {
+            let seam = derive_contact_xpub_material(
+                &TEST_SEED,
+                network,
+                0,
+                &sender,
+                &recipient,
+                &TEST_SECRET,
+            )
+            .expect("seam derive");
+
+            let local = derive_dashpay_incoming_xpub(&TEST_SEED, network, 0, &sender, &recipient)
+                .expect("local derive");
+
+            assert_eq!(
+                seam.public_key,
+                local.public_key.serialize(),
+                "public key must match send↔receive on {network:?}"
+            );
+            assert_eq!(
+                seam.chain_code,
+                local.chain_code.to_bytes(),
+                "chain code must match send↔receive on {network:?}"
+            );
+            assert_eq!(
+                seam.parent_fingerprint,
+                local.parent_fingerprint.to_bytes(),
+                "parent fingerprint must match send↔receive on {network:?}"
+            );
+        }
     }
 
     /// The 32-byte ECDH secret key vs the 64-byte HD seed are different inputs:

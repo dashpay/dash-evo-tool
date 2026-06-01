@@ -153,9 +153,11 @@ fn derive_contact_info_keys(
     let master_xprv = ExtendedPrivKey::new_master(network, &seed)
         .map_err(|e| format!("Failed to create master key: {}", e))?;
 
-    // Derive to the root encryption key path: m/9'/5'/15'/0'
-    // This follows the DashPay derivation structure
-    let root_path = DerivationPath::from_str("m/9'/5'/15'/0'")
+    // Derive to the root encryption key path: m/9'/coin'/15'/0'
+    // This follows the DashPay derivation structure; the coin type is selected
+    // per network so testnet keys match the spec-compliant counterparty.
+    let coin_type = crate::model::wallet::coin_type_for_network(network);
+    let root_path = DerivationPath::from_str(&format!("m/9'/{coin_type}'/15'/0'"))
         .map_err(|e| format!("Invalid derivation path: {}", e))?;
 
     let secp = dash_sdk::dpp::dashcore::secp256k1::Secp256k1::new();

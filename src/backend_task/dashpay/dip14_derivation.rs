@@ -157,7 +157,11 @@ pub fn ckd_pub_256(
 }
 
 /// Derive DashPay incoming funds extended public key using DIP-14 compliant derivation
-/// Path: m/9'/5'/15'/account'/(sender_id)/(recipient_id)
+/// Path: m/9'/coin'/15'/account'/(sender_id)/(recipient_id)
+///
+/// The coin type is selected by `network` (5' on Mainnet, 1' on
+/// Testnet/Devnet/Regtest) so this receive-side scanning xpub matches the
+/// send-side xpub the contact pays into on every network.
 pub fn derive_dashpay_incoming_xpub_dip14(
     master_seed: &[u8],
     network: Network,
@@ -165,6 +169,7 @@ pub fn derive_dashpay_incoming_xpub_dip14(
     sender_id: &Identifier,
     recipient_id: &Identifier,
 ) -> Result<ExtendedPubKey, String> {
+    use crate::model::wallet::coin_type_for_network;
     use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
     use std::str::FromStr;
 
@@ -172,8 +177,9 @@ pub fn derive_dashpay_incoming_xpub_dip14(
     let master_xprv = ExtendedPrivKey::new_master(network, master_seed)
         .map_err(|e| format!("Failed to create master key: {}", e))?;
 
-    // Build derivation path for the base: m/9'/5'/15'/account'
-    let base_path = DerivationPath::from_str(&format!("m/9'/5'/15'/{}'", account))
+    // Build derivation path for the base: m/9'/coin'/15'/account'
+    let coin_type = coin_type_for_network(network);
+    let base_path = DerivationPath::from_str(&format!("m/9'/{coin_type}'/15'/{account}'"))
         .map_err(|e| format!("Invalid derivation path: {}", e))?;
 
     // Derive to the account level using standard BIP32
@@ -371,7 +377,7 @@ mod tests {
         let xpub = xpub.unwrap();
 
         // Verify the derivation depth is correct (base path + 2 identity levels)
-        // m/9'/5'/15'/0'/(sender)/(recipient) = depth 6
+        // m/9'/1'/15'/0'/(sender)/(recipient) on testnet = depth 6
         assert_eq!(xpub.depth, 6);
     }
 }

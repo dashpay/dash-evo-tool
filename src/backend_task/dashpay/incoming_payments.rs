@@ -32,7 +32,7 @@ pub struct DashPayAddressRegistrationResult {
 
 /// Derive the receiving addresses for a contact relationship
 /// These are the addresses the CONTACT will use to pay US
-/// Path: m/9'/5'/15'/account'/(our_id)/(contact_id)/index
+/// Path: m/9'/coin'/15'/account'/(our_id)/(contact_id)/index
 pub fn derive_receiving_addresses_for_contact(
     master_seed: &[u8],
     network: Network,
@@ -42,7 +42,7 @@ pub fn derive_receiving_addresses_for_contact(
     count: u32,
 ) -> Result<Vec<DashPayReceivingAddress>, String> {
     // For receiving payments, we derive from OUR xpub
-    // Path: m/9'/5'/15'/0'/(our_id)/(contact_id)
+    // Path: m/9'/coin'/15'/0'/(our_id)/(contact_id)
     // This is the key we sent to the contact in our contact request
     let xpub = derive_dashpay_incoming_xpub(
         master_seed,
@@ -259,15 +259,18 @@ fn register_dashpay_address(
     contact_id: &Identifier,
     address_index: u32,
 ) -> Result<(), String> {
-    use crate::model::wallet::{DerivationPathReference, DerivationPathType};
+    use crate::model::wallet::{
+        DerivationPathReference, DerivationPathType, coin_type_for_network,
+    };
     use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
 
     // Create a derivation path representation for DashPay addresses
-    // m/9'/5'/15'/0'/<owner_hash>/<contact_hash>/<index>
+    // m/9'/coin'/15'/0'/<owner_hash>/<contact_hash>/<index>
     // Note: We use a simplified representation since full 256-bit paths don't fit in standard BIP32
+    let coin_type = coin_type_for_network(app_context.network);
     let path = DerivationPath::from(vec![
         ChildNumber::from_hardened_idx(9).unwrap(), // Feature purpose
-        ChildNumber::from_hardened_idx(5).unwrap(), // Coin type (Dash)
+        ChildNumber::from_hardened_idx(coin_type).unwrap(), // Coin type (per network)
         ChildNumber::from_hardened_idx(15).unwrap(), // DashPay feature
         ChildNumber::from_hardened_idx(0).unwrap(), // Account
         // For the identity indices, we use a hash to fit in u32

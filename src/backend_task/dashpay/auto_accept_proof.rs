@@ -167,7 +167,7 @@ pub fn generate_auto_accept_proof(
     // Determine network from the identity
     let network = identity.network;
 
-    // Derive the auto-accept key using DIP-0015 path: m/9'/5'/16'/timestamp'
+    // Derive the auto-accept key using DIP-0015 path: m/9'/coin'/16'/timestamp'
     // Using expiration timestamp as the derivation index
     let auto_accept_xprv = derive_auto_accept_key(
         &wallet_seed,

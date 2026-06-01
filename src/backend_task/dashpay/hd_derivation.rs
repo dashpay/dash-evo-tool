@@ -13,12 +13,14 @@ use super::dip14_derivation::derive_dashpay_incoming_xpub_dip14;
 const DASHPAY_AUTO_ACCEPT_FEATURE: u32 = 16;
 
 /// Derive the DashPay incoming funds extended public key for a contact relationship
-/// Path: m/9'/5'/15'/account'/(sender_id)/(recipient_id)
+/// Path: m/9'/coin'/15'/account'/(sender_id)/(recipient_id)
 ///
 /// This creates a unique derivation path for each contact relationship,
-/// allowing for unique payment addresses between any two identities.
+/// allowing for unique payment addresses between any two identities. The coin
+/// type is selected per network (5' on Mainnet, 1' on Testnet/Devnet/Regtest)
+/// so the scanning xpub matches the send-side xpub published to contacts.
 ///
-/// This function now uses DIP-14 compliant 256-bit derivation for identity IDs.
+/// This function uses DIP-14 compliant 256-bit derivation for identity IDs.
 pub fn derive_dashpay_incoming_xpub(
     master_seed: &[u8],
     network: Network,
@@ -101,20 +103,22 @@ pub fn generate_contact_xpub_data(
 }
 
 /// Derive auto-accept proof key according to DIP-0015
-/// Path: m/9'/5'/16'/timestamp'
+/// Path: m/9'/coin'/16'/timestamp'
 pub fn derive_auto_accept_key(
     master_seed: &[u8],
     network: Network,
     timestamp: u32,
 ) -> Result<ExtendedPrivKey, String> {
+    use crate::model::wallet::coin_type_for_network;
+
     // Create extended private key from seed
     let master_xprv = ExtendedPrivKey::new_master(network, master_seed)
         .map_err(|e| format!("Failed to create master key: {}", e))?;
 
-    // Build derivation path: m/9'/5'/16'/timestamp'
+    // Build derivation path: m/9'/coin'/16'/timestamp'
+    let coin_type = coin_type_for_network(network);
     let path = DerivationPath::from_str(&format!(
-        "m/9'/5'/{}'/{}'",
-        DASHPAY_AUTO_ACCEPT_FEATURE, timestamp
+        "m/9'/{coin_type}'/{DASHPAY_AUTO_ACCEPT_FEATURE}'/{timestamp}'"
     ))
     .map_err(|e| format!("Invalid derivation path: {}", e))?;
 
@@ -263,7 +267,7 @@ mod tests {
 
         // Verify the key was derived correctly
         assert_eq!(key.network, network);
-        assert_eq!(key.depth, 4); // m/9'/5'/16'/timestamp' = depth 4
+        assert_eq!(key.depth, 4); // m/9'/1'/16'/timestamp' on testnet = depth 4
     }
 
     #[test]
@@ -392,8 +396,14 @@ mod tests {
         )
         .expect("Should derive xpub for mainnet");
 
-        // Keys should be the same but network should differ
+        // Coin type differs by network (1' testnet, 5' mainnet), so the keys
+        // themselves must differ — not just the network tag.
         assert_eq!(xpub_testnet.network, Network::Testnet);
         assert_eq!(xpub_mainnet.network, Network::Mainnet);
+        assert_ne!(
+            xpub_testnet.public_key.serialize(),
+            xpub_mainnet.public_key.serialize(),
+            "different coin types must produce different keys"
+        );
     }
 }

@@ -41,6 +41,19 @@ pub const DASH_COIN_TYPE: u32 = 5;
 /// Testnet coin type (shared across all testnet-like networks).
 pub const DASH_TESTNET_COIN_TYPE: u32 = 1;
 
+/// Resolve the SLIP-0044 coin type for a Dash network.
+///
+/// Mainnet uses `5'`; Testnet, Devnet, and Regtest all use `1'`. This mirrors
+/// the canonical key-wallet mapping (`DASH_COIN_TYPE` / `DASH_TESTNET_COIN_TYPE`
+/// in `key_wallet::dip9`) and the arms upstream `AccountType::derivation_path`
+/// applies, so every HD path DET builds agrees with what the wallet derives.
+pub const fn coin_type_for_network(network: Network) -> u32 {
+    match network {
+        Network::Mainnet => DASH_COIN_TYPE,
+        Network::Testnet | Network::Devnet | Network::Regtest => DASH_TESTNET_COIN_TYPE,
+    }
+}
+
 /// BIP44 account 0 path for Dash mainnet: `m/44'/5'/0'`.
 pub const DASH_BIP44_ACCOUNT_0_PATH_MAINNET: [ChildNumber; 3] = [
     ChildNumber::Hardened {

@@ -61,6 +61,7 @@ pub use wallet_seed_store::WalletSeedView;
 
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use dash_sdk::Sdk;
 use dash_sdk::dash_spv::ClientConfig;
@@ -84,6 +85,28 @@ use crate::utils::egui_mpsc::SenderAsync;
 /// does not write its own persister (removal-inventory: consume, don't
 /// reimplement).
 type DetPersister = SqlitePersister;
+
+/// One-shot latch guarding chain-sync startup. The upstream
+/// `SpvRuntime::spawn_in_background` unconditionally spawns a fresh run loop
+/// per call, so [`WalletBackend::start`] uses this to spawn exactly once even
+/// when invoked repeatedly (Connect clicked twice, eager-init plus a manual
+/// click).
+#[derive(Debug, Default)]
+struct StartLatch(AtomicBool);
+
+impl StartLatch {
+    /// Returns `true` exactly once — on the first call. Every later call
+    /// returns `false`. Atomic swap, so concurrent callers race to a single
+    /// winner.
+    fn try_begin(&self) -> bool {
+        !self.0.swap(true, Ordering::SeqCst)
+    }
+
+    /// Whether the latch has been triggered.
+    fn is_started(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+}
 
 /// Default BIP-44 account index for wallet receive/send operations. DET has
 /// always operated account 0; multi-account support is out of P2 scope.
@@ -165,6 +188,9 @@ struct Inner {
     /// unlocks every subsequent sign for the same key. Dropped on
     /// shutdown — never persisted, never serialised.
     single_key_unlocked: std::sync::RwLock<std::collections::BTreeMap<String, [u8; 32]>>,
+    /// Guards [`WalletBackend::start`] so chain sync spawns exactly once.
+    /// See [`StartLatch`].
+    start_latch: StartLatch,
 }
 
 /// The single wallet entry point. See module docs.
@@ -246,6 +272,7 @@ impl WalletBackend {
                 single_key_index: std::sync::RwLock::new(std::collections::BTreeMap::new()),
                 single_key_unlocked: std::sync::RwLock::new(std::collections::BTreeMap::new()),
                 app_kv,
+                start_latch: StartLatch::default(),
             }),
         };
 
@@ -416,7 +443,15 @@ impl WalletBackend {
     /// `start()` and which `spawn_in_background()` drives on the tokio
     /// runtime. Sync failures surface asynchronously via the upstream run
     /// task and the `EventBridge` `on_error` callback, not from this call.
+    ///
+    /// Idempotent: the first call latches a started flag and spawns the run
+    /// loop; subsequent calls return `Ok(())` without spawning a second loop.
     pub async fn start(&self) -> Result<(), TaskError> {
+        if !self.inner.start_latch.try_begin() {
+            tracing::debug!("Wallet backend chain sync already started; ignoring");
+            return Ok(());
+        }
+
         let config = self.build_client_config();
 
         self.inner.pwm.spv_arc().spawn_in_background(config);
@@ -428,6 +463,14 @@ impl WalletBackend {
         // `serde`, so there is no `shielded_sync_arc()` to start here.
 
         Ok(())
+    }
+
+    /// Whether chain sync has been started on this backend.
+    ///
+    /// Reflects the latch set by [`Self::start`]; used by tests and by callers
+    /// that want to avoid a redundant spawn attempt.
+    pub fn is_started(&self) -> bool {
+        self.inner.start_latch.is_started()
     }
 
     /// Stop all upstream background tasks. Idempotent.
@@ -1290,6 +1333,58 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The start latch is one-shot: `try_begin` returns `true` only on the
+    /// first call, so `WalletBackend::start` spawns the SPV run loop exactly
+    /// once even when called repeatedly (Connect clicked twice, eager-init plus
+    /// a manual click). This guards against a double-SPV-spawn regression.
+    #[test]
+    fn start_latch_fires_once() {
+        let latch = StartLatch::default();
+        assert!(!latch.is_started(), "fresh latch must not be started");
+        assert!(latch.try_begin(), "first try_begin must win");
+        assert!(
+            latch.is_started(),
+            "latch must report started after winning"
+        );
+        assert!(!latch.try_begin(), "second try_begin must lose");
+        assert!(!latch.try_begin(), "third try_begin must lose");
+        assert!(latch.is_started(), "latch stays started");
+    }
+
+    /// Concurrent callers race to a single winner — exactly one thread sees
+    /// `try_begin() == true`. Pins the atomic-swap contract that prevents two
+    /// SPV run loops from racing against the same data directory.
+    #[test]
+    fn start_latch_single_winner_under_contention() {
+        use std::sync::Arc as StdArc;
+        use std::sync::atomic::AtomicUsize;
+
+        let latch = StdArc::new(StartLatch::default());
+        let winners = StdArc::new(AtomicUsize::new(0));
+
+        let handles: Vec<_> = (0..16)
+            .map(|_| {
+                let latch = StdArc::clone(&latch);
+                let winners = StdArc::clone(&winners);
+                std::thread::spawn(move || {
+                    if latch.try_begin() {
+                        winners.fetch_add(1, Ordering::SeqCst);
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().expect("thread panicked");
+        }
+
+        assert_eq!(
+            winners.load(Ordering::SeqCst),
+            1,
+            "exactly one caller may win the start latch"
+        );
+        assert!(latch.is_started());
+    }
 
     /// I2: a network/broadcast rejection from `register_identity_with_funding`
     /// maps to the dedicated `IdentityCreateRejected` envelope (not the generic

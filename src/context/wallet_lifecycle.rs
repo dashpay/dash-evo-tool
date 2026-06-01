@@ -2,6 +2,7 @@ use super::AppContext;
 use crate::backend_task::error::TaskError;
 use crate::database::is_unique_constraint_violation;
 use crate::model::feature_gate::FeatureGate;
+use crate::model::spv_status::SpvStatus;
 use crate::model::wallet::meta::WalletMeta;
 use crate::model::wallet::seed_envelope::StoredSeedEnvelope;
 use crate::model::wallet::{DerivationPathReference, DerivationPathType, Wallet, WalletSeedHash};
@@ -70,10 +71,28 @@ impl AppContext {
 
     /// Start chain sync.
     ///
-    /// Inert at the P0.5 compile floor: chain sync is owned by upstream
-    /// `platform-wallet`'s `SpvRuntime`. P2 wires this to
-    /// `PlatformWalletManager::start()`.
+    /// Delegates to [`WalletBackend::start`], which spawns the upstream
+    /// `SpvRuntime` run loop and the platform-address / identity sync
+    /// coordinators. The backend's `start` is idempotent, so calling this more
+    /// than once (Connect clicked twice, eager-init plus a manual click) is
+    /// safe.
+    ///
+    /// The synchronous part fails fast with [`TaskError::WalletBackendNotYetWired`]
+    /// when the wallet seam has not been built yet — the caller (Connect button)
+    /// surfaces that immediately. The chain sync itself runs asynchronously:
+    /// success and progress arrive via the `EventBridge`, and a start failure
+    /// flips the SPV indicator to `Error` so it leaves the "idle" state.
     pub fn start_spv(self: &Arc<Self>) -> Result<(), TaskError> {
+        let backend = self.wallet_backend()?;
+        let connection_status = Arc::clone(&self.connection_status);
+        self.subtasks.spawn_sync("spv_start", async move {
+            if let Err(e) = backend.start().await {
+                tracing::error!(error = %e, "Failed to start chain sync");
+                connection_status.set_spv_last_error(Some(format!("{e}")));
+                connection_status.set_spv_status(SpvStatus::Error);
+                connection_status.refresh_state();
+            }
+        });
         Ok(())
     }
 

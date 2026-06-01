@@ -42,7 +42,7 @@ Enumerable index of imported single-key wallets. The private bytes live in `Secr
 
 | Key | Scope | Store | Value type | Fields |
 |-----|-------|-------|------------|--------|
-| `<network>:single_key_meta:<base58_addr>` | `None` | `det-app.sqlite` | `ImportedKey` | `address: String`, `alias: Option<String>`, `network: Network` |
+| `<network>:single_key_meta:<base58_addr>` | `None` | `det-app.sqlite` | `ImportedKey` | `address: String`, `alias: Option<String>`, `network: Network`, `has_passphrase: bool`, `passphrase_hint: Option<String>` |
 
 `<network>` is the same vocabulary as wallet metadata. Global scope for the same reason: the sidecar must be listable independently of any per-wallet `WalletId`.
 
@@ -52,13 +52,17 @@ Source: `src/wallet_backend/single_key.rs`, `src/model/single_key.rs`
 
 ## Migration sentinel
 
-Completion record written by the finish-unwire migration (`BackendTask::MigrationTask::FinishUnwire`). Read on every cold-start to short-circuit re-migration. Written once — idempotent.
+Completion record written by the finish-unwire migration (`BackendTask::MigrationTask::FinishUnwire`). Read on every cold-start to short-circuit re-migration. Written once per network — idempotent.
+
+The sentinel is **per-network**: each network gets its own key so an upgrade completed on mainnet does not suppress the migration for testnet after a network switch.
 
 | Key | Scope | Store | Value type | Fields |
 |-----|-------|-------|------------|--------|
-| `det:migration:finish_unwire:v1` | `None` | `det-app.sqlite` | `MigrationCompletion` | `completed_at: i64` (Unix seconds), `sha: String` (build SHA), `network_count: u32` |
+| `det:migration:finish_unwire:<network>:v1` | `None` | `det-app.sqlite` | `MigrationCompletion` | `completed_at: i64` (Unix seconds), `sha: String` (build SHA), `network_count: u32` |
 
-Source: `src/backend_task/migration/finish_unwire.rs` (`SENTINEL_KEY`)
+`<network>` is one of `mainnet`, `testnet`, `devnet`, `regtest`. Example: `det:migration:finish_unwire:mainnet:v1`. The key is produced by `sentinel_key_for(network)` using the constants `SENTINEL_KEY_PREFIX` (`"det:migration:finish_unwire"`) and `SENTINEL_KEY_VERSION` (`"v1"`).
+
+Source: `src/backend_task/migration/finish_unwire.rs` (`sentinel_key_for`, `SENTINEL_KEY_PREFIX`, `SENTINEL_KEY_VERSION`)
 
 ---
 
@@ -166,7 +170,7 @@ The `SecretStore` file backend (`<data_dir>/secrets/det-secrets.*`) stores opaqu
 
 | Service (scope) | Label | Value encoding | Struct | Fields |
 |-----------------|-------|----------------|--------|--------|
-| `WalletId(seed_hash)` | `envelope.v1` | `bincode::serde` (no DetKv wrapper) | `StoredSeedEnvelope` | `encrypted_seed: Vec<u8>`, `salt: Vec<u8>`, `nonce: Vec<u8>`, `password_hint: Option<String>`, `uses_password: bool`, `xpub_encoded: Vec<u8>` |
+| `WalletId(seed_hash)` | `envelope.v1` | `[ STORED_SEED_ENVELOPE_VERSION (1 byte) \| bincode::serde(payload) ]` (no DetKv wrapper; leading version byte prepended by the storage layer) | `StoredSeedEnvelope` | `encrypted_seed: Vec<u8>`, `salt: Vec<u8>`, `nonce: Vec<u8>`, `password_hint: Option<String>`, `uses_password: bool`, `xpub_encoded: Vec<u8>` |
 
 One entry per HD wallet. `seed_hash` is the 32-byte `WalletSeedHash` reused as the upstream `SecretWalletId`. The outer vault adds Argon2id + XChaCha20-Poly1305 at-rest encryption on top of DET's own AES-GCM per-wallet password layer.
 

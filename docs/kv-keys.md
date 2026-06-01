@@ -1,6 +1,6 @@
 # DET k/v key reference
 
-`DetKv` wraps the upstream `platform_wallet_storage::KvStore`. Values are encoded as `[ schema_version (1 byte) | bincode(payload) ]` using `bincode::config::standard()`. Keys are colon-separated namespaces. Every `DetKv` call takes a `DetScope` argument: `DetScope::Global` = global slot, `DetScope::Wallet(&seed_hash)` = per-wallet slot (cascades on wallet delete). `DetScope::Identity` / `DetScope::Token` are reserved for the Wave 2 scope promotions and not yet written. `DetScope` is the DET-side seam over the upstream `ObjectId` enum — the upstream scope type never crosses the wallet-backend boundary.
+`DetKv` wraps the upstream `platform_wallet_storage::KvStore`. Values are encoded as `[ schema_version (1 byte) | bincode(payload) ]` using `bincode::config::standard()`. Keys are colon-separated namespaces. Every `DetKv` call takes a `DetScope` argument: `DetScope::Global` = global slot, `DetScope::Wallet(&seed_hash)` = per-wallet slot (cascades on wallet delete). `DetScope::Identity(&id)` and `DetScope::Token { identity_id, token_id }` map to the upstream `meta_identity` / `meta_token` tables; their metadata is reaped by an upstream `AFTER DELETE` soft-cascade when the parent object row is removed. `DetScope` is the DET-side seam over the upstream `ObjectId` enum — the upstream scope type never crosses the wallet-backend boundary.
 
 Three backing stores exist:
 
@@ -95,11 +95,14 @@ Source: `src/model/selected_wallet.rs`, `src/wallet_backend/mod.rs`
 
 ## Identities
 
+The identity blob and top-up history are **identity-scoped** (`DetScope::Identity(&id)`) so the upstream soft-cascade reaps them when the identity row is deleted. `DetScope::Identity` has no cross-identity listing, so a Global `det:identity_index:v1` slot holds the complete id roster the load-all paths iterate. `det:identity_order:v1` is a separate user-ordering view (may lag the full set) and stays Global.
+
 | Key | Scope | Store | Value type | Notes |
 |-----|-------|-------|------------|-------|
-| `det:identity:<base58_identity_id>` | `None` | `platform-wallet.sqlite` | `StoredQualifiedIdentity` | Fields: `qi_bytes` (inner bincode), `status: u8`, `identity_type: String`, `wallet_hash: Option<[u8;32]>`, `wallet_index: Option<u32>` |
-| `det:identity_order:v1` | `None` | `platform-wallet.sqlite` | `Vec<[u8;32]>` | Ordered list of identity ID raw bytes |
-| `det:top_ups:<base58_identity_id>` | `None` | `platform-wallet.sqlite` | `BTreeMap<u32, u64>` | Top-up history: account index → credits |
+| `det:identity:v1` | `DetScope::Identity(&id)` | `platform-wallet.sqlite` | `StoredQualifiedIdentity` | Fields: `qi_bytes` (inner bincode, redacted in `Debug`), `status: u8`, `identity_type: String`, `wallet_hash: Option<[u8;32]>`, `wallet_index: Option<u32>` |
+| `det:identity_index:v1` | `None` | `platform-wallet.sqlite` | `Vec<[u8;32]>` | Complete enumeration index of stored identity ids |
+| `det:identity_order:v1` | `None` | `platform-wallet.sqlite` | `Vec<[u8;32]>` | User-chosen display ordering of identity ID raw bytes |
+| `det:top_ups:v1` | `DetScope::Identity(&id)` | `platform-wallet.sqlite` | `BTreeMap<u32, u64>` | Top-up history: account index → credits |
 
 Source: `src/context/identity_db.rs`
 
@@ -107,9 +110,12 @@ Source: `src/context/identity_db.rs`
 
 ## Scheduled votes
 
+Scheduled votes are **voter-scoped** (`DetScope::Identity(&voter_id)`); the contested name is the key suffix. A Global `det:scheduled_vote_voters:v1` slot holds the complete set of voter ids that have at least one scheduled vote, driving the network-wide read / clear paths (Identity scope has no cross-voter listing).
+
 | Key | Scope | Store | Value type | Notes |
 |-----|-------|-------|------------|-------|
-| `det:scheduled_vote:<base58_voter_id>:<contested_name>` | `None` | `platform-wallet.sqlite` | `StoredScheduledVote` | Fields: `voter_id: [u8;32]`, `contested_name: String`, `choice: StoredVoteChoice`, `unix_timestamp: u64`, `executed_successfully: bool` |
+| `det:scheduled_vote:<contested_name>` | `DetScope::Identity(&voter_id)` | `platform-wallet.sqlite` | `StoredScheduledVote` | Fields: `voter_id: [u8;32]`, `contested_name: String`, `choice: StoredVoteChoice`, `unix_timestamp: u64`, `executed_successfully: bool` |
+| `det:scheduled_vote_voters:v1` | `None` | `platform-wallet.sqlite` | `Vec<[u8;32]>` | Enumeration index of voter ids with scheduled votes |
 
 Source: `src/context/identity_db.rs`
 
@@ -165,15 +171,15 @@ Source: `src/context/platform_address_db.rs`, `src/wallet_backend/platform_addre
 
 ## DashPay sidecar
 
-All sidecar keys use **global scope** (`DetScope::Global`). The per-network `platform-wallet.sqlite` already partitions by network, so no `<network>:` prefix is needed within the key.
+Most sidecar keys use **global scope** (`DetScope::Global`); the per-network `platform-wallet.sqlite` already partitions by network, so no `<network>:` prefix is needed within the key. The two **owner-scoped** overlays (`private`, `address_index`) moved to `DetScope::Identity(&owner)` in Wave 2 — the owner id is carried by the scope, so the key drops the `<owner>:` prefix and the upstream soft-cascade reaps them when the owner identity row is deleted.
 
 | Key | Scope | Store | Value type | Notes |
 |-----|-------|-------|------------|-------|
 | `det:dashpay:blocked:<base58_contact_id>` | `None` | `platform-wallet.sqlite` | `()` | Presence-only flag: contact is blocked |
 | `det:dashpay:rejected:<base58_counterparty_id>` | `None` | `platform-wallet.sqlite` | `()` | Presence-only flag: contact request rejected |
 | `det:dashpay:timestamps:<base58_entity_id>` | `None` | `platform-wallet.sqlite` | `(i64, i64)` | DET-local `(created_at_ms, updated_at_ms)` |
-| `det:dashpay:private:<base58_owner>:<base58_contact>` | `None` | `platform-wallet.sqlite` | `ContactPrivateInfo` | Fields: `nickname: String`, `notes: String`, `is_hidden: bool` |
-| `det:dashpay:address_index:<base58_owner>:<base58_contact>` | `None` | `platform-wallet.sqlite` | `ContactAddressIndex` | Fields: `owner_identity_id: Vec<u8>`, `contact_identity_id: Vec<u8>`, `next_send_index: u32`, `highest_receive_index: u32`, `bloom_registered_count: u32` |
+| `det:dashpay:private:<base58_contact>` | `DetScope::Identity(&owner)` | `platform-wallet.sqlite` | `ContactPrivateInfo` | Fields: `nickname: String`, `notes: String`, `is_hidden: bool` |
+| `det:dashpay:address_index:<base58_contact>` | `DetScope::Identity(&owner)` | `platform-wallet.sqlite` | `ContactAddressIndex` | Fields: `owner_identity_id: Vec<u8>`, `contact_identity_id: Vec<u8>`, `next_send_index: u32`, `highest_receive_index: u32`, `bloom_registered_count: u32` |
 | `det:dashpay:addr_map:<base58_owner>:<address>` | `None` | `platform-wallet.sqlite` | `([u8;32], u32)` | Reverse map: wallet address → `(contact_id_bytes, index)` |
 
 Source: `src/wallet_backend/dashpay.rs`, `src/model/dashpay.rs`

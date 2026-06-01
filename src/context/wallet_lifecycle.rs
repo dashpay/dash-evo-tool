@@ -22,13 +22,15 @@ impl AppContext {
     pub fn clear_network_database(&self) -> Result<(), TaskError> {
         self.db.clear_network_data(self.network)?;
 
-        // D4d: drain the DashPay k/v sidecar (private memo, blocked /
-        // rejected markers, timestamps, address index, address mapping).
-        // The sidecar lives on the per-network upstream persister, so
-        // wiping the active network is the right scope. Best-effort when
-        // the wallet backend has not been wired yet (clear at first run
-        // before any wallet exists) — there is nothing to drain in that
-        // case.
+        // D4d: drain the DashPay k/v sidecar. The Global-scoped overlays
+        // (blocked / rejected markers, timestamps, reverse address map)
+        // share the `det:dashpay:` prefix and come out in one sweep. The
+        // per-contact private memos and address-index cursors now live in
+        // each owner's `DetScope::Identity` scope (Wave 2 promotion), which
+        // the Global sweep cannot reach — so fan the per-owner clear out
+        // over the identity index. Best-effort when the wallet backend has
+        // not been wired yet (clear at first run before any wallet exists)
+        // — there is nothing to drain in that case.
         if let Ok(backend) = self.wallet_backend() {
             let kv = backend.kv();
             match kv.list(DetScope::Global, Some("det:dashpay:")) {
@@ -41,6 +43,21 @@ impl AppContext {
                 }
                 Err(e) => {
                     tracing::warn!("DashPay sidecar listing failed: {e:?}");
+                }
+            }
+            match self.local_identity_ids() {
+                Ok(owners) => {
+                    for owner in owners {
+                        if let Err(e) = backend.dashpay_clear_owner_overlays(&owner) {
+                            tracing::warn!(
+                                owner = %owner,
+                                "DashPay per-owner overlay clear failed: {e:?}"
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Identity index listing for DashPay clear failed: {e:?}");
                 }
             }
         }

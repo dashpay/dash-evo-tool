@@ -447,9 +447,11 @@ pub(super) fn increment_send_index_locked(
 ) -> Result<u32, TaskError> {
     let _guard = lock.lock().expect("dashpay address-index mutex poisoned");
 
-    let key = pair_sidecar_key(KV_PREFIX_ADDRESS_INDEX, owner, contact);
+    let owner_buf = owner.to_buffer();
+    let scope = DetScope::Identity(&owner_buf);
+    let key = contact_sidecar_key(KV_PREFIX_ADDRESS_INDEX, contact);
     let mut state: ContactAddressIndex = kv
-        .get::<ContactAddressIndex>(DetScope::Global, &key)
+        .get::<ContactAddressIndex>(scope, &key)
         .map_err(|e| TaskError::DashpaySidecarStorage { source: e })?
         .unwrap_or_else(|| ContactAddressIndex {
             owner_identity_id: owner.to_buffer().to_vec(),
@@ -460,7 +462,7 @@ pub(super) fn increment_send_index_locked(
         });
     let value = state.next_send_index;
     state.next_send_index = state.next_send_index.saturating_add(1);
-    kv.put::<ContactAddressIndex>(DetScope::Global, &key, &state)
+    kv.put::<ContactAddressIndex>(scope, &key, &state)
         .map_err(|e| TaskError::DashpaySidecarStorage { source: e })?;
     Ok(value)
 }
@@ -476,15 +478,12 @@ fn sidecar_key(prefix: &str, id: &Identifier) -> String {
     )
 }
 
-/// Sidecar key for a `(owner, contact)` overlay (private memo, address index).
-/// Format: `<prefix><owner_b58>:<contact_b58>`.
-fn pair_sidecar_key(prefix: &str, owner: &Identifier, contact: &Identifier) -> String {
+/// Sidecar key for a per-contact overlay (private memo, address index)
+/// scoped to [`DetScope::Identity`] of the owner. The owner is carried by
+/// the scope, so the key is `<prefix><contact_b58>`.
+fn contact_sidecar_key(prefix: &str, contact: &Identifier) -> String {
     use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-    format!(
-        "{prefix}{}:{}",
-        owner.to_string(Encoding::Base58),
-        contact.to_string(Encoding::Base58)
-    )
+    format!("{prefix}{}", contact.to_string(Encoding::Base58))
 }
 
 /// Sidecar key for a `(owner, address)` reverse lookup. `address` is the
@@ -704,9 +703,10 @@ impl WalletBackend {
         owner: &Identifier,
         contact: &Identifier,
     ) -> Result<Option<ContactPrivateInfo>, TaskError> {
-        let key = pair_sidecar_key(KV_PREFIX_PRIVATE, owner, contact);
+        let owner_buf = owner.to_buffer();
+        let key = contact_sidecar_key(KV_PREFIX_PRIVATE, contact);
         self.kv()
-            .get::<ContactPrivateInfo>(DetScope::Global, &key)
+            .get::<ContactPrivateInfo>(DetScope::Identity(&owner_buf), &key)
             .map_err(|e| TaskError::DashpaySidecarStorage { source: e })
     }
 
@@ -717,9 +717,10 @@ impl WalletBackend {
         contact: &Identifier,
         info: &ContactPrivateInfo,
     ) -> Result<(), TaskError> {
-        let key = pair_sidecar_key(KV_PREFIX_PRIVATE, owner, contact);
+        let owner_buf = owner.to_buffer();
+        let key = contact_sidecar_key(KV_PREFIX_PRIVATE, contact);
         self.kv()
-            .put::<ContactPrivateInfo>(DetScope::Global, &key, info)
+            .put::<ContactPrivateInfo>(DetScope::Identity(&owner_buf), &key, info)
             .map_err(|e| TaskError::DashpaySidecarStorage { source: e })
     }
 
@@ -731,9 +732,10 @@ impl WalletBackend {
         owner: &Identifier,
         contact: &Identifier,
     ) -> Result<Option<ContactAddressIndex>, TaskError> {
-        let key = pair_sidecar_key(KV_PREFIX_ADDRESS_INDEX, owner, contact);
+        let owner_buf = owner.to_buffer();
+        let key = contact_sidecar_key(KV_PREFIX_ADDRESS_INDEX, contact);
         self.kv()
-            .get::<ContactAddressIndex>(DetScope::Global, &key)
+            .get::<ContactAddressIndex>(DetScope::Identity(&owner_buf), &key)
             .map_err(|e| TaskError::DashpaySidecarStorage { source: e })
     }
 
@@ -749,9 +751,10 @@ impl WalletBackend {
         contact: &Identifier,
         index: &ContactAddressIndex,
     ) -> Result<(), TaskError> {
-        let key = pair_sidecar_key(KV_PREFIX_ADDRESS_INDEX, owner, contact);
+        let owner_buf = owner.to_buffer();
+        let key = contact_sidecar_key(KV_PREFIX_ADDRESS_INDEX, contact);
         self.kv()
-            .put::<ContactAddressIndex>(DetScope::Global, &key, index)
+            .put::<ContactAddressIndex>(DetScope::Identity(&owner_buf), &key, index)
             .map_err(|e| TaskError::DashpaySidecarStorage { source: e })
     }
 
@@ -818,6 +821,31 @@ impl WalletBackend {
                 &(contact.to_buffer(), address_index),
             )
             .map_err(|e| TaskError::DashpaySidecarStorage { source: e })
+    }
+
+    /// Drop every Identity-scoped DashPay overlay for `owner` — the
+    /// per-contact private memos and address-index cursors.
+    ///
+    /// The Global-scoped overlays (blocked / rejected markers, timestamps,
+    /// reverse address map) are not owner-scoped and are swept by the
+    /// `det:dashpay:` Global prefix in
+    /// [`crate::context::AppContext::clear_network_database`]; this method
+    /// covers the two overlays that moved to [`DetScope::Identity`] of the
+    /// owner, which that Global sweep can no longer reach.
+    pub fn dashpay_clear_owner_overlays(&self, owner: &Identifier) -> Result<(), TaskError> {
+        let owner_buf = owner.to_buffer();
+        let scope = DetScope::Identity(&owner_buf);
+        let kv = self.kv();
+        for prefix in [KV_PREFIX_PRIVATE, KV_PREFIX_ADDRESS_INDEX] {
+            let keys = kv
+                .list(scope, Some(prefix))
+                .map_err(|e| TaskError::DashpaySidecarStorage { source: e })?;
+            for key in keys {
+                kv.delete(scope, &key)
+                    .map_err(|e| TaskError::DashpaySidecarStorage { source: e })?;
+            }
+        }
+        Ok(())
     }
 
     /// Locate the `PlatformWallet` whose `IdentityManager` owns `identity_id`.
@@ -1294,14 +1322,14 @@ mod tests {
     // -------------------------------------------------------------------
 
     #[test]
-    fn d4b_pair_sidecar_key_uses_base58_colon_form() {
-        let owner = id_from_byte(1);
+    fn d4b_contact_sidecar_key_is_contact_only_base58() {
+        // Wave 2: the owner moved into the `DetScope::Identity` scope, so
+        // the per-contact key carries only the contact, not `<owner>:<contact>`.
         let contact = id_from_byte(2);
-        let key = pair_sidecar_key(KV_PREFIX_PRIVATE, &owner, &contact);
+        let key = contact_sidecar_key(KV_PREFIX_PRIVATE, &contact);
         use dash_sdk::dpp::platform_value::string_encoding::Encoding;
         let expected = format!(
-            "det:dashpay:private:{}:{}",
-            owner.to_string(Encoding::Base58),
+            "det:dashpay:private:{}",
             contact.to_string(Encoding::Base58)
         );
         assert_eq!(key, expected);
@@ -1322,31 +1350,24 @@ mod tests {
     }
 
     #[test]
-    fn d4b_private_info_round_trips_through_sidecar_key() {
+    fn d4b_private_info_round_trips_in_owner_identity_scope() {
         let kv = empty_kv();
-        let owner = id_from_byte(1);
+        let owner = id_from_byte(1).to_buffer();
         let contact = id_from_byte(2);
         let info = ContactPrivateInfo {
             nickname: "Alice".into(),
             notes: "met at conf".into(),
             is_hidden: true,
         };
-        let key = pair_sidecar_key(KV_PREFIX_PRIVATE, &owner, &contact);
-        kv.put::<ContactPrivateInfo>(DetScope::Global, &key, &info)
-            .unwrap();
+        let key = contact_sidecar_key(KV_PREFIX_PRIVATE, &contact);
+        let scope = DetScope::Identity(&owner);
+        kv.put::<ContactPrivateInfo>(scope, &key, &info).unwrap();
         let got: ContactPrivateInfo = kv
-            .get::<ContactPrivateInfo>(DetScope::Global, &key)
+            .get::<ContactPrivateInfo>(scope, &key)
             .unwrap()
             .expect("written value should round-trip");
         assert_eq!(got, info);
-    }
-
-    #[test]
-    fn d4b_private_info_missing_key_returns_none() {
-        let kv = empty_kv();
-        let owner = id_from_byte(1);
-        let contact = id_from_byte(2);
-        let key = pair_sidecar_key(KV_PREFIX_PRIVATE, &owner, &contact);
+        // Invisible from the Global scope it used to live in.
         assert!(
             kv.get::<ContactPrivateInfo>(DetScope::Global, &key)
                 .unwrap()
@@ -1355,27 +1376,68 @@ mod tests {
     }
 
     #[test]
-    fn d4b_address_index_round_trips_through_sidecar_key() {
+    fn d4b_private_info_missing_key_returns_none() {
         let kv = empty_kv();
-        let owner = id_from_byte(1);
+        let owner = id_from_byte(1).to_buffer();
+        let contact = id_from_byte(2);
+        let key = contact_sidecar_key(KV_PREFIX_PRIVATE, &contact);
+        assert!(
+            kv.get::<ContactPrivateInfo>(DetScope::Identity(&owner), &key)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn d4b_address_index_round_trips_in_owner_identity_scope() {
+        let kv = empty_kv();
+        let owner_id = id_from_byte(1);
+        let owner = owner_id.to_buffer();
         let contact = id_from_byte(2);
         let idx = ContactAddressIndex {
-            owner_identity_id: owner.to_buffer().to_vec(),
+            owner_identity_id: owner_id.to_buffer().to_vec(),
             contact_identity_id: contact.to_buffer().to_vec(),
             next_send_index: 7,
             highest_receive_index: 3,
             bloom_registered_count: 20,
         };
-        let key = pair_sidecar_key(KV_PREFIX_ADDRESS_INDEX, &owner, &contact);
-        kv.put::<ContactAddressIndex>(DetScope::Global, &key, &idx)
-            .unwrap();
+        let key = contact_sidecar_key(KV_PREFIX_ADDRESS_INDEX, &contact);
+        let scope = DetScope::Identity(&owner);
+        kv.put::<ContactAddressIndex>(scope, &key, &idx).unwrap();
         let got = kv
-            .get::<ContactAddressIndex>(DetScope::Global, &key)
+            .get::<ContactAddressIndex>(scope, &key)
             .unwrap()
             .expect("written value should round-trip");
         assert_eq!(got.next_send_index, 7);
         assert_eq!(got.highest_receive_index, 3);
         assert_eq!(got.bloom_registered_count, 20);
+    }
+
+    #[test]
+    fn d4b_private_info_is_isolated_per_owner_scope() {
+        // The owner used to be encoded in the key; now it is the scope.
+        // Two owners sharing a contact must not see each other's memo.
+        let kv = empty_kv();
+        let owner_a = id_from_byte(1).to_buffer();
+        let owner_b = id_from_byte(2).to_buffer();
+        let contact = id_from_byte(3);
+        let key = contact_sidecar_key(KV_PREFIX_PRIVATE, &contact);
+        kv.put::<ContactPrivateInfo>(
+            DetScope::Identity(&owner_a),
+            &key,
+            &ContactPrivateInfo {
+                nickname: "for-a".into(),
+                notes: String::new(),
+                is_hidden: false,
+            },
+        )
+        .unwrap();
+        assert!(
+            kv.get::<ContactPrivateInfo>(DetScope::Identity(&owner_b), &key)
+                .unwrap()
+                .is_none(),
+            "owner B must not see owner A's per-contact memo"
+        );
     }
 
     #[test]
@@ -1396,15 +1458,14 @@ mod tests {
     }
 
     #[test]
-    fn d4b_pair_key_distinguishes_owner_from_contact() {
+    fn d4b_contact_key_distinguishes_contacts() {
+        // The owner now lives in the scope; the key only distinguishes
+        // contacts within one owner's Identity scope.
         let a = id_from_byte(1);
         let b = id_from_byte(2);
-        let key_a_b = pair_sidecar_key(KV_PREFIX_PRIVATE, &a, &b);
-        let key_b_a = pair_sidecar_key(KV_PREFIX_PRIVATE, &b, &a);
-        assert_ne!(
-            key_a_b, key_b_a,
-            "address-index/private overlays are not symmetric in (owner, contact)"
-        );
+        let key_a = contact_sidecar_key(KV_PREFIX_PRIVATE, &a);
+        let key_b = contact_sidecar_key(KV_PREFIX_PRIVATE, &b);
+        assert_ne!(key_a, key_b, "distinct contacts must yield distinct keys");
     }
 
     // -------------------------------------------------------------------
@@ -1450,34 +1511,40 @@ mod tests {
             "100 concurrent increments must return distinct values 0..=99"
         );
 
-        // Final persisted counter advances to 100.
-        let key = pair_sidecar_key(KV_PREFIX_ADDRESS_INDEX, &owner, &contact);
+        // Final persisted counter advances to 100, read back from the
+        // owner's Identity scope where the increment helper now writes.
+        let owner_buf = owner.to_buffer();
+        let key = contact_sidecar_key(KV_PREFIX_ADDRESS_INDEX, &contact);
         let final_state: ContactAddressIndex = kv
-            .get::<ContactAddressIndex>(DetScope::Global, &key)
+            .get::<ContactAddressIndex>(DetScope::Identity(&owner_buf), &key)
             .expect("kv read")
             .expect("counter must have been initialized");
         assert_eq!(final_state.next_send_index, 100);
     }
 
     // -------------------------------------------------------------------
-    // D4d: the `det:dashpay:` prefix sweep used by
-    // `AppContext::clear_network_database` must hit every overlay the
-    // adapter writes — private memo, blocked / rejected markers,
-    // timestamps, address index, address mapping. A miss here would
-    // leak DET-only state across a "Clear network data" action.
+    // D4d / Wave 2: the network-clear path
+    // (`AppContext::clear_network_database`) must hit every overlay the
+    // adapter writes. Wave 2 split the overlays across two scopes: the
+    // Global-scoped markers/timestamps/addr-map come out in one
+    // `det:dashpay:` prefix sweep; the per-contact private memo and
+    // address-index moved to each owner's `DetScope::Identity` scope and
+    // are cleared per owner. A miss in either half leaks DET-only state
+    // across a "Clear network data" action.
     // -------------------------------------------------------------------
 
-    /// D4d-Sweep1: every adapter-written sidecar key starts with the
-    /// shared `det:dashpay:` prefix, so a single `list_global` enumerates
-    /// all of them in one pass.
+    /// D4d-Sweep1: the five Global overlays share the `det:dashpay:`
+    /// prefix and come out of one Global sweep; the two Wave-2
+    /// Identity-scoped overlays do NOT (they live under the owner scope).
     #[test]
-    fn d4d_all_dashpay_sidecar_keys_share_the_prefix() {
+    fn d4d_global_overlays_share_prefix_identity_overlays_do_not() {
         let kv = empty_kv();
-        let owner = id_from_byte(1);
+        let owner_id = id_from_byte(1);
+        let owner = owner_id.to_buffer();
         let contact = id_from_byte(2);
         let addr = "yXyqJv6gP2c8RXAhYQ7v6XwxSqUf7vXKfA";
 
-        // Plant one of every overlay shape DashPay writes.
+        // Five Global overlays.
         kv.put::<()>(
             DetScope::Global,
             &sidecar_key(KV_PREFIX_BLOCKED, &contact),
@@ -1502,17 +1569,25 @@ mod tests {
             &(333, Some(444)),
         )
         .unwrap();
-        kv.put::<ContactPrivateInfo>(
+        kv.put::<([u8; 32], u32)>(
             DetScope::Global,
-            &pair_sidecar_key(KV_PREFIX_PRIVATE, &owner, &contact),
+            &addr_map_sidecar_key(&owner_id, addr),
+            &(contact.to_buffer(), 1),
+        )
+        .unwrap();
+
+        // Two Identity-scoped overlays under the owner.
+        kv.put::<ContactPrivateInfo>(
+            DetScope::Identity(&owner),
+            &contact_sidecar_key(KV_PREFIX_PRIVATE, &contact),
             &ContactPrivateInfo::default(),
         )
         .unwrap();
         kv.put::<ContactAddressIndex>(
-            DetScope::Global,
-            &pair_sidecar_key(KV_PREFIX_ADDRESS_INDEX, &owner, &contact),
+            DetScope::Identity(&owner),
+            &contact_sidecar_key(KV_PREFIX_ADDRESS_INDEX, &contact),
             &ContactAddressIndex {
-                owner_identity_id: owner.to_buffer().to_vec(),
+                owner_identity_id: owner_id.to_buffer().to_vec(),
                 contact_identity_id: contact.to_buffer().to_vec(),
                 next_send_index: 1,
                 highest_receive_index: 0,
@@ -1520,33 +1595,34 @@ mod tests {
             },
         )
         .unwrap();
-        kv.put::<([u8; 32], u32)>(
-            DetScope::Global,
-            &addr_map_sidecar_key(&owner, addr),
-            &(contact.to_buffer(), 1),
-        )
-        .unwrap();
 
-        let keys = kv
+        let global = kv
             .list(DetScope::Global, Some("det:dashpay:"))
-            .expect("sidecar listing must succeed");
-        // 7 writes, each with a unique key.
-        assert_eq!(keys.len(), 7, "every overlay must be enumerated: {keys:?}");
-        for k in &keys {
-            assert!(
-                k.starts_with("det:dashpay:"),
-                "non-DashPay key surfaced: {k}"
-            );
+            .expect("global sidecar listing must succeed");
+        assert_eq!(
+            global.len(),
+            5,
+            "five Global overlays enumerated: {global:?}"
+        );
+        for k in &global {
+            assert!(k.starts_with("det:dashpay:"), "non-DashPay key: {k}");
         }
+
+        // The Identity-scoped overlays are invisible to the Global sweep
+        // but present under the owner scope.
+        let owned = kv
+            .list(DetScope::Identity(&owner), Some("det:dashpay:"))
+            .expect("owner sidecar listing must succeed");
+        assert_eq!(owned.len(), 2, "two owner-scoped overlays: {owned:?}");
     }
 
-    /// D4d-Sweep2: iterating the prefix listing and deleting drains the
-    /// sidecar — mirrors what `AppContext::clear_network_database` does
-    /// post-D4d.
+    /// D4d-Sweep2: the combined clear (Global prefix sweep + per-owner
+    /// Identity clear) drains every overlay — mirrors what
+    /// `AppContext::clear_network_database` does post-Wave-2.
     #[test]
-    fn d4d_prefix_sweep_drains_dashpay_sidecar() {
+    fn d4d_combined_clear_drains_global_and_owner_overlays() {
         let kv = empty_kv();
-        let owner = id_from_byte(1);
+        let owner = id_from_byte(1).to_buffer();
         let contact = id_from_byte(2);
 
         kv.put::<()>(
@@ -1556,8 +1632,8 @@ mod tests {
         )
         .unwrap();
         kv.put::<ContactPrivateInfo>(
-            DetScope::Global,
-            &pair_sidecar_key(KV_PREFIX_PRIVATE, &owner, &contact),
+            DetScope::Identity(&owner),
+            &contact_sidecar_key(KV_PREFIX_PRIVATE, &contact),
             &ContactPrivateInfo {
                 nickname: "alice".into(),
                 notes: "n".into(),
@@ -1565,20 +1641,44 @@ mod tests {
             },
         )
         .unwrap();
+        kv.put::<ContactAddressIndex>(
+            DetScope::Identity(&owner),
+            &contact_sidecar_key(KV_PREFIX_ADDRESS_INDEX, &contact),
+            &ContactAddressIndex {
+                owner_identity_id: owner.to_vec(),
+                contact_identity_id: contact.to_buffer().to_vec(),
+                next_send_index: 3,
+                highest_receive_index: 0,
+                bloom_registered_count: 0,
+            },
+        )
+        .unwrap();
         // Drop one unrelated global key to confirm the sweep is scoped.
         kv.put::<u32>(DetScope::Global, "mainnet:scheduled_votes:1", &7)
             .unwrap();
 
-        let keys = kv.list(DetScope::Global, Some("det:dashpay:")).unwrap();
-        for k in &keys {
-            kv.delete(DetScope::Global, k).unwrap();
+        // Global prefix sweep.
+        for k in kv.list(DetScope::Global, Some("det:dashpay:")).unwrap() {
+            kv.delete(DetScope::Global, &k).unwrap();
+        }
+        // Per-owner Identity-scope clear (private + address_index prefixes).
+        for prefix in [KV_PREFIX_PRIVATE, KV_PREFIX_ADDRESS_INDEX] {
+            for k in kv.list(DetScope::Identity(&owner), Some(prefix)).unwrap() {
+                kv.delete(DetScope::Identity(&owner), &k).unwrap();
+            }
         }
 
         assert!(
             kv.list(DetScope::Global, Some("det:dashpay:"))
                 .unwrap()
                 .is_empty(),
-            "DashPay sidecar must be empty after the sweep"
+            "Global DashPay overlays must be empty after the sweep"
+        );
+        assert!(
+            kv.list(DetScope::Identity(&owner), Some("det:dashpay:"))
+                .unwrap()
+                .is_empty(),
+            "owner-scoped DashPay overlays must be empty after the clear"
         );
         // Unrelated key survives.
         assert_eq!(

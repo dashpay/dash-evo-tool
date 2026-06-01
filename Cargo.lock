@@ -2087,6 +2087,7 @@ dependencies = [
  "rand 0.9.4",
  "raw-cpuid",
  "rayon",
+ "refinery",
  "regex",
  "region",
  "reqwest 0.13.4",

@@ -8,6 +8,10 @@
 
 Relates to: [phasing.md § P3](phasing.md#phase-table) — P3 implements the migration procedure; [g2-mock-boundary.md](g2-mock-boundary.md) — `PersistedWalletLoader` seam (seed re-registration); [dip14-migration-hardstop.md](dip14-migration-hardstop.md) — SUPERSEDED; migrate-or-quarantine apparatus WITHDRAWN (see "Accepted fund-accessibility trade-off" below).
 
+## DEV note — on-disk schema break on this branch (08b0ed9 pin)
+
+The `08b0ed9` `platform-wallet-storage` bump changed the on-disk storage schema (`kv_store` → `meta_*` tables) with a **divergent `V001`** migration. A `platform-wallet.sqlite` written by the prior pin (`17653ba`) will not open — refinery aborts on the divergent checksum (`WalletStorageError::Migration`), which DET maps to the `WalletDataIncompatible` error. During development, reset the local DET wallet databases (`<data_dir>/spv/<net>/platform-wallet.sqlite` and `<data_dir>/det-app.sqlite`) to continue. Full instructions and paths: [kv-keys.md § DEV: on-disk schema break](../../kv-keys.md#dev-on-disk-schema-break-on-this-branch--reset-local-wallet-dbs). Related platform todo: `f5897abd`.
+
 ## D. Data Model and Conversions
 
 ### One-Time Migration

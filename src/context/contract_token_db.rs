@@ -35,11 +35,6 @@ const CONTRACT_KEY_PREFIX: &str = "det:contract:";
 /// tokens are network-scoped via the surrounding per-network k/v store.
 const TOKEN_KEY_PREFIX: &str = "det:token:";
 
-/// Key prefix for per-identity token balances. Compound key:
-/// `det:token_balance:<base58_identity_id>:<base58_token_id>`. The value
-/// is the raw `u64` balance.
-const TOKEN_BALANCE_KEY_PREFIX: &str = "det:token_balance:";
-
 /// Versioned key for the user-chosen ordering of `(token_id, identity_id)`
 /// pairs in the My Tokens screen. Per-network (each network has its own
 /// k/v store, so each holds its own ordering).
@@ -688,15 +683,18 @@ impl AppContext {
             return Ok(());
         }
         let kv = self.token_kv()?;
-        for prefix in [TOKEN_KEY_PREFIX, TOKEN_BALANCE_KEY_PREFIX] {
-            let keys = kv
-                .list(DetScope::Global, Some(prefix))
+        let registry_keys = kv
+            .list(DetScope::Global, Some(TOKEN_KEY_PREFIX))
+            .map_err(|source| TaskError::TokenStorage { source })?;
+        for key in registry_keys {
+            kv.delete(DetScope::Global, &key)
                 .map_err(|source| TaskError::TokenStorage { source })?;
-            for key in keys {
-                kv.delete(DetScope::Global, &key)
-                    .map_err(|source| TaskError::TokenStorage { source })?;
-            }
         }
+        // Balances are owned by the cache view — wipe them through the seam
+        // rather than reaching into `det:token_balance:*` directly.
+        self.token_balances_view()?
+            .clear_all()
+            .map_err(|source| TaskError::TokenStorage { source })?;
         kv.delete(DetScope::Global, TOKEN_ORDER_KEY)
             .map_err(|source| TaskError::TokenStorage { source })?;
         Ok(())

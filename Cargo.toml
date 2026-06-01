@@ -119,6 +119,11 @@ headless = ["cli", "mcp"]
 egui_kittest = { version = "0.33.3", features = ["eframe"] }
 tokio-shared-rt = "=0.1.0"
 criterion = "0.5.1"
+# Used only by error-mapping unit tests to construct a genuine divergent-version
+# `refinery::Error` (the upstream `WalletStorageError::Migration` source). Same
+# version already in the graph via `platform-wallet-storage`; the `rusqlite`
+# feature is already enabled transitively, so this adds no new build.
+refinery = { version = "0.9.1", default-features = false, features = ["rusqlite"] }
 
 [[bin]]
 name = "det-cli"

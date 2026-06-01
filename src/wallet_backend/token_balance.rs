@@ -73,6 +73,12 @@ pub trait TokenBalanceView: Send + Sync {
     /// Every stored `(identity, token, balance)` triple. Malformed keys
     /// are skipped (logged at warn) so one bad row cannot block the list.
     fn list(&self) -> Result<Vec<(Identifier, Identifier, u64)>, KvAdapterError>;
+
+    /// Drop every balance slot this view owns, including any malformed
+    /// `det:token_balance:*` rows that [`Self::list`] would skip. Idempotent.
+    /// Used by the devnet reset sweep so the balance-cache wipe stays inside
+    /// the seam rather than reaching into the raw k/v store at the callsite.
+    fn clear_all(&self) -> Result<(), KvAdapterError>;
 }
 
 /// ACTIVE impl: balances live in the per-network wallet k/v store under
@@ -141,6 +147,16 @@ impl TokenBalanceView for KvCachedTokenBalances {
         }
         Ok(out)
     }
+
+    fn clear_all(&self) -> Result<(), KvAdapterError> {
+        let keys = self
+            .kv
+            .list(DetScope::Global, Some(TOKEN_BALANCE_KEY_PREFIX))?;
+        for key in keys {
+            self.kv.delete(DetScope::Global, &key)?;
+        }
+        Ok(())
+    }
 }
 
 /// Reserved swap target: read token balances from upstream instead of
@@ -182,6 +198,12 @@ impl TokenBalanceView for UpstreamTokenBalances {
     fn list(&self) -> Result<Vec<(Identifier, Identifier, u64)>, KvAdapterError> {
         // TODO(f5897abd): public per-token balance enumeration.
         unimplemented!("pending platform todo f5897abd — public per-token balance reader")
+    }
+
+    fn clear_all(&self) -> Result<(), KvAdapterError> {
+        // Nothing to clear once balances are read straight from upstream.
+        // TODO(f5897abd): drop with the cache.
+        Ok(())
     }
 }
 
@@ -279,5 +301,19 @@ mod tests {
         v.delete(&id(1), &id(2)).unwrap();
         assert_eq!(v.get(&id(1), &id(2)).unwrap(), None);
         assert_eq!(v.get(&id(1), &id(9)).unwrap(), Some(2));
+    }
+
+    /// TB4: `clear_all` drops every balance slot and is idempotent on an
+    /// already-empty view.
+    #[test]
+    fn clear_all_drops_every_balance() {
+        let v = view();
+        v.set(&id(1), &id(2), 1).unwrap();
+        v.set(&id(3), &id(4), 2).unwrap();
+        v.clear_all().unwrap();
+        assert!(v.list().unwrap().is_empty());
+        // Idempotent — clearing an empty view succeeds.
+        v.clear_all().unwrap();
+        assert!(v.list().unwrap().is_empty());
     }
 }

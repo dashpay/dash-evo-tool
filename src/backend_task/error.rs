@@ -117,6 +117,27 @@ pub enum TaskError {
     )]
     WalletDataTooNew { found: i64, max_supported: i64 },
 
+    /// The on-disk wallet database was written under an incompatible storage
+    /// layout — the schema migration history diverges from what this build
+    /// applies, so the database cannot be opened. Distinct from
+    /// [`Self::WalletStorage`] because freeing disk space or restarting never
+    /// resolves an incompatible layout, and distinct from
+    /// [`Self::WalletDataTooNew`] because the data is not merely from a newer
+    /// build — its structure cannot be reconciled at all.
+    ///
+    /// The migration diagnostic is preserved through the `#[source]` chain for
+    /// logs and the `Debug` view; it is kept out of the user-facing `Display`
+    /// copy. On the active development branch the storage layout changed in an
+    /// incompatible way, so the practical action is to remove the local wallet
+    /// data and let the app recreate it (see `docs/kv-keys.md`).
+    #[error(
+        "Your wallet data is not compatible with this version of the app and cannot be opened. Remove the local wallet data so the app can create it fresh, then restart."
+    )]
+    WalletDataIncompatible {
+        #[source]
+        source: platform_wallet_storage::WalletStorageError,
+    },
+
     /// The encrypted secret store could not be opened, read, or written.
     /// Imported single-key material lives here; HD-wallet seeds are
     /// surfaced through [`Self::WalletSeedStorage`] for a clearer
@@ -1391,15 +1412,24 @@ pub enum TaskError {
 impl TaskError {
     /// Map a wallet-storage open failure to the right user-facing variant.
     ///
-    /// A forward-version database (written by a newer build, schema beyond
-    /// what this binary applies) is surfaced as [`Self::WalletDataTooNew`] so
-    /// the banner tells the user to update the app — the only thing that fixes
-    /// it. Every other storage failure keeps the generic disk/IO copy via
-    /// [`Self::WalletStorage`].
+    /// Three storage failures get honest, distinct copy; everything else keeps
+    /// the generic disk/IO message:
+    ///
+    /// - A forward-version database (written by a newer build, schema beyond
+    ///   what this binary applies) is surfaced as [`Self::WalletDataTooNew`] so
+    ///   the banner tells the user to update the app — the only thing that
+    ///   fixes it.
+    /// - A divergent migration history (e.g. a database written under an
+    ///   earlier, incompatible storage layout that this build's migrations
+    ///   cannot reconcile) is surfaced as [`Self::WalletDataIncompatible`] so
+    ///   the banner tells the user to remove the local wallet data — freeing
+    ///   disk space or restarting never resolves a structural mismatch.
+    /// - Every other storage failure keeps the generic disk/IO copy via
+    ///   [`Self::WalletStorage`].
     ///
     /// Discrimination is on the typed upstream variant
-    /// (`WalletStorageError::SchemaVersionUnsupported`), never on its
-    /// `Display` text.
+    /// (`WalletStorageError::SchemaVersionUnsupported` /
+    /// `WalletStorageError::Migration`), never on its `Display` text.
     pub fn from_wallet_storage_open_error(
         source: platform_wallet_storage::WalletStorageError,
     ) -> Self {
@@ -1411,6 +1441,9 @@ impl TaskError {
                 found,
                 max_supported,
             },
+            other @ platform_wallet_storage::WalletStorageError::Migration(_) => {
+                Self::WalletDataIncompatible { source: other }
+            }
             other => Self::WalletStorage { source: other },
         }
     }
@@ -3401,6 +3434,59 @@ mod tests {
         assert!(
             msg.contains("disk space"),
             "Expected disk/IO copy, got: {msg}"
+        );
+        assert!(
+            std::error::Error::source(&err).is_some(),
+            "Expected source chain to be preserved"
+        );
+    }
+
+    /// Builds a genuine divergent-version [`refinery::Error`] by applying a
+    /// `V1__init` migration, then re-running with the same version/name but
+    /// different SQL (which changes refinery's checksum) and
+    /// `abort_divergent` on. This reproduces the real failure a database
+    /// written under an incompatible storage layout hits on open.
+    fn divergent_migration_error() -> refinery::Error {
+        use refinery::{Migration, Runner};
+
+        let mut conn = rusqlite::Connection::open_in_memory().expect("in-memory db");
+
+        let first = Migration::unapplied("V1__init", "CREATE TABLE a (id INTEGER);")
+            .expect("valid migration");
+        Runner::new(&[first])
+            .run(&mut conn)
+            .expect("first run applies cleanly");
+
+        let divergent = Migration::unapplied("V1__init", "CREATE TABLE b (id INTEGER);")
+            .expect("valid migration");
+        Runner::new(&[divergent])
+            .set_abort_divergent(true)
+            .run(&mut conn)
+            .expect_err("divergent checksum must abort")
+    }
+
+    /// QA-001 — a divergent migration history (database written under an
+    /// incompatible storage layout) maps to the dedicated
+    /// `WalletDataIncompatible` variant. Its `Display` tells the user to
+    /// remove the local wallet data, NOT the misleading "free disk space" copy.
+    #[test]
+    fn migration_error_maps_to_wallet_data_incompatible() {
+        let upstream =
+            platform_wallet_storage::WalletStorageError::Migration(divergent_migration_error());
+        let err = TaskError::from_wallet_storage_open_error(upstream);
+        assert!(
+            matches!(err, TaskError::WalletDataIncompatible { .. }),
+            "Expected WalletDataIncompatible, got: {err:?}"
+        );
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not compatible") && msg.contains("Remove"),
+            "Expected incompatibility guidance, got: {msg}"
+        );
+        assert!(
+            !msg.contains("disk space"),
+            "Incompatible-schema message must not mention disk space, got: {msg}"
         );
         assert!(
             std::error::Error::source(&err).is_some(),

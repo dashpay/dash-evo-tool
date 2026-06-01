@@ -301,6 +301,10 @@ impl ScreenLike for PlatformInfoScreen {
                 PlatformInfoTaskResult::AddressBalance { .. } => {
                     // This result is handled by AddressBalanceScreen, not here
                 }
+                PlatformInfoTaskResult::Withdrawals { .. } => {
+                    // Structured withdrawals are a programmatic (MCP/CLI) result;
+                    // this screen uses the text variants instead.
+                }
             }
         }
     }

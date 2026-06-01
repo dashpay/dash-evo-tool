@@ -27,7 +27,8 @@ use dash_sdk::dpp::{dash_to_credits, version::ProtocolVersionVoteCount};
 use dash_sdk::drive::query::{SelectProjection, OrderClause, WhereClause, WhereOperator};
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::platform::fetch_current_no_parameters::FetchCurrent;
-use dash_sdk::platform::{DocumentQuery, FetchMany, FetchUnproved};
+use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
+use dash_sdk::platform::{DocumentQuery, FetchMany, FetchUnproved, Identifier};
 use dash_sdk::query_types::{
     AddressInfo, CurrentQuorumsInfo, NoParamQuery, ProtocolVersionUpgrades, TotalCreditsInPlatform,
 };
@@ -43,9 +44,47 @@ pub enum PlatformInfoTaskRequestType {
     CurrentValidatorSetInfo,
     CurrentWithdrawalsInQueue,
     RecentlyCompletedWithdrawals,
+    /// Structured, paginated withdrawal query for programmatic clients (MCP /
+    /// CLI). Unlike the text variants above, this returns one
+    /// [`WithdrawalRecord`] per document plus a continuation cursor.
+    Withdrawals {
+        /// Query completed/expired withdrawals when `true`, the in-queue set
+        /// when `false`.
+        completed: bool,
+        /// Maximum documents to return. `None` uses the platform default.
+        limit: Option<u32>,
+        /// Continuation cursor: the document id to start after, as returned in
+        /// a prior response's `next_cursor`.
+        start_after: Option<Identifier>,
+    },
     BasicPlatformInfo,
     ShieldedPoolState,
     FetchAddressBalance(String),
+}
+
+/// One withdrawal document flattened into the fields programmatic clients need.
+/// Credits are atomic units (1 Dash = `dash_to_credits!(1)` credits); timestamps
+/// are Unix milliseconds straight from the document.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WithdrawalRecord {
+    /// Withdrawal document id (base58-encodable handle, also the page cursor).
+    pub document_id: Identifier,
+    /// Identity that requested the withdrawal.
+    pub owner_id: Identifier,
+    /// Amount in credits (atomic units).
+    pub amount_credits: u64,
+    /// Withdrawal status: `"queued"`, `"pooled"`, `"broadcasted"`,
+    /// `"complete"`, or `"expired"`.
+    pub status: String,
+    /// Destination Dash address decoded from the output script, or `None` when
+    /// the script does not map to a standard address on this network.
+    pub address: Option<String>,
+    /// Sequential on-chain transaction index, when present on the document.
+    pub transaction_index: Option<u64>,
+    /// Document creation time (Unix ms), when present.
+    pub created_at_ms: Option<u64>,
+    /// Document last-update time (Unix ms), when present.
+    pub updated_at_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -60,6 +99,14 @@ pub enum PlatformInfoTaskResult {
         address: String,
         balance: u64,
         nonce: u32,
+    },
+    Withdrawals {
+        records: Vec<WithdrawalRecord>,
+        /// Sum of all returned records' `amount_credits`.
+        total_amount_credits: u64,
+        /// Pass as the next request's `start_after` to fetch the following
+        /// page. `None` when this page was not full (no more results).
+        next_cursor: Option<Identifier>,
     },
 }
 
@@ -94,6 +141,18 @@ impl PartialEq for PlatformInfoTaskResult {
                     nonce: n2,
                 },
             ) => addr1 == addr2 && bal1 == bal2 && n1 == n2,
+            (
+                PlatformInfoTaskResult::Withdrawals {
+                    records: r1,
+                    total_amount_credits: t1,
+                    next_cursor: c1,
+                },
+                PlatformInfoTaskResult::Withdrawals {
+                    records: r2,
+                    total_amount_credits: t2,
+                    next_cursor: c2,
+                },
+            ) => r1 == r2 && t1 == t2 && c1 == c2,
             _ => false,
         }
     }
@@ -376,6 +435,87 @@ fn format_withdrawal_documents_to_bare_info(
         total_amount as f64 / (dash_to_credits!(1) as f64),
         amounts.join("\n    ")
     ))
+}
+
+/// Stable, lowercase status string for programmatic clients. Distinct from the
+/// human-facing `Display` ("Queued", …) so machine consumers can match on it.
+fn withdrawal_status_str(status: WithdrawalStatus) -> &'static str {
+    match status {
+        WithdrawalStatus::QUEUED => "queued",
+        WithdrawalStatus::POOLED => "pooled",
+        WithdrawalStatus::BROADCASTED => "broadcasted",
+        WithdrawalStatus::COMPLETE => "complete",
+        WithdrawalStatus::EXPIRED => "expired",
+    }
+}
+
+/// Flatten one withdrawal [`Document`] into a [`WithdrawalRecord`].
+fn extract_withdrawal_record(
+    document: &Document,
+    network: Network,
+) -> Result<WithdrawalRecord, TaskError> {
+    let amount_credits = document
+        .properties()
+        .get_integer::<Credits>(AMOUNT)
+        .map_err(|e| TaskError::WithdrawalDocumentParsingError {
+            detail: format!("Failed to get withdrawal amount: {}", e),
+        })?;
+    let status_u8 = document
+        .properties()
+        .get_integer::<u8>(STATUS)
+        .map_err(|e| TaskError::WithdrawalDocumentParsingError {
+            detail: format!("Failed to get withdrawal status: {}", e),
+        })?;
+    let status: WithdrawalStatus =
+        status_u8
+            .try_into()
+            .map_err(|_| TaskError::WithdrawalDocumentParsingError {
+                detail: format!("Invalid withdrawal status value: {}", status_u8),
+            })?;
+    let address = document
+        .properties()
+        .get_bytes(OUTPUT_SCRIPT)
+        .ok()
+        .and_then(|bytes| Address::from_script(&ScriptBuf::from_bytes(bytes), network).ok())
+        .map(|addr| addr.to_string());
+    let transaction_index = document
+        .properties()
+        .get_integer::<u64>(TRANSACTION_INDEX)
+        .ok();
+
+    Ok(WithdrawalRecord {
+        document_id: document.id(),
+        owner_id: document.owner_id(),
+        amount_credits,
+        status: withdrawal_status_str(status).to_string(),
+        address,
+        transaction_index,
+        created_at_ms: document.created_at(),
+        updated_at_ms: document.updated_at(),
+    })
+}
+
+/// Build the structured, paginated withdrawal result. `documents` are the page
+/// already fetched; `page_limit` is the limit that was requested so the cursor
+/// is only emitted when the page came back full (more results may exist).
+fn build_withdrawals_result(
+    documents: &[Document],
+    page_limit: usize,
+    network: Network,
+) -> Result<PlatformInfoTaskResult, TaskError> {
+    let records = documents
+        .iter()
+        .map(|doc| extract_withdrawal_record(doc, network))
+        .collect::<Result<Vec<_>, _>>()?;
+    let total_amount_credits = records.iter().map(|r| r.amount_credits).sum();
+    let next_cursor = (documents.len() == page_limit)
+        .then(|| records.last().map(|r| r.document_id))
+        .flatten();
+    Ok(PlatformInfoTaskResult::Withdrawals {
+        records,
+        total_amount_credits,
+        next_cursor,
+    })
 }
 
 impl AppContext {
@@ -683,6 +823,69 @@ impl AppContext {
                         PlatformInfoTaskResult::TextResult(formatted),
                     ))
                 }
+            }
+            PlatformInfoTaskRequestType::Withdrawals {
+                completed,
+                limit,
+                start_after,
+            } => {
+                let withdrawal_contract = load_system_data_contract(
+                    SystemDataContract::Withdrawals,
+                    PlatformVersion::latest(),
+                )
+                .map_err(|e| TaskError::from(SdkError::Protocol(e)))?;
+
+                // `0` is the upstream sentinel for "default limit"; clamp the
+                // requested page so the cursor heuristic has a known bound.
+                let page_limit = limit.unwrap_or(50).clamp(1, 100);
+                let start = start_after.map(|id| Start::StartAfter(id.to_buffer().to_vec()));
+
+                let (where_clauses, order_by_clauses) = if completed {
+                    (
+                        vec![WhereClause {
+                            field: "status".to_string(),
+                            operator: WhereOperator::In,
+                            value: Value::Array(vec![
+                                Value::U8(WithdrawalStatus::COMPLETE as u8),
+                                Value::U8(WithdrawalStatus::EXPIRED as u8),
+                            ]),
+                        }],
+                        vec![
+                            OrderClause {
+                                field: "status".to_string(),
+                                ascending: true,
+                            },
+                            OrderClause {
+                                field: "transactionIndex".to_string(),
+                                ascending: true,
+                            },
+                        ],
+                    )
+                } else {
+                    (vec![], vec![])
+                };
+
+                let query = DocumentQuery {
+                    select: SelectProjection::documents(),
+                    data_contract: Arc::new(withdrawal_contract),
+                    document_type_name: "withdrawal".to_string(),
+                    where_clauses,
+                    group_by: Vec::new(),
+                    having: Vec::new(),
+                    order_by_clauses,
+                    limit: page_limit,
+                    start,
+                };
+
+                let documents = Document::fetch_many(sdk, query)
+                    .await
+                    .map_err(TaskError::from)?;
+                let withdrawal_docs: Vec<Document> =
+                    documents.values().filter_map(|a| a.clone()).collect();
+
+                let result =
+                    build_withdrawals_result(&withdrawal_docs, page_limit as usize, self.network)?;
+                Ok(BackendTaskSuccessResult::PlatformInfo(result))
             }
             PlatformInfoTaskRequestType::ShieldedPoolState => {
                 use dash_sdk::query_types::ShieldedPoolState;

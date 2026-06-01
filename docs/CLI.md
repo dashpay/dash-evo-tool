@@ -126,6 +126,10 @@ det-cli platform-withdrawals-get
 # Query recently completed withdrawals
 det-cli platform-withdrawals-get status=completed
 
+# Paginate: first page of 10, then continue from the returned next_cursor
+det-cli platform-withdrawals-get status=completed limit=10
+det-cli platform-withdrawals-get status=completed limit=10 start_after=<document_id>
+
 # Get full schema and description for a tool
 det-cli tool-describe name=core_funds_send
 

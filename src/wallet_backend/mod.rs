@@ -47,6 +47,7 @@ pub mod wallet_seed_store;
 pub(crate) mod wallet_seed_store;
 
 pub use dashpay::DashpayView;
+pub(crate) use dashpay::derive_contact_xpub_material;
 pub use shielded::{InsertShieldedNote, SHIELDED_SIDECAR_FILE, ShieldedNoteRow, ShieldedView};
 
 pub use asset_lock_signer::AssetLockSignerError;

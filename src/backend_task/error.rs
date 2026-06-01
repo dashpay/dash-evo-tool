@@ -911,6 +911,14 @@ pub enum TaskError {
     #[error("Could not process encrypted data. Please check your keys and try again.")]
     EncryptionError { detail: String },
 
+    /// Sending a contact request needs the sender wallet's recovery phrase to
+    /// derive the contact's payment addresses, but no unlocked wallet holding
+    /// that recovery phrase is available for the identity.
+    #[error(
+        "Unlock the wallet for this identity before sending a contact request, so payments can reach the right addresses."
+    )]
+    ContactWalletSeedUnavailable,
+
     // ──────────────────────────────────────────────────────────────────────────
     // Wallet persistence errors
     // ──────────────────────────────────────────────────────────────────────────

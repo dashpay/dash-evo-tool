@@ -2,9 +2,6 @@ use super::encryption::{
     encrypt_account_label, encrypt_extended_public_key, generate_ecdh_shared_key,
 };
 use super::errors::DashPayError;
-use super::hd_derivation::{
-    calculate_account_reference, derive_dashpay_incoming_xpub, generate_contact_xpub_data,
-};
 use super::validation::validate_contact_request_before_send;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::dashpay::auto_accept_proof::{
@@ -30,6 +27,7 @@ use dash_sdk::platform::{
 use dash_sdk::query_types::{CurrentQuorumsInfo, NoParamQuery};
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
+use zeroize::Zeroizing;
 
 pub async fn load_contact_requests(
     app_context: &Arc<AppContext>,
@@ -307,45 +305,31 @@ pub async fn send_contact_request_with_proof(
     let shared_key = generate_ecdh_shared_key(&sender_private_key, recipient_key)
         .map_err(|e| TaskError::EncryptionError { detail: e })?;
 
-    // Generate extended public key for this contact using proper HD derivation
-    // For now, use the sender's private key as seed material
-    // In production, this would derive from the wallet's HD seed/mnemonic
-    let wallet_seed = sender_private_key;
-
-    // Get the network from app context
     let network = app_context.network;
 
-    // Use account 0 for now (could be made configurable)
+    // DIP-15 account index for the relationship. Receive-side derivation
+    // (incoming_payments) must use the same value or funds land on
+    // addresses we never scan.
     let account_index = 0u32;
 
-    // Generate the extended public key data for this contact relationship
-    let (parent_fingerprint, chain_code, contact_public_key) = generate_contact_xpub_data(
+    // Derive the contact-relationship xpub from the wallet's real HD seed.
+    // The wallet type and seed stay inside the wallet_backend seam; we receive
+    // only the published byte material plus the account reference. The seed
+    // determines where the contact's payments land, so it must be the same HD
+    // seed the receive-side address derivation uses.
+    let wallet_seed = first_open_wallet_seed(&identity)?;
+    let contact_material = crate::wallet_backend::derive_contact_xpub_material(
         &wallet_seed,
         network,
         account_index,
         &identity.identity.id(),
         &to_identity_id,
-    )
-    .map_err(|e| TaskError::EncryptionError { detail: e })?;
-
-    // Also derive the full xpub for account reference calculation per DIP-0015
-    let contact_xpub = derive_dashpay_incoming_xpub(
-        &wallet_seed,
-        network,
-        account_index,
-        &identity.identity.id(),
-        &to_identity_id,
-    )
-    .map_err(|e| TaskError::EncryptionError { detail: e })?;
-
-    // Calculate account reference per DIP-0015 (ASK-based shortening)
-    // Version 0 is the current version
-    let account_reference = calculate_account_reference(
         &sender_private_key,
-        &contact_xpub,
-        account_index,
-        0, // version
-    );
+    )?;
+    let parent_fingerprint = contact_material.parent_fingerprint;
+    let chain_code = contact_material.chain_code;
+    let contact_public_key = contact_material.public_key;
+    let account_reference = contact_material.account_reference;
 
     let encrypted_public_key = encrypt_extended_public_key(
         parent_fingerprint,
@@ -527,6 +511,23 @@ pub async fn send_contact_request_with_proof(
     Ok(BackendTaskSuccessResult::DashPayContactRequestSent(
         to_username_or_id.to_string(),
     ))
+}
+
+/// Return the 64-byte HD seed of the first unlocked wallet associated with
+/// `identity`, zeroized when dropped. The raw seed only travels from here into
+/// the `wallet_backend` derivation seam; it never enters the contact-request
+/// document. Errors with [`TaskError::ContactWalletSeedUnavailable`] when no
+/// unlocked wallet exposes a seed.
+fn first_open_wallet_seed(identity: &QualifiedIdentity) -> Result<Zeroizing<[u8; 64]>, TaskError> {
+    for wallet in identity.associated_wallets.values() {
+        let Ok(guard) = wallet.read() else {
+            continue;
+        };
+        if let Ok(seed) = guard.seed_bytes() {
+            return Ok(Zeroizing::new(*seed));
+        }
+    }
+    Err(TaskError::ContactWalletSeedUnavailable)
 }
 
 async fn resolve_username_to_identity(

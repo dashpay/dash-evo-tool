@@ -36,14 +36,17 @@
 
 use std::sync::Arc;
 
+use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::key_wallet::wallet::Wallet;
+use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
 use dash_sdk::platform::Identifier;
-use platform_wallet::PlatformWallet;
 use platform_wallet::wallet::identity::types::dashpay::contact_request::ContactRequest;
 use platform_wallet::wallet::identity::types::dashpay::established_contact::EstablishedContact;
 use platform_wallet::wallet::identity::types::dashpay::payment::{
     PaymentDirection, PaymentEntry, PaymentStatus,
 };
 use platform_wallet::wallet::identity::types::dashpay::profile::DashPayProfile;
+use platform_wallet::{PlatformWallet, calculate_account_reference, derive_contact_xpub};
 
 use crate::backend_task::error::TaskError;
 use crate::model::dashpay::{
@@ -52,6 +55,89 @@ use crate::model::dashpay::{
 };
 use crate::wallet_backend::kv::DetKv;
 use crate::wallet_backend::{DetScope, WalletBackend};
+
+// ---------------------------------------------------------------------------
+// Contact xpub derivation seam (DIP-14 / DIP-15)
+// ---------------------------------------------------------------------------
+//
+// `key_wallet` / `platform_wallet` derivation types (`Wallet`,
+// `ExtendedPubKey`, `ContactXpubData`) stay inside this module. Callers
+// receive only the plain byte/integer material a DashPay contact-request
+// document carries. This keeps the M-DONT-LEAK-TYPES boundary intact: the
+// raw 64-byte HD seed and the upstream wallet type never cross out of the
+// `wallet_backend` seam.
+
+/// Plain, type-leak-free material extracted from a contact relationship's
+/// extended public key, ready to drop into a DashPay `contactRequest`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContactXpubMaterial {
+    /// Parent key fingerprint (first 4 bytes of HASH160 of the parent key).
+    pub parent_fingerprint: [u8; 4],
+    /// Chain code of the contact xpub (32 bytes).
+    pub chain_code: [u8; 32],
+    /// Compressed public key of the contact xpub (33 bytes).
+    pub public_key: [u8; 33],
+    /// DIP-15 account reference for the relationship.
+    pub account_reference: u32,
+}
+
+// TODO(PROJ-004): the receive side (`backend_task::dashpay::incoming_payments`
+// via `hd_derivation::derive_dashpay_incoming_xpub`) still uses DET's local
+// DIP-14 path, which hardcodes coin-type 5' and so diverges from this upstream
+// derivation on testnet (coin-type 1'). Route the receive side through this
+// same seam so send/receive agree on every network. Until then, end-to-end
+// fund delivery is only correct on mainnet — see the seam tests.
+//
+/// Derive the contact-relationship xpub material from the wallet's real HD
+/// seed, using upstream `platform_wallet::derive_contact_xpub` as the single
+/// source of truth for the `m/9'/coin'/15'/account'/(sender)/(recipient)`
+/// path.
+///
+/// The published `public_key` / `chain_code` / `parent_fingerprint` are what
+/// the contact pays into; the receive-side address derivation must therefore
+/// run against the same seed and path. `account_reference` is computed via
+/// upstream `calculate_account_reference` so the `ExtendedPubKey` never leaves
+/// this seam.
+///
+/// * `seed_bytes`        - The wallet's 64-byte BIP-39 HD seed.
+/// * `network`           - Network for coin-type selection in the path.
+/// * `account_index`     - DIP-15 account index (hardened path segment).
+/// * `sender_id`         - The sender (our) identity.
+/// * `recipient_id`      - The recipient (contact) identity.
+/// * `sender_secret_key` - The sender's 32-byte ECDH secret, keying the
+///   account-reference HMAC.
+pub(crate) fn derive_contact_xpub_material(
+    seed_bytes: &[u8; 64],
+    network: Network,
+    account_index: u32,
+    sender_id: &Identifier,
+    recipient_id: &Identifier,
+    sender_secret_key: &[u8; 32],
+) -> Result<ContactXpubMaterial, TaskError> {
+    let wallet = Wallet::from_seed_bytes(*seed_bytes, network, WalletAccountCreationOptions::None)
+        .map_err(|e| TaskError::WalletBackend {
+            source: Box::new(
+                platform_wallet::error::PlatformWalletError::InvalidIdentityData(format!(
+                    "Failed to build wallet for contact derivation: {e}"
+                )),
+            ),
+        })?;
+
+    let data = derive_contact_xpub(&wallet, network, account_index, sender_id, recipient_id)
+        .map_err(|e| TaskError::WalletBackend {
+            source: Box::new(e),
+        })?;
+
+    let account_reference =
+        calculate_account_reference(sender_secret_key, &data.xpub, account_index, 0);
+
+    Ok(ContactXpubMaterial {
+        parent_fingerprint: data.parent_fingerprint,
+        chain_code: data.chain_code,
+        public_key: data.public_key,
+        account_reference,
+    })
+}
 
 // ---------------------------------------------------------------------------
 // K/V sidecar key prefixes
@@ -1809,5 +1895,194 @@ mod tests {
         }
 
         DetKv::from_store(Arc::new(InMemoryKv::default()))
+    }
+
+    // -----------------------------------------------------------------------
+    // Contact xpub derivation seam
+    // -----------------------------------------------------------------------
+
+    const TEST_SEED: [u8; 64] = [0x42u8; 64];
+    const TEST_SECRET: [u8; 32] = [0x07u8; 32];
+
+    fn contact_ids() -> (Identifier, Identifier) {
+        (id_from_byte(0x11), id_from_byte(0x22))
+    }
+
+    #[test]
+    fn contact_xpub_material_is_deterministic() {
+        let (sender, recipient) = contact_ids();
+        let a = derive_contact_xpub_material(
+            &TEST_SEED,
+            Network::Testnet,
+            0,
+            &sender,
+            &recipient,
+            &TEST_SECRET,
+        )
+        .expect("derive");
+        let b = derive_contact_xpub_material(
+            &TEST_SEED,
+            Network::Testnet,
+            0,
+            &sender,
+            &recipient,
+            &TEST_SECRET,
+        )
+        .expect("derive");
+        assert_eq!(a, b, "same inputs must yield the same material");
+    }
+
+    #[test]
+    fn contact_xpub_material_differs_by_relationship() {
+        let (sender, recipient) = contact_ids();
+        let forward = derive_contact_xpub_material(
+            &TEST_SEED,
+            Network::Testnet,
+            0,
+            &sender,
+            &recipient,
+            &TEST_SECRET,
+        )
+        .expect("derive forward");
+        let reverse = derive_contact_xpub_material(
+            &TEST_SEED,
+            Network::Testnet,
+            0,
+            &recipient,
+            &sender,
+            &TEST_SECRET,
+        )
+        .expect("derive reverse");
+        assert_ne!(
+            forward.public_key, reverse.public_key,
+            "the relationship is directional; swapping sender/recipient must change the key"
+        );
+    }
+
+    #[test]
+    fn contact_xpub_public_key_is_valid_compressed() {
+        let (sender, recipient) = contact_ids();
+        let m = derive_contact_xpub_material(
+            &TEST_SEED,
+            Network::Testnet,
+            0,
+            &sender,
+            &recipient,
+            &TEST_SECRET,
+        )
+        .expect("derive");
+        assert!(
+            m.public_key[0] == 0x02 || m.public_key[0] == 0x03,
+            "compressed secp256k1 public key must start with 0x02 or 0x03"
+        );
+    }
+
+    /// Correctness substrate for PROJ-004: on **mainnet**, the xpub the seam
+    /// publishes in the contact request equals the xpub DET's receive-side
+    /// derivation (`derive_dashpay_incoming_xpub`) produces from the same seed
+    /// and path. This pins the upstream `derive_contact_xpub` output against
+    /// DET's local DIP-14 path where they agree (both use coin-type 5').
+    #[test]
+    fn seam_xpub_matches_receive_side_derivation_on_mainnet() {
+        use crate::backend_task::dashpay::hd_derivation::derive_dashpay_incoming_xpub;
+
+        let (sender, recipient) = contact_ids();
+        let seam = derive_contact_xpub_material(
+            &TEST_SEED,
+            Network::Mainnet,
+            0,
+            &sender,
+            &recipient,
+            &TEST_SECRET,
+        )
+        .expect("seam derive");
+
+        let local =
+            derive_dashpay_incoming_xpub(&TEST_SEED, Network::Mainnet, 0, &sender, &recipient)
+                .expect("local derive");
+
+        assert_eq!(
+            seam.public_key,
+            local.public_key.serialize(),
+            "published public key must match the receive-side xpub on mainnet"
+        );
+        assert_eq!(
+            seam.chain_code,
+            local.chain_code.to_bytes(),
+            "published chain code must match the receive-side xpub on mainnet"
+        );
+    }
+
+    /// KNOWN DIVERGENCE (PROJ-004 follow-up, out of scope for this change):
+    /// on **testnet** the upstream spec-compliant path uses coin-type `1'`
+    /// (`m/9'/1'/15'/0'/…`) while DET's local `dip14_derivation` hardcodes
+    /// `5'` (`m/9'/5'/15'/0'/…`). The send side now derives the correct
+    /// (upstream) xpub, but the receive side (`incoming_payments`) still uses
+    /// the hardcoded local path, so on testnet they DISAGREE. Funds will only
+    /// land correctly once the receive side also routes through upstream.
+    /// This test documents the gap so the divergence is visible and tracked,
+    /// not silently green.
+    #[test]
+    fn seam_and_local_diverge_on_testnet_until_receive_side_migrates() {
+        use crate::backend_task::dashpay::hd_derivation::derive_dashpay_incoming_xpub;
+
+        let (sender, recipient) = contact_ids();
+        let seam = derive_contact_xpub_material(
+            &TEST_SEED,
+            Network::Testnet,
+            0,
+            &sender,
+            &recipient,
+            &TEST_SECRET,
+        )
+        .expect("seam derive");
+
+        let local =
+            derive_dashpay_incoming_xpub(&TEST_SEED, Network::Testnet, 0, &sender, &recipient)
+                .expect("local derive");
+
+        assert_ne!(
+            seam.public_key,
+            local.public_key.serialize(),
+            "documents the testnet coin-type divergence; flip to assert_eq once \
+             the receive side routes through upstream derive_contact_xpub"
+        );
+    }
+
+    /// The 32-byte ECDH secret key vs the 64-byte HD seed are different inputs:
+    /// the placeholder fed the secret key in as if it were the HD seed, which
+    /// produced an xpub unrelated to the wallet's real tree. This guards the
+    /// behavioural delta — the real HD seed must drive the derivation.
+    #[test]
+    fn hd_seed_drives_derivation_not_the_ecdh_secret() {
+        let (sender, recipient) = contact_ids();
+        let from_seed = derive_contact_xpub_material(
+            &TEST_SEED,
+            Network::Testnet,
+            0,
+            &sender,
+            &recipient,
+            &TEST_SECRET,
+        )
+        .expect("derive from real seed");
+
+        // Reproduce the old placeholder: 32-byte secret right-padded to a
+        // 64-byte "seed". This must NOT match the real-seed derivation.
+        let mut placeholder_seed = [0u8; 64];
+        placeholder_seed[..32].copy_from_slice(&TEST_SECRET);
+        let from_placeholder = derive_contact_xpub_material(
+            &placeholder_seed,
+            Network::Testnet,
+            0,
+            &sender,
+            &recipient,
+            &TEST_SECRET,
+        )
+        .expect("derive from placeholder");
+
+        assert_ne!(
+            from_seed.public_key, from_placeholder.public_key,
+            "deriving from the real HD seed must differ from the old private-key placeholder"
+        );
     }
 }

@@ -266,6 +266,12 @@ pub enum AppAction {
     PopThenAddScreenToMainScreen(RootScreenType, Screen),
     BackendTask(BackendTask),
     BackendTasks(Vec<BackendTask>, BackendTasksExecutionMode),
+    /// Wire the wallet backend (if needed) and start chain sync for the active
+    /// context. Handled by the update loop, which owns the `TaskResult` sender
+    /// the wiring step requires. Used by the manual Connect button so a click
+    /// during the brief not-yet-wired window lazily wires-then-starts instead
+    /// of silently fast-failing.
+    StartSpv,
     Custom(String),
     /// Mark onboarding as complete, hide welcome screen, and optionally navigate
     OnboardingComplete {
@@ -471,11 +477,25 @@ impl AppState {
         // at 10ms on `WalletBackendNotYetWired`. `PlatformWalletManager` is
         // wallet-independent at construction (Case B); locked persisted
         // wallets are skipped by `SeedReregistrationLoader` until unlock.
-        for app_ctx in network_contexts.values() {
+        //
+        // Auto-start of chain sync rides on wiring completion: for the active
+        // network, when onboarding is done and the user opted in, the same
+        // task that wires the backend goes on to start SPV. Folding the start
+        // into the spawned init closes the boot race where a synchronous
+        // `start_spv()` fired before the fire-and-forget wiring could finish.
+        let boot_auto_start_spv = onboarding_completed && settings.auto_start_spv;
+        for (&net, app_ctx) in network_contexts.iter() {
             let app_ctx = app_ctx.clone();
             let sender = task_result_sender.clone();
+            let auto_start = boot_auto_start_spv && net == chosen_network;
             subtasks.spawn_sync("wallet-backend-eager-init", async move {
-                if let Err(e) = app_ctx.ensure_wallet_backend(sender).await {
+                if auto_start && FeatureGate::SpvBackend.is_available(&app_ctx) {
+                    if let Err(e) = app_ctx.ensure_wallet_backend_and_start_spv(sender).await {
+                        tracing::warn!(error = %e, "eager wallet-backend init + SPV auto-start failed; SDK proof verification will retry once the lazy backend-task fallback fires");
+                    } else {
+                        tracing::info!(network = ?net, "SPV sync started automatically at boot");
+                    }
+                } else if let Err(e) = app_ctx.ensure_wallet_backend(sender).await {
                     tracing::warn!(error = %e, "eager wallet-backend init failed; SDK proof verification will retry once the lazy backend-task fallback fires");
                 }
             });
@@ -657,7 +677,8 @@ impl AppState {
             app_state.welcome_screen =
                 Some(WelcomeScreen::new(app_state.current_app_context().clone()));
         } else {
-            app_state.try_auto_start_spv();
+            // Boot-time SPV auto-start is folded into the eager wallet-backend
+            // init above (so it cannot fire before the backend is wired).
 
             // Refresh ALL main screens so they load data properly
             // This ensures screens like DashPay Profile have identities loaded
@@ -845,12 +866,34 @@ impl AppState {
         // Same eager wallet-backend init as at app start (Case B): chain-
         // only SDK lookups must work pre-unlock on the freshly-switched
         // context too, otherwise the SDK tight-loops on WalletBackendNotYetWired.
+        //
+        // Chain sync auto-starts on wiring completion (mirrors boot). The slow
+        // path already started SPV inside the `SwitchNetwork` task, but the fast
+        // path (cached context) reaches here without ever having started it — so
+        // the auto-start must live here to cover both. All steps are idempotent:
+        // re-wiring is a no-op and the backend's start latch prevents a second
+        // run loop. When the cached context's SPV is already running we log it
+        // at info rather than silently no-op (QA-005 latch-wedge visibility).
         {
             let app_ctx = app_context.clone();
             let sender = self.task_result_sender.clone();
+            let auto_start = app_context.get_app_settings().auto_start_spv
+                && FeatureGate::SpvBackend.is_available(&app_context);
             self.subtasks
                 .spawn_sync("wallet-backend-eager-init", async move {
-                    if let Err(e) = app_ctx.ensure_wallet_backend(sender).await {
+                    if auto_start {
+                        let already_running = app_ctx
+                            .wallet_backend()
+                            .map(|b| b.is_started())
+                            .unwrap_or(false);
+                        if let Err(e) = app_ctx.ensure_wallet_backend_and_start_spv(sender).await {
+                            tracing::warn!(error = %e, "eager wallet-backend init + SPV auto-start after network switch failed; lazy fallback will retry");
+                        } else if already_running {
+                            tracing::info!(?network, "Chain sync already running on the switched-to context");
+                        } else {
+                            tracing::info!(?network, "Chain sync started after network switch");
+                        }
+                    } else if let Err(e) = app_ctx.ensure_wallet_backend(sender).await {
                         tracing::warn!(error = %e, "eager wallet-backend init after network switch failed; lazy fallback will retry");
                     }
                 });
@@ -1139,17 +1182,24 @@ impl AppState {
             .ok();
     }
 
-    /// Auto-start SPV sync if the conditions are met: auto-start enabled and
-    /// backend mode is SPV.
+    /// Auto-start chain sync for the active context when the user opted in.
+    ///
+    /// Wires the wallet backend first (via the async chokepoint) so the start
+    /// cannot race ahead of backend wiring. Used after onboarding completes;
+    /// boot-time auto-start is handled inline by the eager wallet-backend init.
     fn try_auto_start_spv(&self) {
         let ctx = self.current_app_context();
         let auto_start = ctx.get_app_settings().auto_start_spv;
         if auto_start && FeatureGate::SpvBackend.is_available(ctx) {
-            if let Err(e) = ctx.start_spv() {
-                tracing::warn!("Failed to auto-start SPV sync: {e}");
-            } else {
-                tracing::info!("SPV sync started automatically for {:?}", ctx.network);
-            }
+            let ctx = ctx.clone();
+            let sender = self.task_result_sender.clone();
+            self.subtasks.spawn_sync("spv_auto_start", async move {
+                if let Err(e) = ctx.ensure_wallet_backend_and_start_spv(sender).await {
+                    tracing::warn!("Failed to auto-start SPV sync: {e}");
+                } else {
+                    tracing::info!("SPV sync started automatically for {:?}", ctx.network);
+                }
+            });
         }
     }
 }
@@ -1558,6 +1608,20 @@ impl App for AppState {
                 AppAction::PopThenAddScreenToMainScreen(root_screen_type, screen) => {
                     self.screen_stack = vec![screen];
                     self.set_main_screen(root_screen_type);
+                }
+                AppAction::StartSpv => {
+                    let app_ctx = self.current_app_context().clone();
+                    let sender = self.task_result_sender.clone();
+                    MessageBanner::set_global(
+                        ctx,
+                        "Connecting to the network. This may take a moment.",
+                        MessageType::Info,
+                    );
+                    self.subtasks.spawn_sync("spv_manual_start", async move {
+                        if let Err(e) = app_ctx.ensure_wallet_backend_and_start_spv(sender).await {
+                            tracing::warn!(error = %e, "Manual SPV start failed");
+                        }
+                    });
                 }
                 AppAction::Custom(_) => {}
                 AppAction::OnboardingComplete {

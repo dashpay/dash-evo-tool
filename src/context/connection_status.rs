@@ -282,7 +282,12 @@ impl ConnectionStatus {
         let spv_status = self.spv_status();
         let dapi_available = self.dapi_available();
 
-        let state = if !dapi_available {
+        // An SPV start/sync failure surfaces as `Error` regardless of DAPI
+        // availability — the DAPI gate below must not mask it, otherwise a
+        // failed chain-sync start would silently read as `Disconnected`.
+        let state = if spv_status == SpvStatus::Error {
+            OverallConnectionState::Error
+        } else if !dapi_available {
             OverallConnectionState::Disconnected
         } else {
             let has_peers = self.spv_connected_peers.load(Ordering::Relaxed) > 0;
@@ -298,7 +303,6 @@ impl ConnectionStatus {
                         OverallConnectionState::Connecting
                     }
                 }
-                SpvStatus::Error => OverallConnectionState::Error,
                 _ => OverallConnectionState::Disconnected,
             }
         };
@@ -539,5 +543,41 @@ mod tests {
         // After reset the timestamp should be cleared.
         status.reset();
         assert!(!status.spv_peer_degraded());
+    }
+
+    /// QA-006: an SPV `Error` must surface as the `Error` overall state even
+    /// when DAPI is unavailable. The DAPI gate previously short-circuited to
+    /// `Disconnected` first, masking a failed chain-sync start.
+    #[test]
+    fn spv_error_not_masked_by_unavailable_dapi() {
+        let status = ConnectionStatus::new();
+        status.set_dapi_status(0, 0); // DAPI unavailable
+        assert!(!status.dapi_available(), "precondition: DAPI unavailable");
+
+        status.set_spv_status(SpvStatus::Error);
+        status.refresh_state();
+
+        assert_eq!(
+            status.overall_state(),
+            OverallConnectionState::Error,
+            "SPV error must not be masked by the DAPI gate"
+        );
+    }
+
+    /// Without an SPV error, an unavailable DAPI still reads as `Disconnected`
+    /// — the new error-precedence branch must not change the DAPI gate for the
+    /// non-error path.
+    #[test]
+    fn unavailable_dapi_reads_disconnected_without_spv_error() {
+        let status = ConnectionStatus::new();
+        status.set_dapi_status(0, 0);
+        status.set_spv_status(SpvStatus::Syncing);
+        status.refresh_state();
+
+        assert_eq!(
+            status.overall_state(),
+            OverallConnectionState::Disconnected,
+            "unavailable DAPI without an SPV error should read Disconnected"
+        );
     }
 }

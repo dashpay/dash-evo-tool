@@ -376,11 +376,12 @@ impl NetworkChooserScreen {
                         .corner_radius(Shape::RADIUS_MD)
                         .min_size(egui::vec2(120.0, 36.0));
 
-                        if ui.add(connect_button).clicked()
-                            && let Err(err) = self.current_app_context().start_spv()
-                        {
-                            app_action =
-                                AppAction::Custom(format!("Failed to start SPV: {}", err));
+                        if ui.add(connect_button).clicked() {
+                            // The update loop owns the `TaskResult` sender the
+                            // backend-wiring step needs, so it lazily wires the
+                            // backend then starts chain sync. A click during the
+                            // brief not-yet-wired boot window no longer fast-fails.
+                            app_action = AppAction::StartSpv;
                         }
                     }
                 }

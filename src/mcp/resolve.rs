@@ -114,10 +114,25 @@ pub(crate) fn wallet_arc(
 ///
 /// Only tools that make no network calls (e.g. `core_wallets_list`,
 /// `network_info`, `tool_describe`) skip this gate.
-pub(crate) async fn ensure_spv_synced(ctx: &AppContext) -> Result<(), McpToolError> {
+///
+/// Wires the wallet backend and starts chain sync on first call before
+/// polling — neither standalone (stdio) boot, the HTTP context swap, nor the
+/// post-network-switch path eagerly wires the backend the way the GUI does, so
+/// this is the single chokepoint that makes SPV actually start for every gated
+/// tool. Both steps are idempotent, so repeated tool calls are cheap.
+pub(crate) async fn ensure_spv_synced(ctx: &Arc<AppContext>) -> Result<(), McpToolError> {
+    // A throwaway `TaskResult` sender: MCP/CLI has no GUI event loop consuming
+    // it, so the receiver is dropped. The `EventBridge` only does non-blocking
+    // `try_send`, so a closed channel is harmless. Mirrors `dispatch::dispatch_task`.
+    let (tx, _) = tokio::sync::mpsc::channel::<crate::app::TaskResult>(32);
+    let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, egui::Context::default());
+    if let Err(e) = ctx.ensure_wallet_backend_and_start_spv(sender).await {
+        tracing::warn!(error = %e, "wallet backend wiring / SPV start failed before sync wait");
+    }
+
     let deadline = tokio::time::Instant::now() + SPV_WAIT_TIMEOUT;
     loop {
-        let _ = ctx.connection_status.trigger_refresh(ctx);
+        let _ = ctx.connection_status.trigger_refresh(ctx.as_ref());
         let state = ctx.connection_status.overall_state();
         if state == OverallConnectionState::Synced {
             return Ok(());

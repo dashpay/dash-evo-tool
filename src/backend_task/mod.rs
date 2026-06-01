@@ -549,8 +549,16 @@ impl AppContext {
                     detail: "AppContext::new() returned None".into(),
                 })?;
 
+                // Wire the freshly-built context's wallet backend and then start
+                // chain sync. The old code called `start_spv()` on an unwired
+                // context, which fast-failed with `WalletBackendNotYetWired` and
+                // reported `spv_started=false`. Wiring first removes that race so
+                // `spv_started` reflects whether sync actually began.
                 let spv_started = if start_spv {
-                    match new_ctx.start_spv() {
+                    match new_ctx
+                        .ensure_wallet_backend_and_start_spv(sender.clone())
+                        .await
+                    {
                         Ok(()) => {
                             tracing::info!(?network, "SPV started after network switch");
                             true

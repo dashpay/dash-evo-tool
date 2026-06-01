@@ -259,14 +259,11 @@ pub async fn init_app_context() -> Result<Arc<AppContext>, McpError> {
         )
     })?;
 
-    // Chain sync is SPV-only (owned by upstream platform-wallet); no backend
-    // mode to force.
-    if let Err(e) = app_context.start_spv() {
-        tracing::warn!("SPV start failed (wallet tools may not work): {e}");
-    } else {
-        tracing::info!("SPV client started, wallets loading in background");
-    }
-
+    // Chain sync is SPV-only (owned by upstream platform-wallet). Starting it
+    // here would fast-fail: the wallet backend is not wired yet at boot. SPV is
+    // instead wired-then-started lazily by `resolve::ensure_spv_synced` on the
+    // first gated tool call — the single chokepoint that also covers the HTTP
+    // context swap and the post-network-switch path.
     Ok(app_context)
 }
 

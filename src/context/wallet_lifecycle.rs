@@ -6,6 +6,7 @@ use crate::model::spv_status::SpvStatus;
 use crate::model::wallet::meta::WalletMeta;
 use crate::model::wallet::seed_envelope::StoredSeedEnvelope;
 use crate::model::wallet::{DerivationPathReference, DerivationPathType, Wallet, WalletSeedHash};
+use crate::wallet_backend::WalletBackend;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 
@@ -69,7 +70,7 @@ impl AppContext {
         Ok(())
     }
 
-    /// Start chain sync.
+    /// Start chain sync against an already-wired wallet backend.
     ///
     /// Delegates to [`WalletBackend::start`], which spawns the upstream
     /// `SpvRuntime` run loop and the platform-address / identity sync
@@ -77,23 +78,61 @@ impl AppContext {
     /// than once (Connect clicked twice, eager-init plus a manual click) is
     /// safe.
     ///
-    /// The synchronous part fails fast with [`TaskError::WalletBackendNotYetWired`]
-    /// when the wallet seam has not been built yet — the caller (Connect button)
-    /// surfaces that immediately. The chain sync itself runs asynchronously:
-    /// success and progress arrive via the `EventBridge`, and a start failure
-    /// flips the SPV indicator to `Error` so it leaves the "idle" state.
+    /// Fails fast with [`TaskError::WalletBackendNotYetWired`] when the wallet
+    /// seam has not been built yet. Most callers should reach for
+    /// [`Self::ensure_wallet_backend_and_start_spv`] instead, which wires the
+    /// backend first and so cannot hit that race; this entry point exists for
+    /// the post-wiring paths that already hold a wired backend.
     pub fn start_spv(self: &Arc<Self>) -> Result<(), TaskError> {
         let backend = self.wallet_backend()?;
-        let connection_status = Arc::clone(&self.connection_status);
-        self.subtasks.spawn_sync("spv_start", async move {
-            if let Err(e) = backend.start().await {
-                tracing::error!(error = %e, "Failed to start chain sync");
-                connection_status.set_spv_last_error(Some(format!("{e}")));
-                connection_status.set_spv_status(SpvStatus::Error);
-                connection_status.refresh_state();
-            }
-        });
+        self.spawn_backend_start(backend);
         Ok(())
+    }
+
+    /// Wire the wallet backend (idempotent) and then start chain sync.
+    ///
+    /// This is the single chokepoint for "start SPV" across every entry path:
+    /// GUI boot auto-start, the manual Connect button, MCP/CLI standalone boot,
+    /// and the post-network-switch restart. Wiring happens first, so the
+    /// historical `WalletBackendNotYetWired` fast-fail race — callers invoking
+    /// [`Self::start_spv`] before [`Self::ensure_wallet_backend`] had a chance
+    /// to complete — cannot occur.
+    ///
+    /// Both steps are idempotent: the backend is wired at most once (first
+    /// writer wins) and the upstream run loop is spawned at most once (guarded
+    /// by the backend's start latch). Chain sync runs asynchronously — progress
+    /// and success arrive via the `EventBridge`.
+    pub async fn ensure_wallet_backend_and_start_spv(
+        self: &Arc<Self>,
+        sender: crate::utils::egui_mpsc::SenderAsync<crate::app::TaskResult>,
+    ) -> Result<(), TaskError> {
+        self.ensure_wallet_backend(sender).await?;
+        let backend = self.wallet_backend()?;
+        self.run_backend_start(backend).await;
+        Ok(())
+    }
+
+    /// Spawn [`WalletBackend::start`] on the subtask runtime, surfacing a
+    /// start failure on the SPV connection indicator. Shared by the
+    /// synchronous [`Self::start_spv`] entry point.
+    fn spawn_backend_start(self: &Arc<Self>, backend: Arc<WalletBackend>) {
+        let ctx = Arc::clone(self);
+        self.subtasks.spawn_sync("spv_start", async move {
+            ctx.run_backend_start(backend).await;
+        });
+    }
+
+    /// Drive [`WalletBackend::start`] to completion, flipping the SPV indicator
+    /// to `Error` if the start fails. Awaited directly by the async chokepoint
+    /// and indirectly (via a subtask) by the synchronous one.
+    async fn run_backend_start(&self, backend: Arc<WalletBackend>) {
+        if let Err(e) = backend.start().await {
+            tracing::error!(error = %e, "Failed to start chain sync");
+            self.connection_status
+                .set_spv_last_error(Some(format!("{e}")));
+            self.connection_status.set_spv_status(SpvStatus::Error);
+            self.connection_status.refresh_state();
+        }
     }
 
     /// Stop chain sync. Inert; see [`Self::start_spv`].
@@ -428,5 +467,134 @@ impl AppContext {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::TaskResult;
+    use crate::app_dir::ensure_env_file;
+    use crate::context::AppContext;
+    use crate::context::connection_status::ConnectionStatus;
+    use crate::database::test_helpers::create_database_at_path;
+    use crate::utils::egui_mpsc::SenderAsync;
+    use crate::utils::tasks::TaskManager;
+    use dash_sdk::dpp::dashcore::Network;
+
+    /// Build an offline `AppContext` for testnet in an isolated temp dir. No
+    /// network I/O happens at construction: the SDK and Core client are built
+    /// from bundled `.env` addresses but connect lazily. The `TempDir` must
+    /// outlive the context — its drop deletes the data dir.
+    fn offline_testnet_context() -> (Arc<AppContext>, SenderAsync<TaskResult>, tempfile::TempDir) {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp_dir.path().to_path_buf();
+        ensure_env_file(&data_dir);
+
+        let db = Arc::new(
+            create_database_at_path(&data_dir.join("data.db")).expect("create test database"),
+        );
+        let subtasks = Arc::new(TaskManager::new());
+        let connection_status = Arc::new(ConnectionStatus::new());
+        let egui_ctx = egui::Context::default();
+        let app_kv = AppContext::open_app_kv(&data_dir).expect("open app k/v");
+
+        let ctx = AppContext::new(
+            data_dir,
+            Network::Testnet,
+            db,
+            subtasks,
+            connection_status,
+            egui_ctx,
+            app_kv,
+        )
+        .expect("AppContext::new should succeed offline with bundled testnet config");
+
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        (ctx, sender, temp_dir)
+    }
+
+    /// Before the wallet seam is wired, `start_spv()` must fail fast with the
+    /// typed `WalletBackendNotYetWired` rather than silently swallowing the
+    /// request. This is the gate the speculative pre-wire callers were tripping.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn start_spv_errors_when_backend_not_wired() {
+        let (ctx, _sender, _tmp) = offline_testnet_context();
+
+        assert!(
+            ctx.wallet_backend().is_err(),
+            "precondition: backend must be unwired before ensure_wallet_backend"
+        );
+        let err = ctx
+            .start_spv()
+            .expect_err("start_spv must fail before the backend is wired");
+        assert!(
+            matches!(err, TaskError::WalletBackendNotYetWired),
+            "expected WalletBackendNotYetWired, got: {err:?}"
+        );
+    }
+
+    /// After wiring the backend, the synchronous gate is gone: `start_spv()`
+    /// returns `Ok` and the backend's start latch flips to started once the
+    /// spawned start runs. Mirrors the production "start on wiring completion"
+    /// path without faking a sync loop — the upstream run loop is shut down
+    /// immediately afterwards so the test leaves no detached network task.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn start_spv_starts_after_backend_wired() {
+        let (ctx, sender, _tmp) = offline_testnet_context();
+
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("ensure_wallet_backend should succeed offline");
+        let backend = ctx
+            .wallet_backend()
+            .expect("backend must be wired after ensure_wallet_backend");
+        assert!(
+            !backend.is_started(),
+            "wiring alone must not start chain sync"
+        );
+
+        ctx.start_spv()
+            .expect("start_spv must not error synchronously once the backend is wired");
+
+        // The spawned start flips the latch synchronously at its head; poll
+        // with a bounded timeout so the test never hangs if the runtime is busy.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !backend.is_started() {
+            if tokio::time::Instant::now() >= deadline {
+                panic!("backend.start() did not run within the timeout");
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        backend.shutdown().await;
+    }
+
+    /// The async chokepoint wires the backend and starts chain sync in one call,
+    /// so a caller need not have wired the backend beforehand. Pins the
+    /// "ensure-then-start" sequencing the GUI/MCP/network-switch paths share.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ensure_wallet_backend_and_start_spv_wires_then_starts() {
+        let (ctx, sender, _tmp) = offline_testnet_context();
+
+        assert!(
+            ctx.wallet_backend().is_err(),
+            "precondition: backend unwired before the chokepoint"
+        );
+
+        ctx.ensure_wallet_backend_and_start_spv(sender)
+            .await
+            .expect("chokepoint should wire then start offline");
+
+        let backend = ctx
+            .wallet_backend()
+            .expect("backend must be wired after the chokepoint");
+        assert!(
+            backend.is_started(),
+            "chokepoint must have started chain sync"
+        );
+
+        backend.shutdown().await;
     }
 }

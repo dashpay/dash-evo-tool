@@ -1,51 +1,57 @@
 # PR #860 Platform-Wallet Rewrite — Consolidated Gap Audit
 
-**Audit date:** 2026-06-01
-**Head SHA:** `686430a4d2b83596fbbe716acc183a424859e11d`
+**Audit date:** 2026-06-01 — **Refreshed:** 2026-06-02
+**Head SHA (refresh):** `450214e5c5ed602a0c10a951ae00400a371c3b97`
+**Original audit head:** `686430a4d2b83596fbbe716acc183a424859e11d`
 **PR #860 base:** `v1.0-dev` @ `87ba5b711839219f5e1c7aee8f9de36d038866e3`
 **Auditor:** project-reviewer-adams (READ-ONLY; no source touched)
-**Resolution update:** 2026-06-01 — PROJ-001 fixed on-branch at `36f5a982` (see commits `42388c4b`, `3165f98c`, `36f5a982`); see Resolution log.
 
 PR #860 rips out DET's home-grown SPV stack (`src/spv/**` deleted) and `data.db` wallet
 schema and re-seats wallet/identity/DashPay/shielded state on the upstream
 `dashpay/platform` `platform-wallet` crate behind a `WalletBackend` seam. It was built in
 phases (P0.5 "compile floor" → P5). Several seams were intentionally landed inert
-("compiles, returns `Ok(())`, wire later") and at least one driver never got its caller.
-This document catalogues every such gap — dead stubs, deferred-by-design scope cuts, real
-bugs, test holes, upstream blockers, and doc gaps — each verified against the current tree
-with `file:line` citations. Where a "known" item turned out already resolved, that is
-stated with evidence; a closed gap is as valuable to record as an open one.
+("compiles, returns `Ok(())`, wire later"). This document catalogues every such gap — dead
+stubs, deferred-by-design scope cuts, real bugs, test holes, upstream blockers, and doc
+gaps — each verified against the live tree with `file:line` citations.
 
-I checked the inventory against the actual code. I did not take the seed list on faith, and
-several items did not survive contact with the source.
+**2026-06-02 refresh:** re-checked every gap against current source. Eight items landed
+between the original audit and `450214e5` and were verified against actual code, not commit
+messages. The single CRITICAL merge-blocker (PROJ-001) is resolved on-branch. Of the six
+original functional gaps, four are now RESOLVED (PROJ-003, PROJ-004, PROJ-006, plus SEC-001
+which was found and fixed in the same window). One new deferred-by-design seam (PROJ-022)
+and one pre-existing convention violation (PROJ-023) were surfaced in the fresh sweep.
+
+I checked the inventory against the actual code. I did not take commit messages on faith,
+and several "fixed" items were re-derived from the source line by line.
 
 ---
 
 ## Executive summary
 
-| Severity | Count |
-|----------|-------|
-| CRITICAL | 1 |
-| HIGH     | 4 |
-| MEDIUM   | 6 |
-| LOW      | 7 |
-| INFO     | 3 |
-| **Total confirmed gaps** | **21** |
+| Severity | Open | Resolved | Total |
+|----------|------|----------|-------|
+| CRITICAL | 0    | 1        | 1 |
+| HIGH     | 2    | 2        | 4 |
+| MEDIUM   | 6    | 1        | 7 |
+| LOW      | 9    | 1        | 10 |
+| INFO     | 0    | 0        | 0 |
+| **Total** | **17** | **5** | **22** |
 
-> **Note:** 1 CRITICAL (PROJ-001) resolved on-branch 2026-06-01; counts above are the original audit snapshot.
+Open by category: functional/unwired = 1 (PROJ-002); deferred-by-design = 7; test = 4;
+upstream = 2; doc = 4. New this refresh: PROJ-022 (LOW, deferred), PROJ-023 (LOW, pre-existing
+convention). Original 21-gap snapshot grew to 22 confirmed; 5 are now RESOLVED.
 
-By category: functional/unwired = 5; deferred-by-design = 6; test = 4; upstream = 2;
-doc = 3; already-resolved (recorded, not counted as open) = 4.
+### Merge-blocker verdict (called out up top)
 
-### Merge-blockers (called out up top)
+**No CRITICAL merge-blocker remains open.** The one functional release gate stands:
 
-1. **PROJ-001 (CRITICAL)** — **Resolved on-branch (`36f5a982`).** SPV / platform-address /
-   identity sync was never started in any code path. This is now fixed; see the PROJ-001
-   section and Resolution log below for the full fix shape.
-2. **PROJ-005 (HIGH)** — release gate G1: the `dash-sdk` / `platform-wallet` pin
-   (`Cargo.toml`) points at an unreleased platform rev tracking PR #3625 (draft persister).
-   Project policy (Decision #1) classifies this as a release-hardening blocker, not a start
-   blocker — but it gates *merge-to-ship*. **This is the sole remaining open merge-blocker.**
+1. **PROJ-001 (CRITICAL)** — **RESOLVED on-branch (`36f5a982`).** SPV / platform-address /
+   identity sync is now started across all four caller paths. See PROJ-001 section + Resolution log.
+2. **PROJ-005 (HIGH)** — release gate G1: the `dash-sdk` / `platform-wallet` pin (`Cargo.toml`)
+   tracks an **unreleased** platform dev rev. Project policy (Decision #1) classifies this as
+   a release-hardening blocker, not a start blocker — but it gates *merge-to-ship*. **This is
+   the sole remaining merge-blocker.** The pin moved since the original audit (now
+   `rev = 35e4a2f6…`, was `17653ba8…`) but is still a dev rev, not a released tag.
 
 Everything else is fixable post-merge or is a disclosed scope cut.
 
@@ -53,118 +59,121 @@ Everything else is fixable post-merge or is a disclosed scope cut.
 
 ## Merge-blocking gaps
 
-| ID | Title | Location | Sev | Status | What's missing | Owner / follow-up |
-|----|-------|----------|-----|--------|----------------|-------------------|
-| PROJ-001 | SPV sync never driven — dead `start()`, inert `start_spv()` | `src/wallet_backend/mod.rs:419-431`; `src/context/wallet_lifecycle.rs:76-78` | CRITICAL | **Resolved (`36f5a982`)** | `start_spv()` returns `Ok(())`; `WalletBackend::start()` (only spawner of `spv_arc().spawn_in_background`) has 0 callers | start_spv fix worktree |
-| PROJ-005 | Pin tracks unreleased platform rev (G1) | `Cargo.toml:21,32,35` (`rev = 17653ba8…`) | HIGH | Open | Pin must move to a released platform rev once #3625 lands before shipping | Release captain |
+| ID | Title | Location | Sev | Status | What's missing |
+|----|-------|----------|-----|--------|----------------|
+| PROJ-001 | SPV sync never driven — dead `start()`, inert `start_spv()` | `src/context/wallet_lifecycle.rs:103,130`; `src/wallet_backend/mod.rs:462-479` | CRITICAL | **RESOLVED (`36f5a982`)** | See Resolution log 2026-06-01 |
+| PROJ-005 | Pin tracks unreleased platform rev (G1) | `Cargo.toml:21,31,32,35` (`rev = 35e4a2f640…`) | HIGH | OPEN | Pin must move to a released platform rev before shipping. Still a dev rev. |
 
 ---
 
 ## Functional gaps (dead stubs, no-op UI, unwired drivers, real bugs)
 
-### PROJ-001 — SPV / sync coordinators never started *(CRITICAL — merge-blocker, see above)*
+### PROJ-001 — SPV / sync coordinators never started *(CRITICAL — RESOLVED)*
 
-Evidence chain (all verified at head):
+Original finding (head `686430a4`): `AppContext::start_spv()` was literally `Ok(())`;
+`WalletBackend::start()` was the sole site spawning the upstream sync coordinators and had
+**zero callers**. Net effect was dead chain/platform-address/identity sync in every path.
 
-- `AppContext::start_spv()` body is literally `Ok(())` — `src/context/wallet_lifecycle.rs:76-78`.
-  Callers that expect it to *start sync*: Connect button
-  `src/ui/network_chooser_screen.rs:380`; auto-start `src/app.rs:1148`; MCP server boot
-  `src/mcp/server.rs:264`; `SwitchNetwork` task `src/backend_task/mod.rs:553`.
-- `WalletBackend::start()` (`src/wallet_backend/mod.rs:419-431`) is the **sole** site calling
-  `self.inner.pwm.spv_arc().spawn_in_background(config)` (line 422),
-  `platform_address_sync_arc().start()` (424), `identity_sync_arc().start()` (425).
-- `rg` for `.start()` / `backend.start(` / `wallet_backend()?.start` across `src`, `tests`,
-  `benches` returns **no invocation** of `WalletBackend::start()`.
-- `ensure_wallet_backend()` (`src/context/mod.rs:647-670`) constructs the backend and
-  registers wallets (`wallets_to_register` at `src/wallet_backend/mod.rs:309`) but **never
-  calls `start()`**. The design (`g2-mock-boundary.md` §G2.1) explicitly says `start()` must
-  run after registration; it does not.
+**RESOLVED 2026-06-02 verify** (`42388c4b`, `3165f98c`, `36f5a982`). Confirmed against source:
+- `start_spv()` (`src/context/wallet_lifecycle.rs:103`) now drives `WalletBackend::start()`;
+  the chokepoint `ensure_wallet_backend_and_start_spv()` (`:130`) wires-then-starts.
+- `WalletBackend::start()` (`src/wallet_backend/mod.rs:462`) latches via `start_latch.try_begin()`
+  and spawns `spv_arc().spawn_in_background()`, `platform_address_sync_arc().start()`,
+  `identity_sync_arc().start()`.
+- All four caller paths funnel through the chokepoint: GUI boot (`src/app.rs:494,890,1198`),
+  Connect button via new `AppAction::StartSpv` (`src/app.rs:275,1613-1625`;
+  `src/ui/network_chooser_screen.rs:390`), MCP (`src/mcp/resolve.rs:129`), network switch
+  (`src/backend_task/mod.rs:559`).
+- Start-path gated by four offline tests (`src/context/wallet_lifecycle.rs:561,583,617,649`).
 
-Net effect: chain sync, platform-address sync, and identity sync are dead in every path.
-Balances/UTXOs/identities never refresh from the network. This is the SgtMaj-grade hole.
+### PROJ-002 — DashPay `add_contact` / `remove_contact` are `NotSupported` stubs *(MEDIUM — OPEN)*
 
-**Resolved 2026-06-01** (`42388c4b`, `3165f98c`, `36f5a982`). The fix wires `start_spv()` to
-`WalletBackend::start()` (guarded by a `StartLatch` for idempotency), then introduces a
-single async chokepoint `AppContext::ensure_wallet_backend_and_start_spv()` that all four
-caller paths — GUI boot auto-start, manual Connect button (new typed `AppAction::StartSpv`),
-MCP `ensure_spv_synced`, and network switch — now funnel through. Wiring and start failures
-are surfaced to the user via the connection-status indicator (flipped to Error) and an
-actionable banner at the Connect handler. QA round-tripped twice; 571 lib tests pass,
-clippy/fmt clean; five offline tests exercise the start-path gating.
+`src/backend_task/dashpay/contacts.rs:521-535` (`add_contact`) and `:539-549`
+(`remove_contact`) ignore all args and return `DashPayError::NotSupported`. `add_contact`
+still carries a "TODO: Steps to implement" comment (`:528`). **Pre-existing in base
+`87ba5b71`**; no live backend-task dispatch caller for the free functions, but PR-relevant
+(module rewritten). Add-contact-by-username and contact removal are not functional. Scope: indirect.
 
-### PROJ-002 — DashPay `add_contact` / `remove_contact` are `NotSupported` stubs *(MEDIUM)*
+### PROJ-003 — `update_payment_status` is a logging no-op *(MEDIUM — RESOLVED)*
 
-`src/backend_task/dashpay/contacts.rs:519-535` (`add_contact`) and `:537-549`
-(`remove_contact`) ignore all args and return `DashPayError::NotSupported`. Both carry
-4-step "TODO: Steps to implement" comments. **Pre-existing in base `87ba5b71`** (not
-introduced by #860), and the free functions have no live backend-task dispatch caller — but
-they are PR-relevant because the DashPay rewrite touched this module and left the holes
-unaddressed. Add-contact-by-username and contact removal are not functional.
-Scope: indirect.
+Original: `payments.rs` `update_payment_status` was a `// TODO: Update payment record in
+database` / "Would update payment…" no-op returning `Ok(())`.
 
-### PROJ-003 — `update_payment_status` is a logging no-op *(MEDIUM)*
+**RESOLVED 2026-06-02** (`3ac9b3b0`). Verified at `src/backend_task/dashpay/payments.rs:462`:
+the function now reads the existing `PaymentEntry` from `dashpay_view().payments(owner)`,
+rebuilds it (counterparty, amount, memo, direction, mapped status) and persists via
+`backend.dashpay_record_payment(owner, tx_id, entry)`, stamping `confirmed_at` on
+confirmation via `dashpay_set_payment_timestamps`. Signature changed
+(`owner, tx_id, status`). The adjacent confirmation path is now `check_address_usage`
+(`:653`) — documented BLOCKED-BY-DESIGN (see PROJ-024).
 
-`src/backend_task/dashpay/payments.rs:432-447`: signature takes `payment_id`, `status`,
-`tx_id`, then `// TODO: Update payment record in database`, logs "Would update payment…",
-and returns `Ok(())`. Payment status transitions are never persisted. **Pre-existing in
-base `87ba5b71`.** A second TODO at `:539` ("would need to query Core or check transaction
-history") marks an adjacent unimplemented confirmation path. Scope: indirect.
+### PROJ-004 — DashPay outgoing contact-request derivation used placeholder seed *(HIGH — RESOLVED)*
 
-### PROJ-004 — DashPay outgoing contact-request derivation uses placeholder seed material *(HIGH)*
+Original: xpub derivation built from `let wallet_seed = sender_private_key;` with a "For
+now… In production this would derive from the wallet's HD seed" comment.
 
-`src/backend_task/dashpay/contact_requests.rs:310-339`: the xpub derivation for a new
-contact relationship is built from `let wallet_seed = sender_private_key;` with inline
-comments "For now, use the sender's private key as seed material / In production, this would
-derive from the wallet's HD seed/mnemonic". This is the substrate behind the seed-list
-TC-037/043 symptom ("incoming contact-request not associated with sending identity after
-broadcast"): the post-broadcast association relies on this derivation, and the derivation is
-explicitly not the production HD path. The DIP-14/15 derivation is also a documented P4
-deletion target in favour of upstream `derive_contact_xpub` (`feature-coverage.md` §2).
-**Status: Open** — partially verifiable from DET source; the broadcast→association linkage
-needs a live-network test to fully confirm severity. Scope: direct (module rewritten in #860).
+**RESOLVED 2026-06-02** (`6c520a33`). Verified at `src/backend_task/dashpay/contact_requests.rs:315-327`:
+derivation now uses `first_open_wallet_seed(&identity)` (`:521`) → 64-byte HD seed → upstream
+`crate::wallet_backend::derive_contact_xpub_material(&wallet_seed, …)`
+(`src/wallet_backend/dashpay.rs:105`). A regression test proves HD-seed derivation differs
+from the old private-key placeholder (`src/wallet_backend/dashpay.rs:2102-2134`).
+**Follow-up SEC-001 (also resolved)**: the receive-side path hardcoded coin-type 5' on every
+network, breaking testnet send/receive xpub agreement. Fixed in `450214e5` via
+`coin_type_for_network()` (`src/model/wallet/mod.rs:50`) threaded through every DashPay HD
+path (DIP-14 contact xpub, DIP-15 root, auto-accept proof, contact_info, contacts,
+incoming_payments). Full broadcast→association still warrants a live-network test, but the
+DET-side derivation is now production HD.
 
-### PROJ-006 — `context_provider_spv` activation-height TODO *(LOW)*
+### PROJ-006 — `context_provider_spv` activation-height TODO *(LOW — RESOLVED)*
 
-`src/context_provider_spv.rs:131`: `// TODO: wire actual activation height if needed` — a
-hardcoded/elided activation height in the SPV context provider that feeds chain-only SDK
-lookups. Low impact while a sensible default holds, but a latent correctness risk on
-networks with non-default activation heights. Scope: direct.
+Original: `// TODO: wire actual activation height if needed` with `Ok(1)` for all networks.
+
+**RESOLVED 2026-06-02** (`7e2553e3`). Verified at `src/context_provider_spv.rs:128-139`:
+`get_platform_activation_height()` now returns real per-network Core heights
+(Mainnet 2_132_092, Testnet 1_090_319, Devnet/Regtest 1), mirroring the SDK's trusted
+context provider; the previously-ignored `network` field is now used.
 
 ---
 
 ## Deferred-by-design / disclosed trade-offs
 
-These are **intentional scope cuts**, recorded so reviewers do not mistake them for
-oversights. All trace to a written decision in
-`docs/ai-design/2026-05-18-platform-wallet-migration/`.
+Intentional scope cuts, recorded so reviewers do not mistake them for oversights. All trace
+to a written decision in `docs/ai-design/2026-05-18-platform-wallet-migration/`.
 
 | ID | Title | Location | Sev | Status | Decision ref |
 |----|-------|----------|-----|--------|--------------|
 | PROJ-007 | Single-key refresh + SPV-send return `SingleKeyWalletsUnsupported` | `src/backend_task/core/refresh_single_key_wallet_info.rs:16`; `src/backend_task/core/send_single_key_wallet_payment.rs:19`; `src/backend_task/core/mod.rs:218,304` | LOW | Open by design | Decision #7 (`single-key-mock.md`) |
-| PROJ-008 | SEC-002 sign-time passphrase prompt UX deferred | `src/wallet_backend/mod.rs:475-480` | MEDIUM | Open (issue #90) | per-task prompt UX deferred; storage+unlock cache shipped |
-| PROJ-009 | DIP-14 back-compat dropped (non-mainnet / non-account-0 legacy contact addresses not reproduced) | `src/wallet_backend/mod.rs:629-651` (`register_dashpay_contact`, "Decision #6, back-compat dropped") | MEDIUM | Open by design | Decision #6 (`open-questions.md`); fund-accessibility trade-off, one-time notice is the sole control |
+| PROJ-008 | SEC-002 sign-time passphrase prompt UX deferred | `src/wallet_backend/mod.rs:562-566` | MEDIUM | Open (issue #90) | per-task prompt UX deferred; storage+unlock cache shipped |
+| PROJ-009 | DIP-14 back-compat dropped (non-mainnet / non-account-0 legacy contact addresses not reproduced) | `src/wallet_backend/mod.rs:722-724` (`register_dashpay_contact`, "Decision #6, back-compat dropped") | MEDIUM | Open by design | Decision #6 (`open-questions.md`) |
 | PROJ-010 | `UpstreamFromPersisted` loader intentionally not implemented (G2 swap deferred) | `src/wallet_backend/loader.rs:139-145` | LOW | Open by design | Decision #2 (`g2-mock-boundary.md` §G2.4) |
-| PROJ-011 | `identity` (+ dormant legacy) `CREATE TABLE` still on fresh installs — tombstone ADR pending | `src/database/initialization.rs:850-866` | LOW | Open by design | T-DEV-02b; deferred to separate ADR (`finish-unwire/notes.md` §4) |
+| PROJ-011 | `identity` `CREATE TABLE` still on fresh installs — tombstone ADR pending | `src/database/initialization.rs:845-866` | LOW | Open by design | T-DEV-02b; deferred to separate ADR (`finish-unwire/notes.md` §4) |
 | PROJ-012 | ZMQ listener receiver retained behind `#[allow(dead_code)]` pending P4 audit | `src/context/mod.rs:73-77` | LOW | Open by design | Decision #3 (`open-questions.md`) |
+| PROJ-022 | `UpstreamPlatformAddresses` reserved swap-target — read methods `unimplemented!()` | `src/wallet_backend/platform_address.rs:245-307` | LOW | Open by design (NEW) | pending platform todo `e817b66a`; parallels PROJ-010 |
 
 Notes:
 
-- **PROJ-007** narrowed since the design docs: SEC-002 work (commits `6052dc72`,
-  `48cdb8ad`) made single-key **import / sign / list / hydrate** genuinely real
-  (`src/wallet_backend/single_key.rs:157,168,320,401,648`; UI wired at
-  `src/ui/wallets/wallets_screen/mod.rs:2178-2180`). Only balance/UTXO **refresh** and
-  **SPV-based send** remain stubbed. The `g2-mock-boundary`/`single-key-mock` claim of a
-  fully read-only mock is now stale — update those docs.
-- **PROJ-011**: `legacy_detected()` (`src/database/initialization.rs:146-175`) correctly
-  gates `wallet` / `wallet_addresses` / `utxos` / `wallet_transactions` /
-  `shielded_notes` behind `include_legacy`. The remaining unconditional creates are
-  `identity` (empty placeholder for legacy reads) and `platform_address_balances`
-  (still live). This is the documented "separate ADR" carve-out, not a full unwire.
-- **`FundWithUtxo` (seed item #15)** — the *removed* asset-lock funding path. The current
-  active funding task is `WalletTask::FundPlatformAddressFromWalletUtxos`
-  (`src/backend_task/wallet/mod.rs:60`; UI `src/ui/wallets/send_screen.rs:952,3349`), which
-  is a *different*, working path. The named `FundWithUtxo` removal is consistent with the
-  disclosed trade-off; no live broken surface found.
+- **PROJ-007** narrowed since the design docs: SEC-002 work (`6052dc72`, `48cdb8ad`) made
+  single-key **import / sign / list / hydrate** genuinely real
+  (`src/wallet_backend/single_key.rs`; `SingleKeyView::import_wif`). UI now imports via
+  `ImportSingleKeyDialog` (`src/ui/wallets/wallets_screen/mod.rs:42,157`;
+  `src/ui/wallets/import_single_key.rs`). Only balance/UTXO **refresh** and **SPV-based
+  send** remain stubbed. The `single-key-mock`/`g2-mock-boundary` "fully read-only mock"
+  claim is stale — see PROJ-020.
+- **PROJ-011** (re-verified): `legacy_detected()` (`src/database/initialization.rs:146`) gates
+  `wallet` / `wallet_addresses` / `utxos` / `wallet_transactions` / `shielded_notes` behind
+  `include_legacy`. The `identity` empty placeholder (`:851`) is still created
+  unconditionally for legacy `database/wallet.rs` cold-start reads. `platform_address_balances`
+  (`:797,933`) is still live. Documented "separate ADR" carve-out.
+- **PROJ-022 (new):** `UpstreamPlatformAddresses` (`platform_address.rs:245`) is the reserved
+  swap target for reading per-address Platform funds straight from upstream. It is **NOT
+  selected** — the ACTIVE impl is `KvCachedPlatformAddresses`
+  (`src/wallet_backend/mod.rs:512`). Its read methods (`get_address_info`, `all_address_info`,
+  `get_sync_info`) are `unimplemented!()` pending upstream `e817b66a` (a public per-address
+  balance+nonce reader + sync-cursor shape). Dead code by design; structurally identical to
+  the PROJ-010 G2 loader seam. Cannot panic in any live path while the cached impl is active.
+- **`FundWithUtxo` (seed item #15)** — the *removed* asset-lock funding path. Current active
+  funding task is `WalletTask::FundPlatformAddressFromWalletUtxos`
+  (`src/backend_task/wallet/mod.rs`), a different working path. No live broken surface.
 
 ---
 
@@ -172,14 +181,13 @@ Notes:
 
 | ID | Title | Location | Sev | Status | What's missing |
 |----|-------|----------|-----|--------|----------------|
-| PROJ-013 | `RUST_MIN_STACK=16777216` not enforced by harness or CI | `tests/backend-e2e/main.rs:7,10`; `.github/workflows/tests.yml` (no ref) | MEDIUM | Open | Only a `//!` doc instruction. No thread `stack_size` builder in harness; backend-e2e is `#[ignore]` and not run with the env var in any workflow. SDK deep-stack tests segfault at default 8 MB without it. |
-| PROJ-014 | `WalletBackend::start()` has no test exercising the start path | `src/wallet_backend/mod.rs:419-431` | HIGH | **Largely resolved (`3165f98c`, `36f5a982`)** | No unit/integration/e2e test invokes `start()` — directly enabling PROJ-001 to ship unnoticed. A test asserting sync coordinators spawn would have caught the dead caller. Offline tests now cover the start-path gating (`start_spv_errors_when_backend_not_wired`, `start_spv_starts_after_backend_wired`, `ensure_wallet_backend_and_start_spv_wires_then_starts`, `chokepoint_wiring_failure_flips_indicator_to_error`); full live-SPV success path remains an e2e/network gap. |
-| PROJ-015 | TC-012 receive-address reuse — unverified from DET source | `src/wallet_backend/mod.rs:614-627` (`next_receive_address` → upstream `next_receive_address_for_account`) | LOW | Unverified — needs follow-up | Whether consecutive calls return the same address depends on upstream issue/used-marking, which cannot run while PROJ-001 keeps sync dead. Re-test after PROJ-001 fix. |
-| PROJ-016 | TC-066 key-not-visible-after-broadcast (flake-vs-bug) | (tracked-only, no isolated code surface) | LOW | Unverified — needs follow-up | Catalogued in seed list; no deterministic repro in tree. Re-classify after live run with PROJ-001 fixed. |
+| PROJ-013 | `RUST_MIN_STACK=16777216` not enforced by harness or CI | `tests/backend-e2e/main.rs:7,10`; `.github/workflows/` (no ref) | MEDIUM | OPEN | Only a `//!` doc instruction. No thread `stack_size` builder in harness; `grep RUST_MIN_STACK .github/` = 0 hits. SDK deep-stack tests segfault at default 8 MB without it. |
+| PROJ-014 | `WalletBackend::start()` start-path test coverage | `src/context/wallet_lifecycle.rs:561,583,617,649` | HIGH | **RESOLVED (`3165f98c`, `36f5a982`)** | Four offline tests now gate the start path (`start_spv_errors_when_backend_not_wired`, `start_spv_starts_after_backend_wired`, `ensure_wallet_backend_and_start_spv_wires_then_starts`, `chokepoint_wiring_failure_flips_indicator_to_error`). Full live-SPV success path remains an e2e/network gap. |
+| PROJ-015 | TC-012 receive-address reuse — unverified from DET source | `src/wallet_backend/mod.rs` (`next_receive_address` → upstream) | LOW | Unverified — needs follow-up | Depends on upstream used-marking; now testable since PROJ-001 is resolved. Re-test on live network. |
+| PROJ-016 | TC-066 key-not-visible-after-broadcast (flake-vs-bug) | (tracked-only, no isolated code surface) | LOW | Unverified — needs follow-up | No deterministic repro in tree. Re-classify after live run. |
 
 Recorded test-spec gaps from `finish-unwire/notes.md` §5 (feature-flag/manual only, not
-counted as new open gaps): TC-SK-010 (D-2 drop path, non-default build flag), TC-A11Y-008
-(focus-trap modal, same flag), TC-PERF-003 (10k-UTXO 30 s migration, nightly/manual).
+counted as new open gaps): TC-SK-010, TC-A11Y-008, TC-PERF-003.
 
 ---
 
@@ -187,8 +195,8 @@ counted as new open gaps): TC-SK-010 (D-2 drop path, non-default build flag), TC
 
 | ID | Title | Location | Sev | Status | Blocker |
 |----|-------|----------|-----|--------|---------|
-| PROJ-005 | platform pin tracks draft persister PR #3625 (G1) | `Cargo.toml:21,32,35` | HIGH | Open | Release gate; bump to released rev before ship. Current rev `17653ba8f9448edc569487b85bb35b27c5f6a14c`. |
-| PROJ-017 | `register_identity_funding_account` absent upstream — DET carries contained exception | `src/wallet_backend/mod.rs:1004-1046` (`provision_identity_funding_account`) | LOW | Open (tracked, live) | `rs-platform-wallet` has no funding-account registrar sibling to `register_contact_account`. DET re-provisions in both `wallet.accounts.*` and `wallet_info.accounts.*`. **Verified live** — called via `ensure_identity_funding_accounts` from register/topup (`mod.rs:1098-1106`). Upstream-contribution TODO `9cdcfb25`. |
+| PROJ-005 | platform pin tracks unreleased dev rev (G1) | `Cargo.toml:21,31,32,35` | HIGH | OPEN | Release gate; bump to released rev before ship. Current rev `35e4a2f640a862ac1a6fc088532facbf8dc17200` (was `17653ba8…` at original audit). |
+| PROJ-017 | `register_identity_funding_account` absent upstream — DET carries contained exception | `src/wallet_backend/mod.rs:1205-1287` (`provision_identity_funding_account` / `ensure_identity_funding_accounts`) | LOW | OPEN (tracked, live) | `rs-platform-wallet` has no funding-account registrar sibling to `register_contact_account`. Verified live — called from register/topup (`mod.rs:441,1088,1142,1181`). Upstream-contribution TODO. |
 
 ---
 
@@ -196,10 +204,18 @@ counted as new open gaps): TC-SK-010 (D-2 drop path, non-default build flag), TC
 
 | ID | Title | Location | Sev | Status | What's missing |
 |----|-------|----------|-----|--------|----------------|
-| PROJ-018 | External user docs (dashpay/docs) not updated for storage rewrite / single-key limits | CHANGELOG.md:7-30 (no external-docs note) | MEDIUM | Open | No reference anywhere in the PR docs to updating `github.com/dashpay/docs` for the new storage model, single-key send/refresh being unsupported, or the DIP-14 fund-accessibility trade-off. End users get no published guidance. |
-| PROJ-019 | ADR floor SHA placeholder unfilled | `docs/ai-design/2026-05-29-finish-unwire/notes.md:92` (`[TO BE UPDATED ON MERGE]`) | LOW | Open | The migration-tool author needs this PR's merge SHA recorded as the wallet-state floor; still a placeholder. |
-| PROJ-020 | Design docs claim single-key is fully read-only mock — now stale | `docs/ai-design/2026-05-18-platform-wallet-migration/single-key-mock.md:30-51`; `g2-mock-boundary.md:15` | LOW | Open | SEC-002 made import/sign/list real; docs still describe a full stub. See PROJ-007 note. |
-| PROJ-021 | CHANGELOG omits single-key capability limits and DIP-14 trade-off | CHANGELOG.md:7-30 | LOW | Open | "Changed/Removed/Fixed" sections cover storage move but never tell users single-key send/refresh is unsupported this release, nor the contact-fund trade-off requiring re-establishment. |
+| PROJ-018 | External user docs (dashpay/docs) not updated for storage rewrite / single-key limits | `CHANGELOG.md` (no external-docs note) | MEDIUM | OPEN | No reference to updating `github.com/dashpay/docs` for the new storage model, single-key send/refresh limits, or the DIP-14 fund-accessibility trade-off. End users get no published guidance. |
+| PROJ-019 | ADR floor SHA placeholder unfilled | `docs/ai-design/2026-05-29-finish-unwire/notes.md:92` (`[TO BE UPDATED ON MERGE]`) | LOW | OPEN | Needs this PR's merge SHA recorded as the wallet-state floor. |
+| PROJ-020 | Design docs claim single-key is fully read-only mock — now stale | `docs/ai-design/2026-05-18-platform-wallet-migration/single-key-mock.md:51`; `g2-mock-boundary.md` | LOW | OPEN | SEC-002 made import/sign/list real; `single-key-mock.md:51` still says "render in read-only mode… no operations are enabled." See PROJ-007. |
+| PROJ-021 | CHANGELOG omits single-key capability limits and DIP-14 trade-off | `CHANGELOG.md:9-32` | LOW | OPEN | Changed/Removed/Fixed sections cover the storage move but never tell users single-key send/refresh is unsupported this release, nor the contact-fund re-establishment trade-off. |
+
+---
+
+## Project conventions
+
+| ID | Title | Location | Sev | Status | What's missing |
+|----|-------|----------|-----|--------|----------------|
+| PROJ-023 | String-based error matching in DashPay add-contact UI (NEW) | `src/ui/dashpay/add_contact_screen.rs:626-650` | LOW | OPEN (pre-existing) | `display_task_result` classifies errors by `message.contains("ENCRYPTION key")`, `"not found"`, etc. — directly violates the CLAUDE.md rule "Never parse error strings to extract information." Self-tagged `TODO(RUST-002)` / issue #660. Pre-existing in base; not introduced by #860 but in a DashPay-adjacent surface the rewrite did not address. Silently misclassifies if upstream wording changes. Scope: indirect. |
 
 ---
 
@@ -207,96 +223,112 @@ counted as new open gaps): TC-SK-010 (D-2 drop path, non-default build flag), TC
 
 Recorded for completeness; **not** counted in the open-gap tally.
 
-1. **Seed #3 — eager wallet-backend init "Could not access wallet data" hard failure.**
-   **Resolved.** `src/app.rs:477-479` now spawns eager init and on error only
-   `tracing::warn!`s and degrades to the lazy backend-task fallback — no hard user-facing
-   "Could not access wallet data" abort. CHANGELOG.md:27-30 documents the eager-init +
-   cold-start rehydrate fixes. No blocking failure path remains here.
+1. **Seed #3 — eager wallet-backend init hard failure.** **Resolved.** `src/app.rs` eager init
+   warns + degrades to lazy fallback — no hard "Could not access wallet data" abort.
+2. **Seed #7 — TC-019 inverted error precedence.** **Resolved / moot.**
+   `refresh_single_key_wallet_info.rs:16` returns `SingleKeyWalletsUnsupported`
+   unconditionally — no seed-lookup branch left to invert.
+3. **Seed #11 — QA-004 `core_backend_mode` inert plumbing.** **Resolved.** `rg
+   core_backend_mode src` = 0 hits.
+4. **Seed #19 — SPV readiness gate "all 5 managers Synced".** **Not present.**
+   `EventBridge::on_progress` keys off the single upstream `progress.is_synced()` predicate.
+5. **Mock finding #1 — "Stop Tracking Balance" only pruned local ordering.** **Resolved**
+   (`5a047357`). `stop_tracking_token_balance` (`src/backend_task/tokens/query_my_token_balances.rs:62`)
+   now calls `unwatch_identity_token` upstream so the row stays gone after refresh.
+6. **Appendix item — DashPay threshold-expiry "not yet wired".** **Resolved** (`a7327e7c`).
+   `expires_at` now derived `created_at + DASHPAY_REQUEST_EXPIRY_DAYS` via
+   `request_expires_at_ms` (`src/wallet_backend/dashpay.rs:429,520`), checked arithmetic,
+   two unit tests + an overflow test.
+7. **Appendix item — MCP `platform_withdrawals_get` pagination/structured-data TODOs.**
+   **Resolved** (`5ba4554e`). `src/mcp/tools/platform.rs` now has `limit` / `start_after` /
+   `next_cursor` pagination (`:36,55,81,148-176`) and a structured response type.
+8. **Appendix item — SPV sync UI read inert `SpvStatusSnapshot::default()`.** **Resolved**
+   (`bd0ed0e4`). `EventBridge::on_progress` now publishes live per-phase heights so the
+   progress bar/labels populate during sync.
 
-2. **Seed #7 — TC-019 inverted error precedence (`RefreshSingleKeyWalletInfo` returns
-   `WalletBackendNotYetWired` instead of `WalletNotFound`).** **Resolved / moot.**
-   `src/backend_task/core/refresh_single_key_wallet_info.rs:16` now returns
-   `TaskError::SingleKeyWalletsUnsupported` unconditionally — there is no seed-lookup branch
-   left to invert. The precedence bug cannot occur.
-
-3. **Seed #11 — QA-004 `core_backend_mode` inert column/plumbing.** **Largely resolved.**
-   `rg core_backend_mode src` finds **zero** hits — the column and plumbing are gone. The
-   only residue is the `SourceSelection::CoreWallet` picker in `send_screen.rs`, which is a
-   *legitimate, working* Core→Platform funding source (`send_screen.rs:819-851,1837-1863`),
-   not inert cosmetic plumbing. Down-grade from a gap to a non-issue.
-
-4. **Seed #19 — SPV readiness gate requiring all 5 managers `Synced`
-   (`event_bridge.rs:~65-75`).** **Not found in current form.** `EventBridge::on_progress`
-   (`src/wallet_backend/event_bridge.rs:65-75`) keys off the single upstream
-   `progress.is_synced()` predicate, not an explicit "all 5 managers Synced" conjunction.
-   The moving-target gate the seed item describes is not present at head. (Caveat: PROJ-001
-   means this handler never fires anyway.)
-
-Also confirmed *consistent with disclosed design* (not bugs): seed #2 corollary
-(`WalletBackend::start()` zero callers) is folded into PROJ-001; seed #4/#5/#12/#13/#14/#16
-map to PROJ-005/PROJ-017/PROJ-008/PROJ-011/PROJ-009/PROJ-007 respectively; seed #10 →
-PROJ-016; seed #6 → PROJ-004; seed #9 → PROJ-013.
-
-Seed items **unverifiable from this tree** (marked needs-follow-up, not asserted):
-seed #17 (Register BlockchainIdentities m/9'/…/5' addresses with SPV bloom filter — only
-generic `MempoolStrategy::BloomFilter` at `src/wallet_backend/mod.rs:1120` and per-contact
-DashPay bloom counters at `src/wallet_backend/dashpay.rs`; no `m/9'` identity-address bloom
-registration found — likely predates this PR or lives upstream); seed #18 (DiskStorageManager
-byte-compat never runtime-verified — no `DiskStorageManager` symbol in DET source; lives in
-upstream `platform-wallet-storage`, so DET cannot verify it here);
-`/tmp/marvin-finish-unwire-exceptions.md` (seed #20) — **file absent**, ~14 missing TCs could
-not be folded in.
+Seed items **unverifiable from this tree** (needs follow-up, not asserted): seed #17 (m/9'
+identity-address SPV bloom registration — not found in DET; likely upstream), seed #18
+(DiskStorageManager byte-compat — lives in upstream `platform-wallet-storage`), seed #20
+(`/tmp/marvin-finish-unwire-exceptions.md` absent).
 
 ---
 
 ## Resolution log
 
 - **2026-06-01 — PROJ-001 resolved** (`42388c4b`, `3165f98c`, `36f5a982`): `start_spv()` wired to
-  `WalletBackend::start()` with `StartLatch` idempotency guard; single async chokepoint
-  `AppContext::ensure_wallet_backend_and_start_spv()` covers all four caller paths (GUI boot,
-  Connect, MCP, network switch); wiring and start failures now surface via indicator + banner.
-  QA residuals also closed by `36f5a982`: QA-007 (user-facing wiring-failure feedback) and
-  QA-008 (dead-branch in error precedence logic) both resolved in the same commit.
-- **2026-06-01 — PROJ-014 largely resolved** (`3165f98c`, `36f5a982`): four offline tests now
-  gate the start path; live-SPV success path remains an e2e/network gap.
+  `WalletBackend::start()` with `StartLatch` idempotency; single async chokepoint
+  `ensure_wallet_backend_and_start_spv()` covers all four caller paths; wiring/start failures
+  surface via indicator + banner. QA-007 / QA-008 closed in `36f5a982`.
+- **2026-06-01 — PROJ-014 largely resolved** (`3165f98c`, `36f5a982`): four offline tests gate
+  the start path; live-SPV success path remains an e2e/network gap.
+- **2026-06-02 — PROJ-003 resolved** (`3ac9b3b0`): `update_payment_status` persists via
+  `dashpay_record_payment` + timestamp sidecar; `check_address_usage` documented BLOCKED-BY-DESIGN.
+- **2026-06-02 — PROJ-004 resolved** (`6c520a33`): contact-request xpub derived from the real
+  64-byte HD seed (`first_open_wallet_seed` → `derive_contact_xpub_material`); regression test
+  proves divergence from the old placeholder. Follow-up **SEC-001 resolved** (`450214e5`):
+  `coin_type_for_network()` threaded through all DashPay HD paths so send/receive xpubs agree
+  per network.
+- **2026-06-02 — PROJ-006 resolved** (`7e2553e3`): real per-network platform activation heights.
+- **2026-06-02 — refresh sweep**: PROJ-005 pin moved `17653ba8…` → `35e4a2f6…` (still
+  unreleased, stays OPEN). New PROJ-022 (`UpstreamPlatformAddresses` reserved seam, deferred)
+  and PROJ-023 (add-contact string error matching, pre-existing convention violation) added.
 
 ---
 
 ## Appendix: raw stub-signal hits not separately categorized
 
-So nothing is silently dropped. These are deferred markers / inert-looking bodies that are
-either (a) genuinely benign, (b) pre-existing, or (c) rolled into a finding above. Cited for
-the record.
+So nothing is silently dropped. Deferred markers / inert-looking bodies that are (a) benign,
+(b) pre-existing, or (c) rolled into a finding above.
 
-- `src/wallet_backend/mod.rs:895` — exhaustive match comment "a new upstream variant must
-  force a compile error" (intentional guard, benign).
-- `src/wallet_backend/event_bridge.rs:169` — `on_shielded_sync_completed` left at upstream
-  no-op default (DET enables only `serde`, no shielded sync coordinator; benign, matches
-  `start()` comment at `mod.rs:426-428`).
-- `src/wallet_backend/dashpay.rs:339` — "Threshold-based expiry derivation is not yet wired
-  (no DET-side …)" — a deferred DashPay refinement; low impact (LOW-adjacent, not separately
-  scored).
-- `src/backend_task/migration/finish_unwire.rs:470,1769,1804` — password-protected
-  single_key rows **deferred** to T-SK-03 UX prompt; counted as "deferred" not "failed" by
-  the migrator. By design (PROJ-008-adjacent); the migration itself is fully wired
-  (`src/app.rs:1011,1115`; `src/backend_task/migration/mod.rs:46`).
-- `src/backend_task/dashpay/payments.rs:210` — `#[allow(dead_code)]` on a payments helper
-  (pre-existing).
+- `src/wallet_backend/mod.rs:1214` — exhaustive-match guard comment "keeping the match
+  exhaustive forces a review if a new variant appears" (intentional, benign).
+- `src/wallet_backend/event_bridge.rs:173` — `on_shielded_sync_completed` left at upstream
+  no-op default (DET enables only `serde`; matches `start()` comment at `mod.rs:474-476`).
+- `src/wallet_backend/platform_address.rs:256-303` — `UpstreamPlatformAddresses` write/delete
+  arms are intentional `Ok(())` no-ops; the panicking read arms are PROJ-022.
+- `src/backend_task/migration/finish_unwire.rs:340,656,1655,1988` — password-protected
+  single_key rows **deferred** to T-SK-03 UX prompt; counted "skipped", not "failed". By
+  design (PROJ-008-adjacent); migration itself fully wired (`src/backend_task/migration/mod.rs`).
+- `src/backend_task/dashpay/payments.rs:210` — `#[allow(dead_code)]` payments helper (pre-existing).
+- `src/ui/dashpay/send_payment.rs:743,754,776` — local in-memory display `PaymentRecord` list
+  uses `Identifier::new([0;32])` contact-id placeholder and `timestamp: 0`. Cosmetic: the
+  authoritative payment record is persisted via `dashpay_record_payment` (the mirror was
+  dropped, see comment `:760-764`); only the throwaway UI list is affected. LOW-adjacent,
+  not separately scored.
+- `src/ui/tokens/update_token_config.rs:684` — "Marketplace settings are not yet supported"
+  UI label for the upstream `MarketplaceTradeMode` config arm. Pre-existing, unrelated to
+  #860; disclosed unsupported feature.
+- `src/ui/identities/identities_screen.rs:183` — stale "dummy for now" comment; the
+  InWallet sort below it actually compares wallet names correctly. Benign stale comment.
+- `src/database/initialization.rs:906` — "TODO: Discuss migration approach with the team" —
+  pre-existing architectural note in `set_default_version`, benign.
 - `src/context/mod.rs:810` — `// TODO: Ideally use sdk.load().version()` — cosmetic version
-  free-fn TODO (pre-existing, benign).
-- `src/app.rs:1263` (`TODO(RUST-002)`), `src/app.rs:1275` — message-text-inspection routing
-  TODOs (pre-existing tech-debt, tracked under RUST-002).
+  free-fn TODO (pre-existing).
+- `src/app.rs:1314` (`TODO(RUST-002)`) — message-text-inspection routing TODO (tracked tech-debt).
+- `src/app.rs:717,733`, `src/model/qualified_identity/mod.rs:770` — `panic!` BUG-guard
+  invariants (missing-network-context, inconsistent-wallet-index); intentional, not gaps.
 - `src/bin/det_cli/main.rs:186,188`, `src/ui/mod.rs:485,604,607`,
-  `src/ui/components/address_input.rs:576`, `src/wallet_backend/mod.rs:1044,1055,1077` —
-  `unreachable!()` arms guarded by prior checks (intentional, not gaps).
-- `src/mcp/tools/platform.rs:24,42` — MCP pagination + structured-withdrawal-data TODOs
-  (pre-existing MCP polish).
-- Numerous `#[allow(dead_code)] // May be used …` across `masternode_list_diff_screen.rs`,
-  `theme.rs`, `qualified_identity/*`, `core_zmq_listener.rs` — pre-existing dead surface
-  unrelated to #860; not scored.
+  `src/ui/components/address_input.rs:576` — `unreachable!()` arms guarded by prior checks
+  (intentional).
+- `src/mcp/tools/platform.rs` pagination/structured TODOs — now RESOLVED (see already-resolved #7).
 
 ---
 
-*🍬 Candy tally — confirmed gaps claimed: 21 (1 CRITICAL · 4 HIGH · 6 MEDIUM · 7 LOW · 3
-INFO). Plus 4 seed items confirmed already-resolved (evidence above) — closing a gap counts
-too.*
+## Appendix: BLOCKED-BY-DESIGN
+
+- **PROJ-024 — `check_address_usage` returns all-unused** (`src/backend_task/dashpay/payments.rs:653`).
+  Documented at `:640-652`: upstream exposes per-account `is_used` keyed by
+  `(wallet_id, AccountType)`, not by arbitrary address; the function receives a context-free
+  address list it cannot route. The only context-bearing DashPay addresses are contact-SEND
+  addresses, which never live in any managed pool, so a full scan would correctly report
+  all-unused anyway. Returning a fabricated usage flag would corrupt gap-limit math. Honest
+  all-unused stub pending a properly-scoped upstream reader. Not a bug — a disclosed,
+  reasoned design limit (introduced with the PROJ-003 fix, `3ac9b3b0`).
+
+---
+
+*🍬 Candy tally — confirmed gaps: 22 (1 CRITICAL · 4 HIGH · 7 MEDIUM · 10 LOW · 0 INFO).
+Status: 5 RESOLVED (PROJ-001, PROJ-003, PROJ-004, PROJ-006, PROJ-014) + SEC-001 follow-up;
+17 OPEN; of those, 7 deferred-by-design and 1 blocked-by-design (PROJ-024). 8 seed/appendix
+items confirmed already-resolved with evidence. Closing a gap counts too — and this pass
+closed five plus a security follow-up.*

@@ -18,7 +18,7 @@ qrcode = "0.14.1"
 nix = { version = "0.31.1", features = ["signal"] }
 eframe = { version = "0.33.3", features = ["persistence", "wgpu"] }
 base64 = "0.22.1"
-dash-sdk = { git = "https://github.com/dashpay/platform", rev = "ffdc28b80a63ab542399e0400e658cf4f97ec4eb", features = [
+dash-sdk = { git = "https://github.com/dashpay/platform", rev = "ddfa66ed373beaebdae9a5d919f896af43cbcd33", features = [
     "core_key_wallet",
     "core_key_wallet_manager",
     "core_bincode",
@@ -28,11 +28,11 @@ dash-sdk = { git = "https://github.com/dashpay/platform", rev = "ffdc28b80a63ab5
     "core_spv",
     "shielded",
 ] }
-rs-sdk-trusted-context-provider = { git = "https://github.com/dashpay/platform", rev = "ffdc28b80a63ab542399e0400e658cf4f97ec4eb" }
-platform-wallet = { git = "https://github.com/dashpay/platform", rev = "ffdc28b80a63ab542399e0400e658cf4f97ec4eb", features = [
+rs-sdk-trusted-context-provider = { git = "https://github.com/dashpay/platform", rev = "ddfa66ed373beaebdae9a5d919f896af43cbcd33" }
+platform-wallet = { git = "https://github.com/dashpay/platform", rev = "ddfa66ed373beaebdae9a5d919f896af43cbcd33", features = [
     "serde",
 ] }
-platform-wallet-storage = { git = "https://github.com/dashpay/platform", rev = "ffdc28b80a63ab542399e0400e658cf4f97ec4eb" }
+platform-wallet-storage = { git = "https://github.com/dashpay/platform", rev = "ddfa66ed373beaebdae9a5d919f896af43cbcd33" }
 zip32 = "0.2.0"
 grovestark = { git = "https://www.github.com/dashpay/grovestark", rev = "5b9e289cca54c79b1305d5f4f40bf1148f1eb0e3" }
 rayon = "1.8"

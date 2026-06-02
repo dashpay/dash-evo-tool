@@ -24,6 +24,15 @@ and one pre-existing convention violation (PROJ-023) were surfaced in the fresh 
 I checked the inventory against the actual code. I did not take commit messages on faith,
 and several "fixed" items were re-derived from the source line by line.
 
+**2026-06-02 disposition update:** PROJ-002 (dead `add_contact` / `remove_contact` free
+functions + orphaned `NotSupported` variant) is now RESOLVED — removed by a sibling commit.
+PROJ-012 was re-filed: it was mis-scoped as a benign deferred-by-design seam, but the source
+shows a live wiring gap (ZMQ connection-health events flow into a void), so it moved to the
+functional-gaps section and was bumped LOW → MEDIUM. While reconciling, the published severity
+table was found to disagree with its own enumerable body (it read 17 open / 22 total, with an
+over-counted open-HIGH row, against a body that enumerates 23 distinct counted IDs). The tally
+below is recomputed **from the actual body entries**, which are the verifiable ground truth.
+
 ---
 
 ## Executive summary
@@ -31,15 +40,16 @@ and several "fixed" items were re-derived from the source line by line.
 | Severity | Open | Resolved | Total |
 |----------|------|----------|-------|
 | CRITICAL | 0    | 1        | 1 |
-| HIGH     | 2    | 2        | 4 |
-| MEDIUM   | 6    | 1        | 7 |
-| LOW      | 9    | 1        | 10 |
+| HIGH     | 1    | 2        | 3 |
+| MEDIUM   | 5    | 2        | 7 |
+| LOW      | 11   | 1        | 12 |
 | INFO     | 0    | 0        | 0 |
-| **Total** | **17** | **5** | **22** |
+| **Total** | **17** | **6** | **23** |
 
-Open by category: functional/unwired = 1 (PROJ-002); deferred-by-design = 7; test = 4;
-upstream = 2; doc = 4. New this refresh: PROJ-022 (LOW, deferred), PROJ-023 (LOW, pre-existing
-convention). Original 21-gap snapshot grew to 22 confirmed; 5 are now RESOLVED.
+Open by category: functional/unwired = 1 (PROJ-012); upstream/release-gate = 2 (PROJ-005,
+PROJ-017); deferred-by-design = 6; test = 3; doc = 4; conventions = 1. Sum = 17 = total open.
+New this refresh: PROJ-022 (LOW, deferred), PROJ-023 (LOW, pre-existing convention). PROJ-002
+is now RESOLVED (removed); PROJ-012 re-filed from deferred-LOW to functional-MEDIUM.
 
 ### Merge-blocker verdict (called out up top)
 
@@ -86,13 +96,43 @@ Original finding (head `686430a4`): `AppContext::start_spv()` was literally `Ok(
   (`src/backend_task/mod.rs:559`).
 - Start-path gated by four offline tests (`src/context/wallet_lifecycle.rs:561,583,617,649`).
 
-### PROJ-002 — DashPay `add_contact` / `remove_contact` are `NotSupported` stubs *(MEDIUM — OPEN)*
+### PROJ-002 — DashPay `add_contact` / `remove_contact` dead free functions *(MEDIUM — RESOLVED (removed))*
 
-`src/backend_task/dashpay/contacts.rs:521-535` (`add_contact`) and `:539-549`
-(`remove_contact`) ignore all args and return `DashPayError::NotSupported`. `add_contact`
-still carries a "TODO: Steps to implement" comment (`:528`). **Pre-existing in base
-`87ba5b71`**; no live backend-task dispatch caller for the free functions, but PR-relevant
-(module rewritten). Add-contact-by-username and contact removal are not functional. Scope: indirect.
+Original finding: `src/backend_task/dashpay/contacts.rs` carried two free functions —
+`add_contact` and `remove_contact` — that ignored all args and returned
+`DashPayError::NotSupported`, with a stale "TODO: Steps to implement" comment.
+
+**RESOLVED (removed 2026-06-02, sibling commit).** These were dead orphans from PR #464
+(`82399a26`): they had **zero callers** in the live tree and were superseded by the real
+`DashPayTask::SendContactRequest` dispatch path. The sibling commit deletes both free
+functions from `src/backend_task/dashpay/contacts.rs` along with the now-orphaned
+`DashPayError::NotSupported` variant in `src/backend_task/dashpay/errors.rs` — the variant
+had no other producers once the stubs were gone. No functional surface is lost: there was no
+backend-task dispatch wired to either function. (Removal SHA omitted; the lead will reconcile
+against the actual sibling commit if needed.)
+
+### PROJ-012 — ZMQ connection-health events flow into a void *(MEDIUM — OPEN)*
+
+The ZMQ status producer is **live** but its consumer side is entirely unwired. Three confirmed
+facts:
+- **Live sender:** `src/app.rs:819` clones `ctx.sx_zmq_status` into the ZMQ listener, which
+  pushes `Connected` / `Disconnected` connection events into the channel.
+- **Unread receiver:** `rx_zmq_status` (`src/context/mod.rs:76`) is stored on `AppContext`
+  (`:305`) but is **never drained** — no `recv` / `try_recv` anywhere in the tree.
+- **Zero-caller setter:** the canonical `ConnectionStatus::set_zmq_status`
+  (`src/context/connection_status.rs:159`) — the only path that would feed those events into
+  the single-source-of-truth status — has **zero callers**.
+
+Net effect: ZMQ connection-health events are produced and then discarded; the status indicator
+never reflects ZMQ state. The channel pair is constructed as a unit at `src/context/mod.rs:161`
+(`let (sx_zmq_status, rx_zmq_status) = …`), so it cannot be trimmed piecemeal. The binary fix
+is to either **wire** the chain — drain `rx_zmq_status` and forward each event to
+`set_zmq_status` — **or remove** the whole producer → channel → setter chain.
+
+This was previously mis-scoped as deferred-by-design (Decision #3 P4 audit), which masked the
+wiring gap. The Decision #3 deferral still stands as written, but it does **not** excuse a
+broken status path: events leaving the producer must reach the status, or the producer should
+not exist.
 
 ### PROJ-003 — `update_payment_status` is a logging no-op *(MEDIUM — RESOLVED)*
 
@@ -147,7 +187,6 @@ to a written decision in `docs/ai-design/2026-05-18-platform-wallet-migration/`.
 | PROJ-009 | DIP-14 back-compat dropped (non-mainnet / non-account-0 legacy contact addresses not reproduced) | `src/wallet_backend/mod.rs:722-724` (`register_dashpay_contact`, "Decision #6, back-compat dropped") | MEDIUM | Open by design | Decision #6 (`open-questions.md`) |
 | PROJ-010 | `UpstreamFromPersisted` loader intentionally not implemented (G2 swap deferred) | `src/wallet_backend/loader.rs:139-145` | LOW | Open by design | Decision #2 (`g2-mock-boundary.md` §G2.4) |
 | PROJ-011 | `identity` `CREATE TABLE` still on fresh installs — tombstone ADR pending | `src/database/initialization.rs:845-866` | LOW | Open by design | T-DEV-02b; deferred to separate ADR (`finish-unwire/notes.md` §4) |
-| PROJ-012 | ZMQ listener receiver retained behind `#[allow(dead_code)]` pending P4 audit | `src/context/mod.rs:73-77` | LOW | Open by design | Decision #3 (`open-questions.md`) |
 | PROJ-022 | `UpstreamPlatformAddresses` reserved swap-target — read methods `unimplemented!()` | `src/wallet_backend/platform_address.rs:245-307` | LOW | Open by design (NEW) | pending platform todo `e817b66a`; parallels PROJ-010 |
 
 Notes:
@@ -272,6 +311,20 @@ identity-address SPV bloom registration — not found in DET; likely upstream), 
 - **2026-06-02 — refresh sweep**: PROJ-005 pin moved `17653ba8…` → `35e4a2f6…` (still
   unreleased, stays OPEN). New PROJ-022 (`UpstreamPlatformAddresses` reserved seam, deferred)
   and PROJ-023 (add-contact string error matching, pre-existing convention violation) added.
+- **2026-06-02 — PROJ-002 resolved (removed)**: dead `add_contact` / `remove_contact` free
+  functions (zero callers, orphaned from PR #464 `82399a26`, superseded by
+  `DashPayTask::SendContactRequest`) deleted by a sibling commit, along with the now-orphaned
+  `DashPayError::NotSupported` variant.
+- **2026-06-02 — PROJ-012 re-filed (deferred-LOW → functional-MEDIUM)**: not benign dead
+  plumbing — the ZMQ status sender is live (`src/app.rs:819`) but `rx_zmq_status` is never
+  drained and `set_zmq_status` (`src/context/connection_status.rs:159`) has zero callers, so
+  ZMQ connection-health events flow into a void. Decision #3 P4-audit deferral does not excuse
+  the broken status path. Fix: wire `rx_zmq_status` → `set_zmq_status`, or remove the whole
+  producer→channel→setter chain (constructed as a unit at `src/context/mod.rs:161`).
+- **2026-06-02 — tally reconciliation**: recomputed the Executive severity table and category
+  breakdown from the enumerable body. The prior table (17 open / 22 total, HIGH open=2) did not
+  match the body, which enumerates 23 distinct counted IDs and a single open HIGH (PROJ-005).
+  Corrected to 23 total / 17 open / 6 resolved.
 
 ---
 
@@ -327,8 +380,9 @@ So nothing is silently dropped. Deferred markers / inert-looking bodies that are
 
 ---
 
-*🍬 Candy tally — confirmed gaps: 22 (1 CRITICAL · 4 HIGH · 7 MEDIUM · 10 LOW · 0 INFO).
-Status: 5 RESOLVED (PROJ-001, PROJ-003, PROJ-004, PROJ-006, PROJ-014) + SEC-001 follow-up;
-17 OPEN; of those, 7 deferred-by-design and 1 blocked-by-design (PROJ-024). 8 seed/appendix
-items confirmed already-resolved with evidence. Closing a gap counts too — and this pass
-closed five plus a security follow-up.*
+*🍬 Candy tally — confirmed gaps: 23 (1 CRITICAL · 3 HIGH · 7 MEDIUM · 12 LOW · 0 INFO).
+Status: 6 RESOLVED (PROJ-001, PROJ-002 (removed), PROJ-003, PROJ-004, PROJ-006, PROJ-014) +
+SEC-001 follow-up; 17 OPEN; of those, 6 deferred-by-design and 1 blocked-by-design (PROJ-024).
+8 seed/appendix items confirmed already-resolved with evidence. Closing a gap counts too — and
+this pass closed PROJ-002 outright and re-filed PROJ-012 from a benign deferral into a real
+MEDIUM wiring gap.*

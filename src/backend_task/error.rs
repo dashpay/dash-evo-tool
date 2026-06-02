@@ -1415,6 +1415,32 @@ pub enum TaskError {
         "Could not protect this imported key with a passphrase. Try again, or import it without a passphrase for now."
     )]
     SingleKeyCryptoFailure,
+
+    /// The user dismissed the just-in-time passphrase prompt (Cancel / X /
+    /// Escape / click-outside), or no interactive prompt was available
+    /// (headless / MCP). The operation aborts cleanly — nothing was
+    /// decrypted, signed, or persisted. Fieldless: cancellation carries
+    /// no upstream diagnostic and, by design, never any secret.
+    #[error("You cancelled. Nothing was changed. Try the action again when you're ready.")]
+    SecretPromptCancelled,
+
+    /// The stored secret for a just-in-time scope could not be decrypted
+    /// for a reason other than a wrong passphrase — typically an AES-GCM
+    /// library error during key derivation or a malformed envelope. The
+    /// callsite logs the typed detail before constructing this variant;
+    /// no secret or raw error string is stored here (CLAUDE.md rule 7).
+    #[error(
+        "Could not unlock this wallet. Try again; if it persists, restore the wallet from its recovery phrase."
+    )]
+    SecretDecryptFailed,
+
+    /// The passphrase the user supplied does not decrypt the stored HD
+    /// wallet seed. The just-in-time chokepoint catches this inside its
+    /// re-ask loop and re-prompts; it only surfaces to the UI when the
+    /// re-ask itself is cancelled. No upstream error is preserved —
+    /// AES-GCM's authentication failure carries no useful diagnostic.
+    #[error("That password is not correct. Try again.")]
+    HdPassphraseIncorrect,
 }
 
 impl TaskError {

@@ -21,6 +21,7 @@
 
 mod asset_lock_signer;
 mod dashpay;
+mod det_signer;
 mod event_bridge;
 #[cfg(any(test, feature = "bench"))]
 pub mod hydration;
@@ -29,6 +30,8 @@ pub(crate) mod hydration;
 mod kv;
 mod loader;
 mod platform_address;
+pub mod secret_access;
+pub mod secret_prompt;
 mod shielded;
 #[cfg(any(test, feature = "bench"))]
 pub mod single_key;
@@ -52,6 +55,14 @@ pub use shielded::{InsertShieldedNote, SHIELDED_SIDECAR_FILE, ShieldedNoteRow, S
 
 pub use asset_lock_signer::AssetLockSignerError;
 use asset_lock_signer::WalletAssetLockSigner;
+
+#[allow(unused_imports)]
+pub(crate) use det_signer::{DetSigner, DetSignerError};
+pub use secret_access::{SecretAccess, SecretPlaintext, SecretSession, WalletPromptMeta};
+pub use secret_prompt::{
+    RememberPolicy, SecretPrompt, SecretPromptCancelled, SecretPromptReply, SecretPromptRequest,
+    SecretPromptRetry, SecretScope,
+};
 
 pub use event_bridge::EventBridge;
 pub use kv::{DetKv, DetScope, KvAdapterError, SCHEMA_VERSION as KV_SCHEMA_VERSION};

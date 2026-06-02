@@ -807,3 +807,57 @@ Smythe review: T1, T2, T3, T4, T5, T6, T7, T8, T9 (all touch secret handling).
 - **Open questions (7):** Q-R3, Q-UNLOCK, Q-SEND, Q-SHIELDED, Q-HEADLESS, Q-RETRYCAP, Q-MIDSTREAM.
 
 **Total: 8 findings (1 critical, 2 high, 3 medium, 2 low) + 7 open questions.**
+
+---
+
+## Resolved Decisions (Wave plan)
+
+Settled by user + Smythe before Wave 1 build. Where these differ from the body above, **these win**.
+
+### Four settled decisions
+
+1. **Residency is operation-scoped by default; a "remember" toggle promotes to a session cache.**
+   The policy is modelled as `RememberPolicy { None, UntilAppClose, For(Duration) }` (replaces the
+   body's `remember_for_session: bool` on `SecretPromptReply`, which now carries `remember:
+   RememberPolicy`). The GUI later wires only `None` + `UntilAppClose`; `For(Duration)` is
+   data-model-only for now (unused by UI). Session-cache entries **carry a TTL/expiry and honor it on
+   access** (expired entries are evicted and force a re-prompt). Default is `None`.
+2. **Secret-on-the-wire is `platform_wallet_storage`'s `SecretString`.** The reply carries the
+   passphrase as `SecretString` plus the chosen `RememberPolicy`. No new secret type. No secret in
+   `TaskError` / `AppAction` / logs / `Debug`.
+3. **The chokepoint lives behind `secret_prompt` (UI seam) + `secret_access` (orchestration).** Only
+   `secret_prompt`'s types are UI-facing; `SecretAccess` / `DetSigner` / upstream types stay in the
+   `wallet_backend` seam (M-DONT-LEAK-TYPES).
+4. **Typed errors only.** New `TaskError` variants `SecretPromptCancelled`, `SecretDecryptFailed`,
+   `HdPassphraseIncorrect`; wrong-passphrase re-ask loop reuses `SingleKeyPassphraseIncorrect` /
+   `HdPassphraseIncorrect`. No user-facing `String` fields; no error-string parsing.
+
+### Smythe must-fixes (baked into Wave 1)
+
+1. **Closure form, not RAII guard.** `with_secret(scope, FnOnce(SecretPlaintext))` and
+   `with_secret_session(scope, AsyncFnOnce(&SecretSession))` confine plaintext to the closure; no
+   storable guard can be parked across awaits. (Resolves the §4.2 `AsyncFnOnce`-vs-guard spike in
+   favour of `AsyncFnOnce` — **no consumer-signature change vs. the guard form is needed; Nagatha
+   re-review NOT triggered.**)
+2. **Borrow-only, no bare `[u8;N]` copies on the consumer path.** The closure borrows
+   `&Zeroizing<…>` via `SecretPlaintext` (no `Clone`, no `Deref` to raw bytes — access via explicit
+   `expose_*`). `DetSigner` borrows the held secret rather than snapshotting. The one place a copy is
+   made is the cache-hit op-lift (an op-scoped `Zeroizing` copy taken to release the cache lock before
+   the closure's `await`, avoiding a re-entrancy deadlock); it zeroizes on op exit, exactly like the
+   prompt path's owned plaintext.
+3. **Boxed session-cache secrets, poison-safe clear.** Cached plaintext is `Box<Plaintext>` so a
+   `HashMap` rehash moves only the pointer. `forget` / `forget_all` recover a poisoned lock
+   (`into_inner`) so a panicked reader can never strand a plaintext.
+4. **Never prompt for unprotected scopes.** `with_secret` checks `scope_has_passphrase` first;
+   unprotected HD wallets (`uses_password = false`) and unprotected imported keys resolve via
+   `decrypt_jit(scope, None)` with no prompt.
+5. **Secret-confinement sentinel tests.** A sentinel passphrase + sentinel seed are asserted absent
+   from every emitted error `Display`, `Debug`, and from `DetSigner`/`SecretPromptCancelled` debug.
+
+### Wave 1 scope delivered (additive, no removals)
+
+`src/wallet_backend/secret_prompt.rs` (T1), `secret_access.rs` (T2), `det_signer.rs` (T4), and the
+three new `TaskError` variants. The eager model (R1 `inner.seeds`/`provide_seed`, R2
+`single_key_unlocked`, R3 `Wallet::Open`) and all consumer rewiring (T3 UI host, T5–T9) are **Waves
+2–4** and untouched here. `DetSigner` compiles + is unit-tested via the mock prompt but is not yet
+swapped into call sites (`#![allow(dead_code)]` on the module until Wave 2).

@@ -1,3 +1,4 @@
+mod derive_key_for_display;
 mod fetch_platform_address_balances;
 mod fund_platform_address_from_asset_lock;
 mod fund_platform_address_from_wallet_utxos;
@@ -10,12 +11,21 @@ use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::Credits;
 use dash_sdk::dpp::dashcore::OutPoint;
 use dash_sdk::dpp::identity::core_script::CoreScript;
+use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum WalletTask {
     GenerateReceiveAddress {
         seed_hash: WalletSeedHash,
+    },
+    /// Derive a private key for on-screen display/export. The HD seed is
+    /// fetched just-in-time through the JIT chokepoint, the key is derived in
+    /// the backend, and only the WIF (wrapped in `Secret`) is returned — the
+    /// seed never crosses into the UI layer.
+    DeriveKeyForDisplay {
+        seed_hash: WalletSeedHash,
+        derivation_path: DerivationPath,
     },
     /// Fetch Platform address balances and nonces from Platform for a wallet
     FetchPlatformAddressBalances {

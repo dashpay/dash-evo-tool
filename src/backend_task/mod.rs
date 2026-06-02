@@ -12,6 +12,7 @@ use crate::backend_task::wallet::WalletTask;
 use crate::context::AppContext;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use dash_sdk::dpp::dashcore::bls_sig_utils::BLSSignature;
 use dash_sdk::dpp::dashcore::network::message_qrinfo::QRInfo;
 use dash_sdk::dpp::dashcore::BlockHash;
@@ -252,6 +253,16 @@ pub enum BackendTaskSuccessResult {
     /// Withdrawal from Platform address to Core initiated
     PlatformAddressWithdrawal {
         seed_hash: WalletSeedHash,
+    },
+    /// A private key derived for on-screen display/export, wrapped in
+    /// [`Secret`](crate::model::secret::Secret) end-to-end. The seed never
+    /// leaves the backend; only the requested WIF crosses to the UI, which
+    /// already shows it on screen (same trust boundary).
+    WalletKeyForDisplay {
+        seed_hash: WalletSeedHash,
+        derivation_path: DerivationPath,
+        /// The derived private key as a WIF string, zeroize-on-drop.
+        wif: crate::model::secret::Secret,
     },
 
     // MNList-specific results
@@ -605,6 +616,13 @@ impl AppContext {
         match task {
             WalletTask::GenerateReceiveAddress { seed_hash } => {
                 self.generate_receive_address(seed_hash).await
+            }
+            WalletTask::DeriveKeyForDisplay {
+                seed_hash,
+                derivation_path,
+            } => {
+                self.derive_key_for_display(seed_hash, derivation_path)
+                    .await
             }
             WalletTask::FetchPlatformAddressBalances { seed_hash } => {
                 self.fetch_platform_address_balances(seed_hash).await

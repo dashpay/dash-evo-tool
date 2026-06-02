@@ -1,7 +1,5 @@
 use crate::app::AppAction;
 use crate::model::wallet::{DerivationPathHelpers, DerivationPathReference};
-use crate::ui::MessageType;
-use crate::ui::components::message_banner::MessageBanner;
 use crate::ui::wallets::account_summary::{AccountCategory, categorize_account_path};
 use dash_sdk::dashcore_rpc::dashcore::{Address, Network};
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
@@ -463,21 +461,10 @@ impl WalletsBalancesScreen {
                                     self.private_key_dialog.pending_address = Some(display_address);
                                     self.wallet_unlock_popup.open();
                                 } else {
-                                    match self.derive_private_key_wif(&data.derivation_path) {
-                                        Ok(key) => {
-                                            self.private_key_dialog.is_open = true;
-                                            self.private_key_dialog.address = display_address;
-                                            self.private_key_dialog.private_key_wif = key;
-                                            self.private_key_dialog.show_key = false;
-                                        }
-                                        Err(err) => {
-                                            MessageBanner::set_global(
-                                                self.app_context.egui_ctx(),
-                                                &err,
-                                                MessageType::Error,
-                                            );
-                                        }
-                                    }
+                                    self.queue_view_key_request(
+                                        &data.derivation_path,
+                                        display_address,
+                                    );
                                 }
                             }
                         });

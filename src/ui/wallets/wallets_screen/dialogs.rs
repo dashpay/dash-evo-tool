@@ -5,7 +5,7 @@ use crate::backend_task::wallet::WalletTask;
 use crate::model::address::{AddressKind, ValidatedAddress};
 use crate::model::amount::Amount;
 use crate::model::secret::Secret;
-use crate::model::wallet::{DerivationPathHelpers, Wallet};
+use crate::model::wallet::{DerivationPathHelpers, Wallet, WalletSeedHash};
 use crate::ui::MessageType;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::address_input::AddressInput;
@@ -112,6 +112,11 @@ pub(super) struct PrivateKeyDialogState {
     pub pending_derivation_path: Option<DerivationPath>,
     /// Pending address string (when wallet needs unlock first)
     pub pending_address: Option<String>,
+    /// A queued key-display request the `ui()` loop drains into a
+    /// `WalletTask::DeriveKeyForDisplay` backend task. The seed is fetched
+    /// just-in-time in the backend; only the WIF returns here. Tuple is
+    /// `(seed_hash, derivation_path, display_address)`.
+    pub pending_view_key_request: Option<(WalletSeedHash, DerivationPath, String)>,
 }
 
 impl WalletsBalancesScreen {
@@ -1245,17 +1250,39 @@ impl WalletsBalancesScreen {
         }
     }
 
-    pub(super) fn derive_private_key_wif(&self, path: &DerivationPath) -> Result<Secret, String> {
-        let wallet_arc = self
-            .selected_wallet
-            .clone()
-            .ok_or_else(|| "Select a wallet first".to_string())?;
-        let wallet = wallet_arc.read().map_err(|e| e.to_string())?;
-        if wallet.uses_password && !wallet.is_open() {
-            return Err("Unlock this wallet to view private keys.".to_string());
-        }
-        let private_key = wallet.private_key_at_derivation_path(path, self.app_context.network)?;
-        Ok(Secret::new(private_key.to_wif()))
+    /// Queue a private-key-display request for the given path and address.
+    ///
+    /// The actual derivation runs in the backend via
+    /// `WalletTask::DeriveKeyForDisplay` — the `ui()` loop drains
+    /// `pending_view_key_request` into a backend task, the seed is fetched
+    /// just-in-time, and only the WIF (wrapped in `Secret`) returns. The seed
+    /// never crosses into the UI layer.
+    pub(super) fn queue_view_key_request(
+        &mut self,
+        path: &DerivationPath,
+        display_address: String,
+    ) {
+        let Some(wallet_arc) = self.selected_wallet.clone() else {
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "Select a wallet first",
+                MessageType::Error,
+            );
+            return;
+        };
+        let seed_hash = match wallet_arc.read() {
+            Ok(w) => w.seed_hash(),
+            Err(_) => {
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "Could not read the selected wallet. Please retry.",
+                    MessageType::Error,
+                );
+                return;
+            }
+        };
+        self.private_key_dialog.pending_view_key_request =
+            Some((seed_hash, path.clone(), display_address));
     }
 
     pub(super) fn open_mine_dialog(&mut self) {

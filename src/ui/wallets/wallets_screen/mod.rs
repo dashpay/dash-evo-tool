@@ -2347,6 +2347,20 @@ impl ScreenLike for WalletsBalancesScreen {
         self.render_private_key_dialog(ctx);
         self.render_import_single_key_dialog(ctx);
 
+        // Drain a queued "view private key" request into a backend task that
+        // fetches the seed just-in-time and derives the key off the UI thread.
+        if let Some((seed_hash, derivation_path, address)) =
+            self.private_key_dialog.pending_view_key_request.take()
+        {
+            self.private_key_dialog.address = address;
+            action |= AppAction::BackendTask(BackendTask::WalletTask(
+                crate::backend_task::wallet::WalletTask::DeriveKeyForDisplay {
+                    seed_hash,
+                    derivation_path,
+                },
+            ));
+        }
+
         // Rename dialog
         if self.show_rename_dialog {
             let window_response = egui::Window::new("Rename Wallet")
@@ -2468,17 +2482,7 @@ impl ScreenLike for WalletsBalancesScreen {
                     if let Some(path) = self.private_key_dialog.pending_derivation_path.take()
                         && let Some(address) = self.private_key_dialog.pending_address.take()
                     {
-                        match self.derive_private_key_wif(&path) {
-                            Ok(key) => {
-                                self.private_key_dialog.is_open = true;
-                                self.private_key_dialog.address = address;
-                                self.private_key_dialog.private_key_wif = key;
-                                self.private_key_dialog.show_key = false;
-                            }
-                            Err(err) => {
-                                MessageBanner::set_global(ctx, &err, MessageType::Error);
-                            }
-                        }
+                        self.queue_view_key_request(&path, address);
                     }
 
                     // Check if we were trying to fund a Platform address
@@ -2757,6 +2761,13 @@ impl ScreenLike for WalletsBalancesScreen {
                     self.receive_dialog.qr_address = None;
                     self.receive_dialog.status = None;
                 }
+            }
+            crate::ui::BackendTaskSuccessResult::WalletKeyForDisplay { wif, .. } => {
+                // The backend derived the key just-in-time; show it in the
+                // private-key dialog (hidden until the user reveals it).
+                self.private_key_dialog.private_key_wif = wif;
+                self.private_key_dialog.show_key = false;
+                self.private_key_dialog.is_open = true;
             }
             crate::ui::BackendTaskSuccessResult::PlatformAddressWithdrawal { .. } => {
                 MessageBanner::set_global(

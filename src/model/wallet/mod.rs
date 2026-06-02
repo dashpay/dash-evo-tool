@@ -1998,7 +1998,8 @@ const DEFAULT_GAP_LIMIT: AddressIndex = 20;
 ///
 /// # Usage
 /// ```ignore
-/// let mut provider = WalletAddressProvider::new(&wallet, network)?;
+/// // `seed` is borrowed from inside a JIT `with_secret(_session)` scope.
+/// let mut provider = WalletAddressProvider::new(&wallet, network, seed)?;
 /// let result = sdk.sync_address_balances(&mut provider, None, None).await?;
 /// provider.apply_results_to_wallet(&mut wallet);
 /// ```
@@ -2007,8 +2008,13 @@ pub struct WalletAddressProvider {
     network: Network,
     /// Gap limit for HD wallet scanning
     gap_limit: AddressIndex,
-    /// Seed bytes for deriving new addresses (64 bytes)
-    seed: [u8; 64],
+    /// DIP-17 account-level extended **public** key at
+    /// `m/9'/coin_type'/17'/account'/key_class'`. All gap-limit children are
+    /// the non-hardened final `index`, so addresses derive from this public
+    /// key alone — the provider never holds the plaintext seed. The seed is
+    /// borrowed once at construction (through the JIT chokepoint) to derive
+    /// this xpub, then dropped.
+    account_xpub: ExtendedPubKey,
     /// Account index for Platform payment addresses (default 0)
     account: u32,
     /// Key class for Platform payment addresses (default 0)
@@ -2028,34 +2034,45 @@ pub struct WalletAddressProvider {
 }
 
 impl WalletAddressProvider {
-    /// Create a new WalletAddressProvider from a wallet.
+    /// Account / key-class used for Platform payment derivation. Single
+    /// source of truth for the constructors and the xpub derivation.
+    const PLATFORM_ACCOUNT: u32 = 0;
+    const PLATFORM_KEY_CLASS: u32 = 0;
+
+    /// Create a new WalletAddressProvider from a borrowed HD seed.
     ///
-    /// This initializes the provider with Platform payment addresses up to the gap limit.
-    /// The wallet must be open (unlocked) to access the seed for address derivation.
+    /// The `seed` is resolved by the async caller through the JIT secret
+    /// chokepoint and borrowed only for this construction — it is used once to
+    /// derive the DIP-17 account-level extended public key and is never copied
+    /// into the provider. All subsequent address derivation is public-key only.
     ///
     /// # Errors
-    /// Returns an error if the wallet is closed/locked.
-    pub fn new(wallet: &Wallet, network: Network) -> Result<Self, String> {
-        Self::with_gap_limit(wallet, network, DEFAULT_GAP_LIMIT)
+    /// Returns an error if the account-level xpub cannot be derived.
+    pub fn new(wallet: &Wallet, network: Network, seed: &[u8; 64]) -> Result<Self, String> {
+        Self::with_gap_limit(wallet, network, DEFAULT_GAP_LIMIT, seed)
     }
 
-    /// Create a new WalletAddressProvider with a custom gap limit.
+    /// Create a new WalletAddressProvider with a custom gap limit from a
+    /// borrowed HD seed. See [`new`](Self::new) for the seed-borrow contract.
     ///
     /// # Errors
-    /// Returns an error if the wallet is closed/locked.
+    /// Returns an error if the account-level xpub cannot be derived.
     pub fn with_gap_limit(
-        wallet: &Wallet,
+        _wallet: &Wallet,
         network: Network,
         gap_limit: AddressIndex,
+        seed: &[u8; 64],
     ) -> Result<Self, String> {
-        let seed = *wallet.seed_bytes()?;
+        let account = Self::PLATFORM_ACCOUNT;
+        let key_class = Self::PLATFORM_KEY_CLASS;
+        let account_xpub = Self::derive_account_xpub(seed, network, account, key_class)?;
 
         let mut provider = Self {
             network,
             gap_limit,
-            seed,
-            account: 0,
-            key_class: 0,
+            account_xpub,
+            account,
+            key_class,
             pending: BTreeMap::new(),
             resolved: BTreeSet::new(),
             highest_found: None,
@@ -2068,6 +2085,35 @@ impl WalletAddressProvider {
         provider.ensure_addresses_up_to(gap_limit.saturating_sub(1))?;
 
         Ok(provider)
+    }
+
+    /// Derive the DIP-17 account-level extended **public** key at
+    /// `m/9'/coin_type'/17'/account'/key_class'` from the borrowed seed.
+    ///
+    /// This is the only place the seed is touched. The hardened account /
+    /// key-class steps require the private key, so the seed is needed here; the
+    /// resulting xpub then derives every non-hardened `index` child publicly.
+    fn derive_account_xpub(
+        seed: &[u8; 64],
+        network: Network,
+        account: u32,
+        key_class: u32,
+    ) -> Result<ExtendedPubKey, String> {
+        let coin_type = Wallet::coin_type(network);
+        let account_path = DerivationPath::from(vec![
+            ChildNumber::Hardened { index: 9 },
+            ChildNumber::Hardened { index: coin_type },
+            ChildNumber::Hardened { index: 17 },
+            ChildNumber::Hardened { index: account },
+            ChildNumber::Hardened { index: key_class },
+        ]);
+        let secp = Secp256k1::new();
+        let master = ExtendedPrivKey::new_master(network, seed)
+            .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
+        let account_priv = master
+            .derive_priv(&secp, &account_path)
+            .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
+        Ok(ExtendedPubKey::from_priv(&secp, &account_priv))
     }
 
     /// Get the network this provider was created for.
@@ -2203,25 +2249,23 @@ impl WalletAddressProvider {
         self
     }
 
-    /// Derive a Platform address at the given index.
+    /// Derive a Platform address at the given index from the account-level
+    /// **public** key — no seed access.
+    ///
+    /// The DIP-17 final `index` is a non-hardened child, so deriving it from
+    /// the account xpub yields the same public key (and therefore the same
+    /// P2PKH address) the legacy seed-based derivation produced. Parity is
+    /// asserted by the `xpub_derivation_matches_seed_derivation` test.
     fn derive_address_at_index(
         &self,
         index: AddressIndex,
     ) -> Result<(PlatformAddress, Address), String> {
-        let derivation_path = DerivationPath::platform_payment_path(
-            self.network,
-            self.account,
-            self.key_class,
-            index,
-        );
-
-        let extended_private_key = derivation_path
-            .derive_priv_ecdsa_for_master_seed(&self.seed, self.network)
-            .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
-
         let secp = Secp256k1::new();
-        let private_key = extended_private_key.to_priv();
-        let public_key = private_key.public_key(&secp);
+        let child = self
+            .account_xpub
+            .derive_pub(&secp, &[ChildNumber::Normal { index }])
+            .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
+        let public_key = child.to_pub();
 
         // Create P2PKH address
         let address = Address::p2pkh(&public_key, self.network);
@@ -3143,5 +3187,42 @@ mod tests {
     fn test_find_in_arc_rw_lock_slice_empty() {
         let result = Wallet::find_in_arc_rw_lock_slice(&[], [0u8; 32]);
         assert!(result.is_none());
+    }
+
+    /// FUND-SAFETY PARITY: the rebuilt `WalletAddressProvider` derives each
+    /// gap-limit address from the DIP-17 account **xpub** (no owned seed). Its
+    /// addresses must be byte-identical to the legacy seed-based
+    /// `derive_priv_ecdsa_for_master_seed(...).to_priv().public_key()` path, on
+    /// every network — otherwise platform balance sync would query the wrong
+    /// addresses.
+    #[test]
+    fn provider_xpub_matches_seed_derivation() {
+        for network in [Network::Testnet, Network::Mainnet] {
+            let seed = [42u8; 64];
+            let wallet = Wallet::new_from_seed(seed, network, None, None).expect("wallet");
+            let provider = WalletAddressProvider::new(&wallet, network, &seed).expect("provider");
+
+            let secp = Secp256k1::new();
+            for index in 0u32..DEFAULT_GAP_LIMIT {
+                // Legacy seed-based derivation (what the old provider and the
+                // platform signer used).
+                let path = DerivationPath::platform_payment_path(network, 0, 0, index);
+                let legacy_priv = path
+                    .derive_priv_ecdsa_for_master_seed(&seed, network)
+                    .expect("legacy derive")
+                    .to_priv();
+                let legacy_address = Address::p2pkh(&legacy_priv.public_key(&secp), network);
+
+                // Provider's xpub-based derivation.
+                let (_platform, provider_address) = provider
+                    .derive_address_at_index(index)
+                    .expect("provider derive");
+
+                assert_eq!(
+                    legacy_address, provider_address,
+                    "provider xpub address diverged from seed derivation at index {index} on {network:?}"
+                );
+            }
+        }
     }
 }

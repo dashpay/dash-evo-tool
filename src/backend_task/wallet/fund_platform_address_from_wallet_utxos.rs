@@ -96,17 +96,38 @@ impl AppContext {
             vec![AddressFundsFeeStrategyStep::ReduceOutput(change_index)]
         };
 
-        outputs
-            .top_up(
-                &sdk,
-                asset_lock_proof,
-                asset_lock_private_key,
-                fee_strategy,
-                &wallet,
-                None,
+        // Sign each funded-output witness through a JIT platform signer that
+        // borrows the HD seed only for the duration of the top-up. The pure
+        // path index is built before the secret scope; the asset-lock private
+        // key was already produced by the upstream wallet above. The seed
+        // zeroizes when the closure returns.
+        use crate::wallet_backend::{DetPlatformSigner, PlatformPathIndex};
+        let network = self.network;
+        let path_index = PlatformPathIndex::from_wallet(&wallet, network);
+        backend
+            .secret_access()
+            .with_secret_session(
+                &crate::wallet_backend::SecretScope::HdSeed { seed_hash },
+                async |session| {
+                    let plaintext = session.plaintext();
+                    let seed = plaintext
+                        .expose_hd_seed()
+                        .ok_or(TaskError::ContactWalletSeedUnavailable)?;
+                    let signer = DetPlatformSigner::from_held(seed, network, &path_index);
+                    outputs
+                        .top_up(
+                            &sdk,
+                            asset_lock_proof,
+                            asset_lock_private_key,
+                            fee_strategy,
+                            &signer,
+                            None,
+                        )
+                        .await
+                        .map_err(TaskError::from)
+                },
             )
-            .await
-            .map_err(TaskError::from)?;
+            .await?;
 
         self.fetch_platform_address_balances(seed_hash).await?;
 

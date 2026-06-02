@@ -20,6 +20,7 @@
 //! `docs/ai-design/2026-05-18-platform-wallet-migration/backend-architecture.md`.
 
 mod dashpay;
+mod det_platform_signer;
 mod det_signer;
 mod event_bridge;
 #[cfg(any(test, feature = "bench"))]
@@ -52,6 +53,7 @@ pub use dashpay::DashpayView;
 pub(crate) use dashpay::{derive_contact_info_encryption_keys, derive_contact_xpub_material};
 pub use shielded::{InsertShieldedNote, SHIELDED_SIDECAR_FILE, ShieldedNoteRow, ShieldedView};
 
+pub(crate) use det_platform_signer::{DetPlatformSigner, PlatformPathIndex};
 pub(crate) use det_signer::DetSigner;
 pub use secret_access::{SecretAccess, SecretPlaintext, SecretSession, WalletPromptMeta};
 pub use secret_prompt::{

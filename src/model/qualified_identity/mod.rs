@@ -373,7 +373,10 @@ impl Signer<IdentityPublicKey> for QualifiedIdentity {
                                 .ok_or(TaskError::ContactWalletSeedUnavailable)?;
                             self.private_keys
                                 .get_resolve_with_seed(&resolve_key, &wallets, seed, network)
-                                .map_err(|detail| TaskError::WalletKeyLookupFailed { detail })
+                                .map_err(|detail| {
+                                    tracing::warn!(error = %detail, "Wallet key lookup failed");
+                                    TaskError::WalletKeyLookupFailed
+                                })
                         },
                     )
                     .await

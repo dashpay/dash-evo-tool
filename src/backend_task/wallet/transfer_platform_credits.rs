@@ -15,6 +15,7 @@ impl AppContext {
         outputs: BTreeMap<PlatformAddress, Credits>,
         fee_payer_index: u16,
     ) -> Result<BackendTaskSuccessResult, crate::backend_task::error::TaskError> {
+        use crate::wallet_backend::{DetPlatformSigner, PlatformPathIndex};
         use dash_sdk::dpp::address_funds::AddressFundsFeeStrategyStep;
         use dash_sdk::platform::transition::transfer_address_funds::TransferAddressFunds;
 
@@ -47,11 +48,29 @@ impl AppContext {
             tracing::info!("  Input {}: {:?} -> {}", idx, addr, amount);
         }
 
-        // Use the SDK to transfer - returns proof-verified updated address infos
-        let address_infos = sdk
-            .transfer_address_funds(inputs, outputs, fee_strategy, &wallet, None)
-            .await
-            .map_err(crate::backend_task::error::TaskError::from)?;
+        // Build the pure address→path index before entering the secret scope,
+        // then sign each input through a JIT platform signer that borrows the
+        // HD seed for the duration of the SDK call only. The seed zeroizes when
+        // the scope returns — it never enters this layer by value.
+        let network = self.network;
+        let path_index = PlatformPathIndex::from_wallet(&wallet, network);
+        let backend = self.wallet_backend()?;
+        let address_infos = backend
+            .secret_access()
+            .with_secret_session(
+                &crate::wallet_backend::SecretScope::HdSeed { seed_hash },
+                async |session| {
+                    let plaintext = session.plaintext();
+                    let seed = plaintext.expose_hd_seed().ok_or(
+                        crate::backend_task::error::TaskError::ContactWalletSeedUnavailable,
+                    )?;
+                    let signer = DetPlatformSigner::from_held(seed, network, &path_index);
+                    sdk.transfer_address_funds(inputs, outputs, fee_strategy, &signer, None)
+                        .await
+                        .map_err(crate::backend_task::error::TaskError::from)
+                },
+            )
+            .await?;
 
         // Update wallet balances from the proof-verified response (no extra fetch needed)
         self.update_wallet_platform_address_info_from_sdk(seed_hash, &address_infos)?;

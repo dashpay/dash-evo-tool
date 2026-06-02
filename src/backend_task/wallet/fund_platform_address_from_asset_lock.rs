@@ -72,45 +72,53 @@ impl AppContext {
             (wallet, sdk)
         };
 
-        // Derive the asset-lock address's private key from the HD seed fetched
-        // just-in-time through the chokepoint; the seed is borrowed for this one
-        // derivation and zeroizes when the closure returns — it never enters
-        // this layer by value.
+        // Resolve the HD seed once through the chokepoint and, inside that same
+        // scope, both derive the asset-lock address's private key AND build the
+        // JIT platform signer that authorises each funded-output witness. The
+        // seed is borrowed for the whole top-up and zeroizes when the closure
+        // returns — it never enters this layer by value. The pure path index is
+        // built before the scope.
+        use crate::wallet_backend::{DetPlatformSigner, PlatformPathIndex};
         let network = self.network;
         let asset_lock_address_for_lookup = asset_lock_address.clone();
-        let asset_lock_private_key = backend
+        let path_index = PlatformPathIndex::from_wallet(&wallet, network);
+        let fee_strategy = vec![AddressFundsFeeStrategyStep::ReduceOutput(0)];
+
+        let _result = backend
             .secret_access()
-            .with_secret(
+            .with_secret_session(
                 &crate::wallet_backend::SecretScope::HdSeed { seed_hash },
-                |plaintext| {
+                async |session| {
+                    let plaintext = session.plaintext();
                     let seed = plaintext
                         .expose_hd_seed()
                         .ok_or(TaskError::ContactWalletSeedUnavailable)?;
-                    wallet
+                    let asset_lock_private_key = wallet
                         .private_key_for_address_with_seed(
                             seed,
                             &asset_lock_address_for_lookup,
                             network,
                         )
-                        .map_err(|detail| TaskError::WalletKeyLookupFailed { detail })?
-                        .ok_or(TaskError::AssetLockAddressNotFound)
+                        .map_err(|detail| {
+                            tracing::warn!(error = %detail, "Asset-lock key derivation failed");
+                            TaskError::WalletKeyLookupFailed
+                        })?
+                        .ok_or(TaskError::AssetLockAddressNotFound)?;
+                    let signer = DetPlatformSigner::from_held(seed, network, &path_index);
+                    outputs
+                        .top_up(
+                            &sdk,
+                            asset_lock_proof,
+                            asset_lock_private_key,
+                            fee_strategy,
+                            &signer,
+                            None,
+                        )
+                        .await
+                        .map_err(TaskError::from)
                 },
             )
             .await?;
-
-        let fee_strategy = vec![AddressFundsFeeStrategyStep::ReduceOutput(0)];
-
-        let _result = outputs
-            .top_up(
-                &sdk,
-                asset_lock_proof,
-                asset_lock_private_key,
-                fee_strategy,
-                &wallet,
-                None,
-            )
-            .await
-            .map_err(TaskError::from)?;
 
         self.fetch_platform_address_balances(seed_hash).await?;
 

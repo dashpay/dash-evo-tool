@@ -1036,11 +1036,11 @@ pub enum TaskError {
     // ──────────────────────────────────────────────────────────────────────────
     // Wallet key / address errors
     // ──────────────────────────────────────────────────────────────────────────
-    /// A private key for a wallet address could not be found.
+    /// A private key for a wallet address could not be found or derived.
     #[error(
         "Could not find the key for this address in your wallet. Please check your wallet and retry."
     )]
-    WalletKeyLookupFailed { detail: String },
+    WalletKeyLookupFailed,
 
     /// A new receive or change address could not be derived from the wallet.
     #[error("Could not generate a wallet address. Please check your wallet and retry.")]

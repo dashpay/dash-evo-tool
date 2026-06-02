@@ -28,23 +28,33 @@ impl AppContext {
         let (last_sync_timestamp, last_sync_height) =
             self.get_platform_sync_info(&seed_hash).unwrap_or((0, 0));
 
-        // Create provider (requires wallet to be open for address derivation)
-        let mut provider = {
-            let wallet = wallet_arc.read()?;
-            match WalletAddressProvider::new(&wallet, self.network) {
-                Ok(provider) => provider.with_stored_state(&wallet, self.network, last_sync_height),
-                Err(_) if !wallet.is_open() => {
-                    return Err(crate::backend_task::error::TaskError::WalletLocked);
-                }
-                Err(e) => {
-                    return Err(
-                        crate::backend_task::error::TaskError::WalletAddressProviderSetupFailed {
-                            detail: e,
+        // Create provider. Address derivation needs the DIP-17 account-level
+        // xpub, which is derived once from the HD seed fetched just-in-time
+        // through the chokepoint. The seed is borrowed for that single
+        // derivation inside the closure and zeroizes on return — the provider
+        // then derives every gap-limit child from the public xpub alone.
+        let network = self.network;
+        let backend = self.wallet_backend()?;
+        let mut provider = backend
+            .secret_access()
+            .with_secret(
+                &crate::wallet_backend::SecretScope::HdSeed { seed_hash },
+                |plaintext| {
+                    let seed = plaintext.expose_hd_seed().ok_or(
+                        crate::backend_task::error::TaskError::ContactWalletSeedUnavailable,
+                    )?;
+                    let wallet = wallet_arc.read()?;
+                    let provider = WalletAddressProvider::new(&wallet, network, seed).map_err(
+                        |detail| {
+                            crate::backend_task::error::TaskError::WalletAddressProviderSetupFailed {
+                                detail,
+                            }
                         },
-                    );
-                }
-            }
-        };
+                    )?;
+                    Ok(provider.with_stored_state(&wallet, network, last_sync_height))
+                },
+            )
+            .await?;
 
         // Sync using SDK's privacy-preserving method (handles both full and incremental)
         let sdk = self.sdk.load().as_ref().clone();

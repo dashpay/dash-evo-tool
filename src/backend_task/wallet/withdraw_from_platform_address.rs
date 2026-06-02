@@ -17,6 +17,7 @@ impl AppContext {
         core_fee_per_byte: u32,
         fee_payer_index: u16,
     ) -> Result<BackendTaskSuccessResult, crate::backend_task::error::TaskError> {
+        use crate::wallet_backend::{DetPlatformSigner, PlatformPathIndex};
         use dash_sdk::dpp::address_funds::AddressFundsFeeStrategyStep;
         use dash_sdk::dpp::withdrawal::Pooling;
         use dash_sdk::platform::transition::address_credit_withdrawal::WithdrawAddressFunds;
@@ -40,20 +41,37 @@ impl AppContext {
             fee_payer_index,
         )];
 
-        // Use the SDK to withdraw
-        let _result = sdk
-            .withdraw_address_funds(
-                inputs,
-                None, // No change output
-                fee_strategy,
-                core_fee_per_byte,
-                Pooling::Never,
-                output_script,
-                &wallet,
-                None,
+        // Sign each withdrawal input through a JIT platform signer that borrows
+        // the HD seed only for the duration of the SDK call. The pure path
+        // index is built before the secret scope; the seed zeroizes on return.
+        let network = self.network;
+        let path_index = PlatformPathIndex::from_wallet(&wallet, network);
+        let backend = self.wallet_backend()?;
+        let _result = backend
+            .secret_access()
+            .with_secret_session(
+                &crate::wallet_backend::SecretScope::HdSeed { seed_hash },
+                async |session| {
+                    let plaintext = session.plaintext();
+                    let seed = plaintext.expose_hd_seed().ok_or(
+                        crate::backend_task::error::TaskError::ContactWalletSeedUnavailable,
+                    )?;
+                    let signer = DetPlatformSigner::from_held(seed, network, &path_index);
+                    sdk.withdraw_address_funds(
+                        inputs,
+                        None, // No change output
+                        fee_strategy,
+                        core_fee_per_byte,
+                        Pooling::Never,
+                        output_script,
+                        &signer,
+                        None,
+                    )
+                    .await
+                    .map_err(crate::backend_task::error::TaskError::from)
+                },
             )
-            .await
-            .map_err(crate::backend_task::error::TaskError::from)?;
+            .await?;
 
         // Trigger a balance refresh
         self.fetch_platform_address_balances(seed_hash).await?;

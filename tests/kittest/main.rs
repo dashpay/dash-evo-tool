@@ -6,6 +6,7 @@ mod info_popup;
 mod message_banner;
 mod migration_banner;
 mod network_chooser;
+mod secret_prompt;
 mod startup;
 mod wallets_screen;
 // trigger rebuild

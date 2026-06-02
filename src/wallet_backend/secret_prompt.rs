@@ -167,6 +167,41 @@ pub trait SecretPrompt: Send + Sync {
         &self,
         request: SecretPromptRequest,
     ) -> Result<SecretPromptReply, SecretPromptCancelled>;
+
+    /// Whether this host can actually ask a human. `true` for the egui host;
+    /// `false` for [`NullSecretPrompt`] (headless MCP / CLI). The chokepoint
+    /// uses this to distinguish a genuine user cancel from "no prompt exists
+    /// here", surfacing the right typed error for each.
+    fn is_interactive(&self) -> bool {
+        true
+    }
+}
+
+/// The [`SecretPrompt`] for non-interactive hosts (MCP server, CLI).
+///
+/// There is no window to ask for a passphrase, so every request resolves as
+/// [`SecretPromptCancelled`] — the chokepoint maps that to a typed
+/// [`TaskError::SecretPromptUnavailable`](crate::backend_task::error::TaskError::SecretPromptUnavailable)
+/// for the caller. Per the Q-HEADLESS security ruling there is **no**
+/// environment-variable or CLI-flag passphrase fallback: a passphrase-
+/// protected secret simply cannot be unlocked headless. Unprotected scopes
+/// never reach the prompt (the chokepoint's fast-path decrypts them with no
+/// passphrase), so this host does not block read-only or no-password flows.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NullSecretPrompt;
+
+#[async_trait]
+impl SecretPrompt for NullSecretPrompt {
+    async fn request(
+        &self,
+        _request: SecretPromptRequest,
+    ) -> Result<SecretPromptReply, SecretPromptCancelled> {
+        Err(SecretPromptCancelled)
+    }
+
+    fn is_interactive(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -328,5 +363,16 @@ mod tests {
     fn cancelled_display_carries_no_secret() {
         let dbg = format!("{:?}", SecretPromptCancelled);
         assert_eq!(dbg, "SecretPromptCancelled");
+    }
+
+    #[tokio::test]
+    async fn null_prompt_always_cancels_and_is_not_interactive() {
+        let prompt = NullSecretPrompt;
+        assert!(!prompt.is_interactive());
+        let err = prompt
+            .request(SecretPromptRequest::new(hd_scope(), "My Wallet"))
+            .await
+            .expect_err("null prompt cancels");
+        assert_eq!(err.to_string(), "the passphrase prompt was cancelled");
     }
 }

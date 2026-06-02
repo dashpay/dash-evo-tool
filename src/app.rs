@@ -16,6 +16,7 @@ use crate::database::Database;
 use crate::logging::initialize_logger;
 use crate::model::feature_gate::FeatureGate;
 use crate::model::settings::AppSettings;
+use crate::ui::components::secret_prompt_host::{ActivePrompt, EguiSecretPromptHost, QueuedPrompt};
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
 use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen, ProfileSearchScreen};
@@ -214,6 +215,16 @@ pub struct AppState {
     /// Shared MCP context -- follows network switches via `ArcSwap`.
     #[cfg(feature = "mcp")]
     pub mcp_app_context: Option<Arc<arc_swap::ArcSwap<AppContext>>>,
+    /// The egui secret prompt host, kept so newly-created (on-demand) network
+    /// contexts can have it installed before their backend is wired.
+    secret_prompt_host: Arc<dyn crate::wallet_backend::SecretPrompt>,
+    /// Receives just-in-time passphrase requests enqueued by the egui secret
+    /// prompt host. Drained once per frame in [`Self::update`]; the active
+    /// request becomes [`Self::active_secret_prompt`].
+    secret_prompt_receiver: tokiompsc::UnboundedReceiver<QueuedPrompt>,
+    /// The passphrase prompt currently shown, if any. Exactly one is active at
+    /// a time; further requests wait in `secret_prompt_receiver` (FIFO).
+    active_secret_prompt: Option<ActivePrompt>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -471,6 +482,19 @@ impl AppState {
         let (task_result_sender, task_result_receiver) =
             tokiompsc::channel(256).with_egui_ctx(ctx.clone());
 
+        // Build the egui just-in-time secret prompt host and install it on
+        // every network context BEFORE the eager wallet-backend init below
+        // reads it into each backend's `SecretAccess`. The host enqueues
+        // passphrase requests onto `secret_prompt_receiver`, which the frame
+        // loop drains. One host serves every network (the request carries the
+        // scope; the active network's backend prompts through it).
+        let (secret_prompt_host, secret_prompt_receiver) = EguiSecretPromptHost::new(ctx.clone());
+        let secret_prompt_host: Arc<dyn crate::wallet_backend::SecretPrompt> =
+            Arc::new(secret_prompt_host);
+        for app_ctx in network_contexts.values() {
+            app_ctx.install_secret_prompt(Arc::clone(&secret_prompt_host));
+        }
+
         // Eagerly build the wallet seam for every pre-created network context
         // (typically just the active one) so the SpvProvider can serve
         // chain-only lookups (e.g. `get_quorum_public_key`) before any
@@ -672,6 +696,9 @@ impl AppState {
             accessibility_retries: 0,
             #[cfg(feature = "mcp")]
             mcp_app_context,
+            secret_prompt_host,
+            secret_prompt_receiver,
+            active_secret_prompt: None,
         };
 
         // Initialize welcome screen if needed (uses whichever context is active)
@@ -861,6 +888,14 @@ impl AppState {
 
     /// Complete the network switch after the context is available.
     fn finalize_network_switch(&mut self, network: Network) {
+        // Forget any session-cached secrets on the outgoing context before we
+        // leave it. The old per-network `WalletBackend` drops on switch (which
+        // zeroizes its cache), but this is the explicit, eager path the JIT
+        // design mandates so secrets never linger across a network change.
+        if let Ok(backend) = self.current_app_context().wallet_backend() {
+            backend.forget_all_secrets();
+        }
+
         self.chosen_network = network;
 
         let app_context = self.current_app_context().clone();
@@ -1176,6 +1211,28 @@ impl AppState {
         }
     }
 
+    /// Drain at most one pending passphrase request and render the active
+    /// prompt modal. Exactly one prompt is shown at a time; on submit/cancel
+    /// the host's one-shot is answered (inside [`ActivePrompt`]) and the slot
+    /// frees for the next queued request next frame.
+    fn render_secret_prompt(&mut self, ctx: &egui::Context) {
+        if self.active_secret_prompt.is_none()
+            && let Ok(queued) = self.secret_prompt_receiver.try_recv()
+        {
+            self.active_secret_prompt = Some(ActivePrompt::new(queued));
+        }
+
+        if let Some(prompt) = &mut self.active_secret_prompt {
+            let resolved = prompt.show(ctx);
+            if resolved {
+                self.active_secret_prompt = None;
+                // A second request may be queued — repaint so it surfaces
+                // without waiting for an idle wakeup.
+                ctx.request_repaint();
+            }
+        }
+    }
+
     fn set_main_screen(&mut self, root_screen_type: RootScreenType) {
         self.selected_main_screen = root_screen_type;
         self.active_root_screen_mut().refresh_on_arrival();
@@ -1372,6 +1429,11 @@ impl App for AppState {
                             context,
                             ..
                         } => {
+                            // Install the egui prompt host before the new
+                            // context's backend is wired, so its `SecretAccess`
+                            // gets the interactive host rather than the headless
+                            // default.
+                            context.install_secret_prompt(Arc::clone(&self.secret_prompt_host));
                             self.network_contexts.insert(network, context);
                             self.network_switch_pending = None;
                             self.network_switch_banner.take_and_clear();
@@ -1547,6 +1609,9 @@ impl App for AppState {
         } else {
             actions.push(self.visible_screen_mut().ui(ctx));
         };
+
+        // Render any just-in-time passphrase prompt on top of the screen.
+        self.render_secret_prompt(ctx);
 
         // Schedule connection status refresh
         actions.push(

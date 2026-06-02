@@ -1441,6 +1441,17 @@ pub enum TaskError {
     /// AES-GCM's authentication failure carries no useful diagnostic.
     #[error("That password is not correct. Try again.")]
     HdPassphraseIncorrect,
+
+    /// A secret was needed but no interactive prompt is available in this
+    /// context — the operation ran headless (MCP / CLI), where there is no
+    /// window to ask for a passphrase. Per the Q-HEADLESS security ruling
+    /// there is no environment-variable or flag fallback for the
+    /// passphrase, so the operation cannot proceed here. Fieldless: this
+    /// carries no upstream diagnostic and, by design, never any secret.
+    #[error(
+        "This wallet is protected by a passphrase, which can only be entered in the app window. Open Dash Evo Tool and run this action there."
+    )]
+    SecretPromptUnavailable,
 }
 
 impl TaskError {

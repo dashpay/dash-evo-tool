@@ -328,7 +328,7 @@ impl SecretAccess {
                 .prompt
                 .request(request)
                 .await
-                .map_err(|_cancelled| TaskError::SecretPromptCancelled)?;
+                .map_err(|_cancelled| self.cancel_error())?;
 
             match self.decrypt_jit(scope, Some(&reply.passphrase)) {
                 Ok(plaintext) => {
@@ -418,6 +418,20 @@ impl SecretAccess {
                     expires_at,
                 },
             );
+        }
+    }
+
+    /// The typed error for a dismissed/absent prompt. A genuine user cancel
+    /// on the interactive host is [`TaskError::SecretPromptCancelled`]; a
+    /// cancel from a non-interactive host
+    /// ([`NullSecretPrompt`](crate::wallet_backend::secret_prompt::NullSecretPrompt))
+    /// means there was no window to ask in, surfaced as
+    /// [`TaskError::SecretPromptUnavailable`] (Q-HEADLESS).
+    fn cancel_error(&self) -> TaskError {
+        if self.inner.prompt.is_interactive() {
+            TaskError::SecretPromptCancelled
+        } else {
+            TaskError::SecretPromptUnavailable
         }
     }
 
@@ -595,6 +609,7 @@ mod tests {
     use std::time::Duration;
 
     use crate::model::wallet::encryption::encrypt_message;
+    use crate::wallet_backend::secret_prompt::NullSecretPrompt;
     use crate::wallet_backend::secret_prompt::test_support::{ScriptedAnswer, TestPrompt};
     use crate::wallet_backend::single_key::{SingleKeyView, open_secret_store};
 
@@ -746,6 +761,44 @@ mod tests {
         assert!(matches!(err, TaskError::SecretPromptCancelled));
         assert!(!ran, "closure never ran on cancel");
         assert!(!sa.is_session_cached(&scope), "nothing cached on cancel");
+    }
+
+    #[tokio::test]
+    async fn null_prompt_on_protected_scope_yields_unavailable() {
+        // Headless host: a passphrase-protected scope has no window to ask
+        // in, so the chokepoint surfaces the typed "unavailable" error
+        // rather than a misleading "you cancelled" (Q-HEADLESS).
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let seed_hash: WalletSeedHash = [0x0C; 32];
+        store_protected_hd(&store, &seed_hash, &SENTINEL_SEED, SENTINEL_PASSPHRASE);
+
+        let sa = access(store, Arc::new(NullSecretPrompt));
+        let scope = SecretScope::HdSeed { seed_hash };
+        let err = sa
+            .with_secret(&scope, |_pt| Ok(()))
+            .await
+            .expect_err("no interactive prompt");
+        assert!(matches!(err, TaskError::SecretPromptUnavailable));
+    }
+
+    #[tokio::test]
+    async fn null_prompt_unprotected_scope_still_resolves() {
+        // The headless host must not block no-password wallets: unprotected
+        // scopes decrypt with no passphrase and never reach the prompt.
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let seed_hash: WalletSeedHash = [0x0D; 32];
+        store_unprotected_hd(&store, &seed_hash, &SENTINEL_SEED);
+
+        let sa = access(store, Arc::new(NullSecretPrompt));
+        let scope = SecretScope::HdSeed { seed_hash };
+        sa.with_secret(&scope, |pt| {
+            assert_eq!(pt.expose_hd_seed().copied(), Some(SENTINEL_SEED));
+            Ok(())
+        })
+        .await
+        .expect("unprotected resolves headless");
     }
 
     #[tokio::test]

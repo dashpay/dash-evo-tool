@@ -11,7 +11,9 @@ pub mod info_popup;
 pub mod left_panel;
 pub mod left_wallet_panel;
 pub mod message_banner;
+pub mod passphrase_modal;
 pub mod password_input;
+pub mod secret_prompt_host;
 pub mod selection_dialog;
 pub mod styled;
 pub mod tokens_subscreen_chooser_panel;
@@ -26,3 +28,4 @@ pub use message_banner::{
     BannerHandle, BannerStatus, MessageBanner, MessageBannerResponse, OptionBannerExt,
     OptionBannerShowExt, ResultBannerExt,
 };
+pub use secret_prompt_host::{ActivePrompt, EguiSecretPromptHost, QueuedPrompt};

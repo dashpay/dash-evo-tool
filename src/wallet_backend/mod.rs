@@ -60,8 +60,8 @@ use asset_lock_signer::WalletAssetLockSigner;
 pub(crate) use det_signer::{DetSigner, DetSignerError};
 pub use secret_access::{SecretAccess, SecretPlaintext, SecretSession, WalletPromptMeta};
 pub use secret_prompt::{
-    RememberPolicy, SecretPrompt, SecretPromptCancelled, SecretPromptReply, SecretPromptRequest,
-    SecretPromptRetry, SecretScope,
+    NullSecretPrompt, RememberPolicy, SecretPrompt, SecretPromptCancelled, SecretPromptReply,
+    SecretPromptRequest, SecretPromptRetry, SecretScope,
 };
 
 pub use event_bridge::EventBridge;
@@ -210,6 +210,12 @@ struct Inner {
     /// unlocks every subsequent sign for the same key. Dropped on
     /// shutdown — never persisted, never serialised.
     single_key_unlocked: std::sync::RwLock<std::collections::BTreeMap<String, [u8; 32]>>,
+    /// The just-in-time secret chokepoint (Wave B). Constructed over the same
+    /// [`Self::secret_store`] with the host-chosen [`SecretPrompt`]; seeded
+    /// with prompt-copy metadata at hydration. Wave C swaps consumers onto it
+    /// and retires the eager [`Self::seeds`] / [`Self::single_key_unlocked`]
+    /// residencies. Held now so consumers have one place to reach.
+    secret_access: SecretAccess,
     /// Guards [`WalletBackend::start`] so chain sync spawns exactly once.
     /// See [`StartLatch`].
     start_latch: StartLatch,
@@ -244,6 +250,7 @@ impl WalletBackend {
         connection_status: Arc<ConnectionStatus>,
         task_result_sender: SenderAsync<TaskResult>,
         loader: Arc<dyn PersistedWalletLoader>,
+        prompt: Arc<dyn SecretPrompt>,
     ) -> Result<Self, TaskError> {
         let network = ctx.network;
         let spv_storage_dir = Self::resolve_spv_storage_dir(ctx.data_dir(), network)?;
@@ -276,6 +283,12 @@ impl WalletBackend {
 
         let app_kv = ctx.app_kv();
 
+        // The JIT chokepoint shares the same encrypted vault and is given the
+        // host-chosen prompt (egui host in the GUI, `NullSecretPrompt`
+        // headless). Wave C migrates consumers onto it; constructed now so
+        // the prompt round-trips and the seam is live.
+        let secret_access = SecretAccess::new(Arc::clone(&secret_store), prompt, network);
+
         let backend = Self {
             inner: Arc::new(Inner {
                 pwm,
@@ -295,6 +308,7 @@ impl WalletBackend {
                 single_key_index: std::sync::RwLock::new(std::collections::BTreeMap::new()),
                 single_key_unlocked: std::sync::RwLock::new(std::collections::BTreeMap::new()),
                 app_kv,
+                secret_access,
                 start_latch: StartLatch::default(),
             }),
         };
@@ -325,6 +339,13 @@ impl WalletBackend {
         view.rehydrate_index()?;
         let single_key_wallets = view.hydrate_wallets();
         let reconstructed = self.hydrate_wallets_for_network(ctx.network)?;
+
+        // Seed the JIT chokepoint's prompt-copy metadata so a passphrase
+        // prompt can show the wallet alias / password hint and the key
+        // nickname / hint. Absent metadata degrades to a generic label, so
+        // this is best-effort and runs even when no wallets reconstruct.
+        self.seed_secret_access_meta(&reconstructed);
+
         if reconstructed.is_empty() && single_key_wallets.is_empty() {
             return Ok(());
         }
@@ -658,6 +679,51 @@ impl WalletBackend {
     /// (T-SK-02), which writes legacy WIFs back into the vault.
     pub fn secret_store(&self) -> &Arc<SecretStore> {
         &self.inner.secret_store
+    }
+
+    /// The just-in-time secret chokepoint (Wave B). O(1)-clone handle; Wave C
+    /// consumers (signing, shielded bind, DashPay derivation) reach for this
+    /// to obtain plaintext through [`SecretAccess::with_secret`] instead of
+    /// the eager seed caches.
+    // Wave C removes this allow once consumers call `secret_access()`.
+    #[allow(dead_code)]
+    pub fn secret_access(&self) -> SecretAccess {
+        self.inner.secret_access.clone()
+    }
+
+    /// Clear every session-cached secret in the JIT chokepoint, zeroizing
+    /// them. Called on network switch and teardown (the `AppContext` drops
+    /// the per-network backend on switch, but this is the explicit, eager
+    /// belt-and-suspenders path the design mandates).
+    pub fn forget_all_secrets(&self) {
+        self.inner.secret_access.forget_all();
+    }
+
+    /// Seed the JIT chokepoint's prompt-copy metadata from the reconstructed
+    /// HD wallets and the rehydrated single-key index. Best-effort: missing
+    /// metadata degrades to a generic prompt label, never an error.
+    fn seed_secret_access_meta(
+        &self,
+        reconstructed: &[(WalletSeedHash, crate::model::wallet::Wallet)],
+    ) {
+        let wallet_meta: std::collections::BTreeMap<WalletSeedHash, WalletPromptMeta> =
+            reconstructed
+                .iter()
+                .map(|(seed_hash, wallet)| {
+                    (
+                        *seed_hash,
+                        WalletPromptMeta {
+                            alias: wallet.alias.clone(),
+                            password_hint: wallet.password_hint().clone(),
+                        },
+                    )
+                })
+                .collect();
+        self.inner.secret_access.set_wallet_meta(wallet_meta);
+
+        if let Ok(index) = self.inner.single_key_index.read() {
+            self.inner.secret_access.set_single_key_index(index.clone());
+        }
     }
 
     /// Per-network shielded sidecar (T-SH-01). The file at

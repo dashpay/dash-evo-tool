@@ -22,7 +22,9 @@ use crate::model::wallet::single_key::{SingleKeyHash, SingleKeyWallet};
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::sdk_wrapper::initialize_sdk;
 use crate::utils::tasks::TaskManager;
-use crate::wallet_backend::{DetKv, DetWalletBalance, UpstreamFromPersisted, WalletBackend};
+use crate::wallet_backend::{
+    DetKv, DetWalletBalance, NullSecretPrompt, SecretPrompt, UpstreamFromPersisted, WalletBackend,
+};
 use arc_swap::{ArcSwap, ArcSwapOption};
 use connection_status::ConnectionStatus;
 use crossbeam_channel::{Receiver, Sender};
@@ -136,6 +138,26 @@ pub struct AppContext {
     /// wallet/identity task arms degrade to `WalletBackendNotYetWired`
     /// while unset.
     wallet_backend: ArcSwapOption<WalletBackend>,
+    /// The just-in-time secret prompt host (UI seam). Defaults to
+    /// [`NullSecretPrompt`] (headless: no interactive unlock); the GUI installs
+    /// an `EguiSecretPromptHost` before the wallet backend is built via
+    /// [`Self::install_secret_prompt`]. Read by [`Self::ensure_wallet_backend`]
+    /// to construct the backend's `SecretAccess` chokepoint. `Mutex` (not
+    /// `ArcSwap`, which needs a `Sized` payload) so the host can be installed
+    /// after `AppContext::new` but before the backend reads it; contention is
+    /// nil (touched only at install and backend construction).
+    secret_prompt: SecretPromptSlot,
+}
+
+/// Mutex-guarded slot for the installable secret-prompt host, with an opaque
+/// `Debug` (the host is `dyn` and not `Debug`) so [`AppContext`] keeps its
+/// derived `Debug`.
+struct SecretPromptSlot(Mutex<Arc<dyn SecretPrompt>>);
+
+impl std::fmt::Debug for SecretPromptSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SecretPromptSlot")
+    }
 }
 
 impl AppContext {
@@ -329,6 +351,9 @@ impl AppContext {
             shielded_states: Mutex::new(std::collections::HashMap::new()),
             egui_ctx,
             wallet_backend: ArcSwapOption::const_empty(),
+            secret_prompt: SecretPromptSlot(Mutex::new(
+                Arc::new(NullSecretPrompt) as Arc<dyn SecretPrompt>
+            )),
         };
 
         let app_context = Arc::new(app_context);
@@ -657,6 +682,7 @@ impl AppContext {
             Arc::clone(&self.connection_status),
             task_result_sender,
             loader,
+            self.secret_prompt(),
         )
         .await?;
         // Idempotent: if a racing call already installed one, keep it.
@@ -714,6 +740,30 @@ impl AppContext {
         self.wallet_backend
             .load_full()
             .ok_or(TaskError::WalletBackendNotYetWired)
+    }
+
+    /// Install the interactive secret-prompt host (the egui host in the GUI).
+    ///
+    /// Must be called **before** [`Self::ensure_wallet_backend`] builds the
+    /// backend, since that is where the prompt is read into the `SecretAccess`
+    /// chokepoint. Headless callers (MCP / CLI) skip this and keep the default
+    /// [`NullSecretPrompt`], which surfaces `SecretPromptUnavailable` for any
+    /// passphrase-protected scope.
+    pub fn install_secret_prompt(&self, prompt: Arc<dyn SecretPrompt>) {
+        if let Ok(mut guard) = self.secret_prompt.0.lock() {
+            *guard = prompt;
+        }
+    }
+
+    /// The currently-installed secret-prompt host. Falls back to the headless
+    /// [`NullSecretPrompt`] if the lock is poisoned (a panicked installer can
+    /// never strand the backend without a prompt).
+    pub fn secret_prompt(&self) -> Arc<dyn SecretPrompt> {
+        self.secret_prompt
+            .0
+            .lock()
+            .map(|g| Arc::clone(&g))
+            .unwrap_or_else(|_| Arc::new(NullSecretPrompt) as Arc<dyn SecretPrompt>)
     }
 
     /// Persist the per-network selected-wallet pointer to the wallet

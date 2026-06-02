@@ -517,35 +517,3 @@ pub async fn load_contacts(
         contact_list,
     ))
 }
-
-pub async fn add_contact(
-    _app_context: &Arc<AppContext>,
-    _sdk: &Sdk,
-    _identity: QualifiedIdentity,
-    _contact_username: String,
-    _account_label: Option<String>,
-) -> Result<BackendTaskSuccessResult, TaskError> {
-    // TODO: Steps to implement:
-    // 1. Resolve username to identity ID via DPNS
-    // 2. Generate encryption keys for this contact relationship
-    // 3. Create the contactRequest document with encrypted fields
-    // 4. Broadcast the state transition
-    Err(DashPayError::NotSupported {
-        operation: "add_contact_by_username".to_string(),
-    }
-    .into())
-}
-
-pub async fn remove_contact(
-    _app_context: &Arc<AppContext>,
-    _sdk: &Sdk,
-    _identity: QualifiedIdentity,
-    _contact_id: Identifier,
-) -> Result<BackendTaskSuccessResult, TaskError> {
-    // TODO: Implement contact removal
-    // This would involve deleting the contactInfo document if it exists
-    Err(DashPayError::NotSupported {
-        operation: "remove_contact".to_string(),
-    }
-    .into())
-}

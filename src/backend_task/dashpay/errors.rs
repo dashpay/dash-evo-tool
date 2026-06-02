@@ -131,9 +131,6 @@ pub enum DashPayError {
     #[error("An unexpected error occurred. Please retry.")]
     Internal { message: String },
 
-    #[error("This operation is not available. Please update the application.")]
-    NotSupported { operation: String },
-
     #[error("Too many requests. Please wait a moment and try again.")]
     RateLimited { operation: String },
 

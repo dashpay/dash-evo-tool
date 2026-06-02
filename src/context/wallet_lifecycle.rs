@@ -535,7 +535,17 @@ mod tests {
     /// outlive the context — its drop deletes the data dir.
     fn offline_testnet_context() -> (Arc<AppContext>, SenderAsync<TaskResult>, tempfile::TempDir) {
         let temp_dir = tempfile::tempdir().expect("tempdir");
-        let data_dir = temp_dir.path().to_path_buf();
+        let (ctx, sender) = offline_testnet_context_at(temp_dir.path());
+        (ctx, sender, temp_dir)
+    }
+
+    /// Build an offline testnet `AppContext` rooted at an existing `data_dir`.
+    /// Splitting this out lets a test build a second, independent context over
+    /// the *same* on-disk sidecars to simulate a process restart (cold boot).
+    fn offline_testnet_context_at(
+        data_dir: &std::path::Path,
+    ) -> (Arc<AppContext>, SenderAsync<TaskResult>) {
+        let data_dir = data_dir.to_path_buf();
         ensure_env_file(&data_dir);
 
         let db = Arc::new(
@@ -559,7 +569,7 @@ mod tests {
 
         let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
         let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
-        (ctx, sender, temp_dir)
+        (ctx, sender)
     }
 
     /// Before the wallet seam is wired, `start_spv()` must fail fast with the
@@ -683,5 +693,80 @@ mod tests {
             SpvStatus::Error,
             "wiring failure must flip the SPV indicator to Error"
         );
+    }
+
+    /// SEC-001/SEC-002 regression: a no-password wallet that is `Open` in
+    /// `ctx.wallets` but whose seed never reached the backend (the exact state
+    /// the seedless cold-boot load leaves behind) must become signable once
+    /// the unlock chokepoint runs.
+    ///
+    /// The seedless loader reconstructs a no-password wallet in the `Open`
+    /// state but never fills `inner.seeds`. Before the fix the only caller of
+    /// the chokepoint, `bootstrap_loaded_wallets`, ran solely at
+    /// `AppContext::new` — against an empty map and an unwired backend — so on
+    /// a real cold boot the seed never reached the backend and `signer_for`
+    /// returned `WalletLocked` even though the UI showed the wallet unlocked.
+    /// The fix moves that call to the tail of `ensure_wallet_backend`, after
+    /// hydration populates `ctx.wallets`.
+    ///
+    /// This test reproduces the post-hydration state directly: register a
+    /// no-password wallet, then clear the backend's seed cache (what the
+    /// seedless load leaves). The wallet is still `Open`, but signing is gated
+    /// `WalletLocked` — then `bootstrap_loaded_wallets` (exactly what the fix
+    /// runs from `ensure_wallet_backend`) restores it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn no_password_wallet_resignable_via_unlock_chokepoint() {
+        let (ctx, sender, _tmp) = offline_testnet_context();
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("ensure_wallet_backend should succeed offline");
+
+        let wallet = crate::model::wallet::Wallet::new_from_seed(
+            [0x24u8; 64],
+            Network::Testnet,
+            Some("cold-boot".to_string()),
+            None, // no password
+        )
+        .expect("build no-password wallet");
+        assert!(wallet.is_open(), "a no-password wallet is open on creation");
+
+        let (seed_hash, wallet_arc) = ctx.register_wallet(wallet).expect("register wallet");
+        let backend = ctx.wallet_backend().expect("backend wired");
+
+        // Live (same-process) state: the registration chokepoint already
+        // provided the seed, so the wallet signs.
+        backend
+            .assert_can_sign(&seed_hash)
+            .expect("freshly-registered no-password wallet must sign in-process");
+
+        // Simulate the seedless cold-boot state: the wallet stays `Open` in
+        // `ctx.wallets`, but the backend's seed cache is empty (the loader
+        // never fills it). This is precisely what hydration leaves behind.
+        backend.clear_seeds_for_test();
+        assert!(
+            wallet_arc.read().unwrap().is_open(),
+            "the wallet is still Open after the seed cache is dropped"
+        );
+
+        // The SEC-001 symptom: signing is now gated even though the wallet
+        // shows as unlocked.
+        assert!(
+            matches!(
+                backend.assert_can_sign(&seed_hash),
+                Err(TaskError::WalletLocked)
+            ),
+            "with the seed cache cleared, signing must report WalletLocked"
+        );
+
+        // The fix: the unlock chokepoint (`ensure_wallet_backend` runs this at
+        // its tail after hydration) re-provides the seed for every Open wallet.
+        ctx.bootstrap_loaded_wallets();
+
+        // And signing works again — the gap is closed.
+        backend
+            .assert_can_sign(&seed_hash)
+            .expect("after the unlock chokepoint runs, the wallet must sign again");
+
+        backend.shutdown().await;
     }
 }

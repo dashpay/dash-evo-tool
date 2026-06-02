@@ -226,12 +226,29 @@ pub fn wallet_needs_unlock(wallet: &Arc<RwLock<Wallet>>) -> bool {
     wallet_guard.uses_password && !wallet_guard.is_open()
 }
 
-/// Helper function to try opening a wallet without password (for wallets that don't use passwords)
-pub fn try_open_wallet_no_password(wallet: &Arc<RwLock<Wallet>>) -> Result<(), String> {
-    let mut wallet_guard = wallet.write().unwrap();
-    if !wallet_guard.uses_password {
-        wallet_guard.wallet_seed.open_no_password()
-    } else {
-        Ok(())
+/// Open a no-password wallet and route it through the unlock chokepoint.
+///
+/// For wallets that do not use a password this opens the in-memory seed and
+/// then calls [`AppContext::handle_wallet_unlocked`], which hands the seed to
+/// the wallet backend via `provide_seed`. Skipping that step would leave the
+/// wallet `Open` in the UI while the backend's `inner.seeds` stays empty, so
+/// every signing op (send, asset lock, identity funding) would fail
+/// `WalletLocked` with no actionable unlock step. Password wallets are a no-op
+/// here — they unlock through the password popup, which calls the same
+/// chokepoint.
+pub fn try_open_wallet_no_password(
+    app_context: &Arc<AppContext>,
+    wallet: &Arc<RwLock<Wallet>>,
+) -> Result<(), String> {
+    {
+        let mut wallet_guard = wallet.write().unwrap();
+        if wallet_guard.uses_password {
+            return Ok(());
+        }
+        wallet_guard.wallet_seed.open_no_password()?;
     }
+    // The write guard is dropped above; `handle_wallet_unlocked` takes its own
+    // read lock to snapshot the seed, so notify only after releasing it.
+    app_context.handle_wallet_unlocked(wallet);
+    Ok(())
 }

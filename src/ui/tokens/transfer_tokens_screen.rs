@@ -477,7 +477,7 @@ impl ScreenLike for TransferTokensScreen {
             } else {
                 if let Some(wallet) = &self.selected_wallet {
                     if !self.wallet_open_attempted {
-                        if let Err(e) = try_open_wallet_no_password(wallet) {
+                        if let Err(e) = try_open_wallet_no_password(&self.app_context, wallet) {
                             MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
                         }
                         self.wallet_open_attempted = true;

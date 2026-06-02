@@ -1087,6 +1087,26 @@ impl WalletBackend {
         Ok(WalletAssetLockSigner::new(seed, self.inner.network))
     }
 
+    /// Test-only probe that a usable signer can be obtained for `seed_hash`
+    /// — i.e. the seed reached the backend. Mirrors the production signing
+    /// precondition (`signer_for`) so a `WalletLocked` regression on the
+    /// no-password cold-boot path is caught without driving a full sign.
+    #[cfg(test)]
+    pub(crate) fn assert_can_sign(&self, seed_hash: &WalletSeedHash) -> Result<(), TaskError> {
+        self.signer_for(seed_hash).map(|_| ())
+    }
+
+    /// Test-only: drop every cached seed, reproducing the state the seedless
+    /// loader leaves after a cold boot (watch-only wallets in `ctx.wallets`,
+    /// `inner.seeds` empty). Lets a test assert the post-hydration
+    /// `WalletLocked` gap and that the unlock chokepoint closes it.
+    #[cfg(test)]
+    pub(crate) fn clear_seeds_for_test(&self) {
+        if let Ok(mut seeds) = self.inner.seeds.write() {
+            seeds.clear();
+        }
+    }
+
     /// Derive the secp256k1 [`PrivateKey`] at `path` from the cached seed.
     /// Used after `create_asset_lock_proof` to obtain the one-time
     /// credit-output key needed to sign DET-retained non-identity state

@@ -13,8 +13,11 @@ pub trait ScreenWithWalletUnlock {
 
     fn should_ask_for_password(&mut self) -> bool {
         if let Some(wallet_guard) = self.selected_wallet_ref().clone() {
-            let mut wallet = wallet_guard.write().unwrap();
-            if !wallet.uses_password {
+            {
+                let mut wallet = wallet_guard.write().unwrap();
+                if wallet.uses_password {
+                    return !wallet.is_open();
+                }
                 if let Err(e) = wallet.wallet_seed.open_no_password() {
                     MessageBanner::set_global(
                         self.app_context().egui_ctx(),
@@ -22,10 +25,13 @@ pub trait ScreenWithWalletUnlock {
                         MessageType::Error,
                     );
                 }
-                false
-            } else {
-                !wallet.is_open()
             }
+            // Hand the freshly-opened seed to the wallet backend via the
+            // single unlock chokepoint. Without this the wallet shows as
+            // `Open` while the backend's seed map stays empty, stranding
+            // every signing op on `WalletLocked`.
+            self.app_context().handle_wallet_unlocked(&wallet_guard);
+            false
         } else {
             true
         }

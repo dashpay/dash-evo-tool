@@ -516,7 +516,8 @@ impl ScreenLike for UpdateDataContractScreen {
             // Render the wallet unlock if needed
             if let Some(wallet) = &self.selected_wallet {
                 if !self.wallet_open_attempted {
-                    let _ = try_open_wallet_no_password(wallet).or_show_error(ui.ctx());
+                    let _ = try_open_wallet_no_password(&self.app_context, wallet)
+                        .or_show_error(ui.ctx());
                     self.wallet_open_attempted = true;
                 }
                 if wallet_needs_unlock(wallet) {

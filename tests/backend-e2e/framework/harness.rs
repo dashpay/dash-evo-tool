@@ -285,12 +285,9 @@ impl BackendTestContext {
             .wallet_backend()
             .expect("wallet backend must be wired after ensure_wallet_backend");
 
-        // Seedless load registers wallets watch-only; the framework wallet's
-        // seed must be handed to the backend before any signing test runs.
-        // Re-run the unlock chokepoint now that the backend exists (the
-        // earlier `register_wallet` ran before it was wired, so its
-        // `provide_seed` was a no-op).
-        app_context.bootstrap_loaded_wallets();
+        // `ensure_wallet_backend` runs the unlock chokepoint
+        // (`bootstrap_loaded_wallets`) at its tail, so the framework wallet's
+        // seed is already handed to the backend here — no manual re-run needed.
 
         // Track the backend before starting sync so a later panic in init
         // (peer wait, balance check, …) doesn't leak the SpvRuntime's

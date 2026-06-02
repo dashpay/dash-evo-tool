@@ -399,7 +399,7 @@ impl ScreenLike for ClaimTokensScreen {
                 // Possibly handle locked wallet scenario
                 if let Some(wallet) = &self.selected_wallet {
                     if !self.wallet_open_attempted {
-                        if let Err(e) = try_open_wallet_no_password(wallet) {
+                        if let Err(e) = try_open_wallet_no_password(&self.app_context, wallet) {
                             MessageBanner::set_global(
                                 self.app_context.egui_ctx(),
                                 "Unable to open wallet. Please unlock it and try again.",

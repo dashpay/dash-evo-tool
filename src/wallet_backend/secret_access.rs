@@ -1111,8 +1111,7 @@ mod tests {
         let sa_inner = sa.clone();
         let both = sa
             .with_secret_session(&scope_a, async move |session| {
-                let outer_ok =
-                    session.plaintext().expose_hd_seed().copied() == Some(SENTINEL_SEED);
+                let outer_ok = session.plaintext().expose_hd_seed().copied() == Some(SENTINEL_SEED);
                 // Re-enter the chokepoint for scope B from inside scope A's
                 // live session. If the outer call still held the cache lock,
                 // this would deadlock.

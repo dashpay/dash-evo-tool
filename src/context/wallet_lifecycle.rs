@@ -1006,8 +1006,7 @@ mod tests {
             None,
         )
         .expect("build wallet");
-        let (seed_hash, _wallet_arc) =
-            ctx.register_wallet(wallet, &seed).expect("register wallet");
+        let (seed_hash, _wallet_arc) = ctx.register_wallet(wallet, &seed).expect("register wallet");
 
         let backend = ctx.wallet_backend().expect("backend wired");
         let scope = crate::wallet_backend::SecretScope::HdSeed { seed_hash };

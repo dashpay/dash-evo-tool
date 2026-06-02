@@ -59,7 +59,7 @@ impl AppContext {
         let asset_lock_address = Address::from_script(&credit_output.script_pubkey, self.network)
             .map_err(|_| TaskError::AssetLockAddressNotFound)?;
 
-        let (wallet, sdk, asset_lock_private_key) = {
+        let (wallet, sdk) = {
             let wallet_arc = {
                 let wallets = self.wallets.read()?;
                 wallets
@@ -69,12 +69,34 @@ impl AppContext {
             };
             let wallet = wallet_arc.read()?.clone();
             let sdk = self.sdk.load().as_ref().clone();
-            let private_key = wallet
-                .private_key_for_address(&asset_lock_address, self.network)
-                .map_err(|e| TaskError::WalletKeyLookupFailed { detail: e })?
-                .ok_or(TaskError::AssetLockAddressNotFound)?;
-            (wallet, sdk, private_key)
+            (wallet, sdk)
         };
+
+        // Derive the asset-lock address's private key from the HD seed fetched
+        // just-in-time through the chokepoint; the seed is borrowed for this one
+        // derivation and zeroizes when the closure returns — it never enters
+        // this layer by value.
+        let network = self.network;
+        let asset_lock_address_for_lookup = asset_lock_address.clone();
+        let asset_lock_private_key = backend
+            .secret_access()
+            .with_secret(
+                &crate::wallet_backend::SecretScope::HdSeed { seed_hash },
+                |plaintext| {
+                    let seed = plaintext
+                        .expose_hd_seed()
+                        .ok_or(TaskError::ContactWalletSeedUnavailable)?;
+                    wallet
+                        .private_key_for_address_with_seed(
+                            seed,
+                            &asset_lock_address_for_lookup,
+                            network,
+                        )
+                        .map_err(|detail| TaskError::WalletKeyLookupFailed { detail })?
+                        .ok_or(TaskError::AssetLockAddressNotFound)
+                },
+            )
+            .await?;
 
         let fee_strategy = vec![AddressFundsFeeStrategyStep::ReduceOutput(0)];
 

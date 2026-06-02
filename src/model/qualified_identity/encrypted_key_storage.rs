@@ -341,6 +341,70 @@ impl KeyStorage {
             .transpose()
     }
 
+    /// The wallet seed hash a key would derive from, or `None` for keys that
+    /// carry their own plaintext ([`PrivateKeyData::Clear`] /
+    /// [`PrivateKeyData::AlwaysClear`]) or are still encrypted.
+    ///
+    /// Pure, secret-free probe: an async caller uses it to decide whether to
+    /// open a [`with_secret`](crate::wallet_backend::SecretAccess::with_secret)
+    /// scope at all, so [`get_resolve_with_seed`](Self::get_resolve_with_seed)
+    /// only prompts for genuinely wallet-derived keys.
+    pub fn wallet_seed_hash_for(&self, key: &(PrivateKeyTarget, KeyID)) -> Option<WalletSeedHash> {
+        match self.private_keys.get(key) {
+            Some((_, PrivateKeyData::AtWalletDerivationPath(wdp))) => Some(wdp.wallet_seed_hash),
+            _ => None,
+        }
+    }
+
+    /// Seed-as-parameter variant of [`get_resolve`](Self::get_resolve).
+    ///
+    /// For a [`PrivateKeyData::AtWalletDerivationPath`] key, derives from the
+    /// `seed` borrowed by the caller (resolved once through the JIT chokepoint
+    /// for the key's wallet seed hash — see
+    /// [`wallet_seed_hash_for`](Self::wallet_seed_hash_for)) instead of reading
+    /// the wallet's parked seed. All other variants behave exactly as
+    /// `get_resolve`. The derivation path, network, and resulting key are
+    /// unchanged — only the seed source differs.
+    pub fn get_resolve_with_seed(
+        &self,
+        key: &(PrivateKeyTarget, KeyID),
+        wallets: &[Arc<RwLock<Wallet>>],
+        seed: &[u8; 64],
+        network: Network,
+    ) -> Result<Option<(QualifiedIdentityPublicKey, [u8; 32])>, String> {
+        self.private_keys
+            .get(key)
+            .map(
+                |(qualified_identity_public_key_data, private_key_data)| match private_key_data {
+                    PrivateKeyData::AlwaysClear(clear) | PrivateKeyData::Clear(clear) => {
+                        Ok((qualified_identity_public_key_data.clone(), *clear))
+                    }
+                    PrivateKeyData::Encrypted(_) => {
+                        Err("Key is encrypted, please enter password".to_string())
+                    }
+                    PrivateKeyData::AtWalletDerivationPath(WalletDerivationPath {
+                        wallet_seed_hash,
+                        derivation_path,
+                    }) => {
+                        let derived_key = Wallet::derive_private_key_in_arc_rw_lock_slice_with_seed(
+                            wallets,
+                            *wallet_seed_hash,
+                            seed,
+                            derivation_path,
+                            network,
+                        )?
+                        .ok_or(format!(
+                            "Wallet for key at derivation path {} not present, we have {} wallets",
+                            derivation_path,
+                            wallets.len()
+                        ))?;
+                        Ok((qualified_identity_public_key_data.clone(), derived_key))
+                    }
+                },
+            )
+            .transpose()
+    }
+
     // Allow dead_code: This method provides access to raw private key data,
     // useful for inspecting key states and encryption status
     #[allow(dead_code)]

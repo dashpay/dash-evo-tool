@@ -699,7 +699,7 @@ impl AppContext {
         // unprotected fast-path with no prompt regardless. This runs after the
         // backend is wired and `ctx.wallets` is populated so address bootstrap
         // has the reconstructed wallets to work from. Idempotent.
-        self.bootstrap_loaded_wallets();
+        self.bootstrap_loaded_wallets().await;
         Ok(())
     }
 

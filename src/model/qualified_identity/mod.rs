@@ -343,35 +343,65 @@ impl Signer<IdentityPublicKey> for QualifiedIdentity {
             );
         }
 
-        let (_, private_key) = self
-            .private_keys
-            .get_resolve(
-                &(target.clone(), key_id),
-                self.associated_wallets
-                    .values()
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .as_slice(),
-                self.network,
-            )
-            .map_err(|e| {
-                tracing::error!(error = %e, "Failed to resolve private key");
-                ProtocolError::Generic(e)
-            })?
-            .ok_or_else(|| {
-                tracing::error!(
-                    key_id = key_id,
-                    purpose = ?identity_public_key.purpose(),
-                    target = ?target,
-                    "Key not found in identity"
-                );
-                ProtocolError::Generic(format!(
-                    "Key {} ({}) not found in identity {:?}",
-                    identity_public_key.id(),
-                    identity_public_key.purpose(),
-                    self.identity.id().to_string(Encoding::Base58)
-                ))
-            })?;
+        let resolve_key = (target.clone(), key_id);
+        let wallets = self
+            .associated_wallets
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+
+        // Resolve the signing key without ever reading a wallet's parked seed.
+        // A wallet-derived key (`AtWalletDerivationPath`) pulls its HD seed
+        // just-in-time through the chokepoint and derives inside the closure;
+        // a key that carries its own plaintext (`Clear`/`AlwaysClear`) resolves
+        // with no seed access and no prompt. The pure `wallet_seed_hash_for`
+        // probe decides which path applies, so the prompt fires only for
+        // genuinely wallet-derived keys.
+        let resolved = match (
+            self.secret_access.as_ref(),
+            self.private_keys.wallet_seed_hash_for(&resolve_key),
+        ) {
+            (Some(secret_access), Some(seed_hash)) => {
+                let network = self.network;
+                let resolve_key = resolve_key.clone();
+                secret_access
+                    .with_secret(
+                        &crate::wallet_backend::SecretScope::HdSeed { seed_hash },
+                        |plaintext| {
+                            let seed = plaintext
+                                .expose_hd_seed()
+                                .ok_or(TaskError::ContactWalletSeedUnavailable)?;
+                            self.private_keys
+                                .get_resolve_with_seed(&resolve_key, &wallets, seed, network)
+                                .map_err(|detail| TaskError::WalletKeyLookupFailed { detail })
+                        },
+                    )
+                    .await
+                    .map_err(|e| ProtocolError::Generic(e.to_string()))?
+            }
+            _ => self
+                .private_keys
+                .get_resolve(&resolve_key, wallets.as_slice(), self.network)
+                .map_err(|e| {
+                    tracing::error!(error = %e, "Failed to resolve private key");
+                    ProtocolError::Generic(e)
+                })?,
+        };
+
+        let (_, private_key) = resolved.ok_or_else(|| {
+            tracing::error!(
+                key_id = key_id,
+                purpose = ?identity_public_key.purpose(),
+                target = ?target,
+                "Key not found in identity"
+            );
+            ProtocolError::Generic(format!(
+                "Key {} ({}) not found in identity {:?}",
+                identity_public_key.id(),
+                identity_public_key.purpose(),
+                self.identity.id().to_string(Encoding::Base58)
+            ))
+        })?;
 
         tracing::debug!("Successfully resolved private key, proceeding to sign");
         match identity_public_key.key_type() {

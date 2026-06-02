@@ -279,22 +279,111 @@ impl AppContext {
         Ok(())
     }
 
+    /// Whether `wallet` still needs its bootstrap address set derived.
+    ///
+    /// `true` for a fresh wallet (no known addresses) or one created with only
+    /// a Core address (no Platform-payment addresses yet). Idempotent: a
+    /// fully-bootstrapped wallet returns `false`.
+    fn wallet_needs_bootstrap(guard: &Wallet) -> bool {
+        // INTENTIONAL(CODE-006): Bootstrap checks only PlatformPayment address
+        // type. Other platform address types may trigger redundant
+        // re-derivation, but `bootstrap_known_addresses` is idempotent so this
+        // is safe.
+        let has_platform_addresses = guard.watched_addresses.values().any(|info| {
+            info.path_reference == crate::model::wallet::DerivationPathReference::PlatformPayment
+        });
+        guard.known_addresses.is_empty() || !has_platform_addresses
+    }
+
+    /// Bootstrap a wallet's address set from its open in-memory seed.
+    ///
+    /// The sync bridge used by the fresh-register and reload paths: the seed is
+    /// read once here (the single remaining `seed_bytes()` bridge, R3 #17 —
+    /// retired in D4) and passed by borrow into the now seed-as-parameter
+    /// [`Wallet::bootstrap_known_addresses`]; the per-family `bootstrap_*`
+    /// readers no longer reach back into the wallet's parked seed. A locked
+    /// wallet is skipped (it has no open seed to read) and bootstraps later via
+    /// [`Self::bootstrap_wallet_addresses_jit`] once its seed is resolvable
+    /// through the chokepoint.
     pub fn bootstrap_wallet_addresses(&self, wallet: &Arc<RwLock<Wallet>>) {
         if let Ok(mut guard) = wallet.write() {
-            // Bootstrap when no addresses exist (fresh wallet) or when
-            // platform payment addresses haven't been derived yet (wallet
-            // created with only a Core address via new_from_seed).
-            // INTENTIONAL(CODE-006): Bootstrap checks only PlatformPayment address type.
-            // Other platform address types may trigger redundant re-derivation, but
-            // bootstrap_known_addresses() is idempotent so this is safe.
-            let has_platform_addresses = guard.watched_addresses.values().any(|info| {
-                info.path_reference
-                    == crate::model::wallet::DerivationPathReference::PlatformPayment
-            });
-            if guard.known_addresses.is_empty() || !has_platform_addresses {
-                tracing::info!(wallet = %hex::encode(guard.seed_hash()), "Bootstrapping wallet addresses");
-                guard.bootstrap_known_addresses(self);
+            if !guard.is_open() {
+                tracing::debug!("Skipping address bootstrap for locked wallet");
+                return;
             }
+            if Self::wallet_needs_bootstrap(&guard) {
+                let seed = match guard.seed_bytes() {
+                    Ok(bytes) => zeroize::Zeroizing::new(*bytes),
+                    Err(err) => {
+                        tracing::warn!(error = %err, wallet = %hex::encode(guard.seed_hash()), "Unable to read seed for bootstrap");
+                        return;
+                    }
+                };
+                tracing::info!(wallet = %hex::encode(guard.seed_hash()), "Bootstrapping wallet addresses");
+                guard.bootstrap_known_addresses(&seed, self);
+            }
+        }
+    }
+
+    /// Bootstrap a wallet's address set by resolving its HD seed just-in-time
+    /// through the [`SecretAccess`](crate::wallet_backend::SecretAccess)
+    /// chokepoint, holding one `with_secret_session` for the whole bootstrap
+    /// run.
+    ///
+    /// The async sibling of [`Self::bootstrap_wallet_addresses`] for the
+    /// cold-boot path. To preserve the prompt-free startup contract it operates
+    /// only on wallets whose seed already resolves without asking the user — an
+    /// unprotected wallet (resolved via the chokepoint's no-passphrase
+    /// fast-path) or a protected one whose seed the user already promoted to the
+    /// session cache on unlock. A still-locked protected wallet is left for its
+    /// unlock gesture to bootstrap, exactly as before; this method never forces
+    /// a passphrase prompt at startup.
+    pub async fn bootstrap_wallet_addresses_jit(&self, wallet: &Arc<RwLock<Wallet>>) {
+        let seed_hash = {
+            let Ok(guard) = wallet.read() else {
+                return;
+            };
+            // Gate on the open seed being resolvable prompt-free: an open
+            // wallet at cold boot is either unprotected (no-prompt fast-path) or
+            // already session-cached via the unlock gesture. A locked protected
+            // wallet is skipped to avoid a surprise startup prompt.
+            if !guard.is_open() || !Self::wallet_needs_bootstrap(&guard) {
+                return;
+            }
+            guard.seed_hash()
+        };
+
+        let Ok(backend) = self.wallet_backend() else {
+            return;
+        };
+        let wallet = Arc::clone(wallet);
+        let result = backend
+            .secret_access()
+            .with_secret_session(
+                &crate::wallet_backend::SecretScope::HdSeed { seed_hash },
+                async |session| {
+                    let plaintext = session.plaintext();
+                    let seed = plaintext
+                        .expose_hd_seed()
+                        .ok_or(TaskError::ContactWalletSeedUnavailable)?;
+                    if let Ok(mut guard) = wallet.write() {
+                        // Re-check under the write lock: a concurrent bootstrap
+                        // may have run between the read above and here.
+                        if Self::wallet_needs_bootstrap(&guard) {
+                            tracing::info!(wallet = %hex::encode(seed_hash), "Bootstrapping wallet addresses (JIT seed)");
+                            guard.bootstrap_known_addresses(seed, self);
+                        }
+                    }
+                    Ok(())
+                },
+            )
+            .await;
+        if let Err(e) = result {
+            tracing::debug!(
+                wallet = %hex::encode(seed_hash),
+                error = %e,
+                "JIT address bootstrap skipped"
+            );
         }
     }
 
@@ -474,15 +563,18 @@ impl AppContext {
             });
     }
 
-    pub fn bootstrap_loaded_wallets(self: &Arc<Self>) {
+    pub async fn bootstrap_loaded_wallets(self: &Arc<Self>) {
         let wallets: Vec<_> = {
             let guard = self.wallets.read().unwrap();
             guard.values().cloned().collect()
         };
 
         for wallet in wallets.iter() {
-            self.bootstrap_wallet_addresses(wallet);
+            // Promote any verified-open seed into the session cache first, so a
+            // protected wallet the user already unlocked resolves through the
+            // chokepoint below without a startup prompt.
             self.handle_wallet_unlocked(wallet);
+            self.bootstrap_wallet_addresses_jit(wallet).await;
         }
     }
 

@@ -13,7 +13,6 @@ use dash_evo_tool::model::qualified_identity::IdentityType;
 use dash_evo_tool::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use dash_evo_tool::model::secret::Secret;
 use dash_evo_tool::model::wallet::WalletArcRef;
-use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
@@ -69,13 +68,13 @@ async fn step_top_up_from_platform_addresses(
     // Must use a DIP-17 Platform payment address (m/9'/coin_type'/17'/...),
     // NOT a BIP44 receive address. sync_address_balances only scans DIP-17
     // addresses via WalletAddressProvider.
-    let platform_addr = {
-        let mut wallet = si.wallet_arc.write().expect("wallet lock");
-        let addr = wallet
-            .platform_receive_address(Network::Testnet, false, Some(&ctx.app_context))
-            .expect("failed to derive platform payment address");
-        PlatformAddress::try_from(addr).expect("failed to convert to PlatformAddress")
-    };
+    let platform_addr = crate::framework::funding::derive_platform_receive_address(
+        &ctx.app_context,
+        si.wallet_seed_hash,
+        Network::Testnet,
+        false,
+    )
+    .await;
 
     let fund_result = run_task_with_nonce_retry(
         &ctx.app_context,
@@ -295,13 +294,13 @@ async fn step_transfer_to_addresses(
     // Must use a DIP-17 Platform payment address (m/9'/coin_type'/17'/...),
     // NOT a BIP44 receive address. sync_address_balances only scans DIP-17
     // addresses via WalletAddressProvider.
-    let platform_addr = {
-        let mut wallet = si.wallet_arc.write().expect("wallet lock");
-        let addr = wallet
-            .platform_receive_address(Network::Testnet, false, Some(&ctx.app_context))
-            .expect("failed to derive platform payment address");
-        PlatformAddress::try_from(addr).expect("failed to convert to PlatformAddress")
-    };
+    let platform_addr = crate::framework::funding::derive_platform_receive_address(
+        &ctx.app_context,
+        si.wallet_seed_hash,
+        Network::Testnet,
+        false,
+    )
+    .await;
 
     let mut outputs = std::collections::BTreeMap::new();
     outputs.insert(platform_addr, 5_000_000u64);
@@ -586,18 +585,13 @@ async fn tc_031_incremental_address_discovery() {
 
     // Step 1: Derive a platform payment address
     tracing::info!("=== Step 1: derive platform payment address ===");
-    let platform_addr = {
-        let mut wallet = si.wallet_arc.write().expect("wallet lock");
-        let addr = wallet
-            .platform_receive_address(
-                dash_sdk::dpp::dashcore::Network::Testnet,
-                false,
-                Some(&ctx.app_context),
-            )
-            .expect("failed to derive platform payment address");
-        dash_sdk::dpp::address_funds::PlatformAddress::try_from(addr)
-            .expect("failed to convert to PlatformAddress")
-    };
+    let platform_addr = crate::framework::funding::derive_platform_receive_address(
+        &ctx.app_context,
+        si.wallet_seed_hash,
+        dash_sdk::dpp::dashcore::Network::Testnet,
+        false,
+    )
+    .await;
     tracing::info!(
         "Platform address: {}",
         platform_addr.to_bech32m_string(dash_sdk::dpp::dashcore::Network::Testnet)

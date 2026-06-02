@@ -1,9 +1,60 @@
 //! Faucet HTTP client and balance verification for test wallets on testnet.
 
+use crate::framework::task_runner::run_task;
+use dash_evo_tool::backend_task::wallet::WalletTask;
+use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_evo_tool::context::AppContext;
 use dash_evo_tool::model::wallet::WalletSeedHash;
+use dash_sdk::dpp::address_funds::PlatformAddress;
+use dash_sdk::dpp::dashcore::Network;
 use std::sync::Arc;
 use std::time::Duration;
+
+/// Test-only platform-receive-address helper for the e2e suite.
+///
+/// Production resolves the HD seed through the JIT chokepoint; the legacy
+/// parked-seed `Wallet::platform_receive_address` was retired. This mirrors
+/// the old "reuse-or-generate" behaviour without touching a seed in the test:
+/// when `skip_known` is false and a watched platform-payment address already
+/// exists, return it (seed-free); otherwise dispatch
+/// [`WalletTask::GeneratePlatformReceiveAddress`], which derives the next one
+/// through the chokepoint in the backend.
+pub async fn derive_platform_receive_address(
+    app_context: &Arc<AppContext>,
+    seed_hash: WalletSeedHash,
+    network: Network,
+    skip_known: bool,
+) -> PlatformAddress {
+    if !skip_known {
+        let existing = {
+            let wallets = app_context.wallets().read().expect("wallets lock");
+            let wallet = wallets.get(&seed_hash).expect("framework wallet missing");
+            let guard = wallet.read().expect("wallet read lock");
+            guard
+                .platform_addresses(network)
+                .into_iter()
+                .next()
+                .map(|(_, platform_addr)| platform_addr)
+        };
+        if let Some(platform_addr) = existing {
+            return platform_addr;
+        }
+    }
+
+    let result = run_task(
+        app_context,
+        BackendTask::WalletTask(WalletTask::GeneratePlatformReceiveAddress { seed_hash }),
+    )
+    .await
+    .expect("GeneratePlatformReceiveAddress task failed");
+
+    let BackendTaskSuccessResult::GeneratedPlatformReceiveAddress { address, .. } = result else {
+        panic!("unexpected result for GeneratePlatformReceiveAddress: {result:?}");
+    };
+    PlatformAddress::from_bech32m_string(&address)
+        .expect("derived platform address is not valid bech32m")
+        .0
+}
 
 #[allow(dead_code)]
 const FAUCET_BASE_URL: &str = "http://faucet.testnet.networks.dash.org";

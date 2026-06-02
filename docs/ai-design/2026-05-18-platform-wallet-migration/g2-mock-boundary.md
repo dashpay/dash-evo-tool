@@ -57,7 +57,20 @@ When upstream `Wallet::from_persisted` ships and `persister.load()` populates `C
 
 ## G2.5 — Gate Impact (Key Consequence)
 
-**G2 REMOVED as a hard implementation gate.**
+**G2 CLOSED (PROJ-010, 2026-06-02).** The seedless watch-only
+`UpstreamFromPersisted` shipped against PR #3692 head `ddfa66ed`, and
+`SeedReregistrationLoader` was removed. The swap point reserved in G2.4
+is now the live load path; the trait slot stays object-safe with one
+shipping impl. See `docs/ai-design/2026-06-02-rehydration-rewire/design.md`
+for the re-wire. The two design deviations forced by upstream reality (the
+WalletId↔seed bridge is keyed on the persisted BIP44 account xpub, not a
+seedless root-WalletId derivation; and the identity-funding re-provision
+moved off the watch-only load path onto the post-unlock asset-lock
+chokepoint) are recorded in the re-wire design notes.
+
+Historical context (G1/G2 gating against PR #3625) follows.
+
+**G2 was REMOVED as a hard implementation gate.**
 
 G1 (PR #3625 merge + pin bump) remains; G2 is downgraded to a deferred swap-in. `SeedReregistrationLoader` is complete, shippable, and behaviorally correct. The project ships on G1 alone. With Decision #1 pinning to the #3625 head now, even G1 is not a start blocker — it becomes a release-hardening item. See [phasing.md § Combined Gate Posture](phasing.md#combined-gate-posture).
 

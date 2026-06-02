@@ -300,7 +300,15 @@ impl AppContext {
     }
 
     pub fn handle_wallet_unlocked(self: &Arc<Self>, wallet: &Arc<RwLock<Wallet>>) {
-        if let Some((seed_hash, _seed_bytes)) = Self::wallet_seed_snapshot(wallet) {
+        if let Some((seed_hash, seed_bytes)) = Self::wallet_seed_snapshot(wallet) {
+            // Hand the seed to the wallet backend so signing paths
+            // (asset locks, payments, DashPay derivation) can derive
+            // private keys. The seedless load path never fills this — the
+            // seed enters memory only here, at the unlock chokepoint.
+            if let Ok(backend) = self.wallet_backend() {
+                backend.provide_seed(seed_hash, zeroize::Zeroizing::new(seed_bytes));
+            }
+
             // Initialize shielded wallet state only when the network supports it
             // (all shielded state transitions present). On mainnet (which doesn't
             // support shielded transactions yet), skip entirely to avoid

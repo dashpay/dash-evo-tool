@@ -242,10 +242,11 @@ impl BackendTestContext {
             }
         }
 
-        // Register the framework wallet into the DET wallet map BEFORE the
-        // backend is built — `SeedReregistrationLoader` reads `ctx.wallets`
-        // at `WalletBackend::new` time, so the wallet must be present for
-        // the upstream manager to monitor its addresses from the first sync.
+        // Register the framework wallet BEFORE the backend is built so its
+        // sidecars (wallet-meta xpub + encrypted-seed envelope) are
+        // persisted. `UpstreamFromPersisted` then loads it watch-only from
+        // the persister at `WalletBackend::new` time and the upstream
+        // manager monitors its addresses from the first sync.
         tracing::info!("Restoring framework wallet from E2E_WALLET_MNEMONIC");
         let wallet = dash_evo_tool::model::wallet::Wallet::new_from_seed(
             seed,
@@ -274,7 +275,7 @@ impl BackendTestContext {
 
         // Construct + start the real wallet backend exactly as production
         // does: `ensure_wallet_backend` builds `WalletBackend` (which loads
-        // the framework wallet via `SeedReregistrationLoader`), then
+        // the framework wallet watch-only via `UpstreamFromPersisted`), then
         // `WalletBackend::start()` starts the upstream `SpvRuntime` sync.
         app_context
             .ensure_wallet_backend(task_result_sender)
@@ -283,6 +284,13 @@ impl BackendTestContext {
         let backend = app_context
             .wallet_backend()
             .expect("wallet backend must be wired after ensure_wallet_backend");
+
+        // Seedless load registers wallets watch-only; the framework wallet's
+        // seed must be handed to the backend before any signing test runs.
+        // Re-run the unlock chokepoint now that the backend exists (the
+        // earlier `register_wallet` ran before it was wired, so its
+        // `provide_seed` was a no-op).
+        app_context.bootstrap_loaded_wallets();
 
         // Track the backend before starting sync so a later panic in init
         // (peer wait, balance check, …) doesn't leak the SpvRuntime's

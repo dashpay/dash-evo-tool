@@ -476,8 +476,9 @@ impl AppState {
         // chain-only lookups (e.g. `get_quorum_public_key`) before any
         // wallet is unlocked. Without this, the SDK retry loop tight-loops
         // at 10ms on `WalletBackendNotYetWired`. `PlatformWalletManager` is
-        // wallet-independent at construction (Case B); locked persisted
-        // wallets are skipped by `SeedReregistrationLoader` until unlock.
+        // wallet-independent at construction (Case B); persisted wallets
+        // load watch-only via `UpstreamFromPersisted`, no unlock required
+        // to display funds — the seed enters memory only on unlock.
         //
         // Auto-start of chain sync rides on wiring completion: for the active
         // network, when onboarding is done and the user opted in, the same

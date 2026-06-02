@@ -1,206 +1,146 @@
-//! Persisted-wallet load seam (G2).
+//! Persisted-wallet load seam (G2 / PROJ-010).
 //!
-//! `PersistedWalletLoader` decouples "which wallets to register at startup"
-//! from `WalletBackend`. Today the only impl is [`SeedReregistrationLoader`],
-//! which re-derives each wallet from DET's retained encrypted-seed store.
-//! When upstream `Wallet::from_persisted` + `persister.load()` populate
-//! `ClientStartState.wallets`, an `UpstreamFromPersisted` impl drops in via a
-//! one-line construction swap with zero blast radius (see
-//! `docs/ai-design/2026-05-18-platform-wallet-migration/g2-mock-boundary.md`).
+//! `PersistedWalletLoader` decouples the *strategy* for bringing
+//! persisted wallets back at startup from `WalletBackend`. The shipping
+//! impl is [`UpstreamFromPersisted`], which drives the upstream
+//! **seedless / watch-only** rehydration API
+//! (`PlatformWalletManager::load_from_persistor`, PR #3692): balances,
+//! UTXOs, identities, and contacts come back at launch with no seed in
+//! memory. Signing keys enter memory later, on unlock, via
+//! [`WalletBackend::provide_seed`].
+//!
+//! The trait stays object-safe (`Arc<dyn PersistedWalletLoader>`) and
+//! its outputs are DET-opaque: [`LoadedWallets`] carries only DET's
+//! [`WalletSeedHash`] keys and a DET-side [`PersistedLoadSkip`] reason —
+//! no `platform_wallet` / `key_wallet` type crosses the seam.
 
 use std::sync::Arc;
-
-use dash_sdk::dpp::dashcore::Network as CoreNetwork;
-use dash_sdk::dpp::key_wallet::Network as WalletNetwork;
-use zeroize::Zeroizing;
 
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::wallet::WalletSeedHash;
 
-/// A DET-opaque descriptor of one wallet to register with the wallet backend.
+use super::WalletBackend;
+
+/// Outcome of a persisted-wallet load pass, mapped to DET-opaque types.
 ///
-/// Carries the in-memory seed (zeroized on drop — never persisted; the
-/// secret boundary stays in DET's seed store) plus the identifying metadata
-/// the backend needs. No `platform-wallet` type is exposed here.
-pub struct WalletRegistration {
-    /// DET seed hash — stable identifier across the seam.
-    pub seed_hash: WalletSeedHash,
-    /// 64-byte BIP-39 seed. Fed to upstream `create_wallet_from_seed_bytes`
-    /// in memory; zeroized on drop.
-    pub seed_bytes: Zeroizing<[u8; 64]>,
-    /// Network the wallet belongs to.
-    pub network: WalletNetwork,
-    /// Optional user-facing alias.
-    pub alias: Option<String>,
-    /// Whether this is the user's primary wallet.
-    pub is_main: bool,
+/// Carries no upstream `platform-wallet` type. A non-empty `skipped`
+/// list is still a **success**: a single corrupt persisted row is
+/// reported and the remaining wallets load. A whole-load failure is a
+/// `TaskError` from [`PersistedWalletLoader::load`], not a populated
+/// `skipped`.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct LoadedWallets {
+    /// Wallets now registered with the backend, keyed by DET's seed hash.
+    pub loaded: Vec<WalletSeedHash>,
+    /// Wallets present on disk but skipped because their persisted row
+    /// was unusable. The [`WalletSeedHash`] is present only when the
+    /// skipped wallet could be matched to a DET sidecar entry; an
+    /// unmatched skip carries `None`.
+    pub skipped: Vec<(Option<WalletSeedHash>, PersistedLoadSkip)>,
 }
 
-impl std::fmt::Debug for WalletRegistration {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Never print seed bytes.
-        f.debug_struct("WalletRegistration")
-            .field("seed_hash", &hex::encode(self.seed_hash))
-            .field("network", &self.network)
-            .field("alias", &self.alias)
-            .field("is_main", &self.is_main)
-            .finish_non_exhaustive()
-    }
+/// DET-opaque reason a persisted wallet row was skipped during load.
+///
+/// Mirrors the upstream corrupt-row families without leaking the
+/// upstream `CorruptKind` type or any row-derived bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PersistedLoadSkip {
+    /// The wallet row has no usable account manifest to rebuild from.
+    MissingManifest,
+    /// The persisted account xpub failed to parse.
+    MalformedXpub,
+    /// Any other structural decode/projection failure on the row.
+    DecodeError,
 }
 
-/// Resolves the set of wallets to register with the backend at startup.
+/// Brings persisted wallets back into the running backend at startup.
 ///
 /// Object-safe so `WalletBackend` can hold `Arc<dyn PersistedWalletLoader>`
-/// and swap impls without touching its own API (mirrors the single-key
-/// `SingleKeyBackend` seam).
+/// and swap impls behind a one-line construction change (mirrors the
+/// single-key `SingleKeyView` seam).
+#[async_trait::async_trait]
 pub trait PersistedWalletLoader: Send + Sync {
-    /// Return one [`WalletRegistration`] per wallet that should be registered.
-    fn wallets_to_register(
+    /// Perform the load pass and report which wallets came back.
+    ///
+    /// `backend` is the orchestration layer the impl drives; `ctx`
+    /// supplies the active network and DET sidecars. The impl must map
+    /// every upstream identifier to a DET [`WalletSeedHash`] before
+    /// returning — no upstream type may appear in [`LoadedWallets`].
+    async fn load(
         &self,
+        backend: &WalletBackend,
         ctx: &Arc<AppContext>,
-    ) -> Result<Vec<WalletRegistration>, TaskError>;
+    ) -> Result<LoadedWallets, TaskError>;
 }
 
-fn core_to_wallet_network(network: CoreNetwork) -> WalletNetwork {
-    match network {
-        CoreNetwork::Mainnet => WalletNetwork::Mainnet,
-        CoreNetwork::Testnet => WalletNetwork::Testnet,
-        CoreNetwork::Devnet => WalletNetwork::Devnet,
-        CoreNetwork::Regtest => WalletNetwork::Regtest,
-    }
-}
-
-/// Re-registers each wallet from DET's retained encrypted-seed store.
+/// Seedless watch-only loader over the upstream PR #3692 rehydration API.
 ///
-/// This is the shipping G2 impl: it mocks the *seam*, not the *behavior*.
-/// The behavior — re-derive from the seed the user already unlocks, then let
-/// the upstream persister layer identity/DashPay/UTXO deltas and `SpvRuntime`
-/// re-confirm on sync — is exactly the upstream-prescribed re-registration
-/// path. Reads only already-open wallets; locked wallets surface the existing
-/// typed seed-decrypt error path elsewhere and are skipped here.
-pub struct SeedReregistrationLoader;
+/// Delegates to [`WalletBackend::load_from_persistor_seedless`]: one
+/// `load_from_persistor()` call, then each returned upstream wallet is
+/// resolved to its DET [`WalletSeedHash`] by matching the loaded
+/// watch-only wallet's BIP44 account xpub against the `xpub_encoded` DET
+/// persisted in its sidecar. A loaded wallet that matches no sidecar
+/// entry is rejected (fund-routing gate, never displayed) — see
+/// [`WalletBackend::load_from_persistor_seedless`] for the gate.
+pub struct UpstreamFromPersisted;
 
-impl SeedReregistrationLoader {
+impl UpstreamFromPersisted {
     pub fn new() -> Self {
         Self
     }
 }
 
-impl Default for SeedReregistrationLoader {
+impl Default for UpstreamFromPersisted {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl PersistedWalletLoader for SeedReregistrationLoader {
-    fn wallets_to_register(
+#[async_trait::async_trait]
+impl PersistedWalletLoader for UpstreamFromPersisted {
+    async fn load(
         &self,
+        backend: &WalletBackend,
         ctx: &Arc<AppContext>,
-    ) -> Result<Vec<WalletRegistration>, TaskError> {
-        let network = core_to_wallet_network(ctx.network);
-        let wallets = ctx.wallets.read()?;
-
-        let mut registrations = Vec::with_capacity(wallets.len());
-        for (seed_hash, wallet_arc) in wallets.iter() {
-            let guard = wallet_arc.read()?;
-            if !guard.is_open() {
-                // Locked wallet — the user unlocks it through the existing
-                // password flow; it is registered on a later pass.
-                tracing::debug!(
-                    wallet = %hex::encode(seed_hash),
-                    "Skipping locked wallet during persisted-wallet load"
-                );
-                continue;
-            }
-            let seed_bytes = match guard.seed_bytes() {
-                Ok(bytes) => Zeroizing::new(*bytes),
-                Err(_) => {
-                    tracing::warn!(
-                        wallet = %hex::encode(seed_hash),
-                        "Open wallet has no accessible seed; skipping"
-                    );
-                    continue;
-                }
-            };
-            registrations.push(WalletRegistration {
-                seed_hash: *seed_hash,
-                seed_bytes,
-                network,
-                alias: guard.alias.clone(),
-                is_main: guard.is_main,
-            });
-        }
-
-        Ok(registrations)
+    ) -> Result<LoadedWallets, TaskError> {
+        backend.load_from_persistor_seedless(ctx).await
     }
 }
-
-// `UpstreamFromPersisted` is intentionally NOT implemented: no upstream
-// `Wallet::from_persisted` / populated `ClientStartState.wallets` API exists
-// yet. The trait slot above is the reserved swap point — when upstream lands
-// it, add the impl and flip the one construction line in `WalletBackend::new`
-// (see g2-mock-boundary.md §G2.4). Mirrors the single-key reserved-impl
-// pattern; no placeholder type is created until there is a real API to back
-// it.
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn wallet_registration_debug_redacts_seed() {
-        let reg = WalletRegistration {
-            seed_hash: [7u8; 32],
-            seed_bytes: Zeroizing::new([0xABu8; 64]),
-            network: WalletNetwork::Testnet,
-            alias: Some("primary".to_string()),
-            is_main: true,
-        };
-        let dbg = format!("{reg:?}");
-        assert!(dbg.contains(&hex::encode([7u8; 32])));
-        assert!(dbg.contains("primary"));
-        // The 64-byte seed (0xAB repeated) must never appear.
-        assert!(!dbg.contains("abab"));
-        assert!(!dbg.contains("171717"));
-    }
-
-    #[test]
-    fn core_to_wallet_network_maps_all_variants() {
-        assert_eq!(
-            core_to_wallet_network(CoreNetwork::Mainnet),
-            WalletNetwork::Mainnet
-        );
-        assert_eq!(
-            core_to_wallet_network(CoreNetwork::Testnet),
-            WalletNetwork::Testnet
-        );
-        assert_eq!(
-            core_to_wallet_network(CoreNetwork::Devnet),
-            WalletNetwork::Devnet
-        );
-        assert_eq!(
-            core_to_wallet_network(CoreNetwork::Regtest),
-            WalletNetwork::Regtest
-        );
-    }
-
-    /// Proves the G2.4 zero-blast swap: an alternate loader impl drops into
-    /// `Arc<dyn PersistedWalletLoader>` with no other change. The behavioral
-    /// "N seed-store wallets → N registrations" assertion needs a populated
-    /// `AppContext` and lives in the P1 backend-e2e QA lane.
+    /// Proves the swap boundary: an alternate loader impl drops into
+    /// `Arc<dyn PersistedWalletLoader>` with no other change. The
+    /// behavioral assertions (real load, the xpub bridge, the
+    /// account-xpub-match gate) live alongside the backend impl and the
+    /// backend-e2e cold-boot lane, which can stand up a real
+    /// `WalletBackend`.
     #[test]
     fn swap_boundary_compiles_with_alternate_impl() {
-        struct StubFromPersisted;
-        impl PersistedWalletLoader for StubFromPersisted {
-            fn wallets_to_register(
+        struct StubLoader;
+        #[async_trait::async_trait]
+        impl PersistedWalletLoader for StubLoader {
+            async fn load(
                 &self,
+                _backend: &WalletBackend,
                 _ctx: &Arc<AppContext>,
-            ) -> Result<Vec<WalletRegistration>, TaskError> {
-                Ok(Vec::new())
+            ) -> Result<LoadedWallets, TaskError> {
+                Ok(LoadedWallets::default())
             }
         }
-        let _loader: Arc<dyn PersistedWalletLoader> = Arc::new(StubFromPersisted);
-        let _default: Arc<dyn PersistedWalletLoader> = Arc::new(SeedReregistrationLoader::new());
+        let _stub: Arc<dyn PersistedWalletLoader> = Arc::new(StubLoader);
+        let _shipping: Arc<dyn PersistedWalletLoader> = Arc::new(UpstreamFromPersisted::new());
+    }
+
+    /// `LoadedWallets::default` is the empty, no-wallet shape — the
+    /// outcome of a cold boot with nothing persisted.
+    #[test]
+    fn loaded_wallets_default_is_empty() {
+        let lw = LoadedWallets::default();
+        assert!(lw.loaded.is_empty());
+        assert!(lw.skipped.is_empty());
     }
 }

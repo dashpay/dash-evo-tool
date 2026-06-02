@@ -22,7 +22,7 @@ use crate::model::wallet::single_key::{SingleKeyHash, SingleKeyWallet};
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::sdk_wrapper::initialize_sdk;
 use crate::utils::tasks::TaskManager;
-use crate::wallet_backend::{DetKv, DetWalletBalance, SeedReregistrationLoader, WalletBackend};
+use crate::wallet_backend::{DetKv, DetWalletBalance, UpstreamFromPersisted, WalletBackend};
 use arc_swap::{ArcSwap, ArcSwapOption};
 use connection_status::ConnectionStatus;
 use crossbeam_channel::{Receiver, Sender};
@@ -652,7 +652,7 @@ impl AppContext {
             return Ok(());
         }
         let sdk = std::sync::Arc::new(self.sdk.load().as_ref().clone());
-        let loader = Arc::new(SeedReregistrationLoader::new());
+        let loader = Arc::new(UpstreamFromPersisted::new());
         let backend = WalletBackend::new(
             self,
             sdk,

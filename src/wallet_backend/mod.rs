@@ -55,7 +55,7 @@ use asset_lock_signer::WalletAssetLockSigner;
 
 pub use event_bridge::EventBridge;
 pub use kv::{DetKv, DetScope, KvAdapterError, SCHEMA_VERSION as KV_SCHEMA_VERSION};
-pub use loader::{PersistedWalletLoader, SeedReregistrationLoader, WalletRegistration};
+pub use loader::{LoadedWallets, PersistedLoadSkip, PersistedWalletLoader, UpstreamFromPersisted};
 pub use platform_address::{
     KvCachedPlatformAddresses, PlatformAddressView, UpstreamPlatformAddresses,
 };
@@ -76,7 +76,6 @@ use dash_sdk::dash_spv::ClientConfig;
 use dash_sdk::dash_spv::client::config::MempoolStrategy;
 use dash_sdk::dash_spv::types::ValidationMode;
 use dash_sdk::dpp::dashcore::Network;
-use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
 use platform_wallet::manager::PlatformWalletManager;
 use platform_wallet_storage::secrets::SecretStore;
 use platform_wallet_storage::{SqlitePersister, SqlitePersisterConfig};
@@ -344,105 +343,211 @@ impl WalletBackend {
         Ok(())
     }
 
-    /// Run the loader and register each wallet with the upstream manager.
+    /// Run the configured loader and re-provision identity funding for
+    /// every wallet it brought back.
     async fn register_persisted_wallets(&self, ctx: &Arc<AppContext>) -> Result<(), TaskError> {
-        let registrations = self.inner.loader.wallets_to_register(ctx)?;
+        let loader = Arc::clone(&self.inner.loader);
+        let outcome = loader.load(self, ctx).await?;
         tracing::info!(
-            count = registrations.len(),
-            "Registering persisted wallets with the wallet backend"
+            loaded = outcome.loaded.len(),
+            skipped = outcome.skipped.len(),
+            "Persisted-wallet load pass complete"
         );
+        for (seed_hash, reason) in &outcome.skipped {
+            tracing::warn!(
+                wallet = ?seed_hash.map(hex::encode),
+                ?reason,
+                "Skipped a corrupt persisted wallet row on load"
+            );
+        }
 
-        for reg in registrations {
-            // Snapshot the seed for the asset-lock / payment signer adapter.
-            // Idempotent: a re-registration on the same backend just rewrites
-            // the same bytes for the same hash.
-            self.inner
-                .seeds
-                .write()?
-                .insert(reg.seed_hash, reg.seed_bytes.clone());
-            let already_this_process = self.inner.id_map.read()?.contains_key(&reg.seed_hash);
-            if !already_this_process {
-                // `create_wallet_from_seed_bytes` also loads persisted
-                // identity/address deltas and runs identity discovery
-                // upstream (see upstream `manager/wallet_lifecycle.rs`).
-                match self
-                    .inner
-                    .pwm
-                    .create_wallet_from_seed_bytes(
-                        reg.network,
-                        *reg.seed_bytes,
-                        WalletAccountCreationOptions::Default,
-                        None,
-                    )
-                    .await
-                {
-                    Ok(pw) => {
-                        let wallet_id = pw.wallet_id();
-                        self.inner.id_map.write()?.insert(reg.seed_hash, wallet_id);
-                        self.inner
-                            .wallets
-                            .write()?
-                            .insert(wallet_id, Arc::clone(&pw));
-                        self.inner
-                            .snapshots
-                            .register_wallet(reg.seed_hash, wallet_id, pw);
-                        tracing::debug!(
-                            wallet = %hex::encode(reg.seed_hash),
-                            "Wallet registered with backend"
-                        );
-                    }
-                    Err(platform_wallet::error::PlatformWalletError::WalletAlreadyExists(_)) => {
-                        // Already present in the upstream manager (e.g. a
-                        // prior Stage-B run before this process). Resolve its
-                        // id by re-deriving deterministically from the seed
-                        // (NOT by parsing the error string — CLAUDE.md), so
-                        // the DET-keyed map and the snapshot store stay
-                        // consistent and the whole step is idempotent.
-                        if let Some(wallet_id) =
-                            Self::wallet_id_from_seed(reg.network, &reg.seed_bytes)
-                        {
-                            self.inner.id_map.write()?.insert(reg.seed_hash, wallet_id);
-                            if let Some(pw) = self.inner.pwm.get_wallet(&wallet_id).await {
-                                self.inner
-                                    .wallets
-                                    .write()?
-                                    .insert(wallet_id, Arc::clone(&pw));
-                                self.inner
-                                    .snapshots
-                                    .register_wallet(reg.seed_hash, wallet_id, pw);
-                            }
-                        }
-                        tracing::debug!(
-                            wallet = %hex::encode(reg.seed_hash),
-                            "Wallet already registered upstream — idempotent"
-                        );
-                    }
-                    Err(e) => {
-                        return Err(TaskError::WalletBackend {
-                            source: Box::new(e),
-                        });
-                    }
-                }
-            }
-
+        for seed_hash in &outcome.loaded {
             // Recurrence trap (a5538dc8): the upstream persister `load()`
             // does NOT reconstruct identity funding HD accounts, so they
-            // must be re-provisioned for every persisted identity on every
-            // (re-)registration — including the idempotent re-run path,
-            // which is exactly an app relaunch. Idempotent per account.
+            // must be re-provisioned for every persisted identity.
+            //
+            // Provisioning derives the funding account from the wallet's
+            // key material, which the seedless watch-only load does NOT
+            // hold. Run this only when the seed is already in memory (an
+            // already-unlocked wallet, e.g. a same-process re-run); on a
+            // cold boot the wallet is watch-only and the seed is absent,
+            // so provisioning is deferred to the asset-lock chokepoint
+            // (`create_asset_lock_proof`), which runs post-unlock with the
+            // seed present and provisions before every identity asset lock.
+            if !self.inner.seeds.read()?.contains_key(seed_hash) {
+                tracing::debug!(
+                    wallet = %hex::encode(seed_hash),
+                    "Skipping load-time identity-funding re-provision for watch-only wallet; the asset-lock chokepoint re-provisions post-unlock"
+                );
+                continue;
+            }
             let identity_indices: Vec<u32> = {
                 let wallets = ctx.wallets.read()?;
-                match wallets.get(&reg.seed_hash) {
+                match wallets.get(seed_hash) {
                     Some(w) => w.read()?.identities.keys().copied().collect::<Vec<u32>>(),
                     None => Vec::new(),
                 }
             };
             for idx in identity_indices {
-                self.ensure_identity_funding_accounts(&reg.seed_hash, idx)
+                self.ensure_identity_funding_accounts(seed_hash, idx)
                     .await?;
             }
         }
         Ok(())
+    }
+
+    /// Seedless watch-only load over the upstream PR #3692 rehydration
+    /// API. One `load_from_persistor()` call rebuilds every persisted
+    /// wallet as a watch-only entry (no seed touched); each registered
+    /// upstream `WalletId` is then resolved to its DET [`WalletSeedHash`]
+    /// by matching the loaded wallet's BIP44 account xpub against the
+    /// `xpub_encoded` DET persisted in its sidecar.
+    ///
+    /// Fund-routing gate (HIGH): a loaded wallet whose BIP44 account
+    /// xpub matches **no** sidecar entry is rejected — never registered,
+    /// never displayed. The match is the published-xpub == scanned-xpub
+    /// invariant by construction: the watch-only wallet is rebuilt from
+    /// the persisted account manifest, and DET keys off the same
+    /// account xpub it published at create time.
+    ///
+    /// Idempotent: the upstream `load_from_persistor()` rejects a wallet
+    /// that is already registered, so it runs only when the manager is
+    /// empty. A re-run (relaunch simulation, migration replay) re-resolves
+    /// the already-registered wallets without a second upstream load.
+    ///
+    /// No upstream type escapes this method: `WalletId` / `PlatformWallet`
+    /// are mapped to [`LoadedWallets`] (DET [`WalletSeedHash`]) before
+    /// returning.
+    pub(super) async fn load_from_persistor_seedless(
+        &self,
+        ctx: &Arc<AppContext>,
+    ) -> Result<LoadedWallets, TaskError> {
+        // 1. Build the account-xpub -> WalletSeedHash bridge from DET's
+        //    sidecars. Seedless: `xpub_encoded` is the persisted
+        //    `m/44'/coin'/0'` account xpub (see model/wallet/meta.rs).
+        let bridge: std::collections::HashMap<Vec<u8>, WalletSeedHash> = self
+            .wallet_meta()
+            .list(ctx.network)
+            .into_iter()
+            .filter(|(_, meta)| !meta.xpub_encoded.is_empty())
+            .map(|(seed_hash, meta)| (meta.xpub_encoded, seed_hash))
+            .collect();
+
+        // 2. One seedless load pass, only when the manager is empty.
+        //    A non-empty `skipped` is success; `Err` is reserved for
+        //    whole-load failures. On a re-run the manager already holds
+        //    the wallets, so the upstream load (which rejects duplicates)
+        //    is skipped and only the resolution below runs.
+        let skipped = if self.inner.pwm.wallet_ids().await.is_empty() {
+            let outcome = self.inner.pwm.load_from_persistor().await.map_err(|e| {
+                TaskError::WalletBackend {
+                    source: Box::new(e),
+                }
+            })?;
+            outcome
+                .skipped
+                .iter()
+                .map(|(_wallet_id, reason)| (None, persisted_load_skip_from_upstream(reason)))
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        // 3. Resolve every currently-registered wallet to its DET seed
+        //    hash via the fund-routing gate, registering it in the
+        //    DET-keyed maps. Driven off the manager's live wallet set so
+        //    the path is identical on first load and re-run.
+        let mut loaded = Vec::new();
+        for wallet_id in self.inner.pwm.wallet_ids().await {
+            let Some(pw) = self.inner.pwm.get_wallet(&wallet_id).await else {
+                tracing::warn!(
+                    wallet_id = %hex::encode(wallet_id),
+                    "Registered wallet not retrievable from manager; skipping"
+                );
+                continue;
+            };
+
+            // Fund-routing gate: resolve the DET seed hash by matching
+            // the loaded wallet's BIP44 account xpub against the bridge.
+            // An unmatched wallet is rejected.
+            let account_xpub = self.bip44_account_xpub_encoded(&pw).await;
+            let Some(seed_hash) = account_xpub.as_ref().and_then(|x| bridge.get(x).copied()) else {
+                tracing::warn!(
+                    wallet_id = %hex::encode(wallet_id),
+                    "Loaded wallet xpub matches no persisted DET wallet; rejecting (fund-routing gate)"
+                );
+                continue;
+            };
+
+            self.inner.id_map.write()?.insert(seed_hash, wallet_id);
+            self.inner
+                .wallets
+                .write()?
+                .insert(wallet_id, Arc::clone(&pw));
+            self.inner
+                .snapshots
+                .register_wallet(seed_hash, wallet_id, pw);
+            tracing::debug!(
+                wallet = %hex::encode(seed_hash),
+                "Watch-only wallet registered with backend (seedless)"
+            );
+            loaded.push(seed_hash);
+        }
+
+        Ok(LoadedWallets { loaded, skipped })
+    }
+
+    /// `ExtendedPubKey::encode()` bytes of the loaded watch-only wallet's
+    /// BIP44 account 0 xpub, or `None` when the wallet has no BIP44
+    /// account. Read seedlessly off the rebuilt watch-only manifest.
+    async fn bip44_account_xpub_encoded(
+        &self,
+        pw: &platform_wallet::PlatformWallet,
+    ) -> Option<Vec<u8>> {
+        use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
+        let guard = pw.state().await;
+        guard
+            .wallet()
+            .accounts
+            .all_accounts()
+            .into_iter()
+            .find(|a| {
+                matches!(
+                    a.account_type,
+                    AccountType::Standard {
+                        index: 0,
+                        standard_account_type: StandardAccountType::BIP44Account,
+                    }
+                )
+            })
+            .map(|a| a.account_xpub.encode().to_vec())
+    }
+
+    /// Provide the BIP-39 seed for a wallet so signing paths can derive
+    /// private keys. Called from the unlock chokepoint
+    /// (`AppContext::handle_wallet_unlocked`); the seedless load path
+    /// never calls this — the seed enters memory only on unlock.
+    /// Idempotent: re-supplying the same hash rewrites the same bytes.
+    pub fn provide_seed(
+        &self,
+        seed_hash: WalletSeedHash,
+        seed_bytes: zeroize::Zeroizing<[u8; 64]>,
+    ) {
+        match self.inner.seeds.write() {
+            Ok(mut seeds) => {
+                seeds.insert(seed_hash, seed_bytes);
+                tracing::trace!(
+                    wallet = %hex::encode(seed_hash),
+                    "Seed provided to wallet backend on unlock"
+                );
+            }
+            Err(_) => {
+                tracing::warn!(
+                    wallet = %hex::encode(seed_hash),
+                    "Could not store seed on unlock; the seed lock was poisoned"
+                );
+            }
+        }
     }
 
     /// Start chain sync and the periodic upstream coordinators.
@@ -753,11 +858,10 @@ impl WalletBackend {
         Ok(())
     }
 
-    /// Re-register every persisted wallet with the upstream manager
-    /// (idempotent). Exposed for the one-time migration engine; the upstream
-    /// `create_wallet_from_seed_bytes` also runs identity discovery from
-    /// chain, repopulating `IdentityManager` (data-model-and-migration.md
-    /// conversion surface — identities "repopulated on first sync").
+    /// Re-run the seedless watch-only load pass (idempotent). Exposed for
+    /// the one-time migration engine and the reload-survival tests; the
+    /// upstream `load_from_persistor` rebuilds each wallet watch-only and
+    /// re-provisions identity funding accounts per loaded wallet.
     pub async fn ensure_wallets_registered(&self, ctx: &Arc<AppContext>) -> Result<(), TaskError> {
         self.register_persisted_wallets(ctx).await
     }
@@ -968,17 +1072,6 @@ impl WalletBackend {
             .publish(TokenBalanceStore::snapshot_from(synced));
     }
 
-    /// Deterministically derive the upstream `WalletId` from seed bytes
-    /// without touching the manager. Used only to recover the id on the
-    /// idempotent `WalletAlreadyExists` re-registration path (avoids
-    /// parsing the upstream error string — CLAUDE.md).
-    fn wallet_id_from_seed(network: Network, seed_bytes: &[u8; 64]) -> Option<WalletId> {
-        use dash_sdk::dpp::key_wallet::wallet::Wallet;
-        Wallet::from_seed_bytes(*seed_bytes, network, WalletAccountCreationOptions::Default)
-            .ok()
-            .map(|w| w.wallet_id)
-    }
-
     /// Snapshot the cached seed and wrap it in a soft-wallet signer for the
     /// upstream signer-driven asset-lock / payment builders. Snapshot is
     /// cloned (and zeroized when the signer drops) so derivation can run
@@ -990,7 +1083,7 @@ impl WalletBackend {
             .read()?
             .get(seed_hash)
             .cloned()
-            .ok_or(TaskError::WalletBackendNotYetWired)?;
+            .ok_or(TaskError::WalletLocked)?;
         Ok(WalletAssetLockSigner::new(seed, self.inner.network))
     }
 
@@ -1009,7 +1102,7 @@ impl WalletBackend {
             .read()?
             .get(seed_hash)
             .cloned()
-            .ok_or(TaskError::WalletBackendNotYetWired)?;
+            .ok_or(TaskError::WalletLocked)?;
         let xprv = path
             .derive_priv_ecdsa_for_master_seed(seed.as_ref(), self.inner.network)
             .map_err(|source| TaskError::WalletBackend {
@@ -1405,6 +1498,22 @@ fn map_identity_top_up_error(
     }
 }
 
+/// Map an upstream load-skip reason to its DET-opaque equivalent,
+/// dropping any row-derived string so no upstream detail crosses the
+/// seam.
+fn persisted_load_skip_from_upstream(
+    reason: &platform_wallet::manager::load_outcome::SkipReason,
+) -> PersistedLoadSkip {
+    use platform_wallet::manager::load_outcome::{CorruptKind, SkipReason};
+    match reason {
+        SkipReason::CorruptPersistedRow { kind } => match kind {
+            CorruptKind::MissingManifest => PersistedLoadSkip::MissingManifest,
+            CorruptKind::MalformedXpub => PersistedLoadSkip::MalformedXpub,
+            CorruptKind::DecodeError(_) => PersistedLoadSkip::DecodeError,
+        },
+    }
+}
+
 /// Bucket for `PlatformWalletError`s coming out of identity register / top-up.
 enum IdentityOpErrorKind {
     /// Network or broadcast rejected the submission (SDK error or asset-lock
@@ -1472,7 +1581,8 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         | P::ShieldedNullifierSyncFailed(_)
         | P::ShieldedMerkleWitnessUnavailable(_)
         | P::ShieldedKeyDerivation(_)
-        | P::ShieldedNotBound => IdentityOpErrorKind::Other,
+        | P::ShieldedNotBound
+        | P::RehydrationTopologyUnsupported { .. } => IdentityOpErrorKind::Other,
     }
 }
 
@@ -1593,5 +1703,97 @@ mod tests {
             } => assert_eq!(got, identity_id, "identity_id must be preserved"),
             other => panic!("Expected IdentityTopUpRejected, got: {other:?}"),
         }
+    }
+
+    /// The upstream load-skip families map 1:1 onto the DET-opaque
+    /// [`PersistedLoadSkip`] and drop the row-derived string so no
+    /// upstream detail crosses the seam.
+    #[test]
+    fn skip_reason_maps_to_det_opaque_variants() {
+        use platform_wallet::manager::load_outcome::{CorruptKind, SkipReason};
+        let cases = [
+            (
+                CorruptKind::MissingManifest,
+                PersistedLoadSkip::MissingManifest,
+            ),
+            (CorruptKind::MalformedXpub, PersistedLoadSkip::MalformedXpub),
+            (
+                CorruptKind::DecodeError("secret-ish detail".into()),
+                PersistedLoadSkip::DecodeError,
+            ),
+        ];
+        for (kind, expected) in cases {
+            let reason = SkipReason::CorruptPersistedRow { kind };
+            assert_eq!(persisted_load_skip_from_upstream(&reason), expected);
+        }
+    }
+
+    /// The seedless bridge keys off the BIP44 account xpub. The DET
+    /// account xpub (`Wallet::new_from_seed`) must equal the upstream
+    /// account xpub for the SAME seed, so the watch-only wallet rebuilt
+    /// from the persisted manifest resolves back to DET's seed hash.
+    /// Locks the cryptographic invariant the
+    /// [`WalletBackend::load_from_persistor_seedless`] gate relies on.
+    #[test]
+    fn bridge_account_xpub_matches_upstream_for_same_seed() {
+        use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
+        use dash_sdk::dpp::key_wallet::wallet::Wallet as UpstreamWallet;
+        use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
+
+        let seed = [0x42u8; 64];
+        let network = Network::Testnet;
+
+        // DET side: what DET persists as `xpub_encoded`.
+        let det = crate::model::wallet::Wallet::new_from_seed(seed, network, None, None)
+            .expect("DET wallet");
+        let det_xpub = det.master_bip44_ecdsa_extended_public_key.encode().to_vec();
+
+        // Upstream side: the watch-only manifest carries the same account
+        // xpub on the BIP44 account.
+        let up =
+            UpstreamWallet::from_seed_bytes(seed, network, WalletAccountCreationOptions::Default)
+                .expect("upstream wallet");
+        let up_xpub = up
+            .accounts
+            .all_accounts()
+            .into_iter()
+            .find(|a| {
+                matches!(
+                    a.account_type,
+                    AccountType::Standard {
+                        index: 0,
+                        standard_account_type: StandardAccountType::BIP44Account,
+                    }
+                )
+            })
+            .map(|a| a.account_xpub.encode().to_vec())
+            .expect("upstream BIP44 account");
+
+        assert_eq!(
+            det_xpub, up_xpub,
+            "DET and upstream must agree on the BIP44 account xpub for the same seed"
+        );
+
+        // A bridge built from DET's sidecar resolves the matching xpub to
+        // the DET seed hash, and rejects a non-matching xpub.
+        let seed_hash = det.seed_hash();
+        let bridge: std::collections::HashMap<Vec<u8>, WalletSeedHash> =
+            std::iter::once((det_xpub.clone(), seed_hash)).collect();
+        assert_eq!(
+            bridge.get(&up_xpub).copied(),
+            Some(seed_hash),
+            "matching account xpub must resolve to the DET seed hash"
+        );
+
+        let other = crate::model::wallet::Wallet::new_from_seed([0x99u8; 64], network, None, None)
+            .expect("other wallet");
+        let other_xpub = other
+            .master_bip44_ecdsa_extended_public_key
+            .encode()
+            .to_vec();
+        assert!(
+            !bridge.contains_key(&other_xpub),
+            "a non-matching account xpub must be rejected by the gate"
+        );
     }
 }

@@ -170,6 +170,24 @@ impl PlatformEventHandler for EventBridge {
         self.nudge_refresh();
     }
 
+    fn on_platform_event(&self, event: &platform_wallet::events::PlatformEvent) {
+        match event {
+            platform_wallet::events::PlatformEvent::WalletSkippedOnLoad { wallet_id, reason } => {
+                // Public wallet id + structural reason only; never a secret.
+                // TODO(PROJ-010-T6): surface a calm MessageBanner ("One saved
+                // wallet couldn't be opened. Re-add it from its recovery
+                // phrase to restore it.") once the construction path can reach
+                // an egui context. The skip is logged here in the meantime and
+                // also reported via `LoadedWallets.skipped`.
+                tracing::warn!(
+                    wallet_id = %hex::encode(wallet_id),
+                    %reason,
+                    "A saved wallet was skipped on load because its stored data is corrupt"
+                );
+            }
+        }
+    }
+
     // `on_shielded_sync_completed` is left at its upstream no-op default:
     // `platform-wallet`'s `shielded` feature is not enabled for DET (only
     // `serde`), so that callback never fires. DET's shielded path is the

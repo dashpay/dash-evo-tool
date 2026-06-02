@@ -110,9 +110,7 @@ impl AppContext {
                 &crate::wallet_backend::SecretScope::HdSeed { seed_hash },
                 async |session| {
                     let plaintext = session.plaintext();
-                    let seed = plaintext
-                        .expose_hd_seed()
-                        .ok_or(TaskError::ContactWalletSeedUnavailable)?;
+                    let seed = plaintext.expose_hd_seed().ok_or(TaskError::WalletLocked)?;
                     let signer = DetPlatformSigner::from_held(seed, network, &path_index);
                     outputs
                         .top_up(

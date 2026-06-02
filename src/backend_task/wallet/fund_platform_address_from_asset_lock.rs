@@ -90,9 +90,7 @@ impl AppContext {
                 &crate::wallet_backend::SecretScope::HdSeed { seed_hash },
                 async |session| {
                     let plaintext = session.plaintext();
-                    let seed = plaintext
-                        .expose_hd_seed()
-                        .ok_or(TaskError::ContactWalletSeedUnavailable)?;
+                    let seed = plaintext.expose_hd_seed().ok_or(TaskError::WalletLocked)?;
                     let asset_lock_private_key = wallet
                         .private_key_for_address_with_seed(
                             seed,

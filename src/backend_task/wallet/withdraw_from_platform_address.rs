@@ -53,9 +53,9 @@ impl AppContext {
                 &crate::wallet_backend::SecretScope::HdSeed { seed_hash },
                 async |session| {
                     let plaintext = session.plaintext();
-                    let seed = plaintext.expose_hd_seed().ok_or(
-                        crate::backend_task::error::TaskError::ContactWalletSeedUnavailable,
-                    )?;
+                    let seed = plaintext
+                        .expose_hd_seed()
+                        .ok_or(crate::backend_task::error::TaskError::WalletLocked)?;
                     let signer = DetPlatformSigner::from_held(seed, network, &path_index);
                     sdk.withdraw_address_funds(
                         inputs,

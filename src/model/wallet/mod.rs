@@ -9,10 +9,8 @@ use crate::backend_task::error::TaskError;
 use crate::database::WalletError;
 use crate::model::secret::Secret;
 use crate::model::wallet::auth_pubkey_cache::AuthPubkeyCache;
-use dash_sdk::dpp::ProtocolError;
-use dash_sdk::dpp::address_funds::{AddressWitness, PlatformAddress};
+use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::async_trait::async_trait;
-use dash_sdk::dpp::identity::signer::Signer;
 use dash_sdk::dpp::key_wallet::account::AccountType;
 use dash_sdk::dpp::key_wallet::bip32::{
     ChildNumber, DerivationPath, ExtendedPrivKey, ExtendedPubKey, KeyDerivationType,
@@ -24,7 +22,6 @@ use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
 use dash_sdk::dpp::dashcore::{
     Address, BlockHash, Network, PrivateKey, PublicKey, Transaction, Txid,
 };
-use dash_sdk::dpp::platform_value::BinaryData;
 use std::cmp;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Debug;
@@ -818,36 +815,10 @@ impl Wallet {
         None
     }
 
-    pub fn derive_private_key_in_arc_rw_lock_slice(
-        slice: &[Arc<RwLock<Wallet>>],
-        wallet_seed_hash: WalletSeedHash,
-        derivation_path: &DerivationPath,
-        network: Network,
-    ) -> Result<Option<[u8; 32]>, String> {
-        for wallet in slice {
-            // Attempt to read the wallet from the RwLock
-            let wallet_ref = wallet.read().unwrap();
-            // Check if this wallet's seed hash matches the target hash
-            if wallet_ref.seed_hash() == wallet_seed_hash {
-                // Attempt to derive the private key using the provided derivation path
-                let extended_private_key = derivation_path
-                    .derive_priv_ecdsa_for_master_seed(wallet_ref.seed_bytes()?, network)
-                    .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
-                return Ok(Some(extended_private_key.private_key.secret_bytes()));
-            }
-        }
-        // Return None if no wallet with the matching seed hash is found
-        Ok(None)
-    }
-
-    /// Seed-as-parameter variant of
-    /// [`derive_private_key_in_arc_rw_lock_slice`](Self::derive_private_key_in_arc_rw_lock_slice).
-    ///
-    /// Derives the private key for `derivation_path` from a `seed` borrowed by
+    /// Derive the private key for `derivation_path` from a `seed` borrowed by
     /// the caller (resolved once through the JIT chokepoint), confirming the
-    /// matching wallet is present by `wallet_seed_hash` without reading the
-    /// wallet's parked seed. The derivation is identical to the legacy variant
-    /// — only the seed source differs.
+    /// matching wallet is present in `slice` by `wallet_seed_hash` without
+    /// reading any wallet's parked seed. `Ok(None)` when no wallet matches.
     pub fn derive_private_key_in_arc_rw_lock_slice_with_seed(
         slice: &[Arc<RwLock<Wallet>>],
         wallet_seed_hash: WalletSeedHash,
@@ -1680,38 +1651,16 @@ impl Wallet {
         ))
     }
 
-    /// Generate a Platform receive address.
-    /// Either returns an existing Platform address or generates a new one.
-    pub fn platform_receive_address(
-        &mut self,
-        network: Network,
-        skip_known_addresses: bool,
-        register: Option<&AppContext>,
-    ) -> Result<Address, String> {
-        // If not skipping known addresses, return first existing one
-        // This doesn't require the wallet to be unlocked
-        if !skip_known_addresses {
-            for (path, info) in &self.watched_addresses {
-                if path.is_platform_payment(network) {
-                    return Ok(info.address.clone());
-                }
-            }
-        }
-
-        // Need to generate a new address - this requires the wallet to be unlocked
-        let seed = *self.seed_bytes()?;
-        self.generate_platform_receive_address_with_seed(&seed, network, register)
-    }
-
-    /// Seed-as-parameter variant of the generating half of
-    /// [`platform_receive_address`](Self::platform_receive_address).
+    /// Derive and register a *new* Platform payment address at the next unused
+    /// index from a `seed` borrowed by the caller (resolved through the JIT
+    /// chokepoint).
     ///
-    /// Always derives and registers a *new* Platform payment address at the next
-    /// unused index from a `seed` borrowed by the caller (resolved through the
-    /// JIT chokepoint) instead of the wallet's parked seed. The early
-    /// "return an existing address" shortcut lives in the legacy method; this
-    /// variant is the unlock-required generation step. Same DIP-17 path, same
-    /// per-network derivation, same address.
+    /// Production callers reach this through
+    /// [`AppContext::generate_platform_receive_address`](crate::context::AppContext)
+    /// which opens the secret scope. The "return an existing address" shortcut
+    /// is the caller's responsibility (see `Wallet::platform_addresses`); this
+    /// is the unlock-required generation step. Same DIP-17 path, same
+    /// per-network derivation, same address as the retired parked-seed method.
     pub fn generate_platform_receive_address_with_seed(
         &mut self,
         seed: &[u8; 64],
@@ -1882,140 +1831,6 @@ impl Wallet {
 
         self.platform_address_info
             .insert(address, PlatformAddressInfo { balance, nonce });
-    }
-
-    /// Get the private key for a Platform address.
-    ///
-    /// Still seed-reading: this backs the [`Signer<PlatformAddress>`] impl
-    /// below, which the shielded shield-transition builder
-    /// (`build_shield_transition`) invokes via `&Wallet`. The address-funding
-    /// fund sites moved to `DetPlatformSigner` (D3); retiring this last reader
-    /// is the shielded-signer JIT conversion, tracked separately.
-    #[allow(clippy::result_large_err)]
-    pub fn get_platform_address_private_key(
-        &self,
-        platform_address: &PlatformAddress,
-        network: Network,
-    ) -> Result<PrivateKey, ProtocolError> {
-        // Find the derivation path by looking through watched_addresses
-        // and matching the PlatformAddress
-        let derivation_path = self
-            .watched_addresses
-            .iter()
-            .filter(|(path, _)| path.is_platform_payment(network))
-            .find_map(|(path, info)| {
-                // Try to convert the stored address to a PlatformAddress and compare
-                PlatformAddress::try_from(info.address.clone())
-                    .ok()
-                    .filter(|addr| addr == platform_address)
-                    .map(|_| path.clone())
-            })
-            .ok_or_else(|| {
-                ProtocolError::Generic(format!(
-                    "Platform address {:?} not found in wallet",
-                    platform_address
-                ))
-            })?;
-
-        // Get the seed bytes
-        let seed = *self.seed_bytes().map_err(ProtocolError::Generic)?;
-
-        // Derive the private key
-        let extended_private_key = derivation_path
-            .derive_priv_ecdsa_for_master_seed(&seed, network)
-            .map_err(|e| ProtocolError::Generic(e.to_string()))?;
-
-        Ok(extended_private_key.to_priv())
-    }
-}
-
-/// Signer implementation for Platform addresses
-/// Allows the wallet to sign transactions that spend from Platform addresses.
-///
-/// Still live: the shielded shield-transition builder
-/// (`build_shield_transition`, `backend_task/shielded/bundle.rs`) signs through
-/// `&Wallet`. The four address-funding fund sites moved to `DetPlatformSigner`
-/// (D3); this impl is retired only once the shielded shield signer is converted
-/// to the JIT chokepoint as well.
-#[async_trait]
-impl Signer<PlatformAddress> for Wallet {
-    async fn sign(
-        &self,
-        platform_address: &PlatformAddress,
-        data: &[u8],
-    ) -> Result<BinaryData, ProtocolError> {
-        // Only P2PKH addresses are supported for now
-        if !platform_address.is_p2pkh() {
-            return Err(ProtocolError::Generic(
-                "Only P2PKH Platform addresses are currently supported for signing".to_string(),
-            ));
-        }
-
-        // The Signer trait doesn't pass network info, so we try each network.
-        // This is safe because:
-        // 1. A wallet instance only stores keys for ONE network (set at creation)
-        // 2. Platform addresses encode their network in the bech32m HRP (dash/tdash per DIP-18)
-        // 3. get_platform_address_private_key will only succeed for the correct network
-        // 4. Only one network's derivation will match the wallet's seed
-        let private_key = self
-            .get_platform_address_private_key(platform_address, Network::Mainnet)
-            .or_else(|_| self.get_platform_address_private_key(platform_address, Network::Testnet))
-            .or_else(|_| self.get_platform_address_private_key(platform_address, Network::Devnet))
-            .or_else(|_| {
-                self.get_platform_address_private_key(platform_address, Network::Regtest)
-            })?;
-
-        // Sign the data
-        let signature = dash_sdk::dpp::dashcore::signer::sign(data, private_key.inner.as_ref())
-            .map_err(|e| ProtocolError::Generic(format!("Failed to sign: {}", e)))?;
-
-        Ok(BinaryData::new(signature.to_vec()))
-    }
-
-    async fn sign_create_witness(
-        &self,
-        platform_address: &PlatformAddress,
-        data: &[u8],
-    ) -> Result<AddressWitness, ProtocolError> {
-        // Only P2PKH addresses are supported for now
-        if !platform_address.is_p2pkh() {
-            return Err(ProtocolError::Generic(
-                "Only P2PKH Platform addresses are currently supported for signing".to_string(),
-            ));
-        }
-
-        // The Signer trait doesn't pass network info, so we try each network.
-        // This is safe - see comment in sign() above for explanation.
-        let private_key = self
-            .get_platform_address_private_key(platform_address, Network::Mainnet)
-            .or_else(|_| self.get_platform_address_private_key(platform_address, Network::Testnet))
-            .or_else(|_| self.get_platform_address_private_key(platform_address, Network::Devnet))
-            .or_else(|_| {
-                self.get_platform_address_private_key(platform_address, Network::Regtest)
-            })?;
-
-        // Sign the data - produces a compact recoverable signature
-        // The public key will be recovered from the signature during verification
-        let signature = dash_sdk::dpp::dashcore::signer::sign(data, private_key.inner.as_ref())
-            .map_err(|e| ProtocolError::Generic(format!("Failed to sign: {}", e)))?;
-
-        Ok(AddressWitness::P2pkh {
-            signature: BinaryData::new(signature.to_vec()),
-        })
-    }
-
-    fn can_sign_with(&self, platform_address: &PlatformAddress) -> bool {
-        // Only P2PKH addresses are supported
-        if !platform_address.is_p2pkh() {
-            return false;
-        }
-
-        // Check if we have the private key for this address
-        self.get_platform_address_private_key(platform_address, Network::Mainnet)
-            .or_else(|_| self.get_platform_address_private_key(platform_address, Network::Testnet))
-            .or_else(|_| self.get_platform_address_private_key(platform_address, Network::Devnet))
-            .or_else(|_| self.get_platform_address_private_key(platform_address, Network::Regtest))
-            .is_ok()
     }
 }
 
@@ -2891,31 +2706,37 @@ mod tests {
         assert_eq!(reference.to_bytes(), param.to_bytes());
     }
 
-    /// `generate_platform_receive_address_with_seed` derives byte-identical
-    /// Platform receive addresses to the legacy `platform_receive_address`
-    /// generate branch — only the seed SOURCE differs, never the DIP-17 path.
+    /// `generate_platform_receive_address_with_seed` derives the DIP-17
+    /// platform-payment address at the next unused index. On a fresh wallet
+    /// that is index 0 — assert byte parity against a direct reference
+    /// derivation at `platform_payment_path(network, 0, 0, 0)` (the legacy
+    /// parked-seed `platform_receive_address` it replaced is gone).
     #[test]
     fn platform_receive_address_seed_param_matches() {
         for network in [Network::Testnet, Network::Mainnet] {
-            let mut legacy_wallet = test_wallet();
             let mut param_wallet = test_wallet();
-            let seed = *legacy_wallet.seed_bytes().expect("open wallet");
+            let seed = *param_wallet.seed_bytes().expect("open wallet");
 
-            let legacy = legacy_wallet
-                .platform_receive_address(network, true, None)
-                .expect("legacy generate");
+            let reference_path = DerivationPath::platform_payment_path(network, 0, 0, 0);
+            let reference_xprv = reference_path
+                .derive_priv_ecdsa_for_master_seed(&seed, network)
+                .expect("reference derive");
+            let secp = Secp256k1::new();
+            let reference = Address::p2pkh(&reference_xprv.to_priv().public_key(&secp), network);
+
             let param = param_wallet
                 .generate_platform_receive_address_with_seed(&seed, network, None)
                 .expect("seed-param generate");
             assert_eq!(
-                legacy, param,
+                reference, param,
                 "platform receive address drift for {network:?}"
             );
         }
     }
 
-    /// `derive_private_key_in_arc_rw_lock_slice_with_seed` matches the legacy
-    /// slice-derive that reads the parked seed.
+    /// `derive_private_key_in_arc_rw_lock_slice_with_seed` matches a direct
+    /// BIP-32 reference derivation at the same path (the legacy parked-seed
+    /// slice-derive it replaced is gone, so parity is anchored independently).
     #[test]
     fn slice_derive_seed_param_matches() {
         let network = Network::Testnet;
@@ -2925,16 +2746,17 @@ mod tests {
         let slice = vec![Arc::new(RwLock::new(wallet))];
 
         let path = DerivationPath::identity_registration_path(network, 0);
-        let legacy =
-            Wallet::derive_private_key_in_arc_rw_lock_slice(&slice, seed_hash, &path, network)
-                .expect("legacy")
-                .expect("found");
+        let reference = path
+            .derive_priv_ecdsa_for_master_seed(&seed, network)
+            .expect("reference derive")
+            .private_key
+            .secret_bytes();
         let param = Wallet::derive_private_key_in_arc_rw_lock_slice_with_seed(
             &slice, seed_hash, &seed, &path, network,
         )
         .expect("param")
         .expect("found");
-        assert_eq!(legacy, param);
+        assert_eq!(reference, param);
 
         // A non-matching seed hash yields None on the seed-param path too.
         let other_hash = [0xEE; 32];

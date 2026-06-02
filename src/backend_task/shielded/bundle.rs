@@ -4,6 +4,7 @@ use crate::context::shielded::get_proving_key;
 use crate::model::fee_estimation::{format_credits_as_dash, shielded_fee_for_actions};
 use crate::model::wallet::WalletSeedHash;
 use crate::model::wallet::shielded::{ShieldedNote, ShieldedWalletState};
+use crate::wallet_backend::{DetPlatformSigner, PlatformPathIndex, SecretScope};
 use dash_sdk::dpp::address_funds::{
     AddressFundsFeeStrategy, AddressFundsFeeStrategyStep, OrchardAddress, PlatformAddress,
 };
@@ -114,23 +115,45 @@ pub fn build_shield_credit(
     let fee_strategy: AddressFundsFeeStrategy =
         vec![AddressFundsFeeStrategyStep::DeductFromInput(0)];
 
-    let wallet = wallet_arc.read()?;
-    // memo: 36-byte structured memo (4-byte type tag + 32-byte payload); all zeros = empty memo
-    // `build_shield_transition` is async (signer trait is async). This fn is
-    // sync and only ever called from inside `spawn_blocking`, so bridge with
-    // a local executor rather than propagating async up the call stack.
-    futures::executor::block_on(build_shield_transition(
-        &recipient_addr,
-        amount,
-        inputs,
-        fee_strategy,
-        &*wallet,
-        0,
-        &prover,
-        [0u8; 36],
-        sdk.version(),
-    ))
-    .map_err(|e| shielded_build_error(e.to_string()))
+    // Build the pure address→path index before touching the secret. The read
+    // guard is dropped here so the seed scope below holds no wallet lock.
+    let network = app_context.network;
+    let path_index = {
+        let wallet = wallet_arc.read()?;
+        PlatformPathIndex::from_wallet(&wallet, network)
+    };
+
+    let backend = app_context.wallet_backend()?;
+    let seed_hash = *seed_hash;
+    // memo: 36-byte structured memo (4-byte type tag + 32-byte payload); all zeros = empty memo.
+    // `build_shield_transition` is async (the platform signer trait is async)
+    // and so is the JIT secret chokepoint. This fn is sync and only ever called
+    // from inside `spawn_blocking`, so bridge both with a local executor rather
+    // than propagating async up the call stack. The seed is borrowed for this
+    // one build via `DetPlatformSigner` and zeroizes when the scope returns.
+    futures::executor::block_on(async {
+        backend
+            .secret_access()
+            .with_secret_session(&SecretScope::HdSeed { seed_hash }, async |session| {
+                let plaintext = session.plaintext();
+                let seed = plaintext.expose_hd_seed().ok_or(TaskError::WalletLocked)?;
+                let signer = DetPlatformSigner::from_held(seed, network, &path_index);
+                build_shield_transition(
+                    &recipient_addr,
+                    amount,
+                    inputs,
+                    fee_strategy,
+                    &signer,
+                    0,
+                    &prover,
+                    [0u8; 36],
+                    sdk.version(),
+                )
+                .await
+                .map_err(|e| shielded_build_error(e.to_string()))
+            })
+            .await
+    })
 }
 
 /// Build and broadcast a Shield transition (transparent -> shielded pool).
@@ -197,24 +220,40 @@ pub async fn shield_credits(
         *s.lock()? = ShieldStage::BuildingProof { nonce };
     }
 
-    let state_transition = {
+    // Build the pure address→path index before the secret scope; the read
+    // guard never crosses an await.
+    let network = app_context.network;
+    let path_index = {
         let wallet = wallet_arc.read()?;
-        // memo: 36-byte structured memo (4-byte type tag + 32-byte payload); all zeros = empty memo
-        // `build_shield_transition` is async (signer trait is async); bridge
-        // with a local executor so the std read guard never crosses an await.
-        futures::executor::block_on(build_shield_transition(
-            &recipient_addr,
-            amount,
-            inputs,
-            fee_strategy,
-            &*wallet,
-            0,
-            &prover,
-            [0u8; 36],
-            sdk.version(),
-        ))
-        .map_err(|e| shielded_build_error(e.to_string()))?
+        PlatformPathIndex::from_wallet(&wallet, network)
     };
+
+    let backend = app_context.wallet_backend()?;
+    let seed_hash = *seed_hash;
+    // memo: 36-byte structured memo (4-byte type tag + 32-byte payload); all zeros = empty memo.
+    // Sign the shield input through a JIT platform signer that borrows the HD
+    // seed only for this build; the seed zeroizes when the scope returns.
+    let state_transition = backend
+        .secret_access()
+        .with_secret_session(&SecretScope::HdSeed { seed_hash }, async |session| {
+            let plaintext = session.plaintext();
+            let seed = plaintext.expose_hd_seed().ok_or(TaskError::WalletLocked)?;
+            let signer = DetPlatformSigner::from_held(seed, network, &path_index);
+            build_shield_transition(
+                &recipient_addr,
+                amount,
+                inputs,
+                fee_strategy,
+                &signer,
+                0,
+                &prover,
+                [0u8; 36],
+                sdk.version(),
+            )
+            .await
+            .map_err(|e| shielded_build_error(e.to_string()))
+        })
+        .await?;
 
     if let Some(s) = &stage {
         *s.lock()? = ShieldStage::Broadcasting;

@@ -1,6 +1,7 @@
 pub mod encrypted_key_storage;
 pub mod qualified_identity_public_key;
 
+use crate::backend_task::error::TaskError;
 use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::wallet::{Wallet, WalletSeedHash};
@@ -220,6 +221,12 @@ pub struct QualifiedIdentity {
     pub private_keys: KeyStorage,
     pub dpns_names: Vec<DPNSNameInfo>,
     pub associated_wallets: BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>,
+    /// The JIT secret chokepoint, attached alongside `associated_wallets` when
+    /// the identity is hydrated. Lets the async `sign` path fetch the HD seed
+    /// just-in-time (no parked seed read) for the ECDSA_HASH160 recovery scan.
+    /// Skipped by Encode/Decode and excluded from `PartialEq`, exactly like
+    /// `associated_wallets` — it is a runtime wiring handle, not identity data.
+    pub secret_access: Option<crate::wallet_backend::SecretAccess>,
     /// The index used to register the identity
     pub wallet_index: Option<u32>,
     pub top_ups: BTreeMap<u32, u64>,
@@ -285,6 +292,7 @@ impl<C> Decode<C> for QualifiedIdentity {
             private_keys: KeyStorage::decode(decoder)?,
             dpns_names: Vec::<DPNSNameInfo>::decode(decoder)?,
             associated_wallets: BTreeMap::new(), // Initialize with an empty vector
+            secret_access: None,                 // Runtime wiring, attached at hydration
             wallet_index: None,
             top_ups: Default::default(),
             status: IdentityStatus::Unknown, // Loaded from the database, not encoded
@@ -385,50 +393,16 @@ impl Signer<IdentityPublicKey> for QualifiedIdentity {
                         let hash160 = ripemd160::Hash::hash(sha256_hash.as_byte_array());
 
                         if hash160.as_byte_array() != platform_key_data {
-                            // Mismatch detected - scan identity indices to find the correct derivation path
-                            use dash_sdk::dpp::key_wallet::bip32::{
-                                DerivationPath as DP, KeyDerivationType,
-                            };
-
-                            if let Some(wallet) = self.associated_wallets.values().next()
-                                && let Ok(wallet_ref) = wallet.read()
-                                && let Ok(seed) = wallet_ref.seed_bytes()
+                            // Mismatch detected — scan identity indices to find
+                            // the correct derivation path. The HD seed is
+                            // fetched just-in-time through the JIT chokepoint
+                            // (no parked-seed read) and the scan runs inside the
+                            // closure, so the seed never enters this layer.
+                            if let Some(found) = self
+                                .sign_via_hash160_path_scan(data, key_id, platform_key_data)
+                                .await?
                             {
-                                // Scan identity indices 0-9 to find matching key
-                                for identity_index in 0..10u32 {
-                                    let correct_path = DP::identity_authentication_path(
-                                        self.network,
-                                        KeyDerivationType::ECDSA,
-                                        identity_index,
-                                        key_id,
-                                    );
-
-                                    if let Ok(extended_key) = correct_path
-                                        .derive_priv_ecdsa_for_master_seed(seed, self.network)
-                                    {
-                                        let correct_pubkey = PublicKey::new(
-                                            extended_key.private_key.public_key(&secp),
-                                        );
-                                        let correct_hash = ripemd160::Hash::hash(
-                                            sha256::Hash::hash(&correct_pubkey.to_bytes())
-                                                .as_byte_array(),
-                                        );
-
-                                        if correct_hash.as_byte_array() == platform_key_data {
-                                            tracing::info!(
-                                                identity_index = identity_index,
-                                                key_id = key_id,
-                                                path = %correct_path,
-                                                "Using corrected derivation path for signing (found via scan)"
-                                            );
-                                            let signature = signer::sign(
-                                                data,
-                                                &extended_key.private_key.secret_bytes(),
-                                            )?;
-                                            return Ok(signature.to_vec().into());
-                                        }
-                                    }
-                                }
+                                return Ok(found);
                             }
 
                             tracing::error!(
@@ -540,6 +514,119 @@ impl QualifiedIdentity {
         bincode::decode_from_slice(bytes, bincode::config::standard())
             .map(|(identity, _)| identity)
             .map_err(|e| format!("Failed to decode QualifiedIdentity: {}", e))
+    }
+
+    /// The seed hash of the wallet DashPay derives contact keys against.
+    ///
+    /// When an identity has more than one associated wallet, both the
+    /// send-side (contact-request xpub) and the receive-side (incoming
+    /// address scan) MUST select the *same* wallet, or a contact would pay
+    /// into addresses the recipient never scans. `associated_wallets` is a
+    /// `BTreeMap<WalletSeedHash, _>`, so the first key is the lowest seed
+    /// hash — a stable, content-derived choice that does not depend on
+    /// insertion order. Both sides call this one helper so the rule lives in
+    /// exactly one place (SEC-W-001).
+    pub fn dashpay_wallet_seed_hash(&self) -> Option<WalletSeedHash> {
+        self.associated_wallets.keys().next().copied()
+    }
+
+    /// The wallet DashPay derives contact keys against (see
+    /// [`Self::dashpay_wallet_seed_hash`] for the selection rule). The
+    /// receive side needs the wallet handle to register scanned addresses;
+    /// the send side needs only the seed hash. Both resolve to the same
+    /// wallet by construction.
+    pub fn dashpay_wallet(&self) -> Option<(WalletSeedHash, &Arc<RwLock<Wallet>>)> {
+        self.associated_wallets
+            .iter()
+            .next()
+            .map(|(hash, wallet)| (*hash, wallet))
+    }
+
+    /// ECDSA_HASH160 recovery scan: when the stored derivation path produces a
+    /// public-key hash that disagrees with Platform's, scan identity indices
+    /// 0..10 for the path whose derived key matches `platform_key_data`, and
+    /// sign `data` with it.
+    ///
+    /// The HD seed is fetched just-in-time through the [`SecretAccess`]
+    /// chokepoint (keyed by the identity's first associated wallet seed hash)
+    /// and the whole scan runs inside the closure — the seed is borrowed for
+    /// this one operation and zeroizes when the closure returns; it never
+    /// enters the model layer by value.
+    ///
+    /// Returns `Ok(None)` when the chokepoint is not wired or no associated
+    /// wallet exists (best-effort recovery — the caller falls back to the
+    /// originally resolved key). Chokepoint failures (e.g. a cancelled
+    /// passphrase prompt) surface as a [`ProtocolError`].
+    async fn sign_via_hash160_path_scan(
+        &self,
+        data: &[u8],
+        key_id: KeyID,
+        platform_key_data: &[u8],
+    ) -> Result<Option<BinaryData>, ProtocolError> {
+        use dash_sdk::dpp::dashcore::PublicKey;
+        use dash_sdk::dpp::dashcore::hashes::{Hash, ripemd160, sha256};
+        use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
+        use dash_sdk::dpp::key_wallet::bip32::{DerivationPath as DP, KeyDerivationType};
+
+        let (Some(secret_access), Some(seed_hash)) =
+            (self.secret_access.as_ref(), self.dashpay_wallet_seed_hash())
+        else {
+            return Ok(None);
+        };
+
+        let network = self.network;
+        // Owned so the closure (`'static`-friendly capture) needs no borrow of
+        // `data`/`platform_key_data` across the await.
+        let data = data.to_vec();
+        let platform_key_data = platform_key_data.to_vec();
+
+        secret_access
+            .with_secret(
+                &crate::wallet_backend::SecretScope::HdSeed { seed_hash },
+                |plaintext| {
+                    let Some(seed) = plaintext.expose_hd_seed() else {
+                        return Ok(None);
+                    };
+                    let secp = Secp256k1::new();
+                    for identity_index in 0..10u32 {
+                        let correct_path = DP::identity_authentication_path(
+                            network,
+                            KeyDerivationType::ECDSA,
+                            identity_index,
+                            key_id,
+                        );
+                        let Ok(extended_key) =
+                            correct_path.derive_priv_ecdsa_for_master_seed(seed, network)
+                        else {
+                            continue;
+                        };
+                        let correct_pubkey =
+                            PublicKey::new(extended_key.private_key.public_key(&secp));
+                        let correct_hash = ripemd160::Hash::hash(
+                            sha256::Hash::hash(&correct_pubkey.to_bytes()).as_byte_array(),
+                        );
+                        if correct_hash.as_byte_array() == platform_key_data.as_slice() {
+                            tracing::info!(
+                                identity_index = identity_index,
+                                key_id = key_id,
+                                path = %correct_path,
+                                "Using corrected derivation path for signing (found via scan)"
+                            );
+                            let signature =
+                                signer::sign(&data, &extended_key.private_key.secret_bytes())
+                                    .map_err(|_| TaskError::EncryptionError {
+                                        detail:
+                                            "Failed to sign with the recovered derivation path."
+                                                .to_string(),
+                                    })?;
+                            return Ok(Some(BinaryData::from(signature.to_vec())));
+                        }
+                    }
+                    Ok(None)
+                },
+            )
+            .await
+            .map_err(|e| ProtocolError::Generic(format!("HASH160 recovery scan failed: {e}")))
     }
 
     pub fn display_string(&self) -> String {

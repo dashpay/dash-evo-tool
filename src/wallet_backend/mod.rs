@@ -49,7 +49,7 @@ pub mod wallet_seed_store;
 pub(crate) mod wallet_seed_store;
 
 pub use dashpay::DashpayView;
-pub(crate) use dashpay::derive_contact_xpub_material;
+pub(crate) use dashpay::{derive_contact_info_encryption_keys, derive_contact_xpub_material};
 pub use shielded::{InsertShieldedNote, SHIELDED_SIDECAR_FILE, ShieldedNoteRow, ShieldedView};
 
 pub(crate) use det_signer::DetSigner;

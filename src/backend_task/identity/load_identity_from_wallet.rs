@@ -235,6 +235,7 @@ impl AppContext {
             private_keys: Default::default(),
             dpns_names: Vec::new(),
             associated_wallets: BTreeMap::new(),
+            secret_access: None,
             wallet_index: None,
             top_ups: Default::default(),
             status: IdentityStatus::Active,
@@ -246,6 +247,7 @@ impl AppContext {
         qualified_identity.dpns_names = maybe_owned_dpns_names;
         qualified_identity.associated_wallets =
             BTreeMap::from([(wallet_seed_hash, wallet_arc_ref.wallet.clone())]);
+        qualified_identity.secret_access = self.wallet_backend().ok().map(|b| b.secret_access());
         qualified_identity.wallet_index = Some(identity_index);
         qualified_identity.status = IdentityStatus::Active;
         qualified_identity.network = self.network;

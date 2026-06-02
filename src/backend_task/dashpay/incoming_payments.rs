@@ -76,23 +76,14 @@ pub async fn register_dashpay_addresses_for_identity(
     let mut result = DashPayAddressRegistrationResult::default();
     let our_identity_id = identity.identity.id();
 
-    // Get the wallet seed
-    let wallet = identity
-        .associated_wallets
-        .values()
-        .next()
+    // Select the DashPay wallet (lowest associated seed hash). The receive
+    // side must pick the SAME wallet the send side published the contact-xpub
+    // from, or the contact pays into addresses we never scan — both sides
+    // resolve through `QualifiedIdentity::dashpay_wallet` (SEC-W-001).
+    let (seed_hash, wallet) = identity
+        .dashpay_wallet()
         .ok_or("No wallet associated with identity")?;
-
-    let seed = {
-        let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
-        if !wallet_guard.is_open() {
-            return Err("Wallet must be unlocked to register DashPay addresses".to_string());
-        }
-        wallet_guard
-            .seed_bytes()
-            .map_err(|e| format!("Wallet seed not available: {}", e))?
-            .to_vec()
-    };
+    let wallet = wallet.clone();
 
     // Load all contacts for this identity from the WalletBackend DashPay
     // adapter — the upstream-backed source of truth. After D4c there is no
@@ -132,96 +123,112 @@ pub async fn register_dashpay_addresses_for_identity(
 
     let network = app_context.network;
 
-    for contact in contacts {
-        let contact_id = match Identifier::from_bytes(&contact.contact_identity_id) {
-            Ok(id) => id,
-            Err(e) => {
-                result.errors.push(format!("Invalid contact ID: {}", e));
-                continue;
-            }
-        };
+    // Fetch the HD seed just-in-time through the chokepoint and derive every
+    // contact's receiving addresses inside the one session scope — the seed
+    // is borrowed for this single registration run and zeroizes when the
+    // closure returns; it never enters this layer by value.
+    let derived = app_context
+        .wallet_backend()
+        .map_err(|e| format!("Wallet backend not yet available: {}", e))?
+        .secret_access()
+        .with_secret_session(
+            &crate::wallet_backend::SecretScope::HdSeed { seed_hash },
+            async |session| {
+                let plaintext = session.plaintext();
+                let seed = plaintext
+                    .expose_hd_seed()
+                    .ok_or(TaskError::ContactWalletSeedUnavailable)?;
 
-        // Get the current highest receive index for this contact
-        let highest_receive_index = indices_map
-            .get(&contact.contact_identity_id)
-            .map(|idx| idx.highest_receive_index)
-            .unwrap_or(0);
+                let mut derived: Vec<(Identifier, u32, Vec<DashPayReceivingAddress>)> = Vec::new();
+                for contact in &contacts {
+                    let contact_id = match Identifier::from_bytes(&contact.contact_identity_id) {
+                        Ok(id) => id,
+                        Err(e) => {
+                            result.errors.push(format!("Invalid contact ID: {}", e));
+                            continue;
+                        }
+                    };
 
-        // Get how many addresses are already registered with bloom filter
-        let bloom_registered = indices_map
-            .get(&contact.contact_identity_id)
-            .map(|idx| idx.bloom_registered_count)
-            .unwrap_or(0);
+                    let highest_receive_index = indices_map
+                        .get(&contact.contact_identity_id)
+                        .map(|idx| idx.highest_receive_index)
+                        .unwrap_or(0);
+                    let bloom_registered = indices_map
+                        .get(&contact.contact_identity_id)
+                        .map(|idx| idx.bloom_registered_count)
+                        .unwrap_or(0);
 
-        // Calculate how many new addresses we need to derive
-        // We want addresses from 0 to (highest_receive_index + GAP_LIMIT)
-        let target_count = highest_receive_index.saturating_add(DASHPAY_GAP_LIMIT);
+                    // Derive 0..(highest_receive_index + GAP_LIMIT), skipping
+                    // what the bloom filter already covers.
+                    let target_count = highest_receive_index.saturating_add(DASHPAY_GAP_LIMIT);
+                    if target_count <= bloom_registered {
+                        result.contacts_processed += 1;
+                        continue;
+                    }
 
-        // Only derive new addresses if we need more than what's registered
-        if target_count <= bloom_registered {
-            result.contacts_processed += 1;
-            continue;
-        }
+                    let start_index = bloom_registered;
+                    let count = target_count - bloom_registered;
 
-        let start_index = bloom_registered;
-        let count = target_count - bloom_registered;
-
-        // Derive the receiving addresses
-        match derive_receiving_addresses_for_contact(
-            &seed,
-            network,
-            &our_identity_id,
-            &contact_id,
-            start_index,
-            count,
-        ) {
-            Ok(addresses) => {
-                // Register each address with the wallet
-                for addr_info in &addresses {
-                    if let Err(e) = register_dashpay_address(
-                        app_context,
-                        wallet,
-                        &addr_info.address,
+                    match derive_receiving_addresses_for_contact(
+                        seed,
+                        network,
                         &our_identity_id,
                         &contact_id,
-                        addr_info.address_index,
+                        start_index,
+                        count,
                     ) {
-                        result.errors.push(format!(
-                            "Failed to register address for contact {}: {}",
-                            contact_id.to_string(Encoding::Base58),
-                            e
-                        ));
-                    } else {
-                        result.addresses_registered += 1;
+                        Ok(addresses) => derived.push((contact_id, target_count, addresses)),
+                        Err(e) => {
+                            result.errors.push(format!(
+                                "Failed to derive addresses for contact {}: {}",
+                                contact_id.to_string(Encoding::Base58),
+                                e
+                            ));
+                        }
                     }
                 }
+                Ok(derived)
+            },
+        )
+        .await
+        .map_err(|e| e.to_string())?;
 
-                // Update the bloom_registered_count in the sidecar (RMW the
-                // shared `ContactAddressIndex` record so we don't clobber a
-                // higher receive cursor written by a concurrent payment).
-                if let Err(e) = set_bloom_registered_count(
-                    &backend,
-                    &our_identity_id,
-                    &contact_id,
-                    target_count,
-                ) {
-                    result.errors.push(format!(
-                        "Failed to update bloom count for contact {}: {}",
-                        contact_id.to_string(Encoding::Base58),
-                        e
-                    ));
-                }
-
-                result.contacts_processed += 1;
-            }
-            Err(e) => {
+    // Register the derived addresses with the wallet outside the secret scope
+    // — registration touches no plaintext seed.
+    for (contact_id, target_count, addresses) in derived {
+        for addr_info in &addresses {
+            if let Err(e) = register_dashpay_address(
+                app_context,
+                &wallet,
+                &addr_info.address,
+                &our_identity_id,
+                &contact_id,
+                addr_info.address_index,
+            ) {
                 result.errors.push(format!(
-                    "Failed to derive addresses for contact {}: {}",
+                    "Failed to register address for contact {}: {}",
                     contact_id.to_string(Encoding::Base58),
                     e
                 ));
+            } else {
+                result.addresses_registered += 1;
             }
         }
+
+        // Update the bloom_registered_count in the sidecar (RMW the shared
+        // `ContactAddressIndex` record so we don't clobber a higher receive
+        // cursor written by a concurrent payment).
+        if let Err(e) =
+            set_bloom_registered_count(&backend, &our_identity_id, &contact_id, target_count)
+        {
+            result.errors.push(format!(
+                "Failed to update bloom count for contact {}: {}",
+                contact_id.to_string(Encoding::Base58),
+                e
+            ));
+        }
+
+        result.contacts_processed += 1;
     }
 
     Ok(result)

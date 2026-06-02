@@ -135,6 +135,79 @@ pub(crate) fn derive_contact_xpub_material(
     })
 }
 
+/// Derive the DIP-0015 contactInfo encryption key pair from the wallet's real
+/// HD seed.
+///
+/// DIP-0015 roots both keys at the encryption root `m/9'/coin'/15'/0'`, then:
+/// - **Key1** (`encToUserId`): `root/(2^16)'/index'`
+/// - **Key2** (`privateData`): `root/(2^16 + 1)'/index'`
+///
+/// The coin type is selected per network so testnet keys match the
+/// spec-compliant counterparty. Both `contacts` (decrypt) and `contact_info`
+/// (encrypt) callers derive through this single helper, so the BIP-32
+/// derivation lives in exactly one place and the raw seed never leaves the
+/// `wallet_backend` seam.
+///
+/// * `seed_bytes`       - The wallet's 64-byte BIP-39 HD seed (borrowed).
+/// * `network`          - Network for coin-type selection in the path.
+/// * `derivation_index` - The contactInfo document's derivation index.
+pub(crate) fn derive_contact_info_encryption_keys(
+    seed_bytes: &[u8; 64],
+    network: Network,
+    derivation_index: u32,
+) -> Result<([u8; 32], [u8; 32]), TaskError> {
+    use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath, ExtendedPrivKey};
+    use std::str::FromStr;
+
+    let derive_err =
+        |e: dash_sdk::dpp::key_wallet::bip32::Error| TaskError::ContactKeyDerivationFailed {
+            source: Box::new(e),
+        };
+
+    let master_xprv = ExtendedPrivKey::new_master(network, seed_bytes).map_err(derive_err)?;
+
+    // Encryption root path: m/9'/coin'/15'/0'
+    let coin_type = crate::model::wallet::coin_type_for_network(network);
+    let root_path =
+        DerivationPath::from_str(&format!("m/9'/{coin_type}'/15'/0'")).map_err(derive_err)?;
+
+    let secp = dash_sdk::dpp::dashcore::secp256k1::Secp256k1::new();
+    let root = master_xprv
+        .derive_priv(&secp, &root_path)
+        .map_err(derive_err)?;
+
+    // Key1 (encToUserId): root/(2^16)'/index'
+    let key1 = root
+        .derive_priv(
+            &secp,
+            &[ChildNumber::from_hardened_idx(65536).map_err(derive_err)?],
+        )
+        .map_err(derive_err)?
+        .derive_priv(
+            &secp,
+            &[ChildNumber::from_hardened_idx(derivation_index).map_err(derive_err)?],
+        )
+        .map_err(derive_err)?;
+
+    // Key2 (privateData): root/(2^16 + 1)'/index'
+    let key2 = root
+        .derive_priv(
+            &secp,
+            &[ChildNumber::from_hardened_idx(65537).map_err(derive_err)?],
+        )
+        .map_err(derive_err)?
+        .derive_priv(
+            &secp,
+            &[ChildNumber::from_hardened_idx(derivation_index).map_err(derive_err)?],
+        )
+        .map_err(derive_err)?;
+
+    Ok((
+        key1.private_key.secret_bytes(),
+        key2.private_key.secret_bytes(),
+    ))
+}
+
 // ---------------------------------------------------------------------------
 // K/V sidecar key prefixes
 // ---------------------------------------------------------------------------
@@ -2132,6 +2205,114 @@ mod tests {
         assert_ne!(
             from_seed.public_key, from_placeholder.public_key,
             "deriving from the real HD seed must differ from the old private-key placeholder"
+        );
+    }
+
+    /// SEC-W-001 multi-wallet fund-routing invariant. When a DashPay identity
+    /// has more than one associated wallet, the send-side wallet selection
+    /// (`QualifiedIdentity::dashpay_wallet_seed_hash`, used by
+    /// `contact_requests` / `contact_info`) and the receive-side selection
+    /// (`QualifiedIdentity::dashpay_wallet`, used by `incoming_payments`) MUST
+    /// resolve to the same wallet — the lowest seed hash — or a contact would
+    /// pay into addresses the recipient never scans.
+    ///
+    /// Proves the full chain:
+    /// 1. both accessors pick the same (lowest-hash) wallet;
+    /// 2. the contact xpub the send side publishes from the selected seed
+    ///    equals the xpub the receive side scans from the selected seed
+    ///    (published == scanned);
+    /// 3. the *other* wallet's seed derives a different xpub — i.e. picking the
+    ///    wrong wallet would route funds astray, so the agreement is load-bearing.
+    #[test]
+    fn multi_wallet_send_and_receive_select_same_wallet() {
+        use crate::backend_task::dashpay::hd_derivation::derive_dashpay_incoming_xpub;
+        use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
+        use crate::model::wallet::Wallet;
+        use dash_sdk::dpp::identity::Identity;
+        use dash_sdk::dpp::version::PlatformVersion;
+        use std::collections::BTreeMap;
+        use std::sync::{Arc, RwLock};
+
+        let network = Network::Testnet;
+        let (sender, recipient) = contact_ids();
+
+        // Two distinct HD seeds → two wallets with distinct seed hashes.
+        let seed_a = [0x11u8; 64];
+        let seed_b = [0x99u8; 64];
+        let wallet_a = Wallet::new_from_seed(seed_a, network, None, None).expect("wallet a");
+        let wallet_b = Wallet::new_from_seed(seed_b, network, None, None).expect("wallet b");
+        let hash_a = wallet_a.seed_hash();
+        let hash_b = wallet_b.seed_hash();
+        assert_ne!(hash_a, hash_b, "test seeds must produce distinct hashes");
+
+        // The selected (lowest-hash) wallet's seed, and the other one.
+        let (selected_hash, selected_seed, other_seed) = if hash_a <= hash_b {
+            (hash_a, seed_a, seed_b)
+        } else {
+            (hash_b, seed_b, seed_a)
+        };
+
+        let mut associated_wallets = BTreeMap::new();
+        associated_wallets.insert(hash_a, Arc::new(RwLock::new(wallet_a)));
+        associated_wallets.insert(hash_b, Arc::new(RwLock::new(wallet_b)));
+
+        let identity = Identity::create_basic_identity(sender, PlatformVersion::latest())
+            .expect("basic identity");
+        let qi = QualifiedIdentity {
+            identity,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: None,
+            private_keys: Default::default(),
+            dpns_names: vec![],
+            associated_wallets,
+            secret_access: None,
+            wallet_index: None,
+            top_ups: Default::default(),
+            status: IdentityStatus::Active,
+            network,
+        };
+
+        // (1) Both sides select the same wallet — the lowest seed hash.
+        let send_side = qi.dashpay_wallet_seed_hash().expect("send-side selection");
+        let (recv_side, _) = qi.dashpay_wallet().expect("receive-side selection");
+        assert_eq!(
+            send_side, recv_side,
+            "send-side and receive-side must select the same wallet"
+        );
+        assert_eq!(
+            send_side, selected_hash,
+            "selection must be the lowest seed hash"
+        );
+
+        // (2) Published (send side) == scanned (receive side) for the selected seed.
+        let published = derive_contact_xpub_material(
+            &selected_seed,
+            network,
+            0,
+            &sender,
+            &recipient,
+            &TEST_SECRET,
+        )
+        .expect("send-side material");
+        let scanned = derive_dashpay_incoming_xpub(&selected_seed, network, 0, &sender, &recipient)
+            .expect("receive-side xpub");
+        assert_eq!(
+            published.public_key,
+            scanned.public_key.serialize(),
+            "published xpub must equal the scanned xpub for the selected wallet"
+        );
+
+        // (3) The other wallet's seed derives a different xpub — agreement matters.
+        let other_scanned =
+            derive_dashpay_incoming_xpub(&other_seed, network, 0, &sender, &recipient)
+                .expect("other-side xpub");
+        assert_ne!(
+            published.public_key,
+            other_scanned.public_key.serialize(),
+            "the unselected wallet's seed must derive a different xpub"
         );
     }
 }

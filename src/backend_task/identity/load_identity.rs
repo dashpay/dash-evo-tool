@@ -387,6 +387,7 @@ impl AppContext {
                     Ok::<_, TaskError>((w.seed_hash(), wallet.clone()))
                 })
                 .collect::<Result<_, _>>()?,
+            secret_access: self.wallet_backend().ok().map(|b| b.secret_access()),
             wallet_index: None, //todo
             top_ups: Default::default(),
             status: IdentityStatus::Active,

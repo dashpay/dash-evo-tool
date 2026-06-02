@@ -15,13 +15,11 @@ use dash_sdk::dpp::document::{
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
-use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath, ExtendedPrivKey};
 use dash_sdk::dpp::platform_value::{Bytes32, Value};
 use dash_sdk::drive::query::{WhereClause, WhereOperator};
 use dash_sdk::platform::documents::transitions::DocumentCreateTransitionBuilder;
 use dash_sdk::platform::{Document, DocumentQuery, FetchMany, Identifier};
 use std::collections::{BTreeMap, HashSet};
-use std::str::FromStr;
 use std::sync::Arc;
 
 // ContactInfo private data structure
@@ -118,96 +116,42 @@ impl ContactInfoPrivateData {
     }
 }
 
-/// Derive encryption keys for contactInfo using BIP32 CKDpriv as specified in DIP-0015.
+/// Derive the DIP-0015 contactInfo encryption keys for `identity`, fetching
+/// the wallet's HD seed just-in-time through the [`SecretAccess`] chokepoint.
 ///
-/// DIP-0015 specifies:
-/// - Key1 (for encToUserId): rootEncryptionKey/(2^16)'/index'
-/// - Key2 (for privateData): rootEncryptionKey/(2^16 + 1)'/index'
-///
-/// We use the wallet's master seed to derive a root encryption key,
-/// then apply BIP32 hardened derivation for the two encryption keys.
-fn derive_contact_info_keys(
+/// The seed is obtained per-operation via
+/// [`SecretAccess::with_secret`](crate::wallet_backend::SecretAccess::with_secret)
+/// keyed by the identity's DashPay wallet seed hash, and the BIP-32
+/// derivation runs inside the closure through the shared
+/// [`derive_contact_info_encryption_keys`](crate::wallet_backend::derive_contact_info_encryption_keys)
+/// helper — the raw seed never enters this layer.
+async fn derive_contact_info_keys(
+    app_context: &Arc<AppContext>,
     identity: &QualifiedIdentity,
     derivation_index: u32,
-) -> Result<([u8; 32], [u8; 32]), String> {
-    // Get the wallet seed from the identity's associated wallet
-    let wallet = identity
-        .associated_wallets
-        .values()
-        .next()
-        .ok_or("No wallet associated with identity for key derivation")?;
+) -> Result<([u8; 32], [u8; 32]), TaskError> {
+    let seed_hash = identity
+        .dashpay_wallet_seed_hash()
+        .ok_or(TaskError::ContactWalletSeedUnavailable)?;
+    let network = identity.network;
 
-    let (seed, network) = {
-        let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
-        if !wallet_guard.is_open() {
-            return Err("Wallet must be unlocked to derive encryption keys".to_string());
-        }
-        let seed = wallet_guard
-            .seed_bytes()
-            .map_err(|e| format!("Wallet seed not available: {}", e))?
-            .to_vec();
-        (seed, identity.network)
-    };
-
-    // Create master extended private key from seed
-    let master_xprv = ExtendedPrivKey::new_master(network, &seed)
-        .map_err(|e| format!("Failed to create master key: {}", e))?;
-
-    // Derive to the root encryption key path: m/9'/coin'/15'/0'
-    // This follows the DashPay derivation structure; the coin type is selected
-    // per network so testnet keys match the spec-compliant counterparty.
-    let coin_type = crate::model::wallet::coin_type_for_network(network);
-    let root_path = DerivationPath::from_str(&format!("m/9'/{coin_type}'/15'/0'"))
-        .map_err(|e| format!("Invalid derivation path: {}", e))?;
-
-    let secp = dash_sdk::dpp::dashcore::secp256k1::Secp256k1::new();
-    let root_encryption_key = master_xprv
-        .derive_priv(&secp, &root_path)
-        .map_err(|e| format!("Failed to derive root encryption key: {}", e))?;
-
-    // Derive Key1 for encToUserId: rootEncryptionKey/(2^16)'/index'
-    // First derive at hardened index 2^16 (65536)
-    let key1_level1 = root_encryption_key
-        .derive_priv(
-            &secp,
-            &[ChildNumber::from_hardened_idx(65536)
-                .map_err(|e| format!("Invalid hardened index: {}", e))?],
+    app_context
+        .wallet_backend()?
+        .secret_access()
+        .with_secret(
+            &crate::wallet_backend::SecretScope::HdSeed { seed_hash },
+            |plaintext| {
+                let seed = plaintext
+                    .expose_hd_seed()
+                    .ok_or(TaskError::ContactWalletSeedUnavailable)?;
+                crate::wallet_backend::derive_contact_info_encryption_keys(
+                    seed,
+                    network,
+                    derivation_index,
+                )
+            },
         )
-        .map_err(|e| format!("Failed to derive key1 level1: {}", e))?;
-
-    // Then derive at hardened derivation_index
-    let key1_final = key1_level1
-        .derive_priv(
-            &secp,
-            &[ChildNumber::from_hardened_idx(derivation_index)
-                .map_err(|e| format!("Invalid hardened index: {}", e))?],
-        )
-        .map_err(|e| format!("Failed to derive key1 final: {}", e))?;
-
-    // Derive Key2 for privateData: rootEncryptionKey/(2^16 + 1)'/index'
-    // First derive at hardened index 2^16 + 1 (65537)
-    let key2_level1 = root_encryption_key
-        .derive_priv(
-            &secp,
-            &[ChildNumber::from_hardened_idx(65537)
-                .map_err(|e| format!("Invalid hardened index: {}", e))?],
-        )
-        .map_err(|e| format!("Failed to derive key2 level1: {}", e))?;
-
-    // Then derive at hardened derivation_index
-    let key2_final = key2_level1
-        .derive_priv(
-            &secp,
-            &[ChildNumber::from_hardened_idx(derivation_index)
-                .map_err(|e| format!("Invalid hardened index: {}", e))?],
-        )
-        .map_err(|e| format!("Failed to derive key2 final: {}", e))?;
-
-    // Extract the private key bytes (32 bytes) for encryption
-    let key1_bytes: [u8; 32] = key1_final.private_key.secret_bytes();
-    let key2_bytes: [u8; 32] = key2_final.private_key.secret_bytes();
-
-    Ok((key1_bytes, key2_bytes))
+        .await
 }
 
 /// Encrypt toUserId using AES-256-ECB as specified by DIP-0015.
@@ -374,8 +318,8 @@ pub async fn create_or_update_contact_info(
                 // Get the root key index to derive keys
                 if let Some(Value::U32(_root_idx)) = props.get("rootEncryptionKeyIndex") {
                     // Derive keys for this document
-                    let (enc_user_id_key, _) = derive_contact_info_keys(&identity, *deriv_idx)
-                        .map_err(|e| TaskError::EncryptionError { detail: e })?;
+                    let (enc_user_id_key, _) =
+                        derive_contact_info_keys(app_context, &identity, *deriv_idx).await?;
 
                     // Decrypt encToUserId to check if it matches
                     if let Some(Value::Bytes(enc_user_id)) = props.get("encToUserId") {
@@ -412,8 +356,8 @@ pub async fn create_or_update_contact_info(
     };
 
     // Derive encryption keys
-    let (enc_user_id_key, private_data_key) = derive_contact_info_keys(&identity, derivation_index)
-        .map_err(|e| TaskError::EncryptionError { detail: e })?;
+    let (enc_user_id_key, private_data_key) =
+        derive_contact_info_keys(app_context, &identity, derivation_index).await?;
 
     // Encrypt toUserId
     let encrypted_user_id = encrypt_to_user_id(&contact_user_id.to_buffer(), &enc_user_id_key)

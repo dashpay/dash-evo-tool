@@ -20,6 +20,7 @@ use dash_sdk::dpp::dashcore::{Address, Network, PrivateKey, PublicKey};
 use platform_wallet_storage::secrets::{
     FileStoreError, SecretBytes, SecretStore, WalletId as SecretWalletId,
 };
+use zeroize::Zeroizing;
 
 use crate::backend_task::error::TaskError;
 use crate::model::single_key::ImportedKey;
@@ -244,7 +245,7 @@ impl<'a> SingleKeyView<'a> {
     /// call here for a protected key returns
     /// [`TaskError::SingleKeyPassphraseRequired`] so non-interactive callers
     /// get a typed signal rather than a silent failure.
-    fn raw_key_bytes(&self, address: &str) -> Result<[u8; 32], TaskError> {
+    fn raw_key_bytes(&self, address: &str) -> Result<Zeroizing<[u8; 32]>, TaskError> {
         let label = label_for_address(address);
         let payload = self
             .secret_store
@@ -259,7 +260,9 @@ impl<'a> SingleKeyView<'a> {
                 addr: address.to_string(),
             });
         }
-        entry.decrypt(None)
+        // Wrap so the bare 32-byte key zeroizes on drop instead of lingering
+        // on the stack after the sign (SEC-W-003).
+        entry.decrypt(None).map(Zeroizing::new)
     }
 
     /// List every imported key tracked by this backend, sorted by

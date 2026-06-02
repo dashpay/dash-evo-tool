@@ -491,6 +491,7 @@ impl AppContext {
             qi.wallet_index = stored.wallet_index;
             qi.network = self.network;
             qi.associated_wallets = wallets.clone();
+            qi.secret_access = self.wallet_backend().ok().map(|b| b.secret_access());
             qi.top_ups = BTreeMap::new();
             out.push(qi);
         }
@@ -555,6 +556,7 @@ impl AppContext {
         qi.wallet_index = stored.wallet_index;
         qi.network = self.network;
         qi.associated_wallets = wallets.clone();
+        qi.secret_access = self.wallet_backend().ok().map(|b| b.secret_access());
         qi.top_ups = BTreeMap::new();
         self.hydrate_top_ups(&mut qi);
         Ok(Some(qi))

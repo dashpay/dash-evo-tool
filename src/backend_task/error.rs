@@ -919,6 +919,15 @@ pub enum TaskError {
     )]
     ContactWalletSeedUnavailable,
 
+    /// Deriving the per-contact encryption keys from the wallet's recovery
+    /// phrase failed. The seam already proved the seed is present, so this is a
+    /// derivation-math failure rather than a missing wallet.
+    #[error("Could not prepare the encryption keys for this contact. Please try again.")]
+    ContactKeyDerivationFailed {
+        #[source]
+        source: Box<dash_sdk::dpp::key_wallet::bip32::Error>,
+    },
+
     // ──────────────────────────────────────────────────────────────────────────
     // Wallet persistence errors
     // ──────────────────────────────────────────────────────────────────────────

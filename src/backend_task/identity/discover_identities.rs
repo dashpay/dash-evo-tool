@@ -308,6 +308,7 @@ impl AppContext {
             private_keys: private_keys_map.into(),
             dpns_names,
             associated_wallets,
+            secret_access: self.wallet_backend().ok().map(|b| b.secret_access()),
             wallet_index: Some(identity_index),
             top_ups: Default::default(),
             status: IdentityStatus::Unknown,

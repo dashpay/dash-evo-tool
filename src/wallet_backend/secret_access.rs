@@ -164,6 +164,18 @@ pub struct SecretAccess {
     inner: Arc<SecretAccessInner>,
 }
 
+impl std::fmt::Debug for SecretAccess {
+    /// Redacts every field — the vault, prompt, caches, and meta could all
+    /// surface secret material. Prints only the network so embedding types
+    /// (e.g. `QualifiedIdentity`) can derive `Debug` without leaking
+    /// (M-PUBLIC-DEBUG, M-DONT-LEAK-TYPES).
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SecretAccess")
+            .field("network", &self.inner.network)
+            .finish_non_exhaustive()
+    }
+}
+
 struct SecretAccessInner {
     /// The encrypted vault — decrypt-on-demand source of truth.
     secret_store: Arc<SecretStore>,

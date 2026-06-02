@@ -146,18 +146,13 @@ pub async fn derive_contact_payment_address(
         .find(|k| k.id() == sender_key_index)
         .ok_or_else(|| format!("Contact key with index {} not found", sender_key_index))?;
 
-    // Get our private key
-    let wallets: Vec<_> = our_identity.associated_wallets.values().cloned().collect();
+    // Resolve our private key through the JIT chokepoint (no parked-seed read).
     let our_private_key = our_identity
-        .private_keys
-        .get_resolve(
-            &(
-                crate::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity,
-                our_key.id(),
-            ),
-            &wallets,
-            our_identity.network,
+        .resolve_private_key_bytes(
+            crate::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            our_key.id(),
         )
+        .await
         .map_err(|e| format!("Error resolving private key: {}", e))?
         .map(|(_, private_key)| private_key)
         .ok_or("Private key not found".to_string())?;

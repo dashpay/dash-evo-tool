@@ -1,5 +1,6 @@
 use crate::app::AppAction;
-use crate::backend_task::dashpay::auto_accept_proof::generate_auto_accept_proof;
+use crate::backend_task::dashpay::DashPayTask;
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
@@ -87,57 +88,49 @@ impl QRCodeGeneratorScreen {
         new_self
     }
 
-    fn generate_qr_code(&mut self) {
-        if let Some(identity) = &self.selected_identity {
-            let account_idx = match self.account_index.parse::<u32>() {
-                Ok(v) => v,
-                Err(_) => {
-                    MessageBanner::set_global(
-                        self.app_context.egui_ctx(),
-                        "Invalid account index number",
-                        MessageType::Error,
-                    );
-                    return;
-                }
-            };
-
-            let validity = match self.validity_hours.parse::<u32>() {
-                Ok(v) if v > 0 && v <= 720 => v, // Max 30 days
-                _ => {
-                    MessageBanner::set_global(
-                        self.app_context.egui_ctx(),
-                        "Validity hours must be between 1 and 720",
-                        MessageType::Error,
-                    );
-                    return;
-                }
-            };
-
-            match generate_auto_accept_proof(identity, account_idx, validity) {
-                Ok(proof_data) => {
-                    let qr_string = proof_data.to_qr_string();
-                    self.generated_qr_data = Some(qr_string);
-                    MessageBanner::set_global(
-                        self.app_context.egui_ctx(),
-                        "QR code generated successfully",
-                        MessageType::Success,
-                    );
-                }
-                Err(e) => {
-                    MessageBanner::set_global(
-                        self.app_context.egui_ctx(),
-                        format!("Failed to generate QR code: {}", e),
-                        MessageType::Error,
-                    );
-                }
-            }
-        } else {
+    /// Dispatch the auto-accept QR build to the backend, which resolves the key
+    /// and derives the proof through the JIT chokepoint (no seed in the UI).
+    fn generate_qr_code(&mut self) -> AppAction {
+        let Some(identity) = &self.selected_identity else {
             MessageBanner::set_global(
                 self.app_context.egui_ctx(),
                 "Please select an identity first",
                 MessageType::Error,
             );
-        }
+            return AppAction::None;
+        };
+
+        let account_idx = match self.account_index.parse::<u32>() {
+            Ok(v) => v,
+            Err(_) => {
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "Invalid account index number",
+                    MessageType::Error,
+                );
+                return AppAction::None;
+            }
+        };
+
+        let validity = match self.validity_hours.parse::<u32>() {
+            Ok(v) if v > 0 && v <= 720 => v, // Max 30 days
+            _ => {
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "Validity hours must be between 1 and 720",
+                    MessageType::Error,
+                );
+                return AppAction::None;
+            }
+        };
+
+        AppAction::BackendTask(BackendTask::DashPayTask(Box::new(
+            DashPayTask::GenerateAutoAcceptQrCode {
+                identity: identity.clone(),
+                account_reference: account_idx,
+                validity_hours: validity,
+            },
+        )))
     }
 
     pub fn render(&mut self, ui: &mut Ui) -> AppAction {
@@ -294,7 +287,7 @@ impl QRCodeGeneratorScreen {
                 } else {
                     ui.horizontal(|ui| {
                         if ui.button("Generate QR Code").clicked() {
-                            self.generate_qr_code();
+                            action |= self.generate_qr_code();
                         }
 
                         if self.generated_qr_data.is_some()
@@ -443,5 +436,11 @@ impl ScreenLike for QRCodeGeneratorScreen {
 
     fn display_message(&mut self, _message: &str, _message_type: MessageType) {
         // Banner display is handled globally by AppState; no side-effects needed.
+    }
+
+    fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
+        if let BackendTaskSuccessResult::DashPayAutoAcceptQrCode(qr_string) = result {
+            self.generated_qr_data = Some(qr_string);
+        }
     }
 }

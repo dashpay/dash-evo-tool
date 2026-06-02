@@ -123,7 +123,7 @@ impl AutoAcceptProofData {
 ///
 /// According to DIP-0015, the autoAcceptProof is a signature that allows the recipient
 /// to automatically accept the contact request and send one back without user interaction.
-pub fn generate_auto_accept_proof(
+pub async fn generate_auto_accept_proof(
     identity: &QualifiedIdentity,
     account_reference: u32,
     validity_hours: u32,
@@ -149,17 +149,14 @@ pub fn generate_auto_accept_proof(
             "No suitable key found. This operation requires a MEDIUM security level ECDSA_SECP256K1 ENCRYPTION key.",
         )?;
 
-    let wallets: Vec<_> = identity.associated_wallets.values().cloned().collect();
+    // Resolve the ENCRYPTION private key through the JIT chokepoint — no
+    // parked-seed read.
     let wallet_seed = identity
-        .private_keys
-        .get_resolve(
-            &(
-                crate::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity,
-                signing_key.id(),
-            ),
-            &wallets,
-            identity.network,
+        .resolve_private_key_bytes(
+            crate::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            signing_key.id(),
         )
+        .await
         .map_err(|e| format!("Error resolving private key: {}", e))?
         .map(|(_, private_key)| private_key)
         .ok_or("Private key not found")?;
@@ -240,7 +237,7 @@ pub fn create_auto_accept_proof_bytes_with_key(
 ///
 /// This would be called when receiving a contact request with an autoAcceptProof field
 /// to determine if we should automatically accept and reciprocate.
-pub fn verify_auto_accept_proof(
+pub async fn verify_auto_accept_proof(
     proof_data: &[u8],
     sender_identity_id: Identifier,
     recipient_identity_id: Identifier,
@@ -287,7 +284,6 @@ pub fn verify_auto_accept_proof(
 
     // Derive expected pubkey from our seed and key index (timestamp)
     // Use ENCRYPTION key (ECDSA_SECP256K1) for HD derivation as per DIP-15
-    let wallets: Vec<_> = our_identity.associated_wallets.values().cloned().collect();
     let signing_key = our_identity
         .identity
         .get_first_public_key_matching(
@@ -297,16 +293,14 @@ pub fn verify_auto_accept_proof(
             false,
         )
         .ok_or("No suitable key found. This operation requires a MEDIUM security level ECDSA_SECP256K1 ENCRYPTION key.")?;
+    // Resolve the ENCRYPTION private key through the JIT chokepoint — no
+    // parked-seed read.
     let wallet_seed = our_identity
-        .private_keys
-        .get_resolve(
-            &(
-                crate::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity,
-                signing_key.id(),
-            ),
-            &wallets,
-            our_identity.network,
+        .resolve_private_key_bytes(
+            crate::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            signing_key.id(),
         )
+        .await
         .map_err(|e| format!("Error resolving private key: {}", e))?
         .map(|(_, private_key)| private_key)
         .ok_or("Private key not found")?;

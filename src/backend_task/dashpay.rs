@@ -93,6 +93,14 @@ pub enum DashPayTask {
     RegisterDashPayAddresses {
         identity: QualifiedIdentity,
     },
+    /// Build an auto-accept contact QR payload. Resolves the ENCRYPTION key and
+    /// derives the auto-accept key through the JIT chokepoint in the backend, so
+    /// the UI never reads a seed.
+    GenerateAutoAcceptQrCode {
+        identity: QualifiedIdentity,
+        account_reference: u32,
+        validity_hours: u32,
+    },
 }
 
 impl AppContext {
@@ -289,6 +297,24 @@ impl AppContext {
                         format!(" ({} errors)", result.errors.len())
                     }
                 )))
+            }
+            DashPayTask::GenerateAutoAcceptQrCode {
+                identity,
+                account_reference,
+                validity_hours,
+            } => {
+                let proof = auto_accept_proof::generate_auto_accept_proof(
+                    &identity,
+                    account_reference,
+                    validity_hours,
+                )
+                .await
+                .map_err(|message| {
+                    crate::backend_task::dashpay::errors::DashPayError::Internal { message }
+                })?;
+                Ok(BackendTaskSuccessResult::DashPayAutoAcceptQrCode(
+                    proof.to_qr_string(),
+                ))
             }
         }
     }

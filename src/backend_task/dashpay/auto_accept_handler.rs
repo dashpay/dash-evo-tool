@@ -80,7 +80,9 @@ pub async fn process_auto_accept_requests(
                     identity.identity.id(),
                     &identity,
                     account_reference,
-                ) {
+                )
+                .await
+                {
                     Ok(true) => {
                         tracing::debug!(
                             "Valid autoAcceptProof, auto-accepting contact request from {}",

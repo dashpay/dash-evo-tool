@@ -276,11 +276,19 @@ impl KeyStorage {
             .transpose()
     }
 
-    pub fn get_resolve(
+    /// Seed-free resolution for keys that carry their own plaintext
+    /// ([`PrivateKeyData::Clear`] / [`PrivateKeyData::AlwaysClear`]).
+    ///
+    /// `Ok(None)` when the key is absent. Errors for keys that need a secret to
+    /// resolve ([`PrivateKeyData::Encrypted`], wallet-derived
+    /// [`PrivateKeyData::AtWalletDerivationPath`]); wallet-derived keys go
+    /// through the JIT chokepoint via
+    /// [`get_resolve_with_seed`](Self::get_resolve_with_seed), gated by
+    /// [`wallet_seed_hash_for`](Self::wallet_seed_hash_for). Never reads a
+    /// wallet's parked seed.
+    pub fn get_resolve_local(
         &self,
         key: &(PrivateKeyTarget, KeyID),
-        wallets: &[Arc<RwLock<Wallet>>],
-        network: Network,
     ) -> Result<Option<(QualifiedIdentityPublicKey, [u8; 32])>, String> {
         self.private_keys
             .get(key)
@@ -292,49 +300,8 @@ impl KeyStorage {
                     PrivateKeyData::Encrypted(_) => {
                         Err("Key is encrypted, please enter password".to_string())
                     }
-                    PrivateKeyData::AtWalletDerivationPath(WalletDerivationPath {
-                        wallet_seed_hash,
-                        derivation_path,
-                    }) => {
-                        tracing::debug!(
-                            stored_wallet_seed_hash = %hex::encode(wallet_seed_hash),
-                            derivation_path = %derivation_path,
-                            num_wallets = wallets.len(),
-                            "Looking up wallet for key derivation"
-                        );
-
-                        // Log available wallet seed hashes
-                        for wallet in wallets {
-                            if let Ok(wallet_ref) = wallet.read() {
-                                tracing::debug!(
-                                    wallet_seed_hash = %hex::encode(wallet_ref.seed_hash()),
-                                    matches = (wallet_ref.seed_hash() == *wallet_seed_hash),
-                                    "Available wallet"
-                                );
-                            }
-                        }
-
-                        let derived_key = Wallet::derive_private_key_in_arc_rw_lock_slice(
-                            wallets,
-                            *wallet_seed_hash,
-                            derivation_path,
-                            network,
-                        )?
-                        .ok_or(format!(
-                            "Wallet for key at derivation path {} not present, we have {} wallets",
-                            derivation_path,
-                            wallets.len()
-                        ))?;
-                        // match qualified_identity_public_key_data
-                        //     .identity_public_key
-                        //     .security_level()
-                        // {
-                        //     SecurityLevel::MEDIUM => {
-                        //         *private_key_data = PrivateKeyData::AlwaysClear(derived_key)
-                        //     }
-                        //     _ => *private_key_data = PrivateKeyData::Clear(derived_key),
-                        // }
-                        Ok((qualified_identity_public_key_data.clone(), derived_key))
+                    PrivateKeyData::AtWalletDerivationPath(_) => {
+                        Err("Key is not resolved, please unlock the wallet".to_string())
                     }
                 },
             )
@@ -356,15 +323,17 @@ impl KeyStorage {
         }
     }
 
-    /// Seed-as-parameter variant of [`get_resolve`](Self::get_resolve).
+    /// Seed-as-parameter resolver, the JIT counterpart of
+    /// [`get_resolve_local`](Self::get_resolve_local).
     ///
     /// For a [`PrivateKeyData::AtWalletDerivationPath`] key, derives from the
     /// `seed` borrowed by the caller (resolved once through the JIT chokepoint
     /// for the key's wallet seed hash — see
     /// [`wallet_seed_hash_for`](Self::wallet_seed_hash_for)) instead of reading
-    /// the wallet's parked seed. All other variants behave exactly as
-    /// `get_resolve`. The derivation path, network, and resulting key are
-    /// unchanged — only the seed source differs.
+    /// the wallet's parked seed. Plaintext-carrying variants
+    /// ([`PrivateKeyData::Clear`] / [`PrivateKeyData::AlwaysClear`]) defer to
+    /// `get_resolve_local` and ignore the seed. The derivation path, network,
+    /// and resulting key are unchanged — only the seed source differs.
     pub fn get_resolve_with_seed(
         &self,
         key: &(PrivateKeyTarget, KeyID),
@@ -372,37 +341,35 @@ impl KeyStorage {
         seed: &[u8; 64],
         network: Network,
     ) -> Result<Option<(QualifiedIdentityPublicKey, [u8; 32])>, String> {
-        self.private_keys
-            .get(key)
-            .map(
-                |(qualified_identity_public_key_data, private_key_data)| match private_key_data {
-                    PrivateKeyData::AlwaysClear(clear) | PrivateKeyData::Clear(clear) => {
-                        Ok((qualified_identity_public_key_data.clone(), *clear))
-                    }
-                    PrivateKeyData::Encrypted(_) => {
-                        Err("Key is encrypted, please enter password".to_string())
-                    }
-                    PrivateKeyData::AtWalletDerivationPath(WalletDerivationPath {
-                        wallet_seed_hash,
-                        derivation_path,
-                    }) => {
-                        let derived_key = Wallet::derive_private_key_in_arc_rw_lock_slice_with_seed(
-                            wallets,
-                            *wallet_seed_hash,
-                            seed,
-                            derivation_path,
-                            network,
-                        )?
-                        .ok_or(format!(
-                            "Wallet for key at derivation path {} not present, we have {} wallets",
-                            derivation_path,
-                            wallets.len()
-                        ))?;
-                        Ok((qualified_identity_public_key_data.clone(), derived_key))
-                    }
-                },
-            )
-            .transpose()
+        match self.private_keys.get(key) {
+            None => Ok(None),
+            Some((
+                qualified_identity_public_key_data,
+                PrivateKeyData::AtWalletDerivationPath(WalletDerivationPath {
+                    wallet_seed_hash,
+                    derivation_path,
+                }),
+            )) => {
+                let derived_key = Wallet::derive_private_key_in_arc_rw_lock_slice_with_seed(
+                    wallets,
+                    *wallet_seed_hash,
+                    seed,
+                    derivation_path,
+                    network,
+                )?
+                .ok_or(format!(
+                    "Wallet for key at derivation path {} not present, we have {} wallets",
+                    derivation_path,
+                    wallets.len()
+                ))?;
+                Ok(Some((
+                    qualified_identity_public_key_data.clone(),
+                    derived_key,
+                )))
+            }
+            // Plaintext-carrying / encrypted variants need no seed.
+            Some(_) => self.get_resolve_local(key),
+        }
     }
 
     // Allow dead_code: This method provides access to raw private key data,

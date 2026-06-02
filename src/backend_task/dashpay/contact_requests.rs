@@ -278,18 +278,15 @@ pub async fn send_contact_request_with_proof(
         )
         .ok_or_else(|| TaskError::DashPay(DashPayError::MissingDecryptionKey))?;
 
-    // Step 4: Generate ECDH shared key and encrypt data
-    let wallets: Vec<_> = identity.associated_wallets.values().cloned().collect();
+    // Step 4: Generate ECDH shared key and encrypt data.
+    // Resolve the ENCRYPTION private key through the JIT chokepoint — no
+    // parked-seed read.
     let sender_private_key = identity
-        .private_keys
-        .get_resolve(
-            &(
-                crate::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity,
-                sender_encryption_key.id(),
-            ),
-            &wallets,
-            identity.network,
+        .resolve_private_key_bytes(
+            crate::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            sender_encryption_key.id(),
         )
+        .await
         .map_err(|e| TaskError::EncryptionError {
             detail: format!("Error resolving ENCRYPTION private key: {}", e),
         })?

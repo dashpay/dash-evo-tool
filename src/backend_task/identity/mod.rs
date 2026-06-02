@@ -1345,14 +1345,17 @@ mod tests {
         assert!(public_map.contains_key(&1));
 
         // Key storage carries the entries' derivation paths verbatim, keyed by
-        // the same wallet seed hash the chokepoint resolves from.
+        // the same wallet seed hash the chokepoint resolves from. Resolve via
+        // the seed-param path (the JIT chokepoint's resolver) with a borrowed
+        // seed — the legacy parked-seed `get_resolve` is gone.
         let storage = specs.to_key_storage(seed_hash);
         let stored = storage
-            .get_resolve(
+            .get_resolve_with_seed(
                 &(PrivateKeyTarget::PrivateKeyOnMainIdentity, 0),
                 std::slice::from_ref(&std::sync::Arc::new(std::sync::RwLock::new(
                     Wallet::new_from_seed(seed, network, None, None).expect("wallet"),
                 ))),
+                &seed,
                 network,
             )
             .expect("resolve master")

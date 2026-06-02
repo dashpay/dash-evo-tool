@@ -343,53 +343,12 @@ impl Signer<IdentityPublicKey> for QualifiedIdentity {
             );
         }
 
-        let resolve_key = (target.clone(), key_id);
-        let wallets = self
-            .associated_wallets
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-
-        // Resolve the signing key without ever reading a wallet's parked seed.
-        // A wallet-derived key (`AtWalletDerivationPath`) pulls its HD seed
-        // just-in-time through the chokepoint and derives inside the closure;
-        // a key that carries its own plaintext (`Clear`/`AlwaysClear`) resolves
-        // with no seed access and no prompt. The pure `wallet_seed_hash_for`
-        // probe decides which path applies, so the prompt fires only for
-        // genuinely wallet-derived keys.
-        let resolved = match (
-            self.secret_access.as_ref(),
-            self.private_keys.wallet_seed_hash_for(&resolve_key),
-        ) {
-            (Some(secret_access), Some(seed_hash)) => {
-                let network = self.network;
-                let resolve_key = resolve_key.clone();
-                secret_access
-                    .with_secret(
-                        &crate::wallet_backend::SecretScope::HdSeed { seed_hash },
-                        |plaintext| {
-                            let seed = plaintext
-                                .expose_hd_seed()
-                                .ok_or(TaskError::ContactWalletSeedUnavailable)?;
-                            self.private_keys
-                                .get_resolve_with_seed(&resolve_key, &wallets, seed, network)
-                                .map_err(|detail| {
-                                    tracing::warn!(error = %detail, "Wallet key lookup failed");
-                                    TaskError::WalletKeyLookupFailed
-                                })
-                        },
-                    )
-                    .await
-                    .map_err(|e| ProtocolError::Generic(e.to_string()))?
-            }
-            _ => self
-                .private_keys
-                .get_resolve(&resolve_key, wallets.as_slice(), self.network)
-                .map_err(|e| {
-                    tracing::error!(error = %e, "Failed to resolve private key");
-                    ProtocolError::Generic(e)
-                })?,
-        };
+        // Resolve the signing key without ever reading a wallet's parked seed
+        // (see [`Self::resolve_private_key_bytes`]).
+        let resolved = self
+            .resolve_private_key_bytes(target.clone(), key_id)
+            .await
+            .map_err(|e| ProtocolError::Generic(e.to_string()))?;
 
         let (_, private_key) = resolved.ok_or_else(|| {
             tracing::error!(
@@ -547,6 +506,66 @@ impl QualifiedIdentity {
         bincode::decode_from_slice(bytes, bincode::config::standard())
             .map(|(identity, _)| identity)
             .map_err(|e| format!("Failed to decode QualifiedIdentity: {}", e))
+    }
+
+    /// Resolve the 32-byte private key for `(target, key_id)` without ever
+    /// reading a wallet's parked seed.
+    ///
+    /// A wallet-derived key ([`PrivateKeyData::AtWalletDerivationPath`]) pulls
+    /// its HD seed just-in-time through the [`SecretAccess`] chokepoint and
+    /// derives inside the scope; a key that carries its own plaintext
+    /// (`Clear`/`AlwaysClear`) resolves with no seed access and no prompt. The
+    /// pure [`wallet_seed_hash_for`](KeyStorage::wallet_seed_hash_for) probe
+    /// decides which path applies, so the prompt fires only for genuinely
+    /// wallet-derived keys.
+    ///
+    /// Returns `Ok(None)` when the key is absent.
+    ///
+    /// [`PrivateKeyData::AtWalletDerivationPath`]: encrypted_key_storage::PrivateKeyData::AtWalletDerivationPath
+    /// [`SecretAccess`]: crate::wallet_backend::SecretAccess
+    pub async fn resolve_private_key_bytes(
+        &self,
+        target: PrivateKeyTarget,
+        key_id: KeyID,
+    ) -> Result<Option<(QualifiedIdentityPublicKey, [u8; 32])>, TaskError> {
+        let resolve_key = (target, key_id);
+        match (
+            self.secret_access.as_ref(),
+            self.private_keys.wallet_seed_hash_for(&resolve_key),
+        ) {
+            (Some(secret_access), Some(seed_hash)) => {
+                let network = self.network;
+                let wallets = self
+                    .associated_wallets
+                    .values()
+                    .cloned()
+                    .collect::<Vec<_>>();
+                secret_access
+                    .with_secret(
+                        &crate::wallet_backend::SecretScope::HdSeed { seed_hash },
+                        |plaintext| {
+                            let seed = plaintext.expose_hd_seed().ok_or(TaskError::WalletLocked)?;
+                            self.private_keys
+                                .get_resolve_with_seed(&resolve_key, &wallets, seed, network)
+                                .map_err(|detail| {
+                                    tracing::warn!(error = %detail, "Wallet key lookup failed");
+                                    TaskError::WalletKeyLookupFailed
+                                })
+                        },
+                    )
+                    .await
+            }
+            // No chokepoint, or a key that carries its own plaintext: resolve
+            // seed-free. A wallet-derived key with no chokepoint fails closed
+            // inside `get_resolve_local`.
+            _ => self
+                .private_keys
+                .get_resolve_local(&resolve_key)
+                .map_err(|detail| {
+                    tracing::warn!(error = %detail, "Local key resolution failed");
+                    TaskError::WalletKeyLookupFailed
+                }),
+        }
     }
 
     /// The seed hash of the wallet DashPay derives contact keys against.

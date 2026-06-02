@@ -371,72 +371,25 @@ impl GroveSTARKScreen {
             }
         };
 
-        // Get the private key from the qualified identity
-        let private_key = match self.get_qualified_identity(&identity_id) {
-            Some(qualified_identity) => {
-                // Get the wallets for resolving encrypted keys
-                let wallets = app_context.wallets.read().unwrap();
-                let wallet_vec: Vec<_> = wallets.values().cloned().collect();
-
-                // Try to get the private key
-                match qualified_identity.private_keys.get_resolve(
-                    &(
-                        PrivateKeyTarget::PrivateKeyOnMainIdentity,
-                        selected_key.id(),
-                    ),
-                    &wallet_vec,
-                    app_context.network,
-                ) {
-                    Ok(Some((_, private_key_bytes))) => private_key_bytes,
-                    Ok(None) => {
-                        MessageBanner::set_global(
-                            app_context.egui_ctx(),
-                            "Private key not found in storage",
-                            MessageType::Error,
-                        );
-                        self.is_generating = false;
-                        return AppAction::None;
-                    }
-                    Err(e) => {
-                        MessageBanner::set_global(
-                            app_context.egui_ctx(),
-                            format!("Failed to get private key: {}", e),
-                            MessageType::Error,
-                        );
-                        self.is_generating = false;
-                        return AppAction::None;
-                    }
-                }
-            }
-            None => {
-                MessageBanner::set_global(
-                    app_context.egui_ctx(),
-                    "Qualified identity not found",
-                    MessageType::Error,
-                );
-                self.is_generating = false;
-                return AppAction::None;
-            }
+        // The backend resolves the signing key and derives its public key
+        // through the JIT chokepoint — the seed never enters the UI. Carry the
+        // qualified identity (which holds the chokepoint handle) into the task.
+        let Some(qualified_identity) = self.get_qualified_identity(&identity_id).cloned() else {
+            MessageBanner::set_global(
+                app_context.egui_ctx(),
+                "Qualified identity not found",
+                MessageType::Error,
+            );
+            self.is_generating = false;
+            return AppAction::None;
         };
 
-        // For EDDSA_25519_HASH160, the key data is only 20 bytes (the hash)
-        // We need to derive the public key from the private key
-        let public_key = {
-            use ed25519_dalek::SigningKey;
-            let signing_key = SigningKey::from_bytes(&private_key);
-            let verifying_key = signing_key.verifying_key();
-            *verifying_key.as_bytes()
-        };
-
-        // Use fixed parameters for simplicity and consistency
         let task = BackendTask::GroveSTARKTask(GroveSTARKTask::GenerateProof {
-            identity_id,
+            identity: Box::new(qualified_identity),
             contract_id,
             document_type,
             document_id,
             key_id: selected_key.id(),
-            private_key,
-            public_key,
         });
 
         AppAction::BackendTask(task)

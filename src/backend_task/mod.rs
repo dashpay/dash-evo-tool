@@ -228,6 +228,9 @@ pub enum BackendTaskSuccessResult {
     DashPayContactAlreadyEstablished(Identifier), // Contact ID that already exists
     DashPayContactInfoUpdated(Identifier), // Contact ID whose info was updated
     DashPayPaymentSent(String, String, f64), // (recipient, address, amount)
+    /// Auto-accept contact QR payload, ready to render. The proof is built
+    /// through the JIT chokepoint in the backend so the UI never touches a seed.
+    DashPayAutoAcceptQrCode(String),
     GeneratedZKProof(ProofDataOutput),
     VerifiedZKProof(bool, ProofDataOutput),
     GeneratedReceiveAddress {

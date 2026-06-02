@@ -1592,7 +1592,6 @@ mod tests {
             index: &index,
             network,
             app_kv: None,
-            unlocked: None,
         };
 
         let outcome = migrate_single_key_rows_from_conn(
@@ -1666,7 +1665,6 @@ mod tests {
             index: &index,
             network,
             app_kv: None,
-            unlocked: None,
         };
 
         let first = migrate_single_key_rows_from_conn(
@@ -1758,7 +1756,6 @@ mod tests {
             index: &index,
             network,
             app_kv: None,
-            unlocked: None,
         };
 
         let outcome = migrate_single_key_rows_from_conn(

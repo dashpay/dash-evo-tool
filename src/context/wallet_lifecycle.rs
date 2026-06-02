@@ -1,7 +1,6 @@
 use super::AppContext;
 use crate::backend_task::error::TaskError;
 use crate::database::is_unique_constraint_violation;
-use crate::model::feature_gate::FeatureGate;
 use crate::model::spv_status::SpvStatus;
 use crate::model::wallet::meta::WalletMeta;
 use crate::model::wallet::seed_envelope::StoredSeedEnvelope;
@@ -299,47 +298,54 @@ impl AppContext {
         }
     }
 
+    /// React to a wallet becoming unlocked in the UI.
+    ///
+    /// Since the JIT migration this is **not** a seed-distribution point —
+    /// signing pulls the seed just-in-time from the encrypted vault through
+    /// the [`SecretAccess`](crate::wallet_backend::SecretAccess) chokepoint.
+    /// Its only job now is to honor the unlock gesture's "keep unlocked"
+    /// intent: when the wallet is open and exposes a seed, promote that seed
+    /// into the session cache (`UntilAppClose`) so the rest of the session's
+    /// operations on this wallet do not re-prompt. A no-password wallet needs
+    /// no promotion — the chokepoint's unprotected fast-path decrypts it with
+    /// no prompt regardless — but promoting it is harmless and keeps the path
+    /// uniform.
+    ///
+    /// Shielded state is no longer warmed here: it is derived on the first
+    /// shielded operation via the chokepoint, so unlock forces no seed
+    /// residency for shielded warm-up.
     pub fn handle_wallet_unlocked(self: &Arc<Self>, wallet: &Arc<RwLock<Wallet>>) {
-        if let Some((seed_hash, seed_bytes)) = Self::wallet_seed_snapshot(wallet) {
-            // Hand the seed to the wallet backend so signing paths
-            // (asset locks, payments, DashPay derivation) can derive
-            // private keys. The seedless load path never fills this — the
-            // seed enters memory only here, at the unlock chokepoint.
-            if let Ok(backend) = self.wallet_backend() {
-                backend.provide_seed(seed_hash, zeroize::Zeroizing::new(seed_bytes));
-            }
-
-            // Initialize shielded wallet state only when the network supports it
-            // (all shielded state transitions present). On mainnet (which doesn't
-            // support shielded transactions yet), skip entirely to avoid
-            // unnecessary sync attempts and log noise.
-            if FeatureGate::Shielded.is_available(self) {
-                match self.initialize_shielded_wallet(seed_hash) {
-                    Ok(_) => {
-                        tracing::trace!(
-                            seed = %hex::encode(seed_hash),
-                            "Shielded wallet state initialized on unlock"
-                        );
-                        self.queue_shielded_sync(seed_hash);
-                    }
-                    Err(e) => tracing::debug!(
-                        seed = %hex::encode(seed_hash),
-                        error = %e,
-                        "Shielded wallet init skipped on unlock"
-                    ),
-                }
-            }
+        let Some((seed_hash, seed)) = Self::wallet_seed_snapshot(wallet) else {
+            return;
+        };
+        if let Ok(backend) = self.wallet_backend() {
+            backend.secret_access().remember_session(
+                &crate::wallet_backend::SecretScope::HdSeed { seed_hash },
+                crate::wallet_backend::SecretPlaintext::HdSeed(&seed),
+                crate::wallet_backend::RememberPolicy::UntilAppClose,
+            );
+            tracing::trace!(
+                wallet = %hex::encode(seed_hash),
+                "Verified-open seed promoted to the session cache on unlock"
+            );
         }
     }
 
     pub fn handle_wallet_locked(self: &Arc<Self>, _wallet: &Arc<RwLock<Wallet>>) {}
 
     /// Initialize shielded state for unlocked wallets that were skipped
-    /// because the protocol version wasn't known at unlock time.
-    /// Called when the protocol version first crosses the shielded threshold.
+    /// because the protocol version wasn't known at unlock time. Called when
+    /// the protocol version first crosses the shielded threshold.
+    ///
+    /// Each init now derives the Orchard keys by pulling the seed just-in-time
+    /// through the JIT chokepoint, which is async, so each candidate is
+    /// initialized on a tracked subtask (mirroring [`Self::queue_shielded_sync`]).
+    /// Only currently-open wallets are candidates, so a no-password wallet
+    /// derives silently and a passphrase-protected wallet whose seed the user
+    /// already remembered for the session resolves from the session cache
+    /// without a surprise background prompt.
     pub(crate) fn init_missing_shielded_wallets(self: &Arc<Self>) {
-        // Collect candidate seed hashes while holding locks, then release
-        // before calling initialize_shielded_wallet (which re-acquires both).
+        // Collect candidate seed hashes while holding locks, then release.
         let candidates: Vec<WalletSeedHash> = (|| {
             let wallets = self.wallets.read().ok()?;
             let existing = self.shielded_states.lock().ok()?;
@@ -357,20 +363,30 @@ impl AppContext {
         .unwrap_or_default();
 
         for seed_hash in candidates {
-            match self.initialize_shielded_wallet(seed_hash) {
-                Ok(_) => {
-                    tracing::info!(
-                        seed = %hex::encode(seed_hash),
-                        "Shielded wallet initialized after protocol version update"
-                    );
-                    self.queue_shielded_sync(seed_hash);
-                }
-                Err(e) => tracing::debug!(
-                    seed = %hex::encode(seed_hash),
-                    error = %e,
-                    "Shielded wallet init failed after protocol version update"
-                ),
-            }
+            let ctx = Arc::clone(self);
+            self.subtasks
+                .spawn_sync("shielded_init_after_protocol_update", async move {
+                    let handle = tokio::runtime::Handle::current();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        handle.block_on(async {
+                            match ctx.initialize_shielded_wallet(seed_hash).await {
+                                Ok(_) => {
+                                    tracing::info!(
+                                        seed = %hex::encode(seed_hash),
+                                        "Shielded wallet initialized after protocol version update"
+                                    );
+                                    ctx.queue_shielded_sync(seed_hash);
+                                }
+                                Err(e) => tracing::debug!(
+                                    seed = %hex::encode(seed_hash),
+                                    error = %e,
+                                    "Shielded wallet init failed after protocol version update"
+                                ),
+                            }
+                        })
+                    })
+                    .await;
+                });
         }
     }
 
@@ -418,13 +434,15 @@ impl AppContext {
         });
     }
 
-    fn wallet_seed_snapshot(wallet: &Arc<RwLock<Wallet>>) -> Option<(WalletSeedHash, [u8; 64])> {
+    fn wallet_seed_snapshot(
+        wallet: &Arc<RwLock<Wallet>>,
+    ) -> Option<(WalletSeedHash, zeroize::Zeroizing<[u8; 64]>)> {
         let guard = wallet.read().ok()?;
         if !guard.is_open() {
             return None;
         }
         let seed_bytes = match guard.seed_bytes() {
-            Ok(bytes) => *bytes,
+            Ok(bytes) => zeroize::Zeroizing::new(*bytes),
             Err(err) => {
                 tracing::warn!(error = %err, wallet = %hex::encode(guard.seed_hash()), "Unable to snapshot wallet seed");
                 return None;
@@ -695,25 +713,20 @@ mod tests {
         );
     }
 
-    /// SEC-001/SEC-002 regression: a no-password wallet that is `Open` in
-    /// `ctx.wallets` but whose seed never reached the backend (the exact state
-    /// the seedless cold-boot load leaves behind) must become signable once
-    /// the unlock chokepoint runs.
+    /// SEC-001/SEC-002 regression, adapted to the JIT secret model: a
+    /// no-password wallet must remain signable after a cold-boot hydration
+    /// without any seed ever being parked in a long-lived cache.
     ///
-    /// The seedless loader reconstructs a no-password wallet in the `Open`
-    /// state but never fills `inner.seeds`. Before the fix the only caller of
-    /// the chokepoint, `bootstrap_loaded_wallets`, ran solely at
-    /// `AppContext::new` — against an empty map and an unwired backend — so on
-    /// a real cold boot the seed never reached the backend and `signer_for`
-    /// returned `WalletLocked` even though the UI showed the wallet unlocked.
-    /// The fix moves that call to the tail of `ensure_wallet_backend`, after
-    /// hydration populates `ctx.wallets`.
-    ///
-    /// This test reproduces the post-hydration state directly: register a
-    /// no-password wallet, then clear the backend's seed cache (what the
-    /// seedless load leaves). The wallet is still `Open`, but signing is gated
-    /// `WalletLocked` — then `bootstrap_loaded_wallets` (exactly what the fix
-    /// runs from `ensure_wallet_backend`) restores it.
+    /// Under the JIT chokepoint there is no `inner.seeds` cache to fill or
+    /// clear; signing decrypts the seed just-in-time from the encrypted vault
+    /// envelope. For a no-password wallet (`uses_password = false`) the
+    /// chokepoint's unprotected fast-path decrypts with **no passphrase and no
+    /// prompt** — so the wallet signs whether or not the session cache holds
+    /// it. This test proves that:
+    ///   1. a freshly-registered no-password wallet signs in-process; and
+    ///   2. after `forget_all_secrets()` wipes the session cache (the exact
+    ///      state a real cold-boot leaves: watch-only, nothing remembered) the
+    ///      wallet STILL signs — the seed is pulled from the vault on demand.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn no_password_wallet_resignable_via_unlock_chokepoint() {
         let (ctx, sender, _tmp) = offline_testnet_context();
@@ -733,39 +746,28 @@ mod tests {
         let (seed_hash, wallet_arc) = ctx.register_wallet(wallet).expect("register wallet");
         let backend = ctx.wallet_backend().expect("backend wired");
 
-        // Live (same-process) state: the registration chokepoint already
-        // provided the seed, so the wallet signs.
+        // Live (same-process) state: registration wrote the seed envelope to
+        // the vault, so the chokepoint can decrypt the no-password seed.
         backend
             .assert_can_sign(&seed_hash)
+            .await
             .expect("freshly-registered no-password wallet must sign in-process");
 
-        // Simulate the seedless cold-boot state: the wallet stays `Open` in
-        // `ctx.wallets`, but the backend's seed cache is empty (the loader
-        // never fills it). This is precisely what hydration leaves behind.
-        backend.clear_seeds_for_test();
+        // Simulate the seedless cold-boot state: wipe the session cache so
+        // nothing is remembered (what hydration leaves behind). The wallet is
+        // still `Open` for display, but no plaintext seed is cached anywhere.
+        backend.forget_all_secrets();
         assert!(
             wallet_arc.read().unwrap().is_open(),
-            "the wallet is still Open after the seed cache is dropped"
+            "the wallet is still Open after the session cache is dropped"
         );
 
-        // The SEC-001 symptom: signing is now gated even though the wallet
-        // shows as unlocked.
-        assert!(
-            matches!(
-                backend.assert_can_sign(&seed_hash),
-                Err(TaskError::WalletLocked)
-            ),
-            "with the seed cache cleared, signing must report WalletLocked"
-        );
-
-        // The fix: the unlock chokepoint (`ensure_wallet_backend` runs this at
-        // its tail after hydration) re-provides the seed for every Open wallet.
-        ctx.bootstrap_loaded_wallets();
-
-        // And signing works again — the gap is closed.
+        // The JIT guarantee: a no-password wallet signs from the vault with no
+        // prompt and no cache — the unprotected fast-path covers it.
         backend
             .assert_can_sign(&seed_hash)
-            .expect("after the unlock chokepoint runs, the wallet must sign again");
+            .await
+            .expect("no-password wallet must sign after cold-boot via the JIT fast-path");
 
         backend.shutdown().await;
     }

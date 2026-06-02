@@ -138,14 +138,14 @@ pub fn wallet_needs_unlock(wallet: &Arc<RwLock<Wallet>>) -> bool {
 
 /// Open a no-password wallet and route it through the unlock chokepoint.
 ///
-/// For wallets that do not use a password this opens the in-memory seed and
-/// then calls [`AppContext::handle_wallet_unlocked`], which hands the seed to
-/// the wallet backend via `provide_seed`. Skipping that step would leave the
-/// wallet `Open` in the UI while the backend's `inner.seeds` stays empty, so
-/// every signing op (send, asset lock, identity funding) would fail
-/// `WalletLocked` with no actionable unlock step. Password wallets are a no-op
-/// here — they unlock through the password popup, which calls the same
-/// chokepoint.
+/// For wallets that do not use a password this flips the in-memory seed to
+/// `Open` for display and then calls [`AppContext::handle_wallet_unlocked`],
+/// which promotes the verified seed into the JIT chokepoint's session cache.
+/// Signing itself pulls the seed just-in-time from the encrypted vault — a
+/// no-password wallet signs even without this call (the chokepoint's
+/// unprotected fast-path), so this is a UX convenience, not a correctness
+/// gate. Password wallets are a no-op here — they unlock through the password
+/// popup, which calls the same chokepoint.
 pub fn try_open_wallet_no_password(
     app_context: &Arc<AppContext>,
     wallet: &Arc<RwLock<Wallet>>,

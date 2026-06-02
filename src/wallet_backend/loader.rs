@@ -6,8 +6,9 @@
 //! **seedless / watch-only** rehydration API
 //! (`PlatformWalletManager::load_from_persistor`, PR #3692): balances,
 //! UTXOs, identities, and contacts come back at launch with no seed in
-//! memory. Signing keys enter memory later, on unlock, via
-//! [`WalletBackend::provide_seed`].
+//! memory. Signing keys enter memory later, on demand, when a signing
+//! operation pulls the seed just-in-time through the
+//! [`SecretAccess`](crate::wallet_backend::SecretAccess) chokepoint.
 //!
 //! The trait stays object-safe (`Arc<dyn PersistedWalletLoader>`) and
 //! its outputs are DET-opaque: [`LoadedWallets`] carries only DET's

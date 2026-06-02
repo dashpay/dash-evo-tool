@@ -1373,10 +1373,12 @@ pub enum TaskError {
         expected: u32,
     },
 
-    /// An imported single-key entry is passphrase-protected and the
-    /// caller tried to sign before unlocking it. UI prompts the user
-    /// for the passphrase, calls `unlock_with_passphrase`, then
-    /// retries the operation.
+    /// An imported single-key entry is passphrase-protected and a
+    /// non-interactive caller tried to sign it directly. Interactive
+    /// signing routes through the JIT chokepoint
+    /// (`WalletBackend::sign_single_key`), which prompts for the passphrase
+    /// and decrypts just-in-time; this variant is the typed signal for
+    /// callers that have no prompt.
     #[error("Enter the passphrase you set for the imported key {addr} to continue.")]
     SingleKeyPassphraseRequired {
         /// Base58 P2PKH address of the imported key — allowed in

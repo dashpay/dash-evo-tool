@@ -108,12 +108,6 @@ pub struct SingleKeyView<'a> {
     /// (used by `WalletBackend::new` before the app k/v is wired and by
     /// the unit tests below).
     pub(crate) app_kv: Option<&'a Arc<DetKv>>,
-    /// In-memory cache of decrypted private-key bytes keyed by address.
-    /// Wired in by [`super::WalletBackend::single_key`]; `None` for the
-    /// transient construction path used by the tests below and the
-    /// pre-context bootstrap.
-    pub(crate) unlocked:
-        Option<&'a std::sync::RwLock<std::collections::BTreeMap<String, [u8; 32]>>>,
 }
 
 /// Optional passphrase choice supplied by the import dialog. Kept as a
@@ -142,7 +136,6 @@ impl<'a> SingleKeyView<'a> {
             index,
             network,
             app_kv,
-            unlocked: None,
         }
     }
 
@@ -224,14 +217,6 @@ impl<'a> SingleKeyView<'a> {
                 })?;
         }
 
-        // Self-import always counts as unlocked for this process so the
-        // user doesn't immediately have to re-type the passphrase.
-        if let Some(cache) = self.unlocked
-            && let Ok(mut c) = cache.write()
-        {
-            c.insert(address_str.clone(), raw);
-        }
-
         self.index
             .write()
             .map_err(|_| TaskError::ImportedKeyNotFound)?
@@ -249,54 +234,17 @@ impl<'a> SingleKeyView<'a> {
             .unwrap_or(false)
     }
 
-    /// Unlock the imported key at `address` with `passphrase` and cache
-    /// the decrypted bytes for the rest of the process. Idempotent — a
-    /// second unlock with the same passphrase replaces the cached
-    /// bytes with the same value.
-    pub fn unlock_with_passphrase(&self, address: &str, passphrase: &str) -> Result<(), TaskError> {
-        let label = label_for_address(address);
-        let payload = self
-            .secret_store
-            .get(&single_key_namespace_id(), &label)
-            .map_err(|source| TaskError::SecretStore {
-                source: Box::new(source),
-            })?
-            .ok_or(TaskError::ImportedKeyNotFound)?;
-        let entry = SingleKeyEntry::decode(payload.expose_secret())?;
-        if !entry.has_passphrase {
-            // Nothing to do — the entry is not passphrase-protected.
-            return Ok(());
-        }
-        let raw = entry.decrypt(Some(passphrase))?;
-        if let Some(cache) = self.unlocked
-            && let Ok(mut c) = cache.write()
-        {
-            c.insert(address.to_string(), raw);
-        }
-        Ok(())
-    }
-
-    /// Forget any cached plaintext for `address`. Called by the UI on
-    /// explicit "lock" actions. Idempotent.
-    pub fn forget_unlocked(&self, address: &str) {
-        if let Some(cache) = self.unlocked
-            && let Ok(mut c) = cache.write()
-        {
-            c.remove(address);
-        }
-    }
-
-    /// Read the raw private-key bytes for `address`, consulting the
-    /// in-memory unlock cache first. Returns
-    /// [`TaskError::SingleKeyPassphraseRequired`] when the entry is
-    /// passphrase-protected and the cache has no entry for it.
+    /// Read the raw private-key bytes for an **unprotected** imported key.
+    ///
+    /// Passphrase-protected keys are not unlocked here — they are obtained
+    /// through the JIT chokepoint
+    /// ([`SecretAccess::with_secret`](crate::wallet_backend::SecretAccess::with_secret)
+    /// with a [`SecretScope::SingleKey`](crate::wallet_backend::SecretScope)),
+    /// which prompts for the passphrase and decrypts just-in-time. A direct
+    /// call here for a protected key returns
+    /// [`TaskError::SingleKeyPassphraseRequired`] so non-interactive callers
+    /// get a typed signal rather than a silent failure.
     fn raw_key_bytes(&self, address: &str) -> Result<[u8; 32], TaskError> {
-        if let Some(cache) = self.unlocked
-            && let Ok(c) = cache.read()
-            && let Some(bytes) = c.get(address)
-        {
-            return Ok(*bytes);
-        }
         let label = label_for_address(address);
         let payload = self
             .secret_store
@@ -641,18 +589,32 @@ impl<'a> SingleKeyView<'a> {
         })
     }
 
-    /// Sign a 32-byte message hash with the imported key registered at
-    /// `address`. Consults the in-memory unlock cache when the entry
-    /// is passphrase-protected; otherwise reads the raw bytes straight
-    /// from the secret store. Pure ECDSA on secp256k1; no BIP-32
+    /// Sign a 32-byte message hash with the **unprotected** imported key
+    /// registered at `address`. Pure ECDSA on secp256k1; no BIP-32
     /// derivation is touched (TC-SK-008).
+    ///
+    /// Passphrase-protected keys must be signed through the JIT chokepoint
+    /// ([`WalletBackend::sign_single_key`](super::WalletBackend::sign_single_key)),
+    /// which prompts and decrypts just-in-time; a direct call here for a
+    /// protected key returns [`TaskError::SingleKeyPassphraseRequired`].
     pub fn sign_with(&self, address: &str, msg: &[u8; 32]) -> Result<Signature, TaskError> {
         let bytes = self.raw_key_bytes(address)?;
-        let sk = dash_sdk::dpp::dashcore::secp256k1::SecretKey::from_byte_array(&bytes)
-            .map_err(|_| TaskError::ImportedKeyNotFound)?;
-        let message = Message::from_digest(*msg);
-        Ok(Secp256k1::new().sign_ecdsa(&message, &sk))
+        sign_message_with_raw_key(&bytes, msg)
     }
+}
+
+/// Sign a 32-byte digest with raw secp256k1 private-key bytes. Shared by the
+/// unprotected [`SingleKeyView::sign_with`] path and the JIT chokepoint path
+/// ([`WalletBackend::sign_single_key`](super::WalletBackend::sign_single_key)),
+/// which decrypts the key just-in-time and hands the borrowed bytes here.
+pub(crate) fn sign_message_with_raw_key(
+    bytes: &[u8; 32],
+    msg: &[u8; 32],
+) -> Result<Signature, TaskError> {
+    let sk = dash_sdk::dpp::dashcore::secp256k1::SecretKey::from_byte_array(bytes)
+        .map_err(|_| TaskError::ImportedKeyNotFound)?;
+    let message = Message::from_digest(*msg);
+    Ok(Secp256k1::new().sign_ecdsa(&message, &sk))
 }
 
 /// Open or create the file-backed secret store at `path`. The parent
@@ -713,7 +675,6 @@ mod tests {
             index: &index,
             network,
             app_kv: None,
-            unlocked: None,
         };
 
         let imported = view
@@ -772,7 +733,6 @@ mod tests {
             index: &index,
             network,
             app_kv: None,
-            unlocked: None,
         };
         let imported = view.import_wif(known_wif(), None).expect("import");
 
@@ -816,7 +776,6 @@ mod tests {
             index: &index,
             network,
             app_kv: None,
-            unlocked: None,
         };
         let err = view
             .import_wif("not-a-valid-wif", None)
@@ -938,7 +897,6 @@ mod tests {
             index: &index,
             network,
             app_kv: Some(&kv),
-            unlocked: None,
         };
 
         let imported = view
@@ -973,7 +931,6 @@ mod tests {
             index: &index,
             network,
             app_kv: Some(&kv),
-            unlocked: None,
         };
 
         let imported = view.import_wif(known_wif(), None).expect("import");
@@ -1004,7 +961,6 @@ mod tests {
             index: &index,
             network,
             app_kv: Some(&kv),
-            unlocked: None,
         };
         let imported = view
             .import_wif(known_wif(), Some("savings".into()))
@@ -1050,7 +1006,6 @@ mod tests {
             index: &index,
             network,
             app_kv: Some(&kv),
-            unlocked: None,
         };
 
         // Healthy entry.
@@ -1082,6 +1037,11 @@ mod tests {
     /// SEC-002 — importing with a passphrase encrypts the in-vault
     /// payload (so a vault dump does not yield the raw key) and the
     /// sidecar records `has_passphrase = true` with the user's hint.
+    ///
+    /// JIT model: there is no unlock cache to prime at import, so a direct
+    /// `sign_with` on the protected key returns the typed
+    /// `SingleKeyPassphraseRequired` — protected signing flows through the
+    /// chokepoint instead (see `sec_002_protected_sign_via_chokepoint`).
     #[test]
     fn sec_002_import_with_passphrase_encrypts_payload() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1091,14 +1051,11 @@ mod tests {
             kv,
             network,
         } = fresh_view_with_kv(dir.path(), Network::Testnet);
-        let unlocked =
-            std::sync::RwLock::new(std::collections::BTreeMap::<String, [u8; 32]>::new());
         let view = SingleKeyView {
             secret_store: &store,
             index: &index,
             network,
             app_kv: Some(&kv),
-            unlocked: Some(&unlocked),
         };
 
         let imported = view
@@ -1129,18 +1086,25 @@ mod tests {
             "ciphertext must not be the plaintext key bytes",
         );
 
-        // Sign immediately after import — the in-process unlock cache
-        // was primed, so no passphrase prompt is needed yet.
-        view.sign_with(&imported.address, &[0x42u8; 32])
-            .expect("sign right after import");
+        // No cache prime: a direct view sign on the protected key reports
+        // that a passphrase is required (the chokepoint is the unlock path).
+        let err = view
+            .sign_with(&imported.address, &[0x42u8; 32])
+            .expect_err("protected key has no cache to sign from");
+        assert!(matches!(err, TaskError::SingleKeyPassphraseRequired { .. }));
     }
 
-    /// SEC-002 — after a cold restart (cache empty), signing without
-    /// first unlocking surfaces the typed
-    /// `SingleKeyPassphraseRequired` error. Unlocking with the right
-    /// passphrase lets the next sign through.
-    #[test]
-    fn sec_002_locked_entry_requires_unlock_before_sign() {
+    /// SEC-002, JIT-adapted — a protected imported key is signed through
+    /// the chokepoint. A direct view sign reports `SingleKeyPassphraseRequired`;
+    /// then `SecretAccess::with_secret` prompts, re-asks on a wrong passphrase,
+    /// decrypts just-in-time on the right one, and signs. The signature
+    /// verifies against the WIF-derived public key.
+    #[tokio::test]
+    async fn sec_002_protected_sign_via_chokepoint() {
+        use crate::wallet_backend::secret_access::SecretAccess;
+        use crate::wallet_backend::secret_prompt::SecretScope;
+        use crate::wallet_backend::secret_prompt::test_support::{ScriptedAnswer, TestPrompt};
+
         let dir = tempfile::tempdir().expect("tempdir");
         let ViewFixture {
             store,
@@ -1148,14 +1112,11 @@ mod tests {
             kv,
             network,
         } = fresh_view_with_kv(dir.path(), Network::Testnet);
-        let unlocked =
-            std::sync::RwLock::new(std::collections::BTreeMap::<String, [u8; 32]>::new());
         let view = SingleKeyView {
             secret_store: &store,
             index: &index,
             network,
             app_kv: Some(&kv),
-            unlocked: Some(&unlocked),
         };
         let imported = view
             .import_wif_with_passphrase(
@@ -1168,13 +1129,11 @@ mod tests {
             )
             .expect("import");
 
-        // Simulate a cold restart — drop everything except the vault
-        // contents on disk.
-        unlocked.write().unwrap().clear();
-
-        // Re-seed the index from the sidecar (cold-boot hydration
-        // analogue). After that, sign without unlocking → typed error.
+        // Re-seed the index from the sidecar (cold-boot analogue): no
+        // plaintext is cached anywhere.
         view.rehydrate_index().expect("rehydrate");
+
+        // Direct view sign on the protected key → typed "passphrase required".
         let err = view
             .sign_with(&imported.address, &[0u8; 32])
             .expect_err("locked sign must surface PassphraseRequired");
@@ -1185,17 +1144,33 @@ mod tests {
             other => panic!("expected SingleKeyPassphraseRequired, got {other:?}"),
         }
 
-        // Wrong passphrase: SingleKeyPassphraseIncorrect.
-        let err = view
-            .unlock_with_passphrase(&imported.address, "wrong-one")
-            .expect_err("wrong passphrase");
-        assert!(matches!(err, TaskError::SingleKeyPassphraseIncorrect));
+        // Chokepoint path: one wrong passphrase (re-ask) then the right one.
+        let prompt = Arc::new(TestPrompt::new([
+            ScriptedAnswer::once("wrong-one"),
+            ScriptedAnswer::once("opensesame"),
+        ]));
+        let sa = SecretAccess::new(Arc::clone(&store), prompt.clone(), network);
+        sa.set_single_key_index(index.read().unwrap().clone());
+        let scope = SecretScope::SingleKey {
+            address: imported.address.clone(),
+        };
+        let msg = [0u8; 32];
+        let sig = sa
+            .with_secret(&scope, |pt| {
+                let bytes = pt
+                    .expose_single_key()
+                    .ok_or(TaskError::ImportedKeyNotFound)?;
+                sign_message_with_raw_key(bytes, &msg)
+            })
+            .await
+            .expect("chokepoint signs after the right passphrase");
 
-        // Correct passphrase unlocks; subsequent sign succeeds.
-        view.unlock_with_passphrase(&imported.address, "opensesame")
-            .expect("unlock");
-        view.sign_with(&imported.address, &[0u8; 32])
-            .expect("sign after unlock");
+        let priv_key = PrivateKey::from_wif(known_wif()).unwrap();
+        let secp = Secp256k1::new();
+        let pk = priv_key.inner.public_key(&secp);
+        secp.verify_ecdsa(&Message::from_digest(msg), &sig, &pk)
+            .expect("chokepoint signature verifies");
+        assert_eq!(prompt.ask_count(), 2, "one wrong + one right passphrase");
     }
 
     /// SEC-002 — a passphrase shorter than the configured minimum is
@@ -1215,7 +1190,6 @@ mod tests {
             index: &index,
             network,
             app_kv: Some(&kv),
-            unlocked: None,
         };
         let err = view
             .import_wif_with_passphrase(
@@ -1253,7 +1227,6 @@ mod tests {
             index: &index,
             network,
             app_kv: Some(&kv),
-            unlocked: None,
         };
 
         // Pretend a pre-SEC-002 install wrote a raw 32-byte payload

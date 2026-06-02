@@ -19,7 +19,6 @@
 //! `Send + Sync`. See
 //! `docs/ai-design/2026-05-18-platform-wallet-migration/backend-architecture.md`.
 
-mod asset_lock_signer;
 mod dashpay;
 mod det_signer;
 mod event_bridge;
@@ -53,11 +52,7 @@ pub use dashpay::DashpayView;
 pub(crate) use dashpay::derive_contact_xpub_material;
 pub use shielded::{InsertShieldedNote, SHIELDED_SIDECAR_FILE, ShieldedNoteRow, ShieldedView};
 
-pub use asset_lock_signer::AssetLockSignerError;
-use asset_lock_signer::WalletAssetLockSigner;
-
-#[allow(unused_imports)]
-pub(crate) use det_signer::{DetSigner, DetSignerError};
+pub(crate) use det_signer::DetSigner;
 pub use secret_access::{SecretAccess, SecretPlaintext, SecretSession, WalletPromptMeta};
 pub use secret_prompt::{
     NullSecretPrompt, RememberPolicy, SecretPrompt, SecretPromptCancelled, SecretPromptReply,
@@ -160,12 +155,6 @@ struct Inner {
     wallets: std::sync::RwLock<
         std::collections::BTreeMap<WalletId, Arc<platform_wallet::PlatformWallet>>,
     >,
-    /// `WalletSeedHash` → BIP-39 seed snapshot. Stored once at registration so
-    /// the upstream signer-driven asset-lock / payment builders can derive
-    /// secp256k1 keys without re-reading DET's wallet store on every call.
-    /// Zeroized on drop with the backend.
-    seeds:
-        std::sync::RwLock<std::collections::BTreeMap<WalletSeedHash, zeroize::Zeroizing<[u8; 64]>>>,
     /// Optional peer `host:port` for Devnet/Regtest or a user-selected local
     /// node. `None` ⇒ DNS-seed discovery (Mainnet/Testnet default).
     peer: Option<std::net::SocketAddr>,
@@ -180,10 +169,10 @@ struct Inner {
     dashpay_address_index_lock: std::sync::Mutex<()>,
     /// Encrypted secret vault. Holds imported single-key WIFs
     /// (`single_key_priv.*` labels, see [`single_key`]) and HD-wallet
-    /// BIP-39 seeds (`seed.v1` labels under `WalletId(seed_hash)`, see
-    /// [`wallet_seed_store`]). [`Self::seeds`] caches plaintext seeds
-    /// for the duration of the process so signers don't re-open the
-    /// vault on every call.
+    /// BIP-39 seeds (`envelope.v1` labels under `WalletId(seed_hash)`, see
+    /// [`wallet_seed_store`]). [`Self::secret_access`] decrypts seeds
+    /// just-in-time from this vault for each signing operation; no
+    /// long-lived plaintext seed cache exists.
     secret_store: Arc<SecretStore>,
     /// Per-network shielded-notes sidecar. Lazy-materialised on first
     /// write at `<spv_storage_dir>/det-shielded.sqlite`. See
@@ -203,18 +192,12 @@ struct Inner {
     single_key_index: std::sync::RwLock<
         std::collections::BTreeMap<String, crate::model::single_key::ImportedKey>,
     >,
-    /// In-memory cache of decrypted single-key bytes for the duration
-    /// of the process. Populated by
-    /// [`SingleKeyView::unlock_with_passphrase`] and consulted by
-    /// [`SingleKeyView::sign_with`] so a single passphrase prompt
-    /// unlocks every subsequent sign for the same key. Dropped on
-    /// shutdown — never persisted, never serialised.
-    single_key_unlocked: std::sync::RwLock<std::collections::BTreeMap<String, [u8; 32]>>,
-    /// The just-in-time secret chokepoint (Wave B). Constructed over the same
+    /// The just-in-time secret chokepoint. Constructed over the same
     /// [`Self::secret_store`] with the host-chosen [`SecretPrompt`]; seeded
-    /// with prompt-copy metadata at hydration. Wave C swaps consumers onto it
-    /// and retires the eager [`Self::seeds`] / [`Self::single_key_unlocked`]
-    /// residencies. Held now so consumers have one place to reach.
+    /// with prompt-copy metadata at hydration. Every signing / derivation
+    /// consumer obtains plaintext through this — HD seeds via
+    /// [`SecretScope::HdSeed`], imported keys via [`SecretScope::SingleKey`]
+    /// — so no long-lived plaintext seed or single-key cache exists.
     secret_access: SecretAccess,
     /// Guards [`WalletBackend::start`] so chain sync spawns exactly once.
     /// See [`StartLatch`].
@@ -298,7 +281,6 @@ impl WalletBackend {
                 token_balances: Arc::new(TokenBalanceStore::new()),
                 id_map: std::sync::RwLock::new(std::collections::BTreeMap::new()),
                 wallets: std::sync::RwLock::new(std::collections::BTreeMap::new()),
-                seeds: std::sync::RwLock::new(std::collections::BTreeMap::new()),
                 peer,
                 network,
                 shielded: ShieldedView::new(&spv_storage_dir),
@@ -306,7 +288,6 @@ impl WalletBackend {
                 dashpay_address_index_lock: std::sync::Mutex::new(()),
                 secret_store,
                 single_key_index: std::sync::RwLock::new(std::collections::BTreeMap::new()),
-                single_key_unlocked: std::sync::RwLock::new(std::collections::BTreeMap::new()),
                 app_kv,
                 secret_access,
                 start_latch: StartLatch::default(),
@@ -375,8 +356,9 @@ impl WalletBackend {
         Ok(())
     }
 
-    /// Run the configured loader and re-provision identity funding for
-    /// every wallet it brought back.
+    /// Run the configured loader to bring back persisted wallets watch-only.
+    /// Identity-funding re-provision is deferred to the asset-lock chokepoint
+    /// (which obtains the seed just-in-time), so this pass only loads and logs.
     async fn register_persisted_wallets(&self, ctx: &Arc<AppContext>) -> Result<(), TaskError> {
         let loader = Arc::clone(&self.inner.loader);
         let outcome = loader.load(self, ctx).await?;
@@ -393,37 +375,19 @@ impl WalletBackend {
             );
         }
 
+        // Recurrence trap (a5538dc8): the upstream persister `load()` does
+        // NOT reconstruct identity funding HD accounts. Provisioning derives
+        // the funding account from the wallet seed, which the seedless
+        // watch-only load never holds and which — after the JIT migration —
+        // is never parked in a long-lived cache. Every identity asset lock
+        // therefore re-provisions at the `create_asset_lock_proof`
+        // chokepoint, which obtains the seed just-in-time inside its
+        // `with_secret_session` scope. Nothing to do at load time.
         for seed_hash in &outcome.loaded {
-            // Recurrence trap (a5538dc8): the upstream persister `load()`
-            // does NOT reconstruct identity funding HD accounts, so they
-            // must be re-provisioned for every persisted identity.
-            //
-            // Provisioning derives the funding account from the wallet's
-            // key material, which the seedless watch-only load does NOT
-            // hold. Run this only when the seed is already in memory (an
-            // already-unlocked wallet, e.g. a same-process re-run); on a
-            // cold boot the wallet is watch-only and the seed is absent,
-            // so provisioning is deferred to the asset-lock chokepoint
-            // (`create_asset_lock_proof`), which runs post-unlock with the
-            // seed present and provisions before every identity asset lock.
-            if !self.inner.seeds.read()?.contains_key(seed_hash) {
-                tracing::debug!(
-                    wallet = %hex::encode(seed_hash),
-                    "Skipping load-time identity-funding re-provision for watch-only wallet; the asset-lock chokepoint re-provisions post-unlock"
-                );
-                continue;
-            }
-            let identity_indices: Vec<u32> = {
-                let wallets = ctx.wallets.read()?;
-                match wallets.get(seed_hash) {
-                    Some(w) => w.read()?.identities.keys().copied().collect::<Vec<u32>>(),
-                    None => Vec::new(),
-                }
-            };
-            for idx in identity_indices {
-                self.ensure_identity_funding_accounts(seed_hash, idx)
-                    .await?;
-            }
+            tracing::debug!(
+                wallet = %hex::encode(seed_hash),
+                "Deferring identity-funding provision to the asset-lock chokepoint (seed obtained just-in-time)"
+            );
         }
         Ok(())
     }
@@ -555,33 +519,6 @@ impl WalletBackend {
             .map(|a| a.account_xpub.encode().to_vec())
     }
 
-    /// Provide the BIP-39 seed for a wallet so signing paths can derive
-    /// private keys. Called from the unlock chokepoint
-    /// (`AppContext::handle_wallet_unlocked`); the seedless load path
-    /// never calls this — the seed enters memory only on unlock.
-    /// Idempotent: re-supplying the same hash rewrites the same bytes.
-    pub fn provide_seed(
-        &self,
-        seed_hash: WalletSeedHash,
-        seed_bytes: zeroize::Zeroizing<[u8; 64]>,
-    ) {
-        match self.inner.seeds.write() {
-            Ok(mut seeds) => {
-                seeds.insert(seed_hash, seed_bytes);
-                tracing::trace!(
-                    wallet = %hex::encode(seed_hash),
-                    "Seed provided to wallet backend on unlock"
-                );
-            }
-            Err(_) => {
-                tracing::warn!(
-                    wallet = %hex::encode(seed_hash),
-                    "Could not store seed on unlock; the seed lock was poisoned"
-                );
-            }
-        }
-    }
-
     /// Start chain sync and the periodic upstream coordinators.
     ///
     /// Upstream has no single `PlatformWalletManager::start()`; this
@@ -681,12 +618,11 @@ impl WalletBackend {
         &self.inner.secret_store
     }
 
-    /// The just-in-time secret chokepoint (Wave B). O(1)-clone handle; Wave C
-    /// consumers (signing, shielded bind, DashPay derivation) reach for this
-    /// to obtain plaintext through [`SecretAccess::with_secret`] instead of
-    /// the eager seed caches.
-    // Wave C removes this allow once consumers call `secret_access()`.
-    #[allow(dead_code)]
+    /// The just-in-time secret chokepoint. O(1)-clone handle; signing,
+    /// shielded bind, and DashPay derivation reach for this to obtain
+    /// plaintext through [`SecretAccess::with_secret`] /
+    /// [`SecretAccess::with_secret_session`] rather than any long-lived
+    /// seed cache.
     pub fn secret_access(&self) -> SecretAccess {
         self.inner.secret_access.clone()
     }
@@ -736,25 +672,43 @@ impl WalletBackend {
     }
 
     /// View over the single-key (imported WIF) operations. The view
-    /// borrows the secret store, the in-memory address index, the
-    /// cross-network app k/v sidecar that persists imported-key
-    /// metadata, and the in-process unlock cache; all four are cheap to
-    /// construct, so callers can build one per operation.
-    ///
-    /// TODO(SEC-002 follow-up): wire the sign-time passphrase prompt
-    /// flow across every backend task that ends up calling
-    /// `single_key().sign_with(...)` (identity register, send funds,
-    /// asset-lock signer, ...). The storage + unlock-cache API ships in
-    /// the same commit as this view; the per-task prompt UX is a
-    /// separate change.
+    /// borrows the secret store, the in-memory address index, and the
+    /// cross-network app k/v sidecar that persists imported-key metadata;
+    /// all three are cheap to construct, so callers can build one per
+    /// operation. Passphrase-protected signing goes through
+    /// [`Self::sign_single_key`] (the JIT chokepoint), not this view.
     pub fn single_key(&self) -> SingleKeyView<'_> {
         SingleKeyView {
             secret_store: &self.inner.secret_store,
             index: &self.inner.single_key_index,
             network: self.inner.network,
             app_kv: Some(&self.inner.app_kv),
-            unlocked: Some(&self.inner.single_key_unlocked),
         }
+    }
+
+    /// Sign a 32-byte digest with the imported key at `address`, obtaining
+    /// the key just-in-time through the JIT chokepoint. A passphrase-
+    /// protected key prompts once; an unprotected key signs with no prompt
+    /// (the chokepoint's unprotected fast-path). The decrypted key is
+    /// borrowed by a [`DetSigner`] for the single sign and zeroized when the
+    /// scope ends.
+    pub async fn sign_single_key(
+        &self,
+        address: &str,
+        msg: &[u8; 32],
+    ) -> Result<dash_sdk::dpp::dashcore::secp256k1::ecdsa::Signature, TaskError> {
+        let scope = SecretScope::SingleKey {
+            address: address.to_string(),
+        };
+        self.inner
+            .secret_access
+            .with_secret(&scope, |plaintext| {
+                let signer = DetSigner::from_held(plaintext, self.inner.network);
+                signer
+                    .sign_single_key_ecdsa(msg)
+                    .map_err(|_| TaskError::SingleKeyCryptoFailure)
+            })
+            .await
     }
 
     /// View over the DET-owned wallet-metadata sidecar (alias /
@@ -1149,59 +1103,27 @@ impl WalletBackend {
             .publish(TokenBalanceStore::snapshot_from(synced));
     }
 
-    /// Snapshot the cached seed and wrap it in a soft-wallet signer for the
-    /// upstream signer-driven asset-lock / payment builders. Snapshot is
-    /// cloned (and zeroized when the signer drops) so derivation can run
-    /// without contention on the upstream wallet-manager lock.
-    fn signer_for(&self, seed_hash: &WalletSeedHash) -> Result<WalletAssetLockSigner, TaskError> {
-        let seed = self
-            .inner
-            .seeds
-            .read()?
-            .get(seed_hash)
-            .cloned()
-            .ok_or(TaskError::WalletLocked)?;
-        Ok(WalletAssetLockSigner::new(seed, self.inner.network))
-    }
-
-    /// Test-only probe that a usable signer can be obtained for `seed_hash`
-    /// — i.e. the seed reached the backend. Mirrors the production signing
-    /// precondition (`signer_for`) so a `WalletLocked` regression on the
-    /// no-password cold-boot path is caught without driving a full sign.
-    #[cfg(test)]
-    pub(crate) fn assert_can_sign(&self, seed_hash: &WalletSeedHash) -> Result<(), TaskError> {
-        self.signer_for(seed_hash).map(|_| ())
-    }
-
-    /// Test-only: drop every cached seed, reproducing the state the seedless
-    /// loader leaves after a cold boot (watch-only wallets in `ctx.wallets`,
-    /// `inner.seeds` empty). Lets a test assert the post-hydration
-    /// `WalletLocked` gap and that the unlock chokepoint closes it.
-    #[cfg(test)]
-    pub(crate) fn clear_seeds_for_test(&self) {
-        if let Ok(mut seeds) = self.inner.seeds.write() {
-            seeds.clear();
+    /// The [`SecretScope`] that addresses the HD seed for `seed_hash`.
+    fn hd_scope(seed_hash: &WalletSeedHash) -> SecretScope {
+        SecretScope::HdSeed {
+            seed_hash: *seed_hash,
         }
     }
 
-    /// Derive the secp256k1 [`PrivateKey`] at `path` from the cached seed.
+    /// Derive the secp256k1 [`PrivateKey`] at `path` from a held HD seed.
     /// Used after `create_asset_lock_proof` to obtain the one-time
     /// credit-output key needed to sign DET-retained non-identity state
-    /// transitions (Platform-address top-up, shielded deposit).
-    fn derive_private_key(
+    /// transitions (Platform-address top-up, shielded deposit). The seed is
+    /// the one already held open by the surrounding `with_secret_session`
+    /// scope, so this never re-prompts.
+    fn derive_private_key_from_held(
         &self,
-        seed_hash: &WalletSeedHash,
+        plaintext: SecretPlaintext<'_>,
         path: &dash_sdk::dpp::key_wallet::bip32::DerivationPath,
     ) -> Result<dash_sdk::dpp::dashcore::PrivateKey, TaskError> {
-        let seed = self
-            .inner
-            .seeds
-            .read()?
-            .get(seed_hash)
-            .cloned()
-            .ok_or(TaskError::WalletLocked)?;
+        let seed = plaintext.expose_hd_seed().ok_or(TaskError::WalletLocked)?;
         let xprv = path
-            .derive_priv_ecdsa_for_master_seed(seed.as_ref(), self.inner.network)
+            .derive_priv_ecdsa_for_master_seed(seed, self.inner.network)
             .map_err(|source| TaskError::WalletBackend {
                 source: Box::new(platform_wallet::error::PlatformWalletError::KeyDerivation(
                     source.to_string(),
@@ -1210,29 +1132,61 @@ impl WalletBackend {
         Ok(xprv.to_priv())
     }
 
+    /// Test-only probe that a usable signer can be obtained for `seed_hash`
+    /// — i.e. the chokepoint can decrypt the seed without a prompt (the
+    /// no-password / unprotected fast-path). Mirrors the production signing
+    /// precondition so a regression on the no-password cold-boot path is
+    /// caught without driving a full sign. Uses a never-prompt expectation:
+    /// the unprotected seed resolves with no interaction.
+    #[cfg(test)]
+    pub(crate) async fn assert_can_sign(
+        &self,
+        seed_hash: &WalletSeedHash,
+    ) -> Result<(), TaskError> {
+        let scope = Self::hd_scope(seed_hash);
+        self.inner
+            .secret_access
+            .with_secret_session(&scope, async |session| {
+                let _signer = DetSigner::from_held(session.plaintext(), self.inner.network);
+                Ok(())
+            })
+            .await
+    }
+
     /// Build, sign, and broadcast a payment from the wallet's default BIP-44
     /// account to `recipients` (`(address, duffs)`). Returns the txid.
+    ///
+    /// One [`SecretAccess::with_secret_session`] scope wraps the whole build:
+    /// the seed is decrypted just-in-time (one prompt for a passphrase-
+    /// protected wallet, none for a no-password wallet), borrowed by the
+    /// [`DetSigner`] for every input sign, and zeroized when the scope ends.
     pub async fn send_payment(
         &self,
         seed_hash: &WalletSeedHash,
         recipients: Vec<(dash_sdk::dpp::dashcore::Address, u64)>,
     ) -> Result<dash_sdk::dpp::dashcore::Txid, TaskError> {
         use dash_sdk::dpp::key_wallet::account::account_type::StandardAccountType;
-        let signer = self.signer_for(seed_hash)?;
-        let wallet = self.resolve_wallet(seed_hash).await?;
-        let tx = wallet
-            .core()
-            .send_to_addresses(
-                StandardAccountType::BIP44Account,
-                DEFAULT_BIP44_ACCOUNT,
-                recipients,
-                &signer,
-            )
+        let scope = Self::hd_scope(seed_hash);
+        self.inner
+            .secret_access
+            .with_secret_session(&scope, async |session| {
+                let signer = DetSigner::from_held(session.plaintext(), self.inner.network);
+                let wallet = self.resolve_wallet(seed_hash).await?;
+                let tx = wallet
+                    .core()
+                    .send_to_addresses(
+                        StandardAccountType::BIP44Account,
+                        DEFAULT_BIP44_ACCOUNT,
+                        recipients,
+                        &signer,
+                    )
+                    .await
+                    .map_err(|e| TaskError::WalletBackend {
+                        source: Box::new(e),
+                    })?;
+                Ok(tx.txid())
+            })
             .await
-            .map_err(|e| TaskError::WalletBackend {
-                source: Box::new(e),
-            })?;
-        Ok(tx.txid())
     }
 
     /// Build, track, and broadcast a **non-identity** asset lock via the
@@ -1284,23 +1238,33 @@ impl WalletBackend {
             | AssetLockFundingType::AssetLockShieldedAddressTopUp => {}
         }
 
-        let signer = self.signer_for(seed_hash)?;
-        let wallet = self.resolve_wallet(seed_hash).await?;
-        let (proof, credit_output_path, out_point) = wallet
-            .asset_locks()
-            .create_funded_asset_lock_proof(
-                amount_duffs,
-                DEFAULT_BIP44_ACCOUNT,
-                funding_type,
-                identity_index,
-                &signer,
-            )
+        // One held-seed scope covers both the funding-input signer and the
+        // credit-output key derivation, so the whole asset-lock build prompts
+        // at most once and the seed zeroizes when the scope ends.
+        let scope = Self::hd_scope(seed_hash);
+        self.inner
+            .secret_access
+            .with_secret_session(&scope, async |session| {
+                let signer = DetSigner::from_held(session.plaintext(), self.inner.network);
+                let wallet = self.resolve_wallet(seed_hash).await?;
+                let (proof, credit_output_path, out_point) = wallet
+                    .asset_locks()
+                    .create_funded_asset_lock_proof(
+                        amount_duffs,
+                        DEFAULT_BIP44_ACCOUNT,
+                        funding_type,
+                        identity_index,
+                        &signer,
+                    )
+                    .await
+                    .map_err(|e| TaskError::WalletBackend {
+                        source: Box::new(e),
+                    })?;
+                let private_key =
+                    self.derive_private_key_from_held(session.plaintext(), &credit_output_path)?;
+                Ok((proof, private_key, out_point.txid))
+            })
             .await
-            .map_err(|e| TaskError::WalletBackend {
-                source: Box::new(e),
-            })?;
-        let private_key = self.derive_private_key(seed_hash, &credit_output_path)?;
-        Ok((proof, private_key, out_point.txid))
     }
 
     /// Register a new identity on Platform funded by an asset lock built and
@@ -1332,20 +1296,27 @@ impl WalletBackend {
         self.ensure_identity_funding_accounts(seed_hash, identity_index)
             .await?;
 
-        let asset_lock_signer = self.signer_for(seed_hash)?;
-        let wallet = self.resolve_wallet(seed_hash).await?;
-        wallet
-            .identity()
-            .register_identity_with_funding(
-                funding,
-                identity_index,
-                keys_map,
-                identity_signer,
-                &asset_lock_signer,
-                settings,
-            )
+        let scope = Self::hd_scope(seed_hash);
+        self.inner
+            .secret_access
+            .with_secret_session(&scope, async |session| {
+                let asset_lock_signer =
+                    DetSigner::from_held(session.plaintext(), self.inner.network);
+                let wallet = self.resolve_wallet(seed_hash).await?;
+                wallet
+                    .identity()
+                    .register_identity_with_funding(
+                        funding,
+                        identity_index,
+                        keys_map,
+                        identity_signer,
+                        &asset_lock_signer,
+                        settings,
+                    )
+                    .await
+                    .map_err(map_identity_register_error)
+            })
             .await
-            .map_err(map_identity_register_error)
     }
 
     /// Top up an existing identity's credit balance from this wallet's
@@ -1371,13 +1342,25 @@ impl WalletBackend {
         self.ensure_identity_funding_accounts(seed_hash, identity_index)
             .await?;
 
-        let asset_lock_signer = self.signer_for(seed_hash)?;
-        let wallet = self.resolve_wallet(seed_hash).await?;
-        wallet
-            .identity()
-            .top_up_identity_with_funding(identity_id, funding, &asset_lock_signer, settings)
+        let scope = Self::hd_scope(seed_hash);
+        self.inner
+            .secret_access
+            .with_secret_session(&scope, async |session| {
+                let asset_lock_signer =
+                    DetSigner::from_held(session.plaintext(), self.inner.network);
+                let wallet = self.resolve_wallet(seed_hash).await?;
+                wallet
+                    .identity()
+                    .top_up_identity_with_funding(
+                        identity_id,
+                        funding,
+                        &asset_lock_signer,
+                        settings,
+                    )
+                    .await
+                    .map_err(|e| map_identity_top_up_error(*identity_id, e))
+            })
             .await
-            .map_err(|e| map_identity_top_up_error(*identity_id, e))
     }
 
     // UPSTREAM GAP: rs-platform-wallet has no identity-funding-account

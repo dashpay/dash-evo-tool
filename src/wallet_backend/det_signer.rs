@@ -8,11 +8,10 @@
 //! [`SecretAccess::with_secret_session`] scope and derives + signs locally,
 //! with no host round-trip.
 //!
-//! This evolves [`WalletAssetLockSigner`](super::WalletAssetLockSigner):
-//! the seed source changes from "snapshot owned at construction" to "borrow
-//! the held JIT secret" (Smythe must-fix #2 — no by-value `[u8; N]` copy).
-//! The held secret zeroizes when the `with_secret_session` scope ends, so
-//! the signer's borrow can never outlive the plaintext.
+//! The seed source is "borrow the held JIT secret" — never a by-value
+//! `[u8; N]` snapshot (Smythe must-fix #2). The held secret zeroizes when
+//! the `with_secret_session` scope ends, so the signer's borrow can never
+//! outlive the plaintext.
 //!
 //! Two key sources:
 //! - **HD seed** — the full [`Signer`] surface (BIP-32 derive at a path,
@@ -25,11 +24,12 @@
 //! the upstream signer trait is the only seam that touches `key_wallet::*`
 //! outside the module.
 //!
-//! Wave 1 lands `DetSigner` as the tested foundation; the call-site swap
-//! (replacing `WalletAssetLockSigner` in `signer_for` / `send_payment` /
-//! identity flows) is Wave 2. Until then the production surface is
-//! exercised only by this module's unit tests, hence the `dead_code` allow.
-#![allow(dead_code)]
+//! The HD `Signer` surface (`from_held` + `sign_ecdsa` / `public_key`) is
+//! wired into every signer-driven HD flow (payment / asset-lock / identity).
+//! The single-key raw-ECDSA helper [`DetSigner::sign_single_key_ecdsa`] is
+//! built and unit-tested but has no live caller yet — single-key *send* is
+//! still stubbed upstream (design §0.4) — so it carries a scoped
+//! `expect(dead_code)` until that send path is un-gated.
 
 use async_trait::async_trait;
 use dash_sdk::dpp::dashcore::Network;
@@ -115,7 +115,9 @@ impl<'a> DetSigner<'a> {
     }
 
     /// Sign `msg` (a 32-byte digest) with the held **single key** directly,
-    /// no derivation. Errors if the held secret is an HD seed.
+    /// no derivation. Errors if the held secret is an HD seed. Used by the
+    /// JIT single-key signing chokepoint
+    /// ([`WalletBackend::sign_single_key`](super::WalletBackend::sign_single_key)).
     pub(crate) fn sign_single_key_ecdsa(
         &self,
         msg: &[u8; 32],

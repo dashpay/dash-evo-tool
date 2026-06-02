@@ -27,7 +27,6 @@ use dash_sdk::platform::{
 use dash_sdk::query_types::{CurrentQuorumsInfo, NoParamQuery};
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
-use zeroize::Zeroizing;
 
 pub async fn load_contact_requests(
     app_context: &Arc<AppContext>,
@@ -312,20 +311,34 @@ pub async fn send_contact_request_with_proof(
     // addresses we never scan.
     let account_index = 0u32;
 
-    // Derive the contact-relationship xpub from the wallet's real HD seed.
-    // The wallet type and seed stay inside the wallet_backend seam; we receive
-    // only the published byte material plus the account reference. The seed
-    // determines where the contact's payments land, so it must be the same HD
-    // seed the receive-side address derivation uses.
-    let wallet_seed = first_open_wallet_seed(&identity)?;
-    let contact_material = crate::wallet_backend::derive_contact_xpub_material(
-        &wallet_seed,
-        network,
-        account_index,
-        &identity.identity.id(),
-        &to_identity_id,
-        &sender_private_key,
-    )?;
+    // Derive the contact-relationship xpub from the wallet's real HD seed,
+    // obtained just-in-time through the JIT chokepoint. The wallet type and
+    // seed stay inside the wallet_backend seam; we receive only the published
+    // byte material plus the account reference. The seed determines where the
+    // contact's payments land, so it must be the same HD seed the receive-side
+    // address derivation uses.
+    let seed_hash = first_associated_wallet_seed_hash(&identity)?;
+    let owner_id = identity.identity.id();
+    let contact_material = app_context
+        .wallet_backend()?
+        .secret_access()
+        .with_secret(
+            &crate::wallet_backend::SecretScope::HdSeed { seed_hash },
+            |plaintext| {
+                let seed = plaintext
+                    .expose_hd_seed()
+                    .ok_or(TaskError::ContactWalletSeedUnavailable)?;
+                crate::wallet_backend::derive_contact_xpub_material(
+                    seed,
+                    network,
+                    account_index,
+                    &owner_id,
+                    &to_identity_id,
+                    &sender_private_key,
+                )
+            },
+        )
+        .await?;
     let parent_fingerprint = contact_material.parent_fingerprint;
     let chain_code = contact_material.chain_code;
     let contact_public_key = contact_material.public_key;
@@ -513,21 +526,20 @@ pub async fn send_contact_request_with_proof(
     ))
 }
 
-/// Return the 64-byte HD seed of the first unlocked wallet associated with
-/// `identity`, zeroized when dropped. The raw seed only travels from here into
-/// the `wallet_backend` derivation seam; it never enters the contact-request
-/// document. Errors with [`TaskError::ContactWalletSeedUnavailable`] when no
-/// unlocked wallet exposes a seed.
-fn first_open_wallet_seed(identity: &QualifiedIdentity) -> Result<Zeroizing<[u8; 64]>, TaskError> {
-    for wallet in identity.associated_wallets.values() {
-        let Ok(guard) = wallet.read() else {
-            continue;
-        };
-        if let Ok(seed) = guard.seed_bytes() {
-            return Ok(Zeroizing::new(*seed));
-        }
-    }
-    Err(TaskError::ContactWalletSeedUnavailable)
+/// Return the [`WalletSeedHash`] of the first wallet associated with
+/// `identity`. The seed itself is never read here — it is decrypted
+/// just-in-time through the JIT chokepoint keyed by this hash, so the raw
+/// seed never enters this layer. Errors with
+/// [`TaskError::ContactWalletSeedUnavailable`] when no wallet is associated.
+fn first_associated_wallet_seed_hash(
+    identity: &QualifiedIdentity,
+) -> Result<crate::model::wallet::WalletSeedHash, TaskError> {
+    identity
+        .associated_wallets
+        .keys()
+        .next()
+        .copied()
+        .ok_or(TaskError::ContactWalletSeedUnavailable)
 }
 
 async fn resolve_username_to_identity(

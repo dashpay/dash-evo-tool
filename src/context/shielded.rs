@@ -202,7 +202,7 @@ impl AppContext {
             }
 
             ShieldedTask::InitializeShieldedWallet { seed_hash } => {
-                self.initialize_shielded_wallet(seed_hash)
+                self.initialize_shielded_wallet(seed_hash).await
             }
 
             ShieldedTask::SyncNotes { seed_hash } => self.sync_shielded_notes(seed_hash).await,
@@ -368,8 +368,16 @@ impl AppContext {
         states.get(seed_hash).map(|s| s.keys.default_address)
     }
 
-    /// Initialize shielded wallet state by deriving ZIP32 keys from the wallet seed.
-    pub(crate) fn initialize_shielded_wallet(
+    /// Initialize shielded wallet state by deriving ZIP32 keys from the
+    /// wallet seed.
+    ///
+    /// The seed is obtained just-in-time through the JIT chokepoint
+    /// ([`SecretAccess::with_secret`](crate::wallet_backend::SecretAccess::with_secret))
+    /// — never read from a session-resident `Wallet::Open`. A passphrase-
+    /// protected wallet prompts once; a no-password wallet derives with no
+    /// prompt. The derived Orchard **viewing/spending** key set persists in
+    /// `shielded_states` for the session (as before); only the *seed* is JIT.
+    pub(crate) async fn initialize_shielded_wallet(
         self: &Arc<Self>,
         seed_hash: WalletSeedHash,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
@@ -385,21 +393,21 @@ impl AppContext {
             }
         }
 
-        // Get the wallet seed
-        let seed_bytes = {
-            let wallets = self.wallets.read()?;
-            let wallet_arc = wallets.get(&seed_hash).ok_or(TaskError::WalletNotFound)?;
-            let wallet = wallet_arc.read()?;
-            match &wallet.wallet_seed {
-                crate::model::wallet::WalletSeed::Open(open) => open.seed,
-                crate::model::wallet::WalletSeed::Closed(_) => {
-                    return Err(TaskError::WalletLocked);
-                }
-            }
-        };
-
-        let keys =
-            derive_orchard_keys(&seed_bytes, self.network, 0).map_err(shielded_build_error)?;
+        // Derive the Orchard key set from the seed, pulled just-in-time from
+        // the encrypted vault. The seed is borrowed inside the closure and
+        // zeroized when it returns; only the derived key set escapes.
+        let network = self.network;
+        let keys = self
+            .wallet_backend()?
+            .secret_access()
+            .with_secret(
+                &crate::wallet_backend::SecretScope::HdSeed { seed_hash },
+                |plaintext| {
+                    let seed = plaintext.expose_hd_seed().ok_or(TaskError::WalletLocked)?;
+                    derive_orchard_keys(seed, network, 0).map_err(shielded_build_error)
+                },
+            )
+            .await?;
 
         let network_str = self.network.to_string();
 

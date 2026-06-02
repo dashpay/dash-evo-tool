@@ -692,17 +692,13 @@ impl AppContext {
         self.restore_selected_wallet_from_kv();
         self.restore_platform_address_info_from_kv();
 
-        // Seed-injection chokepoint for the cold-boot path. Hydration
-        // reconstructs no-password wallets in the `Open` state, but the
-        // seedless loader never fills `inner.seeds`; without this pass a
-        // hydrated no-password wallet shows as unlocked yet every signing
-        // op fails `WalletLocked`. `bootstrap_loaded_wallets` runs
-        // `handle_wallet_unlocked` for each loaded wallet — the single
-        // place `provide_seed` is reached. It is a no-op for password
-        // wallets (still `Closed`) and idempotent for the rest. This must
-        // run here, after the backend is wired and `ctx.wallets` is
-        // populated, not at `AppContext::new` where both preconditions are
-        // false.
+        // Bootstrap addresses and promote any verified-open seeds into the
+        // JIT chokepoint's session cache for the cold-boot path. Signing no
+        // longer depends on this — the chokepoint pulls the seed just-in-time
+        // from the encrypted vault, and a no-password wallet signs via the
+        // unprotected fast-path with no prompt regardless. This runs after the
+        // backend is wired and `ctx.wallets` is populated so address bootstrap
+        // has the reconstructed wallets to work from. Idempotent.
         self.bootstrap_loaded_wallets();
         Ok(())
     }

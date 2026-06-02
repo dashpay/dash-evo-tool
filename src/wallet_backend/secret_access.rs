@@ -375,6 +375,30 @@ impl SecretAccess {
         self.maybe_remember(scope, &owned, policy);
     }
 
+    /// Decrypt an HD-seed envelope with an explicitly-supplied passphrase and
+    /// promote the result into the session cache — **without prompting**.
+    ///
+    /// This is the unlock-gesture bridge: the UI has just verified the
+    /// passphrase (via [`WalletSeed::open`](crate::model::wallet::WalletSeed::open)),
+    /// so the seed is re-decrypted here through the same chokepoint decrypt
+    /// path every signing op uses, then cached so the rest of the session does
+    /// not re-prompt. `passphrase` is `None` for unprotected wallets (the
+    /// envelope decrypts verbatim). The plaintext is borrowed only to seed the
+    /// cache and zeroizes on return.
+    pub fn promote_hd_seed_with_passphrase(
+        &self,
+        seed_hash: &WalletSeedHash,
+        passphrase: Option<&SecretString>,
+        policy: RememberPolicy,
+    ) -> Result<(), TaskError> {
+        let scope = SecretScope::HdSeed {
+            seed_hash: *seed_hash,
+        };
+        let plaintext = self.decrypt_jit(&scope, passphrase)?;
+        self.maybe_remember(&scope, &plaintext, policy);
+        Ok(())
+    }
+
     /// Forget the session-cached secret for `scope`, zeroizing it.
     /// Idempotent. Poison-safe: a poisoned lock is recovered so a panicked
     /// reader can never strand a plaintext in the cache.

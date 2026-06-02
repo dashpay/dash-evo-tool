@@ -221,7 +221,7 @@ impl ImportMnemonicScreen {
 
             let (new_wallet_seed_hash, wallet_arc) = self
                 .app_context
-                .register_wallet(wallet)
+                .register_wallet(wallet, &seed)
                 .map_err(|e| e.to_string())?;
 
             // Set pending wallet selection so the wallet screen auto-selects this wallet

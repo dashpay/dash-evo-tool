@@ -188,11 +188,19 @@ impl AppContext {
     /// This is the single entry point for adding a wallet to the system.
     /// UI screens should call this after constructing a [`Wallet`] via
     /// [`Wallet::new_from_seed()`].
+    ///
+    /// `seed` is the freshly-created/imported HD seed the caller already holds
+    /// from wallet construction. It is borrowed for the fresh-register
+    /// bootstrap (and, for a password wallet, to promote into the JIT session
+    /// cache) so registration never reads a parked seed — an open `Wallet`
+    /// parks none (R3). The borrow does not outlive this call.
     pub fn register_wallet(
         self: &Arc<Self>,
         wallet: Wallet,
+        seed: &[u8; 64],
     ) -> Result<(WalletSeedHash, Arc<RwLock<Wallet>>), TaskError> {
         let seed_hash = wallet.seed_hash();
+        let uses_password = wallet.uses_password;
 
         // 1. Persist to sidecars (T-W-01). The wallet-meta sidecar
         // carries alias/is_main/core_wallet_name plus the pre-computed
@@ -243,9 +251,15 @@ impl AppContext {
         self.has_wallet.store(true, Ordering::Relaxed);
         drop(wallets);
 
-        // 3. Bootstrap addresses and shielded state
-        self.bootstrap_wallet_addresses(&wallet_arc);
-        self.handle_wallet_unlocked(&wallet_arc);
+        // 3. Bootstrap addresses from the seed the caller holds (fresh
+        // register), then — for a password wallet — promote that seed into the
+        // JIT session cache so the rest of the session does not re-prompt.
+        // A no-password wallet needs no promotion: the chokepoint's
+        // unprotected fast-path decrypts it without a prompt regardless.
+        self.bootstrap_wallet_addresses(&wallet_arc, seed);
+        if uses_password {
+            self.promote_seed_to_session(seed_hash, seed);
+        }
 
         Ok((seed_hash, wallet_arc))
     }
@@ -300,41 +314,51 @@ impl AppContext {
         guard.known_addresses.is_empty() || !has_platform_addresses
     }
 
-    /// Bootstrap a wallet's address set from its open in-memory seed.
+    /// Bootstrap a wallet's address set from a borrowed HD seed.
     ///
     /// The sync bridge used by the **fresh-register** path only
-    /// ([`Self::register_wallet`]): a just-created or just-imported wallet still
-    /// holds its seed in memory, so the seed is read once here (R3 #17) and
-    /// passed by borrow into the now seed-as-parameter
-    /// [`Wallet::bootstrap_known_addresses`]; the per-family `bootstrap_*`
-    /// readers no longer reach back into the wallet's parked seed. A locked
-    /// wallet is skipped (it has no open seed to read) and bootstraps later via
-    /// [`Self::bootstrap_wallet_addresses_jit`] once its seed is resolvable
-    /// through the chokepoint.
-    ///
-    /// This read is the genuine fresh-open path — at registration the encrypted
-    /// envelope is only just being persisted, so resolving through the chokepoint
-    /// is not yet clean. It is retired in D4c together with the
-    /// `WalletSeed::open` reshape, which makes the fresh-open seed flow through
-    /// the chokepoint as well.
-    pub fn bootstrap_wallet_addresses(&self, wallet: &Arc<RwLock<Wallet>>) {
+    /// ([`Self::register_wallet`]): a just-created or just-imported wallet's
+    /// seed is in the caller's hand from construction, so it is passed in by
+    /// borrow rather than read from any parked field — an open `Wallet` parks
+    /// no seed (R3). The borrow is fanned down into the seed-as-parameter
+    /// [`Wallet::bootstrap_known_addresses`]; no `bootstrap_*` child reaches
+    /// back into the wallet for a seed. A locked wallet is skipped and
+    /// bootstraps later via [`Self::bootstrap_wallet_addresses_jit`] once its
+    /// seed is resolvable through the chokepoint.
+    pub fn bootstrap_wallet_addresses(&self, wallet: &Arc<RwLock<Wallet>>, seed: &[u8; 64]) {
         if let Ok(mut guard) = wallet.write() {
             if !guard.is_open() {
                 tracing::debug!("Skipping address bootstrap for locked wallet");
                 return;
             }
             if Self::wallet_needs_bootstrap(&guard) {
-                let seed = match guard.seed_bytes() {
-                    Ok(bytes) => zeroize::Zeroizing::new(*bytes),
-                    Err(err) => {
-                        tracing::warn!(error = %err, wallet = %hex::encode(guard.seed_hash()), "Unable to read seed for bootstrap");
-                        return;
-                    }
-                };
                 tracing::info!(wallet = %hex::encode(guard.seed_hash()), "Bootstrapping wallet addresses");
-                guard.bootstrap_known_addresses(&seed, self);
+                guard.bootstrap_known_addresses(seed, self);
             }
         }
+    }
+
+    /// Promote a known HD seed into the JIT chokepoint's session cache
+    /// (`UntilAppClose`), so the rest of the session does not re-prompt for
+    /// this wallet.
+    ///
+    /// Used by the fresh-register path, which holds the seed from wallet
+    /// construction. Best-effort: if the backend is not wired yet the promotion
+    /// is skipped — signing still resolves the seed just-in-time from the vault.
+    fn promote_seed_to_session(self: &Arc<Self>, seed_hash: WalletSeedHash, seed: &[u8; 64]) {
+        let Ok(backend) = self.wallet_backend() else {
+            return;
+        };
+        let seed = zeroize::Zeroizing::new(*seed);
+        backend.secret_access().remember_session(
+            &crate::wallet_backend::SecretScope::HdSeed { seed_hash },
+            crate::wallet_backend::SecretPlaintext::HdSeed(&seed),
+            crate::wallet_backend::RememberPolicy::UntilAppClose,
+        );
+        tracing::trace!(
+            wallet = %hex::encode(seed_hash),
+            "Freshly-registered seed promoted to the session cache"
+        );
     }
 
     /// Bootstrap a wallet's address set by resolving its HD seed just-in-time
@@ -471,46 +495,63 @@ impl AppContext {
     /// signing pulls the seed just-in-time from the encrypted vault through
     /// the [`SecretAccess`](crate::wallet_backend::SecretAccess) chokepoint.
     /// Its only job now is to honor the unlock gesture's "keep unlocked"
-    /// intent for **password-protected** wallets: promote the just-verified
-    /// seed into the session cache (`UntilAppClose`) so the rest of the
-    /// session's operations on this wallet do not re-prompt.
+    /// intent for **password-protected** wallets: re-decrypt the just-verified
+    /// seed through the chokepoint with the passphrase the user just entered,
+    /// and promote it into the session cache (`UntilAppClose`) so the rest of
+    /// the session's operations on this wallet do not re-prompt.
     ///
-    /// A no-password wallet needs no promotion — the chokepoint's unprotected
-    /// fast-path decrypts it with no prompt regardless — so it is skipped here
-    /// and never reads its parked seed.
+    /// `passphrase` is the secret the UI just validated via
+    /// [`WalletSeed::open`](crate::model::wallet::WalletSeed::open). It is
+    /// `None` for the cold-boot bridge ([`Self::bootstrap_loaded_wallets`]) and
+    /// for no-password wallets: in both cases there is nothing to promote here
+    /// (a password wallet with no passphrase in hand is left for its unlock
+    /// gesture, so this never forces a startup prompt), and a no-password
+    /// wallet resolves prompt-free through the chokepoint's unprotected
+    /// fast-path regardless.
     ///
-    /// The protected-wallet snapshot below still reads the just-`open()`ed
-    /// parked seed (R3 #17). That bridge is intrinsically coupled to the
-    /// `WalletSeed::open` "verify-not-park" reshape: once `open()` routes the
-    /// entered passphrase through the chokepoint, this promotion moves there and
-    /// the snapshot disappears. Retired in D4c with the `open()` reshape.
-    ///
-    /// Shielded state is no longer warmed here: it is derived on the first
-    /// shielded operation via the chokepoint, so unlock forces no seed
-    /// residency for shielded warm-up.
-    pub fn handle_wallet_unlocked(self: &Arc<Self>, wallet: &Arc<RwLock<Wallet>>) {
+    /// The seed is obtained ONLY by decrypting the stored envelope through the
+    /// chokepoint — no parked seed is read, because an open `Wallet` parks none
+    /// (R3). Shielded state is not warmed here: it is derived on the first
+    /// shielded operation via the chokepoint.
+    pub fn handle_wallet_unlocked(
+        self: &Arc<Self>,
+        wallet: &Arc<RwLock<Wallet>>,
+        passphrase: Option<&str>,
+    ) {
+        let (seed_hash, uses_password) = match wallet.read() {
+            Ok(guard) => (guard.seed_hash(), guard.uses_password),
+            Err(_) => return,
+        };
+
         // No-password wallets resolve prompt-free through the chokepoint's
-        // unprotected fast-path; promoting them is unnecessary and would force
-        // a parked-seed read. Skip them entirely.
-        if let Ok(guard) = wallet.read()
-            && !guard.uses_password
-        {
+        // unprotected fast-path; promoting them is unnecessary. A password
+        // wallet with no passphrase in hand (cold boot) is left for its unlock
+        // gesture so we never force a startup prompt.
+        if !uses_password {
             return;
         }
-
-        let Some((seed_hash, seed)) = Self::wallet_seed_snapshot(wallet) else {
+        let Some(passphrase) = passphrase else {
             return;
         };
-        if let Ok(backend) = self.wallet_backend() {
-            backend.secret_access().remember_session(
-                &crate::wallet_backend::SecretScope::HdSeed { seed_hash },
-                crate::wallet_backend::SecretPlaintext::HdSeed(&seed),
-                crate::wallet_backend::RememberPolicy::UntilAppClose,
-            );
-            tracing::trace!(
+
+        let Ok(backend) = self.wallet_backend() else {
+            return;
+        };
+        let secret = platform_wallet_storage::secrets::SecretString::new(passphrase);
+        match backend.secret_access().promote_hd_seed_with_passphrase(
+            &seed_hash,
+            Some(&secret),
+            crate::wallet_backend::RememberPolicy::UntilAppClose,
+        ) {
+            Ok(()) => tracing::trace!(
                 wallet = %hex::encode(seed_hash),
                 "Verified-open seed promoted to the session cache on unlock"
-            );
+            ),
+            Err(error) => tracing::debug!(
+                wallet = %hex::encode(seed_hash),
+                %error,
+                "Unlock seed promotion skipped"
+            ),
         }
     }
 
@@ -617,23 +658,6 @@ impl AppContext {
         });
     }
 
-    fn wallet_seed_snapshot(
-        wallet: &Arc<RwLock<Wallet>>,
-    ) -> Option<(WalletSeedHash, zeroize::Zeroizing<[u8; 64]>)> {
-        let guard = wallet.read().ok()?;
-        if !guard.is_open() {
-            return None;
-        }
-        let seed_bytes = match guard.seed_bytes() {
-            Ok(bytes) => zeroize::Zeroizing::new(*bytes),
-            Err(err) => {
-                tracing::warn!(error = %err, wallet = %hex::encode(guard.seed_hash()), "Unable to snapshot wallet seed");
-                return None;
-            }
-        };
-        Some((guard.seed_hash(), seed_bytes))
-    }
-
     /// Queue automatic discovery of identities derived from a wallet.
     /// Checks identity indices 0 through max_identity_index for existing identities on the network.
     pub fn queue_wallet_identity_discovery(
@@ -664,10 +688,13 @@ impl AppContext {
         };
 
         for wallet in wallets.iter() {
-            // Promote any verified-open seed into the session cache first, so a
-            // protected wallet the user already unlocked resolves through the
-            // chokepoint below without a startup prompt.
-            self.handle_wallet_unlocked(wallet);
+            // Cold boot has no passphrase in hand, so this is a no-op for
+            // password wallets (they wait for their unlock gesture) and is
+            // unnecessary for no-password wallets (the chokepoint's unprotected
+            // fast-path covers them). Kept for the promote-before-bootstrap
+            // ordering invariant: a seed already in the session cache resolves
+            // the JIT bootstrap below without a prompt.
+            self.handle_wallet_unlocked(wallet, None);
             self.bootstrap_wallet_addresses_jit(wallet).await;
         }
     }
@@ -920,8 +947,9 @@ mod tests {
             .await
             .expect("ensure_wallet_backend should succeed offline");
 
+        let seed = [0x24u8; 64];
         let wallet = crate::model::wallet::Wallet::new_from_seed(
-            [0x24u8; 64],
+            seed,
             Network::Testnet,
             Some("cold-boot".to_string()),
             None, // no password
@@ -929,7 +957,7 @@ mod tests {
         .expect("build no-password wallet");
         assert!(wallet.is_open(), "a no-password wallet is open on creation");
 
-        let (seed_hash, wallet_arc) = ctx.register_wallet(wallet).expect("register wallet");
+        let (seed_hash, wallet_arc) = ctx.register_wallet(wallet, &seed).expect("register wallet");
         let backend = ctx.wallet_backend().expect("backend wired");
 
         // Live (same-process) state: registration wrote the seed envelope to

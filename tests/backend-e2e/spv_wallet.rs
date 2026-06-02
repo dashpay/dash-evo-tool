@@ -33,7 +33,7 @@ async fn test_spv_sync_and_create_wallet() {
 
     // Register the wallet
     let (seed_hash, _wallet_arc) = app_context
-        .register_wallet(wallet)
+        .register_wallet(wallet, &seed)
         .expect("register_wallet should succeed");
 
     // Verify in-memory

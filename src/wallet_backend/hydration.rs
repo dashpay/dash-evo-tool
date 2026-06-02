@@ -184,26 +184,25 @@ fn wallet_from_envelope(
         // mirror the legacy DB reader behaviour. A length mismatch is
         // surfaced as a typed error so the picker can show WHICH wallet
         // was skipped and WHY (SEC-008) — the silent "fall back to
-        // Closed" behaviour hid this case from the user.
-        match encrypted_seed.clone().try_into() {
-            Ok(seed) => WalletSeed::Open(OpenWalletSeed {
-                seed,
-                wallet_info: closed,
-            }),
-            Err(bytes) => {
-                let label = if meta.alias.is_empty() {
-                    let hex_hash = hex::encode(seed_hash);
-                    format!("{}…", &hex_hash[..hex_hash.len().min(12)])
-                } else {
-                    meta.alias.clone()
-                };
-                return Err(TaskError::SeedLengthInvalid {
-                    wallet_label: label,
-                    got: bytes.len() as u32,
-                    expected: EXPECTED_SEED_LEN,
-                });
-            }
+        // Closed" behaviour hid this case from the user. The envelope is
+        // only length-checked to PROVE it is well-formed; the open wallet
+        // parks no plaintext seed (R3).
+        if encrypted_seed.len() != EXPECTED_SEED_LEN as usize {
+            let label = if meta.alias.is_empty() {
+                let hex_hash = hex::encode(seed_hash);
+                format!("{}…", &hex_hash[..hex_hash.len().min(12)])
+            } else {
+                meta.alias.clone()
+            };
+            return Err(TaskError::SeedLengthInvalid {
+                wallet_label: label,
+                got: encrypted_seed.len() as u32,
+                expected: EXPECTED_SEED_LEN,
+            });
         }
+        WalletSeed::Open(OpenWalletSeed {
+            wallet_info: closed,
+        })
     };
 
     Ok(Wallet {

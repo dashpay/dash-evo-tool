@@ -266,7 +266,7 @@ use bitflags::bitflags;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::platform::Identity;
-use zeroize::Zeroize;
+use zeroize::Zeroizing;
 
 const BOOTSTRAP_BIP44_EXTERNAL_COUNT: u32 = 32;
 const BOOTSTRAP_BIP44_CHANGE_COUNT: u32 = 16;
@@ -411,7 +411,6 @@ impl Wallet {
 
         Ok(Wallet {
             wallet_seed: WalletSeed::Open(OpenWalletSeed {
-                seed,
                 wallet_info: ClosedKeyItem {
                     seed_hash,
                     encrypted_seed,
@@ -593,28 +592,30 @@ impl WalletTransaction {
 
 pub type WalletSeedHash = [u8; 32];
 
+/// State of a wallet's HD seed.
+///
+/// Since the JIT secret-access refactor (R3) neither variant ever holds the
+/// plaintext seed. `Open` means **unlocked/verified** — the passphrase has
+/// been proven correct and the wallet is usable — and `Closed` means locked.
+/// Both variants carry only the encrypted [`ClosedKeyItem`] metadata; the
+/// plaintext seed lives **only** inside a `with_secret*` frame of the
+/// [`SecretAccess`](crate::wallet_backend::SecretAccess) chokepoint.
 #[derive(Debug, Clone, PartialEq)]
 pub enum WalletSeed {
     Open(OpenWalletSeed),
     Closed(ClosedWalletSeed),
 }
-#[derive(Clone, PartialEq)]
-pub struct OpenKeyItem<const N: usize> {
-    pub seed: [u8; N],
+
+/// The "unlocked/verified" half of [`WalletSeed`].
+///
+/// Holds no secret: after R3 an open wallet parks no plaintext seed. The
+/// retained [`ClosedKeyItem`] carries the encrypted-envelope metadata
+/// (`seed_hash`, `salt`, `nonce`, `encrypted_seed`, `password_hint`) the
+/// model and UI still read without the seed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OpenWalletSeed {
     pub wallet_info: ClosedKeyItem,
 }
-
-impl<const N: usize> Debug for OpenKeyItem<N> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let hash = ClosedKeyItem::compute_seed_hash(&self.seed);
-        f.debug_struct("OpenKeyItem")
-            .field("seed_hash", &hex::encode(hash))
-            .finish()
-    }
-}
-
-// Type alias for OpenWalletSeed with a fixed seed size of 64 bytes
-pub type OpenWalletSeed = OpenKeyItem<64>;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClosedKeyItem {
@@ -628,7 +629,16 @@ pub struct ClosedKeyItem {
 pub type ClosedWalletSeed = ClosedKeyItem;
 
 impl WalletSeed {
-    /// Opens the wallet by decrypting the seed using the provided password.
+    /// Verify the passphrase and mark the wallet unlocked, **without parking
+    /// the seed**.
+    ///
+    /// Decrypts the stored envelope only to prove `password` is correct, then
+    /// discards the plaintext (it is zeroized at the end of this call). On
+    /// success the state flips to `Open` carrying no secret. Future seed
+    /// residency is owned entirely by the
+    /// [`SecretAccess`](crate::wallet_backend::SecretAccess) chokepoint; the
+    /// caller that wants the session kept unlocked promotes the seed there
+    /// (see [`AppContext::handle_wallet_unlocked`](crate::context::AppContext::handle_wallet_unlocked)).
     pub fn open(&mut self, password: &str) -> Result<(), String> {
         match self {
             WalletSeed::Open(_) => {
@@ -636,10 +646,10 @@ impl WalletSeed {
                 Ok(())
             }
             WalletSeed::Closed(closed_seed) => {
-                // Try to decrypt the seed
-                let seed = closed_seed.decrypt_seed(password)?;
+                // Decrypt to PROVE the password is correct, then drop the
+                // plaintext (`Zeroizing`) without parking it.
+                let _verified = Zeroizing::new(closed_seed.decrypt_seed(password)?);
                 let open_wallet_seed = OpenWalletSeed {
-                    seed,
                     wallet_info: closed_seed.clone(),
                 };
                 *self = WalletSeed::Open(open_wallet_seed);
@@ -648,7 +658,11 @@ impl WalletSeed {
         }
     }
 
-    /// Opens the wallet by decrypting the seed without using a password.
+    /// Mark a no-password wallet unlocked, **without parking the seed**.
+    ///
+    /// The verify-not-park counterpart of [`Self::open`] for unprotected
+    /// wallets: it validates the stored envelope is a well-formed 64-byte seed,
+    /// then flips to `Open` carrying no secret.
     pub fn open_no_password(&mut self) -> Result<(), String> {
         match self {
             WalletSeed::Open(_) => {
@@ -656,46 +670,37 @@ impl WalletSeed {
                 Ok(())
             }
             WalletSeed::Closed(closed_seed) => {
-                let open_wallet_seed =
-                    OpenWalletSeed {
-                        seed: closed_seed.encrypted_seed.clone().try_into().map_err(
-                            |e: Vec<u8>| {
-                                format!("incorrect seed size, expected 64 bytes, got {}", e.len())
-                            },
-                        )?,
-                        wallet_info: closed_seed.clone(),
-                    };
+                // Unprotected envelopes store the raw 64 bytes verbatim;
+                // validate the length to prove the wallet is openable, then
+                // drop the plaintext without parking it.
+                if closed_seed.encrypted_seed.len() != 64 {
+                    return Err(format!(
+                        "incorrect seed size, expected 64 bytes, got {}",
+                        closed_seed.encrypted_seed.len()
+                    ));
+                }
+                let open_wallet_seed = OpenWalletSeed {
+                    wallet_info: closed_seed.clone(),
+                };
                 *self = WalletSeed::Open(open_wallet_seed);
                 Ok(())
             }
         }
     }
 
-    /// Closes the wallet by securely erasing the seed and transitioning to Closed state.
+    /// Transition the wallet back to the locked (`Closed`) state.
     // Allow dead_code: This method provides explicit wallet closure functionality,
     // useful for security-conscious applications requiring manual wallet management
     #[allow(dead_code)]
     pub fn close(&mut self) {
         match self {
             WalletSeed::Open(open_seed) => {
-                // Zeroize the seed
-                open_seed.seed.zeroize();
-                // Transition back to ClosedWalletSeed
                 let closed_seed = open_seed.wallet_info.clone();
                 *self = WalletSeed::Closed(closed_seed);
             }
             WalletSeed::Closed(_) => {
                 // Wallet is already closed
             }
-        }
-    }
-}
-
-impl Drop for WalletSeed {
-    fn drop(&mut self) {
-        // Securely erase sensitive data
-        if let WalletSeed::Open(open_seed) = self {
-            open_seed.seed.zeroize();
         }
     }
 }
@@ -750,13 +755,6 @@ impl Wallet {
 
         if let Err(err) = self.bootstrap_platform_payment_addresses(seed, network, app_context) {
             tracing::warn!("Failed to bootstrap Platform payment addresses: {}", err);
-        }
-    }
-
-    pub(crate) fn seed_bytes(&self) -> Result<&[u8; 64], String> {
-        match &self.wallet_seed {
-            WalletSeed::Open(opened) => Ok(&opened.seed),
-            WalletSeed::Closed(_) => Err("Wallet is closed, please decrypt it first".to_string()),
         }
     }
 
@@ -2235,10 +2233,24 @@ mod tests {
     use dash_sdk::dpp::dashcore::hashes::Hash;
     use dash_sdk::dpp::key_wallet::bip32::{ExtendedPrivKey, ExtendedPubKey};
 
+    /// The deterministic 64-byte seed every [`test_wallet`] is built from.
+    ///
+    /// Since R3 the seed is no longer parked in `WalletSeed::Open`, so tests
+    /// that need the wallet's raw seed take it from here rather than from a
+    /// (removed) parked-seed accessor — the value is known by construction.
+    const TEST_SEED: [u8; 64] = [42u8; 64];
+
+    /// The known seed behind [`test_wallet`]. Test-only replacement for the
+    /// removed `Wallet::seed_bytes()` — derives nothing, just hands back the
+    /// constant the wallet was built from.
+    fn test_seed() -> [u8; 64] {
+        TEST_SEED
+    }
+
     /// Helper: create a minimal open wallet for testing.
     /// Uses a deterministic 64-byte seed and derives the BIP44 master public key.
     fn test_wallet() -> Wallet {
-        let seed = [42u8; 64];
+        let seed = TEST_SEED;
         let network = Network::Testnet;
         let secp = Secp256k1::new();
 
@@ -2262,7 +2274,6 @@ mod tests {
 
         Wallet {
             wallet_seed: WalletSeed::Open(OpenWalletSeed {
-                seed,
                 wallet_info: ClosedKeyItem {
                     seed_hash,
                     encrypted_seed: seed.to_vec(),
@@ -2470,11 +2481,50 @@ mod tests {
         assert_eq!(hash1, hash2);
     }
 
+    /// R3 capstone: an open wallet retains NO plaintext seed.
+    ///
+    /// `WalletSeed::Open` is the verify-not-park state — it carries only the
+    /// encrypted-envelope metadata, never the decrypted seed. This test pins
+    /// the invariant structurally: the `Open` payload exposes only
+    /// `wallet_info` (a [`ClosedKeyItem`], whose `encrypted_seed` is, for a
+    /// password wallet, the ciphertext — not the plaintext), and there is no
+    /// accessor that yields the plaintext seed from an open wallet.
     #[test]
-    fn test_wallet_seed_bytes_available_when_open() {
-        let wallet = test_wallet();
-        assert!(wallet.seed_bytes().is_ok());
-        assert_eq!(wallet.seed_bytes().unwrap().len(), 64);
+    fn open_wallet_retains_no_plaintext_seed() {
+        let password = "correct horse battery staple";
+        let secret = Secret::new(password);
+        let mut wallet = Wallet::new_from_seed(
+            test_seed(),
+            Network::Testnet,
+            Some("verify-not-park".to_string()),
+            Some(&secret),
+        )
+        .expect("build password wallet");
+
+        // Lock, then unlock by verifying the passphrase.
+        wallet.wallet_seed.close();
+        assert!(!wallet.is_open());
+        wallet
+            .wallet_seed
+            .open(password)
+            .expect("correct passphrase verifies");
+        assert!(wallet.is_open(), "verified-correct passphrase opens");
+
+        // The open payload holds only the ENCRYPTED envelope — never the
+        // plaintext seed. For a password wallet the stored bytes are the
+        // ciphertext, which must differ from the plaintext seed.
+        let WalletSeed::Open(open) = &wallet.wallet_seed else {
+            panic!("wallet should be open");
+        };
+        assert_ne!(
+            open.wallet_info.encrypted_seed,
+            test_seed().to_vec(),
+            "open wallet must not store the plaintext seed"
+        );
+        // A wrong passphrase is rejected — proves `open` truly decrypts to
+        // verify, it does not just flip a flag.
+        wallet.wallet_seed.close();
+        assert!(wallet.wallet_seed.open("wrong passphrase").is_err());
     }
 
     // ========================================================================
@@ -2489,7 +2539,7 @@ mod tests {
     #[test]
     fn auth_pubkey_cached_equals_seed_derived() {
         let wallet = test_wallet();
-        let seed = *wallet.seed_bytes().expect("open wallet");
+        let seed = test_seed();
         let network = Network::Testnet;
 
         for identity_index in 0..2u32 {
@@ -2529,7 +2579,7 @@ mod tests {
     #[test]
     fn auth_pubkey_cold_cache_self_heals() {
         let wallet = test_wallet();
-        let seed = *wallet.seed_bytes().expect("open wallet");
+        let seed = test_seed();
         let network = Network::Testnet;
         let (identity_index, key_index) = (1u32, 3u32);
 
@@ -2658,7 +2708,7 @@ mod tests {
             // The per-path private key is derived directly from the raw seed
             // (BIP-44 master xpub is not involved), so the derivation is
             // network-correct as long as the same `network` is passed.
-            let seed = *wallet.seed_bytes().expect("open wallet");
+            let seed = test_seed();
             for path in representative_bootstrap_paths(network) {
                 let reference = path
                     .derive_priv_ecdsa_for_master_seed(&seed, network)
@@ -2682,7 +2732,7 @@ mod tests {
     fn private_key_for_address_seed_param_matches_reference() {
         let network = Network::Testnet;
         let wallet = test_wallet();
-        let seed = *wallet.seed_bytes().expect("open wallet");
+        let seed = test_seed();
 
         // Derive a known address + path and register it in the wallet.
         let path = DerivationPath::from(vec![
@@ -2715,7 +2765,7 @@ mod tests {
     fn platform_receive_address_seed_param_matches() {
         for network in [Network::Testnet, Network::Mainnet] {
             let mut param_wallet = test_wallet();
-            let seed = *param_wallet.seed_bytes().expect("open wallet");
+            let seed = test_seed();
 
             let reference_path = DerivationPath::platform_payment_path(network, 0, 0, 0);
             let reference_xprv = reference_path
@@ -2742,7 +2792,7 @@ mod tests {
         let network = Network::Testnet;
         let wallet = test_wallet();
         let seed_hash = wallet.seed_hash();
-        let seed = *wallet.seed_bytes().expect("open wallet");
+        let seed = test_seed();
         let slice = vec![Arc::new(RwLock::new(wallet))];
 
         let path = DerivationPath::identity_registration_path(network, 0);
@@ -3108,9 +3158,9 @@ mod tests {
 
         wallet.wallet_seed.close();
         assert!(!wallet.is_open());
-
-        // After closing, seed_bytes should fail
-        assert!(wallet.seed_bytes().is_err());
+        // The seed_hash survives the lock (it is envelope metadata, not the
+        // seed) — the closed state still identifies the wallet.
+        assert_eq!(wallet.seed_hash(), original_hash);
 
         // Reopen without password (test wallet has no encryption)
         wallet.wallet_seed.open_no_password().unwrap();

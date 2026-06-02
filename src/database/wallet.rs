@@ -252,16 +252,19 @@ impl Database {
             let wallet_seed = if uses_password {
                 WalletSeed::Closed(closed_wallet_seed)
             } else {
+                // Unprotected wallets load as Open (verified) carrying no
+                // plaintext seed; validate the verbatim 64-byte envelope so a
+                // corrupt blob surfaces here rather than at first sign.
+                if encrypted_seed.len() != 64 {
+                    return Err(rusqlite::Error::FromSqlConversionFailure(
+                        1,
+                        rusqlite::types::Type::Blob,
+                        Box::new(CorruptedBlobError(
+                            "Seed should be 64 bytes for open wallet".to_string(),
+                        )),
+                    ));
+                }
                 WalletSeed::Open(OpenWalletSeed {
-                    seed: encrypted_seed.try_into().map_err(|_| {
-                        rusqlite::Error::FromSqlConversionFailure(
-                            1,
-                            rusqlite::types::Type::Blob,
-                            Box::new(CorruptedBlobError(
-                                "Seed should be 64 bytes for open wallet".to_string(),
-                            )),
-                        )
-                    })?,
                     wallet_info: closed_wallet_seed,
                 })
             };

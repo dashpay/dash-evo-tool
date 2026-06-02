@@ -109,7 +109,11 @@ impl WalletUnlockPopup {
                 match wallet_guard.wallet_seed.open(self.password_input.text()) {
                     Ok(_) => {
                         drop(wallet_guard);
-                        app_context.handle_wallet_unlocked(wallet);
+                        // Promote the just-verified seed into the JIT session
+                        // cache using the passphrase the user just entered, so
+                        // the rest of the session does not re-prompt.
+                        app_context
+                            .handle_wallet_unlocked(wallet, Some(self.password_input.text()));
                         self.close();
                         WalletUnlockResult::Unlocked
                     }
@@ -139,13 +143,13 @@ pub fn wallet_needs_unlock(wallet: &Arc<RwLock<Wallet>>) -> bool {
 /// Open a no-password wallet and route it through the unlock chokepoint.
 ///
 /// For wallets that do not use a password this flips the in-memory seed to
-/// `Open` for display and then calls [`AppContext::handle_wallet_unlocked`],
-/// which promotes the verified seed into the JIT chokepoint's session cache.
-/// Signing itself pulls the seed just-in-time from the encrypted vault — a
+/// `Open` for display and then notifies [`AppContext::handle_wallet_unlocked`].
+/// Signing pulls the seed just-in-time from the encrypted vault — a
 /// no-password wallet signs even without this call (the chokepoint's
 /// unprotected fast-path), so this is a UX convenience, not a correctness
-/// gate. Password wallets are a no-op here — they unlock through the password
-/// popup, which calls the same chokepoint.
+/// gate; no passphrase is passed because there is none. Password wallets are a
+/// no-op here — they unlock through the password popup, which promotes the
+/// seed with the entered passphrase.
 pub fn try_open_wallet_no_password(
     app_context: &Arc<AppContext>,
     wallet: &Arc<RwLock<Wallet>>,
@@ -157,8 +161,7 @@ pub fn try_open_wallet_no_password(
         }
         wallet_guard.wallet_seed.open_no_password()?;
     }
-    // The write guard is dropped above; `handle_wallet_unlocked` takes its own
-    // read lock to snapshot the seed, so notify only after releasing it.
-    app_context.handle_wallet_unlocked(wallet);
+    // The write guard is dropped above; notify only after releasing it.
+    app_context.handle_wallet_unlocked(wallet, None);
     Ok(())
 }

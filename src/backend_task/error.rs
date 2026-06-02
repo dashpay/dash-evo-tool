@@ -175,6 +175,20 @@ pub enum TaskError {
         source: Box<crate::wallet_backend::KvAdapterError>,
     },
 
+    /// The DET identity-authentication public-key cache (D4b) could not
+    /// be read or written. Lives in the same cross-network
+    /// `det-app.sqlite` k/v file as [`Self::WalletMetaStorage`]; a failure
+    /// here only costs the steady-state optimisation (reads self-heal via
+    /// a just-in-time derivation), so the user hint is the same calm
+    /// disk-space prompt.
+    #[error(
+        "Could not access wallet details. Check available disk space and restart the application."
+    )]
+    AuthPubkeyCacheStorage {
+        #[source]
+        source: Box<crate::wallet_backend::KvAdapterError>,
+    },
+
     /// A WIF-encoded private key supplied by the user could not be parsed.
     /// Wrapped distinctly from [`Self::SecretStore`] so the user sees an
     /// input-shape hint rather than a storage diagnostic.

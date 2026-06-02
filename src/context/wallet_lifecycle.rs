@@ -9,6 +9,11 @@ use crate::wallet_backend::{DetScope, WalletBackend};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 
+/// Number of identity-authentication keys warmed per known identity index
+/// during the JIT bootstrap (D4b). Matches the readers' auth-key lookup
+/// window so the common identity-load path serves entirely from cache.
+const AUTH_PUBKEY_WARM_KEY_COUNT: u32 = 12;
+
 impl AppContext {
     /// Clear the SPV data directory.
     ///
@@ -381,6 +386,14 @@ impl AppContext {
                             guard.bootstrap_known_addresses(seed, self);
                         }
                     }
+                    // D4b lazy warm: populate the identity-auth public-key
+                    // cache for the identities this wallet already knows, in
+                    // the same prompt-free seed scope, so the steady-state
+                    // identity-auth reads are seed-free. Best-effort — a warm
+                    // failure only forgoes the optimisation.
+                    if let Ok(guard) = wallet.read() {
+                        self.warm_auth_pubkey_cache(&backend, &guard, seed, seed_hash);
+                    }
                     Ok(())
                 },
             )
@@ -390,6 +403,64 @@ impl AppContext {
                 wallet = %hex::encode(seed_hash),
                 error = %e,
                 "JIT address bootstrap skipped"
+            );
+        }
+    }
+
+    /// Warm the identity-authentication public-key cache (D4b) for the
+    /// identities this wallet already knows.
+    ///
+    /// Called from inside the JIT bootstrap's `with_secret_session` scope,
+    /// so the borrowed seed is already in hand and no extra prompt is
+    /// raised. Derives the first [`AUTH_PUBKEY_WARM_KEY_COUNT`] auth keys
+    /// per known identity index and persists them in one whole-blob write.
+    /// Identities discovered later warm lazily on the read path's cold-fill.
+    /// Best-effort: a derivation or persist failure is logged and skipped,
+    /// because the read path self-heals regardless.
+    fn warm_auth_pubkey_cache(
+        &self,
+        backend: &WalletBackend,
+        wallet: &Wallet,
+        seed: &[u8; 64],
+        seed_hash: WalletSeedHash,
+    ) {
+        let network = self.network;
+        let view = backend.auth_pubkey_cache();
+        let mut cache = view.get(network, &seed_hash);
+        let mut changed = false;
+
+        for &identity_index in wallet.identities.keys() {
+            for key_index in 0..AUTH_PUBKEY_WARM_KEY_COUNT {
+                if cache.get(network, identity_index, key_index).is_some() {
+                    continue;
+                }
+                match wallet.identity_authentication_ecdsa_public_key_from_seed(
+                    seed,
+                    network,
+                    identity_index,
+                    key_index,
+                ) {
+                    Ok(public_key) => {
+                        changed |= cache.insert(network, identity_index, key_index, &public_key);
+                    }
+                    Err(error) => {
+                        tracing::debug!(
+                            wallet = %hex::encode(seed_hash),
+                            identity_index,
+                            key_index,
+                            %error,
+                            "Skipping auth-pubkey warm for one key"
+                        );
+                    }
+                }
+            }
+        }
+
+        if changed && let Err(e) = view.put(network, &seed_hash, &cache) {
+            tracing::debug!(
+                wallet = %hex::encode(seed_hash),
+                error = %e,
+                "Failed to persist warmed auth-pubkey cache"
             );
         }
     }

@@ -38,16 +38,9 @@ impl AppContext {
         let mut queried_wallet_key_index = None;
 
         for key_index in 0..AUTH_KEY_LOOKUP_WINDOW {
-            let public_key = {
-                let wallet = wallet_arc_ref.wallet.write()?;
-                wallet
-                    .identity_authentication_ecdsa_public_key(
-                        self.network,
-                        identity_index,
-                        key_index,
-                    )
-                    .map_err(|e| TaskError::WalletAddressDerivationFailed { detail: e })?
-            };
+            let public_key = self
+                .resolve_identity_auth_pubkey(&wallet_arc_ref.wallet, identity_index, key_index)
+                .await?;
 
             let key_hash = public_key.pubkey_hash().into();
             let query = NonUniquePublicKeyHashQuery {
@@ -158,20 +151,15 @@ impl AppContext {
         top_bound = top_bound.max(queried_wallet_key_index.saturating_add(1));
         top_bound = top_bound.saturating_add(5);
 
-        let wallet_seed_hash;
-        let (public_key_result_map, public_key_hash_result_map) = {
-            let mut wallet = wallet_arc_ref.wallet.write()?;
-            wallet_seed_hash = wallet.seed_hash();
-            wallet
-                .identity_authentication_ecdsa_public_keys_data_map(
-                    self,
-                    true,
-                    self.network,
-                    identity_index,
-                    0..top_bound,
-                )
-                .map_err(|e| TaskError::WalletAddressDerivationFailed { detail: e })?
-        };
+        let wallet_seed_hash = wallet_arc_ref.wallet.read()?.seed_hash();
+        let (public_key_result_map, public_key_hash_result_map) = self
+            .resolve_identity_auth_pubkeys_data_map(
+                &wallet_arc_ref.wallet,
+                true,
+                identity_index,
+                0..top_bound,
+            )
+            .await?;
 
         let private_keys_map = identity
             .public_keys()

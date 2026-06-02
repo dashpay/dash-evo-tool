@@ -104,11 +104,13 @@ impl AppContext {
 
         if identity_type == IdentityType::User
             && derive_keys_from_wallets
-            && let Some((_, _, wallet_private_keys)) = self.match_user_identity_keys_with_wallet(
-                &identity,
-                &wallets,
-                selected_wallet_seed_hash,
-            )?
+            && let Some((_, _, wallet_private_keys)) = self
+                .match_user_identity_keys_with_wallet(
+                    &identity,
+                    &wallets,
+                    selected_wallet_seed_hash,
+                )
+                .await?
         {
             encrypted_private_keys.extend(wallet_private_keys);
         }
@@ -412,7 +414,7 @@ impl AppContext {
         Ok(BackendTaskSuccessResult::LoadedIdentity(qualified_identity))
     }
 
-    pub(super) fn match_user_identity_keys_with_wallet(
+    pub(super) async fn match_user_identity_keys_with_wallet(
         &self,
         identity: &Identity,
         wallets: &BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>,
@@ -425,23 +427,22 @@ impl AppContext {
             if wallet_filter.is_some_and(|filter| filter != wallet_seed_hash) {
                 continue;
             }
-            let mut wallet = match wallet_arc.write() {
-                Ok(guard) => guard,
-                Err(_) => continue, // Skip poisoned wallets rather than failing the whole operation
-            };
-            if !wallet.is_open() {
-                continue;
+            // Skip poisoned or closed wallets rather than failing the
+            // whole operation; the read guard is released before any await.
+            match wallet_arc.read() {
+                Ok(guard) if guard.is_open() => {}
+                _ => continue,
             }
 
             if let Some((identity_index, wallet_private_keys)) = self
                 .attempt_match_identity_with_wallet(
                     identity,
-                    &mut wallet,
+                    wallet_arc,
                     wallet_seed_hash,
                     top_bound,
-                )?
+                )
+                .await?
             {
-                drop(wallet);
                 return Ok(Some((
                     wallet_seed_hash,
                     identity_index,
@@ -453,29 +454,26 @@ impl AppContext {
         Ok(None)
     }
 
-    fn attempt_match_identity_with_wallet(
+    async fn attempt_match_identity_with_wallet(
         &self,
         identity: &Identity,
-        wallet: &mut Wallet,
+        wallet: &Arc<RwLock<Wallet>>,
         wallet_seed_hash: WalletSeedHash,
         top_bound: u32,
     ) -> Result<Option<(u32, WalletKeyMap)>, TaskError> {
         let identity_id = identity.id();
 
-        if let Some((&identity_index, _)) = wallet
+        let existing_index = wallet
+            .read()?
             .identities
             .iter()
             .find(|(_, existing)| existing.id() == identity_id)
-        {
-            let (public_key_map, public_key_hash_map) = wallet
-                .identity_authentication_ecdsa_public_keys_data_map(
-                    self,
-                    true,
-                    self.network,
-                    identity_index,
-                    0..top_bound,
-                )
-                .map_err(|e| TaskError::WalletAddressDerivationFailed { detail: e })?;
+            .map(|(&index, _)| index);
+
+        if let Some(identity_index) = existing_index {
+            let (public_key_map, public_key_hash_map) = self
+                .resolve_identity_auth_pubkeys_data_map(wallet, true, identity_index, 0..top_bound)
+                .await?;
             let wallet_private_keys = self.build_wallet_private_key_map(
                 identity,
                 wallet_seed_hash,
@@ -490,15 +488,14 @@ impl AppContext {
         }
 
         for candidate_index in 0..MAX_IDENTITY_INDEX {
-            let (public_key_map, public_key_hash_map) = wallet
-                .identity_authentication_ecdsa_public_keys_data_map(
-                    self,
+            let (public_key_map, public_key_hash_map) = self
+                .resolve_identity_auth_pubkeys_data_map(
+                    wallet,
                     false,
-                    self.network,
                     candidate_index,
                     0..top_bound,
                 )
-                .map_err(|e| TaskError::WalletAddressDerivationFailed { detail: e })?;
+                .await?;
 
             if !Self::identity_matches_wallet_key_material(
                 identity,
@@ -508,15 +505,9 @@ impl AppContext {
                 continue;
             }
 
-            let (public_key_map, public_key_hash_map) = wallet
-                .identity_authentication_ecdsa_public_keys_data_map(
-                    self,
-                    true,
-                    self.network,
-                    candidate_index,
-                    0..top_bound,
-                )
-                .map_err(|e| TaskError::WalletAddressDerivationFailed { detail: e })?;
+            let (public_key_map, public_key_hash_map) = self
+                .resolve_identity_auth_pubkeys_data_map(wallet, true, candidate_index, 0..top_bound)
+                .await?;
 
             let wallet_private_keys = self.build_wallet_private_key_map(
                 identity,

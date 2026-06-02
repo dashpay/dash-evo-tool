@@ -19,6 +19,10 @@
 //! `Send + Sync`. See
 //! `docs/ai-design/2026-05-18-platform-wallet-migration/backend-architecture.md`.
 
+#[cfg(any(test, feature = "bench"))]
+pub mod auth_pubkey_cache;
+#[cfg(not(any(test, feature = "bench")))]
+pub(crate) mod auth_pubkey_cache;
 mod dashpay;
 mod det_platform_signer;
 mod det_signer;
@@ -61,6 +65,7 @@ pub use secret_prompt::{
     SecretPromptRequest, SecretPromptRetry, SecretScope,
 };
 
+pub use auth_pubkey_cache::AuthPubkeyCacheView;
 pub use event_bridge::EventBridge;
 pub use kv::{DetKv, DetScope, KvAdapterError, SCHEMA_VERSION as KV_SCHEMA_VERSION};
 pub use loader::{LoadedWallets, PersistedLoadSkip, PersistedWalletLoader, UpstreamFromPersisted};
@@ -720,6 +725,16 @@ impl WalletBackend {
     /// callers may build one per operation rather than threading it.
     pub fn wallet_meta(&self) -> WalletMetaView<'_> {
         WalletMetaView::new(&self.inner.app_kv)
+    }
+
+    /// View over the DET-owned identity-authentication public-key cache
+    /// (D4b). Backed by the same cross-network app-level k/v store as
+    /// [`Self::wallet_meta`], keyed per wallet under
+    /// `DetScope::Wallet(seed_hash)`; see [`AuthPubkeyCacheView`] for the
+    /// key schema. The cache memoises the hardened-path identity-auth
+    /// pubkeys so the steady-state read is seed-free.
+    pub fn auth_pubkey_cache(&self) -> AuthPubkeyCacheView<'_> {
+        AuthPubkeyCacheView::new(&self.inner.app_kv)
     }
 
     /// View over the encrypted HD wallet seed vault (T-W-00.5-v2).

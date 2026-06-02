@@ -35,23 +35,19 @@ impl AppContext {
             let mut matched_key_index = None;
 
             for key_index in 0..AUTH_KEY_LOOKUP_WINDOW {
-                let public_key = {
-                    let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
-                    match wallet_guard.identity_authentication_ecdsa_public_key(
-                        self.network,
-                        identity_index,
-                        key_index,
-                    ) {
-                        Ok(key) => key,
-                        Err(e) => {
-                            tracing::debug!(
-                                "Could not derive key at index {}/{}: {}",
-                                identity_index,
-                                key_index,
-                                e
-                            );
-                            continue;
-                        }
+                let public_key = match self
+                    .resolve_identity_auth_pubkey(wallet, identity_index, key_index)
+                    .await
+                {
+                    Ok(key) => key,
+                    Err(e) => {
+                        tracing::debug!(
+                            "Could not derive key at index {}/{}: {}",
+                            identity_index,
+                            key_index,
+                            e
+                        );
+                        continue;
                     }
                 };
 
@@ -178,25 +174,17 @@ impl AppContext {
         let highest_key_id = identity.public_keys().keys().max().copied().unwrap_or(0);
         let derive_up_to = highest_key_id.saturating_add(6); // Add buffer for future keys
 
-        // Derive authentication keys from wallet and build lookup maps
-        let mut public_key_to_index: std::collections::BTreeMap<Vec<u8>, u32> =
-            std::collections::BTreeMap::new();
-        let mut public_key_hash_to_index: std::collections::BTreeMap<[u8; 20], u32> =
-            std::collections::BTreeMap::new();
-
-        {
-            let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
-            for key_index in 0..=derive_up_to {
-                if let Ok(public_key) = wallet_guard.identity_authentication_ecdsa_public_key(
-                    self.network,
-                    identity_index,
-                    key_index,
-                ) {
-                    public_key_to_index.insert(public_key.to_bytes().to_vec(), key_index);
-                    public_key_hash_to_index.insert(public_key.pubkey_hash().into(), key_index);
-                }
-            }
-        }
+        // Derive authentication keys from wallet and build lookup maps,
+        // cache-first (one JIT scope on a cold cache).
+        let (public_key_to_index, public_key_hash_to_index) = self
+            .resolve_identity_auth_pubkeys_data_map(
+                wallet,
+                false,
+                identity_index,
+                0..derive_up_to.saturating_add(1),
+            )
+            .await
+            .map_err(|e| e.to_string())?;
 
         // Match identity keys with wallet derivation paths
         let private_keys_map: std::collections::BTreeMap<_, _> = identity

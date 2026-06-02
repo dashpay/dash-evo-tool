@@ -509,7 +509,7 @@ impl SecretAccess {
             SecretScope::SingleKey { address } => {
                 let entry = self.load_single_key_entry(address)?;
                 let raw = entry.decrypt(passphrase.map(|p| p.expose_secret()))?;
-                Ok(Plaintext::SingleKey(Zeroizing::new(raw)))
+                Ok(Plaintext::SingleKey(raw))
             }
         }
     }
@@ -1074,6 +1074,64 @@ mod tests {
         assert!(!cdebug.contains(SENTINEL_PASSPHRASE));
         assert!(!cdisplay.contains(&sentinel_seed_hex));
         assert!(!cdebug.contains(&sentinel_seed_hex));
+    }
+
+    /// Cross-scope re-entrancy: a `with_secret_session` for scope A whose
+    /// closure `.await`s another secret access for scope B must resolve both
+    /// — the chokepoint releases the session-cache lock BEFORE running (and
+    /// awaiting in) the closure (see step 1 of `with_secret_session`), so an
+    /// inner call that re-takes the lock for a different scope cannot deadlock.
+    /// This guards that documented lock-release-before-await property against a
+    /// future cross-scope deadlock regression.
+    #[tokio::test]
+    async fn nested_cross_scope_access_resolves_both() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let seed_a: WalletSeedHash = [0xA1; 32];
+        let seed_b: WalletSeedHash = [0xB2; 32];
+        let seed_b_bytes = [0x77u8; 64];
+        store_protected_hd(&store, &seed_a, &SENTINEL_SEED, SENTINEL_PASSPHRASE);
+        store_protected_hd(&store, &seed_b, &seed_b_bytes, SENTINEL_PASSPHRASE);
+
+        // Both scopes remember for the session: scope B is promoted first so
+        // the inner call hits the cache (re-taking the read lock) while the
+        // outer scope-A session is live. Scope A's first access also remembers.
+        let prompt = Arc::new(TestPrompt::new([
+            ScriptedAnswer::remember(SENTINEL_PASSPHRASE, RememberPolicy::UntilAppClose),
+            ScriptedAnswer::remember(SENTINEL_PASSPHRASE, RememberPolicy::UntilAppClose),
+        ]));
+        let sa = access(store, prompt.clone());
+        let scope_a = SecretScope::HdSeed { seed_hash: seed_a };
+        let scope_b = SecretScope::HdSeed { seed_hash: seed_b };
+
+        // Seed the cache for B so the nested call is a pure cache hit.
+        sa.with_secret(&scope_b, |_pt| Ok(())).await.unwrap();
+        assert!(sa.is_session_cached(&scope_b));
+
+        let sa_inner = sa.clone();
+        let both = sa
+            .with_secret_session(&scope_a, async move |session| {
+                let outer_ok =
+                    session.plaintext().expose_hd_seed().copied() == Some(SENTINEL_SEED);
+                // Re-enter the chokepoint for scope B from inside scope A's
+                // live session. If the outer call still held the cache lock,
+                // this would deadlock.
+                let inner_ok = sa_inner
+                    .with_secret(&scope_b, |pt| {
+                        Ok(pt.expose_hd_seed().copied() == Some(seed_b_bytes))
+                    })
+                    .await?;
+                Ok(outer_ok && inner_ok)
+            })
+            .await
+            .expect("nested access must resolve, not deadlock");
+
+        assert!(both, "both the outer and the nested inner secret resolved");
+        assert_eq!(
+            prompt.ask_count(),
+            2,
+            "one prompt for B (seeding) + one for A; the nested B hit the cache"
+        );
     }
 
     #[tokio::test]

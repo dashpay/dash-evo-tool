@@ -20,6 +20,7 @@
 //! salt and the GCM nonce respectively.
 
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
 use crate::backend_task::error::TaskError;
 
@@ -124,16 +125,21 @@ impl SingleKeyEntry {
     /// Recover the raw 32 private-key bytes. For passphrase-protected
     /// entries the caller must supply the passphrase; for unprotected
     /// entries it is ignored.
-    pub fn decrypt(&self, passphrase: Option<&str>) -> Result<[u8; 32], TaskError> {
+    ///
+    /// Returned wrapped in [`Zeroizing`] (SEC-103): the key bytes zeroize when
+    /// the caller drops the binding, so a copy never lingers on the stack after
+    /// crossing this boundary.
+    pub fn decrypt(&self, passphrase: Option<&str>) -> Result<Zeroizing<[u8; 32]>, TaskError> {
         if !self.has_passphrase {
-            return self.ciphertext.as_slice().try_into().map_err(|_| {
+            let raw: [u8; 32] = self.ciphertext.as_slice().try_into().map_err(|_| {
                 tracing::warn!(
                     target = "wallet_backend::single_key_entry",
                     blob_len = self.ciphertext.len(),
                     "Unprotected single-key entry has wrong raw-key length",
                 );
                 TaskError::SingleKeyCryptoFailure
-            });
+            })?;
+            return Ok(Zeroizing::new(raw));
         }
         let passphrase = match passphrase {
             Some(p) if !p.is_empty() => p,
@@ -163,17 +169,20 @@ impl SingleKeyEntry {
             );
             TaskError::SingleKeyCryptoFailure
         })?;
-        let plaintext = cipher
-            .decrypt(Nonce::from_slice(&self.nonce), self.ciphertext.as_slice())
-            .map_err(|_| TaskError::SingleKeyPassphraseIncorrect)?;
-        plaintext.as_slice().try_into().map_err(|_| {
+        let plaintext = Zeroizing::new(
+            cipher
+                .decrypt(Nonce::from_slice(&self.nonce), self.ciphertext.as_slice())
+                .map_err(|_| TaskError::SingleKeyPassphraseIncorrect)?,
+        );
+        let raw: [u8; 32] = plaintext.as_slice().try_into().map_err(|_| {
             tracing::warn!(
                 target = "wallet_backend::single_key_entry",
                 blob_len = plaintext.len(),
                 "Decrypted single-key entry is not 32 bytes",
             );
             TaskError::SingleKeyCryptoFailure
-        })
+        })?;
+        Ok(Zeroizing::new(raw))
     }
 
     /// Encode for the upstream vault: `[version || bincode(self)]`.
@@ -233,7 +242,7 @@ mod tests {
         let bytes = entry.encode().expect("encode");
         let decoded = SingleKeyEntry::decode(&bytes).expect("decode");
         assert!(!decoded.has_passphrase);
-        assert_eq!(decoded.decrypt(None).expect("plaintext"), raw);
+        assert_eq!(*decoded.decrypt(None).expect("plaintext"), raw);
     }
 
     #[test]
@@ -245,7 +254,7 @@ mod tests {
         let decoded = SingleKeyEntry::decode(&bytes).expect("decode");
         assert!(decoded.has_passphrase);
         assert_eq!(
-            decoded
+            *decoded
                 .decrypt(Some("correct horse battery"))
                 .expect("plaintext"),
             raw

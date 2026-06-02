@@ -260,9 +260,9 @@ impl<'a> SingleKeyView<'a> {
                 addr: address.to_string(),
             });
         }
-        // Wrap so the bare 32-byte key zeroizes on drop instead of lingering
-        // on the stack after the sign (SEC-W-003).
-        entry.decrypt(None).map(Zeroizing::new)
+        // `decrypt` returns the key wrapped in `Zeroizing`, so it wipes on
+        // drop instead of lingering on the stack after the sign (SEC-103).
+        entry.decrypt(None)
     }
 
     /// List every imported key tracked by this backend, sorted by
@@ -471,7 +471,7 @@ impl<'a> SingleKeyView<'a> {
             nonce: Vec::new(),
         };
         let private_key_data = SingleKeyData::Open(OpenSingleKey {
-            private_key: key_bytes,
+            private_key: *key_bytes,
             key_info: closed,
         });
 

@@ -2307,6 +2307,70 @@ mod tests {
     }
 
     // ========================================================================
+    // WalletSeed::open_no_password guard
+    // ========================================================================
+
+    /// `open_no_password` must REFUSE a password-protected envelope. There is
+    /// no `uses_password` flag on `ClosedKeyItem`, so the guard keys on the
+    /// stored-blob length: an unprotected envelope stores the raw 64-byte seed
+    /// verbatim, whereas a password-protected blob is AES-256-GCM ciphertext
+    /// (64-byte plaintext + 16-byte tag = 80 bytes). Opening a protected
+    /// wallet with no passphrase would silently treat the ciphertext as a seed
+    /// — this pins the rejection.
+    #[test]
+    fn open_no_password_rejects_protected_envelope() {
+        let seed = [0x42u8; 64];
+        let (encrypted_seed, salt, nonce) =
+            ClosedKeyItem::encrypt_seed(&seed, "a-passphrase").expect("encrypt");
+        // Precondition: a protected blob is longer than a bare 64-byte seed.
+        assert_ne!(
+            encrypted_seed.len(),
+            64,
+            "protected ciphertext must not be exactly 64 bytes"
+        );
+
+        let mut wallet_seed = WalletSeed::Closed(ClosedKeyItem {
+            seed_hash: ClosedKeyItem::compute_seed_hash(&seed),
+            encrypted_seed,
+            salt,
+            nonce,
+            password_hint: None,
+        });
+
+        let result = wallet_seed.open_no_password();
+        assert!(
+            result.is_err(),
+            "open_no_password must reject a password-protected envelope"
+        );
+        assert!(
+            matches!(wallet_seed, WalletSeed::Closed(_)),
+            "the wallet must stay Closed when open_no_password is refused"
+        );
+    }
+
+    /// The matching accept case: an unprotected envelope stores the raw
+    /// 64-byte seed verbatim, so `open_no_password` flips it to `Open`.
+    #[test]
+    fn open_no_password_accepts_unprotected_envelope() {
+        let seed = [0x09u8; 64];
+        let mut wallet_seed = WalletSeed::Closed(ClosedKeyItem {
+            seed_hash: ClosedKeyItem::compute_seed_hash(&seed),
+            encrypted_seed: seed.to_vec(),
+            salt: Vec::new(),
+            nonce: Vec::new(),
+            password_hint: None,
+        });
+
+        wallet_seed
+            .open_no_password()
+            .expect("unprotected envelope opens without a password");
+        assert!(
+            matches!(wallet_seed, WalletSeed::Open(_)),
+            "unprotected wallet must flip to Open"
+        );
+    }
+
+    // ========================================================================
     // Platform address info tests
     // ========================================================================
 

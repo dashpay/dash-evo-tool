@@ -245,6 +245,92 @@ mod tests {
         assert_eq!(prompt.ask_count(), 1, "one prompt for the whole operation");
     }
 
+    /// A pinned `(seed, path) → compressed pubkey` derivation vector for the
+    /// HD parity test. A change to the BIP-32 derivation, the secp256k1
+    /// primitive, or the seed handling would break this exact hex — catching a
+    /// silent derivation regression that a self-consistent parity check alone
+    /// could miss. Computed from [`PARITY_SEED`] at `m/44'/1'/0'/0/0` on
+    /// Testnet (coin-type 1' = the network-independent BIP-44 testnet path).
+    const PINNED_TESTNET_PUBKEY_HEX: &str =
+        "03a9a554ad52bd61203ceee0c8ad65f60d019a1c43a73f657f1a080d9f321730f3";
+
+    /// The deterministic seed both parity vectors derive from.
+    const PARITY_SEED: [u8; 64] = [0x5A; 64];
+
+    /// FUND-SAFETY PARITY: `DetSigner::sign_ecdsa` (the HD signer surface that
+    /// authorises every payment / asset-lock / identity sign) must produce a
+    /// byte-identical signature AND public key to an independent reference
+    /// derivation (path → `derive_priv_ecdsa_for_master_seed` →
+    /// `secp.sign_ecdsa`) for the same seed, path, and digest — on every
+    /// network. A divergence here means wrong signatures and lost/failed funds.
+    ///
+    /// Mirrors the platform-signer parity test
+    /// (`det_platform_signer::tests::platform_signer_parity_with_reference`):
+    /// the reference recomputes the result without going through `DetSigner`,
+    /// so the test proves genuine parity, not self-consistency. A pinned
+    /// `(seed, path) → pubkey` vector additionally guards the derivation itself
+    /// against a regression that would still be internally consistent.
+    #[tokio::test]
+    async fn hd_signer_parity_with_reference() {
+        let path: DerivationPath = "m/44'/1'/0'/0/0".parse().unwrap();
+        let sighash = [0x3Cu8; 32];
+
+        for network in [Network::Testnet, Network::Mainnet] {
+            // Independent reference: derive the key directly from the seed at
+            // the path, then sign + recover the public key with the same
+            // secp256k1 primitive `DetSigner` uses internally.
+            let secp = Secp256k1::new();
+            let reference_sk = path
+                .derive_priv_ecdsa_for_master_seed(&PARITY_SEED, network)
+                .expect("reference derive")
+                .private_key;
+            let reference_msg = Message::from_digest_slice(&sighash).expect("reference digest");
+            let reference_sig = secp.sign_ecdsa(&reference_msg, &reference_sk);
+            let reference_pk = PublicKey::from_secret_key(&secp, &reference_sk);
+
+            // The JIT signer over the same seed, held open through the
+            // chokepoint, must match byte-for-byte.
+            let held = Zeroizing::new(PARITY_SEED);
+            let signer = DetSigner::from_held(SecretPlaintext::HdSeed(&held), network);
+            let (det_sig, det_pk) = signer.sign_ecdsa(&path, sighash).await.expect("det sign");
+
+            assert_eq!(
+                reference_sig, det_sig,
+                "sign_ecdsa signature diverged from reference on {network:?}"
+            );
+            assert_eq!(
+                reference_pk, det_pk,
+                "sign_ecdsa public key diverged from reference on {network:?}"
+            );
+
+            // The derive-only surface must agree with the signing surface.
+            let derive_only_pk = signer.public_key(&path).await.expect("public_key");
+            assert_eq!(
+                det_pk, derive_only_pk,
+                "public_key disagreed with sign_ecdsa on {network:?}"
+            );
+        }
+    }
+
+    /// Pin the exact derived public key so a BIP-32 / coin-type / primitive
+    /// regression is caught even if it stays internally consistent. Testnet
+    /// path `m/44'/1'/0'/0/0` over [`PARITY_SEED`].
+    #[test]
+    fn hd_derivation_matches_pinned_vector() {
+        let path: DerivationPath = "m/44'/1'/0'/0/0".parse().unwrap();
+        let secp = Secp256k1::new();
+        let sk = path
+            .derive_priv_ecdsa_for_master_seed(&PARITY_SEED, Network::Testnet)
+            .expect("derive")
+            .private_key;
+        let pk = PublicKey::from_secret_key(&secp, &sk);
+        assert_eq!(
+            hex::encode(pk.serialize()),
+            PINNED_TESTNET_PUBKEY_HEX,
+            "derived pubkey drifted from the pinned vector — a derivation regression"
+        );
+    }
+
     /// The held single-key plaintext signs raw ECDSA without derivation,
     /// and asking the HD `Signer` surface of a single-key-held signer
     /// returns the typed `WrongSecretKind` rather than mis-deriving.

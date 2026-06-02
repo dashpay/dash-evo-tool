@@ -1149,22 +1149,34 @@ impl WalletBackend {
         Ok(xprv.to_priv())
     }
 
-    /// Test-only probe that a usable signer can be obtained for `seed_hash`
-    /// — i.e. the chokepoint can decrypt the seed without a prompt (the
-    /// no-password / unprotected fast-path). Mirrors the production signing
-    /// precondition so a regression on the no-password cold-boot path is
-    /// caught without driving a full sign. Uses a never-prompt expectation:
-    /// the unprotected seed resolves with no interaction.
+    /// Test-only probe that the chokepoint can decrypt the seed for
+    /// `seed_hash` without a prompt (the no-password / unprotected fast-path)
+    /// AND that the resulting [`DetSigner`] actually produces a signature.
+    /// Mirrors the production signing precondition so a regression on the
+    /// no-password cold-boot path — decrypt or sign — is caught. The
+    /// unprotected seed resolves with no interaction.
     #[cfg(test)]
     pub(crate) async fn assert_can_sign(
         &self,
         seed_hash: &WalletSeedHash,
     ) -> Result<(), TaskError> {
+        use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
+        use dash_sdk::dpp::key_wallet::signer::Signer;
+
         let scope = Self::hd_scope(seed_hash);
+        let path: DerivationPath = "m/44'/1'/0'/0/0"
+            .parse()
+            .expect("static derivation path parses");
         self.inner
             .secret_access
             .with_secret_session(&scope, async |session| {
-                let _signer = DetSigner::from_held(session.plaintext(), self.inner.network);
+                let signer = DetSigner::from_held(session.plaintext(), self.inner.network);
+                // Drive a real sign, not just signer construction: a derive or
+                // sign regression must fail here.
+                signer
+                    .sign_ecdsa(&path, [0x11u8; 32])
+                    .await
+                    .map_err(|_| TaskError::SingleKeyCryptoFailure)?;
                 Ok(())
             })
             .await

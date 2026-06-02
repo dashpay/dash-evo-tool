@@ -985,4 +985,55 @@ mod tests {
 
         backend.shutdown().await;
     }
+
+    /// QA-007: leaving a network must not strand session-cached secrets on the
+    /// outgoing context. `finalize_network_switch` funnels through
+    /// [`WalletBackend::forget_all_secrets`]; this exercises that exact call
+    /// against a populated session cache and asserts it is emptied — the JIT
+    /// design's eager "no secrets linger across a network change" guarantee.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn network_switch_path_clears_outgoing_session_cache() {
+        let (ctx, sender, _tmp) = offline_testnet_context();
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("ensure_wallet_backend should succeed offline");
+
+        let seed = [0x31u8; 64];
+        let wallet = crate::model::wallet::Wallet::new_from_seed(
+            seed,
+            Network::Testnet,
+            Some("switching".to_string()),
+            None,
+        )
+        .expect("build wallet");
+        let (seed_hash, _wallet_arc) =
+            ctx.register_wallet(wallet, &seed).expect("register wallet");
+
+        let backend = ctx.wallet_backend().expect("backend wired");
+        let scope = crate::wallet_backend::SecretScope::HdSeed { seed_hash };
+
+        // Promote the seed into the session cache (what the unlock gesture or a
+        // remembered op leaves behind).
+        let held = zeroize::Zeroizing::new(seed);
+        backend.secret_access().remember_session(
+            &scope,
+            crate::wallet_backend::SecretPlaintext::HdSeed(&held),
+            crate::wallet_backend::RememberPolicy::UntilAppClose,
+        );
+        assert!(
+            backend.secret_access().is_session_cached(&scope),
+            "precondition: the seed is session-cached before the switch"
+        );
+
+        // The exact call `finalize_network_switch` makes on the outgoing
+        // context before leaving it.
+        backend.forget_all_secrets();
+
+        assert!(
+            !backend.secret_access().is_session_cached(&scope),
+            "the outgoing context's session cache must be empty after the switch path runs"
+        );
+
+        backend.shutdown().await;
+    }
 }

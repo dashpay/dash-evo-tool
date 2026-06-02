@@ -787,8 +787,13 @@ impl AppContext {
             inputs
         );
 
-        // Get the wallet for signing - clone it to avoid holding guard across await
-        let wallet_clone = {
+        // Clone the wallet for the pure address→path index (needed across the
+        // async boundary). The signing key never lives in this snapshot — it is
+        // derived JIT from the borrowed HD seed inside the secret scope below.
+        // No `is_open()` gate: the chokepoint resolves an unprotected or
+        // session-cached wallet without a prompt, and prompts a locked protected
+        // one — returning `WalletLocked` only if the seed is truly unavailable.
+        let wallet_snapshot = {
             let wallet = {
                 let wallets = self.wallets.read()?;
                 wallets
@@ -796,25 +801,41 @@ impl AppContext {
                     .cloned()
                     .ok_or(TaskError::WalletNotFound)?
             };
-
             let wallet_guard = wallet.read()?;
-
-            // Ensure wallet is open
-            if !wallet_guard.is_open() {
-                return Err(TaskError::WalletLocked);
-            }
-
             wallet_guard.clone()
         };
 
-        tracing::info!("Wallet loaded and open, calling top_up_from_addresses...");
+        tracing::info!("Wallet loaded, calling top_up_from_addresses...");
 
         // Get the identity
         let identity = qualified_identity.identity.clone();
 
+        // Sign each top-up input through a JIT platform signer that borrows the
+        // HD seed only for the duration of the SDK call. The pure path index is
+        // built before the secret scope; the seed zeroizes on return and never
+        // enters this layer by value.
+        use crate::wallet_backend::{DetPlatformSigner, PlatformPathIndex, SecretScope};
+        let network = self.network;
+        let path_index = PlatformPathIndex::from_wallet(&wallet_snapshot, network);
+        let backend = self.wallet_backend()?;
+
         // Execute the top-up
-        let (address_infos, new_balance) = identity
-            .top_up_from_addresses(sdk, inputs, &wallet_clone, None)
+        let (address_infos, new_balance) = backend
+            .secret_access()
+            .with_secret_session(
+                &SecretScope::HdSeed {
+                    seed_hash: wallet_seed_hash,
+                },
+                async |session| {
+                    let plaintext = session.plaintext();
+                    let seed = plaintext.expose_hd_seed().ok_or(TaskError::WalletLocked)?;
+                    let signer = DetPlatformSigner::from_held(seed, network, &path_index);
+                    identity
+                        .top_up_from_addresses(sdk, inputs, &signer, None)
+                        .await
+                        .map_err(TaskError::from)
+                },
+            )
             .await?;
 
         tracing::info!(

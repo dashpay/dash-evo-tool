@@ -263,8 +263,10 @@ impl AppContext {
             key_count,
         );
 
-        // Clone the wallet for use as the address signer (needed across async boundary)
-        let wallet_clone = { wallet.read().map_err(TaskError::from)?.clone() };
+        // Clone the wallet for the pure address→path index (needed across the
+        // async boundary). The signing key never lives in this snapshot — it is
+        // derived JIT from the borrowed HD seed inside the secret scope below.
+        let wallet_snapshot = { wallet.read().map_err(TaskError::from)?.clone() };
 
         let identity = Identity::new_with_input_addresses_and_keys(
             &inputs,
@@ -297,11 +299,41 @@ impl AppContext {
             qualified_identity.alias = Some(alias_input);
         }
 
+        // Sign each funding input through a JIT platform signer that borrows the
+        // HD seed only for the duration of the SDK call. The pure path index is
+        // built before the secret scope; the seed zeroizes on return and never
+        // enters this layer by value.
+        use crate::wallet_backend::{DetPlatformSigner, PlatformPathIndex, SecretScope};
+        let network = self.network;
+        let path_index = PlatformPathIndex::from_wallet(&wallet_snapshot, network);
+        let backend = self.wallet_backend()?;
+
         // Send to Platform using address funding and wait for response
-        match identity
-            .put_with_address_funding(&sdk, inputs, None, &qualified_identity, &wallet_clone, None)
-            .await
-        {
+        let put_result = backend
+            .secret_access()
+            .with_secret_session(
+                &SecretScope::HdSeed {
+                    seed_hash: wallet_seed_hash,
+                },
+                async |session| {
+                    let plaintext = session.plaintext();
+                    let seed = plaintext.expose_hd_seed().ok_or(TaskError::WalletLocked)?;
+                    let signer = DetPlatformSigner::from_held(seed, network, &path_index);
+                    Ok(identity
+                        .put_with_address_funding(
+                            &sdk,
+                            inputs,
+                            None,
+                            &qualified_identity,
+                            &signer,
+                            None,
+                        )
+                        .await)
+                },
+            )
+            .await?;
+
+        match put_result {
             Ok((updated_identity, address_infos)) => {
                 qualified_identity.identity = updated_identity;
                 qualified_identity.status = IdentityStatus::Unknown; // Force refresh

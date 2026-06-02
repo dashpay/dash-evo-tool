@@ -70,9 +70,7 @@ fn tc_sk_004_valid_wif_renders_address_preview() {
         "derived-address label should be rendered for a valid WIF"
     );
     assert!(
-        harness
-            .query_by_label_contains("Network: Testnet")
-            .is_some(),
+        harness.query_by_label_contains("Testnet address").is_some(),
         "network indicator should read Testnet"
     );
 }

@@ -1478,7 +1478,7 @@ pub enum TaskError {
     /// re-ask loop and re-prompts; it only surfaces to the UI when the
     /// re-ask itself is cancelled. No upstream error is preserved —
     /// AES-GCM's authentication failure carries no useful diagnostic.
-    #[error("That password is not correct. Try again.")]
+    #[error("That passphrase is not correct. Try again.")]
     HdPassphraseIncorrect,
 
     /// A secret was needed but no interactive prompt is available in this

@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Sign-time wallet unlock**: the passphrase is now requested just-in-time, the
+  moment an operation actually needs your secret (sending funds, registering an
+  identity, signing). The prompt offers an optional "Keep this wallet unlocked
+  until I close the app" checkbox so a busy session asks only once. This replaces
+  the old upfront unlock gate that held the wallet open for the whole session —
+  the HD seed is no longer kept in memory between operations; it is decrypted on
+  demand and wiped as soon as the operation finishes.
+
 - **Wallet storage backend**: HD wallet seeds and single-key private keys are now
   stored in an upstream `platform-wallet-storage` encrypted vault (`secrets.pwsvault`)
   rather than in the legacy `data.db` SQLite database. Wallet metadata (alias, main flag,

@@ -281,12 +281,10 @@ impl SecretAccess {
         scope: &SecretScope,
         f: impl AsyncFnOnce(&SecretSession<'_>) -> Result<R, TaskError>,
     ) -> Result<R, TaskError> {
-        // 1. Session-cache hit (opt-in, TTL-honored). Copy the cached
-        //    plaintext into an op-scoped `Zeroizing` buffer and release the
-        //    lock BEFORE running the closure: the closure may `.await` and
-        //    may itself reach back into the cache for a different scope, so
-        //    holding the lock across it would risk a deadlock. The op copy
-        //    zeroizes on scope exit; the boxed cache entry is untouched.
+        // 1. Session-cache hit (opt-in, TTL-honored). Copy the entry into an
+        //    op-scoped `Zeroizing` buffer and release the lock BEFORE the
+        //    closure runs: it may `.await` and re-enter the cache for another
+        //    scope, so holding the lock across it could deadlock.
         {
             let now = Instant::now();
             let mut needs_evict = false;

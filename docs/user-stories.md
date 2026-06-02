@@ -67,10 +67,11 @@ As a power user, I want to rename wallets so that I can identify them by purpose
 ### WAL-006: Lock and unlock wallet [Implemented]
 **Persona:** Alex, Priya
 
-As a user, I want to lock my wallet with a password so that others cannot access my funds if I leave the app open.
+As a user, I want my wallet protected by a passphrase so that others cannot access my funds if I leave the app open.
 
-- Locked wallet requires password to unlock.
-- Sensitive operations are blocked while locked.
+- The passphrase is requested just-in-time, when an operation actually needs the secret (sending funds, registering an identity, signing).
+- The prompt offers a "Keep this wallet unlocked until I close the app" option so a busy session is asked only once.
+- The seed is never held in memory between operations: it is decrypted on demand and wiped as soon as the operation finishes.
 
 ### WAL-007: Remove a wallet [Implemented]
 **Persona:** Priya, Jordan

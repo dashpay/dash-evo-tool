@@ -27,9 +27,11 @@
 //! The HD `Signer` surface (`from_held` + `sign_ecdsa` / `public_key`) is
 //! wired into every signer-driven HD flow (payment / asset-lock / identity).
 //! The single-key raw-ECDSA helper [`DetSigner::sign_single_key_ecdsa`] is
-//! built and unit-tested but has no live caller yet — single-key *send* is
-//! still stubbed upstream (design §0.4) — so it carries a scoped
-//! `expect(dead_code)` until that send path is un-gated.
+//! wired into [`WalletBackend::sign_single_key`](super::WalletBackend::sign_single_key),
+//! the JIT single-key signing chokepoint. That chokepoint has no production
+//! caller yet — single-key *send* is still stubbed upstream (design §0.4) —
+//! so the path is exercised through unit tests until that send flow is
+//! un-gated.
 
 use async_trait::async_trait;
 use dash_sdk::dpp::dashcore::Network;

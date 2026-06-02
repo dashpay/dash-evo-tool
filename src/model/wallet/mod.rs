@@ -594,11 +594,11 @@ pub type WalletSeedHash = [u8; 32];
 
 /// State of a wallet's HD seed.
 ///
-/// Since the JIT secret-access refactor (R3) neither variant ever holds the
-/// plaintext seed. `Open` means **unlocked/verified** — the passphrase has
-/// been proven correct and the wallet is usable — and `Closed` means locked.
-/// Both variants carry only the encrypted [`ClosedKeyItem`] metadata; the
-/// plaintext seed lives **only** inside a `with_secret*` frame of the
+/// Neither variant ever holds the plaintext seed. `Open` means
+/// **unlocked/verified** — the passphrase has been proven correct and the
+/// wallet is usable — and `Closed` means locked. Both variants carry only the
+/// encrypted [`ClosedKeyItem`] metadata; the plaintext seed lives **only**
+/// inside a `with_secret*` frame of the
 /// [`SecretAccess`](crate::wallet_backend::SecretAccess) chokepoint.
 #[derive(Debug, Clone, PartialEq)]
 pub enum WalletSeed {
@@ -608,10 +608,10 @@ pub enum WalletSeed {
 
 /// The "unlocked/verified" half of [`WalletSeed`].
 ///
-/// Holds no secret: after R3 an open wallet parks no plaintext seed. The
-/// retained [`ClosedKeyItem`] carries the encrypted-envelope metadata
-/// (`seed_hash`, `salt`, `nonce`, `encrypted_seed`, `password_hint`) the
-/// model and UI still read without the seed.
+/// Holds no secret: an open wallet parks no plaintext seed. The retained
+/// [`ClosedKeyItem`] carries the encrypted-envelope metadata (`seed_hash`,
+/// `salt`, `nonce`, `encrypted_seed`, `password_hint`) the model and UI read
+/// without the seed.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OpenWalletSeed {
     pub wallet_info: ClosedKeyItem,
@@ -634,8 +634,8 @@ impl WalletSeed {
     ///
     /// Decrypts the stored envelope only to prove `password` is correct, then
     /// discards the plaintext (it is zeroized at the end of this call). On
-    /// success the state flips to `Open` carrying no secret. Future seed
-    /// residency is owned entirely by the
+    /// success the state flips to `Open` carrying no secret. Seed residency is
+    /// owned entirely by the
     /// [`SecretAccess`](crate::wallet_backend::SecretAccess) chokepoint; the
     /// caller that wants the session kept unlocked promotes the seed there
     /// (see [`AppContext::handle_wallet_unlocked`](crate::context::AppContext::handle_wallet_unlocked)).

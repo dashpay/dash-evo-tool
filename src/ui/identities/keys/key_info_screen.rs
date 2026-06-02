@@ -1,4 +1,6 @@
 use crate::app::AppAction;
+use crate::backend_task::wallet::WalletTask;
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::qualified_identity::encrypted_key_storage::{
@@ -31,6 +33,7 @@ use dash_sdk::dpp::identity::KeyType::BIP13_SCRIPT_HASH;
 use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
+use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::IdentityPublicKey;
 use eframe::egui::{self, Context};
@@ -54,6 +57,17 @@ pub struct KeyInfoScreen {
     view_private_key_even_if_encrypted_or_in_wallet: bool,
     show_pop_up_info: Option<String>,
     remove_private_key_dialog: Option<ConfirmationDialog>,
+    /// A queued "derive private key for display" request for a wallet-derived
+    /// key. Drained at the end of `ui()` into a `WalletTask::DeriveKeyForDisplay`
+    /// backend task — the seed is fetched just-in-time and only the WIF returns.
+    pending_key_display_request: Option<DerivationPath>,
+    /// `true` once a display derivation has been dispatched, so the same
+    /// request is not re-queued every frame while the result is in flight.
+    key_display_requested: bool,
+    /// A queued "sign message" request for a wallet-derived key. Drained at the
+    /// end of `ui()` into a `WalletTask::SignMessageWithKey` backend task — the
+    /// seed is fetched just-in-time and only the public signature returns.
+    pending_sign_request: Option<DerivationPath>,
 }
 
 // /// The prefix for signed messages using Dash's message signing protocol.
@@ -70,6 +84,32 @@ pub struct KeyInfoScreen {
 
 impl ScreenLike for KeyInfoScreen {
     fn refresh(&mut self) {}
+
+    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
+        match backend_task_success_result {
+            BackendTaskSuccessResult::WalletKeyForDisplay { wif, .. } => {
+                // The backend derived the key just-in-time; reconstruct the
+                // RPC private key from the WIF only to render WIF + hex. The
+                // seed never crossed into the UI.
+                match RPCPrivateKey::from_wif(wif.expose_secret()) {
+                    Ok(private_key) => self.decrypted_private_key = Some(private_key),
+                    Err(e) => {
+                        self.key_display_requested = false;
+                        MessageBanner::set_global(
+                            self.app_context.egui_ctx(),
+                            "Could not display the private key. Please retry.",
+                            MessageType::Error,
+                        )
+                        .with_details(e);
+                    }
+                }
+            }
+            BackendTaskSuccessResult::WalletMessageSigned { signature, .. } => {
+                self.signed_message = Some(signature);
+            }
+            _ => {}
+        }
+    }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
         let mut action = add_top_panel(
@@ -365,84 +405,17 @@ impl ScreenLike for KeyInfoScreen {
                                 && self.selected_wallet.is_some()
                             {
                                 if let Some(private_key) = self.decrypted_private_key {
-                                    egui::Grid::new("private_key_grid_wallet")
-                                        .num_columns(2)
-                                        .spacing([10.0, 10.0])
-                                        .show(ui, |ui| {
-                                            ui.label(
-                                                RichText::new("Private Key (WIF):")
-                                                    .strong()
-                                                    .color(ui.visuals().text_color()),
-                                            );
-                                            let wif = Secret::new(private_key.to_wif());
-                                            ui.label(
-                                                RichText::new(wif.expose_secret())
-                                                    .color(ui.visuals().text_color()),
-                                            );
-                                            ui.end_row();
-
-                                            ui.label(
-                                                RichText::new("Private Key (Hex):")
-                                                    .strong()
-                                                    .color(ui.visuals().text_color()),
-                                            );
-                                            let private_key_hex = Secret::new(hex::encode(
-                                                private_key.inner.secret_bytes(),
-                                            ));
-                                            ui.label(
-                                                RichText::new(private_key_hex.expose_secret())
-                                                    .color(ui.visuals().text_color()),
-                                            );
-                                            ui.end_row();
-                                        });
+                                    Self::render_decrypted_key_grid(ui, &private_key);
                                 } else {
-                                    let wallet =
-                                        self.selected_wallet.as_ref().unwrap().read().unwrap();
-                                    match wallet.private_key_at_derivation_path(
+                                    Self::queue_key_display(
+                                        &mut self.pending_key_display_request,
+                                        &mut self.key_display_requested,
                                         &derivation_path.derivation_path,
-                                        self.app_context.network,
-                                    ) {
-                                        Ok(private_key) => {
-                                            egui::Grid::new("private_key_grid_wallet2")
-                                                .num_columns(2)
-                                                .spacing([10.0, 10.0])
-                                                .show(ui, |ui| {
-                                                    ui.label(
-                                                        RichText::new("Private Key (WIF):")
-                                                            .strong()
-                                                            .color(ui.visuals().text_color()),
-                                                    );
-                                                    let wif = Secret::new(private_key.to_wif());
-                                                    ui.label(
-                                                        RichText::new(wif.expose_secret())
-                                                            .color(ui.visuals().text_color()),
-                                                    );
-                                                    ui.end_row();
-
-                                                    ui.label(
-                                                        RichText::new("Private Key (Hex):")
-                                                            .strong()
-                                                            .color(ui.visuals().text_color()),
-                                                    );
-                                                    let private_key_hex = Secret::new(hex::encode(
-                                                        private_key.inner.secret_bytes(),
-                                                    ));
-                                                    ui.label(
-                                                        RichText::new(
-                                                            private_key_hex.expose_secret(),
-                                                        )
-                                                        .color(ui.visuals().text_color()),
-                                                    );
-                                                    ui.end_row();
-                                                });
-
-                                            self.decrypted_private_key = Some(private_key);
-                                        }
-                                        Err(e) => {
-                                            ui.label(format!("Error: {}", e));
-                                            return;
-                                        }
-                                    }
+                                    );
+                                    ui.label(
+                                        RichText::new("Deriving private key…")
+                                            .color(ui.visuals().text_color()),
+                                    );
                                 }
                                 self.render_sign_input(ui);
                             } else if self.wallet_open {
@@ -453,54 +426,18 @@ impl ScreenLike for KeyInfoScreen {
                                     self.view_private_key_even_if_encrypted_or_in_wallet = true;
                                     self.view_wallet_unlock = true;
                                 }
-                                if self.decrypted_private_key.is_none() {
-                                    let wallet =
-                                        self.selected_wallet.as_ref().unwrap().read().unwrap();
-                                    match wallet.private_key_at_derivation_path(
+                                if let Some(private_key) = self.decrypted_private_key {
+                                    Self::render_decrypted_key_grid(ui, &private_key);
+                                } else {
+                                    Self::queue_key_display(
+                                        &mut self.pending_key_display_request,
+                                        &mut self.key_display_requested,
                                         &derivation_path.derivation_path,
-                                        self.app_context.network,
-                                    ) {
-                                        Ok(private_key) => {
-                                            egui::Grid::new("private_key_grid_wallet2")
-                                                .num_columns(2)
-                                                .spacing([10.0, 10.0])
-                                                .show(ui, |ui| {
-                                                    ui.label(
-                                                        RichText::new("Private Key (WIF):")
-                                                            .strong()
-                                                            .color(ui.visuals().text_color()),
-                                                    );
-                                                    let wif = Secret::new(private_key.to_wif());
-                                                    ui.label(
-                                                        RichText::new(wif.expose_secret())
-                                                            .color(ui.visuals().text_color()),
-                                                    );
-                                                    ui.end_row();
-
-                                                    ui.label(
-                                                        RichText::new("Private Key (Hex):")
-                                                            .strong()
-                                                            .color(ui.visuals().text_color()),
-                                                    );
-                                                    let private_key_hex = Secret::new(hex::encode(
-                                                        private_key.inner.secret_bytes(),
-                                                    ));
-                                                    ui.label(
-                                                        RichText::new(
-                                                            private_key_hex.expose_secret(),
-                                                        )
-                                                        .color(ui.visuals().text_color()),
-                                                    );
-                                                    ui.end_row();
-                                                });
-
-                                            self.decrypted_private_key = Some(private_key);
-                                        }
-                                        Err(e) => {
-                                            ui.label(format!("Error: {}", e));
-                                            return;
-                                        }
-                                    }
+                                    );
+                                    ui.label(
+                                        RichText::new("Deriving private key…")
+                                            .color(ui.visuals().text_color()),
+                                    );
                                 }
                                 self.render_sign_input(ui);
                             } else {
@@ -587,6 +524,30 @@ impl ScreenLike for KeyInfoScreen {
                 });
         }
 
+        // Drain queued wallet-key requests into backend tasks that fetch the
+        // seed just-in-time and derive/sign off the UI thread. Only the public
+        // result (WIF for display, signature) returns to the UI.
+        if let Some(seed_hash) = self.wallet_seed_hash() {
+            if let Some(derivation_path) = self.pending_key_display_request.take() {
+                action |= AppAction::BackendTask(BackendTask::WalletTask(
+                    WalletTask::DeriveKeyForDisplay {
+                        seed_hash,
+                        derivation_path,
+                    },
+                ));
+            }
+            if let Some(derivation_path) = self.pending_sign_request.take() {
+                action |= AppAction::BackendTask(BackendTask::WalletTask(
+                    WalletTask::SignMessageWithKey {
+                        seed_hash,
+                        derivation_path,
+                        message: self.message_input.clone(),
+                        key_type: self.key.key_type(),
+                    },
+                ));
+            }
+        }
+
         action
     }
 }
@@ -626,6 +587,9 @@ impl KeyInfoScreen {
             view_private_key_even_if_encrypted_or_in_wallet: false,
             show_pop_up_info: None,
             remove_private_key_dialog: None,
+            pending_key_display_request: None,
+            key_display_requested: false,
+            pending_sign_request: None,
         }
     }
 
@@ -742,60 +706,114 @@ impl KeyInfoScreen {
     }
 
     fn sign_message(&mut self) {
-        // Check that we have a private key
-        if let Some((private_key_data, _)) = &self.private_key_data {
-            let private_key_bytes = match (private_key_data, self.decrypted_private_key.as_ref()) {
-                (PrivateKeyData::Clear(bytes), _) | (PrivateKeyData::AlwaysClear(bytes), _) => {
-                    *bytes
-                }
-                (_, Some(private_key)) => private_key.inner.secret_bytes(),
-                // Other cases may not have the private key directly
-                _ => {
-                    MessageBanner::set_global(
-                        self.app_context.egui_ctx(),
-                        "Private key is not available.",
-                        MessageType::Error,
-                    );
-                    return;
-                }
-            };
-
-            // Use the key type to determine how to sign
-            match self.key.key_type() {
-                KeyType::ECDSA_SECP256K1 | KeyType::ECDSA_HASH160 => {
-                    // Sign the message using ECDSA
-                    let secp = Secp256k1::new();
-
-                    let message_hash = signed_msg_hash(self.message_input.as_str());
-                    let message = Message::from_digest(*message_hash.as_byte_array());
-
-                    let secret_key = SecretKey::from_byte_array(&private_key_bytes).unwrap();
-
-                    let signature = secp.sign_ecdsa(&message, &secret_key);
-
-                    // Serialize the signature
-                    let mut serialized_signature = signature.serialize_compact().to_vec();
-                    serialized_signature.insert(0, 32);
-
-                    // Encode to Base64
-                    let signature_base64 = STANDARD.encode(serialized_signature);
-
-                    self.signed_message = Some(signature_base64);
-                }
-                _ => {
-                    MessageBanner::set_global(
-                        self.app_context.egui_ctx(),
-                        "Unsupported key type for signing.",
-                        MessageType::Error,
-                    );
-                }
-            }
-        } else {
+        let Some((private_key_data, _)) = &self.private_key_data else {
             MessageBanner::set_global(
                 self.app_context.egui_ctx(),
                 "Private key is not available.",
                 MessageType::Error,
             );
+            return;
+        };
+
+        if !matches!(
+            self.key.key_type(),
+            KeyType::ECDSA_SECP256K1 | KeyType::ECDSA_HASH160
+        ) {
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "Unsupported key type for signing.",
+                MessageType::Error,
+            );
+            return;
+        }
+
+        match private_key_data {
+            // Keys that carry their own plaintext sign locally — no wallet seed
+            // is involved, so there is nothing to fetch through the chokepoint.
+            PrivateKeyData::Clear(bytes) | PrivateKeyData::AlwaysClear(bytes) => {
+                self.signed_message = Some(Self::sign_ecdsa_local(bytes, &self.message_input));
+            }
+            // Wallet-derived keys sign in the backend: the seed is fetched
+            // just-in-time through the JIT chokepoint and only the public
+            // signature returns. Queue the request; `ui()` dispatches it.
+            PrivateKeyData::AtWalletDerivationPath(wdp) => {
+                self.pending_sign_request = Some(wdp.derivation_path.clone());
+            }
+            PrivateKeyData::Encrypted(_) => {
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "Private key is not available.",
+                    MessageType::Error,
+                );
+            }
+        }
+    }
+
+    /// Sign `message` with a locally-held ECDSA secret, returning the
+    /// Base64-encoded Dash signed-message envelope. Used only for keys that
+    /// already carry their plaintext in the UI — never for wallet-derived keys.
+    fn sign_ecdsa_local(private_key_bytes: &[u8; 32], message: &str) -> String {
+        let secp = Secp256k1::new();
+        let message_hash = signed_msg_hash(message);
+        let digest = Message::from_digest(*message_hash.as_byte_array());
+        let secret_key = SecretKey::from_byte_array(private_key_bytes)
+            .expect("clear private key is a valid 32-byte secret");
+        let signature = secp.sign_ecdsa(&digest, &secret_key);
+        let mut serialized = signature.serialize_compact().to_vec();
+        serialized.insert(0, 32);
+        STANDARD.encode(serialized)
+    }
+
+    /// Render the WIF + hex of an already-derived private key. The key is
+    /// derived in the backend via `WalletTask::DeriveKeyForDisplay` and the
+    /// reconstructed [`RPCPrivateKey`] passed here only for rendering.
+    fn render_decrypted_key_grid(ui: &mut egui::Ui, private_key: &RPCPrivateKey) {
+        egui::Grid::new("private_key_grid_wallet")
+            .num_columns(2)
+            .spacing([10.0, 10.0])
+            .show(ui, |ui| {
+                ui.label(
+                    RichText::new("Private Key (WIF):")
+                        .strong()
+                        .color(ui.visuals().text_color()),
+                );
+                let wif = Secret::new(private_key.to_wif());
+                ui.label(RichText::new(wif.expose_secret()).color(ui.visuals().text_color()));
+                ui.end_row();
+
+                ui.label(
+                    RichText::new("Private Key (Hex):")
+                        .strong()
+                        .color(ui.visuals().text_color()),
+                );
+                let private_key_hex = Secret::new(hex::encode(private_key.inner.secret_bytes()));
+                ui.label(
+                    RichText::new(private_key_hex.expose_secret()).color(ui.visuals().text_color()),
+                );
+                ui.end_row();
+            });
+    }
+
+    /// Queue a one-shot "derive private key for display" request the first time
+    /// a wallet-derived key needs to be shown. Idempotent within a view session
+    /// via `requested`, so the backend task is dispatched once, not every frame.
+    fn queue_key_display(
+        pending: &mut Option<DerivationPath>,
+        requested: &mut bool,
+        path: &DerivationPath,
+    ) {
+        if !*requested {
+            *pending = Some(path.clone());
+            *requested = true;
+        }
+    }
+
+    /// The HD wallet this key derives from, or `None` for keys that carry their
+    /// own plaintext. Used to scope the JIT chokepoint for display/sign tasks.
+    fn wallet_seed_hash(&self) -> Option<crate::model::wallet::WalletSeedHash> {
+        match self.private_key_data.as_ref()? {
+            (PrivateKeyData::AtWalletDerivationPath(wdp), _) => Some(wdp.wallet_seed_hash),
+            _ => None,
         }
     }
 

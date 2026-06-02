@@ -297,14 +297,21 @@ impl AppContext {
 
     /// Bootstrap a wallet's address set from its open in-memory seed.
     ///
-    /// The sync bridge used by the fresh-register and reload paths: the seed is
-    /// read once here (the single remaining `seed_bytes()` bridge, R3 #17 —
-    /// retired in D4) and passed by borrow into the now seed-as-parameter
+    /// The sync bridge used by the **fresh-register** path only
+    /// ([`Self::register_wallet`]): a just-created or just-imported wallet still
+    /// holds its seed in memory, so the seed is read once here (R3 #17) and
+    /// passed by borrow into the now seed-as-parameter
     /// [`Wallet::bootstrap_known_addresses`]; the per-family `bootstrap_*`
     /// readers no longer reach back into the wallet's parked seed. A locked
     /// wallet is skipped (it has no open seed to read) and bootstraps later via
     /// [`Self::bootstrap_wallet_addresses_jit`] once its seed is resolvable
     /// through the chokepoint.
+    ///
+    /// This read is the genuine fresh-open path — at registration the encrypted
+    /// envelope is only just being persisted, so resolving through the chokepoint
+    /// is not yet clean. It is retired in D4c together with the
+    /// `WalletSeed::open` reshape, which makes the fresh-open seed flow through
+    /// the chokepoint as well.
     pub fn bootstrap_wallet_addresses(&self, wallet: &Arc<RwLock<Wallet>>) {
         if let Ok(mut guard) = wallet.write() {
             if !guard.is_open() {
@@ -393,17 +400,33 @@ impl AppContext {
     /// signing pulls the seed just-in-time from the encrypted vault through
     /// the [`SecretAccess`](crate::wallet_backend::SecretAccess) chokepoint.
     /// Its only job now is to honor the unlock gesture's "keep unlocked"
-    /// intent: when the wallet is open and exposes a seed, promote that seed
-    /// into the session cache (`UntilAppClose`) so the rest of the session's
-    /// operations on this wallet do not re-prompt. A no-password wallet needs
-    /// no promotion — the chokepoint's unprotected fast-path decrypts it with
-    /// no prompt regardless — but promoting it is harmless and keeps the path
-    /// uniform.
+    /// intent for **password-protected** wallets: promote the just-verified
+    /// seed into the session cache (`UntilAppClose`) so the rest of the
+    /// session's operations on this wallet do not re-prompt.
+    ///
+    /// A no-password wallet needs no promotion — the chokepoint's unprotected
+    /// fast-path decrypts it with no prompt regardless — so it is skipped here
+    /// and never reads its parked seed.
+    ///
+    /// The protected-wallet snapshot below still reads the just-`open()`ed
+    /// parked seed (R3 #17). That bridge is intrinsically coupled to the
+    /// `WalletSeed::open` "verify-not-park" reshape: once `open()` routes the
+    /// entered passphrase through the chokepoint, this promotion moves there and
+    /// the snapshot disappears. Retired in D4c with the `open()` reshape.
     ///
     /// Shielded state is no longer warmed here: it is derived on the first
     /// shielded operation via the chokepoint, so unlock forces no seed
     /// residency for shielded warm-up.
     pub fn handle_wallet_unlocked(self: &Arc<Self>, wallet: &Arc<RwLock<Wallet>>) {
+        // No-password wallets resolve prompt-free through the chokepoint's
+        // unprotected fast-path; promoting them is unnecessary and would force
+        // a parked-seed read. Skip them entirely.
+        if let Ok(guard) = wallet.read()
+            && !guard.uses_password
+        {
+            return;
+        }
+
         let Some((seed_hash, seed)) = Self::wallet_seed_snapshot(wallet) else {
             return;
         };

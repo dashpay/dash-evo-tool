@@ -264,6 +264,23 @@ pub enum BackendTaskSuccessResult {
         /// The derived private key as a WIF string, zeroize-on-drop.
         wif: crate::model::secret::Secret,
     },
+    /// A fresh Platform (DIP-17/18) receive address generated via the JIT
+    /// chokepoint. The seed never leaves the backend; only the Bech32m-encoded
+    /// address string crosses to the UI.
+    GeneratedPlatformReceiveAddress {
+        seed_hash: WalletSeedHash,
+        /// The Bech32m-encoded Platform address (DIP-18).
+        address: String,
+    },
+    /// A message signed with a wallet-derived key via the JIT chokepoint. Only
+    /// the public Base64 signature crosses to the UI — the seed and the derived
+    /// private key never leave the backend.
+    WalletMessageSigned {
+        seed_hash: WalletSeedHash,
+        derivation_path: DerivationPath,
+        /// The Base64-encoded signature (a public artifact, not a secret).
+        signature: String,
+    },
 
     // MNList-specific results
     MnListFetchedDiff {
@@ -622,6 +639,18 @@ impl AppContext {
                 derivation_path,
             } => {
                 self.derive_key_for_display(seed_hash, derivation_path)
+                    .await
+            }
+            WalletTask::GeneratePlatformReceiveAddress { seed_hash } => {
+                self.generate_platform_receive_address(seed_hash).await
+            }
+            WalletTask::SignMessageWithKey {
+                seed_hash,
+                derivation_path,
+                message,
+                key_type,
+            } => {
+                self.sign_message_with_key(seed_hash, derivation_path, message, key_type)
                     .await
             }
             WalletTask::FetchPlatformAddressBalances { seed_hash } => {

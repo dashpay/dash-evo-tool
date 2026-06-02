@@ -1567,53 +1567,6 @@ impl Wallet {
         }
     }
 
-    pub fn identity_top_up_ecdsa_private_key(
-        &mut self,
-        app_context: &AppContext,
-        network: Network,
-        identity_index: u32,
-        top_up_index: u32,
-    ) -> Result<PrivateKey, String> {
-        let derivation_path =
-            DerivationPath::identity_top_up_path(network, identity_index, top_up_index);
-        let extended_private_key = derivation_path
-            .derive_priv_ecdsa_for_master_seed(self.seed_bytes()?, network)
-            .expect("derivation should not be able to fail");
-        let private_key = extended_private_key.to_priv();
-
-        self.register_address_from_private_key(
-            &private_key,
-            &derivation_path,
-            DerivationPathType::CREDIT_FUNDING,
-            DerivationPathReference::BlockchainIdentityCreditRegistrationFunding,
-            app_context,
-        )?;
-        Ok(private_key)
-    }
-
-    /// Generate Core key for identity registration
-    pub fn identity_registration_ecdsa_private_key(
-        &mut self,
-        app_context: &AppContext,
-        network: Network,
-        index: u32,
-    ) -> Result<PrivateKey, String> {
-        let derivation_path = DerivationPath::identity_registration_path(network, index);
-        let extended_private_key = derivation_path
-            .derive_priv_ecdsa_for_master_seed(self.seed_bytes()?, network)
-            .expect("derivation should not be able to fail");
-        let private_key = extended_private_key.to_priv();
-
-        self.register_address_from_private_key(
-            &private_key,
-            &derivation_path,
-            DerivationPathType::CREDIT_FUNDING,
-            DerivationPathReference::BlockchainIdentityCreditRegistrationFunding,
-            app_context,
-        )?;
-        Ok(private_key)
-    }
-
     pub fn receive_address(
         &mut self,
         network: Network,
@@ -1698,6 +1651,24 @@ impl Wallet {
 
         // Need to generate a new address - this requires the wallet to be unlocked
         let seed = *self.seed_bytes()?;
+        self.generate_platform_receive_address_with_seed(&seed, network, register)
+    }
+
+    /// Seed-as-parameter variant of the generating half of
+    /// [`platform_receive_address`](Self::platform_receive_address).
+    ///
+    /// Always derives and registers a *new* Platform payment address at the next
+    /// unused index from a `seed` borrowed by the caller (resolved through the
+    /// JIT chokepoint) instead of the wallet's parked seed. The early
+    /// "return an existing address" shortcut lives in the legacy method; this
+    /// variant is the unlock-required generation step. Same DIP-17 path, same
+    /// per-network derivation, same address.
+    pub fn generate_platform_receive_address_with_seed(
+        &mut self,
+        seed: &[u8; 64],
+        network: Network,
+        register: Option<&AppContext>,
+    ) -> Result<Address, String> {
         let secp = Secp256k1::new();
         let account = 0u32;
         let key_class = 0u32;
@@ -1722,7 +1693,7 @@ impl Wallet {
         let derivation_path =
             DerivationPath::platform_payment_path(network, account, key_class, next_index);
         let extended_private_key = derivation_path
-            .derive_priv_ecdsa_for_master_seed(&seed, network)
+            .derive_priv_ecdsa_for_master_seed(seed, network)
             .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
         let private_key = extended_private_key.to_priv();
         let public_key = private_key.public_key(&secp);
@@ -2755,6 +2726,29 @@ mod tests {
             .expect("param")
             .expect("known");
         assert_eq!(legacy.to_bytes(), param.to_bytes());
+    }
+
+    /// `generate_platform_receive_address_with_seed` derives byte-identical
+    /// Platform receive addresses to the legacy `platform_receive_address`
+    /// generate branch — only the seed SOURCE differs, never the DIP-17 path.
+    #[test]
+    fn platform_receive_address_seed_param_matches() {
+        for network in [Network::Testnet, Network::Mainnet] {
+            let mut legacy_wallet = test_wallet();
+            let mut param_wallet = test_wallet();
+            let seed = *legacy_wallet.seed_bytes().expect("open wallet");
+
+            let legacy = legacy_wallet
+                .platform_receive_address(network, true, None)
+                .expect("legacy generate");
+            let param = param_wallet
+                .generate_platform_receive_address_with_seed(&seed, network, None)
+                .expect("seed-param generate");
+            assert_eq!(
+                legacy, param,
+                "platform receive address drift for {network:?}"
+            );
+        }
     }
 
     /// `derive_private_key_in_arc_rw_lock_slice_with_seed` matches the legacy

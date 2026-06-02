@@ -66,6 +66,11 @@ pub(super) struct ReceiveDialogState {
     pub qr_texture: Option<TextureHandle>,
     pub qr_address: Option<String>,
     pub status: Option<String>,
+    /// A queued "generate Platform receive address" request the `ui()` loop
+    /// drains into a `WalletTask::GeneratePlatformReceiveAddress` backend task.
+    /// The seed is fetched just-in-time in the backend; only the new address
+    /// returns here. Carries the wallet's seed hash.
+    pub pending_platform_address_request: Option<WalletSeedHash>,
 }
 
 /// State for the Fund Platform Address from Asset Lock dialog
@@ -578,7 +583,7 @@ impl WalletsBalancesScreen {
                                 ui.add_space(8.0);
 
                                 let mut copy_status: Option<String> = None;
-                                let mut new_addr_result: Option<Result<String, String>> = None;
+                                let mut request_new_addr = false;
 
                                 ui.horizontal(|ui| {
                                     if ComponentStyles::add_primary_button(ui, "Copy Address")
@@ -592,7 +597,7 @@ impl WalletsBalancesScreen {
                                     }
 
                                     // Button to add new Platform address
-                                    if let Some(wallet) = &self.selected_wallet
+                                    if self.selected_wallet.is_some()
                                         && ComponentStyles::add_secondary_button(
                                             ui,
                                             "New Address",
@@ -600,7 +605,7 @@ impl WalletsBalancesScreen {
                                         )
                                         .clicked()
                                     {
-                                        new_addr_result = Some(self.generate_platform_address(wallet));
+                                        request_new_addr = true;
                                     }
                                 });
 
@@ -609,22 +614,12 @@ impl WalletsBalancesScreen {
                                     self.receive_dialog.status = Some(status);
                                 }
 
-                                // Handle new address generation after the closure
-                                if let Some(result) = new_addr_result {
-                                    match result {
-                                        Ok(new_addr) => {
-                                            self.receive_dialog.platform_addresses.push((new_addr, 0));
-                                            self.receive_dialog.selected_platform_index =
-                                                self.receive_dialog.platform_addresses.len() - 1;
-                                            self.receive_dialog.qr_texture = None;
-                                            self.receive_dialog.qr_address = None;
-                                            self.receive_dialog.status =
-                                                Some("New address generated!".to_string());
-                                        }
-                                        Err(err) => {
-                                            self.receive_dialog.status = Some(err);
-                                        }
-                                    }
+                                // Queue the backend address-generation request
+                                // after the closure (it borrows `&mut self`).
+                                if request_new_addr
+                                    && let Some(wallet) = self.selected_wallet.clone()
+                                {
+                                    self.queue_platform_address_request(&wallet);
                                 }
                             }
 
@@ -662,22 +657,24 @@ impl WalletsBalancesScreen {
         AppAction::None
     }
 
-    /// Generate a new Platform address for the wallet.
-    /// Returns the address in Bech32m format (e.g., tdash1k... for testnet per DIP-18)
-    pub(super) fn generate_platform_address(
-        &self,
-        wallet: &Arc<RwLock<Wallet>>,
-    ) -> Result<String, String> {
-        use dash_sdk::dpp::address_funds::PlatformAddress;
-        let mut wallet_guard = wallet.write().map_err(|e| e.to_string())?;
-        // Pass true to skip known addresses and generate a new one
-        let address = wallet_guard
-            .platform_receive_address(self.app_context.network, true, Some(&self.app_context))
-            .map_err(|e| e.to_string())?;
-        // Convert to PlatformAddress and encode as Bech32m per DIP-18
-        let platform_addr =
-            PlatformAddress::try_from(address).map_err(|e| format!("Invalid address: {}", e))?;
-        Ok(platform_addr.to_bech32m_string(self.app_context.network))
+    /// Queue a "generate a new Platform receive address" request for the wallet.
+    ///
+    /// The actual derivation runs in the backend via
+    /// `WalletTask::GeneratePlatformReceiveAddress` — the `ui()` loop drains
+    /// `pending_platform_address_request` into a backend task, the seed is
+    /// fetched just-in-time, and only the new Bech32m address returns. The seed
+    /// never crosses into the UI layer.
+    pub(super) fn queue_platform_address_request(&mut self, wallet: &Arc<RwLock<Wallet>>) {
+        let seed_hash = match wallet.read() {
+            Ok(w) => w.seed_hash(),
+            Err(_) => {
+                self.receive_dialog.status =
+                    Some("Could not read the selected wallet. Please retry.".to_string());
+                return;
+            }
+        };
+        self.receive_dialog.pending_platform_address_request = Some(seed_hash);
+        self.receive_dialog.status = Some("Generating a new address…".to_string());
     }
 
     /// Generate a new Core receive address for the wallet
@@ -1233,17 +1230,11 @@ impl WalletsBalancesScreen {
         drop(wallet_guard);
 
         if platform_addresses.is_empty() {
-            // Generate a new Platform address if none exists
-            match self.generate_platform_address(wallet) {
-                Ok(address) => {
-                    self.receive_dialog.platform_addresses = vec![(address, 0)];
-                    self.receive_dialog.selected_platform_index = 0;
-                }
-                Err(err) => {
-                    self.receive_dialog.status = Some(err);
-                    self.receive_dialog.platform_addresses.clear();
-                }
-            }
+            // No address yet: queue a backend generation request. The seed is
+            // fetched just-in-time and the new address arrives via
+            // `display_task_result`.
+            self.receive_dialog.platform_addresses.clear();
+            self.queue_platform_address_request(wallet);
         } else {
             self.receive_dialog.platform_addresses = platform_addresses;
             self.receive_dialog.selected_platform_index = 0;

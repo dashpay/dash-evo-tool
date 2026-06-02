@@ -2,7 +2,9 @@ mod derive_key_for_display;
 mod fetch_platform_address_balances;
 mod fund_platform_address_from_asset_lock;
 mod fund_platform_address_from_wallet_utxos;
+mod generate_platform_receive_address;
 mod generate_receive_address;
+mod sign_message_with_key;
 mod transfer_platform_credits;
 mod withdraw_from_platform_address;
 
@@ -10,6 +12,7 @@ use crate::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::Credits;
 use dash_sdk::dpp::dashcore::OutPoint;
+use dash_sdk::dpp::identity::KeyType;
 use dash_sdk::dpp::identity::core_script::CoreScript;
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use std::collections::BTreeMap;
@@ -26,6 +29,26 @@ pub enum WalletTask {
     DeriveKeyForDisplay {
         seed_hash: WalletSeedHash,
         derivation_path: DerivationPath,
+    },
+    /// Generate a fresh Platform (DIP-17/18) receive address. The HD seed is
+    /// fetched just-in-time through the JIT chokepoint, the address is derived
+    /// and registered in the backend, and only the resulting address crosses
+    /// back to the UI — the seed never leaves the backend.
+    GeneratePlatformReceiveAddress {
+        seed_hash: WalletSeedHash,
+    },
+    /// Sign a message with a wallet-derived key at `derivation_path`. The HD
+    /// seed is fetched just-in-time through the JIT chokepoint, the key is
+    /// derived and the message signed entirely in the backend, and only the
+    /// Base64 signature (public) is returned — the seed and the derived private
+    /// key never cross into the UI layer.
+    SignMessageWithKey {
+        seed_hash: WalletSeedHash,
+        derivation_path: DerivationPath,
+        /// The message to sign (the user-entered plaintext, not a secret).
+        message: String,
+        /// The key type that determines the signing scheme.
+        key_type: KeyType,
     },
     /// Fetch Platform address balances and nonces from Platform for a wallet
     FetchPlatformAddressBalances {

@@ -2361,6 +2361,17 @@ impl ScreenLike for WalletsBalancesScreen {
             ));
         }
 
+        // Drain a queued "generate Platform receive address" request into a
+        // backend task that fetches the seed just-in-time and derives + registers
+        // the new address off the UI thread.
+        if let Some(seed_hash) = self.receive_dialog.pending_platform_address_request.take() {
+            action |= AppAction::BackendTask(BackendTask::WalletTask(
+                crate::backend_task::wallet::WalletTask::GeneratePlatformReceiveAddress {
+                    seed_hash,
+                },
+            ));
+        }
+
         // Rename dialog
         if self.show_rename_dialog {
             let window_response = egui::Window::new("Rename Wallet")
@@ -2768,6 +2779,19 @@ impl ScreenLike for WalletsBalancesScreen {
                 self.private_key_dialog.private_key_wif = wif;
                 self.private_key_dialog.show_key = false;
                 self.private_key_dialog.is_open = true;
+            }
+            crate::ui::BackendTaskSuccessResult::GeneratedPlatformReceiveAddress {
+                address,
+                ..
+            } => {
+                // The backend derived + registered the new Platform address
+                // just-in-time; surface it in the receive dialog.
+                self.receive_dialog.platform_addresses.push((address, 0));
+                self.receive_dialog.selected_platform_index =
+                    self.receive_dialog.platform_addresses.len() - 1;
+                self.receive_dialog.qr_texture = None;
+                self.receive_dialog.qr_address = None;
+                self.receive_dialog.status = Some("New address generated!".to_string());
             }
             crate::ui::BackendTaskSuccessResult::PlatformAddressWithdrawal { .. } => {
                 MessageBanner::set_global(

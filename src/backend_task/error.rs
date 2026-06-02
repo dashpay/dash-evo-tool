@@ -1046,6 +1046,20 @@ pub enum TaskError {
     #[error("Could not generate a wallet address. Please check your wallet and retry.")]
     WalletAddressDerivationFailed { detail: String },
 
+    /// A new Platform (DIP-17/18) receive address could not be derived or
+    /// registered. The underlying detail is logged, never shown to the user.
+    #[error("Could not generate a Platform receive address. Please check your wallet and retry.")]
+    WalletPlatformReceiveAddressFailed,
+
+    /// Signing a message with a wallet-derived key failed during derivation or
+    /// signing. The underlying detail is logged, never shown to the user.
+    #[error("Could not sign the message. Please check your wallet and retry.")]
+    WalletMessageSigningFailed,
+
+    /// The selected key type cannot be used to sign a message in this tool.
+    #[error("This key type cannot sign a message. Please choose an ECDSA key and try again.")]
+    WalletMessageSignUnsupportedKeyType,
+
     // ──────────────────────────────────────────────────────────────────────────
     // Payment errors
     // ──────────────────────────────────────────────────────────────────────────

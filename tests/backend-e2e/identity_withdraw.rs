@@ -19,8 +19,7 @@ async fn test_withdraw_from_identity() {
     let (seed_hash, wallet_arc) = ctx.create_funded_test_wallet(30_000_000).await;
 
     // Register identity on Platform
-    let (reg_info, _master_key_bytes) =
-        build_identity_registration(&ctx.app_context, &wallet_arc, seed_hash);
+    let reg_info = build_identity_registration(&ctx.app_context, &wallet_arc, seed_hash).await;
     let task = BackendTask::IdentityTask(IdentityTask::RegisterIdentity(reg_info));
     let result = run_task(&ctx.app_context, task)
         .await

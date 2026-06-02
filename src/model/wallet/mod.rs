@@ -867,23 +867,9 @@ impl Wallet {
         Ok(None)
     }
 
-    pub fn private_key_at_derivation_path(
-        &self,
-        derivation_path: &DerivationPath,
-        network: Network,
-    ) -> Result<PrivateKey, String> {
-        let extended_private_key = derivation_path
-            .derive_priv_ecdsa_for_master_seed(self.seed_bytes()?, network)
-            .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
-        Ok(extended_private_key.to_priv())
-    }
-
-    /// Seed-as-parameter variant of
-    /// [`private_key_at_derivation_path`](Self::private_key_at_derivation_path).
-    ///
-    /// Derives from a `seed` borrowed by the caller (resolved through the JIT
-    /// chokepoint) instead of the wallet's parked seed. Same path, same
-    /// per-network derivation, same key.
+    /// Derive the private key for `derivation_path` from a `seed` borrowed by
+    /// the caller (resolved through the JIT chokepoint). Same path, same
+    /// per-network derivation, same key as the BIP-32 spec dictates.
     pub fn private_key_at_derivation_path_with_seed(
         &self,
         seed: &[u8; 64],
@@ -896,30 +882,12 @@ impl Wallet {
         Ok(extended_private_key.to_priv())
     }
 
-    pub fn private_key_for_address(
-        &self,
-        address: &Address,
-        network: Network,
-    ) -> Result<Option<PrivateKey>, String> {
-        self.known_addresses
-            .get(address)
-            .map(|derivation_path| {
-                derivation_path
-                    .derive_priv_ecdsa_for_master_seed(self.seed_bytes()?, network)
-                    .map(|extended_private_key| extended_private_key.to_priv())
-                    .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())
-            })
-            .transpose()
-    }
-
-    /// Seed-as-parameter variant of
-    /// [`private_key_for_address`](Self::private_key_for_address).
+    /// Derive the private key for a known `address` from a `seed` borrowed by
+    /// the caller (resolved through the JIT chokepoint).
     ///
-    /// Looks up the address's derivation path (pure, no secret) and derives
-    /// from a `seed` borrowed by the caller (resolved through the JIT
-    /// chokepoint) instead of the wallet's parked seed. `Ok(None)` when the
-    /// address is not one of this wallet's known addresses. Same path, same
-    /// per-network derivation, same key.
+    /// Looks up the address's derivation path (pure, no secret) and derives at
+    /// it. `Ok(None)` when the address is not one of this wallet's known
+    /// addresses. Same path, same per-network derivation, same key.
     pub fn private_key_for_address_with_seed(
         &self,
         seed: &[u8; 64],
@@ -1203,41 +1171,6 @@ impl Wallet {
             )?;
         }
         Ok(())
-    }
-
-    pub fn identity_authentication_ecdsa_private_key(
-        &mut self,
-        app_context: &AppContext,
-        network: Network,
-        identity_index: u32,
-        key_index: u32,
-    ) -> Result<(PrivateKey, DerivationPath), String> {
-        let derivation_path = DerivationPath::identity_authentication_path(
-            network,
-            KeyDerivationType::ECDSA,
-            identity_index,
-            key_index,
-        );
-        tracing::debug!(
-            identity_index = identity_index,
-            key_index = key_index,
-            path = %derivation_path,
-            "Generated identity authentication ECDSA derivation path"
-        );
-        let extended_public_key = derivation_path
-            .derive_priv_ecdsa_for_master_seed(self.seed_bytes()?, network)
-            .expect("derivation should not be able to fail");
-
-        let private_key = extended_public_key.to_priv();
-        self.register_address_from_private_key(
-            &private_key,
-            &derivation_path,
-            DerivationPathType::SINGLE_USER_AUTHENTICATION,
-            DerivationPathReference::BlockchainIdentities,
-            app_context,
-        )?;
-
-        Ok((private_key, derivation_path))
     }
 
     fn register_address_from_private_key(
@@ -1951,7 +1884,13 @@ impl Wallet {
             .insert(address, PlatformAddressInfo { balance, nonce });
     }
 
-    /// Get the private key for a Platform address
+    /// Get the private key for a Platform address.
+    ///
+    /// Still seed-reading: this backs the [`Signer<PlatformAddress>`] impl
+    /// below, which the shielded shield-transition builder
+    /// (`build_shield_transition`) invokes via `&Wallet`. The address-funding
+    /// fund sites moved to `DetPlatformSigner` (D3); retiring this last reader
+    /// is the shielded-signer JIT conversion, tracked separately.
     #[allow(clippy::result_large_err)]
     pub fn get_platform_address_private_key(
         &self,
@@ -1991,7 +1930,13 @@ impl Wallet {
 }
 
 /// Signer implementation for Platform addresses
-/// Allows the wallet to sign transactions that spend from Platform addresses
+/// Allows the wallet to sign transactions that spend from Platform addresses.
+///
+/// Still live: the shielded shield-transition builder
+/// (`build_shield_transition`, `backend_task/shielded/bundle.rs`) signs through
+/// `&Wallet`. The four address-funding fund sites moved to `DetPlatformSigner`
+/// (D3); this impl is retired only once the shielded shield signer is converted
+/// to the JIT chokepoint as well.
 #[async_trait]
 impl Signer<PlatformAddress> for Wallet {
     async fn sign(
@@ -2889,25 +2834,26 @@ mod tests {
     }
 
     /// The seed-as-parameter derivation produces byte-identical private keys to
-    /// the legacy parked-seed derivation across every bootstrap family — only
-    /// the seed SOURCE changed, never the derivation math.
+    /// a direct BIP-32 reference derivation across every bootstrap family — the
+    /// derivation math is the spec, not the wrapper.
     #[test]
-    fn seed_param_derivation_matches_parked_seed_derivation() {
+    fn seed_param_derivation_matches_reference_derivation() {
         for network in [Network::Testnet, Network::Mainnet] {
             let wallet = test_wallet();
             // The per-path private key is derived directly from the raw seed
-            // (BIP-44 master xpub is not involved), so both variants are
-            // network-correct as long as they pass the same `network`.
+            // (BIP-44 master xpub is not involved), so the derivation is
+            // network-correct as long as the same `network` is passed.
             let seed = *wallet.seed_bytes().expect("open wallet");
             for path in representative_bootstrap_paths(network) {
-                let from_self = wallet
-                    .private_key_at_derivation_path(&path, network)
-                    .expect("legacy derive");
+                let reference = path
+                    .derive_priv_ecdsa_for_master_seed(&seed, network)
+                    .expect("reference derive")
+                    .to_priv();
                 let from_param = wallet
                     .private_key_at_derivation_path_with_seed(&seed, &path, network)
                     .expect("seed-param derive");
                 assert_eq!(
-                    from_self.to_bytes(),
+                    reference.to_bytes(),
                     from_param.to_bytes(),
                     "derivation drift on path {path} for {network:?}"
                 );
@@ -2915,10 +2861,10 @@ mod tests {
         }
     }
 
-    /// `private_key_for_address_with_seed` resolves the same key the legacy
-    /// `private_key_for_address` does for a known address.
+    /// `private_key_for_address_with_seed` resolves the same key a direct
+    /// reference derivation at the address's stored path produces.
     #[test]
-    fn private_key_for_address_seed_param_matches() {
+    fn private_key_for_address_seed_param_matches_reference() {
         let network = Network::Testnet;
         let wallet = test_wallet();
         let seed = *wallet.seed_bytes().expect("open wallet");
@@ -2928,24 +2874,21 @@ mod tests {
             ChildNumber::Hardened { index: 0 },
             ChildNumber::Normal { index: 1 },
         ]);
-        let priv_key = wallet
-            .private_key_at_derivation_path_with_seed(&seed, &path, network)
-            .expect("derive");
+        let reference = path
+            .derive_priv_ecdsa_for_master_seed(&seed, network)
+            .expect("reference derive")
+            .to_priv();
         let secp = Secp256k1::new();
-        let address = Address::p2pkh(&priv_key.public_key(&secp), network);
+        let address = Address::p2pkh(&reference.public_key(&secp), network);
 
         let mut wallet = wallet;
         wallet.known_addresses.insert(address.clone(), path);
 
-        let legacy = wallet
-            .private_key_for_address(&address, network)
-            .expect("legacy")
-            .expect("known");
         let param = wallet
             .private_key_for_address_with_seed(&seed, &address, network)
             .expect("param")
             .expect("known");
-        assert_eq!(legacy.to_bytes(), param.to_bytes());
+        assert_eq!(reference.to_bytes(), param.to_bytes());
     }
 
     /// `generate_platform_receive_address_with_seed` derives byte-identical

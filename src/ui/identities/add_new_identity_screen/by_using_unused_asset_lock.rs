@@ -109,7 +109,7 @@ impl AddNewIdentityScreen {
         ui.add_space(10.0);
         self.render_choose_funding_asset_lock(ui);
 
-        let key_count = self.identity_keys.keys_input.len() + 1; // +1 for master key
+        let key_count = self.identity_keys.others.len() + 1; // +1 for master key
         let estimated_fee = self
             .app_context
             .fee_estimator()

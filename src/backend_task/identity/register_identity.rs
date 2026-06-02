@@ -143,7 +143,7 @@ impl AppContext {
             dash_sdk::dpp::identity::KeyID,
             dash_sdk::dpp::identity::IdentityPublicKey,
         >,
-        keys: super::IdentityKeys,
+        keys: super::IdentityKeySpecs,
         wallet: std::sync::Arc<std::sync::RwLock<super::Wallet>>,
         wallet_seed_hash: super::WalletSeedHash,
         alias_input: String,
@@ -237,7 +237,7 @@ impl AppContext {
     async fn register_identity_from_platform_addresses(
         &self,
         alias_input: String,
-        keys: super::IdentityKeys,
+        keys: super::IdentityKeySpecs,
         wallet: std::sync::Arc<std::sync::RwLock<super::Wallet>>,
         wallet_identity_index: u32,
         inputs: BTreeMap<

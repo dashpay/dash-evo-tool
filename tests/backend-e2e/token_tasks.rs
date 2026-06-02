@@ -27,8 +27,6 @@ static SECOND_IDENTITY: tokio::sync::OnceCell<SecondIdentity> = tokio::sync::Onc
 struct SecondIdentity {
     qualified_identity: dash_evo_tool::model::qualified_identity::QualifiedIdentity,
     signing_key: dash_sdk::platform::IdentityPublicKey,
-    #[allow(dead_code)]
-    signing_key_bytes: Vec<u8>,
 }
 
 /// Register and return a second identity for use in transfer/freeze/purchase tests.
@@ -39,8 +37,8 @@ async fn ensure_second_identity() -> &'static SecondIdentity {
             tracing::info!("SecondIdentity: creating funded test wallet (30M duffs)...");
             let (seed_hash, wallet_arc) = ctx.create_funded_test_wallet(30_000_000).await;
 
-            let (reg_info, master_key_bytes) =
-                build_identity_registration(&ctx.app_context, &wallet_arc, seed_hash);
+            let reg_info =
+                build_identity_registration(&ctx.app_context, &wallet_arc, seed_hash).await;
 
             let task = BackendTask::IdentityTask(
                 dash_evo_tool::backend_task::identity::IdentityTask::RegisterIdentity(reg_info),
@@ -62,7 +60,6 @@ async fn ensure_second_identity() -> &'static SecondIdentity {
             SecondIdentity {
                 qualified_identity: qi,
                 signing_key,
-                signing_key_bytes: master_key_bytes,
             }
         })
         .await

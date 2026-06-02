@@ -38,9 +38,7 @@ impl AppContext {
             .with_secret(
                 &crate::wallet_backend::SecretScope::HdSeed { seed_hash },
                 |plaintext| {
-                    let seed = plaintext
-                        .expose_hd_seed()
-                        .ok_or(TaskError::ContactWalletSeedUnavailable)?;
+                    let seed = plaintext.expose_hd_seed().ok_or(TaskError::WalletLocked)?;
                     let private_key = wallet
                         .private_key_at_derivation_path_with_seed(seed, &path_for_derive, network)
                         .map_err(|detail| {

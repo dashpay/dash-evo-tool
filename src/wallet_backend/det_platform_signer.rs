@@ -209,10 +209,32 @@ mod tests {
     use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
     use zeroize::Zeroizing;
 
+    /// Reference platform-address signing — reproduces exactly what the
+    /// retired `Wallet` `Signer<PlatformAddress>` impl did: look up the address
+    /// in the index, derive the private key at its path from the seed, and sign
+    /// with the same `dashcore::signer::sign`. The parity tests compare
+    /// [`DetPlatformSigner`] against this independent reference so they still
+    /// prove fund-safety parity without the deleted impl.
+    fn reference_sign(
+        index: &PlatformPathIndex,
+        seed: &[u8; 64],
+        network: Network,
+        platform_address: &PlatformAddress,
+        data: &[u8],
+    ) -> Vec<u8> {
+        let path = index.path_for(platform_address).expect("indexed path");
+        let private_key = path
+            .derive_priv_ecdsa_for_master_seed(seed, network)
+            .expect("derive")
+            .to_priv();
+        dash_sdk::dpp::dashcore::signer::sign(data, private_key.inner.as_ref())
+            .expect("reference sign")
+            .to_vec()
+    }
+
     /// Build a minimal open wallet (via the public pure constructor) and wire
     /// one platform-payment address into its watched/known maps — exactly the
-    /// shape the legacy `get_platform_address_private_key` lookup and the new
-    /// [`PlatformPathIndex`] both consume. No `AppContext` needed.
+    /// shape the [`PlatformPathIndex`] consumes. No `AppContext` needed.
     fn wallet_with_platform_address(
         network: Network,
     ) -> (Wallet, PlatformAddress, Zeroizing<[u8; 64]>) {
@@ -242,12 +264,11 @@ mod tests {
     }
 
     /// FUND-SAFETY PARITY: `DetPlatformSigner` must produce byte-identical
-    /// `sign` and `sign_create_witness` output to the legacy `Wallet`
-    /// `Signer<PlatformAddress>` impl for the same address and data, on every
-    /// network. A divergence here means wrong signatures and lost/failed
-    /// funds.
+    /// `sign` output to a direct reference derivation (path-from-index → derive
+    /// → `dashcore::signer::sign`) for the same address and data, on every
+    /// network. A divergence here means wrong signatures and lost/failed funds.
     #[tokio::test]
-    async fn platform_signer_parity_with_wallet_signer() {
+    async fn platform_signer_parity_with_reference() {
         for network in [Network::Testnet, Network::Mainnet] {
             let (wallet, platform_address, seed) = wallet_with_platform_address(network);
             let index = PlatformPathIndex::from_wallet(&wallet, network);
@@ -255,27 +276,24 @@ mod tests {
 
             let data = b"fund-critical-parity-vector";
 
-            let legacy_sig = wallet
-                .sign(&platform_address, data)
-                .await
-                .expect("legacy sign");
+            let reference_sig = reference_sign(&index, &seed, network, &platform_address, data);
             let det_sig = det.sign(&platform_address, data).await.expect("det sign");
             assert_eq!(
-                legacy_sig.to_vec(),
+                reference_sig,
                 det_sig.to_vec(),
                 "sign() bytes diverged on {network:?}"
             );
 
-            let legacy_witness = wallet
-                .sign_create_witness(&platform_address, data)
-                .await
-                .expect("legacy witness");
+            // The create-witness signature wraps the same `sign` output.
             let det_witness = det
                 .sign_create_witness(&platform_address, data)
                 .await
                 .expect("det witness");
+            let reference_witness = AddressWitness::P2pkh {
+                signature: BinaryData::new(reference_sig),
+            };
             assert_eq!(
-                format!("{legacy_witness:?}"),
+                format!("{reference_witness:?}"),
                 format!("{det_witness:?}"),
                 "sign_create_witness() diverged on {network:?}"
             );
@@ -287,30 +305,36 @@ mod tests {
         }
     }
 
-    /// PARITY: the derived private key matches the legacy
-    /// `get_platform_address_private_key` exactly (same path, same coin-type,
-    /// same network) — the strongest fund-safety guarantee, independent of the
-    /// signing nonce.
-    #[test]
-    fn platform_signer_derives_same_key_as_wallet() {
+    /// PARITY: the key `DetPlatformSigner` signs with matches a direct
+    /// reference derivation at the indexed path exactly (same path, same
+    /// coin-type, same network) — the strongest fund-safety guarantee,
+    /// independent of the signing nonce.
+    #[tokio::test]
+    async fn platform_signer_derives_same_key_as_reference() {
         for network in [Network::Testnet, Network::Mainnet] {
             let (wallet, platform_address, seed) = wallet_with_platform_address(network);
             let index = PlatformPathIndex::from_wallet(&wallet, network);
 
-            let legacy_key = wallet
-                .get_platform_address_private_key(&platform_address, network)
-                .expect("legacy key");
-
+            // Reference: derive directly at the indexed path and sign.
             let path = index.path_for(&platform_address).expect("indexed path");
-            let det_key = path
+            let reference_key = path
                 .derive_priv_ecdsa_for_master_seed(&*seed, network)
                 .expect("derive")
                 .to_priv();
+            let data = b"key-parity-vector";
+            let reference_sig =
+                dash_sdk::dpp::dashcore::signer::sign(data, reference_key.inner.as_ref())
+                    .expect("reference sign")
+                    .to_vec();
+
+            // The signer's view of the same address must yield the same key.
+            let det = DetPlatformSigner::from_held(&seed, network, &index);
+            let det_sig = det.sign(&platform_address, data).await.expect("det sign");
 
             assert_eq!(
-                legacy_key.inner.secret_bytes(),
-                det_key.inner.secret_bytes(),
-                "derived key bytes diverged on {network:?}"
+                reference_sig,
+                det_sig.to_vec(),
+                "derived key signatures diverged on {network:?}"
             );
         }
     }

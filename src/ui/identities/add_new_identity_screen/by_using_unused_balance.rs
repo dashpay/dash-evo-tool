@@ -57,7 +57,7 @@ impl AddNewIdentityScreen {
         }
 
         // Display estimated fee before action button
-        let key_count = self.identity_keys.keys_input.len() + 1; // +1 for master key
+        let key_count = self.identity_keys.others.len() + 1; // +1 for master key
         let estimated_fee = self
             .app_context
             .fee_estimator()

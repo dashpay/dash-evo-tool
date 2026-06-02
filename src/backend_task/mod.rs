@@ -272,6 +272,12 @@ pub enum BackendTaskSuccessResult {
         /// The Bech32m-encoded Platform address (DIP-18).
         address: String,
     },
+    /// The identity-authentication public-key cache was warmed for
+    /// `identity_index` (a completion signal — carries no key material). The
+    /// chooser re-reads the now-warm cache on the next frame.
+    IdentityAuthPubkeysWarmed {
+        identity_index: u32,
+    },
     /// A message signed with a wallet-derived key via the JIT chokepoint. Only
     /// the public Base64 signature crosses to the UI — the seed and the derived
     /// private key never leave the backend.
@@ -643,6 +649,14 @@ impl AppContext {
             }
             WalletTask::GeneratePlatformReceiveAddress { seed_hash } => {
                 self.generate_platform_receive_address(seed_hash).await
+            }
+            WalletTask::WarmIdentityAuthPubkeys {
+                seed_hash,
+                identity_index,
+                key_count,
+            } => {
+                self.warm_identity_auth_pubkeys(seed_hash, identity_index, key_count)
+                    .await
             }
             WalletTask::SignMessageWithKey {
                 seed_hash,

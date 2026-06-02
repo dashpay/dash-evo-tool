@@ -21,12 +21,11 @@ use crate::model::qualified_identity::{IdentityType, PrivateKeyTarget, Qualified
 use crate::model::secret::Secret;
 use crate::model::wallet::{Wallet, WalletArcRef, WalletSeedHash};
 use dash_sdk::Sdk;
-use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dashcore_rpc::dashcore::{Address, PrivateKey};
 use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::balances::credits::Duffs;
-use dash_sdk::dpp::dashcore::OutPoint;
 use dash_sdk::dpp::dashcore::hashes::Hash;
+use dash_sdk::dpp::dashcore::{Network, OutPoint, PublicKey};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
@@ -34,7 +33,7 @@ use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicK
 use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
 use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
 use dash_sdk::dpp::identity::{KeyID, KeyType, Purpose, SecurityLevel};
-use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
+use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, KeyDerivationType};
 use dash_sdk::platform::{Identifier, Identity, IdentityPublicKey};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
@@ -52,69 +51,164 @@ pub struct IdentityInputToLoad {
     pub selected_wallet_seed_hash: Option<WalletSeedHash>,
 }
 
-/// A key input tuple containing the private key with derivation path, key type, purpose,
-/// security level, and optional contract bounds.
-pub type KeyInput = (
-    (PrivateKey, DerivationPath),
-    KeyType,
-    Purpose,
-    SecurityLevel,
-    Option<ContractBounds>,
-);
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct IdentityKeys {
-    pub(crate) master_private_key: Option<(PrivateKey, DerivationPath)>,
-    pub(crate) master_private_key_type: KeyType,
-    pub(crate) keys_input: Vec<KeyInput>,
+/// One chosen identity key, public-only.
+///
+/// Carries the derived **public** key plus the wallet derivation path it came
+/// from. The matching private key is never held here — it is materialized
+/// just-in-time at signing time from `derivation_path` through the JIT
+/// chokepoint (`QualifiedIdentity` signer + `get_resolve_with_seed`). The
+/// public key and the path are derived from the same
+/// `(network, identity_index, key_index)`, so the key submitted to Platform
+/// and the key that signs are the two faces of one path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdentityKeyEntry {
+    pub public_key: PublicKey,
+    pub derivation_path: DerivationPath,
+    pub key_type: KeyType,
+    pub purpose: Purpose,
+    pub security_level: SecurityLevel,
+    pub contract_bounds: Option<ContractBounds>,
 }
 
-impl IdentityKeys {
-    pub fn new(
-        master_private_key: Option<(PrivateKey, DerivationPath)>,
-        master_private_key_type: KeyType,
-        keys_input: Vec<KeyInput>,
+impl IdentityKeyEntry {
+    /// Build an entry from a cached public key, deriving the matching path
+    /// from the **same** `(network, identity_index, key_index)`.
+    ///
+    /// RK-1 single-constructor rule: the public key and the path always come
+    /// from one coordinate, so the key submitted to Platform and the key the
+    /// chokepoint signs with at registration are byte-for-byte the same key.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_cached_public_key(
+        public_key: PublicKey,
+        network: Network,
+        identity_index: u32,
+        key_index: u32,
+        key_type: KeyType,
+        purpose: Purpose,
+        security_level: SecurityLevel,
+        contract_bounds: Option<ContractBounds>,
     ) -> Self {
+        let derivation_path = DerivationPath::identity_authentication_path(
+            network,
+            KeyDerivationType::ECDSA,
+            identity_index,
+            key_index,
+        );
         Self {
-            master_private_key,
-            master_private_key_type,
-            keys_input,
+            public_key,
+            derivation_path,
+            key_type,
+            purpose,
+            security_level,
+            contract_bounds,
+        }
+    }
+
+    /// Build an entry by deriving the public key from a borrowed HD seed.
+    ///
+    /// Seed-param form used by the seed-driven registration prep (production
+    /// `build_identity_registration` and the e2e helper). The public key is
+    /// derived from the same coordinate as the path, satisfying the RK-1
+    /// single-constructor rule. The seed is borrowed for the derivation only
+    /// and never retained.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_seed(
+        wallet: &Wallet,
+        seed: &[u8; 64],
+        network: Network,
+        identity_index: u32,
+        key_index: u32,
+        key_type: KeyType,
+        purpose: Purpose,
+        security_level: SecurityLevel,
+        contract_bounds: Option<ContractBounds>,
+    ) -> Result<Self, TaskError> {
+        let public_key = wallet
+            .identity_authentication_ecdsa_public_key_from_seed(
+                seed,
+                network,
+                identity_index,
+                key_index,
+            )
+            .map_err(|e| TaskError::WalletKeyDerivationFailed { source: e.into() })?;
+        Ok(Self::from_cached_public_key(
+            public_key,
+            network,
+            identity_index,
+            key_index,
+            key_type,
+            purpose,
+            security_level,
+            contract_bounds,
+        ))
+    }
+}
+
+/// The chosen key set for a new identity, public-only.
+///
+/// Holds public material + derivation paths (key *specs*), not private keys:
+/// the chooser reads public keys from the
+/// [`AuthPubkeyCache`](crate::model::wallet::auth_pubkey_cache::AuthPubkeyCache)
+/// and signing derives the private keys just-in-time at registration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdentityKeySpecs {
+    /// The master AUTHENTICATION/MASTER key, when present. `None` until the
+    /// chooser has populated keys (a cold auth-pubkey cache, before warming).
+    pub(crate) master: Option<IdentityKeyEntry>,
+    /// The additional non-master keys, in id order (id = index + 1).
+    pub(crate) others: Vec<IdentityKeyEntry>,
+}
+
+impl IdentityKeySpecs {
+    pub fn new(master: Option<IdentityKeyEntry>, others: Vec<IdentityKeyEntry>) -> Self {
+        Self { master, others }
+    }
+
+    /// An empty, not-yet-populated key set (cold auth-pubkey cache).
+    pub fn empty() -> Self {
+        Self {
+            master: None,
+            others: Vec::new(),
+        }
+    }
+
+    /// Whether the master key has been populated. Registration is gated on
+    /// this — a cold cache leaves it `None` and the create button stays
+    /// disabled (fail-closed).
+    pub fn has_master(&self) -> bool {
+        self.master.is_some()
+    }
+
+    fn key_data(entry: &IdentityKeyEntry) -> dash_sdk::dpp::platform_value::BinaryData {
+        match entry.key_type {
+            KeyType::ECDSA_HASH160 => entry
+                .public_key
+                .pubkey_hash()
+                .to_byte_array()
+                .to_vec()
+                .into(),
+            _ => entry.public_key.to_bytes().into(),
         }
     }
 
     pub fn to_key_storage(&self, wallet_seed_hash: WalletSeedHash) -> KeyStorage {
-        let Self {
-            master_private_key,
-            master_private_key_type,
-            keys_input,
-        } = self;
-        let secp = Secp256k1::new();
         let mut key_map = BTreeMap::new();
 
-        if let Some((master_private_key, master_private_key_derivation_path)) = master_private_key {
-            let data = match master_private_key_type {
-                KeyType::ECDSA_HASH160 => master_private_key
-                    .public_key(&secp)
-                    .pubkey_hash()
-                    .to_byte_array()
-                    .to_vec()
-                    .into(),
-                _ => master_private_key.public_key(&secp).to_bytes().into(),
-            };
+        if let Some(master) = &self.master {
             let key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
                 id: 0,
                 purpose: Purpose::AUTHENTICATION,
                 security_level: SecurityLevel::MASTER,
                 contract_bounds: None,
-                key_type: *master_private_key_type,
+                key_type: master.key_type,
                 read_only: false,
-                data,
+                data: Self::key_data(master),
                 disabled_at: None,
             });
 
             let wallet_derivation_path = WalletDerivationPath {
                 wallet_seed_hash,
-                derivation_path: master_private_key_derivation_path.clone(),
+                derivation_path: master.derivation_path.clone(),
             };
             let qualified_identity_public_key =
                 QualifiedIdentityPublicKey::from_identity_public_key_in_wallet(
@@ -127,99 +221,67 @@ impl IdentityKeys {
             );
         }
 
-        key_map.extend(keys_input.iter().enumerate().map(
-            |(
-                i,
-                (
-                    (private_key, derivation_path),
-                    key_type,
-                    purpose,
-                    security_level,
-                    contract_bounds,
-                ),
-            )| {
-                let id = (i + 1) as KeyID;
-                let data = match key_type {
-                    KeyType::ECDSA_HASH160 => private_key
-                        .public_key(&secp)
-                        .pubkey_hash()
-                        .to_byte_array()
-                        .to_vec()
-                        .into(),
-                    _ => private_key.public_key(&secp).to_bytes().into(),
-                };
-                let identity_public_key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
-                    id,
-                    purpose: *purpose,
-                    security_level: *security_level,
-                    contract_bounds: contract_bounds.clone(),
-                    key_type: *key_type,
-                    read_only: false,
-                    data,
-                    disabled_at: None,
-                });
+        key_map.extend(self.others.iter().enumerate().map(|(i, entry)| {
+            let id = (i + 1) as KeyID;
+            let identity_public_key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
+                id,
+                purpose: entry.purpose,
+                security_level: entry.security_level,
+                contract_bounds: entry.contract_bounds.clone(),
+                key_type: entry.key_type,
+                read_only: false,
+                data: Self::key_data(entry),
+                disabled_at: None,
+            });
 
-                let wallet_derivation_path = WalletDerivationPath {
-                    wallet_seed_hash,
-                    derivation_path: derivation_path.clone(),
-                };
+            let wallet_derivation_path = WalletDerivationPath {
+                wallet_seed_hash,
+                derivation_path: entry.derivation_path.clone(),
+            };
 
-                let qualified_identity_public_key =
-                    QualifiedIdentityPublicKey::from_identity_public_key_in_wallet(
-                        identity_public_key,
-                        Some(wallet_derivation_path.clone()),
-                    );
-                (
-                    (PrivateKeyTarget::PrivateKeyOnMainIdentity, id),
-                    (qualified_identity_public_key, wallet_derivation_path),
-                )
-            },
-        ));
+            let qualified_identity_public_key =
+                QualifiedIdentityPublicKey::from_identity_public_key_in_wallet(
+                    identity_public_key,
+                    Some(wallet_derivation_path.clone()),
+                );
+            (
+                (PrivateKeyTarget::PrivateKeyOnMainIdentity, id),
+                (qualified_identity_public_key, wallet_derivation_path),
+            )
+        }));
 
         key_map.into()
     }
     pub fn to_public_keys_map(&self) -> Result<BTreeMap<KeyID, IdentityPublicKey>, String> {
-        let Self {
-            master_private_key,
-            master_private_key_type,
-            keys_input,
-            ..
-        } = self;
-        let secp = Secp256k1::new();
         let mut key_map = BTreeMap::new();
-        if let Some((master_private_key, _)) = master_private_key {
-            let data = match master_private_key_type {
-                KeyType::ECDSA_SECP256K1 => master_private_key.public_key(&secp).to_bytes().into(),
-                KeyType::ECDSA_HASH160 => master_private_key
-                    .public_key(&secp)
-                    .pubkey_hash()
-                    .to_byte_array()
-                    .to_vec()
-                    .into(),
+        if let Some(master) = &self.master {
+            match master.key_type {
+                KeyType::ECDSA_SECP256K1 | KeyType::ECDSA_HASH160 => {}
                 other => {
                     return Err(format!(
                         "Unsupported master key type: {:?}. Only ECDSA_SECP256K1 and ECDSA_HASH160 are supported.",
                         other
                     ));
                 }
-            };
+            }
             let key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
                 id: 0,
                 purpose: Purpose::AUTHENTICATION,
                 security_level: SecurityLevel::MASTER,
                 contract_bounds: None,
-                key_type: *master_private_key_type,
+                key_type: master.key_type,
                 read_only: false,
-                data,
+                data: Self::key_data(master),
                 disabled_at: None,
             });
 
             key_map.insert(0, key);
         }
-        for (i, ((private_key, _), key_type, purpose, security_level, contract_bounds)) in
-            keys_input.iter().enumerate()
-        {
+        for (i, entry) in self.others.iter().enumerate() {
             let id = (i + 1) as KeyID;
+            let key_type = &entry.key_type;
+            let purpose = &entry.purpose;
+            let security_level = &entry.security_level;
 
             // Validate security level matches key purpose (defense-in-depth)
             match purpose {
@@ -253,29 +315,23 @@ impl IdentityKeys {
                 _ => {}
             }
 
-            let data = match key_type {
-                KeyType::ECDSA_SECP256K1 => private_key.public_key(&secp).to_bytes().into(),
-                KeyType::ECDSA_HASH160 => private_key
-                    .public_key(&secp)
-                    .pubkey_hash()
-                    .to_byte_array()
-                    .to_vec()
-                    .into(),
+            match key_type {
+                KeyType::ECDSA_SECP256K1 | KeyType::ECDSA_HASH160 => {}
                 other => {
                     return Err(format!(
                         "Unsupported key type for key {}: {:?}. Only ECDSA_SECP256K1 and ECDSA_HASH160 are supported.",
                         id, other
                     ));
                 }
-            };
+            }
             let identity_public_key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
                 id,
                 purpose: *purpose,
                 security_level: *security_level,
-                contract_bounds: contract_bounds.clone(),
+                contract_bounds: entry.contract_bounds.clone(),
                 key_type: *key_type,
                 read_only: false,
-                data,
+                data: Self::key_data(entry),
                 disabled_at: None,
             });
             key_map.insert(id, identity_public_key);
@@ -322,7 +378,7 @@ pub enum TopUpIdentityFundingMethod {
 #[derive(Debug, Clone)]
 pub struct IdentityRegistrationInfo {
     pub alias_input: String,
-    pub keys: IdentityKeys,
+    pub keys: IdentityKeySpecs,
     pub wallet: Arc<RwLock<Wallet>>,
     pub wallet_identity_index: u32,
     pub identity_funding_method: RegisterIdentityFundingMethod,
@@ -476,63 +532,66 @@ pub fn default_identity_key_specs(
     ]
 }
 
-/// Build an [`IdentityRegistrationInfo`] for a wallet-funded identity.
+/// Build an [`IdentityRegistrationInfo`] for a wallet-funded identity from a
+/// borrowed HD seed.
 ///
-/// Derives the master key and additional keys from the wallet at the given
-/// `identity_index`. This is the canonical way to prepare identity
-/// registration data from a wallet — used by both UI screens and tests.
-#[allow(dead_code)] // Used by backend-e2e tests via pub(crate) visibility
-pub(crate) fn build_identity_registration(
+/// Derives the **public** master key and additional keys from `seed` at the
+/// given `identity_index`. Seed-param form: the caller resolves the seed once
+/// through the JIT chokepoint and passes it by borrow — the private keys are
+/// never materialized here (signing derives them JIT at registration). The
+/// public key and the wallet derivation path of each entry come from the same
+/// coordinate (RK-1), so the keys submitted to Platform and the keys the
+/// chokepoint signs with are identical. This is the canonical way to prepare
+/// identity registration data — used by the async UI/registration path and by
+/// tests.
+pub fn build_identity_registration_with_seed(
     app_context: &Arc<AppContext>,
     wallet_arc: &Arc<RwLock<Wallet>>,
+    seed: &[u8; 64],
     identity_index: u32,
     funding_amount: Duffs,
 ) -> Result<IdentityRegistrationInfo, TaskError> {
     let dashpay_contract_id = app_context.dashpay_contract.id();
     let key_specs = default_identity_key_specs(dashpay_contract_id);
+    let network = app_context.network;
 
-    let mut wallet = wallet_arc.write()?;
+    let wallet = wallet_arc.read()?;
 
-    let (master_private_key, master_derivation_path) = wallet
-        .identity_authentication_ecdsa_private_key(
-            app_context,
-            app_context.network,
-            identity_index,
-            0,
-        )
-        .map_err(|e| TaskError::WalletKeyDerivationFailed { source: e.into() })?;
+    let master = IdentityKeyEntry::from_seed(
+        &wallet,
+        seed,
+        network,
+        identity_index,
+        0,
+        KeyType::ECDSA_HASH160,
+        Purpose::AUTHENTICATION,
+        SecurityLevel::MASTER,
+        None,
+    )?;
 
-    let mut keys_input: Vec<KeyInput> = Vec::new();
+    let mut others: Vec<IdentityKeyEntry> = Vec::with_capacity(key_specs.len());
     for (i, (key_type, purpose, security_level, contract_bounds)) in
         key_specs.into_iter().enumerate()
     {
         let key_index = (i + 1) as u32;
-        let (private_key, derivation_path) = wallet
-            .identity_authentication_ecdsa_private_key(
-                app_context,
-                app_context.network,
-                identity_index,
-                key_index,
-            )
-            .map_err(|e| TaskError::WalletKeyDerivationFailed { source: e.into() })?;
-        keys_input.push((
-            (private_key, derivation_path),
+        others.push(IdentityKeyEntry::from_seed(
+            &wallet,
+            seed,
+            network,
+            identity_index,
+            key_index,
             key_type,
             purpose,
             security_level,
             contract_bounds,
-        ));
+        )?);
     }
 
     drop(wallet);
 
     Ok(IdentityRegistrationInfo {
         alias_input: String::new(),
-        keys: IdentityKeys::new(
-            Some((master_private_key, master_derivation_path)),
-            KeyType::ECDSA_HASH160,
-            keys_input,
-        ),
+        keys: IdentityKeySpecs::new(Some(master), others),
         wallet: wallet_arc.clone(),
         wallet_identity_index: identity_index,
         identity_funding_method: RegisterIdentityFundingMethod::FundWithWallet(
@@ -540,6 +599,37 @@ pub(crate) fn build_identity_registration(
             identity_index,
         ),
     })
+}
+
+/// Async wrapper over [`build_identity_registration_with_seed`].
+///
+/// Resolves the wallet's HD seed once through the JIT chokepoint and delegates;
+/// callers that can `await` use this and never read the wallet's parked seed.
+#[allow(dead_code)] // Used by backend-e2e tests
+pub async fn build_identity_registration(
+    app_context: &Arc<AppContext>,
+    wallet_arc: &Arc<RwLock<Wallet>>,
+    identity_index: u32,
+    funding_amount: Duffs,
+) -> Result<IdentityRegistrationInfo, TaskError> {
+    let seed_hash = wallet_arc.read()?.seed_hash();
+    let backend = app_context.wallet_backend()?;
+    backend
+        .secret_access()
+        .with_secret(
+            &crate::wallet_backend::SecretScope::HdSeed { seed_hash },
+            |plaintext| {
+                let seed = plaintext.expose_hd_seed().ok_or(TaskError::WalletLocked)?;
+                build_identity_registration_with_seed(
+                    app_context,
+                    wallet_arc,
+                    seed,
+                    identity_index,
+                    funding_amount,
+                )
+            },
+        )
+        .await
 }
 
 /// Get a receive address string from a wallet.
@@ -1131,5 +1221,151 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// RK-1 / no-drift: the public key the chooser shows (from the cache,
+    /// reconstructed via `from_cached_public_key`) and the private key the
+    /// chokepoint derives at registration (the path's BIP-32 private
+    /// derivation) are the two faces of one `(network, identity_index,
+    /// key_index)` coordinate. If these ever diverge, the key submitted to
+    /// Platform would not match the key that signs — identity-create would be
+    /// rejected or the wallet could not sign for its own identity.
+    #[test]
+    fn identity_key_entry_public_matches_private_derivation() {
+        use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
+
+        let seed = [0x42u8; 64];
+        let secp = Secp256k1::new();
+
+        for network in [Network::Testnet, Network::Mainnet] {
+            let wallet = Wallet::new_from_seed(seed, network, None, None).expect("build wallet");
+
+            for identity_index in [0u32, 7] {
+                for key_index in 0u32..6 {
+                    // The public key the chooser caches/shows.
+                    let cached_pk = wallet
+                        .identity_authentication_ecdsa_public_key_from_seed(
+                            &seed,
+                            network,
+                            identity_index,
+                            key_index,
+                        )
+                        .expect("public derive");
+
+                    // The entry the chooser builds from that cached key.
+                    let entry = IdentityKeyEntry::from_cached_public_key(
+                        cached_pk,
+                        network,
+                        identity_index,
+                        key_index,
+                        KeyType::ECDSA_HASH160,
+                        Purpose::AUTHENTICATION,
+                        SecurityLevel::HIGH,
+                        None,
+                    );
+
+                    // The private key the chokepoint derives at the entry's
+                    // path at signing time.
+                    let private_key = entry
+                        .derivation_path
+                        .derive_priv_ecdsa_for_master_seed(&seed, network)
+                        .expect("private derive")
+                        .to_priv();
+
+                    assert_eq!(
+                        entry.public_key.inner.serialize(),
+                        private_key.public_key(&secp).inner.serialize(),
+                        "public/private key drift at ({network:?}, id={identity_index}, key={key_index})"
+                    );
+
+                    // The seed-param entry constructor must produce the same
+                    // entry (same public key + same path).
+                    let from_seed_entry = IdentityKeyEntry::from_seed(
+                        &wallet,
+                        &seed,
+                        network,
+                        identity_index,
+                        key_index,
+                        KeyType::ECDSA_HASH160,
+                        Purpose::AUTHENTICATION,
+                        SecurityLevel::HIGH,
+                        None,
+                    )
+                    .expect("from_seed");
+                    assert_eq!(
+                        entry, from_seed_entry,
+                        "from_cached_public_key and from_seed diverged at ({network:?}, id={identity_index}, key={key_index})"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The reshaped `to_public_keys_map` / `to_key_storage` produce the same
+    /// public key data and stored derivation paths the registration flow
+    /// expects, with no private key held anywhere in the spec set.
+    #[test]
+    fn identity_key_specs_roundtrip_public_and_paths() {
+        let seed = [0x11u8; 64];
+        let network = Network::Testnet;
+        let wallet = Wallet::new_from_seed(seed, network, None, None).expect("build wallet");
+        let seed_hash = wallet.seed_hash();
+
+        let master = IdentityKeyEntry::from_seed(
+            &wallet,
+            &seed,
+            network,
+            0,
+            0,
+            KeyType::ECDSA_HASH160,
+            Purpose::AUTHENTICATION,
+            SecurityLevel::MASTER,
+            None,
+        )
+        .expect("master");
+        let other = IdentityKeyEntry::from_seed(
+            &wallet,
+            &seed,
+            network,
+            0,
+            1,
+            KeyType::ECDSA_SECP256K1,
+            Purpose::AUTHENTICATION,
+            SecurityLevel::HIGH,
+            None,
+        )
+        .expect("other");
+
+        let specs = IdentityKeySpecs::new(Some(master.clone()), vec![other.clone()]);
+
+        // Public keys map: id 0 (master) + id 1 (other), both present.
+        let public_map = specs.to_public_keys_map().expect("public map");
+        assert_eq!(public_map.len(), 2);
+        assert!(public_map.contains_key(&0));
+        assert!(public_map.contains_key(&1));
+
+        // Key storage carries the entries' derivation paths verbatim, keyed by
+        // the same wallet seed hash the chokepoint resolves from.
+        let storage = specs.to_key_storage(seed_hash);
+        let stored = storage
+            .get_resolve(
+                &(PrivateKeyTarget::PrivateKeyOnMainIdentity, 0),
+                std::slice::from_ref(&std::sync::Arc::new(std::sync::RwLock::new(
+                    Wallet::new_from_seed(seed, network, None, None).expect("wallet"),
+                ))),
+                network,
+            )
+            .expect("resolve master")
+            .expect("master present");
+        // The resolved private key's public key must match the spec's public key.
+        let secp = dash_sdk::dpp::dashcore::secp256k1::Secp256k1::new();
+        let resolved_pub = dash_sdk::dpp::dashcore::secp256k1::SecretKey::from_slice(&stored.1)
+            .expect("secret")
+            .public_key(&secp);
+        assert_eq!(
+            master.public_key.inner.serialize(),
+            resolved_pub.serialize(),
+            "stored path resolves to the spec's public key"
+        );
     }
 }

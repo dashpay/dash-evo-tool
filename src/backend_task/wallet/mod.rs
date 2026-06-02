@@ -6,6 +6,7 @@ mod generate_platform_receive_address;
 mod generate_receive_address;
 mod sign_message_with_key;
 mod transfer_platform_credits;
+mod warm_identity_auth_pubkeys;
 mod withdraw_from_platform_address;
 
 use crate::model::wallet::WalletSeedHash;
@@ -36,6 +37,19 @@ pub enum WalletTask {
     /// back to the UI — the seed never leaves the backend.
     GeneratePlatformReceiveAddress {
         seed_hash: WalletSeedHash,
+    },
+    /// Warm the identity-authentication public-key cache for one identity
+    /// index so the identity-key chooser can read its public keys without the
+    /// seed. The HD seed is fetched just-in-time through the JIT chokepoint,
+    /// the first `key_count` auth keys are derived and persisted to the cache
+    /// in the backend, and only a completion signal crosses back to the UI —
+    /// the seed never leaves the backend.
+    WarmIdentityAuthPubkeys {
+        seed_hash: WalletSeedHash,
+        identity_index: u32,
+        /// Number of auth keys to warm (master at index 0 plus the default
+        /// additional keys), so the chooser's cache reads all hit.
+        key_count: u32,
     },
     /// Sign a message with a wallet-derived key at `derivation_path`. The HD
     /// seed is fetched just-in-time through the JIT chokepoint, the key is

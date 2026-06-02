@@ -255,7 +255,7 @@ async fn step_send_contact_request(
 ) {
     tracing::info!("=== Step 1: SendContactRequest (A -> B) ===");
 
-    let (signing_key, _signing_key_bytes) = &pair.signing_key_a;
+    let signing_key = &pair.signing_key_a;
 
     // TODO: DPNS propagation delay on username resolution
     // Expected: SendContactRequest resolves the DPNS name immediately after
@@ -636,7 +636,7 @@ async fn tc_043_reject_contact_request() {
     // Create a third DashPay identity (C) from a fresh funded wallet
     tracing::info!("TC-043: creating third DashPay identity (C)...");
     let (seed_hash_c, wallet_c) = ctx.create_funded_test_wallet(30_000_000).await;
-    let (qi_c, _key_bytes_c) =
+    let qi_c =
         dashpay_helpers::create_dashpay_identity(&ctx.app_context, &wallet_c, seed_hash_c).await;
 
     // Register a DPNS name for C so A can send a contact request
@@ -705,7 +705,7 @@ async fn tc_043_reject_contact_request() {
     //           the propagation check above confirms the name is queryable
     // Actual: occasionally fails with UsernameResolutionFailed because a
     //         different DAPI node serves the query before it has the name
-    let (signing_key_a, _) = &pair.signing_key_a;
+    let signing_key_a = &pair.signing_key_a;
     tracing::info!(
         "TC-043: sending contact request from A to C ('{}')",
         username_c
@@ -786,7 +786,7 @@ async fn tc_044_send_contact_request_nonexistent_username() {
     let ctx = harness::ctx().await;
     let pair = fixtures::shared_dashpay_pair().await;
 
-    let (signing_key, _) = &pair.signing_key_a;
+    let signing_key = &pair.signing_key_a;
 
     let task = BackendTask::DashPayTask(Box::new(DashPayTask::SendContactRequest {
         identity: pair.identity_a.clone(),

@@ -377,7 +377,7 @@ impl AppContext {
                     let plaintext = session.plaintext();
                     let seed = plaintext
                         .expose_hd_seed()
-                        .ok_or(TaskError::ContactWalletSeedUnavailable)?;
+                        .ok_or(TaskError::WalletLocked)?;
                     if let Ok(mut guard) = wallet.write() {
                         // Re-check under the write lock: a concurrent bootstrap
                         // may have run between the read above and here.

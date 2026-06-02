@@ -39,7 +39,6 @@ pub struct SharedIdentity {
     pub wallet_arc: Arc<RwLock<Wallet>>,
     pub wallet_seed_hash: WalletSeedHash,
     pub signing_key: IdentityPublicKey,
-    pub signing_key_bytes: Vec<u8>,
 }
 
 /// Get (or initialize) the shared identity fixture.
@@ -53,8 +52,8 @@ pub async fn shared_identity() -> &'static SharedIdentity {
             tracing::info!("SharedIdentity: creating funded test wallet (30M duffs)...");
             let (seed_hash, wallet_arc) = ctx.create_funded_test_wallet(30_000_000).await;
 
-            let (reg_info, master_key_bytes) =
-                build_identity_registration(&ctx.app_context, &wallet_arc, seed_hash);
+            let reg_info =
+                build_identity_registration(&ctx.app_context, &wallet_arc, seed_hash).await;
 
             let task = BackendTask::IdentityTask(IdentityTask::RegisterIdentity(reg_info));
             let result = run_task(&ctx.app_context, task)
@@ -83,7 +82,6 @@ pub async fn shared_identity() -> &'static SharedIdentity {
                 wallet_arc,
                 wallet_seed_hash: seed_hash,
                 signing_key,
-                signing_key_bytes: master_key_bytes,
             }
         })
         .await
@@ -187,8 +185,8 @@ pub struct SharedDashPayPair {
     pub identity_b: dash_evo_tool::model::qualified_identity::QualifiedIdentity,
     pub username_a: String,
     pub username_b: String,
-    pub signing_key_a: (IdentityPublicKey, Vec<u8>),
-    pub signing_key_b: (IdentityPublicKey, Vec<u8>),
+    pub signing_key_a: IdentityPublicKey,
+    pub signing_key_b: IdentityPublicKey,
     pub wallet_a: Arc<RwLock<Wallet>>,
     pub wallet_b: Arc<RwLock<Wallet>>,
 }
@@ -206,10 +204,7 @@ pub async fn shared_dashpay_pair() -> &'static SharedDashPayPair {
             );
             // Fund wallets and register identities in parallel (A and B
             // are independent — no shared state between them).
-            let (
-                (seed_hash_a, wallet_a, qi_a, key_bytes_a),
-                (seed_hash_b, wallet_b, qi_b, key_bytes_b),
-            ) = tokio::join!(
+            let ((seed_hash_a, wallet_a, qi_a), (seed_hash_b, wallet_b, qi_b)) = tokio::join!(
                 create_dashpay_member(&ctx.app_context, ctx),
                 create_dashpay_member(&ctx.app_context, ctx),
             );
@@ -278,8 +273,8 @@ pub async fn shared_dashpay_pair() -> &'static SharedDashPayPair {
                 tokio::time::sleep(poll_interval).await;
             }
 
-            let signing_key_a = (find_authentication_public_key(&qi_a), key_bytes_a);
-            let signing_key_b = (find_authentication_public_key(&qi_b), key_bytes_b);
+            let signing_key_a = find_authentication_public_key(&qi_a);
+            let signing_key_b = find_authentication_public_key(&qi_b);
 
             tracing::info!(
                 "SharedDashPayPair: ready — A={:?} ({}), B={:?} ({})",
@@ -340,12 +335,10 @@ async fn create_dashpay_member(
     WalletSeedHash,
     Arc<RwLock<Wallet>>,
     dash_evo_tool::model::qualified_identity::QualifiedIdentity,
-    Vec<u8>,
 ) {
     let (seed_hash, wallet) = ctx.create_funded_test_wallet(30_000_000).await;
-    let (qi, key_bytes) =
-        dashpay_helpers::create_dashpay_identity(app_context, &wallet, seed_hash).await;
-    (seed_hash, wallet, qi, key_bytes)
+    let qi = dashpay_helpers::create_dashpay_identity(app_context, &wallet, seed_hash).await;
+    (seed_hash, wallet, qi)
 }
 
 /// Register a DPNS name for a qualified identity.

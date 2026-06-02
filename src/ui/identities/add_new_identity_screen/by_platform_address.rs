@@ -152,7 +152,7 @@ impl AddNewIdentityScreen {
             });
 
         // Calculate estimated fee for identity creation (needed for max amount calculation)
-        let key_count = self.identity_keys.keys_input.len() + 1; // +1 for master key
+        let key_count = self.identity_keys.others.len() + 1; // +1 for master key
         let input_count = if self.selected_platform_address_for_funding.is_some() {
             1
         } else {

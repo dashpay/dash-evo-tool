@@ -1,6 +1,7 @@
 use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::dashpay::errors::DashPayError;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -837,17 +838,19 @@ impl ScreenLike for ContactRequests {
         action
     }
 
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
+    fn display_message(&mut self, _message: &str, _message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
         self.loading = false;
+    }
 
-        // TODO(RUST-002): String-based error classification — see #660
-        if matches!(message_type, MessageType::Error | MessageType::Warning) {
-            if message.contains("ENCRYPTION key") {
-                self.error = Some(DashPayError::MissingEncryptionKey);
-            } else if message.contains("DECRYPTION key") {
-                self.error = Some(DashPayError::MissingDecryptionKey);
+    fn display_task_error(&mut self, error: &TaskError) -> bool {
+        self.loading = false;
+        match classify_request_error(error) {
+            Some(dashpay_error) => {
+                self.error = Some(dashpay_error);
+                true
             }
+            None => false,
         }
     }
 
@@ -978,18 +981,57 @@ impl ScreenLike for ContactRequests {
             BackendTaskSuccessResult::DashPayContactAlreadyEstablished(_) => {
                 // Message display is handled globally by AppState
             }
-            BackendTaskSuccessResult::Message(msg) => {
-                // Check if this is an error message about missing keys
-                if msg.contains("ENCRYPTION key") {
-                    self.error = Some(DashPayError::MissingEncryptionKey);
-                } else if msg.contains("DECRYPTION key") {
-                    self.error = Some(DashPayError::MissingDecryptionKey);
-                }
-                // Other messages are handled globally by AppState
-            }
             _ => {
                 // Ignore other results
             }
         }
+    }
+}
+
+/// Map a typed accept/reject error onto the screen-local error category that
+/// drives a dedicated affordance (the "Add Encryption Key" button). Returns
+/// `None` when no request-specific UI applies, leaving the global banner to
+/// report the error.
+fn classify_request_error(error: &TaskError) -> Option<DashPayError> {
+    match error {
+        TaskError::DashPay(DashPayError::MissingEncryptionKey) => {
+            Some(DashPayError::MissingEncryptionKey)
+        }
+        TaskError::DashPay(DashPayError::MissingDecryptionKey) => {
+            Some(DashPayError::MissingDecryptionKey)
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classifies_missing_encryption_key() {
+        let mapped =
+            classify_request_error(&TaskError::DashPay(DashPayError::MissingEncryptionKey));
+        assert!(matches!(mapped, Some(DashPayError::MissingEncryptionKey)));
+    }
+
+    #[test]
+    fn classifies_missing_decryption_key() {
+        let mapped =
+            classify_request_error(&TaskError::DashPay(DashPayError::MissingDecryptionKey));
+        assert!(matches!(mapped, Some(DashPayError::MissingDecryptionKey)));
+    }
+
+    #[test]
+    fn unrelated_dashpay_error_defers_to_global_banner() {
+        let mapped =
+            classify_request_error(&TaskError::DashPay(DashPayError::MissingAuthenticationKey));
+        assert!(mapped.is_none());
+    }
+
+    #[test]
+    fn unrelated_task_error_defers_to_global_banner() {
+        let mapped = classify_request_error(&TaskError::DocumentNotFound);
+        assert!(mapped.is_none());
     }
 }

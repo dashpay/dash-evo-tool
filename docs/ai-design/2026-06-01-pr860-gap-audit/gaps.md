@@ -1,7 +1,7 @@
 # PR #860 Platform-Wallet Rewrite — Consolidated Gap Audit
 
 **Audit date:** 2026-06-01 — **Refreshed:** 2026-06-03
-**Head SHA (refresh):** `f39b085d`
+**Head SHA (refresh):** `39e459ff`
 **Prior refresh head:** `450214e5c5ed602a0c10a951ae00400a371c3b97`
 **Original audit head:** `686430a4d2b83596fbbe716acc183a424859e11d`
 **PR #860 base:** `v1.0-dev` @ `87ba5b711839219f5e1c7aee8f9de36d038866e3`
@@ -61,16 +61,14 @@ which are the verifiable ground truth.
 | CRITICAL | 0    | 1        | 1 |
 | HIGH     | 1    | 2        | 3 |
 | MEDIUM   | 3    | 4        | 7 |
-| LOW      | 8    | 5        | 13 |
+| LOW      | 7    | 6        | 13 |
 | INFO     | 0    | 0        | 0 |
-| **Total** | **12** | **12** | **24** |
+| **Total** | **11** | **13** | **24** |
 
 Open by category: upstream/release-gate = 2 (PROJ-005, PROJ-017); functional/unwired = 1
 (PROJ-012); deferred-by-design = 4 (PROJ-007, PROJ-009, PROJ-011, PROJ-022); test = 2
-(PROJ-015, PROJ-016); doc = 2 (PROJ-018, PROJ-019); conventions = 1 (PROJ-025). Sum = 12 =
-total open. New this refresh: PROJ-025 (LOW, pre-existing convention — sibling of PROJ-023 in
-`contact_requests.rs`). Resolved this refresh: PROJ-008, PROJ-013, PROJ-020, PROJ-021,
-PROJ-023.
+(PROJ-015, PROJ-016); doc = 2 (PROJ-018, PROJ-019). Sum = 11 = total open. Resolved this
+refresh: PROJ-025 (LOW, typed classification mirroring PROJ-023; zero new variants; 4 tests).
 
 ### Merge-blocker verdict (called out up top)
 
@@ -321,7 +319,7 @@ so the item stays OPEN as a merge-time action.
 | ID | Title | Location | Sev | Status | What's missing |
 |----|-------|----------|-----|--------|----------------|
 | PROJ-023 | String-based error matching in DashPay add-contact UI | `src/ui/dashpay/add_contact_screen.rs` | LOW | **RESOLVED (`d852ce99`)** | `display_task_result` no longer parses error strings; classification routes through typed `classify_send_error` matching `TaskError` / `DashPayError` variants. Verified: zero `.contains(` on error/message text in the file; 6 typed-error unit tests added. |
-| PROJ-025 | String-based error matching in DashPay contact-requests UI (NEW) | `src/ui/dashpay/contact_requests.rs:844-851,983-985` | LOW | OPEN (pre-existing) | Same anti-pattern PROJ-023 fixed, surviving in the sibling screen: `display_message` classifies errors by `message.contains("ENCRYPTION key")` / `"DECRYPTION key")` (`:844-851`) and a second copy at `:983-985`. Self-tagged `TODO(RUST-002)` / issue #660. Violates CLAUDE.md "Never parse error strings to extract information." Pre-existing in base, not introduced by #860, but PROJ-023's fix leaves this sibling untouched. Silently misclassifies if upstream wording changes. Scope: indirect. |
+| PROJ-025 | String-based error matching in DashPay contact-requests UI | `src/ui/dashpay/contact_requests.rs` | LOW | **RESOLVED (`39e459ff`)** | Typed classification via `display_task_error` + `classify_request_error`; routes `TaskError::DashPay(DashPayError::Missing{En,De}cryptionKey)`. Old `message.contains("ENCRYPTION key")` / `"DECRYPTION key"` sites (`:844-851`, `:983-985`) removed. Dead `Message`-arm string-matching also gone. 4 unit tests added. |
 
 **PROJ-023 — RESOLVED.** Verified at `src/ui/dashpay/add_contact_screen.rs`: no `.contains(`
 on error/message strings remains; `classify_send_error` (`:649`) matches typed
@@ -330,12 +328,13 @@ on error/message strings remains; `classify_send_error` (`:649`) matches typed
 classification (`:700-761`) — they assert specific variant mapping, base58 fallback, and that
 recoverable errors map through so retry is offered (not shallow "no error" checks).
 
-**PROJ-025 (NEW).** The PROJ-023 fix did **not** reach the sibling `contact_requests.rs`,
-which still carries the identical `TODO(RUST-002)` string-matching anti-pattern in **two**
-places: `display_message` at `:844-851` and a second copy at `:983-985`, both keying off
-`message.contains("ENCRYPTION key")` / `"DECRYPTION key")`. Filed under issue #660 so the
-audit tracks it. Fix mirrors PROJ-023: route through the typed error chain
-(`TaskError::DashPay(DashPayError::Missing{En,De}cryptionKey)`).
+**PROJ-025 — RESOLVED (`39e459ff`).** `contact_requests.rs` now implements `display_task_error`
+with a pure `classify_request_error` helper that routes typed `TaskError::DashPay(DashPayError::Missing{En,De}cryptionKey)`
+onto the screen-local affordance. Missing-key variants drive the "Add Encryption Key" affordance
+and suppress the duplicate global banner; everything else returns `None` so the global banner
+reports it. Both `message.contains("ENCRYPTION key")` / `"DECRYPTION key"` sites and the dead
+`Message`-arm string-matching body are gone; `git grep` returns zero hits. Four unit tests cover
+the classification. Pattern mirrors PROJ-023 exactly; zero new `TaskError` variants were required.
 
 ---
 
@@ -422,6 +421,11 @@ identity-address SPV bloom registration — not found in DET; likely upstream), 
   breakdown from the enumerable body. Now 24 total / 12 open / 12 resolved (was 23/17/6):
   PROJ-025 added (+1 total, +1 open LOW); PROJ-008 (MEDIUM), PROJ-013 (MEDIUM), PROJ-020,
   PROJ-021, PROJ-023 (LOW) flipped open→resolved.
+- **2026-06-03 — PROJ-025 resolved** (`39e459ff`): contact-requests string-matching anti-pattern
+  replaced by typed `display_task_error` + `classify_request_error`; routes
+  `TaskError::DashPay(DashPayError::Missing{En,De}cryptionKey)`. Both keyword-sniffing sites and
+  the dead `Message`-arm removed; 4 unit tests added. Pattern mirrors PROJ-023; zero new variants.
+  Tally: 24 total / **11 open / 13 resolved** (LOW: open 8→7, resolved 5→6).
 
 ---
 
@@ -480,10 +484,8 @@ So nothing is silently dropped. Deferred markers / inert-looking bodies that are
 
 ---
 
-*🍬 Candy tally — confirmed gaps: 24 (1 CRITICAL · 3 HIGH · 7 MEDIUM · 13 LOW · 0 INFO).
-Status: 12 RESOLVED (PROJ-001, PROJ-002 (removed), PROJ-003, PROJ-004, PROJ-006, PROJ-008,
-PROJ-013, PROJ-014, PROJ-020, PROJ-021, PROJ-023) + SEC-001 follow-up; 12 OPEN; of those, 4
-deferred-by-design and 1 blocked-by-design (PROJ-024). 8 seed/appendix items confirmed
-already-resolved with evidence. This 2026-06-03 pass closed five more gaps against verified
-source and opened one new sibling-convention gap (PROJ-025). PROJ-005 remains the sole open
-merge-blocker.*
+*Candy tally — confirmed gaps: 24 (1 CRITICAL · 3 HIGH · 7 MEDIUM · 13 LOW · 0 INFO).
+Status: 13 RESOLVED (PROJ-001, PROJ-002 (removed), PROJ-003, PROJ-004, PROJ-006, PROJ-008,
+PROJ-013, PROJ-014, PROJ-020, PROJ-021, PROJ-023, PROJ-025) + SEC-001 follow-up; 11 OPEN; of
+those, 4 deferred-by-design and 1 blocked-by-design (PROJ-024). 8 seed/appendix items confirmed
+already-resolved with evidence. PROJ-005 remains the sole open merge-blocker.*

@@ -89,7 +89,10 @@ earlier SHA and the new wallet API from this PR's merge SHA.
   paths intact (PR #860 pre-unwire tip). Use this to read every legacy code path in context.
 - `b0fecacb` — PR #861 merge point; last commit with deferred-domain code before DashPay and
   shielded unwire landed.
-- **[TO BE UPDATED ON MERGE]** — this PR's merge SHA is the new floor for wallet-state paths.
+- **[PLACEHOLDER — fill at merge time]** — replace this bullet with the squash-merge commit
+  SHA of the finish-unwire PR once it lands on `v1.0-dev`. That SHA is the new floor for
+  wallet-state paths. Do not leave this placeholder in place after merging: it will mislead
+  the migration-tool author into thinking no post-Stage-B floor SHA exists.
 
 **Rationale:** Two SHAs are the minimum to cover pre-Stage-B reads (legacy schema) and
 post-Stage-B wallet-row migration. A single SHA (`35eb07bf` only, alt a) forces the tool

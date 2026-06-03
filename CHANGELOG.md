@@ -28,6 +28,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   under one second on local storage). The migration is idempotent — subsequent
   launches skip it via a completion sentinel in `det-app.sqlite`.
 
+### Known Limitations
+
+- **Single-key wallets — send and balance refresh not available**: importing a
+  single-key wallet (WIF), viewing it, and signing with it all work in this
+  release. Sending funds and refreshing the balance or UTXO list are not yet
+  supported. Your key data is preserved and these actions will be available in a
+  future update. To send funds now, use an HD (recovery-phrase) wallet.
+
+- **DashPay contacts — non-mainnet / non-account-0 legacy addresses**: this
+  release drops back-compat for contact-request addresses derived outside mainnet
+  account 0 under the old DIP-14 scheme (non-mainnet networks, or secondary
+  account indices). If you used DashPay on testnet or devnet with a non-default
+  account, existing contact payment addresses for those contacts may not be
+  reproduced. Re-establishing the contact from both sides restores full
+  functionality.
+
 ### Removed
 
 - Proof log screen (internal developer tool, not part of the public feature set).

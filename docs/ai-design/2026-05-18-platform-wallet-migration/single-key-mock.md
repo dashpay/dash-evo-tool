@@ -48,7 +48,13 @@ Requirements met (CLAUDE.md error-message rules):
 
 ### UI Rendering
 
-Single-key screens render in read-only mode: existing data is visible from the preserved legacy `single_key_wallet` table; no operations are enabled. The banner is displayed automatically by the `TaskError` → `MessageBanner` path — no per-screen handling needed.
+Single-key screens support import, list, and sign operations — these are backed
+by the upstream `SecretStore` and work in full in this release.
+
+Sending funds (`RefreshSingleKeyWalletInfo`, `SendSingleKeyWalletPayment`) return
+`TaskError::SingleKeyWalletsUnsupported`. When those arms fire, the banner is
+displayed automatically by the `TaskError` → `MessageBanner` path — no per-screen
+handling needed.
 
 ### Isolation
 

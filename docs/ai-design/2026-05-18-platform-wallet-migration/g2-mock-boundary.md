@@ -43,7 +43,7 @@ Two impls:
 
 ## G2.3 — User-Facing Surface
 
-Transparent. No banner or alert (unlike single-key, which is a capability loss). The seed-unlock prompt already exists today; adding a "re-registering" message is over-messaging (CLAUDE.md rules — messages are what-happened + what-to-do; nothing actionable here). Debug `tracing` only (M-LOG-STRUCTURED). The sole error surface is the existing seed-decrypt failure path — already a typed `TaskError` with a calm banner, unchanged.
+Transparent. No banner or alert (unlike single-key, which has a partial capability gap: send and balance/UTXO refresh are unsupported and return `TaskError::SingleKeyWalletsUnsupported`; import, list, and sign are fully operational via `SecretStore`). The seed-unlock prompt already exists today; adding a "re-registering" message is over-messaging (CLAUDE.md rules — messages are what-happened + what-to-do; nothing actionable here). Debug `tracing` only (M-LOG-STRUCTURED). The sole error surface is the existing seed-decrypt failure path — already a typed `TaskError` with a calm banner, unchanged.
 
 ## G2.4 — Swap Path
 

@@ -8,5 +8,5 @@ mod migration_banner;
 mod network_chooser;
 mod secret_prompt;
 mod startup;
+mod support;
 mod wallets_screen;
-// trigger rebuild

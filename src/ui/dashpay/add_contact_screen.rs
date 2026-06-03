@@ -1,6 +1,7 @@
 use crate::app::AppAction;
 use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::dashpay::errors::DashPayError;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -602,68 +603,28 @@ impl ScreenLike for AddContactScreen {
         action
     }
 
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
-        // Banner display is handled globally by AppState; this is only for side-effects.
-        if matches!(message_type, MessageType::Error | MessageType::Warning) {
-            let error = DashPayError::Internal {
-                message: message.to_string(),
-            };
-            self.status = ContactRequestStatus::Error(error);
+    fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
+        if let BackendTaskSuccessResult::DashPayContactRequestSent(_recipient) = result {
+            self.status = ContactRequestStatus::Success;
+            self.username_or_id.clear();
+            self.account_label.clear();
+            self.selected_key = None;
         }
     }
 
-    fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
-        match result {
-            BackendTaskSuccessResult::DashPayContactRequestSent(_recipient) => {
-                // Contact request sent successfully - show success screen
-                self.status = ContactRequestStatus::Success;
-                // Clear form for next use
-                self.username_or_id.clear();
-                self.account_label.clear();
-                self.selected_key = None;
+    fn display_task_error(&mut self, error: &TaskError) -> bool {
+        match classify_send_error(error, &self.username_or_id) {
+            Some(dashpay_error) => {
+                self.status = ContactRequestStatus::Error(dashpay_error);
+                true
             }
-            BackendTaskSuccessResult::Message(message) => {
-                // TODO(RUST-002): Replace string-based error matching with structured
-                // error types through the task result system. This is fragile — if
-                // upstream error wording changes, classification silently breaks.
-                // See: https://github.com/dashpay/dash-evo-tool/issues/660
-                if message.contains("Error")
-                    || message.contains("Failed")
-                    || message.contains("does not have")
-                {
-                    // Try to parse structured error, fallback to generic
-                    let error = if message.contains("ENCRYPTION key") {
-                        DashPayError::MissingEncryptionKey
-                    } else if message.contains("DECRYPTION key") {
-                        DashPayError::MissingDecryptionKey
-                    } else if message.contains("not found") && message.contains("username") {
-                        DashPayError::UsernameResolutionFailed {
-                            username: self.username_or_id.clone(),
-                        }
-                    } else if message.contains("Identity not found") {
-                        DashPayError::IdentityNotFound {
-                            identity_id: dash_sdk::platform::Identifier::from_string(
-                                &self.username_or_id,
-                                dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
-                            )
-                            .unwrap_or_else(|_| dash_sdk::platform::Identifier::random()),
-                        }
-                    } else if message.contains("Network") || message.contains("connection") {
-                        DashPayError::NetworkError {
-                            reason: message.clone(),
-                        }
-                    } else {
-                        DashPayError::Internal {
-                            message: message.clone(),
-                        }
-                    };
-
-                    self.status = ContactRequestStatus::Error(error);
+            None => {
+                // No dedicated affordance: stop the spinner and let the global
+                // banner report the error.
+                if matches!(self.status, ContactRequestStatus::Sending) {
+                    self.status = ContactRequestStatus::NotStarted;
                 }
-                // Ignore other messages - they're not for this screen
-            }
-            _ => {
-                // Ignore results not meant for this screen
+                false
             }
         }
     }
@@ -676,5 +637,135 @@ impl AddContactScreen {
 
     pub fn refresh_on_arrival(&mut self) {
         self.refresh();
+    }
+}
+
+/// Map a typed send-contact-request error onto the screen-local error category
+/// that drives a dedicated affordance (key-add button, tip, retry). Returns
+/// `None` when no add-contact-specific UI applies, leaving the global banner to
+/// report the error. `username_or_id` is the current recipient input, used to
+/// label an unresolved identity.
+fn classify_send_error(error: &TaskError, username_or_id: &str) -> Option<DashPayError> {
+    match error {
+        TaskError::IdentityNotFound => Some(DashPayError::IdentityNotFound {
+            identity_id: dash_sdk::platform::Identifier::from_string(
+                username_or_id,
+                dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
+            )
+            .ok()?,
+        }),
+        TaskError::DashPay(inner) => match inner {
+            DashPayError::MissingEncryptionKey => Some(DashPayError::MissingEncryptionKey),
+            DashPayError::MissingDecryptionKey => Some(DashPayError::MissingDecryptionKey),
+            DashPayError::UsernameResolutionFailed { username } => {
+                Some(DashPayError::UsernameResolutionFailed {
+                    username: username.clone(),
+                })
+            }
+            DashPayError::InvalidUsername { username } => Some(DashPayError::InvalidUsername {
+                username: username.clone(),
+            }),
+            DashPayError::AccountLabelTooLong { length, max } => {
+                Some(DashPayError::AccountLabelTooLong {
+                    length: *length,
+                    max: *max,
+                })
+            }
+            DashPayError::CannotContactSelf => Some(DashPayError::CannotContactSelf),
+            DashPayError::ContactRequestAlreadySent { to } => {
+                Some(DashPayError::ContactRequestAlreadySent { to: to.clone() })
+            }
+            DashPayError::RateLimited { operation } => Some(DashPayError::RateLimited {
+                operation: operation.clone(),
+            }),
+            DashPayError::NetworkError { reason } => Some(DashPayError::NetworkError {
+                reason: reason.clone(),
+            }),
+            DashPayError::PlatformError { reason } => Some(DashPayError::PlatformError {
+                reason: reason.clone(),
+            }),
+            DashPayError::BroadcastFailed { reason } => Some(DashPayError::BroadcastFailed {
+                reason: reason.clone(),
+            }),
+            DashPayError::QueryFailed { reason } => Some(DashPayError::QueryFailed {
+                reason: reason.clone(),
+            }),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classifies_missing_key_errors_for_add_key_affordance() {
+        let enc = classify_send_error(
+            &TaskError::DashPay(DashPayError::MissingEncryptionKey),
+            "alice.dash",
+        );
+        assert!(matches!(enc, Some(DashPayError::MissingEncryptionKey)));
+
+        let dec = classify_send_error(
+            &TaskError::DashPay(DashPayError::MissingDecryptionKey),
+            "alice.dash",
+        );
+        assert!(matches!(dec, Some(DashPayError::MissingDecryptionKey)));
+    }
+
+    #[test]
+    fn classifies_username_resolution_failure_preserving_username() {
+        let mapped = classify_send_error(
+            &TaskError::DashPay(DashPayError::UsernameResolutionFailed {
+                username: "bob.dash".to_string(),
+            }),
+            "bob.dash",
+        );
+        assert!(matches!(
+            mapped,
+            Some(DashPayError::UsernameResolutionFailed { username }) if username == "bob.dash"
+        ));
+    }
+
+    #[test]
+    fn recoverable_errors_map_through_so_retry_is_offered() {
+        let mapped = classify_send_error(
+            &TaskError::DashPay(DashPayError::NetworkError {
+                reason: "timeout".to_string(),
+            }),
+            "alice.dash",
+        );
+        let mapped = mapped.expect("network errors should be classified");
+        assert!(mapped.is_recoverable());
+    }
+
+    #[test]
+    fn identity_not_found_with_valid_base58_maps_to_typed_variant() {
+        let id = dash_sdk::platform::Identifier::random()
+            .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
+        let mapped = classify_send_error(&TaskError::IdentityNotFound, &id);
+        assert!(matches!(
+            mapped,
+            Some(DashPayError::IdentityNotFound { .. })
+        ));
+    }
+
+    #[test]
+    fn identity_not_found_with_invalid_base58_falls_back_to_global_banner() {
+        let mapped = classify_send_error(&TaskError::IdentityNotFound, "not a valid id");
+        assert!(mapped.is_none());
+    }
+
+    #[test]
+    fn unrelated_errors_defer_to_global_banner() {
+        let mapped = classify_send_error(
+            &TaskError::EncryptionError {
+                detail: "ecdh".to_string(),
+            },
+            "alice.dash",
+        );
+        assert!(mapped.is_none());
     }
 }

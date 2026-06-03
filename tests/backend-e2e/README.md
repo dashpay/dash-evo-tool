@@ -11,12 +11,17 @@ application at runtime.
 All tests are marked `#[ignore]` to prevent them from running during normal
 `cargo test`. They require network access and a funded wallet.
 
+The harness drives every SDK-bearing task on a dedicated runtime with a 32 MB
+thread stack (`framework/task_runner.rs`), so deep SDK proof verification no
+longer requires `RUST_MIN_STACK` to be set by the caller. Exporting it anyway is
+harmless belt-and-suspenders for any code path outside that runtime.
+
 ```bash
 # Run all backend E2E tests
-cargo test --test backend-e2e --all-features -- --ignored --nocapture
+RUST_MIN_STACK=16777216 cargo test --test backend-e2e --all-features -- --ignored --nocapture
 
 # Run a single test
-cargo test --test backend-e2e --all-features -- --ignored --nocapture test_create_identity
+RUST_MIN_STACK=16777216 cargo test --test backend-e2e --all-features -- --ignored --nocapture test_create_identity
 ```
 
 **Required flags:**

@@ -1,10 +1,11 @@
 # PR #860 Platform-Wallet Rewrite — Consolidated Gap Audit
 
-**Audit date:** 2026-06-01 — **Refreshed:** 2026-06-02
-**Head SHA (refresh):** `450214e5c5ed602a0c10a951ae00400a371c3b97`
+**Audit date:** 2026-06-01 — **Refreshed:** 2026-06-03
+**Head SHA (refresh):** `f39b085d`
+**Prior refresh head:** `450214e5c5ed602a0c10a951ae00400a371c3b97`
 **Original audit head:** `686430a4d2b83596fbbe716acc183a424859e11d`
 **PR #860 base:** `v1.0-dev` @ `87ba5b711839219f5e1c7aee8f9de36d038866e3`
-**Auditor:** project-reviewer-adams (READ-ONLY; no source touched)
+**Auditor:** project-reviewer-adams (READ-ONLY; this refresh touches gaps.md only)
 
 PR #860 rips out DET's home-grown SPV stack (`src/spv/**` deleted) and `data.db` wallet
 schema and re-seats wallet/identity/DashPay/shielded state on the upstream
@@ -28,10 +29,28 @@ and several "fixed" items were re-derived from the source line by line.
 functions + orphaned `NotSupported` variant) is now RESOLVED — removed by a sibling commit.
 PROJ-012 was re-filed: it was mis-scoped as a benign deferred-by-design seam, but the source
 shows a live wiring gap (ZMQ connection-health events flow into a void), so it moved to the
-functional-gaps section and was bumped LOW → MEDIUM. While reconciling, the published severity
-table was found to disagree with its own enumerable body (it read 17 open / 22 total, with an
-over-counted open-HIGH row, against a body that enumerates 23 distinct counted IDs). The tally
-below is recomputed **from the actual body entries**, which are the verifiable ground truth.
+functional-gaps section and was bumped LOW → MEDIUM.
+
+**2026-06-03 refresh:** five more items verified RESOLVED against source at `f39b085d`,
+each re-derived line by line (not taken on commit-message faith):
+
+- **PROJ-008** (sign-time passphrase prompt UX, issue #90) — RESOLVED. The JIT secret-access
+  refactor (commit range `2272bae0..43f412cf`, 24 commits) landed a per-secret prompt seam:
+  `src/wallet_backend/secret_prompt.rs` (the `SecretPrompt` trait + `SecretScope` /
+  `RememberPolicy` / retry types), `src/ui/components/secret_prompt_host.rs` (egui host), and
+  `src/ui/components/passphrase_modal.rs` (modal). The passphrase is requested just-in-time per
+  operation, keyed by scope (`HdSeed { seed_hash }` / `SingleKey { address }`), with an
+  optional "keep unlocked until app close" remember policy. The HD seed is decrypted on demand
+  and dropped immediately.
+- **PROJ-013** (large-stack e2e harness) — RESOLVED (`2a9161d3`). Residual CI sub-item tracked.
+- **PROJ-020 / PROJ-021** (single-key-mock prose / CHANGELOG known-limits) — RESOLVED (`f39b085d`).
+- **PROJ-023** (add-contact string error matching) — RESOLVED (`d852ce99`). A sibling
+  occurrence of the same anti-pattern survives in `contact_requests.rs` and is filed as the
+  new PROJ-025.
+
+PROJ-018 / PROJ-019 stay OPEN (partials that can only close at/after merge). PROJ-005 remains
+the sole open merge-blocker. The tally below is recomputed **from the actual body entries**,
+which are the verifiable ground truth.
 
 ---
 
@@ -41,15 +60,17 @@ below is recomputed **from the actual body entries**, which are the verifiable g
 |----------|------|----------|-------|
 | CRITICAL | 0    | 1        | 1 |
 | HIGH     | 1    | 2        | 3 |
-| MEDIUM   | 5    | 2        | 7 |
-| LOW      | 11   | 1        | 12 |
+| MEDIUM   | 3    | 4        | 7 |
+| LOW      | 8    | 5        | 13 |
 | INFO     | 0    | 0        | 0 |
-| **Total** | **17** | **6** | **23** |
+| **Total** | **12** | **12** | **24** |
 
-Open by category: functional/unwired = 1 (PROJ-012); upstream/release-gate = 2 (PROJ-005,
-PROJ-017); deferred-by-design = 6; test = 3; doc = 4; conventions = 1. Sum = 17 = total open.
-New this refresh: PROJ-022 (LOW, deferred), PROJ-023 (LOW, pre-existing convention). PROJ-002
-is now RESOLVED (removed); PROJ-012 re-filed from deferred-LOW to functional-MEDIUM.
+Open by category: upstream/release-gate = 2 (PROJ-005, PROJ-017); functional/unwired = 1
+(PROJ-012); deferred-by-design = 4 (PROJ-007, PROJ-009, PROJ-011, PROJ-022); test = 2
+(PROJ-015, PROJ-016); doc = 2 (PROJ-018, PROJ-019); conventions = 1 (PROJ-025). Sum = 12 =
+total open. New this refresh: PROJ-025 (LOW, pre-existing convention — sibling of PROJ-023 in
+`contact_requests.rs`). Resolved this refresh: PROJ-008, PROJ-013, PROJ-020, PROJ-021,
+PROJ-023.
 
 ### Merge-blocker verdict (called out up top)
 
@@ -60,8 +81,9 @@ is now RESOLVED (removed); PROJ-012 re-filed from deferred-LOW to functional-MED
 2. **PROJ-005 (HIGH)** — release gate G1: the `dash-sdk` / `platform-wallet` pin (`Cargo.toml`)
    tracks an **unreleased** platform dev rev. Project policy (Decision #1) classifies this as
    a release-hardening blocker, not a start blocker — but it gates *merge-to-ship*. **This is
-   the sole remaining merge-blocker.** The pin moved since the original audit (now
-   `rev = 35e4a2f6…`, was `17653ba8…`) but is still a dev rev, not a released tag.
+   the sole remaining merge-blocker.** The pin moved again since the prior refresh — now
+   `rev = ddfa66ed…` (was `35e4a2f6…`, originally `17653ba8…`) — but is still a dev rev, not a
+   released tag.
 
 Everything else is fixable post-merge or is a disclosed scope cut.
 
@@ -72,7 +94,7 @@ Everything else is fixable post-merge or is a disclosed scope cut.
 | ID | Title | Location | Sev | Status | What's missing |
 |----|-------|----------|-----|--------|----------------|
 | PROJ-001 | SPV sync never driven — dead `start()`, inert `start_spv()` | `src/context/wallet_lifecycle.rs:103,130`; `src/wallet_backend/mod.rs:462-479` | CRITICAL | **RESOLVED (`36f5a982`)** | See Resolution log 2026-06-01 |
-| PROJ-005 | Pin tracks unreleased platform rev (G1) | `Cargo.toml:21,31,32,35` (`rev = 35e4a2f640…`) | HIGH | OPEN | Pin must move to a released platform rev before shipping. Still a dev rev. |
+| PROJ-005 | Pin tracks unreleased platform rev (G1) | `Cargo.toml:21,31,32,35` (`rev = ddfa66ed37…`) | HIGH | OPEN | Pin must move to a released platform rev before shipping. Still a dev rev. |
 
 ---
 
@@ -183,11 +205,11 @@ to a written decision in `docs/ai-design/2026-05-18-platform-wallet-migration/`.
 | ID | Title | Location | Sev | Status | Decision ref |
 |----|-------|----------|-----|--------|--------------|
 | PROJ-007 | Single-key refresh + SPV-send return `SingleKeyWalletsUnsupported` | `src/backend_task/core/refresh_single_key_wallet_info.rs:16`; `src/backend_task/core/send_single_key_wallet_payment.rs:19`; `src/backend_task/core/mod.rs:218,304` | LOW | Open by design | Decision #7 (`single-key-mock.md`) |
-| PROJ-008 | SEC-002 sign-time passphrase prompt UX deferred | `src/wallet_backend/mod.rs:562-566` | MEDIUM | Open (issue #90) | per-task prompt UX deferred; storage+unlock cache shipped |
+| PROJ-008 | SEC-002 sign-time passphrase prompt UX | `src/wallet_backend/secret_prompt.rs`; `src/ui/components/secret_prompt_host.rs`; `src/ui/components/passphrase_modal.rs` | MEDIUM | **RESOLVED (`2272bae0..43f412cf`)** | issue #90 — per-secret JIT prompt now shipped |
 | PROJ-009 | DIP-14 back-compat dropped (non-mainnet / non-account-0 legacy contact addresses not reproduced) | `src/wallet_backend/mod.rs:722-724` (`register_dashpay_contact`, "Decision #6, back-compat dropped") | MEDIUM | Open by design | Decision #6 (`open-questions.md`) |
 | PROJ-010 | `UpstreamFromPersisted` seedless watch-only loader implemented; `SeedReregistrationLoader` removed | `src/wallet_backend/loader.rs`; `src/wallet_backend/mod.rs::load_from_persistor_seedless` | LOW | Resolved (PR #3692 `ddfa66ed`) | `docs/ai-design/2026-06-02-rehydration-rewire/design.md` |
 | PROJ-011 | `identity` `CREATE TABLE` still on fresh installs — tombstone ADR pending | `src/database/initialization.rs:845-866` | LOW | Open by design | T-DEV-02b; deferred to separate ADR (`finish-unwire/notes.md` §4) |
-| PROJ-022 | `UpstreamPlatformAddresses` reserved swap-target — read methods `unimplemented!()` | `src/wallet_backend/platform_address.rs:245-307` | LOW | Open by design (NEW) | pending platform todo `e817b66a`; parallels PROJ-010 |
+| PROJ-022 | `UpstreamPlatformAddresses` reserved swap-target — read methods `unimplemented!()` | `src/wallet_backend/platform_address.rs:245-307` | LOW | Open by design | pending platform todo `e817b66a`; parallels PROJ-010 |
 
 Notes:
 
@@ -197,13 +219,23 @@ Notes:
   `ImportSingleKeyDialog` (`src/ui/wallets/wallets_screen/mod.rs:42,157`;
   `src/ui/wallets/import_single_key.rs`). Only balance/UTXO **refresh** and **SPV-based
   send** remain stubbed. The `single-key-mock`/`g2-mock-boundary` "fully read-only mock"
-  claim is stale — see PROJ-020.
+  claim has now been corrected in the design docs (see PROJ-020, RESOLVED).
+- **PROJ-008 (RESOLVED this refresh):** the SEC-002 sign-time prompt UX that was deferred is
+  now shipped by the JIT secret-access refactor (`2272bae0..43f412cf`). `secret_prompt.rs`
+  defines the `SecretPrompt` async trait whose `request()` is asked per-secret, keyed by
+  `SecretScope::{HdSeed { seed_hash }, SingleKey { address }}`, carrying **no plaintext** —
+  only display copy and an optional `SecretPromptRetry::WrongPassphrase` re-ask reason. The
+  egui host (`secret_prompt_host.rs`) and modal (`passphrase_modal.rs`) collect the
+  passphrase; `RememberPolicy` (`None` default / `UntilAppClose` / `For(Duration)`) controls
+  caching. `NullSecretPrompt` cleanly cancels in headless/MCP/CLI. This is exactly the
+  "prompt at sign time, not an upfront session gate" UX issue #90 tracked as deferred. Moved
+  out of the open deferred set.
 - **PROJ-011** (re-verified): `legacy_detected()` (`src/database/initialization.rs:146`) gates
   `wallet` / `wallet_addresses` / `utxos` / `wallet_transactions` / `shielded_notes` behind
   `include_legacy`. The `identity` empty placeholder (`:851`) is still created
   unconditionally for legacy `database/wallet.rs` cold-start reads. `platform_address_balances`
   (`:797,933`) is still live. Documented "separate ADR" carve-out.
-- **PROJ-022 (new):** `UpstreamPlatformAddresses` (`platform_address.rs:245`) is the reserved
+- **PROJ-022:** `UpstreamPlatformAddresses` (`platform_address.rs:245`) is the reserved
   swap target for reading per-address Platform funds straight from upstream. It is **NOT
   selected** — the ACTIVE impl is `KvCachedPlatformAddresses`
   (`src/wallet_backend/mod.rs:512`). Its read methods (`get_address_info`, `all_address_info`,
@@ -220,10 +252,32 @@ Notes:
 
 | ID | Title | Location | Sev | Status | What's missing |
 |----|-------|----------|-----|--------|----------------|
-| PROJ-013 | `RUST_MIN_STACK=16777216` not enforced by harness or CI | `tests/backend-e2e/main.rs:7,10`; `.github/workflows/` (no ref) | MEDIUM | OPEN | Only a `//!` doc instruction. No thread `stack_size` builder in harness; `grep RUST_MIN_STACK .github/` = 0 hits. SDK deep-stack tests segfault at default 8 MB without it. |
+| PROJ-013 | Large-stack e2e harness — SDK deep-recursion stack overflow | `tests/backend-e2e/framework/task_runner.rs:17-78,153-160` | MEDIUM | **RESOLVED (`2a9161d3`)** | Harness now drives every SDK task on a dedicated 32 MB-stack runtime; residual CI sub-item below. |
 | PROJ-014 | `WalletBackend::start()` start-path test coverage | `src/context/wallet_lifecycle.rs:561,583,617,649` | HIGH | **RESOLVED (`3165f98c`, `36f5a982`)** | Four offline tests now gate the start path (`start_spv_errors_when_backend_not_wired`, `start_spv_starts_after_backend_wired`, `ensure_wallet_backend_and_start_spv_wires_then_starts`, `chokepoint_wiring_failure_flips_indicator_to_error`). Full live-SPV success path remains an e2e/network gap. |
 | PROJ-015 | TC-012 receive-address reuse — unverified from DET source | `src/wallet_backend/mod.rs` (`next_receive_address` → upstream) | LOW | Unverified — needs follow-up | Depends on upstream used-marking; now testable since PROJ-001 is resolved. Re-test on live network. |
 | PROJ-016 | TC-066 key-not-visible-after-broadcast (flake-vs-bug) | (tracked-only, no isolated code surface) | LOW | Unverified — needs follow-up | No deterministic repro in tree. Re-classify after live run. |
+
+**PROJ-013 — RESOLVED, with a tracked CI sub-item.** Verified at
+`tests/backend-e2e/framework/task_runner.rs`: `sdk_runtime()` (`:22`) builds a dedicated
+multi-thread tokio runtime with `thread_stack_size(32 * 1024 * 1024)` (`SDK_THREAD_STACK_SIZE`,
+`:17`); `run_task` drives the backend future through `drive_on_large_stack` (`:50,65`), which
+`block_on`s on a 32 MB blocking thread so the deep synchronous SDK `block_on`
+(grovedb / drive-proof-verifier) cannot overflow the default 8 MB test-thread stack —
+**regardless of `RUST_MIN_STACK`**. A deterministic, non-network smoke test
+`large_stack_path_survives_deep_recursion` (`:153-160`) recurses ~12 MiB through the exact
+`drive_on_large_stack` path, proving the mechanism is load-bearing. The commit is
+test-only — zero production `src/` changes (verified: `git show --name-only 2a9161d3` =
+`tests/backend-e2e/{README.md,framework/task_runner.rs}`).
+
+- **Residual sub-item (tracked, LOW):** CI does **not** run the `#[ignore]` backend-e2e suite —
+  the run steps are commented out in `.github/workflows/tests.yml:85,90`
+  (`# run: cargo test --test backend-e2e … -- --ignored …`). The harness now solves the
+  overflow inside Rust via the large-stack runtime, so `RUST_MIN_STACK` is no longer required
+  for the e2e path; however, when those CI steps are re-enabled they should be reviewed to
+  confirm no env-level stack bump is needed for any non-`drive_on_large_stack` path.
+  `RUST_MIN_STACK` is currently absent from all of `.github/` (`grep -rn RUST_MIN_STACK
+  .github/` = 0 hits). The PROJ-013 commit could not add it to the commented step (tool policy
+  blocked `.github/` edits). Record here so it is not lost when CI re-enables the suite.
 
 Recorded test-spec gaps from `finish-unwire/notes.md` §5 (feature-flag/manual only, not
 counted as new open gaps): TC-SK-010, TC-A11Y-008, TC-PERF-003.
@@ -234,7 +288,7 @@ counted as new open gaps): TC-SK-010, TC-A11Y-008, TC-PERF-003.
 
 | ID | Title | Location | Sev | Status | Blocker |
 |----|-------|----------|-----|--------|---------|
-| PROJ-005 | platform pin tracks unreleased dev rev (G1) | `Cargo.toml:21,31,32,35` | HIGH | OPEN | Release gate; bump to released rev before ship. Current rev `35e4a2f640a862ac1a6fc088532facbf8dc17200` (was `17653ba8…` at original audit). |
+| PROJ-005 | platform pin tracks unreleased dev rev (G1) | `Cargo.toml:21,31,32,35` | HIGH | OPEN | Release gate; bump to released rev before ship. Current rev `ddfa66ed373beaebdae9a5d919f896af43cbcd33` (was `35e4a2f6…` at prior refresh, `17653ba8…` at original audit). |
 | PROJ-017 | `register_identity_funding_account` absent upstream — DET carries contained exception | `src/wallet_backend/mod.rs:1205-1287` (`provision_identity_funding_account` / `ensure_identity_funding_accounts`) | LOW | OPEN (tracked, live) | `rs-platform-wallet` has no funding-account registrar sibling to `register_contact_account`. Verified live — called from register/topup (`mod.rs:441,1088,1142,1181`). Upstream-contribution TODO. |
 
 ---
@@ -243,10 +297,22 @@ counted as new open gaps): TC-SK-010, TC-A11Y-008, TC-PERF-003.
 
 | ID | Title | Location | Sev | Status | What's missing |
 |----|-------|----------|-----|--------|----------------|
-| PROJ-018 | External user docs (dashpay/docs) not updated for storage rewrite / single-key limits | `CHANGELOG.md` (no external-docs note) | MEDIUM | OPEN | No reference to updating `github.com/dashpay/docs` for the new storage model, single-key send/refresh limits, or the DIP-14 fund-accessibility trade-off. End users get no published guidance. |
-| PROJ-019 | ADR floor SHA placeholder unfilled | `docs/ai-design/2026-05-29-finish-unwire/notes.md:92` (`[TO BE UPDATED ON MERGE]`) | LOW | OPEN | Needs this PR's merge SHA recorded as the wallet-state floor. |
-| PROJ-020 | Design docs claim single-key is fully read-only mock — now stale | `docs/ai-design/2026-05-18-platform-wallet-migration/single-key-mock.md:51`; `g2-mock-boundary.md` | LOW | OPEN | SEC-002 made import/sign/list real; `single-key-mock.md:51` still says "render in read-only mode… no operations are enabled." See PROJ-007. |
-| PROJ-021 | CHANGELOG omits single-key capability limits and DIP-14 trade-off | `CHANGELOG.md:9-32` | LOW | OPEN | Changed/Removed/Fixed sections cover the storage move but never tell users single-key send/refresh is unsupported this release, nor the contact-fund re-establishment trade-off. |
+| PROJ-018 | External user docs (dashpay/docs) not yet filed | `docs/ai-design/2026-06-03-pr860-doc-followups/external-docs-draft.md` | MEDIUM | OPEN (tracked) | Draft written; must still be filed as a PR/issue against `github.com/dashpay/docs` after #860 merges. |
+| PROJ-019 | ADR floor SHA placeholder unfilled | `docs/ai-design/2026-05-29-finish-unwire/notes.md:90` (`[PLACEHOLDER — fill at merge time]`) | LOW | OPEN | Cannot close pre-merge — needs this PR's squash-merge SHA recorded as the wallet-state floor. |
+| PROJ-020 | Design docs claimed single-key is fully read-only mock — was stale | `docs/ai-design/2026-05-18-platform-wallet-migration/single-key-mock.md:51`; `g2-mock-boundary.md:46` | LOW | **RESOLVED (`f39b085d`)** | Prose corrected: `single-key-mock.md:51` now states import/list/sign work in full via `SecretStore`; `g2-mock-boundary.md:46` records the partial capability gap accurately. |
+| PROJ-021 | CHANGELOG omits single-key capability limits and DIP-14 trade-off | `CHANGELOG.md:31-46` | LOW | **RESOLVED (`f39b085d`)** | `### Known Limitations` section now states single-key send/refresh is unsupported this release and documents the DIP-14 non-mainnet/non-account-0 contact-fund re-establishment trade-off. |
+
+**PROJ-018 (PARTIAL).** Verified at `docs/ai-design/2026-06-03-pr860-doc-followups/external-docs-draft.md`:
+a full external-docs draft now exists, targeting `dashpay/docs` →
+`docs/user/network/dash-evo-tool/`, with a **Tracking** section and an explicit
+`TODO: file a dashpay/docs issue linking to PR #860 … once the merge commit is confirmed`.
+The draft satisfies the "write the guidance" half of the gap; the gap stays OPEN until the
+PR/issue is actually filed against `dashpay/docs` post-merge.
+
+**PROJ-019 (PARTIAL).** Verified at `docs/ai-design/2026-05-29-finish-unwire/notes.md:90`:
+the placeholder is now explicit (`[PLACEHOLDER — fill at merge time]`) with a clear
+instruction not to leave it in place after merge. The merge SHA cannot be filled pre-merge,
+so the item stays OPEN as a merge-time action.
 
 ---
 
@@ -254,7 +320,22 @@ counted as new open gaps): TC-SK-010, TC-A11Y-008, TC-PERF-003.
 
 | ID | Title | Location | Sev | Status | What's missing |
 |----|-------|----------|-----|--------|----------------|
-| PROJ-023 | String-based error matching in DashPay add-contact UI (NEW) | `src/ui/dashpay/add_contact_screen.rs:626-650` | LOW | OPEN (pre-existing) | `display_task_result` classifies errors by `message.contains("ENCRYPTION key")`, `"not found"`, etc. — directly violates the CLAUDE.md rule "Never parse error strings to extract information." Self-tagged `TODO(RUST-002)` / issue #660. Pre-existing in base; not introduced by #860 but in a DashPay-adjacent surface the rewrite did not address. Silently misclassifies if upstream wording changes. Scope: indirect. |
+| PROJ-023 | String-based error matching in DashPay add-contact UI | `src/ui/dashpay/add_contact_screen.rs` | LOW | **RESOLVED (`d852ce99`)** | `display_task_result` no longer parses error strings; classification routes through typed `classify_send_error` matching `TaskError` / `DashPayError` variants. Verified: zero `.contains(` on error/message text in the file; 6 typed-error unit tests added. |
+| PROJ-025 | String-based error matching in DashPay contact-requests UI (NEW) | `src/ui/dashpay/contact_requests.rs:844-851,983-985` | LOW | OPEN (pre-existing) | Same anti-pattern PROJ-023 fixed, surviving in the sibling screen: `display_message` classifies errors by `message.contains("ENCRYPTION key")` / `"DECRYPTION key")` (`:844-851`) and a second copy at `:983-985`. Self-tagged `TODO(RUST-002)` / issue #660. Violates CLAUDE.md "Never parse error strings to extract information." Pre-existing in base, not introduced by #860, but PROJ-023's fix leaves this sibling untouched. Silently misclassifies if upstream wording changes. Scope: indirect. |
+
+**PROJ-023 — RESOLVED.** Verified at `src/ui/dashpay/add_contact_screen.rs`: no `.contains(`
+on error/message strings remains; `classify_send_error` (`:649`) matches typed
+`TaskError::IdentityNotFound`, `TaskError::DashPay(DashPayError::{…})` variants and the
+`display_task_result` path routes through it (`:616`). Six typed-error unit tests cover the
+classification (`:700-761`) — they assert specific variant mapping, base58 fallback, and that
+recoverable errors map through so retry is offered (not shallow "no error" checks).
+
+**PROJ-025 (NEW).** The PROJ-023 fix did **not** reach the sibling `contact_requests.rs`,
+which still carries the identical `TODO(RUST-002)` string-matching anti-pattern in **two**
+places: `display_message` at `:844-851` and a second copy at `:983-985`, both keying off
+`message.contains("ENCRYPTION key")` / `"DECRYPTION key")`. Filed under issue #660 so the
+audit tracks it. Fix mirrors PROJ-023: route through the typed error chain
+(`TaskError::DashPay(DashPayError::Missing{En,De}cryptionKey)`).
 
 ---
 
@@ -308,9 +389,6 @@ identity-address SPV bloom registration — not found in DET; likely upstream), 
   `coin_type_for_network()` threaded through all DashPay HD paths so send/receive xpubs agree
   per network.
 - **2026-06-02 — PROJ-006 resolved** (`7e2553e3`): real per-network platform activation heights.
-- **2026-06-02 — refresh sweep**: PROJ-005 pin moved `17653ba8…` → `35e4a2f6…` (still
-  unreleased, stays OPEN). New PROJ-022 (`UpstreamPlatformAddresses` reserved seam, deferred)
-  and PROJ-023 (add-contact string error matching, pre-existing convention violation) added.
 - **2026-06-02 — PROJ-002 resolved (removed)**: dead `add_contact` / `remove_contact` free
   functions (zero callers, orphaned from PR #464 `82399a26`, superseded by
   `DashPayTask::SendContactRequest`) deleted by a sibling commit, along with the now-orphaned
@@ -321,10 +399,29 @@ identity-address SPV bloom registration — not found in DET; likely upstream), 
   ZMQ connection-health events flow into a void. Decision #3 P4-audit deferral does not excuse
   the broken status path. Fix: wire `rx_zmq_status` → `set_zmq_status`, or remove the whole
   producer→channel→setter chain (constructed as a unit at `src/context/mod.rs:161`).
-- **2026-06-02 — tally reconciliation**: recomputed the Executive severity table and category
-  breakdown from the enumerable body. The prior table (17 open / 22 total, HIGH open=2) did not
-  match the body, which enumerates 23 distinct counted IDs and a single open HIGH (PROJ-005).
-  Corrected to 23 total / 17 open / 6 resolved.
+- **2026-06-03 — refresh pass (head `f39b085d`)**: build/lint/test verified clean
+  (`cargo +nightly fmt --check`, `cargo clippy --all-features --all-targets -D warnings`,
+  `cargo build --tests --all-features`, the 6 `add_contact_screen` typed-error tests, and the
+  deterministic `large_stack_path_survives_deep_recursion` e2e smoke — all green). Dispositions:
+  - **PROJ-008 resolved** (`2272bae0..43f412cf`): the deferred SEC-002 sign-time passphrase
+    prompt UX (issue #90) is shipped — per-secret JIT `SecretPrompt` seam
+    (`secret_prompt.rs`), egui host (`secret_prompt_host.rs`), modal (`passphrase_modal.rs`),
+    keyed by `SecretScope`, with `RememberPolicy`. Moved out of the open deferred set.
+  - **PROJ-013 resolved** (`2a9161d3`): test-only; 32 MB-stack `sdk_runtime` +
+    `drive_on_large_stack` chokepoint + deterministic smoke test. Residual CI sub-item tracked
+    (commented `#[ignore]` step in `.github/workflows/tests.yml:85,90`; no `RUST_MIN_STACK` in
+    `.github/`; `.github/` edits blocked by tool policy).
+  - **PROJ-020 / PROJ-021 resolved** (`f39b085d`): single-key-mock / g2-mock-boundary prose
+    corrected to present state; CHANGELOG `### Known Limitations` added.
+  - **PROJ-023 resolved** (`d852ce99`): add-contact UI error classification moved off string
+    matching onto typed `classify_send_error`; 6 unit tests. Sibling occurrence in
+    `contact_requests.rs` filed as **new PROJ-025** (LOW, pre-existing, issue #660).
+  - **PROJ-018 / PROJ-019 stay OPEN** as merge-time partials; **PROJ-005** pin moved
+    `35e4a2f6…` → `ddfa66ed…` (still unreleased, stays the sole open merge-blocker).
+- **2026-06-03 — tally reconciliation**: recomputed the Executive severity table and category
+  breakdown from the enumerable body. Now 24 total / 12 open / 12 resolved (was 23/17/6):
+  PROJ-025 added (+1 total, +1 open LOW); PROJ-008 (MEDIUM), PROJ-013 (MEDIUM), PROJ-020,
+  PROJ-021, PROJ-023 (LOW) flipped open→resolved.
 
 ---
 
@@ -341,7 +438,9 @@ So nothing is silently dropped. Deferred markers / inert-looking bodies that are
   arms are intentional `Ok(())` no-ops; the panicking read arms are PROJ-022.
 - `src/backend_task/migration/finish_unwire.rs:340,656,1655,1988` — password-protected
   single_key rows **deferred** to T-SK-03 UX prompt; counted "skipped", not "failed". By
-  design (PROJ-008-adjacent); migration itself fully wired (`src/backend_task/migration/mod.rs`).
+  design; migration itself fully wired (`src/backend_task/migration/mod.rs`). With PROJ-008
+  resolved, the JIT prompt seam that T-SK-03 depends on now exists — re-check on next migration
+  pass whether these rows can be unlocked inline.
 - `src/backend_task/dashpay/payments.rs:210` — `#[allow(dead_code)]` payments helper (pre-existing).
 - `src/ui/dashpay/send_payment.rs:743,754,776` — local in-memory display `PaymentRecord` list
   uses `Identifier::new([0;32])` contact-id placeholder and `timestamp: 0`. Cosmetic: the
@@ -357,7 +456,8 @@ So nothing is silently dropped. Deferred markers / inert-looking bodies that are
   pre-existing architectural note in `set_default_version`, benign.
 - `src/context/mod.rs:810` — `// TODO: Ideally use sdk.load().version()` — cosmetic version
   free-fn TODO (pre-existing).
-- `src/app.rs:1314` (`TODO(RUST-002)`) — message-text-inspection routing TODO (tracked tech-debt).
+- `src/app.rs:1314` (`TODO(RUST-002)`) — message-text-inspection routing TODO (tracked tech-debt,
+  same family as PROJ-025).
 - `src/app.rs:717,733`, `src/model/qualified_identity/mod.rs:770` — `panic!` BUG-guard
   invariants (missing-network-context, inconsistent-wallet-index); intentional, not gaps.
 - `src/bin/det_cli/main.rs:186,188`, `src/ui/mod.rs:485,604,607`,
@@ -380,9 +480,10 @@ So nothing is silently dropped. Deferred markers / inert-looking bodies that are
 
 ---
 
-*🍬 Candy tally — confirmed gaps: 23 (1 CRITICAL · 3 HIGH · 7 MEDIUM · 12 LOW · 0 INFO).
-Status: 6 RESOLVED (PROJ-001, PROJ-002 (removed), PROJ-003, PROJ-004, PROJ-006, PROJ-014) +
-SEC-001 follow-up; 17 OPEN; of those, 6 deferred-by-design and 1 blocked-by-design (PROJ-024).
-8 seed/appendix items confirmed already-resolved with evidence. Closing a gap counts too — and
-this pass closed PROJ-002 outright and re-filed PROJ-012 from a benign deferral into a real
-MEDIUM wiring gap.*
+*🍬 Candy tally — confirmed gaps: 24 (1 CRITICAL · 3 HIGH · 7 MEDIUM · 13 LOW · 0 INFO).
+Status: 12 RESOLVED (PROJ-001, PROJ-002 (removed), PROJ-003, PROJ-004, PROJ-006, PROJ-008,
+PROJ-013, PROJ-014, PROJ-020, PROJ-021, PROJ-023) + SEC-001 follow-up; 12 OPEN; of those, 4
+deferred-by-design and 1 blocked-by-design (PROJ-024). 8 seed/appendix items confirmed
+already-resolved with evidence. This 2026-06-03 pass closed five more gaps against verified
+source and opened one new sibling-convention gap (PROJ-025). PROJ-005 remains the sole open
+merge-blocker.*

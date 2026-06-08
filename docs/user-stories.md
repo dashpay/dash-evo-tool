@@ -71,6 +71,7 @@ As a user, I want my wallet protected by a passphrase so that others cannot acce
 
 - The passphrase is requested just-in-time, when an operation actually needs the secret (sending funds, registering an identity, signing).
 - The prompt offers a "Keep this wallet unlocked until I close the app" option so a busy session is asked only once.
+- That option defaults to off: unless the user actively ticks it, every secret access re-prompts, and the seed is not cached.
 - The seed is never held in memory between operations: it is decrypted on demand and wiped as soon as the operation finishes.
 
 ### WAL-007: Remove a wallet [Implemented]

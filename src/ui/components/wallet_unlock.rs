@@ -47,10 +47,6 @@ pub trait ScreenWithWalletUnlock {
 
     fn render_wallet_unlock(&mut self, ui: &mut Ui) -> bool {
         let mut unlocked_wallet: Option<Arc<RwLock<Wallet>>> = None;
-        // The passphrase the user just entered, captured before the input is
-        // cleared, so the unlock chokepoint can promote the seed into the
-        // session cache without a second prompt.
-        let mut entered_passphrase: Option<String> = None;
 
         if let Some(wallet_guard) = self.selected_wallet_ref().clone() {
             let mut wallet = wallet_guard.write().unwrap();
@@ -82,7 +78,6 @@ pub trait ScreenWithWalletUnlock {
                     match unlock_result {
                         Ok(_) => {
                             unlocked_wallet = Some(wallet_guard.clone());
-                            entered_passphrase = Some(self.password_input().text().to_string());
                         }
                         Err(_) => {
                             let error_msg = if let Some(hint) = wallet.password_hint() {
@@ -101,8 +96,13 @@ pub trait ScreenWithWalletUnlock {
         }
 
         if let Some(wallet_arc) = unlocked_wallet {
+            // Mark the wallet open for display only. This inline unlock has no
+            // opt-in surface, so it does not promote the seed to the session
+            // cache (secure default): the first signing operation re-prompts
+            // just-in-time. Screens that want a "keep unlocked" affordance use
+            // the WalletUnlockPopup, which carries the opt-in checkbox.
             let app_context = self.app_context();
-            app_context.handle_wallet_unlocked(&wallet_arc, entered_passphrase.as_deref());
+            app_context.handle_wallet_unlocked(&wallet_arc, None);
             return true;
         }
 

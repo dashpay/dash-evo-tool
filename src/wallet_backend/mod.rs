@@ -608,8 +608,9 @@ impl WalletBackend {
 
         // Idempotency probe: if this seed's wallet is already registered in the
         // DET maps, there is nothing to do — never re-register, never
-        // double-watch.
-        let (wallet_id, expected_account_xpub) = self.upstream_identity_from_seed(seed)?;
+        // double-watch. The cheap `seed_hash` lookup runs FIRST so the common
+        // already-registered case (W1 and W2 can both fire per boot) skips the
+        // expensive seed derivation in `upstream_identity_from_seed`.
         if self.inner.id_map.read()?.contains_key(seed_hash) {
             tracing::debug!(
                 wallet = %hex::encode(seed_hash),
@@ -617,6 +618,10 @@ impl WalletBackend {
             );
             return Ok(());
         }
+
+        // Not registered: derive the upstream identity (BIP32 from the seed)
+        // now, since the resolve / create paths below both need it.
+        let (wallet_id, expected_account_xpub) = self.upstream_identity_from_seed(seed)?;
 
         if self.inner.pwm.get_wallet(&wallet_id).await.is_some() {
             // Present upstream but absent from the DET maps (e.g. a prior

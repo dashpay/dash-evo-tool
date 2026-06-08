@@ -6,7 +6,7 @@ use crate::model::wallet::birth_height::{WalletOrigin, registration_birth_height
 use crate::model::wallet::meta::WalletMeta;
 use crate::model::wallet::seed_envelope::StoredSeedEnvelope;
 use crate::model::wallet::{DerivationPathReference, DerivationPathType, Wallet, WalletSeedHash};
-use crate::wallet_backend::{DetScope, WalletBackend};
+use crate::wallet_backend::{DetScope, WalletBackend, WalletMetaView, WalletSeedView};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 
@@ -319,12 +319,16 @@ impl AppContext {
     }
 
     /// Mirror a newly-registered wallet into the wallet-meta +
-    /// seed-envelope sidecars. Skipped (logged) when the wallet backend
-    /// has not been wired yet — the next `ensure_wallet_backend` boot
-    /// then rebuilds the same sidecar entries via T-W-00 / T-W-00.5-v2
-    /// migration replay against the legacy row that was written below.
+    /// seed-envelope sidecars.
+    ///
+    /// Writes through the shared `app_kv` k/v store and the shared
+    /// `secret_store` vault that `AppContext` opens at boot, so this succeeds
+    /// even before the wallet backend is wired (PROJ-010): the seed envelope
+    /// the W2 cold-boot bridge needs is persisted at create/import time
+    /// regardless of wiring order. The wallet backend, once built, reuses the
+    /// very same vault handle, so the entry written here is the same one it
+    /// reads.
     fn write_wallet_sidecars(&self, wallet: &Wallet) -> Result<(), TaskError> {
-        let backend = self.wallet_backend()?;
         let seed_hash = wallet.seed_hash();
         let xpub_encoded = wallet
             .master_bip44_ecdsa_extended_public_key
@@ -339,7 +343,7 @@ impl AppContext {
             uses_password: wallet.uses_password,
             xpub_encoded: xpub_encoded.clone(),
         };
-        backend.wallet_seeds().set(&seed_hash, &envelope)?;
+        WalletSeedView::new(&self.secret_store).set(&seed_hash, &envelope)?;
 
         let meta = WalletMeta {
             alias: wallet.alias.clone().unwrap_or_default(),
@@ -347,7 +351,7 @@ impl AppContext {
             core_wallet_name: wallet.core_wallet_name.clone(),
             xpub_encoded,
         };
-        backend.wallet_meta().set(self.network, &seed_hash, &meta)?;
+        WalletMetaView::new(&self.app_kv).set(self.network, &seed_hash, &meta)?;
 
         Ok(())
     }
@@ -874,6 +878,7 @@ mod tests {
         let connection_status = Arc::new(ConnectionStatus::new());
         let egui_ctx = egui::Context::default();
         let app_kv = AppContext::open_app_kv(&data_dir).expect("open app k/v");
+        let secret_store = AppContext::open_secret_store(&data_dir).expect("open secret store");
 
         let ctx = AppContext::new(
             data_dir,
@@ -883,6 +888,7 @@ mod tests {
             connection_status,
             egui_ctx,
             app_kv,
+            secret_store,
         )
         .expect("AppContext::new should succeed offline with bundled testnet config");
 
@@ -1224,6 +1230,109 @@ mod tests {
             backend.wallet_count().await,
             1,
             "W2 must not double-watch an already-registered wallet"
+        );
+
+        backend.shutdown().await;
+    }
+
+    /// PROJ-010 (root-cause regression): `register_wallet` persists the
+    /// seed-envelope sidecar **before** the wallet backend is wired.
+    ///
+    /// This is the exact ordering the backend-e2e harness uses — register the
+    /// framework wallet first, wire the backend second. The pre-fix bug was that
+    /// `write_wallet_sidecars` required `self.wallet_backend()`, so the envelope
+    /// was never written and the W2 cold-boot bridge could not find a seed to
+    /// register from. With the vault handle owned by `AppContext`, the write
+    /// succeeds regardless of wiring order. Reading the envelope back through the
+    /// shared handle is the assertion that would have failed before the fix.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn register_wallet_persists_seed_envelope_before_backend_wired() {
+        let (ctx, _sender, _tmp) = offline_testnet_context();
+
+        assert!(
+            ctx.wallet_backend().is_err(),
+            "precondition: the backend must be unwired so we exercise the pre-wire path"
+        );
+
+        let seed = [0x7Cu8; 64];
+        let wallet = crate::model::wallet::Wallet::new_from_seed(
+            seed,
+            Network::Testnet,
+            Some("pre-wire".to_string()),
+            None,
+        )
+        .expect("build no-password wallet");
+        let (seed_hash, _wallet_arc) = ctx
+            .register_wallet(wallet, &seed, WalletOrigin::Imported)
+            .expect("register wallet before the backend is wired");
+
+        let envelope = WalletSeedView::new(&ctx.secret_store())
+            .get(&seed_hash)
+            .expect("vault read must not error")
+            .expect("the seed envelope must be persisted at register time, even unwired");
+        assert!(
+            !envelope.uses_password,
+            "the persisted envelope must carry the no-password flag for the W2 fast-path"
+        );
+        assert_eq!(
+            envelope.xpub_encoded,
+            ctx.wallets
+                .read()
+                .unwrap()
+                .get(&seed_hash)
+                .unwrap()
+                .read()
+                .unwrap()
+                .master_bip44_ecdsa_extended_public_key
+                .encode()
+                .to_vec(),
+            "the persisted xpub must match the registered wallet's BIP44 account xpub"
+        );
+    }
+
+    /// PROJ-010 (end-to-end on the harness ordering): a wallet registered
+    /// **before** the backend is wired is registered with the upstream SPV
+    /// manager once the backend comes up — the W2 cold-boot bridge fires from
+    /// the seed envelope persisted at register time.
+    ///
+    /// This is the in-process half of the live repro: it proves the chain from
+    /// the persisted envelope through `bootstrap_loaded_wallets` →
+    /// `bootstrap_wallet_addresses_jit` → `ensure_upstream_registered` without a
+    /// launch-time prompt (the wallet is unprotected, so the chokepoint's
+    /// no-passphrase fast-path resolves the seed). The funded below-tip balance
+    /// assertion needs a live testnet and lives in the `#[ignore]` backend-e2e
+    /// lane.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wallet_registered_before_wiring_is_upstream_registered_on_cold_boot() {
+        let (ctx, sender, _tmp) = offline_testnet_context();
+
+        let seed = [0x8Du8; 64];
+        let wallet = crate::model::wallet::Wallet::new_from_seed(
+            seed,
+            Network::Testnet,
+            Some("cold-boot-bridge".to_string()),
+            None,
+        )
+        .expect("build no-password wallet");
+        let (seed_hash, _wallet_arc) = ctx
+            .register_wallet(wallet, &seed, WalletOrigin::Imported)
+            .expect("register wallet before wiring");
+
+        // Wiring runs hydration + the cold-boot bootstrap, which drives the W2
+        // bridge from the now-persisted seed envelope.
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("ensure_wallet_backend should succeed offline");
+        let backend = ctx.wallet_backend().expect("backend wired");
+
+        assert!(
+            backend.is_wallet_registered(&seed_hash),
+            "the wallet must be upstream-registered by the W2 bridge after wiring"
+        );
+        assert_eq!(
+            backend.wallet_count().await,
+            1,
+            "exactly one wallet must be watched after the cold-boot bridge runs"
         );
 
         backend.shutdown().await;

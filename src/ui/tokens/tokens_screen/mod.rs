@@ -3216,6 +3216,7 @@ mod tests {
         // a single persister per process via `AppContext::open_app_kv`.
         let kv_tmp = tempfile::tempdir().expect("kv tmpdir");
         let app_kv = AppContext::open_app_kv(kv_tmp.path()).expect("open app k/v");
+        let secret_store = AppContext::open_secret_store(kv_tmp.path()).expect("open secret store");
         let data_dir = crate::app_dir::app_user_data_dir_path().unwrap();
         let app_context = AppContext::new(
             data_dir,
@@ -3225,6 +3226,7 @@ mod tests {
             Default::default(),
             egui::Context::default(),
             app_kv,
+            secret_store,
         )
         .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
@@ -3541,6 +3543,7 @@ mod tests {
         // a single persister per process via `AppContext::open_app_kv`.
         let kv_tmp = tempfile::tempdir().expect("kv tmpdir");
         let app_kv = AppContext::open_app_kv(kv_tmp.path()).expect("open app k/v");
+        let secret_store = AppContext::open_secret_store(kv_tmp.path()).expect("open secret store");
         let data_dir = crate::app_dir::app_user_data_dir_path().unwrap();
         let app_context = AppContext::new(
             data_dir,
@@ -3550,6 +3553,7 @@ mod tests {
             Default::default(),
             egui::Context::default(),
             app_kv,
+            secret_store,
         )
         .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
@@ -3680,6 +3684,7 @@ mod tests {
         // a single persister per process via `AppContext::open_app_kv`.
         let kv_tmp = tempfile::tempdir().expect("kv tmpdir");
         let app_kv = AppContext::open_app_kv(kv_tmp.path()).expect("open app k/v");
+        let secret_store = AppContext::open_secret_store(kv_tmp.path()).expect("open secret store");
         let data_dir = crate::app_dir::app_user_data_dir_path().unwrap();
         let app_context = AppContext::new(
             data_dir,
@@ -3689,6 +3694,7 @@ mod tests {
             Default::default(),
             egui::Context::default(),
             app_kv,
+            secret_store,
         )
         .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);

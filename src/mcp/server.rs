@@ -217,6 +217,8 @@ pub async fn init_app_context() -> Result<Arc<AppContext>, McpError> {
 
     let app_kv = AppContext::open_app_kv(&data_dir)
         .map_err(|e| McpError::internal_error(format!("app k/v open: {e}"), None))?;
+    let secret_store = AppContext::open_secret_store(&data_dir)
+        .map_err(|e| McpError::internal_error(format!("secret store open: {e}"), None))?;
     let network = app_kv
         .get::<crate::model::settings::AppSettings>(
             crate::wallet_backend::DetScope::Global,
@@ -251,6 +253,7 @@ pub async fn init_app_context() -> Result<Arc<AppContext>, McpError> {
         connection_status,
         egui::Context::default(),
         app_kv,
+        secret_store,
     )
     .ok_or_else(|| {
         McpError::internal_error(

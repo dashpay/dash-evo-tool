@@ -45,6 +45,7 @@ use dash_sdk::platform::DataContract;
 use dash_sdk::platform::Identifier;
 use egui::Context;
 use migration_status::MigrationStatus;
+use platform_wallet_storage::secrets::SecretStore;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::str::FromStr as _;
@@ -100,6 +101,14 @@ pub struct AppContext {
     /// DET-owned application data that must outlive a single network's
     /// wallet persister. Cheap to clone (`Arc<DetKv>` is `Arc`-backed).
     app_kv: Arc<DetKv>,
+    /// Shared encrypted HD-seed vault at `<data_dir>/secrets/det-secrets.pwsvault`.
+    /// Opened once and handed to every per-network `AppContext` and to the
+    /// `WalletBackend`, because the file backend takes an exclusive advisory
+    /// lock — a second open of the same vault returns `AlreadyLocked`. Holding
+    /// the handle here lets `register_wallet` persist the seed-envelope sidecar
+    /// before the wallet backend is wired (PROJ-010). Cross-network: a single
+    /// imported WIF / HD seed is keyed by its hash, not by the chain prefix.
+    secret_store: Arc<SecretStore>,
     // subtasks started by the app context, used for graceful shutdown
     pub(crate) subtasks: Arc<TaskManager>,
     /// Tracks the connection status to currently active network
@@ -161,6 +170,11 @@ impl std::fmt::Debug for SecretPromptSlot {
 }
 
 impl AppContext {
+    // The constructor takes the app's foundational dependencies — the shared
+    // db, k/v store, and seed vault all have to be opened once and threaded in
+    // so every per-network context reuses the same handle (the vault's
+    // exclusive advisory lock forbids a second open).
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         data_dir: PathBuf,
         network: Network,
@@ -169,6 +183,7 @@ impl AppContext {
         connection_status: Arc<ConnectionStatus>,
         egui_ctx: egui::Context,
         app_kv: Arc<DetKv>,
+        secret_store: Arc<SecretStore>,
     ) -> Option<Arc<Self>> {
         let config = match Config::load_from(&data_dir) {
             Ok(config) => config,
@@ -338,6 +353,7 @@ impl AppContext {
             animate,
             cached_settings: RwLock::new(None),
             app_kv,
+            secret_store,
             subtasks,
             connection_status,
             migration_status: Arc::new(MigrationStatus::new_idle()),
@@ -395,6 +411,14 @@ impl AppContext {
         Arc::clone(&self.app_kv)
     }
 
+    /// Shared encrypted HD-seed vault. Cheap clone — `Arc<SecretStore>` is
+    /// `Arc`-backed. The wallet backend reuses this same handle rather than
+    /// opening its own, because the file vault takes an exclusive advisory
+    /// lock that a second open would trip.
+    pub fn secret_store(&self) -> Arc<SecretStore> {
+        Arc::clone(&self.secret_store)
+    }
+
     /// Shared migration-status handle. Cheap to clone — backed by `Arc`.
     /// Readers (the UI hot path) call `.state()` each frame; writers
     /// (the [`MigrationTask`](crate::backend_task::migration::MigrationTask)
@@ -415,6 +439,24 @@ impl AppContext {
         let config = SqlitePersisterConfig::new(path);
         let persister = Arc::new(SqlitePersister::open(config)?);
         Ok(Arc::new(DetKv::new(persister)))
+    }
+
+    /// Open (or create) the shared encrypted seed vault at
+    /// `<data_dir>/secrets/det-secrets.pwsvault`. Called once per process and
+    /// the resulting `Arc<SecretStore>` is handed to every per-network
+    /// `AppContext` and reused by the `WalletBackend` — the file backend holds
+    /// an exclusive advisory lock for the handle's lifetime, so a second open
+    /// of the same vault would fail with `AlreadyLocked`. The vault is
+    /// cross-network: seeds and imported keys are scoped by hash, not chain.
+    pub fn open_secret_store(data_dir: &std::path::Path) -> Result<Arc<SecretStore>, TaskError> {
+        let mut path = data_dir.to_path_buf();
+        path.push("secrets");
+        path.push("det-secrets.pwsvault");
+        crate::wallet_backend::single_key::open_secret_store(&path)
+            .map(Arc::new)
+            .map_err(|source| TaskError::SecretStore {
+                source: Box::new(source),
+            })
     }
 
     pub fn network(&self) -> Network {

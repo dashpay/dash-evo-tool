@@ -49,17 +49,22 @@ fn test_app_handles_frame_stepping() {
 /// Test that the app renders at different window sizes
 #[test]
 fn test_app_renders_at_various_sizes() {
-    with_isolated_data_dir(|| {
-        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
-        let _guard = rt.enter();
+    let sizes = [
+        egui::vec2(640.0, 480.0),   // Small
+        egui::vec2(1024.0, 768.0),  // Medium
+        egui::vec2(1920.0, 1080.0), // Large
+    ];
 
-        let sizes = [
-            egui::vec2(640.0, 480.0),   // Small
-            egui::vec2(1024.0, 768.0),  // Medium
-            egui::vec2(1920.0, 1080.0), // Large
-        ];
+    // A fresh data dir per size: each `AppState` opens the shared seed vault,
+    // whose exclusive advisory lock outlives the harness drop (background
+    // subtasks keep the `Arc<AppContext>` graph alive). Per-iteration isolation
+    // gives each its own vault file so the lock never collides. Production opens
+    // the vault once per process, so this multi-AppState pattern is test-only.
+    for size in sizes {
+        with_isolated_data_dir(|| {
+            let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+            let _guard = rt.enter();
 
-        for size in sizes {
             let mut harness = Harness::builder().with_max_steps(50).build_eframe(|ctx| {
                 dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
                     .expect("Failed to create AppState")
@@ -68,6 +73,6 @@ fn test_app_renders_at_various_sizes() {
 
             harness.set_size(size);
             harness.run_steps(5);
-        }
-    });
+        });
+    }
 }

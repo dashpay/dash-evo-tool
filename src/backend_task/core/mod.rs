@@ -426,6 +426,7 @@ mod send_payment_unsupported_options {
         db.create_tables(true).expect("create tables");
         db.set_default_version().expect("set version");
         let app_kv = AppContext::open_app_kv(tmp).expect("open app k/v");
+        let secret_store = AppContext::open_secret_store(tmp).expect("open secret store");
         AppContext::new(
             tmp.to_path_buf(),
             Network::Testnet,
@@ -434,6 +435,7 @@ mod send_payment_unsupported_options {
             Default::default(),
             egui::Context::default(),
             app_kv,
+            secret_store,
         )
         .expect("AppContext")
     }

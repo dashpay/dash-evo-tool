@@ -29,17 +29,23 @@ fn test_basic_navigation() {
 /// Test navigation with different window sizes
 #[test]
 fn test_navigation_responsive_layout() {
-    with_isolated_data_dir(|| {
-        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
-        let _guard = rt.enter();
+    let sizes = [
+        egui::vec2(640.0, 480.0),
+        egui::vec2(1024.0, 768.0),
+        egui::vec2(1440.0, 900.0),
+    ];
 
-        let sizes = [
-            egui::vec2(640.0, 480.0),
-            egui::vec2(1024.0, 768.0),
-            egui::vec2(1440.0, 900.0),
-        ];
+    // A fresh data dir per size: each `AppState` opens the shared seed vault,
+    // which takes an exclusive advisory lock that outlives the harness drop
+    // (background subtasks keep the `Arc<AppContext>` graph — and thus the vault
+    // handle — alive). Isolating the data dir per iteration gives each its own
+    // vault file, so the lock never collides. Production opens the vault once
+    // per process, so this multi-AppState pattern is test-only.
+    for size in sizes {
+        with_isolated_data_dir(|| {
+            let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+            let _guard = rt.enter();
 
-        for size in sizes {
             let mut harness = Harness::builder().with_max_steps(50).build_eframe(|ctx| {
                 dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
                     .expect("Failed to create AppState")
@@ -48,8 +54,8 @@ fn test_navigation_responsive_layout() {
 
             harness.set_size(size);
             harness.run_steps(15);
-        }
-    });
+        });
+    }
 }
 
 /// Test that rapid navigation doesn't cause issues

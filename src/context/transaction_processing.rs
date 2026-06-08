@@ -172,6 +172,7 @@ mod path3_asset_lock_finality_no_wallet_mutation {
         }
 
         let app_kv = AppContext::open_app_kv(tmp.path()).expect("open app k/v");
+        let secret_store = AppContext::open_secret_store(tmp.path()).expect("open secret store");
         let app_context = AppContext::new(
             tmp.path().to_path_buf(),
             network,
@@ -180,6 +181,7 @@ mod path3_asset_lock_finality_no_wallet_mutation {
             Default::default(),
             egui::Context::default(),
             app_kv,
+            secret_store,
         )
         .expect("AppContext");
 

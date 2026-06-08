@@ -570,6 +570,7 @@ impl AppContext {
                 let connection_status = self.connection_status.clone();
                 let egui_ctx = self.egui_ctx().clone();
                 let app_kv = self.app_kv();
+                let secret_store = self.secret_store();
                 let new_ctx = tokio::task::block_in_place(|| {
                     AppContext::new(
                         data_dir,
@@ -579,6 +580,7 @@ impl AppContext {
                         connection_status,
                         egui_ctx,
                         app_kv,
+                        secret_store,
                     )
                 })
                 .ok_or(TaskError::NetworkContextCreationFailed {

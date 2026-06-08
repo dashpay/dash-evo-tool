@@ -350,6 +350,7 @@ impl AppState {
         // (`<data_dir>/det-app.sqlite`). The store is opened once here and
         // handed to every per-network `AppContext`.
         let app_kv = AppContext::open_app_kv(&data_dir)?;
+        let secret_store = AppContext::open_secret_store(&data_dir)?;
         let settings = match app_kv.get::<AppSettings>(DetScope::Global, AppSettings::KV_KEY) {
             Ok(Some(s)) => s,
             Ok(None) => AppSettings::default(),
@@ -380,6 +381,7 @@ impl AppState {
                 connection_status.clone(),
                 ctx.clone(),
                 Arc::clone(&app_kv),
+                Arc::clone(&secret_store),
             )
         };
 

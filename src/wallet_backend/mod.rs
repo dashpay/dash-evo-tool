@@ -252,12 +252,12 @@ impl WalletBackend {
                 .map_err(TaskError::from_wallet_storage_open_error)?,
         );
 
-        let secret_store_path = Self::resolve_secret_store_path(ctx.data_dir());
-        let secret_store = Arc::new(single_key::open_secret_store(&secret_store_path).map_err(
-            |source| TaskError::SecretStore {
-                source: Box::new(source),
-            },
-        )?);
+        // Reuse the vault handle `AppContext` already opened at boot. The file
+        // backend holds an exclusive advisory lock for the handle's lifetime,
+        // so opening a second handle here would fail with `AlreadyLocked` — and
+        // `register_wallet` must be able to write seed-envelope sidecars through
+        // the same handle before the backend is wired (PROJ-010).
+        let secret_store = ctx.secret_store();
 
         let snapshots = Arc::new(SnapshotStore::new());
 
@@ -1749,18 +1749,6 @@ impl WalletBackend {
             Network::Regtest => 19899,
         };
         format!("{host}:{port}").to_socket_addrs().ok()?.next()
-    }
-
-    /// Per-process file path of the encrypted secret store vault. Shared
-    /// across networks: the secret store is not per-network (a single
-    /// imported WIF is a P2PKH key whose network prefix lives in the
-    /// derived address). The parent directory is created lazily by
-    /// [`single_key::open_secret_store`].
-    fn resolve_secret_store_path(app_data_dir: &Path) -> std::path::PathBuf {
-        let mut path = app_data_dir.to_path_buf();
-        path.push("secrets");
-        path.push("det-secrets.pwsvault");
-        path
     }
 
     fn resolve_spv_storage_dir(

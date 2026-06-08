@@ -184,6 +184,7 @@ impl BackendTestContext {
         let egui_ctx = egui::Context::default();
 
         let app_kv = AppContext::open_app_kv(&workdir).expect("open app k/v");
+        let secret_store = AppContext::open_secret_store(&workdir).expect("open secret store");
         let app_context = AppContext::new(
             workdir.clone(),
             Network::Testnet,
@@ -192,6 +193,7 @@ impl BackendTestContext {
             connection_status,
             egui_ctx,
             app_kv,
+            secret_store,
         )
         .expect("Failed to create AppContext for testnet");
 

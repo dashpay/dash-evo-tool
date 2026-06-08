@@ -2165,6 +2165,59 @@ impl WalletsBalancesScreen {
         }
     }
 
+    /// Mirror a freshly imported single key into the in-memory state the
+    /// screen renders from, then select it. Returns the inserted wallet.
+    ///
+    /// `import_wif_with_passphrase` persists to the vault, sidecar, and
+    /// index, but the screen reads `app_context.single_key_wallets`; without
+    /// this the imported key stays invisible until the next cold-boot
+    /// hydration. The rebuilt wallet carries no per-wallet password — the
+    /// optional import passphrase guards the vaulted key bytes, not this
+    /// in-memory copy — matching the shape `hydrate_context_wallets`
+    /// produces. Mirrors the mnemonic-screen import path.
+    fn register_imported_single_key(
+        &mut self,
+        wif: &str,
+        imported: &crate::model::single_key::ImportedKey,
+    ) -> Result<Arc<RwLock<SingleKeyWallet>>, String> {
+        let wallet = SingleKeyWallet::from_wif(wif, None, imported.alias.clone())
+            .map_err(|e| format!("Could not load imported key: {e}"))?;
+        let key_hash = wallet.key_hash();
+        let wallet_arc = Arc::new(RwLock::new(wallet));
+
+        if let Ok(mut single_key_wallets) = self.app_context.single_key_wallets.write() {
+            single_key_wallets.insert(key_hash, wallet_arc.clone());
+            self.app_context
+                .has_wallet
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+
+        self.select_single_key_wallet(wallet_arc.clone());
+        Ok(wallet_arc)
+    }
+
+    /// Test-only seam: run the advanced single-key import end to end (vault
+    /// write + in-memory sync) the way the confirmed dialog does, then return
+    /// the in-memory wallet that became selectable, so an integration test can
+    /// assert the imported key becomes visible in the same session. Not
+    /// exposed for production callers.
+    #[doc(hidden)]
+    pub fn import_single_key_for_test(
+        &mut self,
+        wif: &str,
+        alias: Option<String>,
+    ) -> Result<Arc<RwLock<SingleKeyWallet>>, String> {
+        let backend = self
+            .app_context
+            .wallet_backend()
+            .map_err(|e| e.to_string())?;
+        let imported = backend
+            .single_key()
+            .import_wif(wif, alias)
+            .map_err(|e| e.to_string())?;
+        self.register_imported_single_key(wif, &imported)
+    }
+
     /// Render the J-6 "Import private key (advanced)" modal and route a
     /// confirmed WIF through [`crate::wallet_backend::SingleKeyView::import_wif`].
     /// Errors surface as a global banner with the typed `TaskError` details
@@ -2186,14 +2239,23 @@ impl WalletsBalancesScreen {
                         hint: request.passphrase_hint.clone(),
                     },
                 ) {
-                    Ok(_) => {
-                        MessageBanner::set_global(
-                            ctx,
-                            format!("Imported key added for {}.", request.address_preview),
-                            MessageType::Success,
-                        );
-                        self.import_single_key_dialog.open = false;
-                        self.import_single_key_dialog.reset();
+                    Ok(imported) => {
+                        // Mirror the imported key into the in-memory map the
+                        // screen reads, otherwise the new key stays invisible
+                        // until the next cold-boot hydration. Matches the
+                        // mnemonic-screen import path.
+                        if let Err(e) = self.register_imported_single_key(&request.wif, &imported) {
+                            MessageBanner::set_global(ctx, e.to_string(), MessageType::Error)
+                                .with_details(&e);
+                        } else {
+                            MessageBanner::set_global(
+                                ctx,
+                                format!("Imported key added for {}.", request.address_preview),
+                                MessageType::Success,
+                            );
+                            self.import_single_key_dialog.open = false;
+                            self.import_single_key_dialog.reset();
+                        }
                     }
                     Err(e) => {
                         MessageBanner::set_global(ctx, e.to_string(), MessageType::Error)

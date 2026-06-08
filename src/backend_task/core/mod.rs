@@ -214,6 +214,7 @@ impl AppContext {
                 };
                 Ok(BackendTaskSuccessResult::RefreshedWallet { warning })
             }
+            // Single-key send/refresh unsupported this release — by design (single-key-mock.md, Decision #7).
             CoreTask::RefreshSingleKeyWalletInfo(_wallet) => {
                 Err(TaskError::SingleKeyWalletsUnsupported)
             }
@@ -298,6 +299,7 @@ impl AppContext {
                     total_amount,
                 })
             }
+            // Single-key send/refresh unsupported this release — by design (single-key-mock.md, Decision #7).
             CoreTask::SendSingleKeyWalletPayment {
                 wallet: _,
                 request: _,

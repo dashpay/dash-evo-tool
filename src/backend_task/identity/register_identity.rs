@@ -8,10 +8,21 @@ use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedId
 use dash_sdk::dash_spv::Network;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::fee::Credits;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::prelude::AddressNonce;
 use dash_sdk::platform::{FetchMany, Identity};
 use dash_sdk::query_types::AddressInfo;
 use std::collections::BTreeMap;
+
+/// Whether `qi` still carries the all-zeros placeholder id assigned before
+/// the upstream wallet-backend path learns the real identity id.
+///
+/// A placeholder identity must never be persisted: keyed by the all-zeros
+/// id it pollutes the identity store and enumeration index with a phantom
+/// entry that every subsequent failure overwrites.
+fn is_placeholder_identity(qi: &QualifiedIdentity) -> bool {
+    qi.identity.id() == dash_sdk::platform::Identifier::default()
+}
 
 impl AppContext {
     pub(super) async fn register_identity(
@@ -196,6 +207,16 @@ impl AppContext {
             )
             .await
             .inspect_err(|_| {
+                // On this path the real identity id is only known once upstream
+                // succeeds; the local mirror still carries the all-zeros
+                // placeholder. Persisting it would key a bogus zero-id record in
+                // the identity store and enumeration index, surfacing a phantom
+                // identity that every later failure overwrites. There is no real
+                // id to anchor a FailedCreation marker to, so skip the insert —
+                // the upstream discovery loop owns the asset-lock bookkeeping.
+                if is_placeholder_identity(&qualified_identity) {
+                    return;
+                }
                 qualified_identity
                     .status
                     .update(IdentityStatus::FailedCreation);
@@ -415,5 +436,55 @@ impl AppContext {
         }
 
         recent_info
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::platform::Identifier;
+
+    fn qualified_identity_with_id(id: Identifier) -> QualifiedIdentity {
+        let identity =
+            Identity::create_basic_identity(id, PlatformVersion::latest()).expect("basic identity");
+        QualifiedIdentity {
+            identity,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: None,
+            private_keys: Default::default(),
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: Default::default(),
+            status: IdentityStatus::PendingCreation,
+            network: Network::Testnet,
+        }
+    }
+
+    /// A failed wallet-backend registration must not persist its all-zeros
+    /// placeholder identity. The guard keys on the placeholder id; this pins
+    /// that an unresolved (default-id) identity is recognised as a placeholder
+    /// and a real-id identity is not.
+    #[test]
+    fn placeholder_identity_is_not_persistable() {
+        let placeholder = qualified_identity_with_id(Identifier::default());
+        assert!(
+            is_placeholder_identity(&placeholder),
+            "all-zeros id must be treated as a placeholder and skipped on the failure path"
+        );
+
+        let mut real_id_bytes = [0u8; 32];
+        real_id_bytes[0] = 7;
+        real_id_bytes[31] = 9;
+        let real = qualified_identity_with_id(Identifier::from(real_id_bytes));
+        assert!(
+            !is_placeholder_identity(&real),
+            "a real identity id must be persisted, not skipped"
+        );
     }
 }

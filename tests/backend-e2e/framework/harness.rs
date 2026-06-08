@@ -36,6 +36,14 @@ use std::time::Duration;
 /// balance query, etc.). Only the initial SPV sync may exceed this.
 pub const MAX_TEST_TIMEOUT: Duration = Duration::from_secs(360);
 
+/// Budget for the framework wallet to register with the upstream wallet
+/// backend during `init`. Registration emits the transient
+/// `TaskError::WalletBackend` ("retry in a moment") signal under the slower
+/// platform revision; `wait_for_wallet_in_spv` retries that typed variant with
+/// backoff inside this budget, so it must be comfortably longer than a single
+/// registration round-trip.
+const FRAMEWORK_WALLET_REGISTRATION_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// Shared test context, initialized once across all backend E2E tests.
 ///
 /// Uses `tokio::sync::OnceCell` so initialization runs inside the shared
@@ -70,9 +78,17 @@ static LEAKED_BACKEND: tokio::sync::Mutex<
     Option<Arc<dash_evo_tool::wallet_backend::WalletBackend>>,
 > = tokio::sync::Mutex::const_new(None);
 
-/// Minimum workdir slot for the next `init()`. Bumped each time a panicked
-/// init leaks an un-droppable SPV `LockFile`, so the retry starts from a
-/// fresh directory instead of colliding with the locked one.
+/// Number of distinct workdir slots `pick_available_workdir` cycles through.
+/// The scan wraps modulo this value, so the preferred floor can climb without
+/// ever emptying the scan range.
+const MAX_WORKDIR_SLOTS: usize = 10;
+
+/// Preferred starting workdir slot for the next `init()`. Bumped each time a
+/// panicked init leaks an un-droppable SPV `LockFile`, so the retry prefers a
+/// fresh directory instead of colliding with the locked one. The scan in
+/// [`pick_available_workdir`] wraps modulo [`MAX_WORKDIR_SLOTS`], so even if
+/// this floor exceeds the slot count it never exhausts the available slots — a
+/// freed lower slot is still picked up.
 static WORKDIR_SLOT_FLOOR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Get (or initialize) the shared test context.
@@ -338,9 +354,15 @@ impl BackendTestContext {
 
         // Confirm the framework wallet is registered with the upstream
         // manager so its addresses are watched by the SpvRuntime.
-        wait::wait_for_wallet_in_spv(&app_context, framework_wallet_hash, Duration::from_secs(30))
-            .await
-            .expect("Framework wallet not registered with the wallet backend");
+        // `wait_for_wallet_in_spv` retries the transient
+        // `TaskError::WalletBackend` signal with backoff inside this budget.
+        wait::wait_for_wallet_in_spv(
+            &app_context,
+            framework_wallet_hash,
+            FRAMEWORK_WALLET_REGISTRATION_TIMEOUT,
+        )
+        .await
+        .expect("Framework wallet not registered with the wallet backend");
 
         // Wait for SPV to fully sync (including masternodes) so MempoolManager
         // is active and bloom filter is built before any test broadcasts.
@@ -405,6 +427,11 @@ impl BackendTestContext {
         if let Ok(mut guard) = SPV_CANCEL.lock() {
             *guard = None;
         }
+
+        // Reset the retry bookkeeping: `OnceCell` caches this success, so no
+        // further init runs. Clearing the floor keeps the slot accounting
+        // deterministic if a future change ever re-enters init.
+        WORKDIR_SLOT_FLOOR.store(0, std::sync::atomic::Ordering::SeqCst);
 
         BackendTestContext {
             app_context,
@@ -598,20 +625,25 @@ impl BackendTestContext {
 /// etc. up to 10 slots. Each slot has a `.lock` file that is held for the
 /// lifetime of the returned `File` handle (via `flock` / `LockFile`).
 ///
-/// `slot_floor` is the first slot to try — bumped across init retries when a
-/// panicked predecessor leaked an un-droppable SPV `LockFile`, so the retry
-/// skips the still-locked directory.
+/// `slot_floor` is the *preferred* first slot to try — bumped across init
+/// retries when a panicked predecessor leaked an un-droppable SPV `LockFile`,
+/// so the retry prefers a fresh directory over the still-locked one. The scan
+/// wraps around and tries every slot, so a `slot_floor` that has climbed to (or
+/// past) `MAX_WORKDIR_SLOTS` still falls back to lower slots whose harness
+/// `.lock` was released on a previous init's unwind — it never produces an empty
+/// scan and a spurious "all slots locked" panic.
 ///
 /// This ensures:
 /// - The same workdir is reused across runs (wallets, SPV data, DB persist)
 /// - Concurrent test processes get separate workdirs automatically
-/// - A retried init after a leaked SPV lock gets a clean directory
+/// - A retried init after a leaked SPV lock prefers a clean directory, but
+///   still recovers a freed lower slot once the leaked floor exceeds the range
 fn pick_available_workdir(base: &std::path::Path, slot_floor: usize) -> (PathBuf, std::fs::File) {
     use std::io::Write;
 
-    let max_slots = 10;
-
-    for slot in slot_floor..max_slots {
+    let preferred = slot_floor % MAX_WORKDIR_SLOTS;
+    for offset in 0..MAX_WORKDIR_SLOTS {
+        let slot = (preferred + offset) % MAX_WORKDIR_SLOTS;
         let dir = if slot == 0 {
             base.to_path_buf()
         } else {
@@ -644,11 +676,13 @@ fn pick_available_workdir(base: &std::path::Path, slot_floor: usize) -> (PathBuf
             let _ = write!(f, "{}", std::process::id());
             let _ = f.flush();
 
-            if slot > 0 {
+            if offset > 0 {
                 tracing::info!(
-                    "Primary workdir locked by another process, using slot {slot}: {}",
+                    "Preferred workdir slot {preferred} unavailable, using slot {slot}: {}",
                     dir.display()
                 );
+            } else if slot != 0 {
+                tracing::info!("Using preferred workdir slot {slot}: {}", dir.display());
             }
             return (dir, f);
         }
@@ -660,7 +694,7 @@ fn pick_available_workdir(base: &std::path::Path, slot_floor: usize) -> (PathBuf
     }
 
     panic!(
-        "All {max_slots} E2E workdir slots are locked. \
+        "All {MAX_WORKDIR_SLOTS} E2E workdir slots are locked. \
          Kill other test processes or remove lock files in {}*",
         base.display()
     );

@@ -30,5 +30,6 @@ mod identity_tasks;
 mod mnlist_tasks;
 mod shielded_tasks;
 mod token_tasks;
+mod wallet_reregistration;
 mod wallet_tasks;
 mod z_broadcast_st_tasks;

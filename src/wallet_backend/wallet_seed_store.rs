@@ -27,7 +27,7 @@
 use std::sync::Arc;
 
 use platform_wallet_storage::secrets::{
-    FileStoreError, SecretBytes, SecretStore, WalletId as SecretWalletId,
+    SecretBytes, SecretStore, SecretStoreError, WalletId as SecretWalletId,
 };
 
 use crate::backend_task::error::TaskError;
@@ -50,7 +50,7 @@ fn encode_with_version(envelope: &StoredSeedEnvelope) -> Result<Vec<u8>, TaskErr
     let body =
         bincode::serde::encode_to_vec(envelope, bincode::config::standard()).map_err(|_| {
             TaskError::WalletSeedStorage {
-                source: Box::new(FileStoreError::MalformedVault),
+                source: Box::new(SecretStoreError::MalformedVault),
             }
         })?;
     let mut out = Vec::with_capacity(body.len() + 1);
@@ -64,7 +64,7 @@ fn encode_with_version(envelope: &StoredSeedEnvelope) -> Result<Vec<u8>, TaskErr
 /// matches on the leading byte to dispatch to the right decoder.
 fn decode_with_version(bytes: &[u8]) -> Result<StoredSeedEnvelope, TaskError> {
     let malformed = || TaskError::WalletSeedStorage {
-        source: Box::new(FileStoreError::MalformedVault),
+        source: Box::new(SecretStoreError::MalformedVault),
     };
     if let Some((&tag, rest)) = bytes.split_first()
         && tag == STORED_SEED_ENVELOPE_VERSION
@@ -145,7 +145,7 @@ fn scope_for(seed_hash: &WalletSeedHash) -> SecretWalletId {
     SecretWalletId::from(*seed_hash)
 }
 
-fn map_err(source: FileStoreError) -> TaskError {
+fn map_err(source: SecretStoreError) -> TaskError {
     TaskError::WalletSeedStorage {
         source: Box::new(source),
     }

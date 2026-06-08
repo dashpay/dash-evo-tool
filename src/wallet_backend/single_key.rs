@@ -18,7 +18,7 @@ use dash_sdk::dpp::dashcore::secp256k1::ecdsa::Signature;
 use dash_sdk::dpp::dashcore::secp256k1::{Message, Secp256k1};
 use dash_sdk::dpp::dashcore::{Address, Network, PrivateKey, PublicKey};
 use platform_wallet_storage::secrets::{
-    FileStoreError, SecretBytes, SecretStore, WalletId as SecretWalletId,
+    SecretBytes, SecretStore, SecretStoreError, WalletId as SecretWalletId,
 };
 use zeroize::Zeroizing;
 
@@ -624,16 +624,16 @@ pub(crate) fn sign_message_with_raw_key(
 /// directory is created if missing; on Unix the vault file inherits its
 /// initial mode from upstream's writer (the encrypted-file backend
 /// refuses pre-existing modes looser than `0600`, so the secret-at-rest
-/// floor is enforced at open time — see `FileStoreError::InsecurePermissions`).
+/// floor is enforced at open time — see `SecretStoreError::InsecurePermissions`).
 ///
 /// The passphrase is a fixed, non-secret per-process constant: at-rest
 /// protection relies on file permissions (enforced by the upstream backend).
 /// A user-supplied passphrase is a follow-up (T-SK-03 UX work). The design
 /// choice is documented in the ADR under
 /// `docs/ai-design/2026-05-18-platform-wallet-migration/`.
-pub fn open_secret_store(path: &std::path::Path) -> Result<SecretStore, FileStoreError> {
+pub fn open_secret_store(path: &std::path::Path) -> Result<SecretStore, SecretStoreError> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|_| FileStoreError::MalformedVault)?;
+        std::fs::create_dir_all(parent).map_err(|_| SecretStoreError::MalformedVault)?;
     }
     SecretStore::file(
         path,

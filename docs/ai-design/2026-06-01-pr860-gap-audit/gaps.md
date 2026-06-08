@@ -81,8 +81,8 @@ refresh: PROJ-025 (LOW, typed classification mirroring PROJ-023; zero new varian
    tracks an **unreleased** platform dev rev. Project policy (Decision #1) classifies this as
    a release-hardening blocker, not a start blocker — but it gates *merge-to-ship*. **This is
    the sole remaining merge-blocker.** The pin moved again since the prior refresh — now
-   `rev = ddfa66ed…` (was `35e4a2f6…`, originally `17653ba8…`) — but is still a dev rev, not a
-   released tag.
+   `rev = 9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8` (was `ddfa66ed…`, before that `35e4a2f6…`,
+   originally `17653ba8…`) — but is still a dev rev, not a released tag.
 
 Everything else is fixable post-merge or is a disclosed scope cut.
 
@@ -93,7 +93,7 @@ Everything else is fixable post-merge or is a disclosed scope cut.
 | ID | Title | Location | Sev | Status | What's missing |
 |----|-------|----------|-----|--------|----------------|
 | PROJ-001 | SPV sync never driven — dead `start()`, inert `start_spv()` | `src/context/wallet_lifecycle.rs:103,130`; `src/wallet_backend/mod.rs:462-479` | CRITICAL | **RESOLVED (`36f5a982`)** | See Resolution log 2026-06-01 |
-| PROJ-005 | Pin tracks unreleased platform rev (G1) | `Cargo.toml:21,31,32,35` (`rev = ddfa66ed37…`) | HIGH | OPEN | Pin must move to a released platform rev before shipping. Still a dev rev. |
+| PROJ-005 | Pin tracks unreleased platform rev (G1) | `Cargo.toml:21,31,32,35` (`rev = 9e1248cb…`) | HIGH | OPEN | Pin must move to a released platform rev before shipping. Still a dev rev. |
 
 ---
 
@@ -291,7 +291,7 @@ counted as new open gaps): TC-SK-010, TC-A11Y-008, TC-PERF-003.
 
 | ID | Title | Location | Sev | Status | Blocker |
 |----|-------|----------|-----|--------|---------|
-| PROJ-005 | platform pin tracks unreleased dev rev (G1) | `Cargo.toml:21,31,32,35` | HIGH | OPEN | Release gate; bump to released rev before ship. Current rev `ddfa66ed373beaebdae9a5d919f896af43cbcd33` (was `35e4a2f6…` at prior refresh, `17653ba8…` at original audit). |
+| PROJ-005 | platform pin tracks unreleased dev rev (G1) | `Cargo.toml:21,31,32,35` | HIGH | OPEN | Release gate; bump to released rev before ship. Current rev `9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8` (was `ddfa66ed373beaebdae9a5d919f896af43cbcd33` at prior refresh, `35e4a2f6…` before that, `17653ba8…` at original audit). |
 | PROJ-017 | `register_identity_funding_account` absent upstream — DET carries contained exception | `src/wallet_backend/mod.rs:1407` (`provision_identity_funding_account`) / `:1489` (`ensure_identity_funding_accounts`) | LOW | OPEN (tracked, live) | `rs-platform-wallet` has no funding-account registrar sibling to `register_contact_account`. Verified live — called from register/topup (`mod.rs:1261,1325,1371`). Upstream-contribution `9cdcfb25`; persister-load recurrence `a5538dc8`. |
 
 ---

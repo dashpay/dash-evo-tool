@@ -147,7 +147,7 @@ pub enum TaskError {
     )]
     SecretStore {
         #[source]
-        source: Box<platform_wallet_storage::secrets::FileStoreError>,
+        source: Box<platform_wallet_storage::secrets::SecretStoreError>,
     },
 
     /// The encrypted seed vault could not be read or written. Distinct
@@ -159,7 +159,7 @@ pub enum TaskError {
     )]
     WalletSeedStorage {
         #[source]
-        source: Box<platform_wallet_storage::secrets::FileStoreError>,
+        source: Box<platform_wallet_storage::secrets::SecretStoreError>,
     },
 
     /// The DET wallet-metadata sidecar (alias / `is_main` /

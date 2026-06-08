@@ -2,6 +2,7 @@ use super::AppContext;
 use crate::backend_task::error::TaskError;
 use crate::database::is_unique_constraint_violation;
 use crate::model::spv_status::SpvStatus;
+use crate::model::wallet::birth_height::{WalletOrigin, registration_birth_height};
 use crate::model::wallet::meta::WalletMeta;
 use crate::model::wallet::seed_envelope::StoredSeedEnvelope;
 use crate::model::wallet::{DerivationPathReference, DerivationPathType, Wallet, WalletSeedHash};
@@ -194,10 +195,17 @@ impl AppContext {
     /// bootstrap (and, for a password wallet, to promote into the JIT session
     /// cache) so registration never reads a parked seed — an open `Wallet`
     /// parks none (R3). The borrow does not outlive this call.
+    ///
+    /// `origin` records whether the recovery phrase is brand-new
+    /// ([`WalletOrigin::Fresh`]) or pre-existing ([`WalletOrigin::Imported`]).
+    /// It sets the upstream SPV scan-window floor: a fresh wallet scans from
+    /// the current tip, an imported one from genesis so deposits made before
+    /// registration are still found (PROJ-010).
     pub fn register_wallet(
         self: &Arc<Self>,
         wallet: Wallet,
         seed: &[u8; 64],
+        origin: WalletOrigin,
     ) -> Result<(WalletSeedHash, Arc<RwLock<Wallet>>), TaskError> {
         let seed_hash = wallet.seed_hash();
         let uses_password = wallet.uses_password;
@@ -261,7 +269,53 @@ impl AppContext {
             self.promote_seed_to_session(seed_hash, seed);
         }
 
+        // 4. Register the wallet with the upstream SPV backend so its addresses
+        // are watched and received funds become visible (W1; PROJ-010). The
+        // upstream `create_wallet_from_seed_bytes` is the only writer to the
+        // persistor, so without this the wallet is never watched. Done on a
+        // tracked subtask because registration is async and this entry point is
+        // synchronous; the seed is moved in zeroized and dropped when the task
+        // ends. If the backend is not wired yet, the W2 cold-boot bridge covers
+        // it at the next launch.
+        self.register_wallet_upstream(seed_hash, seed, origin);
+
         Ok((seed_hash, wallet_arc))
+    }
+
+    /// Spawn the W1 upstream-registration subtask for a just-registered wallet.
+    ///
+    /// Moves a zeroized copy of `seed` into the subtask; the borrow in
+    /// [`Self::register_wallet`] is not extended. The birth height follows the
+    /// wallet's [`WalletOrigin`]. Best-effort: a registration failure is logged
+    /// and the wallet is retried by the W2 cold-boot bridge at next launch.
+    fn register_wallet_upstream(
+        self: &Arc<Self>,
+        seed_hash: WalletSeedHash,
+        seed: &[u8; 64],
+        origin: WalletOrigin,
+    ) {
+        let Ok(backend) = self.wallet_backend() else {
+            tracing::debug!(
+                wallet = %hex::encode(seed_hash),
+                "Wallet backend not wired yet; deferring upstream registration to next cold boot"
+            );
+            return;
+        };
+        let seed = zeroize::Zeroizing::new(*seed);
+        let birth_height = registration_birth_height(origin);
+        self.subtasks
+            .spawn_sync("wallet_upstream_registration", async move {
+                if let Err(error) = backend
+                    .register_wallet_from_seed(&seed_hash, &seed, birth_height)
+                    .await
+                {
+                    tracing::warn!(
+                        wallet = %hex::encode(seed_hash),
+                        %error,
+                        "Upstream wallet registration failed; will retry at next cold boot"
+                    );
+                }
+            });
     }
 
     /// Mirror a newly-registered wallet into the wallet-meta +
@@ -374,7 +428,18 @@ impl AppContext {
     /// session cache on unlock. A still-locked protected wallet is left for its
     /// unlock gesture to bootstrap, exactly as before; this method never forces
     /// a passphrase prompt at startup.
+    ///
+    /// This is also the W2 cold-boot reconciliation point (PROJ-010): inside
+    /// the same prompt-free seed scope it registers any wallet present in DET
+    /// sidecars but absent from the upstream SPV persistor (migrated installs,
+    /// wallets created before the fix, post-reset), so received funds become
+    /// visible without a launch-time password prompt. Registration is
+    /// independent of address bootstrap: an already-bootstrapped wallet that
+    /// was never registered upstream still gets registered here.
     pub async fn bootstrap_wallet_addresses_jit(&self, wallet: &Arc<RwLock<Wallet>>) {
+        let Ok(backend) = self.wallet_backend() else {
+            return;
+        };
         let seed_hash = {
             let Ok(guard) = wallet.read() else {
                 return;
@@ -383,15 +448,25 @@ impl AppContext {
             // wallet at cold boot is either unprotected (no-prompt fast-path) or
             // already session-cached via the unlock gesture. A locked protected
             // wallet is skipped to avoid a surprise startup prompt.
-            if !guard.is_open() || !Self::wallet_needs_bootstrap(&guard) {
+            if !guard.is_open() {
                 return;
             }
             guard.seed_hash()
         };
 
-        let Ok(backend) = self.wallet_backend() else {
+        // Enter the seed scope when there is any seed-dependent work to do:
+        // address bootstrap OR upstream registration. A fully-bootstrapped,
+        // already-registered wallet needs neither and is skipped without
+        // touching the vault.
+        let needs_bootstrap = wallet
+            .read()
+            .map(|g| Self::wallet_needs_bootstrap(&g))
+            .unwrap_or(false);
+        let needs_registration = !backend.is_wallet_registered(&seed_hash);
+        if !needs_bootstrap && !needs_registration {
             return;
-        };
+        }
+
         let wallet = Arc::clone(wallet);
         let result = backend
             .secret_access()
@@ -409,6 +484,19 @@ impl AppContext {
                             tracing::info!(wallet = %hex::encode(seed_hash), "Bootstrapping wallet addresses (JIT seed)");
                             guard.bootstrap_known_addresses(seed, self);
                         }
+                    }
+                    // W2 cold-boot reconciliation: register with the upstream
+                    // SPV backend if this wallet is not yet known to it, using
+                    // the seed already open in this scope. Idempotent and
+                    // genesis-floored so pre-existing deposits are found
+                    // (PROJ-010). Best-effort — a failure is retried on the
+                    // next boot.
+                    if let Err(error) = backend.ensure_upstream_registered(&seed_hash, seed).await {
+                        tracing::warn!(
+                            wallet = %hex::encode(seed_hash),
+                            %error,
+                            "W2 upstream registration failed; will retry at next cold boot"
+                        );
                     }
                     // D4b lazy warm: populate the identity-auth public-key
                     // cache for the identities this wallet already knows, in
@@ -957,7 +1045,9 @@ mod tests {
         .expect("build no-password wallet");
         assert!(wallet.is_open(), "a no-password wallet is open on creation");
 
-        let (seed_hash, wallet_arc) = ctx.register_wallet(wallet, &seed).expect("register wallet");
+        let (seed_hash, wallet_arc) = ctx
+            .register_wallet(wallet, &seed, WalletOrigin::Fresh)
+            .expect("register wallet");
         let backend = ctx.wallet_backend().expect("backend wired");
 
         // Live (same-process) state: registration wrote the seed envelope to
@@ -1006,7 +1096,9 @@ mod tests {
             None,
         )
         .expect("build wallet");
-        let (seed_hash, _wallet_arc) = ctx.register_wallet(wallet, &seed).expect("register wallet");
+        let (seed_hash, _wallet_arc) = ctx
+            .register_wallet(wallet, &seed, WalletOrigin::Fresh)
+            .expect("register wallet");
 
         let backend = ctx.wallet_backend().expect("backend wired");
         let scope = crate::wallet_backend::SecretScope::HdSeed { seed_hash };
@@ -1031,6 +1123,107 @@ mod tests {
         assert!(
             !backend.secret_access().is_session_cached(&scope),
             "the outgoing context's session cache must be empty after the switch path runs"
+        );
+
+        backend.shutdown().await;
+    }
+
+    /// PROJ-010 (W1 idempotency): registering the same wallet twice with the
+    /// upstream backend is a no-op the second time — the wallet is watched once,
+    /// never double-watched. The pre-fix bug was the *opposite* (a never-watched
+    /// wallet); this pins that the new writer is also safe to call repeatedly,
+    /// as both W1 (create/import) and W2 (cold-boot) may fire for one wallet in
+    /// a single session.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn register_wallet_from_seed_is_idempotent() {
+        let (ctx, sender, _tmp) = offline_testnet_context();
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("ensure_wallet_backend should succeed offline");
+        let backend = ctx.wallet_backend().expect("backend wired");
+
+        let seed = [0x5Au8; 64];
+        let wallet =
+            crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+                .expect("build wallet");
+        let seed_hash = wallet.seed_hash();
+
+        assert!(
+            !backend.is_wallet_registered(&seed_hash),
+            "precondition: wallet must not be registered before the first call"
+        );
+
+        backend
+            .register_wallet_from_seed(&seed_hash, &seed, Some(0))
+            .await
+            .expect("first registration must succeed");
+        assert!(
+            backend.is_wallet_registered(&seed_hash),
+            "the wallet must be registered after the first call"
+        );
+        assert_eq!(
+            backend.wallet_count().await,
+            1,
+            "exactly one wallet is watched after the first registration"
+        );
+
+        // Second call: idempotent no-op, no double-watch.
+        backend
+            .register_wallet_from_seed(&seed_hash, &seed, Some(0))
+            .await
+            .expect("second registration must be a no-op, not an error");
+        assert_eq!(
+            backend.wallet_count().await,
+            1,
+            "a repeat registration must not double-watch the wallet"
+        );
+
+        backend.shutdown().await;
+    }
+
+    /// PROJ-010 W2 reconciliation (idempotency across the two writers): once a
+    /// wallet is registered, the W2 `ensure_upstream_registered` path is a
+    /// no-op — it never re-registers or double-watches. This is the cold-boot
+    /// bridge's safety property: an already-watched wallet is left untouched
+    /// while a missing one is filled exactly once.
+    ///
+    /// The full cross-process cold-boot reload (a fresh `AppContext` over the
+    /// same persistor re-watching the wallet) and the live below-tip funding
+    /// repro both require process isolation — DET's `SpvProvider` holds a
+    /// strong `Arc<AppContext>`, so a second in-process context cannot open the
+    /// same secret-store vault. Those assertions live in the `#[ignore]`
+    /// backend-e2e lane (`tests/backend-e2e/wallet_reregistration.rs`), which
+    /// runs each context in its own workdir slot.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ensure_upstream_registered_is_noop_when_already_registered() {
+        let (ctx, sender, _tmp) = offline_testnet_context();
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("ensure_wallet_backend should succeed offline");
+        let backend = ctx.wallet_backend().expect("backend wired");
+
+        let seed = [0x6Bu8; 64];
+        let wallet =
+            crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+                .expect("build wallet");
+        let seed_hash = wallet.seed_hash();
+
+        // W1 registers it once.
+        backend
+            .register_wallet_from_seed(&seed_hash, &seed, None)
+            .await
+            .expect("initial registration must succeed");
+        assert_eq!(backend.wallet_count().await, 1);
+
+        // W2 over the same, already-registered wallet is a no-op.
+        backend
+            .ensure_upstream_registered(&seed_hash, &seed)
+            .await
+            .expect("W2 must be a no-op, not an error, for a registered wallet");
+        assert_eq!(
+            backend.wallet_count().await,
+            1,
+            "W2 must not double-watch an already-registered wallet"
         );
 
         backend.shutdown().await;

@@ -4,11 +4,22 @@
 //! persisted wallets back at startup from `WalletBackend`. The shipping
 //! impl is [`UpstreamFromPersisted`], which drives the upstream
 //! **seedless / watch-only** rehydration API
-//! (`PlatformWalletManager::load_from_persistor`, PR #3692): balances,
-//! UTXOs, identities, and contacts come back at launch with no seed in
-//! memory. Signing keys enter memory later, on demand, when a signing
-//! operation pulls the seed just-in-time through the
+//! (`PlatformWalletManager::load_from_persistor`, PR #3692): for every
+//! wallet **already present in the upstream persistor**, balances, UTXOs,
+//! identities, and contacts come back at launch with no seed in memory.
+//! Signing keys enter memory later, on demand, when a signing operation
+//! pulls the seed just-in-time through the
 //! [`SecretAccess`](crate::wallet_backend::SecretAccess) chokepoint.
+//!
+//! This loader is **read-only**: it does NOT register or re-register
+//! wallets. It can only return what the persistor already holds. The
+//! persistor is populated at the two seed-bearing moments —
+//! `WalletBackend::register_wallet_from_seed` (W1, create/import) and
+//! `WalletBackend::ensure_upstream_registered` (W2, cold-boot
+//! reconciliation). If those have never run for a wallet (fresh install,
+//! post-reset, migrated/sidecar-only), the persistor is empty for it and
+//! this loader brings back nothing — exactly the PROJ-010 funds-invisible
+//! state the W1/W2 writers exist to prevent.
 //!
 //! The trait stays object-safe (`Arc<dyn PersistedWalletLoader>`) and
 //! its outputs are DET-opaque: [`LoadedWallets`] carries only DET's

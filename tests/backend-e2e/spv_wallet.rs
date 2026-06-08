@@ -33,7 +33,11 @@ async fn test_spv_sync_and_create_wallet() {
 
     // Register the wallet
     let (seed_hash, _wallet_arc) = app_context
-        .register_wallet(wallet, &seed)
+        .register_wallet(
+            wallet,
+            &seed,
+            dash_evo_tool::model::wallet::birth_height::WalletOrigin::Imported,
+        )
         .expect("register_wallet should succeed");
 
     // Verify in-memory

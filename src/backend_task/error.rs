@@ -338,6 +338,16 @@ pub enum TaskError {
         source: platform_wallet::changeset::PersistenceError,
     },
 
+    /// A wallet just registered with the SPV backend produced an address
+    /// signature that does not match the saved wallet's. The wallet was
+    /// rejected rather than watched, so funds are never routed to the wrong
+    /// place. This is a defensive fund-safety gate that should not occur in
+    /// normal use — the wallet was registered from its own seed.
+    #[error(
+        "This wallet could not be safely linked to your saved wallet, so it was not activated. Remove and re-import it from its recovery phrase."
+    )]
+    WalletRegistrationXpubMismatch,
+
     /// A stored wallet seed could not be decrypted (wrong password or
     /// corrupted seed store).
     #[error(

@@ -271,7 +271,11 @@ impl BackendTestContext {
             None,
         )
         .expect("Failed to create framework wallet");
-        match app_context.register_wallet(wallet, &seed) {
+        match app_context.register_wallet(
+            wallet,
+            &seed,
+            dash_evo_tool::model::wallet::birth_height::WalletOrigin::Imported,
+        ) {
             Ok((hash, _)) => {
                 tracing::info!("Registered framework wallet (seed_hash: {:?})", &hash[..4]);
             }
@@ -470,7 +474,11 @@ impl BackendTestContext {
         .expect("Failed to create test wallet");
 
         let (seed_hash, wallet_arc) = app_context
-            .register_wallet(wallet, &seed)
+            .register_wallet(
+                wallet,
+                &seed,
+                dash_evo_tool::model::wallet::birth_height::WalletOrigin::Imported,
+            )
             .expect("Failed to register test wallet");
         tracing::trace!(
             seed_hash = ?&seed_hash[..4],

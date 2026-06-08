@@ -145,7 +145,11 @@ impl AddNewWalletScreen {
 
             let (new_wallet_seed_hash, _wallet_arc) = self
                 .app_context
-                .register_wallet(wallet, &seed)
+                .register_wallet(
+                    wallet,
+                    &seed,
+                    crate::model::wallet::birth_height::WalletOrigin::Fresh,
+                )
                 .map_err(|e| e.to_string())?;
 
             // Set pending wallet selection so the wallet screen auto-selects this wallet

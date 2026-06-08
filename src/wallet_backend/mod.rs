@@ -400,11 +400,18 @@ impl WalletBackend {
     }
 
     /// Seedless watch-only load over the upstream PR #3692 rehydration
-    /// API. One `load_from_persistor()` call rebuilds every persisted
-    /// wallet as a watch-only entry (no seed touched); each registered
-    /// upstream `WalletId` is then resolved to its DET [`WalletSeedHash`]
-    /// by matching the loaded wallet's BIP44 account xpub against the
-    /// `xpub_encoded` DET persisted in its sidecar.
+    /// API. One `load_from_persistor()` call rebuilds every wallet **the
+    /// persistor already holds** as a watch-only entry (no seed touched);
+    /// each registered upstream `WalletId` is then resolved to its DET
+    /// [`WalletSeedHash`] by matching the loaded wallet's BIP44 account
+    /// xpub against the `xpub_encoded` DET persisted in its sidecar.
+    ///
+    /// READ-ONLY: this does not register wallets. A wallet absent from the
+    /// persistor (never created/imported under the W1/W2 writers, or
+    /// post-reset) is not loaded here — it is registered by
+    /// [`Self::register_wallet_from_seed`] (W1) or
+    /// [`Self::ensure_upstream_registered`] (W2) the next time its seed is
+    /// in hand, after which this path rebuilds it on subsequent boots.
     ///
     /// Fund-routing gate (HIGH): a loaded wallet whose BIP44 account
     /// xpub matches **no** sidecar entry is rejected — never registered,
@@ -524,6 +531,213 @@ impl WalletBackend {
                 )
             })
             .map(|a| a.account_xpub.encode().to_vec())
+    }
+
+    /// The upstream `WalletId = SHA256(root_xpub ‖ chaincode)` and BIP44
+    /// account-0 xpub bytes for the given seed, computed WITHOUT registering.
+    ///
+    /// Builds the same `key_wallet::Wallet` the upstream
+    /// `create_wallet_from_seed_bytes` builds internally and reads its
+    /// already-computed `wallet_id` (the idempotency probe key) and account
+    /// xpub (the fund-routing gate's expected value). DET cannot derive the
+    /// `WalletId` from its sidecar account xpub — BIP44 hardens every level
+    /// above the account — so the seed is required; this is only ever called
+    /// where the seed is already in hand.
+    fn upstream_identity_from_seed(
+        &self,
+        seed: &[u8; 64],
+    ) -> Result<(WalletId, Vec<u8>), TaskError> {
+        use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
+        use dash_sdk::dpp::key_wallet::wallet::Wallet as UpstreamWallet;
+        use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
+        let wallet = UpstreamWallet::from_seed_bytes(
+            *seed,
+            self.inner.network,
+            WalletAccountCreationOptions::Default,
+        )
+        .map_err(|e| TaskError::WalletBackend {
+            source: Box::new(platform_wallet::error::PlatformWalletError::WalletCreation(
+                e.to_string(),
+            )),
+        })?;
+        let account_xpub = wallet
+            .accounts
+            .all_accounts()
+            .into_iter()
+            .find(|a| {
+                matches!(
+                    a.account_type,
+                    AccountType::Standard {
+                        index: 0,
+                        standard_account_type: StandardAccountType::BIP44Account,
+                    }
+                )
+            })
+            .map(|a| a.account_xpub.encode().to_vec())
+            .ok_or(TaskError::WalletRegistrationXpubMismatch)?;
+        Ok((wallet.wallet_id, account_xpub))
+    }
+
+    /// Register a wallet with the upstream SPV backend from its seed, so the
+    /// upstream persistor is populated and the wallet's addresses are watched
+    /// (W1 — create/import write path; PROJ-010 regression fix).
+    ///
+    /// The upstream `create_wallet_from_seed_bytes` is the only writer to the
+    /// `platform-wallet.sqlite` persistor; the seedless cold-boot loader only
+    /// reads it. Without this call nothing ever populates the persistor, so a
+    /// fresh / reset / migrated install never watches the wallet and received
+    /// funds stay invisible at 100% sync.
+    ///
+    /// `birth_height_override` is the SPV scan-window floor — `None` scans from
+    /// the current tip (fresh wallet), `Some(0)` from genesis (imported/
+    /// recovered wallet that may already hold funds). See
+    /// [`crate::model::wallet::birth_height`].
+    ///
+    /// Idempotent: a wallet already in the upstream manager is a no-op, and an
+    /// upstream `WalletAlreadyExists` is mapped to `Ok` so a W1/W2 race never
+    /// double-watches. The `seed` is borrowed for the call only and never
+    /// parked.
+    pub(crate) async fn register_wallet_from_seed(
+        &self,
+        seed_hash: &WalletSeedHash,
+        seed: &[u8; 64],
+        birth_height_override: Option<u32>,
+    ) -> Result<(), TaskError> {
+        use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
+        use platform_wallet::error::PlatformWalletError;
+
+        // Idempotency probe: if this seed's wallet is already registered in the
+        // DET maps, there is nothing to do — never re-register, never
+        // double-watch.
+        let (wallet_id, expected_account_xpub) = self.upstream_identity_from_seed(seed)?;
+        if self.inner.id_map.read()?.contains_key(seed_hash) {
+            tracing::debug!(
+                wallet = %hex::encode(seed_hash),
+                "Wallet already registered with backend; skipping upstream register"
+            );
+            return Ok(());
+        }
+
+        if self.inner.pwm.get_wallet(&wallet_id).await.is_some() {
+            // Present upstream but absent from the DET maps (e.g. a prior
+            // partial run): resolve it into the maps without a second create.
+            return self
+                .resolve_registered_wallet(*seed_hash, wallet_id, &expected_account_xpub)
+                .await;
+        }
+
+        // Write the persistor via the sole upstream writer. A concurrent
+        // registration that wins the race surfaces as `WalletAlreadyExists`,
+        // which is success for our purposes (the wallet IS registered).
+        match self
+            .inner
+            .pwm
+            .create_wallet_from_seed_bytes(
+                self.inner.network,
+                *seed,
+                WalletAccountCreationOptions::Default,
+                birth_height_override,
+            )
+            .await
+        {
+            Ok(_pw) => {}
+            Err(PlatformWalletError::WalletAlreadyExists(_)) => {
+                tracing::debug!(
+                    wallet = %hex::encode(seed_hash),
+                    "Upstream reports wallet already exists; treating as registered"
+                );
+            }
+            Err(e) => {
+                return Err(TaskError::WalletBackend {
+                    source: Box::new(e),
+                });
+            }
+        }
+
+        self.resolve_registered_wallet(*seed_hash, wallet_id, &expected_account_xpub)
+            .await?;
+        tracing::info!(
+            wallet = %hex::encode(seed_hash),
+            birth_height = ?birth_height_override,
+            "Registered wallet with upstream SPV backend"
+        );
+        Ok(())
+    }
+
+    /// Cold-boot / first-unlock reconciliation: register a wallet present in
+    /// DET sidecars but absent from the upstream persistor (W2; PROJ-010).
+    ///
+    /// Migrated installs, wallets created before this fix, and post-reset
+    /// states land with an empty upstream persistor, so the seedless cold-boot
+    /// loader has nothing to read. This re-populates the persistor the first
+    /// time the seed becomes available — prompt-free for unprotected wallets at
+    /// boot, on the unlock gesture for protected ones. The caller already holds
+    /// the plaintext seed inside a JIT secret scope, so this introduces no new
+    /// password prompt (preserves the watch-only-at-boot contract).
+    ///
+    /// Imported/recovered/migrated wallets may hold deposits made before
+    /// registration, so this always uses `Some(0)` (genesis) — the only floor
+    /// that guarantees a pre-existing deposit is found. Idempotent: a wallet
+    /// already registered is a no-op.
+    pub(crate) async fn ensure_upstream_registered(
+        &self,
+        seed_hash: &WalletSeedHash,
+        seed: &[u8; 64],
+    ) -> Result<(), TaskError> {
+        use crate::model::wallet::birth_height::{WalletOrigin, registration_birth_height};
+
+        if self.inner.id_map.read()?.contains_key(seed_hash) {
+            return Ok(());
+        }
+        self.register_wallet_from_seed(
+            seed_hash,
+            seed,
+            registration_birth_height(WalletOrigin::Imported),
+        )
+        .await
+    }
+
+    /// Resolve one just-registered upstream wallet into the DET-keyed maps via
+    /// the account-xpub fund-routing gate, identical in spirit to the gate the
+    /// seedless loader applies per wallet.
+    ///
+    /// Fund-routing gate (HIGH): the registered wallet's BIP44 account xpub
+    /// MUST equal `expected_account_xpub` — DET's published xpub for this
+    /// seed. A mismatch means the upstream wallet would route funds for a
+    /// different seed than DET believes it holds, so it is rejected (never
+    /// inserted into the maps, never displayed) rather than silently trusted.
+    async fn resolve_registered_wallet(
+        &self,
+        seed_hash: WalletSeedHash,
+        wallet_id: WalletId,
+        expected_account_xpub: &[u8],
+    ) -> Result<(), TaskError> {
+        let Some(pw) = self.inner.pwm.get_wallet(&wallet_id).await else {
+            return Err(TaskError::WalletBackend {
+                source: Box::new(platform_wallet::error::PlatformWalletError::WalletNotFound(
+                    hex::encode(wallet_id),
+                )),
+            });
+        };
+
+        let registered_xpub = self.bip44_account_xpub_encoded(&pw).await;
+        if registered_xpub.as_deref() != Some(expected_account_xpub) {
+            tracing::warn!(
+                wallet = %hex::encode(seed_hash),
+                "Registered wallet xpub does not match DET's published xpub; rejecting (fund-routing gate)"
+            );
+            return Err(TaskError::WalletRegistrationXpubMismatch);
+        }
+
+        self.inner.id_map.write()?.insert(seed_hash, wallet_id);
+        self.inner
+            .wallets
+            .write()?
+            .insert(wallet_id, Arc::clone(&pw));
+        self.inner
+            .snapshots
+            .register_wallet(seed_hash, wallet_id, pw);
+        Ok(())
     }
 
     /// Start chain sync and the periodic upstream coordinators.

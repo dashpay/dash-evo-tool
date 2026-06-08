@@ -1,8 +1,8 @@
 # PR #860 Platform-Wallet Rewrite — Consolidated Gap Audit
 
-**Audit date:** 2026-06-01 — **Refreshed:** 2026-06-03
-**Head SHA (refresh):** `39e459ff`
-**Prior refresh head:** `450214e5c5ed602a0c10a951ae00400a371c3b97`
+**Audit date:** 2026-06-01 — **Refreshed:** 2026-06-08
+**Head SHA (refresh):** `954ea3f8`
+**Prior refresh head:** `39e459ff`
 **Original audit head:** `686430a4d2b83596fbbe716acc183a424859e11d`
 **PR #860 base:** `v1.0-dev` @ `87ba5b711839219f5e1c7aee8f9de36d038866e3`
 **Auditor:** project-reviewer-adams (READ-ONLY; this refresh touches gaps.md only)
@@ -42,7 +42,8 @@ each re-derived line by line (not taken on commit-message faith):
   operation, keyed by scope (`HdSeed { seed_hash }` / `SingleKey { address }`), with an
   optional "keep unlocked until app close" remember policy. The HD seed is decrypted on demand
   and dropped immediately.
-- **PROJ-013** (large-stack e2e harness) — RESOLVED (`2a9161d3`). Residual CI sub-item tracked.
+- **PROJ-013** (large-stack e2e harness) — RESOLVED (`2a9161d3`, `93a20769`). 32 MB-stack runtime
+  confirmed load-bearing; `#[stack_size]` rejected (recursion runs on tokio threads); `RUST_MIN_STACK` moot.
 - **PROJ-020 / PROJ-021** (single-key-mock prose / CHANGELOG known-limits) — RESOLVED (`f39b085d`).
 - **PROJ-023** (add-contact string error matching) — RESOLVED (`d852ce99`). A sibling
   occurrence of the same anti-pattern survives in `contact_requests.rs` and is filed as the
@@ -202,7 +203,7 @@ to a written decision in `docs/ai-design/2026-05-18-platform-wallet-migration/`.
 
 | ID | Title | Location | Sev | Status | Decision ref |
 |----|-------|----------|-----|--------|--------------|
-| PROJ-007 | Single-key refresh + SPV-send return `SingleKeyWalletsUnsupported` | `src/backend_task/core/refresh_single_key_wallet_info.rs:16`; `src/backend_task/core/send_single_key_wallet_payment.rs:19`; `src/backend_task/core/mod.rs:218,304` | LOW | Open by design | Decision #7 (`single-key-mock.md`) |
+| PROJ-007 | Single-key refresh + SPV-send return `SingleKeyWalletsUnsupported` | `src/backend_task/core/refresh_single_key_wallet_info.rs:16`; `src/backend_task/core/send_single_key_wallet_payment.rs:19`; `src/backend_task/core/mod.rs:218,303` | LOW | Open by design | Decision #7 (`single-key-mock.md`) |
 | PROJ-008 | SEC-002 sign-time passphrase prompt UX | `src/wallet_backend/secret_prompt.rs`; `src/ui/components/secret_prompt_host.rs`; `src/ui/components/passphrase_modal.rs` | MEDIUM | **RESOLVED (`2272bae0..43f412cf`)** | issue #90 — per-secret JIT prompt now shipped |
 | PROJ-009 | DIP-14 back-compat dropped (non-mainnet / non-account-0 legacy contact addresses not reproduced) | `src/wallet_backend/mod.rs:722-724` (`register_dashpay_contact`, "Decision #6, back-compat dropped") | MEDIUM | Open by design | Decision #6 (`open-questions.md`) |
 | PROJ-010 | `UpstreamFromPersisted` seedless watch-only loader implemented; `SeedReregistrationLoader` removed | `src/wallet_backend/loader.rs`; `src/wallet_backend/mod.rs::load_from_persistor_seedless` | LOW | Resolved (PR #3692 `ddfa66ed`) | `docs/ai-design/2026-06-02-rehydration-rewire/design.md` |
@@ -236,7 +237,7 @@ Notes:
 - **PROJ-022:** `UpstreamPlatformAddresses` (`platform_address.rs:245`) is the reserved
   swap target for reading per-address Platform funds straight from upstream. It is **NOT
   selected** — the ACTIVE impl is `KvCachedPlatformAddresses`
-  (`src/wallet_backend/mod.rs:512`). Its read methods (`get_address_info`, `all_address_info`,
+  (returned by `platform_addresses()`, `src/wallet_backend/mod.rs:593`). Its read methods (`get_address_info`, `all_address_info`,
   `get_sync_info`) are `unimplemented!()` pending upstream `e817b66a` (a public per-address
   balance+nonce reader + sync-cursor shape). Dead code by design; structurally identical to
   the PROJ-010 G2 loader seam. Cannot panic in any live path while the cached impl is active.
@@ -250,32 +251,36 @@ Notes:
 
 | ID | Title | Location | Sev | Status | What's missing |
 |----|-------|----------|-----|--------|----------------|
-| PROJ-013 | Large-stack e2e harness — SDK deep-recursion stack overflow | `tests/backend-e2e/framework/task_runner.rs:17-78,153-160` | MEDIUM | **RESOLVED (`2a9161d3`)** | Harness now drives every SDK task on a dedicated 32 MB-stack runtime; residual CI sub-item below. |
+| PROJ-013 | Large-stack e2e harness — SDK deep-recursion stack overflow | `tests/backend-e2e/framework/task_runner.rs:17-78,153-160` | MEDIUM | **RESOLVED (`2a9161d3`, `93a20769`)** | Harness drives every SDK task on a dedicated 32 MB-stack runtime (the only mechanism that reaches tokio threads). `#[stack_size]` investigated and rejected; `RUST_MIN_STACK` now moot. Detail below. |
 | PROJ-014 | `WalletBackend::start()` start-path test coverage | `src/context/wallet_lifecycle.rs:561,583,617,649` | HIGH | **RESOLVED (`3165f98c`, `36f5a982`)** | Four offline tests now gate the start path (`start_spv_errors_when_backend_not_wired`, `start_spv_starts_after_backend_wired`, `ensure_wallet_backend_and_start_spv_wires_then_starts`, `chokepoint_wiring_failure_flips_indicator_to_error`). Full live-SPV success path remains an e2e/network gap. |
 | PROJ-015 | TC-012 receive-address reuse — unverified from DET source | `src/wallet_backend/mod.rs` (`next_receive_address` → upstream) | LOW | Unverified — needs follow-up | Depends on upstream used-marking; now testable since PROJ-001 is resolved. Re-test on live network. |
 | PROJ-016 | TC-066 key-not-visible-after-broadcast (flake-vs-bug) | (tracked-only, no isolated code surface) | LOW | Unverified — needs follow-up | No deterministic repro in tree. Re-classify after live run. |
 
-**PROJ-013 — RESOLVED, with a tracked CI sub-item.** Verified at
+**PROJ-013 — RESOLVED. Mechanism confirmed correct; `#[stack_size]` rejected.** Verified at
 `tests/backend-e2e/framework/task_runner.rs`: `sdk_runtime()` (`:22`) builds a dedicated
 multi-thread tokio runtime with `thread_stack_size(32 * 1024 * 1024)` (`SDK_THREAD_STACK_SIZE`,
-`:17`); `run_task` drives the backend future through `drive_on_large_stack` (`:50,65`), which
-`block_on`s on a 32 MB blocking thread so the deep synchronous SDK `block_on`
-(grovedb / drive-proof-verifier) cannot overflow the default 8 MB test-thread stack —
-**regardless of `RUST_MIN_STACK`**. A deterministic, non-network smoke test
+`:17`); `run_task` (`:50`) drives every backend future through `drive_on_large_stack` (`:65`) —
+the single chokepoint all e2e tasks pass through — which `block_on`s on a 32 MB blocking thread
+so the deep synchronous SDK `block_on` (grovedb / drive-proof-verifier) cannot overflow the
+default 8 MB stack, **regardless of `RUST_MIN_STACK`**. A deterministic, non-network smoke test
 `large_stack_path_survives_deep_recursion` (`:153-160`) recurses ~12 MiB through the exact
-`drive_on_large_stack` path, proving the mechanism is load-bearing. The commit is
-test-only — zero production `src/` changes (verified: `git show --name-only 2a9161d3` =
-`tests/backend-e2e/{README.md,framework/task_runner.rs}`).
+`drive_on_large_stack` path, proving the mechanism is load-bearing without any env-var assist.
 
-- **Residual sub-item (tracked, LOW):** CI does **not** run the `#[ignore]` backend-e2e suite —
-  the run steps are commented out in `.github/workflows/tests.yml:85,90`
-  (`# run: cargo test --test backend-e2e … -- --ignored …`). The harness now solves the
-  overflow inside Rust via the large-stack runtime, so `RUST_MIN_STACK` is no longer required
-  for the e2e path; however, when those CI steps are re-enabled they should be reviewed to
-  confirm no env-level stack bump is needed for any non-`drive_on_large_stack` path.
-  `RUST_MIN_STACK` is currently absent from all of `.github/` (`grep -rn RUST_MIN_STACK
-  .github/` = 0 hits). The PROJ-013 commit could not add it to the commented step (tool policy
-  blocked `.github/` edits). Record here so it is not lost when CI re-enables the suite.
+- **`#[stack_size]` (`dash-platform-macros`) investigated and rejected.** The upstream
+  attribute enlarges only the single `std::thread` running the wrapped function body. The
+  backend-e2e tests are async (`#[tokio_shared_rt::test(shared, flavor = "multi_thread", …)]`)
+  and the SDK recurses *inside* the sync `ContextProvider::get_quorum_public_key` callback
+  (`src/context_provider_spv.rs`), which bridges to async via `tokio::task::block_in_place` —
+  a multi-thread-only construct. The recursion therefore lands on **tokio worker / blocking
+  threads**, which `#[stack_size]` cannot reach. The shared runtime built by `tokio-shared-rt`
+  carries no custom stack size, so `thread_stack_size` on a dedicated runtime is the only
+  mechanism that covers those threads. The dependency was deliberately **not** added.
+
+- **`RUST_MIN_STACK` now moot.** The harness owns the stack via the runtime, so callers no
+  longer set it. `tests/backend-e2e/main.rs` (`93a20769`) and `tests/backend-e2e/README.md`
+  agree on this. When CI re-enables the `#[ignore]` backend-e2e suite (run steps currently
+  commented in `.github/workflows/tests.yml:85,90`), no env-level stack bump is needed —
+  the runtime owns the stack for every task path (all flow through `run_task`).
 
 Recorded test-spec gaps from `finish-unwire/notes.md` §5 (feature-flag/manual only, not
 counted as new open gaps): TC-SK-010, TC-A11Y-008, TC-PERF-003.
@@ -287,7 +292,7 @@ counted as new open gaps): TC-SK-010, TC-A11Y-008, TC-PERF-003.
 | ID | Title | Location | Sev | Status | Blocker |
 |----|-------|----------|-----|--------|---------|
 | PROJ-005 | platform pin tracks unreleased dev rev (G1) | `Cargo.toml:21,31,32,35` | HIGH | OPEN | Release gate; bump to released rev before ship. Current rev `ddfa66ed373beaebdae9a5d919f896af43cbcd33` (was `35e4a2f6…` at prior refresh, `17653ba8…` at original audit). |
-| PROJ-017 | `register_identity_funding_account` absent upstream — DET carries contained exception | `src/wallet_backend/mod.rs:1205-1287` (`provision_identity_funding_account` / `ensure_identity_funding_accounts`) | LOW | OPEN (tracked, live) | `rs-platform-wallet` has no funding-account registrar sibling to `register_contact_account`. Verified live — called from register/topup (`mod.rs:441,1088,1142,1181`). Upstream-contribution TODO. |
+| PROJ-017 | `register_identity_funding_account` absent upstream — DET carries contained exception | `src/wallet_backend/mod.rs:1407` (`provision_identity_funding_account`) / `:1489` (`ensure_identity_funding_accounts`) | LOW | OPEN (tracked, live) | `rs-platform-wallet` has no funding-account registrar sibling to `register_contact_account`. Verified live — called from register/topup (`mod.rs:1261,1325,1371`). Upstream-contribution `9cdcfb25`; persister-load recurrence `a5538dc8`. |
 
 ---
 
@@ -296,7 +301,7 @@ counted as new open gaps): TC-SK-010, TC-A11Y-008, TC-PERF-003.
 | ID | Title | Location | Sev | Status | What's missing |
 |----|-------|----------|-----|--------|----------------|
 | PROJ-018 | External user docs (dashpay/docs) not yet filed | `docs/ai-design/2026-06-03-pr860-doc-followups/external-docs-draft.md` | MEDIUM | OPEN (tracked) | Draft written; must still be filed as a PR/issue against `github.com/dashpay/docs` after #860 merges. |
-| PROJ-019 | ADR floor SHA placeholder unfilled | `docs/ai-design/2026-05-29-finish-unwire/notes.md:90` (`[PLACEHOLDER — fill at merge time]`) | LOW | OPEN | Cannot close pre-merge — needs this PR's squash-merge SHA recorded as the wallet-state floor. |
+| PROJ-019 | ADR floor SHA placeholder unfilled | `docs/ai-design/2026-05-29-finish-unwire/notes.md:92` (`[PLACEHOLDER — fill at merge time]`) | LOW | OPEN | Cannot close pre-merge — needs this PR's squash-merge SHA recorded as the wallet-state floor. |
 | PROJ-020 | Design docs claimed single-key is fully read-only mock — was stale | `docs/ai-design/2026-05-18-platform-wallet-migration/single-key-mock.md:51`; `g2-mock-boundary.md:46` | LOW | **RESOLVED (`f39b085d`)** | Prose corrected: `single-key-mock.md:51` now states import/list/sign work in full via `SecretStore`; `g2-mock-boundary.md:46` records the partial capability gap accurately. |
 | PROJ-021 | CHANGELOG omits single-key capability limits and DIP-14 trade-off | `CHANGELOG.md:31-46` | LOW | **RESOLVED (`f39b085d`)** | `### Known Limitations` section now states single-key send/refresh is unsupported this release and documents the DIP-14 non-mainnet/non-account-0 contact-fund re-establishment trade-off. |
 
@@ -307,7 +312,7 @@ a full external-docs draft now exists, targeting `dashpay/docs` →
 The draft satisfies the "write the guidance" half of the gap; the gap stays OPEN until the
 PR/issue is actually filed against `dashpay/docs` post-merge.
 
-**PROJ-019 (PARTIAL).** Verified at `docs/ai-design/2026-05-29-finish-unwire/notes.md:90`:
+**PROJ-019 (PARTIAL).** Verified at `docs/ai-design/2026-05-29-finish-unwire/notes.md:92`:
 the placeholder is now explicit (`[PLACEHOLDER — fill at merge time]`) with a clear
 instruction not to leave it in place after merge. The merge SHA cannot be filled pre-merge,
 so the item stays OPEN as a merge-time action.
@@ -426,6 +431,14 @@ identity-address SPV bloom registration — not found in DET; likely upstream), 
   `TaskError::DashPay(DashPayError::Missing{En,De}cryptionKey)`. Both keyword-sniffing sites and
   the dead `Message`-arm removed; 4 unit tests added. Pattern mirrors PROJ-023; zero new variants.
   Tally: 24 total / **11 open / 13 resolved** (LOW: open 8→7, resolved 5→6).
+- **2026-06-08 — line-ref consolidation (head `954ea3f8`)**: re-pinned drifted refs against
+  source, line by line. PROJ-017 → `mod.rs:1407`/`:1489` (callers `:1261,1325,1371`; tracking
+  `9cdcfb25` / `a5538dc8`); PROJ-019 → `notes.md:92`; PROJ-022 active impl → `mod.rs:593`;
+  PROJ-007 arm → `mod.rs:218,303` (and two by-design markers added in source, `93a20769`).
+  PROJ-013 detail refreshed: `#[stack_size]` (`dash-platform-macros`) investigated and rejected
+  (recursion lands on tokio threads via `block_in_place`, which the single-thread macro cannot
+  reach), 32 MB-stack runtime confirmed the only load-bearing mechanism, `RUST_MIN_STACK` moot
+  (`main.rs` `93a20769` + README agree); residual CI sub-item folded into the entry. No tally change.
 
 ---
 

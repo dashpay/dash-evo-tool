@@ -1,11 +1,10 @@
 use super::AppContext;
 use crate::backend_task::error::TaskError;
-use crate::database::is_unique_constraint_violation;
 use crate::model::spv_status::SpvStatus;
 use crate::model::wallet::birth_height::{WalletOrigin, registration_birth_height};
 use crate::model::wallet::meta::WalletMeta;
 use crate::model::wallet::seed_envelope::StoredSeedEnvelope;
-use crate::model::wallet::{DerivationPathReference, DerivationPathType, Wallet, WalletSeedHash};
+use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::wallet_backend::{DetScope, WalletBackend, WalletMetaView, WalletSeedView};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
@@ -210,56 +209,41 @@ impl AppContext {
         let seed_hash = wallet.seed_hash();
         let uses_password = wallet.uses_password;
 
-        // 1. Persist to sidecars (T-W-01). The wallet-meta sidecar
+        // 1. Reject a duplicate import. The upstream `platform-wallet.sqlite`
+        // persistor is the system of record now; DET no longer writes the
+        // legacy `data.db.wallet` row (the fresh-install schema gates that
+        // table out entirely). Uniqueness is enforced against the wallet-meta
+        // sidecar and the in-memory map — the same key (`seed_hash`) the
+        // legacy unique constraint used.
+        if self.wallets.read()?.contains_key(&seed_hash)
+            || WalletMetaView::new(&self.app_kv)
+                .get(self.network, &seed_hash)
+                .is_some()
+        {
+            return Err(TaskError::WalletAlreadyImported);
+        }
+
+        // 2. Persist to sidecars (T-W-01). The wallet-meta sidecar
         // carries alias/is_main/core_wallet_name plus the pre-computed
         // master xpub the cold-boot picker reads without unlocking the
         // vault; the seed-envelope sidecar carries the encrypted seed
         // bytes plus the matching xpub copy.
-        //
-        // The legacy `data.db.wallet` row is still written so the
-        // in-process migration replay (T-DEV-02) has something to read
-        // when an older build is downgraded onto a freshly-imported
-        // wallet. The cold-boot READ path no longer touches that row —
-        // see the comment in `AppContext::new`.
         if let Err(e) = self.write_wallet_sidecars(&wallet) {
             tracing::warn!(
                 wallet = %hex::encode(seed_hash),
                 error = ?e,
-                "Failed to persist wallet sidecars; rolling forward with legacy DB write",
+                "Failed to persist wallet sidecars",
             );
         }
 
-        let addresses: Vec<_> = wallet
-            .known_addresses
-            .iter()
-            .map(|(address, path)| {
-                (
-                    address,
-                    path,
-                    DerivationPathReference::BIP44,
-                    DerivationPathType::CLEAR_FUNDS,
-                )
-            })
-            .collect();
-
-        self.db
-            .store_wallet_with_addresses(&wallet, &self.network, &addresses)
-            .map_err(|e| {
-                if is_unique_constraint_violation(&e) {
-                    TaskError::WalletAlreadyImported
-                } else {
-                    TaskError::Database { source: e }
-                }
-            })?;
-
-        // 2. Register in-memory
+        // 3. Register in-memory
         let wallet_arc = Arc::new(RwLock::new(wallet));
         let mut wallets = self.wallets.write()?;
         wallets.insert(seed_hash, wallet_arc.clone());
         self.has_wallet.store(true, Ordering::Relaxed);
         drop(wallets);
 
-        // 3. Bootstrap addresses from the seed the caller holds (fresh
+        // 4. Bootstrap addresses from the seed the caller holds (fresh
         // register), then — for a password wallet — promote that seed into the
         // JIT session cache so the rest of the session does not re-prompt.
         // A no-password wallet needs no promotion: the chokepoint's
@@ -269,7 +253,7 @@ impl AppContext {
             self.promote_seed_to_session(seed_hash, seed);
         }
 
-        // 4. Register the wallet with the upstream SPV backend so its addresses
+        // 5. Register the wallet with the upstream SPV backend so its addresses
         // are watched and received funds become visible (W1; PROJ-010). The
         // upstream `create_wallet_from_seed_bytes` is the only writer to the
         // persistor, so without this the wallet is never watched. Done on a
@@ -868,12 +852,34 @@ mod tests {
     fn offline_testnet_context_at(
         data_dir: &std::path::Path,
     ) -> (Arc<AppContext>, SenderAsync<TaskResult>) {
-        let data_dir = data_dir.to_path_buf();
-        ensure_env_file(&data_dir);
-
         let db = Arc::new(
             create_database_at_path(&data_dir.join("data.db")).expect("create test database"),
         );
+        offline_testnet_context_with_db(data_dir, db)
+    }
+
+    /// Build an offline testnet `AppContext` whose `data.db` went through the
+    /// **real** `Database::initialize` fresh-install path (the path production
+    /// uses at `app.rs:322`), which gates the legacy `wallet`/`wallet_addresses`
+    /// tables OUT. Use this for fresh-install regression tests; the default
+    /// helper force-creates those tables via `create_tables(true)`.
+    fn offline_testnet_context_fresh_init(
+        data_dir: &std::path::Path,
+    ) -> (Arc<AppContext>, SenderAsync<TaskResult>) {
+        let db_file = data_dir.join("data.db");
+        let db = crate::database::Database::new(&db_file).expect("create fresh test database");
+        db.initialize(&db_file)
+            .expect("fresh Database::initialize should succeed");
+        offline_testnet_context_with_db(data_dir, Arc::new(db))
+    }
+
+    fn offline_testnet_context_with_db(
+        data_dir: &std::path::Path,
+        db: Arc<crate::database::Database>,
+    ) -> (Arc<AppContext>, SenderAsync<TaskResult>) {
+        let data_dir = data_dir.to_path_buf();
+        ensure_env_file(&data_dir);
+
         let subtasks = Arc::new(TaskManager::new());
         let connection_status = Arc::new(ConnectionStatus::new());
         let egui_ctx = egui::Context::default();
@@ -1336,5 +1342,52 @@ mod tests {
         );
 
         backend.shutdown().await;
+    }
+
+    /// PROJ-010 (fresh-install regression): on a truly-fresh install the real
+    /// `Database::initialize` path gates the legacy `wallet`/`wallet_addresses`
+    /// tables OUT, so `register_wallet` must not depend on them. The pre-fix
+    /// `store_wallet_with_addresses` ran an unguarded `INSERT INTO wallet` that
+    /// failed with `no such table: wallet`, so `register_wallet` returned `Err`
+    /// before any in-memory registration — fresh installs could never create or
+    /// import a wallet. This drives the exact production path and asserts success
+    /// plus in-memory registration.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn register_wallet_succeeds_on_fresh_install_without_legacy_tables() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let (ctx, _sender) = offline_testnet_context_fresh_init(temp_dir.path());
+
+        // Precondition: the fresh-install schema must NOT carry the legacy
+        // wallet table — this is the state that exposed the bug. Querying it
+        // surfaces sqlite's "no such table: wallet" error.
+        let probe = ctx.db.get_wallets(&Network::Testnet);
+        assert!(
+            probe.is_err(),
+            "precondition: fresh install must not create the legacy `wallet` table"
+        );
+
+        let seed = [0x9Eu8; 64];
+        let wallet = crate::model::wallet::Wallet::new_from_seed(
+            seed,
+            Network::Testnet,
+            Some("fresh-install".to_string()),
+            None,
+        )
+        .expect("build no-password wallet");
+        let seed_hash = wallet.seed_hash();
+
+        let (returned_hash, _wallet_arc) = ctx
+            .register_wallet(wallet, &seed, WalletOrigin::Fresh)
+            .expect("register_wallet must succeed on a fresh install");
+        assert_eq!(returned_hash, seed_hash);
+
+        assert!(
+            ctx.wallets.read().unwrap().contains_key(&seed_hash),
+            "the wallet must be registered in-memory after register_wallet"
+        );
+        assert!(
+            ctx.has_wallet.load(Ordering::Relaxed),
+            "the has_wallet flag must flip true after a successful registration"
+        );
     }
 }

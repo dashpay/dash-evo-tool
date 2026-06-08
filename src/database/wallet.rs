@@ -15,66 +15,6 @@ use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
 
 impl Database {
-    /// Atomically persist a wallet row and its known addresses in a single
-    /// database transaction. Prevents partial persistence where the wallet
-    /// is stored but addresses are lost on failure.
-    pub fn store_wallet_with_addresses(
-        &self,
-        wallet: &Wallet,
-        network: &Network,
-        addresses: &[(
-            &Address,
-            &DerivationPath,
-            DerivationPathReference,
-            DerivationPathType,
-        )],
-    ) -> rusqlite::Result<()> {
-        let network_str = network.to_string();
-
-        let master_ecdsa_bip44_account_0_epk_bytes =
-            wallet.master_bip44_ecdsa_extended_public_key.encode();
-
-        let mut conn = self.conn.lock().unwrap();
-        let tx = conn.transaction()?;
-
-        tx.execute(
-            "INSERT INTO wallet (seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, alias, is_main, uses_password, password_hint, network, core_wallet_name)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            params![
-                wallet.seed_hash(),
-                wallet.encrypted_seed_slice(),
-                wallet.salt(),
-                wallet.nonce(),
-                master_ecdsa_bip44_account_0_epk_bytes,
-                wallet.alias.clone(),
-                wallet.is_main as i32,
-                wallet.uses_password,
-                wallet.password_hint().clone(),
-                network_str,
-                wallet.core_wallet_name.as_deref(),
-            ],
-        )?;
-
-        let seed_hash = wallet.seed_hash();
-        for (address, derivation_path, path_reference, path_type) in addresses {
-            let checked_addr = check_address_for_network(address.as_unchecked().clone(), network)?;
-            tx.execute(
-                "INSERT OR IGNORE INTO wallet_addresses
-                 (seed_hash, address, derivation_path, path_reference, path_type, balance)
-                 VALUES (?, ?, ?, ?, ?, NULL)",
-                params![
-                    seed_hash,
-                    checked_addr.to_string(),
-                    derivation_path.to_string(),
-                    *path_reference as u32,
-                    path_type.bits(),
-                ],
-            )?;
-        }
-
-        tx.commit()
-    }
-
     /// Remove a wallet and all associated records from the database.
     ///
     /// This clears dependent records (addresses, utxos, asset locks, identity links)

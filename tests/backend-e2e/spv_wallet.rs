@@ -49,15 +49,15 @@ async fn test_spv_sync_and_create_wallet() {
         );
     }
 
-    // Verify in DB
+    // Verify persistence in the system of record (the wallet-meta sidecar).
+    // DET no longer writes the legacy `data.db.wallet` row — the upstream
+    // persistor plus the wallet-meta/seed-envelope sidecars own wallet state.
     {
-        let db_wallets = app_context
-            .db()
-            .get_wallets(&Network::Testnet)
-            .expect("DB query should succeed");
+        let meta = dash_evo_tool::wallet_backend::WalletMetaView::new(&app_context.app_kv())
+            .get(Network::Testnet, &seed_hash);
         assert!(
-            db_wallets.iter().any(|w| w.seed_hash() == seed_hash),
-            "Wallet should be persisted in DB"
+            meta.is_some(),
+            "Wallet should be persisted in the wallet-meta sidecar"
         );
     }
 

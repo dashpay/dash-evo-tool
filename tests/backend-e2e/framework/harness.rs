@@ -675,10 +675,8 @@ fn try_lock_exclusive(file: &std::fs::File) -> bool {
     unsafe { nix::libc::flock(file.as_raw_fd(), nix::libc::LOCK_EX | nix::libc::LOCK_NB) == 0 }
 }
 
-// INTENTIONAL(CMT-038): On non-Unix platforms, file locking is not
-// implemented — always returns true. This means concurrent test processes
-// on Windows will share the same workdir, which may cause conflicts.
-// Acceptable because CI runs on Linux and Windows E2E runs are rare.
+// Non-Unix has no file locking here, so concurrent processes share a workdir;
+// acceptable because CI is Linux and Windows E2E runs are rare.
 #[cfg(not(unix))]
 fn try_lock_exclusive(_file: &std::fs::File) -> bool {
     true

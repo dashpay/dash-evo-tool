@@ -12,6 +12,21 @@ PR #3692.
 > and `load_from_persistor()` takes **no resolver**. This document targets the
 > live head. All upstream `file:line` citations are at `ddfa66ed`.
 
+> **⚠ Regression correction (2026-06-08):** this re-wire deleted DET's *only*
+> persistor **writer** along with `SeedReregistrationLoader`. `load_from_persistor`
+> is **read-only** — it brings back only what the persistor already holds. With no
+> writer left, the persistor stayed empty on fresh / reset / migrated /
+> sidecar-only installs, the SPV watch set was empty, and received funds were
+> invisible at 100% sync (PROJ-010, HIGH). The seedless *read* path in this
+> document is correct and unchanged; what was missing is a **write** path. The fix
+> (`docs/ai-design/2026-06-08-wallet-reregistration-fix/design.md`) re-introduces
+> the persistor write at the two seed-bearing moments —
+> `WalletBackend::register_wallet_from_seed` (W1, create/import) and
+> `WalletBackend::ensure_upstream_registered` (W2, cold-boot reconciliation) —
+> with a genesis birth-height floor for imported/recovered/migrated wallets. Read
+> the headline findings below with that in mind: "comes back at launch" holds only
+> **once the persistor has been written** by W1/W2.
+
 ---
 
 ## 0. Headline findings (read first)

@@ -89,6 +89,7 @@ As a user, I want to see my wallet balance so that I know how much Dash I hold.
 
 - Displays Core balance and Platform balance.
 - Alex sees a simplified view; Priya sees per-account breakdown.
+- Received funds remain visible after restarting the app, including funds deposited before the wallet was last opened (the wallet re-registers with the network watcher on launch).
 
 ### WAL-009: View fiat equivalent of balances [Gap]
 **Persona:** Alex

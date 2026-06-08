@@ -206,7 +206,7 @@ to a written decision in `docs/ai-design/2026-05-18-platform-wallet-migration/`.
 | PROJ-007 | Single-key refresh + SPV-send return `SingleKeyWalletsUnsupported` | `src/backend_task/core/refresh_single_key_wallet_info.rs:16`; `src/backend_task/core/send_single_key_wallet_payment.rs:19`; `src/backend_task/core/mod.rs:218,303` | LOW | Open by design | Decision #7 (`single-key-mock.md`) |
 | PROJ-008 | SEC-002 sign-time passphrase prompt UX | `src/wallet_backend/secret_prompt.rs`; `src/ui/components/secret_prompt_host.rs`; `src/ui/components/passphrase_modal.rs` | MEDIUM | **RESOLVED (`2272bae0..43f412cf`)** | issue #90 — per-secret JIT prompt now shipped |
 | PROJ-009 | DIP-14 back-compat dropped (non-mainnet / non-account-0 legacy contact addresses not reproduced) | `src/wallet_backend/mod.rs:722-724` (`register_dashpay_contact`, "Decision #6, back-compat dropped") | MEDIUM | Open by design | Decision #6 (`open-questions.md`) |
-| PROJ-010 | `UpstreamFromPersisted` seedless watch-only loader implemented; `SeedReregistrationLoader` removed | `src/wallet_backend/loader.rs`; `src/wallet_backend/mod.rs::load_from_persistor_seedless` | LOW | Resolved (PR #3692 `ddfa66ed`) | `docs/ai-design/2026-06-02-rehydration-rewire/design.md` |
+| PROJ-010 | Seedless loader is READ-ONLY; nothing populated the upstream persistor after `SeedReregistrationLoader` was deleted (`e6c6c017`) → empty watch set → received funds invisible. **Regression, now fixed.** | `src/wallet_backend/loader.rs`; `src/wallet_backend/mod.rs::{load_from_persistor_seedless, register_wallet_from_seed, ensure_upstream_registered}`; `src/context/wallet_lifecycle.rs::{register_wallet, bootstrap_wallet_addresses_jit}` | HIGH | **REGRESSION — FIXED** (W1/W2 persistor writers re-introduced) | `docs/ai-design/2026-06-08-wallet-reregistration-fix/design.md` |
 | PROJ-011 | `identity` `CREATE TABLE` still on fresh installs — tombstone ADR pending | `src/database/initialization.rs:845-866` | LOW | Open by design | T-DEV-02b; deferred to separate ADR (`finish-unwire/notes.md` §4) |
 | PROJ-022 | `UpstreamPlatformAddresses` reserved swap-target — read methods `unimplemented!()` | `src/wallet_backend/platform_address.rs:245-307` | LOW | Open by design | pending platform todo `e817b66a`; parallels PROJ-010 |
 
@@ -229,6 +229,23 @@ Notes:
   caching. `NullSecretPrompt` cleanly cancels in headless/MCP/CLI. This is exactly the
   "prompt at sign time, not an upfront session gate" UX issue #90 tracked as deferred. Moved
   out of the open deferred set.
+- **PROJ-010 (REGRESSION, now FIXED):** the earlier "Resolved (PR #3692)" status was wrong.
+  Swapping `SeedReregistrationLoader` for the read-only `UpstreamFromPersisted` loader
+  (`e6c6c017`) deleted the **only** code that ever wrote wallets into the upstream
+  `platform-wallet.sqlite` persistor (`create_wallet_from_seed_bytes` → `persister.store`).
+  The seedless `load_from_persistor` only READS that persistor, so when it was empty (fresh
+  install, post-reset, migrated/sidecar-only wallets) the wallet was never registered with the
+  upstream SPV manager, the watch set was empty, and received Core funds stayed invisible at
+  100% sync (real repro: 1.0 DASH at block 1492173 to `m/44'/1'/0'/0/0`). It also explains the
+  backend-e2e "Timed out waiting for wallet to register with the upstream backend" timeout —
+  `is_wallet_registered` never flipped true because nothing populated the persistor. **Fix:**
+  re-introduce the persistor write at the two seed-bearing moments — `register_wallet_from_seed`
+  (W1, create/import) and `ensure_upstream_registered` (W2, cold-boot reconciliation through the
+  JIT chokepoint), both idempotent and routed through the account-xpub fund-routing gate, with a
+  genesis birth-height floor (`Some(0)`) for imported/recovered/migrated wallets so deposits made
+  before registration are still found. The seedless read path is unchanged; W1/W2 simply
+  guarantee its input is populated. PROJ-008 watch-only-at-boot is preserved (no launch-time
+  prompt for protected wallets). See `docs/ai-design/2026-06-08-wallet-reregistration-fix/design.md`.
 - **PROJ-011** (re-verified): `legacy_detected()` (`src/database/initialization.rs:146`) gates
   `wallet` / `wallet_addresses` / `utxos` / `wallet_transactions` / `shielded_notes` behind
   `include_legacy`. The `identity` empty placeholder (`:851`) is still created

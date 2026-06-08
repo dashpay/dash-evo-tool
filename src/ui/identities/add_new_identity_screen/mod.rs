@@ -910,8 +910,8 @@ impl AddNewIdentityScreen {
                     return AppAction::None;
                 }
 
-                let seed = selected_wallet.read().unwrap().wallet_seed.clone();
-                tracing::debug!(selected_wallet = ?selected_wallet,?seed, "funding with wallet balance");
+                let wallet_seed_hash = hex::encode(selected_wallet.read().unwrap().seed_hash());
+                tracing::debug!(wallet_seed_hash, "funding with wallet balance");
                 let identity_input = IdentityRegistrationInfo {
                     alias_input: self.alias_input.clone(),
                     keys: self.identity_keys.clone(),

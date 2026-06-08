@@ -618,13 +618,32 @@ pub struct OpenWalletSeed {
     pub wallet_info: ClosedKeyItem,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct ClosedKeyItem {
     pub seed_hash: WalletSeedHash, // SHA-256 hash of the seed
     pub encrypted_seed: Vec<u8>,
     pub salt: Vec<u8>,
     pub nonce: Vec<u8>,
     pub password_hint: Option<String>,
+}
+
+impl std::fmt::Debug for ClosedKeyItem {
+    /// Redacting `Debug`: prints only the public seed hash and lengths.
+    ///
+    /// For an unprotected wallet `encrypted_seed` is the raw 64-byte
+    /// plaintext seed, so it must never reach a `Debug` sink (logs,
+    /// panics). `Wallet`, `WalletSeed`, and `OpenWalletSeed` all derive
+    /// `Debug` and delegate here, so redacting once protects the whole
+    /// chain.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClosedKeyItem")
+            .field("seed_hash", &hex::encode(self.seed_hash))
+            .field("encrypted_seed", &"[redacted]")
+            .field("salt_len", &self.salt.len())
+            .field("nonce_len", &self.nonce.len())
+            .field("password_hint", &self.password_hint)
+            .finish()
+    }
 }
 
 pub type ClosedWalletSeed = ClosedKeyItem;
@@ -2590,6 +2609,60 @@ mod tests {
         // verify, it does not just flip a flag.
         wallet.wallet_seed.close();
         assert!(wallet.wallet_seed.open("wrong passphrase").is_err());
+    }
+
+    /// `Debug` of an UNPROTECTED wallet must never leak the plaintext seed.
+    ///
+    /// For a no-password wallet `encrypted_seed` holds the raw 64-byte seed
+    /// verbatim. `ClosedKeyItem` redacts it in `Debug`, and `WalletSeed`,
+    /// `OpenWalletSeed`, and `Wallet` all delegate to that impl. A known
+    /// distinctive seed (not all-equal, so byte fragments are unambiguous)
+    /// must appear in none of their `Debug` renderings.
+    #[test]
+    fn debug_output_never_leaks_plaintext_seed() {
+        let mut seed = [0u8; 64];
+        for (i, b) in seed.iter_mut().enumerate() {
+            *b = i as u8;
+        }
+        let wallet = Wallet::new_from_seed(seed, Network::Testnet, None, None)
+            .expect("build unprotected wallet");
+
+        // The unprotected envelope stores the raw plaintext.
+        assert_eq!(wallet.encrypted_seed_slice(), seed.as_slice());
+
+        let needle = hex::encode(seed);
+        let closed = ClosedKeyItem {
+            seed_hash: ClosedKeyItem::compute_seed_hash(&seed),
+            encrypted_seed: seed.to_vec(),
+            salt: vec![],
+            nonce: vec![],
+            password_hint: None,
+        };
+        let open_seed = OpenWalletSeed {
+            wallet_info: closed.clone(),
+        };
+        let wallet_seed = WalletSeed::Open(open_seed.clone());
+
+        for (label, rendered) in [
+            ("ClosedKeyItem", format!("{closed:?}")),
+            ("OpenWalletSeed", format!("{open_seed:?}")),
+            ("WalletSeed", format!("{wallet_seed:?}")),
+            ("Wallet", format!("{wallet:?}")),
+        ] {
+            assert!(
+                !rendered.contains(&needle),
+                "{label} Debug leaked hex seed bytes: {rendered}"
+            );
+            // Also catch the raw comma-separated `Vec<u8>` rendering.
+            assert!(
+                !rendered.contains("0, 1, 2, 3, 4, 5"),
+                "{label} Debug leaked raw seed byte sequence: {rendered}"
+            );
+            assert!(
+                rendered.contains("[redacted]"),
+                "{label} Debug should mark the seed redacted: {rendered}"
+            );
+        }
     }
 
     // ========================================================================

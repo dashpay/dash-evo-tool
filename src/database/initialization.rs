@@ -1642,7 +1642,7 @@ impl Database {
     }
 
     /// Check if a table exists in the database.
-    fn table_exists(&self, conn: &Connection, table: &str) -> rusqlite::Result<bool> {
+    pub(crate) fn table_exists(&self, conn: &Connection, table: &str) -> rusqlite::Result<bool> {
         conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
             [table],

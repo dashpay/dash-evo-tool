@@ -95,35 +95,27 @@ impl Database {
             // managed (C6). Fresh installs do not have them; legacy
             // installs keep the rows dormant.
 
-            tx.execute(
-                "DELETE FROM wallet_transactions WHERE network = ?1",
-                rusqlite::params![&network_str],
-            )?;
-
-            tx.execute(
-                "DELETE FROM utxos WHERE network = ?1",
-                rusqlite::params![&network_str],
-            )?;
-
-            // `asset_lock_transaction` was unwired (entire module deleted)
-            // — fresh installs do not create the table, legacy installs
-            // keep the rows dormant. The migration tool drains them via git
-            // history; no DELETE here would just error on fresh installs.
-
-            tx.execute(
-                "DELETE FROM wallet WHERE network = ?1",
-                rusqlite::params![&network_str],
-            )?;
-
-            tx.execute(
-                "DELETE FROM single_key_wallet WHERE network = ?1",
-                rusqlite::params![&network_str],
-            )?;
-
-            tx.execute(
-                "DELETE FROM shielded_notes WHERE network = ?1",
-                rusqlite::params![&network_str],
-            )?;
+            // The legacy wallet-family tables are gated out of the fresh
+            // schema (they live in the upstream persistor now), so each
+            // DELETE is existence-guarded — a fresh install has none of them
+            // and an unguarded DELETE would error on the first missing table,
+            // aborting the whole clear. `asset_lock_transaction` is omitted
+            // entirely: its module was deleted and the migration tool drains
+            // it via git history.
+            for table in [
+                "wallet_transactions",
+                "utxos",
+                "wallet",
+                "single_key_wallet",
+                "shielded_notes",
+            ] {
+                if self.table_exists(&tx, table)? {
+                    tx.execute(
+                        &format!("DELETE FROM {table} WHERE network = ?1"),
+                        rusqlite::params![&network_str],
+                    )?;
+                }
+            }
 
             tx.commit()?;
         } // conn lock released here
@@ -134,5 +126,44 @@ impl Database {
         // after this method returns successfully.
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// "Clear database" must succeed on a truly-fresh install. The legacy
+    /// wallet-family tables (`wallet_transactions`, `utxos`, `wallet`,
+    /// `single_key_wallet`, `shielded_notes`) are gated out of the fresh
+    /// schema, so `clear_network_data` previously errored on the first
+    /// `DELETE FROM` of a missing table and committed nothing. Each DELETE is
+    /// now guarded by an existence check, so a fresh install clears cleanly.
+    #[test]
+    fn clear_network_data_succeeds_on_fresh_install() {
+        use dash_sdk::dpp::dashcore::Network;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_file = temp_dir.path().join("test_data.db");
+        let db = super::Database::new(&db_file).unwrap();
+        db.initialize(&db_file).unwrap();
+
+        // Precondition: the fresh schema must not carry the legacy wallet
+        // table, which is what made the unguarded DELETE fail.
+        {
+            let conn = db.conn.lock().unwrap();
+            let wallet_exists: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='wallet')",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(
+                !wallet_exists,
+                "precondition: fresh install must not create the legacy `wallet` table"
+            );
+        }
+
+        db.clear_network_data(Network::Testnet)
+            .expect("clear_network_data must succeed on a fresh install");
     }
 }

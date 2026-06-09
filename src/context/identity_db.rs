@@ -58,9 +58,7 @@ fn scheduled_vote_key(contested_name: &str) -> String {
 fn voter_buffer(identity_id: &[u8]) -> std::result::Result<[u8; 32], TaskError> {
     Identifier::from_bytes(identity_id)
         .map(|id| id.to_buffer())
-        .map_err(|e| TaskError::SerializationError {
-            detail: format!("Invalid voter identifier in scheduled-vote operation: {e}"),
-        })
+        .map_err(|source| TaskError::InvalidVoterIdentifier { source })
 }
 
 /// Decode a stored bincode'd [`QualifiedIdentity`] blob, attaching the
@@ -320,6 +318,15 @@ impl AppContext {
     /// `INSERT OR REPLACE` semantics — wallet association is overwritten
     /// from the passed-in hint. Also registers the id in the Global
     /// enumeration index so the load-all paths can find it.
+    ///
+    /// The underlying k/v store offers no multi-key transaction, so the
+    /// enumeration index is written *before* the blob. The ordering makes a
+    /// mid-operation failure self-healing: a dangling index entry that points
+    /// at a not-yet-written blob is skipped by every reader
+    /// ([`Self::load_identities_filtered`] / [`Self::load_identity_order`]
+    /// `continue` on a missing blob), and the next successful insert fills it
+    /// in. The reverse order would instead hide a written identity — and its
+    /// keys and balances — until an unrelated update happened to re-index it.
     pub fn insert_local_qualified_identity(
         &self,
         qualified_identity: &QualifiedIdentity,
@@ -345,9 +352,9 @@ impl AppContext {
             wallet_index,
         };
         let id = qualified_identity.identity.id().to_buffer();
+        index_add_identity(&kv, &id)?;
         kv.put(DetScope::Identity(&id), IDENTITY_KEY, &stored)
-            .map_err(|source| TaskError::IdentityStorage { source })?;
-        index_add_identity(&kv, &id)
+            .map_err(|source| TaskError::IdentityStorage { source })
     }
 
     /// Update a local qualified identity in place. Wallet association
@@ -1244,6 +1251,59 @@ mod tests {
                 .unwrap()
                 .is_none(),
             "identity b must not see identity a's blob"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // F43: a wrong-length voter id surfaces a typed variant carrying the
+    // upstream error as a `#[source]`, not a stringified detail.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn voter_buffer_accepts_a_32_byte_id() {
+        let bytes = [7u8; 32];
+        assert_eq!(voter_buffer(&bytes).unwrap(), bytes);
+    }
+
+    #[test]
+    fn voter_buffer_rejects_short_id_with_typed_source() {
+        let err = voter_buffer(&[0u8; 5]).expect_err("a 5-byte voter id must be rejected");
+        assert!(
+            matches!(err, TaskError::InvalidVoterIdentifier { .. }),
+            "expected InvalidVoterIdentifier, got {err:?}"
+        );
+        assert!(
+            std::error::Error::source(&err).is_some(),
+            "the typed upstream error must be preserved as the source"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // F63: the index is written before the blob, so a reader tolerates a
+    // dangling index entry rather than hiding a written identity.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn dangling_index_entry_without_blob_is_skipped_by_readers() {
+        let kv = empty_kv();
+        let present = id(1);
+        let dangling = id(2);
+        put_identity(&kv, &present, "User");
+        // Simulate the post-`index_add_identity`, pre-blob-write window.
+        index_add_identity(&kv, &dangling).unwrap();
+
+        // The enumeration index lists both ids...
+        let mut listed = load_identity_index(&kv).unwrap();
+        listed.sort_unstable();
+        assert_eq!(listed, vec![present, dangling]);
+
+        // ...but a blob read for the dangling id finds nothing, which the
+        // load paths treat as "skip" (they `continue` on a missing blob).
+        assert!(
+            kv.get::<StoredQualifiedIdentity>(DetScope::Identity(&dangling), IDENTITY_KEY)
+                .unwrap()
+                .is_none(),
+            "a dangling index entry must not resolve to a blob"
         );
     }
 }

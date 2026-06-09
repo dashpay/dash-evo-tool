@@ -40,9 +40,9 @@ impl AppContext {
             .with_secret(
                 &crate::wallet_backend::SecretScope::HdSeed { seed_hash },
                 |plaintext| {
-                    let seed = plaintext.expose_hd_seed().ok_or(
-                        crate::backend_task::error::TaskError::ContactWalletSeedUnavailable,
-                    )?;
+                    let seed = plaintext
+                        .expose_hd_seed()
+                        .ok_or(crate::backend_task::error::TaskError::WalletLocked)?;
                     let wallet = wallet_arc.read()?;
                     let provider = WalletAddressProvider::new(&wallet, network, seed).map_err(
                         |detail| {
@@ -82,9 +82,13 @@ impl AppContext {
             .await
         {
             Ok(res) => res,
-            // TODO: Replace with structural match when the SDK exposes a typed
-            // variant for empty-tree proof responses.
-            Err(e) if e.to_string().contains("empty tree") => {
+            // A never-funded wallet has no platform-balance tree to prove
+            // against, so the proof layer reports an empty tree. That is the
+            // expected first-sync state, not a failure — treat it as an empty
+            // result. Matched structurally against the typed proof variants
+            // (see `is_empty_tree_proof`); the leaf marker is the only string
+            // the upstream proof error exposes for this case.
+            Err(e) if crate::backend_task::error::is_empty_tree_proof(&e) => {
                 tracing::debug!(
                     "Platform address balance tree is empty. Returning empty sync result."
                 );

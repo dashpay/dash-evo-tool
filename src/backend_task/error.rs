@@ -285,6 +285,15 @@ pub enum TaskError {
         source: crate::wallet_backend::KvAdapterError,
     },
 
+    /// A voter identifier handed to a scheduled-vote operation was not a valid
+    /// 32-byte identity id. Callers always pass an [`Identifier`]'s bytes, so
+    /// this signals an internal inconsistency rather than user input.
+    #[error("Could not read the voter for this scheduled vote. Please refresh and try again.")]
+    InvalidVoterIdentifier {
+        #[source]
+        source: dash_sdk::dpp::platform_value::Error,
+    },
+
     /// A stored [`QualifiedIdentity`](crate::model::qualified_identity::QualifiedIdentity)
     /// blob could not be decoded. Private keys and balance state are at stake,
     /// so this is surfaced rather than silently skipped.
@@ -1113,6 +1122,16 @@ pub enum TaskError {
         source: dashcore::address::Error,
     },
 
+    /// The payment had no recipients. A transaction must pay at least one
+    /// address, so the request is rejected before any funds move.
+    #[error("Add at least one recipient before sending a payment.")]
+    PaymentNoRecipients,
+
+    /// A recipient was given a zero amount. Sending nothing wastes the network
+    /// fee and is almost always a slip, so it is rejected up front.
+    #[error("Enter an amount greater than zero for every recipient, then try again.")]
+    PaymentZeroAmount,
+
     /// The wallet has no UTXOs available to cover the payment.
     #[error("Your wallet has no available funds to spend. Please receive some Dash first.")]
     NoUtxosAvailable,
@@ -1612,6 +1631,51 @@ pub fn is_instant_lock_proof_invalid(error: &SdkError) -> bool {
             BasicError::InvalidInstantAssetLockProofSignatureError(_),
         ))
     )
+}
+
+/// Marker the upstream proof layer emits when a queried GroveDB subtree has
+/// never been written. It originates as a merk `CorruptedCodeExecution`
+/// (`"Cannot create proof for empty tree"`) and is carried verbatim into the
+/// proof-error leaf string — the only signal the upstream exposes for this
+/// case.
+const EMPTY_TREE_PROOF_MARKER: &str = "empty tree";
+
+/// Returns `true` when the SDK error is a proof-verification failure caused by
+/// a never-written GroveDB subtree (an "empty tree").
+///
+/// A wallet that has never received platform credits has no balance subtree to
+/// prove against, so an address-balance sync returns this rather than real
+/// data — the expected first-sync state, not an error.
+///
+/// Upstream exposes no typed variant for this case: the leaf message lives in a
+/// `String` field of the proof-error types. This narrows the match to the two
+/// proof-carrying `SdkError` variants and inspects only their leaf string, so a
+/// stray "empty tree" substring elsewhere in an unrelated error chain cannot
+/// trigger a false positive. Replace with a structural match once the proof
+/// layer gains a typed empty-tree variant.
+pub fn is_empty_tree_proof(error: &SdkError) -> bool {
+    fn proof_verifier_leaf(error: &dash_sdk::ProofVerifierError) -> Option<&str> {
+        match error {
+            dash_sdk::ProofVerifierError::GroveDBError { error, .. }
+            | dash_sdk::ProofVerifierError::DriveError { error }
+            | dash_sdk::ProofVerifierError::ProtocolError { error } => Some(error.as_str()),
+            _ => None,
+        }
+    }
+
+    use dash_sdk::drive::error::proof::ProofError;
+    let leaf = match error {
+        SdkError::Proof(proof_err) => proof_verifier_leaf(proof_err),
+        SdkError::DriveProofError(
+            ProofError::CorruptedProof(detail)
+            | ProofError::IncorrectProof(detail)
+            | ProofError::UnexpectedResultProof(detail),
+            ..,
+        ) => Some(detail.as_str()),
+        _ => None,
+    };
+
+    leaf.is_some_and(|s| s.to_lowercase().contains(EMPTY_TREE_PROOF_MARKER))
 }
 
 // TODO: Replace string parsing with a pre-check on amount + fee > spendable
@@ -3607,6 +3671,50 @@ mod tests {
         assert!(
             std::error::Error::source(&err).is_some(),
             "Expected source chain to be preserved"
+        );
+    }
+
+    #[test]
+    fn empty_tree_proof_detects_grovedb_verifier_leaf() {
+        let err = SdkError::Proof(dash_sdk::ProofVerifierError::GroveDBError {
+            proof_bytes: Vec::new(),
+            path_query: None,
+            height: 0,
+            time_ms: 0,
+            error: "Cannot create proof for empty tree".to_string(),
+        });
+        assert!(is_empty_tree_proof(&err));
+    }
+
+    #[test]
+    fn empty_tree_proof_detects_drive_proof_corrupted_leaf() {
+        use dash_sdk::drive::error::proof::ProofError;
+        let err = SdkError::DriveProofError(
+            ProofError::CorruptedProof("Cannot create proof for empty tree".to_string()),
+            Vec::new(),
+            dash_sdk::dpp::block::block_info::BlockInfo::default(),
+        );
+        assert!(is_empty_tree_proof(&err));
+    }
+
+    #[test]
+    fn empty_tree_proof_ignores_unrelated_proof_leaf() {
+        let err = SdkError::Proof(dash_sdk::ProofVerifierError::GroveDBError {
+            proof_bytes: Vec::new(),
+            path_query: None,
+            height: 0,
+            time_ms: 0,
+            error: "signature verification failed".to_string(),
+        });
+        assert!(!is_empty_tree_proof(&err));
+    }
+
+    #[test]
+    fn empty_tree_proof_ignores_non_proof_error() {
+        let err = SdkError::Generic("empty tree mentioned in unrelated text".to_string());
+        assert!(
+            !is_empty_tree_proof(&err),
+            "the substring must not match outside a proof-error leaf"
         );
     }
 }

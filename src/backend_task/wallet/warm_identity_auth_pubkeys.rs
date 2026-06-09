@@ -51,9 +51,7 @@ impl AppContext {
         backend
             .secret_access()
             .with_secret(&SecretScope::HdSeed { seed_hash }, |plaintext| {
-                let seed = plaintext
-                    .expose_hd_seed()
-                    .ok_or(TaskError::ContactWalletSeedUnavailable)?;
+                let seed = plaintext.expose_hd_seed().ok_or(TaskError::WalletLocked)?;
                 let guard = wallet.read()?;
                 let mut changed = false;
                 for &key_index in &missing {

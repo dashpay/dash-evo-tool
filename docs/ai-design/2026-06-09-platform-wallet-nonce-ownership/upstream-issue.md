@@ -67,7 +67,8 @@ send path advances it:
   > `// persist it via their own store (see evo-tool's platform_address_balances`
   > `// table which writes both balance and nonce from the changeset).`
 
-  — `packages/rs-platform-wallet/src/wallet/apply.rs:195`. (Confirmed at the
+  — `packages/rs-platform-wallet/src/wallet/apply.rs:196` (introduced in
+  `4809f802`, 2026-04-17). (Confirmed at the
   key-wallet layer: `ManagedPlatformAccount` stores
   `address_balances: BTreeMap<PlatformP2PKHAddress, u64>` — balance only, no
   nonce field —

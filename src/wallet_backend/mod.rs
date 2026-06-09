@@ -1215,12 +1215,12 @@ impl WalletBackend {
             .id_map
             .read()?
             .get(seed_hash)
-            .ok_or(TaskError::WalletBackendNotYetWired)?;
+            .ok_or(TaskError::WalletNotLoaded)?;
         self.inner
             .pwm
             .get_wallet(&wallet_id)
             .await
-            .ok_or(TaskError::WalletBackendNotYetWired)
+            .ok_or(TaskError::WalletStateInconsistent)
     }
 
     /// Derive the next unused receive address for the wallet's default BIP-44
@@ -1764,7 +1764,7 @@ impl WalletBackend {
         // upstream identity-funding variant appears.
         match account_type {
             AccountType::IdentityRegistration | AccountType::IdentityTopUp { .. } => {}
-            _ => return Err(TaskError::WalletBackendNotYetWired),
+            _ => return Err(TaskError::UnsupportedIdentityFundingAccount),
         }
 
         let wallet = self.resolve_wallet(seed_hash).await?;
@@ -1772,7 +1772,7 @@ impl WalletBackend {
         let mut wm = wallet.wallet_manager().write().await;
         let (kw, info) = wm
             .get_wallet_mut_and_info_mut(&wallet_id)
-            .ok_or(TaskError::WalletBackendNotYetWired)?;
+            .ok_or(TaskError::WalletStateInconsistent)?;
 
         let in_wallet = match account_type {
             AccountType::IdentityRegistration => kw.accounts.identity_registration.is_some(),
@@ -1814,7 +1814,7 @@ impl WalletBackend {
             }
             _ => unreachable!("checked above"),
         }
-        .ok_or(TaskError::WalletBackendNotYetWired)?;
+        .ok_or(TaskError::WalletStateInconsistent)?;
 
         let managed = ManagedCoreKeysAccount::from_account(derived);
         info.core_wallet

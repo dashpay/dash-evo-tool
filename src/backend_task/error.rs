@@ -24,14 +24,39 @@ const RPC_WALLET_NOT_SPECIFIED: i32 = -19;
 /// App-level error envelope for backend tasks.
 #[derive(Debug, Error)]
 pub enum TaskError {
-    /// A wallet/identity/DashPay action whose backend is being rewired to the
-    /// upstream `platform-wallet` runtime. Inert until P2 wires the real call.
-    #[error(
-        "This action is being upgraded and is temporarily unavailable. \
-        Please use the previous version of the app to transact, \
-        or wait for the next update."
-    )]
+    /// The wallet backend has not finished starting up yet. The lazy-init gate
+    /// in [`AppContext::wallet_backend`](crate::context::AppContext::wallet_backend)
+    /// returns this while the backend is still being built; every wallet and
+    /// identity task degrades through it until the backend is ready.
+    #[error("Your wallet is still starting up. Please wait a moment and try again.")]
     WalletBackendNotYetWired,
+
+    /// A wallet operation was requested before its wallet had finished loading
+    /// into the wallet backend. Distinct from
+    /// [`Self::WalletBackendNotYetWired`]: the backend is ready, but this
+    /// particular wallet is not yet registered with it (still loading, or
+    /// skipped during load). User-actionable — waiting and retrying resolves it.
+    #[error("This wallet is still loading. Please wait a moment and try again.")]
+    WalletNotLoaded,
+
+    /// An internal wallet-state inconsistency: the wallet backend's records
+    /// disagree with each other in a way that should never happen (a wallet
+    /// present in one place but missing from another, or an account that just
+    /// could not be read back after being created). The technical specifics
+    /// live in `Debug` and the logs, never in the message.
+    #[error(
+        "Your wallet data could not be read correctly. Please restart the application and try again."
+    )]
+    WalletStateInconsistent,
+
+    /// An account type that this build does not support for identity funding
+    /// was supplied. Guards over [`dash_sdk::dpp::key_wallet::AccountType`],
+    /// which may gain variants upstream, so it is a typed error rather than a
+    /// panic. Not reachable from current call sites.
+    #[error(
+        "This wallet operation is not supported in this version. Update to the latest version to continue."
+    )]
+    UnsupportedIdentityFundingAccount,
 
     /// Single-key wallets are not supported in this version. Their data is
     /// preserved; HD (recovery-phrase) wallets remain fully functional.

@@ -254,17 +254,16 @@ impl AppContext {
         // AppContext-owned, so this succeeds even before the backend is wired.
         self.write_seed_envelope(&wallet)?;
 
-        // The wallet-meta sidecar (alias / is_main / xpub the cold-boot picker
-        // reads without unlocking the vault) is best-effort: a failure degrades
-        // the picker label but never loses funds, and the meta is rebuilt from
-        // the upstream persistor on the next cold boot.
-        if let Err(e) = self.write_wallet_meta(&wallet) {
-            tracing::warn!(
-                wallet = %hex::encode(seed_hash),
-                error = ?e,
-                "Failed to persist wallet-meta sidecar (non-fatal)",
-            );
-        }
+        // Persist the wallet-meta sidecar — FAIL-CLOSED. Cold-boot hydration
+        // enumerates ONLY this sidecar (`hydrate_wallets_for_network` rebuilds
+        // `ctx.wallets` from `WalletMetaView::list`); there is no
+        // upstream→meta reconstruction path. A wallet with a seed envelope but
+        // no meta row is never hydrated, so its funds become unreachable on the
+        // next launch with no self-heal. Both sidecars are required, so a meta
+        // write failure aborts the registration here just like the envelope
+        // write above. The sidecar is AppContext-owned (app_kv), so this
+        // succeeds even before the backend is wired.
+        self.write_wallet_meta(&wallet)?;
 
         // 3. Register in-memory
         let wallet_arc = Arc::new(RwLock::new(wallet));
@@ -360,9 +359,11 @@ impl AppContext {
 
     /// Persist a newly-registered wallet's metadata (alias / is_main /
     /// core_wallet_name + master xpub) to the wallet-meta sidecar.
-    /// **Best-effort** (F62): a failure degrades only the cold-boot picker
-    /// label, never loses funds — the caller logs and continues, and the meta
-    /// is rebuilt from the upstream persistor on the next cold boot.
+    /// **Fail-closed** (SEC-002): cold-boot hydration enumerates ONLY this
+    /// sidecar (`hydrate_wallets_for_network` lists `WalletMetaView`), and
+    /// nothing reconstructs the meta from the upstream persistor — so a wallet
+    /// with no meta row never rehydrates and its funds become unreachable. The
+    /// caller propagates the error so the wallet is not kept.
     fn write_wallet_meta(&self, wallet: &Wallet) -> Result<(), TaskError> {
         let seed_hash = wallet.seed_hash();
         let meta = WalletMeta {
@@ -1796,6 +1797,57 @@ mod tests {
         assert!(
             !ctx.wallets.read().unwrap().contains_key(&seed_hash),
             "a wallet whose seed was not saved must not be kept in memory"
+        );
+        assert!(
+            !ctx.has_wallet.load(Ordering::Relaxed),
+            "has_wallet must not flip true when registration fails closed"
+        );
+    }
+
+    /// SEC-002 — when the wallet-meta sidecar write fails, `register_wallet`
+    /// must FAIL CLOSED: return `Err` and NOT keep the wallet. Cold-boot
+    /// hydration (`hydrate_wallets_for_network`) enumerates ONLY the meta
+    /// sidecar — `ctx.wallets` is rebuilt solely from `WalletMetaView::list`.
+    /// A wallet whose seed envelope was saved but whose meta row is missing is
+    /// never hydrated, so its funds become unreachable with no self-heal (there
+    /// is no upstream→meta reconstruction path). Both sidecars are required, so
+    /// the meta write must be fail-closed just like the seed-envelope write.
+    ///
+    /// Induces the meta-write failure permission-free by dropping the
+    /// `meta_global` table from `det-app.sqlite` (which backs `app_kv`) through
+    /// a second connection: the next `WalletMetaView::set` upsert errors with
+    /// "no such table", deterministically, with no filesystem race.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn register_wallet_fails_closed_when_wallet_meta_write_fails() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let (ctx, _sender) = offline_testnet_context_at(temp_dir.path());
+
+        // Drop the table the wallet-meta sidecar upserts into, so the next
+        // `WalletMetaView::set` fails. The persister holds its own connection;
+        // a second connection to the same file is enough to drop the shared
+        // schema object.
+        {
+            let meta_db = temp_dir.path().join("det-app.sqlite");
+            let conn =
+                rusqlite::Connection::open(&meta_db).expect("open det-app.sqlite second handle");
+            conn.execute("DROP TABLE meta_global", [])
+                .expect("drop meta_global to force the wallet-meta write to fail");
+        }
+
+        let seed = [0x17u8; 64];
+        let wallet =
+            crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+                .expect("build wallet");
+        let seed_hash = wallet.seed_hash();
+
+        let result = ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh);
+        assert!(
+            result.is_err(),
+            "register_wallet must fail closed when the wallet-meta sidecar cannot be saved"
+        );
+        assert!(
+            !ctx.wallets.read().unwrap().contains_key(&seed_hash),
+            "a wallet with no meta row must not be kept in memory (it would never hydrate)"
         );
         assert!(
             !ctx.has_wallet.load(Ordering::Relaxed),

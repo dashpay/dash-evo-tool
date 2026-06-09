@@ -20,13 +20,11 @@ use crate::ui::components::wallet_unlock_popup::{
 };
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenLike};
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD;
 use dash_sdk::dashcore_rpc::dashcore::PrivateKey as RPCPrivateKey;
 use dash_sdk::dpp::dashcore::address::Payload;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::secp256k1::{Message, Secp256k1, SecretKey};
-use dash_sdk::dpp::dashcore::sign_message::signed_msg_hash;
+use dash_sdk::dpp::dashcore::sign_message::{MessageSignature, signed_msg_hash};
 use dash_sdk::dpp::dashcore::{Address, PrivateKey, PubkeyHash, ScriptHash};
 use dash_sdk::dpp::identity::KeyType;
 use dash_sdk::dpp::identity::KeyType::BIP13_SCRIPT_HASH;
@@ -69,18 +67,6 @@ pub struct KeyInfoScreen {
     /// seed is fetched just-in-time and only the public signature returns.
     pending_sign_request: Option<DerivationPath>,
 }
-
-// /// The prefix for signed messages using Dash's message signing protocol.
-// pub const DASH_SIGNED_MSG_PREFIX: &[u8] = b"\x19Dash Signed Message:\n";
-//
-// pub fn signed_msg_hash(msg: &str) -> sha256d::Hash {
-//     let mut engine = sha256d::Hash::engine();
-//     engine.input(DASH_SIGNED_MSG_PREFIX);
-//     let msg_len = encode::VarInt(msg.len() as u64);
-//     msg_len.consensus_encode(&mut engine).expect("engines don't error");
-//     engine.input(msg.as_bytes());
-//     sha256d::Hash::from_engine(engine)
-// }
 
 impl ScreenLike for KeyInfoScreen {
     fn refresh(&mut self) {}
@@ -752,16 +738,19 @@ impl KeyInfoScreen {
     /// Sign `message` with a locally-held ECDSA secret, returning the
     /// Base64-encoded Dash signed-message envelope. Used only for keys that
     /// already carry their plaintext in the UI — never for wallet-derived keys.
+    ///
+    /// The envelope is a recoverable signature: a header byte (`27 + recId`,
+    /// `+4` for a compressed key) followed by the 64-byte signature. These keys
+    /// are compressed by convention, so a verifier can recover the signer's
+    /// public key and address from the signature alone.
     fn sign_ecdsa_local(private_key_bytes: &[u8; 32], message: &str) -> String {
         let secp = Secp256k1::new();
         let message_hash = signed_msg_hash(message);
         let digest = Message::from_digest(*message_hash.as_byte_array());
         let secret_key = SecretKey::from_byte_array(private_key_bytes)
             .expect("clear private key is a valid 32-byte secret");
-        let signature = secp.sign_ecdsa(&digest, &secret_key);
-        let mut serialized = signature.serialize_compact().to_vec();
-        serialized.insert(0, 32);
-        STANDARD.encode(serialized)
+        let recoverable = secp.sign_ecdsa_recoverable(&digest, &secret_key);
+        MessageSignature::new(recoverable, true).to_base64()
     }
 
     /// Render the WIF + hex of an already-derived private key. The key is

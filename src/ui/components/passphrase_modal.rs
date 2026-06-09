@@ -66,11 +66,13 @@ pub fn passphrase_modal(
     focus_requested: &mut bool,
     extra: impl FnOnce(&mut egui::Ui),
 ) -> PassphraseModalOutcome {
-    // Dark overlay behind the modal.
+    // Dark overlay behind the modal. The layer id is salted with the window
+    // title so a wallet-unlock modal and a JIT secret prompt drawn in the same
+    // frame get distinct overlay layers instead of fighting over one.
     let screen_rect = ctx.content_rect();
     let painter = ctx.layer_painter(egui::LayerId::new(
         egui::Order::Background,
-        egui::Id::new("passphrase_modal_overlay"),
+        egui::Id::new("passphrase_modal_overlay").with(config.window_title),
     ));
     painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
 
@@ -159,8 +161,10 @@ pub fn passphrase_modal(
         outcome = PassphraseModalOutcome::Cancel;
     }
 
-    // Escape key.
-    if outcome == PassphraseModalOutcome::Pending && ctx.input(|i| i.key_pressed(egui::Key::Escape))
+    // Escape key. Consume it so a second passphrase modal in the same frame
+    // does not also dismiss on the same keypress.
+    if outcome == PassphraseModalOutcome::Pending
+        && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
     {
         outcome = PassphraseModalOutcome::Cancel;
     }

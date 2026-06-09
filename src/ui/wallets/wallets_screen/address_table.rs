@@ -14,7 +14,6 @@ pub(super) enum SortColumn {
     Address,
     Balance,
     UTXOs,
-    TotalReceived,
     Type,
     Index,
     DerivationPath,
@@ -32,7 +31,6 @@ pub(super) struct AddressData {
     /// Platform credits balance for Platform Payment addresses
     platform_credits: u64,
     utxo_count: usize,
-    total_received: u64,
     /// Platform address nonce (for Platform Payment addresses)
     nonce: u32,
     address_type: String,
@@ -77,7 +75,6 @@ impl WalletsBalancesScreen {
                 SortColumn::Address => a.address.cmp(&b.address),
                 SortColumn::Balance => a.balance.cmp(&b.balance),
                 SortColumn::UTXOs => a.utxo_count.cmp(&b.utxo_count),
-                SortColumn::TotalReceived => a.total_received.cmp(&b.total_received),
                 SortColumn::Type => a.address_type.cmp(&b.address_type),
                 SortColumn::Index => a.index.cmp(&b.index),
                 SortColumn::DerivationPath => a.derivation_path.cmp(&b.derivation_path),
@@ -107,10 +104,8 @@ impl WalletsBalancesScreen {
         let action = AppAction::None;
 
         // Per-address UTXO counts + balances come from the display-only
-        // `WalletBackend` snapshot (P4a). `total_received` (cumulative
-        // historical receipts) has no upstream source post-migration — the
-        // best truthful proxy is the address's current snapshot balance
-        // (funds received and still held); see user-stories (degraded).
+        // `WalletBackend` snapshot (P4a). Cumulative historical receipts have no
+        // upstream source post-migration, so no "Total Received" column is shown.
         let seed_hash = self
             .selected_wallet
             .as_ref()
@@ -142,9 +137,6 @@ impl WalletsBalancesScreen {
                 .iter()
                 .map(|(address, derivation_path)| {
                     let utxo_count = snap_utxo_counts.get(address).copied().unwrap_or(0);
-
-                    let total_received =
-                        snap_address_balances.get(address).copied().unwrap_or(0u64);
 
                     let index = derivation_path
                         .into_iter()
@@ -202,7 +194,6 @@ impl WalletsBalancesScreen {
                             .unwrap_or_default(),
                         platform_credits,
                         utxo_count,
-                        total_received,
                         nonce,
                         address_type,
                         index,
@@ -238,9 +229,8 @@ impl WalletsBalancesScreen {
         });
         let auto_show = account_address_count < 5 && all_zero_balance;
 
-        // INTENTIONAL(CMT-002): Zero-balance filter treats key-only addresses the same as all
-        // others. The old exception (always showing key-only addresses) was removed intentionally
-        // to reduce UI clutter — key-only accounts with no balance carry no actionable information.
+        // Zero-balance filter treats key-only addresses like any other: a
+        // key-only account with no balance carries no actionable information.
         if !self.show_zero_balance_addresses && !auto_show {
             address_data.retain(|data| {
                 if data.account_category == AccountCategory::PlatformPayment {
@@ -261,12 +251,7 @@ impl WalletsBalancesScreen {
         let is_platform_account = account_filter.0 == AccountCategory::PlatformPayment;
 
         // Reset sort column if it refers to a column not visible for the current account type
-        if is_platform_account
-            && matches!(
-                self.sort_column,
-                SortColumn::UTXOs | SortColumn::TotalReceived
-            )
-        {
+        if is_platform_account && matches!(self.sort_column, SortColumn::UTXOs) {
             self.sort_column = SortColumn::Balance;
             self.sort_order = SortOrder::Descending;
         }
@@ -283,11 +268,8 @@ impl WalletsBalancesScreen {
 
         builder = if is_platform_account {
             builder.column(Column::initial(80.0)) // Nonce (replaces UTXOs)
-        // Total Received column omitted
         } else {
-            builder
-                .column(Column::initial(70.0)) // UTXOs
-                .column(Column::initial(150.0)) // Total Received
+            builder.column(Column::initial(70.0)) // UTXOs
         };
 
         builder
@@ -338,19 +320,6 @@ impl WalletsBalancesScreen {
                         };
                         if ui.button(label).clicked() {
                             self.toggle_sort(SortColumn::UTXOs);
-                        }
-                    });
-                    header.col(|ui| {
-                        let label = if self.sort_column == SortColumn::TotalReceived {
-                            match self.sort_order {
-                                SortOrder::Ascending => "Total Received (DASH) ^",
-                                SortOrder::Descending => "Total Received (DASH) v",
-                            }
-                        } else {
-                            "Total Received (DASH)"
-                        };
-                        if ui.button(label).clicked() {
-                            self.toggle_sort(SortColumn::TotalReceived);
                         }
                     });
                 };
@@ -424,10 +393,6 @@ impl WalletsBalancesScreen {
                         } else {
                             row.col(|ui| {
                                 ui.label(format!("{}", data.utxo_count));
-                            });
-                            row.col(|ui| {
-                                let dash_received = data.total_received as f64 * 1e-8;
-                                ui.label(format!("{:.8}", dash_received));
                             });
                         };
                         row.col(|ui| {

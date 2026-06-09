@@ -43,11 +43,17 @@ use serde::de::DeserializeOwned;
 
 use crate::model::wallet::WalletSeedHash;
 
-/// Schema version prefix prepended to every encoded value. Mirrors the
-/// upstream `entry_blob` convention so future readers can detect
-/// format-breaking changes deterministically. Bump only when the
-/// encoding scheme itself changes (not when payload structs evolve —
-/// bincode already tolerates compatible struct evolution).
+/// Schema version prefix prepended to every encoded value, the envelope
+/// that makes stored blobs migratable.
+///
+/// `bincode::config::standard()` is positional and non-self-describing:
+/// fields are written in declaration order with no names or tags, so
+/// adding, removing, or reordering a payload struct's fields is a
+/// format-breaking change for already-stored blobs (a `#[serde(default)]`
+/// attribute does not rescue an old blob — there are no field names to
+/// match). This version byte is the only forward-compatibility mechanism:
+/// bump it whenever a payload struct's wire shape changes, then teach
+/// readers to migrate or reject the old version explicitly.
 pub const SCHEMA_VERSION: u8 = 1;
 
 /// DET-side metadata scope. Maps onto the upstream object-scoped key/value
@@ -68,9 +74,12 @@ pub enum DetScope<'a> {
     Global,
     /// Per-wallet metadata; cascades when the wallet is removed.
     Wallet(&'a WalletSeedHash),
-    /// Per-identity metadata. Reserved for Wave 2.
+    /// Per-identity metadata; cascades when the identity is removed. Active:
+    /// identities, top-up history, scheduled votes, and the DashPay
+    /// `private` / `address_index` overlays are all identity-scoped.
     Identity(&'a [u8; 32]),
-    /// Per-token-balance metadata. Reserved for Wave 2.
+    /// Per-token-balance metadata. Defined and mapped but currently unused —
+    /// token balances are read live from upstream rather than cached in DET.
     Token {
         identity_id: &'a [u8; 32],
         token_id: &'a [u8; 32],

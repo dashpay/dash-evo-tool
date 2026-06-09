@@ -44,9 +44,16 @@ pub struct WalletMeta {
     /// `ExtendedPubKey::encode()` bytes for `m/44'/coin'/0'`. Computed
     /// once when the wallet is first persisted; the picker reads it on
     /// every boot so locked seeds don't have to be unlocked to render
-    /// the list. Empty vector for entries written before T-W-00.5 — the
-    /// caller treats absent bytes as "xpub unknown" and skips the
-    /// affected operations (currently only the picker derives from it).
+    /// the list. An empty vector means "xpub unknown" — the caller skips
+    /// the operations that derive from it (currently only the picker).
+    ///
+    /// `#[serde(default)]` only supplies a value at the Rust layer; it does
+    /// NOT make this blob forward-compatible. `WalletMeta` is stored as a
+    /// positional `bincode::config::standard()` blob behind the `DetKv`
+    /// schema envelope, so adding, removing, or reordering any field here is
+    /// a format-breaking change for already-stored blobs. Evolve the shape
+    /// only by bumping `crate::wallet_backend::kv::SCHEMA_VERSION` and
+    /// migrating old blobs.
     #[serde(default)]
     pub xpub_encoded: Vec<u8>,
 }

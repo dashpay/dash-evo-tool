@@ -447,7 +447,7 @@ impl WalletBackend {
             .map(|(seed_hash, meta)| (meta.xpub_encoded, seed_hash))
             .collect();
 
-        // 2. One seedless load pass, only when the manager is empty.
+        // 2. One persister load pass, only when the manager is empty.
         //    A non-empty `skipped` is success; `Err` is reserved for
         //    whole-load failures. On a re-run the manager already holds
         //    the wallets, so the upstream load (which rejects duplicates)

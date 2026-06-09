@@ -1,24 +1,23 @@
 //! Cold-boot wallet rehydration (T-W-01).
 //!
-//! Before T-W-01, the in-memory `BTreeMap<WalletSeedHash, Wallet>` was
-//! populated from the legacy DET `wallet` SQLite table. After T-W-00
-//! (alias / `is_main` / `core_wallet_name` / `xpub_encoded` sidecar) and
-//! T-W-00.5-v2 (encrypted-seed envelope inside the upstream
-//! [`SecretStore`]), the same map is reconstructed from those two
-//! sidecars instead — the legacy table is no longer read.
+//! The in-memory `BTreeMap<WalletSeedHash, Wallet>` is reconstructed from the
+//! wallet-meta sidecar (alias / `is_main` / `core_wallet_name` /
+//! `xpub_encoded`) and the encrypted-seed envelope inside the upstream
+//! `SecretStore`.
 //!
 //! The reconstruction is intentionally cheap: it does NOT touch the
 //! `wallet_addresses` table, derive any addresses, or unlock the seed.
 //! The wallet starts in `Closed` state when the envelope is
 //! password-protected; address bootstrap and identity discovery happen
 //! later, through the same paths a freshly-imported wallet uses
-//! ([`AppContext::bootstrap_wallet_addresses`] /
-//! [`AppContext::handle_wallet_unlocked`]).
+//! (`AppContext::bootstrap_wallet_addresses` /
+//! `AppContext::handle_wallet_unlocked`).
 //!
-//! Locking caveat: every error path here is a "skip" — a single corrupt
-//! row must not block the picker from listing the remaining wallets.
-//! The migration banner is the recovery surface for full-vault failure;
-//! per-row failure is logged and swallowed.
+//! Per-row failure is logged and swallowed: a single corrupt row must not
+//! block the picker from listing the remaining wallets. These skips are
+//! log-only — there is no reachable egui context here, so the skip reason
+//! does not surface to the user. The migration banner is the recovery
+//! surface for a full-vault failure.
 
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::key_wallet::bip32::ExtendedPubKey;
@@ -180,13 +179,12 @@ fn wallet_from_envelope(
     let wallet_seed = if uses_password {
         WalletSeed::Closed(closed)
     } else {
-        // Non-password envelopes store the raw 64-byte seed verbatim;
-        // mirror the legacy DB reader behaviour. A length mismatch is
-        // surfaced as a typed error so the picker can show WHICH wallet
-        // was skipped and WHY (SEC-008) — the silent "fall back to
-        // Closed" behaviour hid this case from the user. The envelope is
-        // only length-checked to PROVE it is well-formed; the open wallet
-        // parks no plaintext seed (R3).
+        // Non-password envelopes store the raw 64-byte seed verbatim. A
+        // length mismatch is a corrupt envelope: surface a typed error
+        // carrying the wallet label and observed length. The caller logs
+        // and skips it (log-only — no egui context is reachable here). The
+        // envelope is only length-checked to prove it is well-formed; the
+        // open wallet parks no plaintext seed (R3).
         if encrypted_seed.len() != EXPECTED_SEED_LEN as usize {
             let label = if meta.alias.is_empty() {
                 let hex_hash = hex::encode(seed_hash);

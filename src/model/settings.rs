@@ -168,7 +168,12 @@ impl From<AppSettingsWire> for AppSettings {
         Self {
             network,
             root_screen_type,
-            dash_qt_path: w.dash_qt_path.map(PathBuf::from),
+            // `None` means "autodetect" (see `dash_qt_path` field docs), so a
+            // stored-but-empty path re-runs detection rather than staying unset.
+            dash_qt_path: w
+                .dash_qt_path
+                .map(PathBuf::from)
+                .or_else(detect_dash_qt_path),
             overwrite_dash_conf: w.overwrite_dash_conf,
             disable_zmq: w.disable_zmq,
             theme_mode,
@@ -317,5 +322,39 @@ mod tests {
         };
         let s: AppSettings = wire.into();
         assert_eq!(s.network, Network::Mainnet);
+    }
+
+    fn wire_with_dash_qt_path(dash_qt_path: Option<String>) -> AppSettingsWire {
+        AppSettingsWire {
+            network: "testnet".to_string(),
+            root_screen_type: 0,
+            dash_qt_path,
+            overwrite_dash_conf: true,
+            disable_zmq: false,
+            theme_mode: "System".to_string(),
+            core_backend_mode: 1,
+            onboarding_completed: false,
+            show_evonode_tools: false,
+            user_mode: "Advanced".to_string(),
+            close_dash_qt_on_exit: true,
+            auto_start_spv: false,
+        }
+    }
+
+    /// S4: a stored Dash-Qt path is preserved verbatim — autodetect never
+    /// overrides an explicit user choice on deserialize.
+    #[test]
+    fn stored_dash_qt_path_is_preserved() {
+        let stored = "/custom/path/to/dash-qt";
+        let s: AppSettings = wire_with_dash_qt_path(Some(stored.to_string())).into();
+        assert_eq!(s.dash_qt_path, Some(PathBuf::from(stored)));
+    }
+
+    /// S5: an unset (`None`) Dash-Qt path re-runs autodetect on deserialize, so
+    /// installing Dash-Qt after first launch is picked up without a manual edit.
+    #[test]
+    fn unset_dash_qt_path_reruns_autodetect() {
+        let s: AppSettings = wire_with_dash_qt_path(None).into();
+        assert_eq!(s.dash_qt_path, detect_dash_qt_path());
     }
 }

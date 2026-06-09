@@ -1,5 +1,6 @@
 mod confirmation_dialog;
 mod create_asset_lock_screen;
+mod dashpay_screen;
 mod identities_screen;
 mod import_single_key;
 mod info_popup;

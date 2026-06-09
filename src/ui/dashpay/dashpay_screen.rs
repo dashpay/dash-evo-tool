@@ -1,5 +1,6 @@
 use crate::app::{AppAction, BackendTasksExecutionMode, DesiredAppAction};
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
 use crate::ui::components::left_panel::add_left_panel;
@@ -195,6 +196,21 @@ impl ScreenLike for DashPayScreen {
             DashPaySubscreen::ProfileSearch => {
                 // ProfileSearch is a separate screen, not embedded here
             }
+        }
+    }
+
+    fn display_task_error(&mut self, error: &TaskError) -> bool {
+        // Forward to the active subscreen so its typed-error classification
+        // runs. Without this the embedded ContactRequests never sees the
+        // error, so a missing-encryption-key failure never surfaces its
+        // inline "Add Encryption Key" recovery affordance.
+        match self.dashpay_subscreen {
+            DashPaySubscreen::Contacts => self
+                .contacts_list
+                .contact_requests
+                .display_task_error(error),
+            DashPaySubscreen::Profile | DashPaySubscreen::Payments => false,
+            DashPaySubscreen::ProfileSearch => false,
         }
     }
 }

@@ -89,6 +89,25 @@ fn is_wallet_touching(task: &BackendTask) -> bool {
     )
 }
 
+/// Whether `task` should trigger the lazy `WalletBackend` build before
+/// dispatch. Mirrors [`is_wallet_touching`] — every family that funnels
+/// through the backend wires it on first use, including shielded so the
+/// first shielded task cannot trip the migration gate while unwired (F51).
+fn needs_lazy_backend_build(task: &BackendTask) -> bool {
+    is_wallet_touching(task)
+}
+
+/// Whether a wallet-backend build error is terminal (storage written by a
+/// newer/incompatible app build). These must surface their actionable
+/// message instead of being logged-and-discarded as a transient deferral
+/// (F50); every other init error is retried by the cold-boot bridge.
+fn is_terminal_storage_open_error(error: &TaskError) -> bool {
+    matches!(
+        error,
+        TaskError::WalletDataTooNew { .. } | TaskError::WalletDataIncompatible { .. }
+    )
+}
+
 /// Information about fees paid for a platform state transition
 #[derive(Debug, Clone, PartialEq)]
 pub struct FeeResult {
@@ -476,17 +495,20 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let sdk = self.sdk.load().as_ref().clone();
 
-        // Wallet/identity/DashPay/core flows go through `WalletBackend`.
-        // Build it lazily on first such task (idempotent) — this is where
-        // the `AppState`-owned `TaskResult` sender is available.
-        if matches!(
-            task,
-            BackendTask::WalletTask(_)
-                | BackendTask::CoreTask(_)
-                | BackendTask::IdentityTask(_)
-                | BackendTask::DashPayTask(_)
-        ) && let Err(e) = self.ensure_wallet_backend(sender.clone()).await
+        // Wallet/identity/DashPay/core/shielded flows go through
+        // `WalletBackend`. Build it lazily on first such task (idempotent) —
+        // this is where the `AppState`-owned `TaskResult` sender is available.
+        if needs_lazy_backend_build(&task)
+            && let Err(e) = self.ensure_wallet_backend(sender.clone()).await
         {
+            // A storage-open failure (data written by a newer/incompatible app
+            // build) is terminal — restarting won't help and the generic
+            // "deferred" banner is misleading. Surface those variants so the
+            // user sees the actionable message; every other init error is a
+            // transient deferral the cold-boot bridge retries (F50).
+            if is_terminal_storage_open_error(&e) {
+                return Err(e);
+            }
             tracing::warn!(error = %e, "Wallet backend initialization deferred");
         }
 
@@ -508,7 +530,12 @@ impl AppContext {
             );
             return Err(TaskError::WalletStorageNotReady);
         }
+        // Only consult the shielded migration gate once the backend is wired —
+        // an unwired backend means "cannot gate yet", not a migration failure.
+        // The lazy-build above wires it for shielded tasks, so this normally
+        // holds; the guard covers a transient init deferral (F51).
         if matches!(task, BackendTask::ShieldedTask(_))
+            && self.wallet_backend().is_ok()
             && crate::backend_task::migration::finish_unwire::legacy_shielded_present_but_sidecar_empty(
                 self,
             )?
@@ -791,5 +818,39 @@ mod tests {
         assert!(!is_wallet_touching(&BackendTask::DiscoverDapiNodes {
             network: Network::Testnet,
         }));
+    }
+
+    /// F51 — a shielded task must trigger the lazy backend build, otherwise the
+    /// first shielded operation before wiring trips the migration gate and
+    /// surfaces a misleading "restart to finish migration" error.
+    #[test]
+    fn shielded_task_triggers_lazy_backend_build() {
+        let seed_hash = crate::model::wallet::WalletSeedHash::default();
+        assert!(needs_lazy_backend_build(&BackendTask::ShieldedTask(
+            shielded::ShieldedTask::InitializeShieldedWallet { seed_hash },
+        )));
+        // A network-level task must not eagerly build the backend.
+        assert!(!needs_lazy_backend_build(
+            &BackendTask::ReinitCoreClientAndSdk
+        ));
+    }
+
+    /// F50 — only the storage-open variants (data from a newer/incompatible
+    /// build) are terminal; every other init error is a transient deferral.
+    #[test]
+    fn terminal_storage_open_errors_are_classified() {
+        assert!(is_terminal_storage_open_error(
+            &TaskError::WalletDataTooNew {
+                found: 99,
+                max_supported: 1,
+            }
+        ));
+        // A transient pre-wire state must NOT be treated as terminal.
+        assert!(!is_terminal_storage_open_error(
+            &TaskError::WalletBackendNotYetWired
+        ));
+        assert!(!is_terminal_storage_open_error(
+            &TaskError::WalletStorageNotReady
+        ));
     }
 }

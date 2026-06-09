@@ -1973,8 +1973,113 @@ mod tests {
     const TEST_SEED: [u8; 64] = [0x42u8; 64];
     const TEST_SECRET: [u8; 32] = [0x07u8; 32];
 
+    // F3 pinned vectors — captured from the implementation for the fixed
+    // inputs `(TEST_SEED, Testnet, account_index 0, sender 0x11, recipient
+    // 0x22, TEST_SECRET)`. They guard the DashPay derivation seam against a
+    // silent upstream drift; update only with a deliberate review.
+    const ACCOUNT_REFERENCE_TESTNET_PINNED: u32 = 14_771_035;
+    const CONTACT_INFO_KEY1_TESTNET_PINNED: [u8; 32] = [
+        158, 54, 59, 142, 202, 216, 7, 142, 110, 245, 93, 36, 97, 242, 74, 190, 160, 34, 128, 221,
+        103, 201, 77, 14, 76, 12, 80, 209, 66, 120, 131, 231,
+    ];
+    const CONTACT_INFO_KEY2_TESTNET_PINNED: [u8; 32] = [
+        38, 164, 234, 130, 35, 156, 42, 172, 46, 176, 30, 207, 166, 199, 230, 203, 100, 89, 48, 37,
+        54, 201, 175, 48, 191, 160, 21, 137, 219, 78, 222, 242,
+    ];
+
     fn contact_ids() -> (Identifier, Identifier) {
         (id_from_byte(0x11), id_from_byte(0x22))
+    }
+
+    /// F3 — pinned vector for `account_reference`. Locks the DIP-15
+    /// account-reference HMAC against a fixed `(seed, sender, recipient,
+    /// secret)` so an upstream change to `calculate_account_reference` or the
+    /// xpub derivation path cannot silently shift the value contacts pay
+    /// against. The expected value was captured from the implementation and
+    /// pinned; a mismatch is a deliberate-review signal, not a flake.
+    #[test]
+    fn f3_account_reference_pinned_vector() {
+        let (sender, recipient) = contact_ids();
+        let m = derive_contact_xpub_material(
+            &TEST_SEED,
+            Network::Testnet,
+            0,
+            &sender,
+            &recipient,
+            &TEST_SECRET,
+        )
+        .expect("derive");
+        assert_eq!(
+            m.account_reference, ACCOUNT_REFERENCE_TESTNET_PINNED,
+            "account_reference drifted from its pinned vector"
+        );
+    }
+
+    /// F3 — `account_reference` differs across networks for the same inputs,
+    /// because the coin-type segment of the derivation path differs. Guards
+    /// against a regression that would make testnet and mainnet collide.
+    #[test]
+    fn f3_account_reference_testnet_differs_from_mainnet() {
+        let (sender, recipient) = contact_ids();
+        let testnet = derive_contact_xpub_material(
+            &TEST_SEED,
+            Network::Testnet,
+            0,
+            &sender,
+            &recipient,
+            &TEST_SECRET,
+        )
+        .expect("testnet");
+        let mainnet = derive_contact_xpub_material(
+            &TEST_SEED,
+            Network::Mainnet,
+            0,
+            &sender,
+            &recipient,
+            &TEST_SECRET,
+        )
+        .expect("mainnet");
+        assert_ne!(
+            testnet.account_reference, mainnet.account_reference,
+            "testnet and mainnet account_reference must not collide"
+        );
+        assert_ne!(
+            testnet.public_key, mainnet.public_key,
+            "testnet and mainnet contact xpub must not collide"
+        );
+    }
+
+    /// F3 — pinned vector for the DIP-0015 contactInfo encryption key pair.
+    /// Locks `derive_contact_info_encryption_keys` against a fixed
+    /// `(seed, network, index)` so an upstream BIP-32 change cannot silently
+    /// rotate the keys that decrypt existing contact-info documents.
+    #[test]
+    fn f3_contact_info_encryption_keys_pinned_vector() {
+        let (key1, key2) =
+            derive_contact_info_encryption_keys(&TEST_SEED, Network::Testnet, 0).expect("derive");
+        assert_eq!(
+            key1, CONTACT_INFO_KEY1_TESTNET_PINNED,
+            "contactInfo key1 drifted from its pinned vector"
+        );
+        assert_eq!(
+            key2, CONTACT_INFO_KEY2_TESTNET_PINNED,
+            "contactInfo key2 drifted from its pinned vector"
+        );
+        // The two DIP-15 keys are derived under distinct hardened branches —
+        // they must never be equal.
+        assert_ne!(key1, key2, "key1 and key2 must differ");
+    }
+
+    /// F3 — the contactInfo encryption keys differ across networks for the
+    /// same `(seed, index)`, because the coin-type path segment differs.
+    #[test]
+    fn f3_contact_info_encryption_keys_testnet_differs_from_mainnet() {
+        let (t1, t2) =
+            derive_contact_info_encryption_keys(&TEST_SEED, Network::Testnet, 0).expect("testnet");
+        let (m1, m2) =
+            derive_contact_info_encryption_keys(&TEST_SEED, Network::Mainnet, 0).expect("mainnet");
+        assert_ne!(t1, m1, "key1 must differ across networks");
+        assert_ne!(t2, m2, "key2 must differ across networks");
     }
 
     #[test]

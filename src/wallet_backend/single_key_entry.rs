@@ -169,9 +169,20 @@ impl SingleKeyEntry {
             );
             TaskError::SingleKeyCryptoFailure
         })?;
+        // Checked nonce conversion: a stored blob with the wrong nonce length
+        // is a corrupt at-rest entry, not a panic. `Nonce::from_slice` would
+        // panic on a length mismatch and poison the secret-store mutex.
+        let nonce_bytes: &[u8; 12] = self.nonce.as_slice().try_into().map_err(|_| {
+            tracing::warn!(
+                target = "wallet_backend::single_key_entry",
+                nonce_len = self.nonce.len(),
+                "Single-key entry nonce is not 12 bytes",
+            );
+            TaskError::SingleKeyCryptoFailure
+        })?;
         let plaintext = Zeroizing::new(
             cipher
-                .decrypt(Nonce::from_slice(&self.nonce), self.ciphertext.as_slice())
+                .decrypt(Nonce::from_slice(nonce_bytes), self.ciphertext.as_slice())
                 .map_err(|_| TaskError::SingleKeyPassphraseIncorrect)?,
         );
         let raw: [u8; 32] = plaintext.as_slice().try_into().map_err(|_| {
@@ -296,6 +307,43 @@ mod tests {
             dbg.contains("[redacted]"),
             "expected [redacted] in debug output: {dbg}"
         );
+    }
+
+    #[test]
+    fn wrong_length_nonce_returns_typed_error_not_panic() {
+        // A corrupt at-rest entry whose nonce is not 12 bytes must surface a
+        // typed error rather than panic inside `Nonce::from_slice` (which
+        // would poison the long-lived secret-store mutex).
+        let entry = SingleKeyEntry {
+            has_passphrase: true,
+            salt: vec![0u8; 16],
+            nonce: vec![0u8; 7], // wrong length on purpose
+            ciphertext: vec![0u8; 48],
+            passphrase_hint: None,
+            public_key_bytes: Vec::new(),
+        };
+        match entry.decrypt(Some("any-passphrase")) {
+            Err(TaskError::SingleKeyCryptoFailure) => {}
+            other => panic!("expected SingleKeyCryptoFailure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn wrong_length_unprotected_blob_returns_typed_error_not_panic() {
+        // An unprotected entry whose raw blob is not 32 bytes must also be a
+        // typed error, not a panic.
+        let entry = SingleKeyEntry {
+            has_passphrase: false,
+            salt: Vec::new(),
+            nonce: Vec::new(),
+            ciphertext: vec![0u8; 31], // one byte short
+            passphrase_hint: None,
+            public_key_bytes: Vec::new(),
+        };
+        match entry.decrypt(None) {
+            Err(TaskError::SingleKeyCryptoFailure) => {}
+            other => panic!("expected SingleKeyCryptoFailure, got {other:?}"),
+        }
     }
 
     #[test]

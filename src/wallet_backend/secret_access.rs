@@ -609,10 +609,21 @@ fn decrypt_hd_seed(
         );
         TaskError::SecretDecryptFailed
     })?;
+    // Checked nonce conversion: a stored envelope with the wrong nonce length
+    // is a corrupt at-rest blob, not a panic. `Nonce::from_slice` would panic
+    // on a length mismatch and poison the long-lived secret-store mutex.
+    let nonce_bytes: &[u8; 12] = envelope.nonce.as_slice().try_into().map_err(|_| {
+        tracing::warn!(
+            target = "wallet_backend::secret_access",
+            nonce_len = envelope.nonce.len(),
+            "HD seed envelope nonce is not 12 bytes",
+        );
+        TaskError::SecretDecryptFailed
+    })?;
     let plaintext = Zeroizing::new(
         cipher
             .decrypt(
-                Nonce::from_slice(&envelope.nonce),
+                Nonce::from_slice(nonce_bytes),
                 envelope.encrypted_seed.as_slice(),
             )
             .map_err(|_| TaskError::HdPassphraseIncorrect)?,
@@ -698,6 +709,27 @@ mod tests {
 
     fn access(store: Arc<SecretStore>, prompt: Arc<dyn SecretPrompt>) -> SecretAccess {
         SecretAccess::new(store, prompt, Network::Testnet)
+    }
+
+    #[test]
+    fn hd_seed_wrong_length_nonce_returns_typed_error_not_panic() {
+        // A protected envelope whose nonce is not 12 bytes is a corrupt
+        // at-rest blob: `decrypt_hd_seed` must surface a typed error rather
+        // than panic inside `Nonce::from_slice` (which would poison the
+        // long-lived secret-store mutex).
+        let envelope = StoredSeedEnvelope {
+            encrypted_seed: vec![0u8; 80],
+            salt: vec![0u8; 16],
+            nonce: vec![0u8; 5], // wrong length on purpose
+            password_hint: None,
+            uses_password: true,
+            xpub_encoded: vec![0u8; 78],
+        };
+        let passphrase = SecretString::new(SENTINEL_PASSPHRASE);
+        match decrypt_hd_seed(&envelope, Some(&passphrase)) {
+            Err(TaskError::SecretDecryptFailed) => {}
+            other => panic!("expected SecretDecryptFailed, got {other:?}"),
+        }
     }
 
     // --- HD seed scope ----------------------------------------------------

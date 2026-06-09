@@ -1,11 +1,10 @@
 //! Per-network shielded sidecar (T-SH-01).
 //!
 //! [`ShieldedView`] wraps a private SQLite file at
-//! `<data_dir>/spv/<network>/det-shielded.sqlite` that mirrors the shielded
-//! tables in `src/database/shielded.rs` byte-for-byte. The schema is
-//! intentionally identical so T-SH-02 can migrate legacy rows with a plain
-//! `ATTACH` + `INSERT OR REPLACE`, and so callers swapped over in T-SH-03
-//! see no behavioural change.
+//! `<data_dir>/spv/<network>/det-shielded.sqlite`. Its schema mirrors the
+//! legacy shielded tables byte-for-byte so the one-shot migration copies
+//! rows with a plain `ATTACH` + `INSERT OR REPLACE`, and so callers reading
+//! through this view see the same shapes the legacy reader produced.
 //!
 //! Lazy materialization (FR-3.3): the file is opened-and-created only on
 //! the first **write** (`insert_shielded_note`, `mark_shielded_note_spent`,
@@ -24,13 +23,13 @@ use crate::model::wallet::WalletSeedHash;
 /// Sidecar filename used under every `<data_dir>/spv/<network>/` directory.
 pub const SHIELDED_SIDECAR_FILE: &str = "det-shielded.sqlite";
 
-/// Per-network shielded-notes sidecar. One instance per [`WalletBackend`]
+/// Per-network shielded-notes sidecar. One instance per `WalletBackend`
 /// (so one per network) — the path is fixed at construction time and the
 /// connection is materialised lazily on first write.
 ///
-/// All methods mirror their `Database::*_shielded_*` counterparts so the
-/// migration in T-SH-02 only has to copy rows, not translate them. The view
-/// is `Send + Sync` via the inner [`Mutex`].
+/// All methods mirror their legacy `Database::*_shielded_*` counterparts so
+/// the migration only copies rows, never translates them. The view is
+/// `Send + Sync` via the inner [`Mutex`].
 pub struct ShieldedView {
     path: PathBuf,
     /// `None` until the first write materialises the file + schema.
@@ -340,12 +339,11 @@ impl ShieldedView {
 }
 
 fn map_note_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ShieldedNoteRow> {
-    let cmx_bytes: Vec<u8> = row.get(3)?;
-    let nullifier_bytes: Vec<u8> = row.get(4)?;
-    let mut cmx = [0u8; 32];
-    let mut nullifier = [0u8; 32];
-    cmx.copy_from_slice(&cmx_bytes);
-    nullifier.copy_from_slice(&nullifier_bytes);
+    // Checked 32-byte conversions: a stored blob with the wrong length is a
+    // corrupt at-rest row, surfaced as a typed column error. `copy_from_slice`
+    // would panic and poison the long-lived sidecar mutex.
+    let cmx = blob_to_array(row, 3, "cmx")?;
+    let nullifier = blob_to_array(row, 4, "nullifier")?;
     Ok(ShieldedNoteRow {
         id: row.get(0)?,
         note_data: row.get(1)?,
@@ -354,6 +352,29 @@ fn map_note_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ShieldedNoteRow> {
         nullifier,
         block_height: row.get::<_, i64>(5)? as u64,
         value: row.get::<_, i64>(6)? as u64,
+    })
+}
+
+/// Read a 32-byte BLOB column as `[u8; 32]`, returning a typed conversion
+/// error (never a panic) when the stored blob is the wrong length.
+fn blob_to_array(
+    row: &rusqlite::Row<'_>,
+    idx: usize,
+    column: &'static str,
+) -> rusqlite::Result<[u8; 32]> {
+    let bytes: Vec<u8> = row.get(idx)?;
+    bytes.as_slice().try_into().map_err(|_| {
+        tracing::warn!(
+            target = "wallet_backend::shielded",
+            column,
+            blob_len = bytes.len(),
+            "Shielded note column is not 32 bytes",
+        );
+        rusqlite::Error::FromSqlConversionFailure(
+            idx,
+            rusqlite::types::Type::Blob,
+            format!("{column} blob is not 32 bytes").into(),
+        )
     })
 }
 
@@ -906,5 +927,46 @@ mod tests {
             .get_all_shielded_notes(&seed, "testnet")
             .expect("read all");
         assert_eq!(all.len(), 1, "duplicate must be ignored");
+    }
+
+    /// F12 — a stored note whose `cmx` blob is not 32 bytes (a corrupt
+    /// at-rest row) must surface a typed `rusqlite::Error`, never a panic.
+    /// `copy_from_slice` on a length mismatch would poison the sidecar mutex.
+    #[test]
+    fn wrong_length_cmx_blob_returns_typed_error_not_panic() {
+        let tmp = tempdir().expect("tempdir");
+        let view = make_view(tmp.path());
+        let seed: WalletSeedHash = [0x88; 32];
+
+        // Materialise the sidecar with one healthy note, then plant a row
+        // whose cmx blob is the wrong length via a direct connection.
+        view.insert_shielded_note(&seed, &sample_note(5, 0, 0x01).as_param("testnet"))
+            .expect("seed sidecar");
+        {
+            let conn = Connection::open(view.path()).expect("open sidecar");
+            conn.execute(
+                "INSERT INTO shielded_notes
+                 (wallet_seed_hash, note_data, position, cmx, nullifier, block_height, value, network)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    seed.as_slice(),
+                    vec![0xAAu8; 16],
+                    1i64,
+                    vec![0u8; 7], // wrong-length cmx on purpose
+                    vec![0u8; 32],
+                    100i64,
+                    9i64,
+                    "testnet",
+                ],
+            )
+            .expect("plant corrupt row");
+        }
+
+        let result = view.get_all_shielded_notes(&seed, "testnet");
+        match result {
+            Err(rusqlite::Error::FromSqlConversionFailure(_, rusqlite::types::Type::Blob, _)) => {}
+            Err(other) => panic!("expected a typed blob conversion error, got {other:?}"),
+            Ok(_) => panic!("expected an error for the corrupt cmx blob, got Ok"),
+        }
     }
 }

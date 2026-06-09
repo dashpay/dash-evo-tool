@@ -786,3 +786,187 @@ where
     kv.put(DetScope::Global, TOKEN_ORDER_KEY, &serialized)
         .map_err(|source| TaskError::TokenStorage { source })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use platform_wallet_storage::{KvError, KvStore, ObjectId};
+    use std::sync::Mutex;
+
+    /// FK-free in-memory `KvStore` modelling each `ObjectId` scope as an
+    /// independent slot. Mirrors the harness used across the storage modules.
+    #[derive(Default)]
+    struct InMemoryKv {
+        slots: Mutex<Vec<(ObjectId, String, Vec<u8>)>>,
+    }
+
+    impl KvStore for InMemoryKv {
+        fn get(&self, scope: &ObjectId, key: &str) -> Result<Option<Vec<u8>>, KvError> {
+            Ok(self
+                .slots
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|(s, k, _)| s == scope && k == key)
+                .map(|(_, _, v)| v.clone()))
+        }
+        fn put(&self, scope: &ObjectId, key: &str, value: &[u8]) -> Result<(), KvError> {
+            let mut slots = self.slots.lock().unwrap();
+            if let Some(slot) = slots.iter_mut().find(|(s, k, _)| s == scope && k == key) {
+                slot.2 = value.to_vec();
+            } else {
+                slots.push((scope.clone(), key.to_string(), value.to_vec()));
+            }
+            Ok(())
+        }
+        fn delete(&self, scope: &ObjectId, key: &str) -> Result<(), KvError> {
+            self.slots
+                .lock()
+                .unwrap()
+                .retain(|(s, k, _)| !(s == scope && k == key));
+            Ok(())
+        }
+        fn list_keys(
+            &self,
+            scope: &ObjectId,
+            prefix: Option<&str>,
+        ) -> Result<Vec<String>, KvError> {
+            let pred = |k: &str| -> bool { prefix.is_none_or(|p| k.starts_with(p)) };
+            let mut keys: Vec<String> = self
+                .slots
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(s, k, _)| s == scope && pred(k))
+                .map(|(_, k, _)| k.clone())
+                .collect();
+            keys.sort();
+            Ok(keys)
+        }
+    }
+
+    fn empty_kv() -> DetKv {
+        DetKv::from_store(Arc::new(InMemoryKv::default()))
+    }
+
+    fn ident(b: u8) -> Identifier {
+        Identifier::from([b; 32])
+    }
+
+    fn stored_token(alias: &str, contract: u8, position: u16) -> StoredToken {
+        StoredToken {
+            config_bytes: vec![0xAB, 0xCD, 0xEF],
+            alias: alias.to_string(),
+            data_contract_id: [contract; 32],
+            position,
+        }
+    }
+
+    // ----------------------------------------------------------------
+    // Token registry: Global-scoped k/v round-trip.
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn token_registry_entry_round_trips_in_global_scope() {
+        let kv = empty_kv();
+        let token = ident(1);
+        let key = token_key(&token);
+        let stored = stored_token("MyToken", 9, 3);
+        kv.put(DetScope::Global, &key, &stored).unwrap();
+
+        let got: StoredToken = kv.get(DetScope::Global, &key).unwrap().unwrap();
+        assert_eq!(got.alias, "MyToken");
+        assert_eq!(got.position, 3);
+        assert_eq!(got.data_contract_id, [9u8; 32]);
+        assert_eq!(got.config_bytes, vec![0xAB, 0xCD, 0xEF]);
+    }
+
+    #[test]
+    fn missing_token_registry_entry_reads_as_none() {
+        let kv = empty_kv();
+        let got: Option<StoredToken> = kv.get(DetScope::Global, &token_key(&ident(2))).unwrap();
+        assert!(got.is_none());
+    }
+
+    #[test]
+    fn token_registry_put_upserts_in_place() {
+        let kv = empty_kv();
+        let token = ident(1);
+        let key = token_key(&token);
+        kv.put(DetScope::Global, &key, &stored_token("Old", 1, 0))
+            .unwrap();
+        kv.put(DetScope::Global, &key, &stored_token("New", 2, 5))
+            .unwrap();
+        let got: StoredToken = kv.get(DetScope::Global, &key).unwrap().unwrap();
+        assert_eq!(got.alias, "New");
+        assert_eq!(got.position, 5);
+        assert_eq!(got.data_contract_id, [2u8; 32]);
+    }
+
+    #[test]
+    fn token_keys_carry_a_base58_suffix_that_round_trips_to_the_id() {
+        // The listing readers strip the prefix and decode the base58 suffix
+        // back into an `Identifier`; assert that contract holds.
+        let token = ident(5);
+        let key = token_key(&token);
+        let suffix = key.strip_prefix(TOKEN_KEY_PREFIX).unwrap();
+        let decoded = Identifier::from_string(suffix, Encoding::Base58).unwrap();
+        assert_eq!(decoded, token);
+    }
+
+    #[test]
+    fn contract_keys_carry_a_base58_suffix_that_round_trips_to_the_id() {
+        let contract = ident(6);
+        let key = contract_key(&contract);
+        let suffix = key.strip_prefix(CONTRACT_KEY_PREFIX).unwrap();
+        let decoded = Identifier::from_string(suffix, Encoding::Base58).unwrap();
+        assert_eq!(decoded, contract);
+    }
+
+    // ----------------------------------------------------------------
+    // Token order: prune helper rewrites the list only when it shrinks.
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn prune_token_order_drops_only_filtered_pairs() {
+        let kv = empty_kv();
+        let keep_pair = (ident(1), ident(10));
+        let drop_pair = (ident(2), ident(20));
+        let payload: Vec<([u8; 32], [u8; 32])> = vec![
+            (keep_pair.0.to_buffer(), keep_pair.1.to_buffer()),
+            (drop_pair.0.to_buffer(), drop_pair.1.to_buffer()),
+        ];
+        kv.put(DetScope::Global, TOKEN_ORDER_KEY, &payload).unwrap();
+
+        prune_token_order(&kv, |(t, i)| !(*t == drop_pair.0 && *i == drop_pair.1)).unwrap();
+
+        let got: Vec<([u8; 32], [u8; 32])> =
+            kv.get(DetScope::Global, TOKEN_ORDER_KEY).unwrap().unwrap();
+        assert_eq!(
+            got,
+            vec![(keep_pair.0.to_buffer(), keep_pair.1.to_buffer())]
+        );
+    }
+
+    #[test]
+    fn prune_token_order_is_noop_when_no_order_list_exists() {
+        let kv = empty_kv();
+        // No order list has ever been written — pruning must not create one.
+        prune_token_order(&kv, |_| true).unwrap();
+        let got: Option<Vec<([u8; 32], [u8; 32])>> =
+            kv.get(DetScope::Global, TOKEN_ORDER_KEY).unwrap();
+        assert!(got.is_none());
+    }
+
+    #[test]
+    fn prune_token_order_keeps_list_intact_when_filter_drops_nothing() {
+        let kv = empty_kv();
+        let payload: Vec<([u8; 32], [u8; 32])> =
+            vec![(ident(1).to_buffer(), ident(10).to_buffer())];
+        kv.put(DetScope::Global, TOKEN_ORDER_KEY, &payload).unwrap();
+        prune_token_order(&kv, |_| true).unwrap();
+        let got: Vec<([u8; 32], [u8; 32])> =
+            kv.get(DetScope::Global, TOKEN_ORDER_KEY).unwrap().unwrap();
+        assert_eq!(got, payload);
+    }
+}

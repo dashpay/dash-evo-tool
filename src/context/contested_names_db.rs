@@ -358,3 +358,195 @@ impl AppContext {
         Ok(backend.kv())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use platform_wallet_storage::{KvError, KvStore, ObjectId};
+    use std::sync::{Arc, Mutex};
+
+    /// FK-free in-memory `KvStore` modelling each `ObjectId` scope as an
+    /// independent slot. Mirrors the harness used across the storage modules.
+    #[derive(Default)]
+    struct InMemoryKv {
+        slots: Mutex<Vec<(ObjectId, String, Vec<u8>)>>,
+    }
+
+    impl KvStore for InMemoryKv {
+        fn get(&self, scope: &ObjectId, key: &str) -> Result<Option<Vec<u8>>, KvError> {
+            Ok(self
+                .slots
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|(s, k, _)| s == scope && k == key)
+                .map(|(_, _, v)| v.clone()))
+        }
+        fn put(&self, scope: &ObjectId, key: &str, value: &[u8]) -> Result<(), KvError> {
+            let mut slots = self.slots.lock().unwrap();
+            if let Some(slot) = slots.iter_mut().find(|(s, k, _)| s == scope && k == key) {
+                slot.2 = value.to_vec();
+            } else {
+                slots.push((scope.clone(), key.to_string(), value.to_vec()));
+            }
+            Ok(())
+        }
+        fn delete(&self, scope: &ObjectId, key: &str) -> Result<(), KvError> {
+            self.slots
+                .lock()
+                .unwrap()
+                .retain(|(s, k, _)| !(s == scope && k == key));
+            Ok(())
+        }
+        fn list_keys(
+            &self,
+            scope: &ObjectId,
+            prefix: Option<&str>,
+        ) -> Result<Vec<String>, KvError> {
+            let pred = |k: &str| -> bool { prefix.is_none_or(|p| k.starts_with(p)) };
+            let mut keys: Vec<String> = self
+                .slots
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(s, k, _)| s == scope && pred(k))
+                .map(|(_, k, _)| k.clone())
+                .collect();
+            keys.sort();
+            Ok(keys)
+        }
+    }
+
+    fn empty_kv() -> DetKv {
+        DetKv::from_store(Arc::new(InMemoryKv::default()))
+    }
+
+    fn contestant(id: u8, created_at: Option<TimestampMillis>) -> StoredContestant {
+        StoredContestant {
+            id: [id; 32],
+            name: format!("name-{id}"),
+            info: String::new(),
+            votes: u32::from(id),
+            created_at,
+            created_at_block_height: None,
+            created_at_core_block_height: None,
+            document_id: [id; 32],
+        }
+    }
+
+    // ----------------------------------------------------------------
+    // Decode: contest state branches the cache resolves at read time.
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn to_contested_name_reports_won_by_when_awarded() {
+        let stored = StoredContestedName {
+            normalized_contested_name: "dash".to_string(),
+            awarded_to: Some([7u8; 32]),
+            ..Default::default()
+        };
+        let cn = stored.to_contested_name(Network::Testnet);
+        assert_eq!(cn.state, ContestState::WonBy(Identifier::from([7u8; 32])));
+        assert_eq!(cn.awarded_to, Some(Identifier::from([7u8; 32])));
+    }
+
+    #[test]
+    fn to_contested_name_reports_locked_when_locked_flag_set() {
+        let stored = StoredContestedName {
+            normalized_contested_name: "dash".to_string(),
+            locked: true,
+            ..Default::default()
+        };
+        let cn = stored.to_contested_name(Network::Testnet);
+        assert_eq!(cn.state, ContestState::Locked);
+        assert!(cn.awarded_to.is_none());
+    }
+
+    #[test]
+    fn to_contested_name_locked_wins_over_awarded() {
+        // `locked` is checked before `awarded_to`; a record carrying both
+        // resolves to `Locked`.
+        let stored = StoredContestedName {
+            normalized_contested_name: "dash".to_string(),
+            locked: true,
+            awarded_to: Some([9u8; 32]),
+            ..Default::default()
+        };
+        assert_eq!(
+            stored.to_contested_name(Network::Testnet).state,
+            ContestState::Locked
+        );
+    }
+
+    #[test]
+    fn to_contested_name_is_unknown_without_winner_or_timestamps() {
+        // No winner, not locked, and no contestant timestamps to date the
+        // contest against — the state stays `Unknown`.
+        let stored = StoredContestedName {
+            normalized_contested_name: "dash".to_string(),
+            contestants: vec![contestant(1, None), contestant(2, None)],
+            ..Default::default()
+        };
+        let cn = stored.to_contested_name(Network::Testnet);
+        assert_eq!(cn.state, ContestState::Unknown);
+        assert_eq!(cn.contestants.as_ref().map(Vec::len), Some(2));
+    }
+
+    #[test]
+    fn to_contested_name_preserves_contestant_fields() {
+        let stored = StoredContestedName {
+            normalized_contested_name: "dash".to_string(),
+            locked: true,
+            contestants: vec![contestant(3, Some(100))],
+            ..Default::default()
+        };
+        let cn = stored.to_contested_name(Network::Testnet);
+        let mapped = &cn.contestants.unwrap()[0];
+        assert_eq!(mapped.id, Identifier::from([3u8; 32]));
+        assert_eq!(mapped.name, "name-3");
+        assert_eq!(mapped.votes, 3);
+        assert_eq!(mapped.created_at, Some(100));
+    }
+
+    // ----------------------------------------------------------------
+    // Storage: Global-scoped k/v round-trip of a contest record.
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn contest_record_round_trips_in_global_scope() {
+        let kv = empty_kv();
+        let key = contested_name_key("dash");
+        let stored = StoredContestedName {
+            normalized_contested_name: "dash".to_string(),
+            locked_votes: Some(4),
+            abstain_votes: Some(2),
+            end_time: Some(1_700),
+            last_updated: Some(1_600),
+            contestants: vec![contestant(1, Some(10))],
+            ..Default::default()
+        };
+        kv.put(DetScope::Global, &key, &stored).unwrap();
+
+        let got: StoredContestedName = kv.get(DetScope::Global, &key).unwrap().unwrap();
+        assert_eq!(got.normalized_contested_name, "dash");
+        assert_eq!(got.locked_votes, Some(4));
+        assert_eq!(got.abstain_votes, Some(2));
+        assert_eq!(got.end_time, Some(1_700));
+        assert_eq!(got.contestants.len(), 1);
+        assert_eq!(got.contestants[0].created_at, Some(10));
+    }
+
+    #[test]
+    fn missing_contest_record_reads_as_none() {
+        let kv = empty_kv();
+        let got: Option<StoredContestedName> = kv
+            .get(DetScope::Global, &contested_name_key("never-stored"))
+            .unwrap();
+        assert!(got.is_none());
+    }
+
+    #[test]
+    fn contest_key_is_prefixed_with_normalized_name() {
+        assert_eq!(contested_name_key("dash"), "det:contested_name:dash");
+    }
+}

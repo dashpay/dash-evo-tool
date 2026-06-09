@@ -135,3 +135,129 @@ impl AppContext {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::app::TaskResult;
+    use crate::app_dir::ensure_env_file;
+    use crate::context::AppContext;
+    use crate::context::connection_status::ConnectionStatus;
+    use crate::database::test_helpers::create_database_at_path;
+    use crate::model::wallet::{Wallet, WalletSeedHash};
+    use crate::utils::egui_mpsc::SenderAsync;
+    use crate::utils::tasks::TaskManager;
+    use dash_sdk::dpp::dashcore::address::Address;
+    use dash_sdk::dpp::dashcore::{Network, PublicKey};
+    use std::sync::Arc;
+
+    /// Build an offline testnet `AppContext` with the wallet backend wired so
+    /// the platform-address façade resolves a real k/v store. No network I/O:
+    /// construction reads bundled `.env` addresses and connects lazily. The
+    /// `TempDir` must outlive the context — its drop removes the data dir.
+    async fn wired_context() -> (Arc<AppContext>, tempfile::TempDir) {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp_dir.path().to_path_buf();
+        ensure_env_file(&data_dir);
+
+        let db = Arc::new(
+            create_database_at_path(&data_dir.join("data.db")).expect("create test database"),
+        );
+        let subtasks = Arc::new(TaskManager::new());
+        let connection_status = Arc::new(ConnectionStatus::new());
+        let egui_ctx = egui::Context::default();
+        let app_kv = AppContext::open_app_kv(&data_dir).expect("open app k/v");
+        let secret_store = AppContext::open_secret_store(&data_dir).expect("open secret store");
+
+        let ctx = AppContext::new(
+            data_dir,
+            Network::Testnet,
+            db,
+            subtasks,
+            connection_status,
+            egui_ctx,
+            app_kv,
+            secret_store,
+        )
+        .expect("offline testnet AppContext::new");
+
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("wire wallet backend offline");
+        (ctx, temp_dir)
+    }
+
+    fn sample_address() -> Address {
+        let pubkey = PublicKey::from_slice(&[0x02; 33]).unwrap();
+        Wallet::canonical_address(&Address::p2pkh(&pubkey, Network::Testnet), Network::Testnet)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn address_info_round_trips_through_facade() {
+        let (ctx, _tmp) = wired_context().await;
+        let seed: WalletSeedHash = [1u8; 32];
+        let addr = sample_address();
+        ctx.set_platform_address_info(&seed, &addr, 1_000, 7)
+            .unwrap();
+        assert_eq!(
+            ctx.get_platform_address_info(&seed, &addr).unwrap(),
+            Some((1_000, 7))
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn missing_address_info_reads_as_none() {
+        let (ctx, _tmp) = wired_context().await;
+        let seed: WalletSeedHash = [2u8; 32];
+        assert_eq!(
+            ctx.get_platform_address_info(&seed, &sample_address())
+                .unwrap(),
+            None
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn all_address_info_lists_only_the_wallets_own_entries() {
+        let (ctx, _tmp) = wired_context().await;
+        let seed: WalletSeedHash = [3u8; 32];
+        let other: WalletSeedHash = [4u8; 32];
+        let addr = sample_address();
+        ctx.set_platform_address_info(&seed, &addr, 42, 1).unwrap();
+        ctx.set_platform_address_info(&other, &addr, 99, 2).unwrap();
+
+        let entries = ctx.get_all_platform_address_info(&seed).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!((entries[0].1, entries[0].2), (42, 1));
+        // A wallet with no stored entries lists empty.
+        assert!(
+            ctx.get_all_platform_address_info(&[9u8; 32])
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn delete_clears_address_entries_but_leaves_sync_cursor() {
+        let (ctx, _tmp) = wired_context().await;
+        let seed: WalletSeedHash = [5u8; 32];
+        let addr = sample_address();
+        ctx.set_platform_address_info(&seed, &addr, 5, 0).unwrap();
+        ctx.set_platform_sync_info(&seed, 1_700, 900).unwrap();
+
+        ctx.delete_platform_address_info(&seed).unwrap();
+        assert!(ctx.get_all_platform_address_info(&seed).unwrap().is_empty());
+        // The sync cursor lives in its own slot, untouched by the delete.
+        assert_eq!(ctx.get_platform_sync_info(&seed).unwrap(), (1_700, 900));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sync_cursor_round_trips_and_defaults_to_zero() {
+        let (ctx, _tmp) = wired_context().await;
+        let seed: WalletSeedHash = [6u8; 32];
+        // Unset cursor reads as (0, 0) — callers treat that as "from scratch".
+        assert_eq!(ctx.get_platform_sync_info(&seed).unwrap(), (0, 0));
+        ctx.set_platform_sync_info(&seed, 2_500, 1_234).unwrap();
+        assert_eq!(ctx.get_platform_sync_info(&seed).unwrap(), (2_500, 1_234));
+    }
+}
